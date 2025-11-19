@@ -9,6 +9,9 @@ src-tauri/target/
 update_streamnook.bat
 StreamNook_new.exe
 
+# Documentation
+RELEASE.md
+
 # System
 .DS_Store
 Thumbs.db
