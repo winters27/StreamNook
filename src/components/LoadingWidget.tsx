@@ -5,16 +5,16 @@ import PenroseCanvas from './PenroseCanvas';
 const EMOTE_URLS: Record<string, string> = {
   'PogChamp': 'https://static-cdn.jtvnw.net/emoticons/v2/305954156/default/dark/1.0',
   'Kappa': 'https://static-cdn.jtvnw.net/emoticons/v2/25/default/dark/1.0',
-  'monkaS': 'https://cdn.7tv.app/emote/60420c7a77137b000de9e675/1x.webp',
-  'KEKW': 'https://cdn.7tv.app/emote/60420c6977137b000de9e675/1x.webp',
-  'Sadge': 'https://cdn.7tv.app/emote/60420c3577137b000de9e665/1x.webp',
-  'Pepega': 'https://cdn.7tv.app/emote/60420c5677137b000de9e66a/1x.webp',
-  'Copege': 'https://cdn.7tv.app/emote/60b8ff584e1b6d0e4c0e8a8f/1x.webp',
-  'Aware': 'https://cdn.7tv.app/emote/60b8ff584e1b6d0e4c0e8a8e/1x.webp',
-  'Clueless': 'https://cdn.7tv.app/emote/60b8ff584e1b6d0e4c0e8a8d/1x.webp',
-  'forsenCD': 'https://cdn.7tv.app/emote/60420c7077137b000de9e673/1x.webp',
-  '5Head': 'https://cdn.7tv.app/emote/60420c4577137b000de9e668/1x.webp',
-  'BatChest': 'https://cdn.7tv.app/emote/60b8ff584e1b6d0e4c0e8a90/1x.webp',
+  'monkaS': 'https://cdn.7tv.app/emote/01FBFNXGCR0006C5E1Y5NJVDMW/1x.webp',
+  'KEKW': 'https://cdn.7tv.app/emote/01GA29CZ2R000C36HNE7Z0DQXD/1x.webp',
+  'Sadge': 'https://cdn.7tv.app/emote/01EZPG1FN80001SNAW00ADK2DY/1x.avif',
+  'Pepega': 'https://cdn.7tv.app/emote/01FGYQJJ1R000BF1F0BAH6R3DP/1x.webp',
+  'Copege': 'https://cdn.7tv.app/emote/01FNEWEE48000FZADBM40VPFSQ/1x.webp',
+  'Aware': 'https://cdn.7tv.app/emote/01GGRAYAQ8000EWKN4JP9DAVSG/1x.webp',
+  'Clueless': 'https://cdn.7tv.app/emote/01FME4XBAG000B3TR3VAP7VAJZ/1x.webp',
+  'forsenCD': 'https://cdn.7tv.app/emote/01GT2VWX980000ZMA1SVXGHQ1C/1x.webp',
+  '5Head': 'https://cdn.7tv.app/emote/01FM1BAN8G000F3BGNNF3YRVJT/1x.webp',
+  'BatChest': 'https://cdn.7tv.app/emote/01GFCQC380000DYC21DTSR0VVS/1x.webp',
 };
 
 // Messages with emote placeholders
@@ -130,18 +130,6 @@ const FUNNY_MESSAGES = [
   "This you? (loading)",
   "Understood the assignment...",
   "Passing the vibe check...",
-  "Clearing the chat logs...",
-  "Banning the bots...",
-  "Timing out the trolls...",
-  "Raiding the server...",
-  "Clipping that moment...",
-  "Farming channel points...",
-  "Claiming the drops...",
-  "Subbing to the channel...",
-  "Gifting subs to chat...",
-  "Hyping the train...",
-  "Popping the bits...",
-  "Cheering with bits...",
   "Modding the chat...",
   "VIP status: pending...",
   "Lurking in style...",
@@ -173,7 +161,7 @@ interface LoadingWidgetProps {
 }
 
 const LoadingWidget = ({ message, useFunnyMessages = false }: LoadingWidgetProps) => {
-  const [currentMessageIndex, setCurrentMessageIndex] = useState(() => 
+  const [currentMessageIndex, setCurrentMessageIndex] = useState(() =>
     Math.floor(Math.random() * FUNNY_MESSAGES.length)
   );
 
@@ -194,7 +182,7 @@ const LoadingWidget = ({ message, useFunnyMessages = false }: LoadingWidgetProps
     return () => clearInterval(interval);
   }, [useFunnyMessages]);
 
-  const displayMessage = useFunnyMessages 
+  const displayMessage = useFunnyMessages
     ? FUNNY_MESSAGES[currentMessageIndex]
     : message || "Loading stream...";
 
@@ -214,7 +202,7 @@ const LoadingWidget = ({ message, useFunnyMessages = false }: LoadingWidgetProps
       // Add the emote image
       const emoteName = match[1];
       const emoteUrl = EMOTE_URLS[emoteName];
-      
+
       if (emoteUrl) {
         parts.push(
           <img
