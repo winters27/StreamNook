@@ -309,10 +309,10 @@ const PenroseCanvas = (props: PenroseCanvasProps) => {
     // Scale down for the loading widget
     const scaledProps = {
       ...props,
-      triangleEdge: 120,
-      cubeEdge: 22,
+      triangleEdge: 80,
+      cubeEdge: 15,
       cubesPerTriangleEdge: 3,
-      padding: [20, 20] as [number, number],
+      padding: [10, 10] as [number, number],
       loopFrames: 100,
       lineWidth: 1,
       lineColor: 'rgba(151, 177, 185, 0.4)',
@@ -342,8 +342,8 @@ const PenroseCanvas = (props: PenroseCanvasProps) => {
   return (
     <canvas 
       ref={canvasRef} 
-      width={160} 
-      height={180}
+      width={100} 
+      height={110}
       style={{
         display: 'block'
       }}
