@@ -1,0 +1,95 @@
+import { parseBadges } from './twitchBadges';
+
+export interface ReplyInfo {
+  parentMsgId: string;
+  parentDisplayName: string;
+  parentMsgBody: string;
+  parentUserId: string;
+  parentUserLogin: string;
+}
+
+export const parseMessage = (raw: string, channelId?: string) => {
+  // Parse IRC tags, username, content, etc.
+  const tags = new Map<string, string>();
+  let message = raw;
+  
+  // Parse tags if present
+  if (raw.startsWith('@')) {
+    const tagEnd = raw.indexOf(' ');
+    const tagStr = raw.slice(1, tagEnd);
+    tagStr.split(';').forEach(pair => {
+      const [key, value] = pair.split('=');
+      if (key && value !== undefined) {
+        tags.set(key, value);
+      }
+    });
+    message = raw.slice(tagEnd + 1).trim();
+  }
+  
+  // Check if this is a USERNOTICE (subscription, etc.)
+  const isUserNotice = message.includes('USERNOTICE');
+  
+  // Parse IRC message format: :user!user@user.tmi.twitch.tv PRIVMSG #channel :message
+  // Extract username from prefix or tags
+  let username = tags.get('display-name') || tags.get('login') || 'unknown';
+  if (message.startsWith(':')) {
+    const prefixEnd = message.indexOf(' ');
+    const prefix = message.slice(1, prefixEnd);
+    const userMatch = prefix.match(/^([^!]+)!/);
+    if (userMatch && username === 'unknown') {
+      username = userMatch[1];
+    }
+    message = message.slice(prefixEnd + 1);
+  }
+  
+  // Extract the actual message content
+  let content = '';
+  if (isUserNotice) {
+    // For USERNOTICE, content comes after USERNOTICE #channel :
+    const contentMatch = message.match(/USERNOTICE\s+#\S+\s+:(.+)$/);
+    content = contentMatch ? contentMatch[1] : '';
+  } else {
+    // For PRIVMSG, content comes after PRIVMSG #channel :
+    const contentMatch = message.match(/PRIVMSG\s+#\S+\s+:(.+)$/);
+    content = contentMatch ? contentMatch[1] : '';
+  }
+  
+  // Parse badges using the badge service
+  // For shared chat messages, prefer source-badges over badges
+  const sourceBadgeStr = tags.get('source-badges');
+  const badgeStr = sourceBadgeStr || tags.get('badges') || '';
+  
+  // For shared chat, use source-room-id for badge lookup
+  const sourceRoomId = tags.get('source-room-id');
+  const effectiveChannelId = sourceRoomId || channelId;
+  
+  const badgeData = parseBadges(badgeStr, effectiveChannelId);
+  
+  // Parse reply information if present
+  let replyInfo: ReplyInfo | undefined;
+  const replyParentMsgId = tags.get('reply-parent-msg-id');
+  if (replyParentMsgId) {
+    const parentDisplayName = tags.get('reply-parent-display-name') || '';
+    const parentMsgBody = tags.get('reply-parent-msg-body')?.replace(/\\s/g, ' ') || '';
+    const parentUserId = tags.get('reply-parent-user-id') || '';
+    const parentUserLogin = tags.get('reply-parent-user-login') || '';
+    
+    replyInfo = {
+      parentMsgId: replyParentMsgId,
+      parentDisplayName,
+      parentMsgBody,
+      parentUserId,
+      parentUserLogin,
+    };
+  }
+  
+  return {
+    tags,
+    username,
+    content,
+    color: tags.get('color') || '#9147FF', // Twitch purple as default
+    badges: badgeData,
+    emotes: tags.get('emotes') || '',
+    replyInfo,
+  };
+};

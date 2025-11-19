@@ -1,0 +1,10 @@
+# Dependencies
+node_modules/
+
+# Production
+dist/
+src-tauri/target/
+
+# System
+.DS_Store
+Thumbs.db

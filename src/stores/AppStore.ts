@@ -1,0 +1,466 @@
+import { create } from 'zustand';
+import { invoke } from '@tauri-apps/api/core';
+import type { Settings, TwitchUser, TwitchStream, UserInfo } from '../types';
+
+export interface Toast {
+  id: number;
+  message: string | React.ReactNode;
+  type: 'info' | 'success' | 'warning' | 'error';
+  action?: {
+    label: string;
+    onClick: () => void;
+  };
+}
+
+interface AppState {
+  settings: Settings;
+  followedStreams: TwitchStream[];
+  recommendedStreams: TwitchStream[];
+  recommendedCursor: string | null;
+  hasMoreRecommended: boolean;
+  isLoadingMore: boolean;
+  streamUrl: string | null;
+  currentStream: TwitchStream | null;
+  chatPlacement: string;
+  isLoading: boolean;
+  isSettingsOpen: boolean;
+  showLiveStreamsOverlay: boolean;
+  showProfileOverlay: boolean;
+  showDropsOverlay: boolean;
+  showBadgesOverlay: boolean;
+  isAuthenticated: boolean;
+  currentUser: TwitchUser | null;
+  toasts: Toast[];
+  addToast: (message: string | React.ReactNode, type: 'info' | 'success' | 'warning' | 'error', action?: { label: string; onClick: () => void }) => void;
+  removeToast: (id: number) => void;
+  loadSettings: () => Promise<void>;
+  updateSettings: (newSettings: Settings) => Promise<void>;
+  loadFollowedStreams: () => Promise<void>;
+  loadRecommendedStreams: () => Promise<void>;
+  loadMoreRecommendedStreams: () => Promise<void>;
+  startStream: (channel: string, streamInfo?: TwitchStream) => Promise<void>;
+  stopStream: () => Promise<void>;
+  openSettings: () => void;
+  closeSettings: () => void;
+  setShowLiveStreamsOverlay: (show: boolean) => void;
+  setShowProfileOverlay: (show: boolean) => void;
+  setShowDropsOverlay: (show: boolean) => void;
+  setShowBadgesOverlay: (show: boolean) => void;
+  loginToTwitch: () => Promise<void>;
+  logoutFromTwitch: () => Promise<void>;
+  checkAuthStatus: () => Promise<void>;
+  toggleFavoriteStreamer: (userId: string) => Promise<void>;
+  isFavoriteStreamer: (userId: string) => boolean;
+}
+
+export const useAppStore = create<AppState>((set, get) => ({
+  settings: {} as Settings,
+  followedStreams: [],
+  recommendedStreams: [],
+  recommendedCursor: null,
+  hasMoreRecommended: true,
+  isLoadingMore: false,
+  streamUrl: null,
+  currentStream: null,
+  chatPlacement: 'right',
+  isLoading: false,
+  isSettingsOpen: false,
+  showLiveStreamsOverlay: false,
+  showProfileOverlay: false,
+  showDropsOverlay: false,
+  showBadgesOverlay: false,
+  isAuthenticated: false,
+  currentUser: null,
+  toasts: [],
+  addToast: (message, type, action) => {
+    const id = Date.now();
+    set(state => ({ toasts: [...state.toasts, { id, message, type, action }] }));
+    // Auto-remove after 5 seconds
+    setTimeout(() => {
+      set(state => ({ toasts: state.toasts.filter(t => t.id !== id) }));
+    }, 5000);
+  },
+  removeToast: (id) => {
+    set(state => ({ toasts: state.toasts.filter(t => t.id !== id) }));
+  },
+  loadSettings: async () => {
+    const settings = await invoke('load_settings') as Settings;
+    // Ensure cache settings have defaults if not present
+    if (!settings.cache) {
+      settings.cache = { enabled: true, expiry_days: 7 };
+    }
+    // Ensure favorite_streamers has a default if not present
+    if (!settings.favorite_streamers) {
+      settings.favorite_streamers = [];
+    }
+    // Ensure chat_history_max has a default if not present
+    if (!settings.chat_history_max) {
+      settings.chat_history_max = 500; // Default value
+    }
+    set({ settings, chatPlacement: settings.chat_placement });
+    
+    // Connect to Discord if enabled
+    if (settings.discord_rpc_enabled) {
+      try {
+        await invoke('connect_discord');
+      } catch (e) {
+        console.warn('Could not connect to Discord:', e);
+      }
+    }
+  },
+  updateSettings: async (newSettings) => {
+    const oldSettings = get().settings;
+    
+    // Only save if settings actually changed to prevent unnecessary saves
+    const settingsChanged = JSON.stringify(oldSettings) !== JSON.stringify(newSettings);
+    if (!settingsChanged) {
+      return;
+    }
+    
+    await invoke('save_settings', { settings: newSettings });
+    set({ settings: newSettings, chatPlacement: newSettings.chat_placement });
+    
+    // Handle Discord enable/disable toggle
+    if (newSettings.discord_rpc_enabled !== oldSettings.discord_rpc_enabled) {
+      if (newSettings.discord_rpc_enabled) {
+        // Connect to Discord
+        try {
+          await invoke('connect_discord');
+        } catch (e) {
+          console.warn('Could not connect to Discord:', e);
+        }
+      } else {
+        // Disconnect from Discord
+        try {
+          await invoke('disconnect_discord');
+        } catch (e) {
+          console.warn('Could not disconnect from Discord:', e);
+        }
+      }
+    }
+  },
+  loadFollowedStreams: async () => {
+    try {
+      const streams = await invoke('get_followed_streams') as TwitchStream[];
+      set({ followedStreams: streams });
+    } catch (e) {
+      console.warn('Could not load followed streams:', e);
+      // User is not authenticated, this is expected on first launch
+      set({ followedStreams: [] });
+      
+      // Show toast if user tries to view followed streams but isn't logged in
+      const state = get();
+      if (!state.isAuthenticated && state.showLiveStreamsOverlay) {
+        state.addToast('Please log in to Twitch to view your followed streams', 'warning');
+      }
+    }
+  },
+  loadRecommendedStreams: async () => {
+    try {
+      const result = await invoke('get_recommended_streams_paginated', { 
+        cursor: null, 
+        limit: 20 
+      }) as [TwitchStream[], string | null];
+      
+      const [streams, cursor] = result;
+      
+      // Filter out streams that are already in followed streams
+      const followedIds = new Set(get().followedStreams.map(s => s.user_id));
+      const filteredStreams = streams.filter(s => !followedIds.has(s.user_id));
+      
+      set({ 
+        recommendedStreams: filteredStreams,
+        recommendedCursor: cursor,
+        hasMoreRecommended: cursor !== null
+      });
+    } catch (e) {
+      console.warn('Could not load recommended streams:', e);
+      set({ recommendedStreams: [], recommendedCursor: null, hasMoreRecommended: false });
+    }
+  },
+  
+  loadMoreRecommendedStreams: async () => {
+    const { recommendedCursor, hasMoreRecommended, isLoadingMore, followedStreams, recommendedStreams } = get();
+    
+    if (!hasMoreRecommended || isLoadingMore || !recommendedCursor) {
+      return;
+    }
+    
+    set({ isLoadingMore: true });
+    
+    try {
+      const result = await invoke('get_recommended_streams_paginated', { 
+        cursor: recommendedCursor, 
+        limit: 20 
+      }) as [TwitchStream[], string | null];
+      
+      const [newStreams, cursor] = result;
+      
+      // Filter out streams that are already in followed streams or already loaded
+      const followedIds = new Set(followedStreams.map(s => s.user_id));
+      const existingIds = new Set(recommendedStreams.map(s => s.user_id));
+      const filteredStreams = newStreams.filter(
+        s => !followedIds.has(s.user_id) && !existingIds.has(s.user_id)
+      );
+      
+      set({ 
+        recommendedStreams: [...recommendedStreams, ...filteredStreams],
+        recommendedCursor: cursor,
+        hasMoreRecommended: cursor !== null,
+        isLoadingMore: false
+      });
+    } catch (e) {
+      console.warn('Could not load more recommended streams:', e);
+      set({ isLoadingMore: false, hasMoreRecommended: false });
+    }
+  },
+  stopStream: async () => {
+    try {
+      await invoke('stop_stream');
+      await invoke('stop_chat');
+      
+      // Stop drops monitoring
+      try {
+        await invoke('stop_drops_monitoring');
+        console.log('🛑 Stopped drops monitoring');
+      } catch (e) {
+        console.warn('Could not stop drops monitoring:', e);
+      }
+      
+      set({ streamUrl: null, currentStream: null });
+      
+      // Set idle Discord presence when not watching
+      if (get().settings.discord_rpc_enabled) {
+        try {
+          await invoke('set_idle_discord_presence');
+        } catch (e) {
+          console.warn('Could not set idle Discord presence:', e);
+        }
+      }
+    } catch (e) {
+      console.error('Failed to stop stream:', e);
+    }
+  },
+  startStream: async (channel, providedStreamInfo?) => {
+    set({ isLoading: true });
+    try {
+      const url = await invoke('start_stream', { url: `https://twitch.tv/${channel}`, quality: get().settings.quality }) as string;
+      
+      // Use the provided stream info, or find it from followed streams, or fetch it
+      let info: TwitchStream;
+      if (providedStreamInfo) {
+        info = providedStreamInfo;
+      } else {
+        // Find the stream info from our followed streams list
+        const followedStreamInfo = get().followedStreams.find(s => s.user_login === channel);
+        if (followedStreamInfo) {
+          info = followedStreamInfo;
+        } else {
+          // Fallback: try to get channel info (for manually entered channels)
+          try {
+            info = await invoke('get_channel_info', { channelName: channel }) as TwitchStream;
+          } catch (e) {
+            // If that fails too, create a minimal info object
+            console.warn('Could not get channel info:', e);
+            info = {
+              id: '',
+              user_id: '',
+              user_name: channel,
+              user_login: channel,
+              title: `Watching ${channel}`,
+              viewer_count: 0,
+              game_name: '',
+              thumbnail_url: '',
+              started_at: new Date().toISOString(),
+            };
+          }
+        }
+      }
+      
+      set({ streamUrl: url, currentStream: info });
+      
+      // Start chat first - only if authenticated
+      try {
+        await invoke('start_chat', { channel });
+      } catch (e) {
+        console.warn('Could not start chat:', e);
+        // Chat connection failed, but stream can still work
+      }
+      
+      // Start drops and channel points monitoring
+      try {
+        const channelId = info.user_id || '';
+        const channelName = info.user_login || channel;
+        
+        if (channelId && channelName) {
+          await invoke('start_drops_monitoring', { 
+            channelId, 
+            channelName
+          });
+          console.log('🎮 Started drops monitoring for', channelName);
+        }
+      } catch (e) {
+        console.warn('Could not start drops monitoring:', e);
+        // Non-critical, stream can still work
+      }
+      
+      // Update Discord with game matching (don't await - let it run in background)
+      if (get().settings.discord_rpc_enabled) {
+        console.log('[Discord] Updating presence for stream:', {
+          user: info.user_name,
+          title: info.title,
+          game: info.game_name,
+          channel: channel
+        });
+        
+        invoke('update_discord_presence', {
+          details: `Watching ${info.user_name}`,
+          activityState: info.title || 'Live on Twitch',
+          largeImage: 'icon_256x256', // Fallback image
+          smallImage: 'twitch_logo', // Twitch logo as small image
+          startTime: Date.now(),
+          gameName: info.game_name || '', // Pass game name for matching
+          streamUrl: `https://twitch.tv/${channel}`,
+        }).then(() => {
+          console.log('[Discord] Presence updated successfully');
+        }).catch((e) => {
+          console.error('[Discord] Failed to update presence:', e);
+        });
+      }
+    } catch (e) {
+      console.error('Failed to start stream:', e);
+      // Show toast error
+    } finally {
+      set({ isLoading: false });
+    }
+  },
+  openSettings: () => set({ isSettingsOpen: true }),
+  closeSettings: () => set({ isSettingsOpen: false }),
+  setShowLiveStreamsOverlay: (show: boolean) => set({ showLiveStreamsOverlay: show }),
+  setShowProfileOverlay: (show: boolean) => set({ showProfileOverlay: show }),
+  setShowDropsOverlay: (show: boolean) => set({ showDropsOverlay: show }),
+  setShowBadgesOverlay: (show: boolean) => set({ showBadgesOverlay: show }),
+  
+  loginToTwitch: async () => {
+    try {
+      set({ isLoading: true });
+      console.log('Starting Twitch Device Code login...');
+      
+      // Use Device Code flow (like Python app)
+      const [verificationUri, userCode] = await invoke('twitch_login') as [string, string];
+      
+      console.log('Device code received:', userCode);
+      console.log('Verification URI:', verificationUri);
+      
+      // Show the user code to the user
+      get().addToast(`Enter code ${userCode} at twitch.tv/activate`, 'info');
+      
+      // Open the verification URL in browser
+      try {
+        await invoke('open_browser_url', { url: verificationUri });
+        console.log('Browser opened successfully');
+      } catch (e) {
+        console.error('Failed to open browser:', e);
+        get().addToast(`Please visit ${verificationUri} and enter code: ${userCode}`, 'warning');
+      }
+      
+      // Listen for login completion event from backend
+      const { listen } = await import('@tauri-apps/api/event');
+      
+      const unlisten = await listen('twitch-login-complete', async () => {
+        console.log('Login complete event received');
+        
+        // After successful login, check auth status FIRST
+        await get().checkAuthStatus();
+        
+        // Then show success message and load streams
+        get().addToast('Login successful! You are now authenticated with Twitch.', 'success');
+        await get().loadFollowedStreams();
+        
+        set({ isLoading: false });
+        
+        // Bring the app window to focus after successful login
+        try {
+          await invoke('focus_window');
+        } catch (e) {
+          console.warn('Could not focus window:', e);
+        }
+        
+        // Clean up listener
+        unlisten();
+      });
+      
+      // Also listen for login errors
+      const unlistenError = await listen('twitch-login-error', (event) => {
+        console.error('Login error event received:', event.payload);
+        const errorMessage = String(event.payload);
+        get().addToast(`Login failed: ${errorMessage}`, 'error');
+        set({ isLoading: false });
+        unlistenError();
+      });
+      
+    } catch (e) {
+      console.error('Login failed:', e);
+      const errorMessage = e instanceof Error ? e.message : String(e);
+      get().addToast(`Login failed: ${errorMessage}. Please try again.`, 'error');
+      set({ isLoading: false });
+    }
+  },
+  
+  logoutFromTwitch: async () => {
+    try {
+      await invoke('twitch_logout');
+      set({ isAuthenticated: false, currentUser: null, followedStreams: [] });
+      get().addToast('Successfully logged out from Twitch', 'success');
+    } catch (e) {
+      console.error('Logout failed:', e);
+      get().addToast('Failed to logout. Please try again.', 'error');
+    }
+  },
+  
+  checkAuthStatus: async () => {
+    try {
+      // Try to get user info - if it works, we're authenticated
+      const userInfo = await invoke('get_user_info') as UserInfo;
+      const user: TwitchUser = {
+        access_token: '', // We don't need to expose this
+        username: userInfo.login,
+        user_id: userInfo.id,
+        login: userInfo.login,
+        display_name: userInfo.display_name,
+        profile_image_url: userInfo.profile_image_url,
+      };
+      
+      set({ isAuthenticated: true, currentUser: user });
+    } catch (e) {
+      // If it fails, we're not authenticated
+      set({ isAuthenticated: false, currentUser: null, followedStreams: [] });
+    }
+  },
+  
+  toggleFavoriteStreamer: async (userId: string) => {
+    const currentSettings = get().settings;
+    const favorites = currentSettings.favorite_streamers || [];
+    
+    let newFavorites: string[];
+    if (favorites.includes(userId)) {
+      // Remove from favorites
+      newFavorites = favorites.filter(id => id !== userId);
+    } else {
+      // Add to favorites
+      newFavorites = [...favorites, userId];
+    }
+    
+    const newSettings = {
+      ...currentSettings,
+      favorite_streamers: newFavorites
+    };
+    
+    await get().updateSettings(newSettings);
+  },
+  
+  isFavoriteStreamer: (userId: string) => {
+    const favorites = get().settings.favorite_streamers || [];
+    return favorites.includes(userId);
+  },
+}));

@@ -1,0 +1,31 @@
+{
+  "$schema": "../gen/schemas/desktop_capability.json",
+  "identifier": "main-capability",
+  "description": "Main application capabilities",
+  "windows": ["main", "profile-*"],
+  "permissions": [
+    "core:window:allow-close",
+    "core:window:allow-minimize",
+    "core:window:allow-maximize",
+    "core:window:allow-unmaximize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-start-dragging",
+    "core:window:allow-outer-position",
+    "core:window:allow-outer-size",
+    "core:window:allow-current-monitor",
+    "core:webview:allow-create-webview-window",
+    "core:webview:allow-webview-close",
+    "core:event:allow-listen",
+    "core:event:allow-emit",
+    "core:event:default",
+    "shell:allow-open",
+    {
+      "identifier": "http:default",
+      "scope": [
+        "https://api.twitch.tv/*",
+        "https://id.twitch.tv/oauth2/token",
+        "https://www.twitch.tv/*"
+      ]
+    }
+  ]
+}
