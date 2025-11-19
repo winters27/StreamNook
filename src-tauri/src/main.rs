@@ -113,6 +113,9 @@ fn main() {
             get_installed_streamlink_version,
             get_latest_streamlink_version,
             get_installed_ttvlol_version,
+            get_current_app_version,
+            get_latest_app_version,
+            download_and_install_app_update,
             get_latest_ttvlol_version,
             download_and_install_ttvlol_plugin,
             // Badge commands

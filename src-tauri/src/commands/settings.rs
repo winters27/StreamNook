@@ -332,3 +332,147 @@ pub async fn download_and_install_ttvlol_plugin() -> Result<String, String> {
     
     Ok(version.to_string())
 }
+
+#[tauri::command]
+pub async fn get_latest_app_version() -> Result<String, String> {
+    // Fetch the latest release page to get the redirect
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+    
+    let response = client
+        .get("https://github.com/winters27/StreamNook/releases/latest")
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch latest release: {}", e))?;
+    
+    // Get the redirect location
+    let location = response
+        .headers()
+        .get("location")
+        .ok_or("No redirect location found")?
+        .to_str()
+        .map_err(|e| format!("Invalid location header: {}", e))?;
+    
+    // Extract version from the redirect URL
+    // Example: https://github.com/winters27/StreamNook/releases/tag/v1.0.1
+    let version_regex = Regex::new(r"/tag/v?([0-9]+\.[0-9]+\.[0-9]+)")
+        .map_err(|e| format!("Failed to create regex: {}", e))?;
+    
+    let version = version_regex
+        .captures(location)
+        .and_then(|caps| caps.get(1))
+        .map(|m| m.as_str().to_string())
+        .ok_or("Failed to extract version from redirect URL")?;
+    
+    Ok(version)
+}
+
+#[tauri::command]
+pub fn get_current_app_version() -> Result<String, String> {
+    // Get the version from Cargo.toml at compile time
+    Ok(env!("CARGO_PKG_VERSION").to_string())
+}
+
+#[tauri::command]
+pub async fn download_and_install_app_update(app_handle: tauri::AppHandle) -> Result<String, String> {
+    // First, get the latest version
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+    
+    let response = client
+        .get("https://github.com/winters27/StreamNook/releases/latest")
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch latest release: {}", e))?;
+    
+    // Get the redirect location
+    let location = response
+        .headers()
+        .get("location")
+        .ok_or("No redirect location found")?
+        .to_str()
+        .map_err(|e| format!("Invalid location header: {}", e))?;
+    
+    // Extract version from the redirect URL
+    let version_regex = Regex::new(r"/tag/v?([0-9]+\.[0-9]+\.[0-9]+)")
+        .map_err(|e| format!("Failed to create regex: {}", e))?;
+    
+    let version = version_regex
+        .captures(location)
+        .and_then(|caps| caps.get(1))
+        .map(|m| m.as_str())
+        .ok_or("Failed to extract version from redirect URL")?;
+    
+    // Construct the download URL for the executable
+    // Pattern: https://github.com/winters27/StreamNook/releases/download/v{version}/StreamNook.exe
+    let download_url = format!(
+        "https://github.com/winters27/StreamNook/releases/download/v{}/StreamNook.exe",
+        version
+    );
+    
+    // Download the file
+    let client = reqwest::Client::new();
+    let response = client
+        .get(&download_url)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to download update: {}", e))?;
+    
+    if !response.status().is_success() {
+        return Err(format!("Download failed with status: {}", response.status()));
+    }
+    
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|e| format!("Failed to read update bytes: {}", e))?;
+    
+    // Get the current executable path
+    let current_exe = std::env::current_exe()
+        .map_err(|e| format!("Failed to get current exe path: {}", e))?;
+    
+    let current_exe_dir = current_exe.parent()
+        .ok_or("Failed to get exe directory")?;
+    
+    // Save the new exe to a temporary location in the same directory
+    let temp_new_exe = current_exe_dir.join("StreamNook_new.exe");
+    std::fs::write(&temp_new_exe, bytes)
+        .map_err(|e| format!("Failed to write new executable: {}", e))?;
+    
+    // Create a batch script to replace the exe and restart
+    let batch_script = format!(
+        r#"@echo off
+timeout /t 2 /nobreak > nul
+del /f /q "{}"
+move /y "{}" "{}"
+start "" "{}"
+del /f /q "%~f0"
+"#,
+        current_exe.display(),
+        temp_new_exe.display(),
+        current_exe.display(),
+        current_exe.display()
+    );
+    
+    let batch_path = current_exe_dir.join("update_streamnook.bat");
+    std::fs::write(&batch_path, batch_script)
+        .map_err(|e| format!("Failed to write update script: {}", e))?;
+    
+    // Launch the batch script and exit the app
+    std::process::Command::new("cmd")
+        .args(&["/C", "start", "/min", batch_path.to_str().unwrap()])
+        .spawn()
+        .map_err(|e| format!("Failed to launch update script: {}", e))?;
+    
+    // Exit the application after a short delay to allow the script to start
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        app_handle.exit(0);
+    });
+    
+    Ok(version.to_string())
+}

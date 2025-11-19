@@ -143,7 +143,7 @@ const FUNNY_MESSAGES = [
   "Copege in progress...",
   "Aware of the loading...",
   "Clueless about ETA...",
-  "Surely it loads Clueless",
+  "Surely it loads {Clueless}",
   "forsenCD picking a side...",
   "5Head calculations ongoing...",
   "Smoothbrain loading...",

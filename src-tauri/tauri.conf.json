@@ -1,6 +1,6 @@
 {
   "productName": "Stream Nook",
-  "version": "../package.json",
+  "version": "1.2.0",
   "identifier": "com.streamnook.dev",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -19,7 +19,9 @@
     "security": {
       "assetProtocol": {
         "enable": true,
-        "scope": ["**"]
+        "scope": [
+          "**"
+        ]
       },
       "csp": null,
       "capabilities": [
