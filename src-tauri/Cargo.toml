@@ -1,6 +1,6 @@
 [package]
 name = "StreamNook"
-version = "1.3.0"
+version = "1.4.0"
 description = "The best Twitch suite."
 authors = ["Brandon Winters"]
 license = ""

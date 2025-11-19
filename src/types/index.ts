@@ -5,6 +5,7 @@ export interface VideoPlayerSettings {
   muted: boolean;
   volume: number;
   start_quality: number;
+  lock_aspect_ratio: boolean;
 }
 
 export interface CacheSettings {

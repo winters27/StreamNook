@@ -13,6 +13,8 @@ import DropsOverlay from './components/DropsOverlay';
 import BadgesOverlay from './components/BadgesOverlay';
 import BadgeDetailOverlay from './components/BadgeDetailOverlay';
 import { listen } from '@tauri-apps/api/event';
+import { invoke } from '@tauri-apps/api/core';
+import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
 
 interface BadgeVersion {
   id: string;
@@ -27,7 +29,7 @@ interface BadgeVersion {
 }
 
 function App() {
-  const { loadSettings, chatPlacement, isLoading, currentStream, streamUrl, checkAuthStatus, showProfileOverlay, setShowProfileOverlay, addToast, setShowDropsOverlay, showBadgesOverlay, setShowBadgesOverlay } = useAppStore();
+  const { loadSettings, chatPlacement, isLoading, currentStream, streamUrl, checkAuthStatus, showProfileOverlay, setShowProfileOverlay, addToast, setShowDropsOverlay, showBadgesOverlay, setShowBadgesOverlay, settings } = useAppStore();
   const [chatSize, setChatSize] = useState(384); // Default 384px (w-96)
   const [isResizing, setIsResizing] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -81,6 +83,51 @@ function App() {
     
     initializeApp();
   }, [loadSettings, checkAuthStatus]);
+
+  // Handle aspect ratio locking when setting changes or chat is resized
+  useEffect(() => {
+    const adjustWindowForAspectRatio = async () => {
+      if (!settings.video_player?.lock_aspect_ratio || !streamUrl) return;
+
+      try {
+        const window = getCurrentWindow();
+        
+        // Get current window size using Tauri's API
+        const size = await window.innerSize();
+        const width = size.width;
+        const height = size.height;
+        
+        console.log('Current window size:', width, height);
+        console.log('Chat size:', chatSize);
+        console.log('Chat placement:', chatPlacement);
+        
+        // Title bar height is approximately 32px
+        const titleBarHeight = 32;
+        
+        const [newWidth, newHeight] = await invoke<[number, number]>('calculate_aspect_ratio_size', {
+          currentWidth: width,
+          currentHeight: height,
+          chatSize: chatSize,
+          chatPlacement: chatPlacement,
+          titleBarHeight: titleBarHeight,
+        });
+
+        console.log('Calculated new size:', newWidth, newHeight);
+
+        // Only resize if dimensions changed significantly (more than 5px difference)
+        if (Math.abs(width - newWidth) > 5 || Math.abs(height - newHeight) > 5) {
+          console.log('Resizing window to:', newWidth, newHeight);
+          await window.setSize(new LogicalSize(newWidth, newHeight));
+        } else {
+          console.log('Size difference too small, not resizing');
+        }
+      } catch (error) {
+        console.error('Failed to adjust window for aspect ratio:', error);
+      }
+    };
+
+    adjustWindowForAspectRatio();
+  }, [settings.video_player?.lock_aspect_ratio, chatSize, chatPlacement, streamUrl]);
 
   useEffect(() => {
     const checkUpdates = async () => {

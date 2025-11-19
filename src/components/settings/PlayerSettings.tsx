@@ -113,6 +113,27 @@ const PlayerSettings = () => {
           </p>
         </div>
 
+        {/* Lock Aspect Ratio */}
+        <div>
+          <label className="flex items-center gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={settings.video_player?.lock_aspect_ratio ?? false}
+              onChange={(e) =>
+                updateSettings({
+                  ...settings,
+                  video_player: { ...settings.video_player, lock_aspect_ratio: e.target.checked },
+                })
+              }
+              className="w-5 h-5 accent-accent cursor-pointer"
+            />
+            <div>
+              <span className="text-sm font-medium text-textPrimary">Lock Aspect Ratio (16:9)</span>
+              <p className="text-xs text-textSecondary">Prevent letterboxing by constraining window resize to maintain video aspect ratio</p>
+            </div>
+          </label>
+        </div>
+
         {/* Default Volume and Muted - Kept for initial state */}
         <div>
           <label className="flex items-center gap-3 cursor-pointer">

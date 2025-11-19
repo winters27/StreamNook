@@ -237,7 +237,7 @@ const VideoPlayer = () => {
   return (
     <div 
       ref={videoRef} 
-      className="w-full h-full bg-black"
+      className="w-full h-full bg-black flex items-center justify-center"
       data-vjs-player
     />
   );

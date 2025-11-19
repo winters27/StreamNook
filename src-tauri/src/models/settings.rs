@@ -11,6 +11,7 @@ pub struct VideoPlayerSettings {
     pub muted: bool,
     pub volume: f32,
     pub start_quality: i32,
+    pub lock_aspect_ratio: bool,
 }
 
 impl Default for VideoPlayerSettings {
@@ -22,6 +23,7 @@ impl Default for VideoPlayerSettings {
             muted: false,
             volume: 1.0,
             start_quality: -1,
+            lock_aspect_ratio: false,
         }
     }
 }
