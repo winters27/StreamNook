@@ -1,43 +1,108 @@
-# StreamNook
+<div align="center">
 
-> The Twitch companion that doesn't eat your RAM for breakfast
+<div style="margin: 20px 0;">
+  <h1>🎮 StreamNook</h1>
+</div>
+
+<div align="center">
+  <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 15px; padding: 25px; text-align: center;">
+    <p>
+      <a href='https://github.com/winters27/StreamNook'><img src='https://img.shields.io/badge/🔥Project-Page-00d9ff?style=for-the-badge&logo=github&logoColor=white&labelColor=1a1a2e'></a>
+      <a href="https://github.com/winters27/StreamNook/stargazers"><img src='https://img.shields.io/github/stars/winters27/StreamNook?color=00d9ff&style=for-the-badge&logo=star&logoColor=white&labelColor=1a1a2e' /></a>
+      <a href="https://github.com/winters27/StreamNook/releases/latest"><img src='https://img.shields.io/github/v/release/winters27/StreamNook?color=ff6b6b&style=for-the-badge&logo=github&logoColor=white&labelColor=1a1a2e' /></a>
+    </p>
+    <p>
+      <img src="https://img.shields.io/badge/🦀Rust-orange?style=for-the-badge&logo=rust&logoColor=white&labelColor=1a1a2e">
+      <img src="https://img.shields.io/badge/⚛️React-61DAFB?style=for-the-badge&logo=react&logoColor=white&labelColor=1a1a2e">
+      <img src="https://img.shields.io/badge/⚡Tauri-FFC131?style=for-the-badge&logo=tauri&logoColor=white&labelColor=1a1a2e">
+    </p>
+    <p>
+      <a href="https://github.com/winters27/StreamNook/issues"><img src="https://img.shields.io/badge/🐛Issues-ff6b6b?style=for-the-badge&logo=github&logoColor=white&labelColor=1a1a2e"></a>
+      <a href="https://github.com/winters27/StreamNook/discussions"><img src="https://img.shields.io/badge/💬Discussions-4ecdc4?style=for-the-badge&logo=github&logoColor=white&labelColor=1a1a2e"></a>
+    </p>
+  </div>
+</div>
+
+</div>
+
+<div align="center" style="margin: 30px 0;">
+  <img src="https://user-images.githubusercontent.com/74038190/212284100-561aa473-3905-4a80-b561-0d28506553ee.gif" width="800">
+</div>
 
 ---
 
-## Overview
+## 🎯 The Problem
 
 Let's be honest: you're grinding through your 47th hour of that indie roguelike, talking to yourself about optimal build paths, when you realize—*I need human voices*. But opening Twitch in a browser? That's like inviting a resource-hungry elephant to sit on your CPU. Your fans spin up, your frame rate tanks, and suddenly you're choosing between watching streams and actually playing games.
 
 **StreamNook** is the answer to this very specific but deeply relatable problem.
 
-Built from the ground up with Rust and React, StreamNook delivers a buttery-smooth Twitch experience that sips resources instead of chugging them. It's the cozy corner of the internet where you can watch streams, chat with communities, and claim those precious Drops—all without turning your PC into a space heater.
+Built from the ground up with Rust and React, StreamNook delivers a buttery-smooth Twitch experience that sips resources instead of chugging them. It's the cozy corner of the internet where you can watch streams, chat with communities, and track your favorite streamers—all without turning your PC into a space heater.
 
 ---
 
-## Features
+## ✨ Key Features
 
-### Native Video Playback
-Built-in video player powered by Video.js and Streamlink with adaptive quality selection, picture-in-picture support, and low-latency streaming that keeps you in sync with chat.
+**Native Video Playback**
+- Built-in player powered by Video.js and Streamlink
+- Adaptive quality selection (because your internet isn't always cooperating)
+- Picture-in-picture support for true multitasking
+- Low-latency streaming that keeps you in sync with chat
 
-### First-Class Chat Experience
-Full Twitch chat integration with native IRC support, 7TV/BetterTTV/FrankerFaceZ emote support, badge rendering for subs/mods/VIPs, and smooth scrolling that doesn't stutter.
+**First-Class Chat Experience**
+- Full Twitch chat integration with native IRC support
+- 7TV, BetterTTV, and FrankerFaceZ emote support (all the emotes, all the time)
+- Badge rendering for subs, mods, and VIPs
+- Third-party badge integration (show off those achievements)
+- Smooth scrolling and message rendering that doesn't stutter
 
+**Live Notifications**
+- Get notified when your favorite streamers go live
+- Customizable notification settings
+- Stream preview thumbnails
+- Quick-launch to any live channel
 
-### Live Notifications
-Get notified when your favorite streamers go live with customizable notification settings, stream preview thumbnails, and quick-launch to any live channel.
+**Rich Integrations**
+- Discord Rich Presence (flex what you're watching)
+- Profile cards with detailed streamer stats
+- Subscribe overlay for easy sub management
+- Badge collection and display system
 
-### Rich Integrations
-Discord Rich Presence integration, profile cards with detailed streamer stats, subscribe overlay for easy sub management, and a comprehensive badge collection system.
+**Power User Features**
+- Universal caching system for blazing-fast load times
+- Granular settings for every aspect of the app
+- Custom quality presets
+- Chat filters and moderation tools
+- Keyboard shortcuts for everything
 
-### Power User Features
-Universal caching system for blazing-fast load times, granular settings for every aspect of the app, custom quality presets, chat filters and moderation tools, plus keyboard shortcuts for everything.
-
-### Lightweight Architecture
-Built with Rust for maximum performance, React frontend for smooth UI, native desktop integration via Tauri, and a minimal memory footprint (~100MB vs. browser's 1GB+). No Electron bloat in sight.
+**Lightweight Architecture**
+- Built with Rust for maximum performance
+- React frontend for smooth, responsive UI
+- Native desktop integration via Tauri
+- Minimal memory footprint (~100MB vs. browser's 1GB+)
+- No Electron bloat in sight
 
 ---
 
-## Tech Stack
+## 🚀 Installation
+
+### Prerequisites
+
+**Streamlink** - Required for stream playback
+- Download from [streamlink.github.io](https://streamlink.github.io/)
+
+### Quick Start
+
+1. Download the latest release from the [Releases page](https://github.com/winters27/StreamNook/releases/latest)
+2. Extract and run the application
+3. Sign in with your Twitch account
+4. Start watching streams
+
+That's it. No configuration files to edit, no command-line wizardry required.
+
+---
+
+## 🛠️ Tech Stack
 
 StreamNook is built on a modern, performance-first stack:
 
@@ -66,24 +131,7 @@ StreamNook is built on a modern, performance-first stack:
 
 ---
 
-## Getting Started
-
-### Prerequisites
-- **Streamlink** - Required for stream playback
-  - Download from [streamlink.github.io](https://streamlink.github.io/)
-
-### Installation
-
-1. **Download the latest release** from the [Releases page](https://github.com/winters27/StreamNook/releases/latest)
-2. **Extract and run** the application
-3. **Sign in** with your Twitch account
-4. **Start watching** - search for a channel or browse your followed streams
-
-That's it. No configuration files to edit, no command-line wizardry required.
-
----
-
-## Roadmap
+## 🎯 Roadmap
 
 We're constantly improving StreamNook. Here's what's cooking:
 
@@ -95,25 +143,16 @@ We're constantly improving StreamNook. Here's what's cooking:
 - Custom themes and UI customization
 - Stream recording capabilities
 - Predictions and polls integration
-- Mobile companion app
 
 ---
 
-## Contributing
+## 🤝 Contributing
 
 StreamNook is open source and we welcome contributions! Whether it's bug reports, feature requests, documentation improvements, or code contributions—we'd love to have you involved.
 
-Check out our [Contributing Guide](CONTRIBUTING.md) to get started.
-
 ---
 
-## Screenshots
-
-*Coming soon - we're too busy building features to take pretty pictures*
-
----
-
-## Credits & Acknowledgments
+## 🙏 Credits
 
 StreamNook stands on the shoulders of giants:
 
@@ -127,24 +166,33 @@ Special thanks to the open-source community for making projects like this possib
 
 ---
 
-## License
+## 📄 License
 
-StreamNook is licensed under the MIT License. See [LICENSE](LICENSE) for details.
-
----
-
-## Support & Community
-
-- **Issues**: [GitHub Issues](https://github.com/winters27/StreamNook/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/winters27/StreamNook/discussions)
-- **Discord**: *Coming soon*
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ---
 
-<p align="center">
-  Made with ☕ and questionable life choices
-</p>
+<div align="center" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 15px; padding: 30px; margin: 30px 0;">
+  <div>
+    <img src="https://user-images.githubusercontent.com/74038190/212284100-561aa473-3905-4a80-b561-0d28506553ee.gif" width="500">
+  </div>
+  <div style="margin-top: 20px;">
+    <a href="https://github.com/winters27/StreamNook" style="text-decoration: none;">
+      <img src="https://img.shields.io/badge/⭐%20Star%20us%20on%20GitHub-1a1a2e?style=for-the-badge&logo=github&logoColor=white">
+    </a>
+    <a href="https://github.com/winters27/StreamNook/issues" style="text-decoration: none;">
+      <img src="https://img.shields.io/badge/🐛%20Report%20Issues-ff6b6b?style=for-the-badge&logo=github&logoColor=white">
+    </a>
+    <a href="https://github.com/winters27/StreamNook/discussions" style="text-decoration: none;">
+      <img src="https://img.shields.io/badge/💬%20Discussions-4ecdc4?style=for-the-badge&logo=github&logoColor=white">
+    </a>
+  </div>
+</div>
 
-<p align="center">
-  <sub>StreamNook is not affiliated with Twitch Interactive, Inc.</sub>
-</p>
+<div align="center">
+  <div style="width: 100%; max-width: 600px; margin: 20px auto; padding: 20px; background: linear-gradient(135deg, rgba(0, 217, 255, 0.1) 0%, rgba(0, 217, 255, 0.05) 100%); border-radius: 15px; border: 1px solid rgba(0, 217, 255, 0.2);">
+    <p align="center">
+      <sub>StreamNook is not affiliated with Twitch Interactive, Inc.</sub>
+    </p>
+  </div>
+</div>
