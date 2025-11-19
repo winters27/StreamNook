@@ -380,12 +380,12 @@ impl TwitchService {
     }
 
     pub async fn get_token() -> Result<String> {
-        println!("[GET_TOKEN] Attempting to retrieve token from storage...");
+        // println!("[GET_TOKEN] Attempting to retrieve token from storage...");
         
         // Try to load from file first (primary storage)
         match Self::load_token_from_file() {
             Ok(mut token) => {
-                println!("[GET_TOKEN] ✅ Token retrieved from file storage");
+                // println!("[GET_TOKEN] ✅ Token retrieved from file storage");
                 
                 if Utc::now().timestamp() >= token.expires_at {
                     // Token is expired, refresh it

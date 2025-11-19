@@ -291,7 +291,7 @@ impl IrcService {
             // Regular chat message - forward as-is with shared chat detection
             let enhanced_message = Self::enhance_message_with_shared_chat(trimmed).await;
             if tx.send(enhanced_message.clone()).is_err() {
-                println!("[IRC Chat] No active receivers, queueing message");
+                // println!("[IRC Chat] No active receivers, queueing message");
                 let mut queue = get_message_queue().lock().await;
                 queue.push_back(enhanced_message);
                 
@@ -304,7 +304,7 @@ impl IrcService {
             // Subscription, resub, gift sub, etc.
             // These already come with proper IRC formatting from Twitch
             if tx.send(trimmed.to_string()).is_err() {
-                println!("[IRC Chat] No active receivers, queueing USERNOTICE");
+                // println!("[IRC Chat] No active receivers, queueing USERNOTICE");
                 let mut queue = get_message_queue().lock().await;
                 queue.push_back(trimmed.to_string());
                 
