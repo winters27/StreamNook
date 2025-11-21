@@ -3,7 +3,9 @@ import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-shell';
 import { useAppStore } from '../stores/AppStore';
 import { listen } from '@tauri-apps/api/event';
-import { X, Search, TrendingUp, Settings as SettingsIcon, BarChart3, Gift, Lock, ExternalLink, Play, Pause } from 'lucide-react';
+import { X, Search, TrendingUp, Settings as SettingsIcon, BarChart3, Gift, Lock, ExternalLink, Play, Pause, Package } from 'lucide-react';
+import { InventoryOverlay } from './InventoryOverlay';
+import ChannelPointsLeaderboard from './ChannelPointsLeaderboard';
 
 // Twitch SVG Icon Component
 const TwitchIcon = ({ size = 20 }: { size?: number }) => (
@@ -96,7 +98,7 @@ interface MiningStatus {
   last_update: string;
 }
 
-type Tab = 'campaigns' | 'settings' | 'stats';
+type Tab = 'campaigns' | 'stats' | 'settings';
 
 export default function DropsWidget() {
   const [campaigns, setCampaigns] = useState<DropCampaign[]>([]);
@@ -125,6 +127,7 @@ export default function DropsWidget() {
   
   // Settings state
   const [dropsSettings, setDropsSettings] = useState<any>(null);
+  const [showInventory, setShowInventory] = useState(false);
   const { addToast } = useAppStore();
   const prevProgressRef = useRef<DropProgress[]>([]);
 
@@ -626,7 +629,10 @@ export default function DropsWidget() {
   }
 
   return (
-    <div className="flex flex-col h-full bg-background">
+    <>
+      {showInventory && <InventoryOverlay onClose={() => setShowInventory(false)} />}
+      
+      <div className="flex flex-col h-full bg-background">
       {/* Tab Navigation */}
       <div className="flex items-center gap-2 px-4 py-3 bg-backgroundSecondary border-b border-borderLight">
         <button
@@ -652,6 +658,13 @@ export default function DropsWidget() {
           <span>Stats</span>
         </button>
         <button
+          onClick={() => setShowInventory(true)}
+          className="flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-all text-textSecondary hover:text-textPrimary hover:bg-glass border-2 border-transparent"
+        >
+          <Package size={18} />
+          <span>Inventory</span>
+        </button>
+        <button
           onClick={() => setActiveTab('settings')}
           className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-all ${
             activeTab === 'settings'
@@ -663,11 +676,30 @@ export default function DropsWidget() {
           <span>Settings</span>
         </button>
         
-        {/* Auto Mining Toggle */}
+        {/* Toggles */}
         <div className="ml-auto flex items-center gap-3">
-          <label className="flex items-center gap-2 cursor-pointer group">
-            <span className="text-sm font-medium text-textSecondary group-hover:text-textPrimary transition-colors">
-              Auto Mining
+          {/* Auto-claim Channel Points Toggle */}
+          <label className="flex items-center gap-1.5 cursor-pointer group">
+            <span className="text-xs font-medium text-textSecondary group-hover:text-textPrimary transition-colors whitespace-nowrap">
+              Channel Points
+            </span>
+            <div className="relative">
+              <input
+                type="checkbox"
+                checked={dropsSettings?.auto_claim_channel_points ?? false}
+                onChange={async (e) => {
+                  await updateDropsSettings({ auto_claim_channel_points: e.target.checked });
+                }}
+                className="sr-only peer"
+              />
+              <div className="relative w-10 h-5 bg-glass border-2 border-borderLight peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-accent/50 rounded-full peer peer-checked:after:translate-x-[1.125rem] rtl:peer-checked:after:-translate-x-[1.125rem] peer-checked:after:border-white after:content-[''] after:absolute after:top-0 after:start-0 after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-accent peer-checked:border-accent"></div>
+            </div>
+          </label>
+
+          {/* Drops Mining Toggle */}
+          <label className="flex items-center gap-1.5 cursor-pointer group">
+            <span className="text-xs font-medium text-textSecondary group-hover:text-textPrimary transition-colors whitespace-nowrap">
+              Drops Mining
             </span>
             <div className="relative">
               <input
@@ -682,9 +714,10 @@ export default function DropsWidget() {
                       await handleStopMining();
                     }
                     
-                    await updateDropsSettings({ auto_mining_enabled: true });
-                    
                     try {
+                      // Update settings first
+                      await updateDropsSettings({ auto_mining_enabled: true });
+                      // Then start mining
                       await invoke('start_auto_mining');
                     } catch (err) {
                       console.error('Failed to start auto mining:', err);
@@ -693,14 +726,15 @@ export default function DropsWidget() {
                       await updateDropsSettings({ auto_mining_enabled: false });
                     }
                   } else {
-                    // When disabling auto mining, stop it
-                    await handleStopMining();
+                    // When disabling auto mining, update settings FIRST to prevent auto-restart
                     await updateDropsSettings({ auto_mining_enabled: false });
+                    // Then stop the mining
+                    await handleStopMining();
                   }
                 }}
                 className="sr-only peer"
               />
-              <div className="w-11 h-6 bg-glass border-2 border-borderLight peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-accent/50 rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-accent peer-checked:border-accent"></div>
+              <div className="relative w-10 h-5 bg-glass border-2 border-borderLight peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-accent/50 rounded-full peer peer-checked:after:translate-x-[1.125rem] rtl:peer-checked:after:-translate-x-[1.125rem] peer-checked:after:border-white after:content-[''] after:absolute after:top-0 after:start-0 after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-accent peer-checked:border-accent"></div>
             </div>
           </label>
           
@@ -1086,6 +1120,16 @@ export default function DropsWidget() {
                 </div>
               </div>
             )}
+
+            {/* Channel Points Leaderboard */}
+            <div className="bg-backgroundSecondary rounded-lg p-6 border border-borderLight">
+              <ChannelPointsLeaderboard 
+                onStreamClick={(channelName) => {
+                  // Close the drops overlay and start the stream
+                  useAppStore.getState().setShowDropsOverlay(false);
+                }}
+              />
+            </div>
           </div>
         </div>
       )}
@@ -1218,82 +1262,10 @@ export default function DropsWidget() {
               </div>
             </div>
 
-            {/* Auto-claim Options */}
-            <div className="bg-backgroundSecondary rounded-lg p-6 border border-borderLight space-y-4">
-              <h4 className="text-base font-semibold text-textPrimary mb-3">Auto-claim</h4>
-              
-              <label className="flex items-start gap-3 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={dropsSettings.auto_claim_drops ?? true}
-                  onChange={(e) => updateDropsSettings({ auto_claim_drops: e.target.checked })}
-                  className="w-5 h-5 accent-accent cursor-pointer mt-0.5"
-                />
-                <div>
-                  <span className="text-sm font-medium text-textPrimary">Auto-claim Drops</span>
-                  <p className="text-xs text-textSecondary mt-0.5">
-                    Automatically claim drops when they're ready
-                  </p>
-                </div>
-              </label>
-
-              <label className="flex items-start gap-3 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={dropsSettings.auto_claim_channel_points ?? true}
-                  onChange={(e) => updateDropsSettings({ auto_claim_channel_points: e.target.checked })}
-                  className="w-5 h-5 accent-accent cursor-pointer mt-0.5"
-                />
-                <div>
-                  <span className="text-sm font-medium text-textPrimary">Auto-claim Channel Points</span>
-                  <p className="text-xs text-textSecondary mt-0.5">
-                    Automatically claim channel point bonuses
-                  </p>
-                </div>
-              </label>
-            </div>
-
-            {/* Intervals */}
-            <div className="bg-backgroundSecondary rounded-lg p-6 border border-borderLight space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-textPrimary mb-2">
-                  Watch Interval: {dropsSettings.watch_interval_seconds ?? 20} seconds
-                </label>
-                <input
-                  type="range"
-                  min="10"
-                  max="60"
-                  step="5"
-                  value={dropsSettings.watch_interval_seconds ?? 20}
-                  onChange={(e) => updateDropsSettings({ watch_interval_seconds: parseInt(e.target.value) })}
-                  className="w-full accent-accent cursor-pointer"
-                />
-                <p className="text-xs text-textSecondary mt-1">
-                  How often to update mining progress
-                </p>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-textPrimary mb-2">
-                  Check Interval: {dropsSettings.check_interval_seconds ?? 60} seconds
-                </label>
-                <input
-                  type="range"
-                  min="30"
-                  max="300"
-                  step="30"
-                  value={dropsSettings.check_interval_seconds ?? 60}
-                  onChange={(e) => updateDropsSettings({ check_interval_seconds: parseInt(e.target.value) })}
-                  className="w-full accent-accent cursor-pointer"
-                />
-                <p className="text-xs text-textSecondary mt-1">
-                  How often to check for drops and channel points
-                </p>
-              </div>
-            </div>
           </div>
         </div>
       )}
-    </div>
+      </div>
+    </>
   );
 }

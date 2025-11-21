@@ -196,3 +196,124 @@ impl Default for MiningStatus {
         }
     }
 }
+
+// GQL Models for fetching inventory
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct GqlInventoryResponse {
+    pub data: GqlData,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct GqlData {
+    pub current_user: CurrentUser,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct CurrentUser {
+    pub inventory: Inventory,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Inventory {
+    pub drop_campaigns_in_progress: Option<Vec<DropCampaignInProgress>>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct DropCampaignInProgress {
+    pub id: String,
+    pub name: String,
+    pub status: String,
+    pub game: Game,
+    #[serde(rename = "self")]
+    pub account_info: AccountInfo,
+    pub time_based_drops: Vec<GqlTimeBasedDrop>,
+    pub start_at: DateTime<Utc>,
+    pub end_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountInfo {
+    pub is_account_connected: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Game {
+    pub id: String,
+    pub name: String,
+    pub box_art_url: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct GqlTimeBasedDrop {
+    pub id: String,
+    pub name: String,
+    pub required_minutes_watched: i32,
+    #[serde(rename = "self")]
+    pub drop_instance: Option<DropInstance>,
+    pub benefit_edges: Vec<BenefitEdge>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct DropInstance {
+    pub id: String,
+    pub current_minutes_watched: i32,
+    pub is_claimed: bool,
+    pub drop_instance_id: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct BenefitEdge {
+    pub benefit: Benefit,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Benefit {
+    pub id: String,
+    pub name: String,
+    pub image_asset_url: String,
+}
+
+// Inventory-specific models
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InventoryItem {
+    pub campaign: DropCampaign,
+    pub status: CampaignStatus,
+    pub progress_percentage: f32,
+    pub total_drops: i32,
+    pub claimed_drops: i32,
+    pub drops_in_progress: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum CampaignStatus {
+    Active,
+    Upcoming,
+    Expired,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InventoryResponse {
+    pub items: Vec<InventoryItem>,
+    pub total_campaigns: i32,
+    pub active_campaigns: i32,
+    pub upcoming_campaigns: i32,
+    pub expired_campaigns: i32,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct GameEventDrop {
+    pub id: String,
+    pub last_awarded_at: DateTime<Utc>,
+}

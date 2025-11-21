@@ -112,6 +112,7 @@ export interface TwitchStream {
   started_at: string;
   broadcaster_type?: string;
   has_shared_chat?: boolean;
+  profile_image_url?: string;
 }
 
 export interface TwitchUser {
@@ -177,4 +178,103 @@ export interface TwitchGame {
 export interface TwitchCategory extends TwitchGame {
   viewer_count?: number;
   tags?: string[];
+}
+
+// Drops inventory types
+export interface DropBenefit {
+  id: string;
+  name: string;
+  image_url: string;
+}
+
+export interface DropProgress {
+  campaign_id: string;
+  drop_id: string;
+  current_minutes_watched: number;
+  required_minutes_watched: number;
+  is_claimed: boolean;
+  last_updated: string;
+}
+
+export interface TimeBasedDrop {
+  id: string;
+  name: string;
+  required_minutes_watched: number;
+  benefit_edges: DropBenefit[];
+  progress?: DropProgress;
+}
+
+export interface AllowedChannel {
+  id: string;
+  name: string;
+}
+
+export interface DropCampaign {
+  id: string;
+  name: string;
+  game_id: string;
+  game_name: string;
+  description: string;
+  image_url: string;
+  start_at: string;
+  end_at: string;
+  time_based_drops: TimeBasedDrop[];
+  is_account_connected: boolean;
+  allowed_channels: AllowedChannel[];
+  is_acl_based: boolean;
+}
+
+export type CampaignStatus = 'Active' | 'Upcoming' | 'Expired';
+
+export interface InventoryItem {
+  campaign: DropCampaign;
+  status: CampaignStatus;
+  progress_percentage: number;
+  total_drops: number;
+  claimed_drops: number;
+  drops_in_progress: number;
+}
+
+export interface InventoryResponse {
+  items: InventoryItem[];
+  total_campaigns: number;
+  active_campaigns: number;
+  upcoming_campaigns: number;
+  expired_campaigns: number;
+}
+
+export interface ClaimedDrop {
+  id: string;
+  campaign_id: string;
+  drop_id: string;
+  drop_name: string;
+  game_name: string;
+  benefit_name: string;
+  benefit_image_url: string;
+  claimed_at: string;
+}
+
+export interface ChannelPointsClaim {
+  id: string;
+  channel_id: string;
+  channel_name: string;
+  points_earned: number;
+  claimed_at: string;
+  claim_type: 'Watch' | 'Raid' | 'Prediction' | 'Bonus' | 'Other';
+}
+
+export interface ChannelPointsBalance {
+  channel_id: string;
+  channel_name: string;
+  balance: number;
+  last_updated: string;
+}
+
+export interface DropsStatistics {
+  total_drops_claimed: number;
+  total_channel_points_earned: number;
+  active_campaigns: number;
+  drops_in_progress: number;
+  recent_claims: ClaimedDrop[];
+  channel_points_history: ChannelPointsClaim[];
 }

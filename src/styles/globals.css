@@ -669,3 +669,199 @@ body {
   background: rgba(239, 68, 68, 0.2);
   border-radius: 4px;
 }
+
+/* Shimmer animation for leaderboard top 3 */
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+/* Green drop animation for drops mining */
+@keyframes green-drop {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+.green-drop-animation {
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    transparent 25%,
+    rgba(34, 197, 94, 0.3) 40%,
+    rgba(34, 197, 94, 0.8) 50%,
+    rgba(34, 197, 94, 0.3) 60%,
+    transparent 75%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  animation: green-drop 3s ease-in-out infinite;
+}
+
+/* Blue drop animation for channel points mining */
+@keyframes blue-drop {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+.blue-drop-animation {
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    transparent 25%,
+    rgba(59, 130, 246, 0.3) 40%,
+    rgba(59, 130, 246, 0.8) 50%,
+    rgba(59, 130, 246, 0.3) 60%,
+    transparent 75%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  animation: blue-drop 3s ease-in-out infinite;
+}
+
+/* Rainbow iridescent drop animation for both mining types active */
+@keyframes rainbow-drop {
+  0% {
+    background-position: 0% 50%;
+  }
+  25% {
+    background-position: 50% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  75% {
+    background-position: 50% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+.rainbow-drop-animation {
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 107, 157, 0.4) 10%,
+    rgba(192, 107, 255, 0.5) 20%,
+    rgba(107, 157, 255, 0.6) 30%,
+    rgba(107, 255, 192, 0.7) 40%,
+    rgba(255, 192, 107, 0.8) 50%,
+    rgba(255, 107, 157, 0.7) 60%,
+    rgba(192, 107, 255, 0.6) 70%,
+    rgba(107, 157, 255, 0.5) 80%,
+    rgba(107, 255, 192, 0.4) 90%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  animation: rainbow-drop 4s ease-in-out infinite;
+}
+
+/* Puddle/glow effects for mining indicators */
+.green-puddle {
+  box-shadow: 0 0 20px rgba(34, 197, 94, 0.4), 0 0 40px rgba(34, 197, 94, 0.2);
+}
+
+.blue-puddle {
+  box-shadow: 0 0 20px rgba(59, 130, 246, 0.4), 0 0 40px rgba(59, 130, 246, 0.2);
+}
+
+.rainbow-puddle {
+  animation: rainbow-glow 3s ease-in-out infinite;
+}
+
+@keyframes rainbow-glow {
+  0%, 100% {
+    box-shadow: 0 0 20px rgba(255, 107, 157, 0.5), 0 0 40px rgba(255, 107, 157, 0.3);
+  }
+  20% {
+    box-shadow: 0 0 20px rgba(192, 107, 255, 0.5), 0 0 40px rgba(192, 107, 255, 0.3);
+  }
+  40% {
+    box-shadow: 0 0 20px rgba(107, 157, 255, 0.5), 0 0 40px rgba(107, 157, 255, 0.3);
+  }
+  60% {
+    box-shadow: 0 0 20px rgba(107, 255, 192, 0.5), 0 0 40px rgba(107, 255, 192, 0.3);
+  }
+  80% {
+    box-shadow: 0 0 20px rgba(255, 192, 107, 0.5), 0 0 40px rgba(255, 192, 107, 0.3);
+  }
+}
+
+/* Rainbow droplet icon color animation */
+@keyframes rainbow-icon-color {
+  0%, 100% {
+    color: rgb(255, 107, 157);
+  }
+  20% {
+    color: rgb(192, 107, 255);
+  }
+  40% {
+    color: rgb(107, 157, 255);
+  }
+  60% {
+    color: rgb(107, 255, 192);
+  }
+  80% {
+    color: rgb(255, 192, 107);
+  }
+}
+
+.rainbow-drop-icon {
+  animation: rainbow-icon-color 3s linear infinite;
+}
+
+/* Rainbow puddle background animation - combines ripple and color change */
+@keyframes rainbow-puddle-ripple {
+  0%, 75% {
+    transform: scale(0.8);
+    opacity: 0;
+    background-color: rgba(255, 107, 157, 0.3);
+  }
+  78% {
+    transform: scale(1.0);
+    opacity: 0.5;
+    background-color: rgba(192, 107, 255, 0.3);
+  }
+  84% {
+    transform: scale(1.3);
+    opacity: 0.4;
+    background-color: rgba(107, 157, 255, 0.3);
+  }
+  90% {
+    transform: scale(1.6);
+    opacity: 0.2;
+    background-color: rgba(107, 255, 192, 0.3);
+  }
+  96% {
+    transform: scale(1.9);
+    opacity: 0.1;
+    background-color: rgba(255, 192, 107, 0.3);
+  }
+  100% {
+    transform: scale(2.2);
+    opacity: 0;
+    background-color: rgba(255, 107, 157, 0.3);
+  }
+}
+
+.rainbow-puddle-icon {
+  animation: rainbow-puddle-ripple 2.5s ease-out infinite;
+}

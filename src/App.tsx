@@ -54,6 +54,16 @@ function App() {
       await loadSettings();
       await checkAuthStatus();
       
+      // Pre-fetch cosmetics for current user
+      const { currentUser, isAuthenticated } = useAppStore.getState();
+      if (isAuthenticated && currentUser?.user_id) {
+        console.log('[App] Pre-fetching cosmetics for current user...');
+        const { prefetchAllUserData } = await import('./services/cosmeticsCache');
+        prefetchAllUserData(currentUser.user_id).catch(err => 
+          console.error('[App] Failed to pre-fetch user cosmetics:', err)
+        );
+      }
+      
       // Set up event listeners for drops and channel points
       const unlistenChannelPoints = await listen('channel-points-claimed', (event: any) => {
         const claim = event.payload;

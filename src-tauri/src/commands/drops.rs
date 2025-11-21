@@ -24,9 +24,20 @@ pub async fn get_active_drop_campaigns(
     state: State<'_, AppState>,
 ) -> Result<Vec<DropCampaign>, String> {
     let drops_service = state.drops_service.lock().await;
-    // Use fetch_all_active_campaigns_from_api for UI display (no filters)
+    // Use cached version to avoid excessive API calls when UI opens
     drops_service
-        .fetch_all_active_campaigns_from_api()
+        .get_all_active_campaigns_cached()
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn get_drops_inventory(
+    state: State<'_, AppState>,
+) -> Result<InventoryResponse, String> {
+    let drops_service = state.drops_service.lock().await;
+    drops_service
+        .fetch_inventory()
         .await
         .map_err(|e| e.to_string())
 }
@@ -102,6 +113,14 @@ pub async fn get_channel_points_balance(
 ) -> Result<Option<ChannelPointsBalance>, String> {
     let drops_service = state.drops_service.lock().await;
     Ok(drops_service.get_channel_points_balance(&channel_id).await)
+}
+
+#[tauri::command]
+pub async fn get_all_channel_points_balances(
+    state: State<'_, AppState>,
+) -> Result<Vec<ChannelPointsBalance>, String> {
+    let background_service = state.background_service.lock().await;
+    Ok(background_service.get_channel_points_balances().await)
 }
 
 #[tauri::command]

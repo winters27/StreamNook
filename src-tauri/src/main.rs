@@ -3,12 +3,14 @@
 use std::sync::{Arc, Mutex};
 use tokio::sync::Mutex as TokioMutex;
 use tauri::{Builder, Manager};
-use commands::{app::*, badges::*, badge_metadata::*, twitch::*, streaming::*, chat::*, discord::*, settings::*, cache::*, drops::*, universal_cache::*};
+use commands::{app::*, badges::*, badge_metadata::*, twitch::*, streaming::*, chat::*, discord::*, settings::*, cache::*, drops::*, universal_cache::*, cosmetics_cache::*};
 use models::settings::{Settings, AppState};
 use services::drops_service::DropsService;
 use services::mining_service::MiningService;
 use services::cache_service;
 use services::live_notification_service::LiveNotificationService;
+use services::background_service::BackgroundService;
+use services::twitch_service::TwitchService;
 
 mod commands;
 mod models;
@@ -38,13 +40,8 @@ fn main() {
     
     // Initialize mining service with drops service reference
     let mining_service = Arc::new(TokioMutex::new(MiningService::new(drops_service.clone())));
-    
-    // Initialize application state (not wrapped in Arc yet)
-    let app_state = AppState {
-        settings: Arc::new(Mutex::new(settings)),
-        drops_service,
-        mining_service,
-    };
+
+    let settings_arc = Arc::new(Mutex::new(settings));
 
     // Initialize live notification service
     let live_notification_service = Arc::new(LiveNotificationService::new());
@@ -52,23 +49,40 @@ fn main() {
     Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
-        .manage(app_state)
         .manage(live_notification_service.clone())
         .setup(move |app| {
             let app_handle = app.handle().clone();
-            let app_state_handle = app.state::<AppState>();
             let live_notif_service = live_notification_service.clone();
             
-            // Create Arc wrapper for the service
-            let app_state_arc = Arc::new(AppState {
-                settings: app_state_handle.settings.clone(),
-                drops_service: app_state_handle.drops_service.clone(),
-                mining_service: app_state_handle.mining_service.clone(),
+            // Create and manage the background service correctly within the setup hook
+            let background_service = Arc::new(TokioMutex::new(BackgroundService::new(
+                Arc::new(tokio::sync::RwLock::new(settings_arc.lock().unwrap().clone())),
+                app_handle.clone(),
+                drops_service.clone(),
+            )));
+
+            let app_state = AppState {
+                settings: settings_arc,
+                drops_service,
+                mining_service,
+                background_service: background_service.clone(),
+            };
+            
+            // Clone the app_state before managing it
+            let app_state_for_live_notif = app_state.clone();
+            
+            // Manage AppState directly, not wrapped in Arc
+            app.manage(app_state);
+
+            // Start background service
+            tauri::async_runtime::spawn(async move {
+                background_service.lock().await.start().await;
             });
             
             // Start live notification service
+            let live_app_handle = app_handle.clone();
             tauri::async_runtime::spawn(async move {
-                if let Err(e) = live_notif_service.start(app_handle, app_state_arc).await {
+                if let Err(e) = live_notif_service.start(live_app_handle, app_state_for_live_notif).await {
                     eprintln!("Failed to start live notification service: {}", e);
                 }
             });
@@ -188,10 +202,17 @@ fn main() {
             get_universal_cache_statistics,
             assign_badge_positions,
             export_manifest,
+            // Cosmetics Cache commands
+            cache_user_cosmetics,
+            get_cached_user_cosmetics,
+            cache_third_party_badges,
+            get_cached_third_party_badges,
+            prefetch_user_cosmetics,
             // Drops commands
             get_drops_settings,
             update_drops_settings,
             get_active_drop_campaigns,
+            get_drops_inventory,
             get_drop_progress,
             claim_drop,
             check_channel_points,
@@ -200,6 +221,7 @@ fn main() {
             get_claimed_drops,
             get_channel_points_history,
             get_channel_points_balance,
+            get_all_channel_points_balances,
             start_drops_monitoring,
             stop_drops_monitoring,
             update_monitoring_channel,

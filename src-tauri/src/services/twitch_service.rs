@@ -430,35 +430,59 @@ impl TwitchService {
             Err(file_err) => {
                 println!("[GET_TOKEN] Could not read from file: {:?}", file_err);
                 
-                // Fallback to keyring if file doesn't exist
-                println!("[GET_TOKEN] Trying keyring as fallback...");
-                
-                if let Ok(entry) = Entry::new(KEYRING_SERVICE, KEYRING_USERNAME) {
-                    if let Ok(pwd) = entry.get_password() {
-                        println!("[GET_TOKEN] ✅ Token retrieved from keyring fallback");
+                // Try cookies as fallback (new persistent storage)
+                println!("[GET_TOKEN] Trying cookies as fallback...");
+                match Self::load_token_from_cookies().await {
+                    Ok(cookie_token) => {
+                        println!("[GET_TOKEN] ✅ Token retrieved from cookies");
+                        // Validate the token from cookies
+                        let client = Client::new();
+                        let response = client
+                            .get("https://id.twitch.tv/oauth2/validate")
+                            .header("Authorization", format!("OAuth {}", cookie_token))
+                            .send()
+                            .await?;
                         
-                        let mut token: StorableToken = match serde_json::from_str(&pwd) {
-                            Ok(t) => t,
-                            Err(e) => {
-                                eprintln!("[GET_TOKEN] Failed to parse keyring token: {:?}", e);
-                                return Err(anyhow::anyhow!("Not authenticated. Please log in to Twitch first."));
-                            }
-                        };
-                        
-                        // Save it to file for next time
-                        let _ = Self::store_token_to_file(&token);
-                        
-                        if Utc::now().timestamp() >= token.expires_at {
-                            println!("[GET_TOKEN] Token expired, refreshing...");
-                            token = Self::refresh_token(&token.refresh_token).await?;
+                        if response.status() == 401 {
+                            println!("[GET_TOKEN] Cookie token is invalid, clearing cookies");
+                            let _ = Self::delete_cookies().await;
+                            return Err(anyhow::anyhow!("Not authenticated. Please log in to Twitch first."));
                         }
                         
-                        return Ok(token.access_token);
+                        return Ok(cookie_token);
+                    }
+                    Err(_) => {
+                        // Fallback to keyring if cookies don't exist
+                        println!("[GET_TOKEN] Trying keyring as fallback...");
+                        
+                        if let Ok(entry) = Entry::new(KEYRING_SERVICE, KEYRING_USERNAME) {
+                            if let Ok(pwd) = entry.get_password() {
+                                println!("[GET_TOKEN] ✅ Token retrieved from keyring fallback");
+                                
+                                let mut token: StorableToken = match serde_json::from_str(&pwd) {
+                                    Ok(t) => t,
+                                    Err(e) => {
+                                        eprintln!("[GET_TOKEN] Failed to parse keyring token: {:?}", e);
+                                        return Err(anyhow::anyhow!("Not authenticated. Please log in to Twitch first."));
+                                    }
+                                };
+                                
+                                // Save it to file for next time
+                                let _ = Self::store_token_to_file(&token);
+                                
+                                if Utc::now().timestamp() >= token.expires_at {
+                                    println!("[GET_TOKEN] Token expired, refreshing...");
+                                    token = Self::refresh_token(&token.refresh_token).await?;
+                                }
+                                
+                                return Ok(token.access_token);
+                            }
+                        }
+                        
+                        eprintln!("[GET_TOKEN] ❌ No token found in file, cookies, or keyring storage");
+                        Err(anyhow::anyhow!("Not authenticated. Please log in to Twitch first."))
                     }
                 }
-                
-                eprintln!("[GET_TOKEN] ❌ No token found in file or keyring storage");
-                Err(anyhow::anyhow!("Not authenticated. Please log in to Twitch first."))
             }
         }
     }
@@ -924,6 +948,7 @@ impl TwitchService {
             Some(arr) => {
                 // Convert search results to TwitchStream format
                 let mut streams = Vec::new();
+                let mut user_ids = Vec::new();
                 
                 for channel in arr {
                     if let (Some(id), Some(user_id), Some(user_name), Some(user_login), Some(title), Some(game_name)) = (
@@ -945,13 +970,15 @@ impl TwitchService {
                             .filter(|s| !s.is_empty())
                             .map(|s| s.to_string());
                         
+                        user_ids.push(user_id.to_string());
+                        
                         streams.push(TwitchStream {
                             id: id.to_string(), // This is user_id, but search result doesn't provide stream_id
                             user_id: user_id.to_string(),
                             user_name: user_name.to_string(),
                             user_login: user_login.to_string(),
                             title: title.to_string(),
-                            viewer_count: 0, // Search API doesn't provide viewer count
+                            viewer_count: 0, // Will be populated from streams API
                             game_name: game_name.to_string(),
                             thumbnail_url,
                             started_at: channel.get("started_at")
@@ -961,6 +988,62 @@ impl TwitchService {
                             broadcaster_type,
                             has_shared_chat: None, // Will be populated later
                         });
+                    }
+                }
+                
+                // Fetch actual stream data to get viewer counts and accurate info
+                if !user_ids.is_empty() {
+                    let user_ids_param = user_ids.iter()
+                        .map(|id| format!("user_id={}", id))
+                        .collect::<Vec<_>>()
+                        .join("&");
+                    
+                    let streams_url = format!("https://api.twitch.tv/helix/streams?{}", user_ids_param);
+                    
+                    let mut streams_request = client.get(&streams_url)
+                        .header("Client-Id", CLIENT_ID);
+                    
+                    if let Some(token) = &token {
+                        streams_request = streams_request.header(AUTHORIZATION, format!("Bearer {}", token));
+                    }
+                    
+                    if let Ok(streams_response) = streams_request.send().await {
+                        if let Ok(streams_json) = streams_response.json::<serde_json::Value>().await {
+                            if let Some(streams_data) = streams_json.get("data").and_then(|d| d.as_array()) {
+                                // Create a map of user_id -> stream data
+                                let mut stream_data_map = std::collections::HashMap::new();
+                                for stream_data in streams_data {
+                                    if let Some(uid) = stream_data.get("user_id").and_then(|v| v.as_str()) {
+                                        stream_data_map.insert(uid.to_string(), stream_data);
+                                    }
+                                }
+                                
+                                // Update our streams with actual stream data
+                                for stream in &mut streams {
+                                    if let Some(stream_data) = stream_data_map.get(&stream.user_id) {
+                                        // Update viewer count
+                                        if let Some(viewer_count) = stream_data.get("viewer_count").and_then(|v| v.as_u64()) {
+                                            stream.viewer_count = viewer_count as u32;
+                                        }
+                                        
+                                        // Update stream ID (actual stream_id, not user_id)
+                                        if let Some(stream_id) = stream_data.get("id").and_then(|v| v.as_str()) {
+                                            stream.id = stream_id.to_string();
+                                        }
+                                        
+                                        // Update thumbnail URL with actual stream thumbnail
+                                        if let Some(thumbnail) = stream_data.get("thumbnail_url").and_then(|v| v.as_str()) {
+                                            stream.thumbnail_url = thumbnail.replace("{width}", "320").replace("{height}", "180");
+                                        }
+                                        
+                                        // Update started_at if available
+                                        if let Some(started_at) = stream_data.get("started_at").and_then(|v| v.as_str()) {
+                                            stream.started_at = started_at.to_string();
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 

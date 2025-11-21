@@ -32,7 +32,7 @@ impl LiveNotificationService {
         }
     }
 
-    pub async fn start(&self, app_handle: AppHandle, app_state: Arc<AppState>) -> Result<()> {
+    pub async fn start(&self, app_handle: AppHandle, app_state: AppState) -> Result<()> {
         // Check if already running
         {
             let mut running = self.running.write().await;

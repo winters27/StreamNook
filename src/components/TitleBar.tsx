@@ -4,12 +4,32 @@ import { useState, useEffect, useRef } from 'react';
 import { useAppStore } from '../stores/AppStore';
 import PenroseLogo from './PenroseLogo';
 import AboutWidget from './AboutWidget';
+import { invoke } from '@tauri-apps/api/core';
 
 const TitleBar = () => {
   const { openSettings, setShowLiveStreamsOverlay, setShowProfileOverlay, setShowDropsOverlay, setShowBadgesOverlay, showProfileOverlay, isAuthenticated, currentUser, isMiningActive } = useAppStore();
   const [showAbout, setShowAbout] = useState(false);
   const [showSplash, setShowSplash] = useState(false);
+  const [dropsSettings, setDropsSettings] = useState<any>(null);
   const prevMiningActive = useRef(isMiningActive);
+
+  // Load drops settings
+  useEffect(() => {
+    const loadDropsSettings = async () => {
+      try {
+        const settings = await invoke<any>('get_drops_settings');
+        setDropsSettings(settings);
+      } catch (err) {
+        console.error('Failed to get drops settings:', err);
+      }
+    };
+    
+    loadDropsSettings();
+    
+    // Refresh settings periodically
+    const interval = setInterval(loadDropsSettings, 5000);
+    return () => clearInterval(interval);
+  }, []);
 
   useEffect(() => {
     // Detect when mining stops
@@ -56,28 +76,64 @@ const TitleBar = () => {
 
           {/* Drops Button */}
           <div className="relative">
-            <button
-              onClick={() => setShowDropsOverlay(true)}
-              className="p-1.5 text-textSecondary hover:text-textPrimary hover:bg-glass rounded transition-all duration-200"
-              title={isMiningActive ? "Drops & Points (Mining Active)" : "Drops & Points"}
-            >
-              {isMiningActive ? (
+            {(() => {
+              const isChannelPointsMining = dropsSettings?.auto_claim_channel_points ?? false;
+              const isBothActive = isMiningActive && isChannelPointsMining;
+              
+              // Determine droplet color and puddle class
+              let dropletColor = 'text-textSecondary';
+              let puddleColor = 'bg-green-500/30';
+              let splashColor = 'bg-green-500/60';
+              let title = 'Drops & Points';
+              
+              if (isBothActive) {
+                dropletColor = 'text-purple-500 rainbow-drop-icon';
+                puddleColor = 'rainbow-puddle-icon';
+                splashColor = 'bg-purple-500/60';
+                title = 'Drops & Points (Both Mining Active)';
+              } else if (isMiningActive) {
+                dropletColor = 'text-green-500';
+                puddleColor = 'bg-green-500/30';
+                splashColor = 'bg-green-500/60';
+                title = 'Drops & Points (Drops Mining Active)';
+              } else if (isChannelPointsMining) {
+                dropletColor = 'text-blue-500';
+                puddleColor = 'bg-blue-500/30';
+                splashColor = 'bg-blue-500/60';
+                title = 'Drops & Points (Channel Points Active)';
+              }
+              
+              const isAnyMiningActive = isMiningActive || isChannelPointsMining;
+              
+              return (
                 <>
-                  <Droplet size={14} className="text-green-500 animate-droplet relative z-10" fill="currentColor" />
-                  {/* Rippling puddle at bottom */}
-                  <div className="absolute bottom-0 left-1/2 -translate-x-1/2 translate-y-1/2 w-3 h-1 pointer-events-none">
-                    <div className="absolute inset-0 bg-green-500/30 rounded-full blur-[1px] animate-ripple" />
-                  </div>
+                  <button
+                    onClick={() => setShowDropsOverlay(true)}
+                    className="p-1.5 text-textSecondary hover:text-textPrimary hover:bg-glass rounded transition-all duration-200"
+                    title={title}
+                  >
+                    {isAnyMiningActive ? (
+                      <>
+                        <div className={`relative z-10 ${isBothActive ? 'rainbow-drop-icon' : ''}`}>
+                          <Droplet size={14} className={`animate-droplet ${isBothActive ? '' : dropletColor}`} fill="currentColor" />
+                        </div>
+                        {/* Rippling puddle at bottom */}
+                        <div className="absolute bottom-0 left-1/2 -translate-x-1/2 translate-y-1/2 w-3 h-1 pointer-events-none">
+                          <div className={`absolute inset-0 rounded-full blur-[1px] ${isBothActive ? 'rainbow-puddle-icon' : `animate-ripple ${puddleColor}`}`} />
+                        </div>
+                      </>
+                    ) : (
+                      <Droplet size={14} fill="currentColor" />
+                    )}
+                  </button>
+                  {showSplash && (
+                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                      <div className={`w-2 h-2 ${splashColor} rounded-full animate-splash`} />
+                    </div>
+                  )}
                 </>
-              ) : (
-                <Droplet size={14} fill="currentColor" />
-              )}
-            </button>
-            {showSplash && (
-              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                <div className="w-2 h-2 bg-green-500/60 rounded-full animate-splash" />
-              </div>
-            )}
+              );
+            })()}
           </div>
 
           {/* Badges Button */}
