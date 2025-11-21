@@ -214,7 +214,8 @@ fn main() {
             poll_drops_token,
             drops_logout,
             is_drops_authenticated,
-            validate_drops_token
+            validate_drops_token,
+            open_drop_details
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

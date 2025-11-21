@@ -33,12 +33,18 @@ pub fn get_app_data_dir() -> Result<PathBuf> {
             format!("{}\\AppData\\Local", user_profile)
         });
     
-    // Check if we're in development mode by looking for TAURI_ENV or checking debug assertions
-    let app_dir = if cfg!(debug_assertions) {
+    // For production builds, always use StreamNook
+    // For development, use com.streamnook.dev
+    // We check for TAURI_ENV environment variable first, then fall back to debug_assertions
+    let is_dev = std::env::var("TAURI_ENV")
+        .map(|v| v == "development")
+        .unwrap_or_else(|_| cfg!(debug_assertions));
+    
+    let app_dir = if is_dev {
         // In development, use com.streamnook.dev
         PathBuf::from(local_app_data).join("com.streamnook.dev")
     } else {
-        // In production, use StreamNook
+        // In production, use StreamNook (without space, matching the actual folder name)
         PathBuf::from(local_app_data).join("StreamNook")
     };
     

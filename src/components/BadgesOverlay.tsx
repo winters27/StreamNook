@@ -208,7 +208,30 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
   const parseDate = (dateStr: string | null | undefined): number => {
     if (!dateStr) return 0;
     try {
-      // Try parsing the date string directly
+      // Handle the "DD Month YYYY" format from BadgeBase
+      // Example: "12 November 2025"
+      const months: Record<string, number> = {
+        'January': 0, 'February': 1, 'March': 2, 'April': 3,
+        'May': 4, 'June': 5, 'July': 6, 'August': 7,
+        'September': 8, 'October': 9, 'November': 10, 'December': 11
+      };
+      
+      // Try to match "DD Month YYYY" format
+      const match = dateStr.match(/(\d{1,2})\s+(\w+)\s+(\d{4})/);
+      if (match) {
+        const day = parseInt(match[1], 10);
+        const monthName = match[2];
+        const year = parseInt(match[3], 10);
+        
+        if (months.hasOwnProperty(monthName)) {
+          const date = new Date(year, months[monthName], day);
+          if (!isNaN(date.getTime())) {
+            return date.getTime();
+          }
+        }
+      }
+      
+      // Fallback: try parsing the date string directly
       const parsed = new Date(dateStr);
       if (!isNaN(parsed.getTime())) {
         return parsed.getTime();

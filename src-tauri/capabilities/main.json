@@ -26,7 +26,17 @@
       "scope": [
         "https://api.twitch.tv/*",
         "https://id.twitch.tv/oauth2/token",
-        "https://www.twitch.tv/*"
+        "https://www.twitch.tv/*",
+        "https://gql.twitch.tv/*",
+        "https://*.ttvnw.net/*",
+        "https://static-cdn.jtvnw.net/*",
+        "https://7tv.io/*",
+        "https://api.7tv.app/*",
+        "https://cdn.7tv.app/*",
+        "https://api.frankerfacez.com/*",
+        "https://cdn.frankerfacez.com/*",
+        "https://api.betterttv.net/*",
+        "https://cdn.betterttv.net/*"
       ]
     }
   ]

@@ -365,6 +365,13 @@ impl DropsService {
                     continue;
                 }
 
+                // Look for detailsURL or any URL field that might be the "about this drop" link
+                let details_url = campaign_json["detailsURL"].as_str()
+                    .or_else(|| campaign_json["aboutDropsURL"].as_str())
+                    .or_else(|| campaign_json["aboutURL"].as_str())
+                    .or_else(|| campaign_json["url"].as_str())
+                    .map(|s| s.to_string());
+
                 result.push(DropCampaign {
                     id: campaign_json["id"].as_str().unwrap_or("").to_string(),
                     name: campaign_json["name"].as_str().unwrap_or("").to_string(),
@@ -378,6 +385,7 @@ impl DropsService {
                     is_account_connected: true,
                     allowed_channels,
                     is_acl_based,
+                    details_url,
                 });
             }
         }
@@ -1120,6 +1128,7 @@ impl DropsService {
                 is_account_connected: true, // Internal campaigns are always connected
                 allowed_channels: Vec::new(),
                 is_acl_based: false,
+                details_url: None, // Will be populated from the main fetch method
             });
         }
 

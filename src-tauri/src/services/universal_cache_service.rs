@@ -322,6 +322,57 @@ pub async fn cache_item(
     save_cached_item(entry).await
 }
 
+/// Parse date string in format "DD Month YYYY" to timestamp for sorting
+fn parse_date_to_timestamp(date_str: &str) -> i64 {
+    use chrono::{NaiveDate, Datelike, Timelike};
+    
+    // Try to parse "DD Month YYYY" format
+    let months = [
+        ("January", 1), ("February", 2), ("March", 3), ("April", 4),
+        ("May", 5), ("June", 6), ("July", 7), ("August", 8),
+        ("September", 9), ("October", 10), ("November", 11), ("December", 12)
+    ];
+    
+    // Split the date string
+    let parts: Vec<&str> = date_str.split_whitespace().collect();
+    if parts.len() != 3 {
+        return 0; // Invalid format
+    }
+    
+    // Parse day
+    let day = match parts[0].parse::<u32>() {
+        Ok(d) if d >= 1 && d <= 31 => d,
+        _ => return 0,
+    };
+    
+    // Parse month
+    let month = months.iter()
+        .find(|(name, _)| *name == parts[1])
+        .map(|(_, num)| *num)
+        .unwrap_or(0);
+    
+    if month == 0 {
+        return 0;
+    }
+    
+    // Parse year
+    let year = match parts[2].parse::<i32>() {
+        Ok(y) if y >= 1900 && y <= 3000 => y,
+        _ => return 0,
+    };
+    
+    // Create a date and convert to timestamp
+    match NaiveDate::from_ymd_opt(year, month, day) {
+        Some(date) => {
+            // Convert to timestamp (seconds since epoch)
+            date.and_hms_opt(0, 0, 0)
+                .map(|dt| dt.and_utc().timestamp())
+                .unwrap_or(0)
+        },
+        None => 0,
+    }
+}
+
 /// Assign positions to badge metadata entries based on date and usage
 pub async fn assign_badge_metadata_positions() -> Result<usize> {
     let mut manifest = load_manifest()?;
@@ -342,13 +393,16 @@ pub async fn assign_badge_metadata_positions() -> Result<usize> {
         let a_data = &a.1.data;
         let b_data = &b.1.data;
         
-        // Extract date_added
-        let a_date = a_data.get("date_added")
+        // Extract and parse date_added
+        let a_date_str = a_data.get("date_added")
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        let b_date = b_data.get("date_added")
+        let b_date_str = b_data.get("date_added")
             .and_then(|v| v.as_str())
             .unwrap_or("");
+        
+        let a_timestamp = parse_date_to_timestamp(a_date_str);
+        let b_timestamp = parse_date_to_timestamp(b_date_str);
         
         // Parse usage stats
         let parse_usage = |stats: &str| -> u32 {
@@ -367,8 +421,8 @@ pub async fn assign_badge_metadata_positions() -> Result<usize> {
             .map(parse_usage)
             .unwrap_or(0);
         
-        // Sort by date (newest first), then usage (highest first)
-        b_date.cmp(a_date).then(b_usage.cmp(&a_usage))
+        // Sort by timestamp (newest first), then usage (highest first)
+        b_timestamp.cmp(&a_timestamp).then(b_usage.cmp(&a_usage))
     });
     
     // Assign positions

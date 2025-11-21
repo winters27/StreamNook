@@ -27,6 +27,7 @@ interface DropCampaign {
   start_at: string;
   end_at: string;
   time_based_drops: TimeBasedDrop[];
+  details_url?: string;  // "About this drop" link
 }
 
 interface TimeBasedDrop {
@@ -773,6 +774,21 @@ export default function DropsWidget() {
                             <p className="text-xs text-textSecondary mt-1 line-clamp-2">
                               {campaign.description}
                             </p>
+                            {campaign.details_url && (
+                              <button
+                                onClick={async () => {
+                                  try {
+                                    await invoke('open_drop_details', { url: campaign.details_url });
+                                  } catch (err) {
+                                    console.error('Failed to open drop details:', err);
+                                  }
+                                }}
+                                className="mt-2 inline-flex items-center gap-1 text-xs text-accent hover:text-accentHover transition-colors"
+                              >
+                                <ExternalLink size={12} />
+                                <span>About this drop</span>
+                              </button>
+                            )}
                           </div>
                           <div className="flex-shrink-0">
                             {isActiveMining ? (

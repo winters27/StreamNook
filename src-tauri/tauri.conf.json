@@ -23,7 +23,7 @@
           "**"
         ]
       },
-      "csp": "default-src 'self'; img-src 'self' https://static-cdn.jtvnw.net https://*.twitch.tv https://*.twitchcdn.net data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; connect-src 'self' https://*.twitch.tv https://api.twitch.tv wss://*.twitch.tv ws://localhost:*",
+      "csp": "default-src * 'unsafe-inline' 'unsafe-eval' data: blob: filesystem: about: ws: wss: http: https: tauri: asset:; script-src * 'unsafe-inline' 'unsafe-eval' blob: data:; connect-src * http: https: ws: wss:; img-src * data: blob: 'unsafe-inline'; frame-src *; style-src * 'unsafe-inline'; media-src * blob: data: http: https:;",
       "capabilities": [
         "main-capability"
       ]
@@ -36,7 +36,8 @@
         "height": 720,
         "resizable": true,
         "fullscreen": false,
-        "decorations": false
+        "decorations": false,
+        "devtools": true
       }
     ]
   },

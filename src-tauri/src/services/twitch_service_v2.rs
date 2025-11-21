@@ -694,3 +694,35 @@ impl TwitchService {
                         let broadcaster_type = channel.get("broadcaster_type")
                             .and_then(|v| v.as_str())
                             .filter(|s| !s.is_empty())
+                            .map(|s| s.to_string());
+                        
+                        let stream = TwitchStream {
+                            id: id.to_string(),
+                            user_id: user_id.to_string(),
+                            user_name: user_name.to_string(),
+                            user_login: user_login.to_string(),
+                            game_id: channel.get("game_id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                            game_name: game_name.to_string(),
+                            title: title.to_string(),
+                            viewer_count: channel.get("viewer_count").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
+                            started_at: String::new(),
+                            language: channel.get("broadcaster_language").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                            thumbnail_url: thumbnail_url,
+                            tag_ids: vec![],
+                            tags: channel.get("tags").and_then(|v| v.as_array()).map(|arr| {
+                                arr.iter().filter_map(|t| t.as_str().map(|s| s.to_string())).collect()
+                            }).unwrap_or_default(),
+                            is_mature: false,
+                            broadcaster_type,
+                        };
+                        
+                        streams.push(stream);
+                    }
+                }
+                
+                Ok(streams)
+            },
+            None => Ok(Vec::new()),
+        }
+    }
+}
