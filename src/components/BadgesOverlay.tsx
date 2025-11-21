@@ -13,16 +13,16 @@ interface BadgeVersion {
   click_url: string | null;
 }
 
-interface BadgeBaseInfo {
+interface BadgeMetadata {
   date_added: string | null;
   usage_stats: string | null;
   more_info: string | null;
-  badgebase_url: string;
+  info_url: string;
 }
 
 interface BadgeWithMetadata extends BadgeVersion {
   set_id: string;
-  badgebase_info?: BadgeBaseInfo;
+  badgebase_info?: BadgeMetadata;
 }
 
 type SortOption = 'date-newest' | 'date-oldest' | 'usage-high' | 'usage-low' | 'available' | 'coming-soon';
@@ -54,10 +54,37 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
       setLoading(true);
       setError(null);
 
+      // Try to load from cache first
+      console.log('[BadgesOverlay] Checking for cached badges...');
+      const cachedBadges = await invoke<{ data: BadgeSet[] } | null>('get_cached_global_badges');
+      
+      if (cachedBadges && cachedBadges.data && cachedBadges.data.length > 0) {
+        console.log('[BadgesOverlay] Found cached badges, loading immediately');
+        setBadges(cachedBadges.data);
+        
+        // Flatten all badge versions
+        const flattened = cachedBadges.data.flatMap(set => 
+          set.versions.map(version => ({ ...version, set_id: set.set_id } as BadgeWithMetadata))
+        );
+        
+        setBadgesWithMetadata(flattened);
+        setLoading(false);
+        
+        // Fetch metadata for all badges in the background
+        fetchAllBadgeMetadata(flattened);
+        
+        // Optionally refresh badges in the background if cache is old
+        // (This happens automatically in the backend if cache is > 7 days old)
+        return;
+      }
+
+      // No cache available, fetch from API
+      console.log('[BadgesOverlay] No cached badges, fetching from API...');
+      
       // Get credentials
       const [clientId, token] = await invoke<[string, string]>('get_twitch_credentials');
       
-      // Fetch global badges
+      // Fetch global badges (this will cache them)
       const response = await invoke<{ data: BadgeSet[] }>('fetch_global_badges', {
         clientId,
         token,
@@ -86,25 +113,28 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
     setLoadingMetadata(true);
     
     // First, check cache for ALL badges at once to minimize API calls
-    const metadataCache: Record<string, BadgeBaseInfo> = {};
+    const metadataCache: Record<string, BadgeMetadata> = {};
     const uncachedBadges: BadgeWithMetadata[] = [];
     
     // Check cache for all badges first
     console.log('[BadgesOverlay] Checking cache for all badges first...');
     for (const badge of badgeList) {
-      const cacheKey = `${badge.set_id}-v${badge.id}`;
+      const cacheKey = `metadata:${badge.set_id}-v${badge.id}`;
       
       try {
         // Try to get from universal cache first
-        const cached = await invoke<{ data: any } | null>('get_universal_cached_item', {
-          cacheType: 'badgebase',
+        const cached = await invoke<{ data: any; position?: number } | null>('get_universal_cached_item', {
+          cacheType: 'badge',
           id: cacheKey,
         });
         
-        if (cached && cached.data) {
-          // Found in cache, use it
-          metadataCache[`${badge.set_id}/${badge.id}`] = cached.data as BadgeBaseInfo;
-          console.log(`[BadgesOverlay] Found ${cacheKey} in cache`);
+        if (cached) {
+          // Found in cache, use it - include position from top level
+          const metadata = cached.data as BadgeMetadata;
+          // Add position from the cache entry itself
+          (metadata as any).position = cached.position;
+          metadataCache[`${badge.set_id}/${badge.id}`] = metadata;
+          console.log(`[BadgesOverlay] Found ${cacheKey} in cache with position ${cached.position}`);
         } else {
           // Not in cache, add to list to fetch
           uncachedBadges.push(badge);
@@ -135,7 +165,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
         
         const batchResults = await Promise.allSettled(
           batch.map(badge =>
-            invoke<BadgeBaseInfo>('fetch_badgebase_info', {
+            invoke<BadgeMetadata>('fetch_badge_metadata', {
               badgeSetId: badge.set_id,
               badgeVersion: badge.id,
             })
@@ -229,6 +259,36 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
   // Sort badges based on selected option - use useMemo to prevent re-sorting on every render
   const sortedBadges = useMemo(() => {
     console.log(`[BadgesOverlay] Sorting ${badgesWithMetadata.length} badges by ${sortBy}`);
+    
+    // Check if we can use pre-computed positions for date-newest sort
+    // Only use positions if at least 90% of badges have them (to handle edge cases)
+    const badgesWithPositions = badgesWithMetadata.filter(b => 
+      b.badgebase_info && typeof (b.badgebase_info as any).position === 'number'
+    ).length;
+    
+    const canUsePositions = sortBy === 'date-newest' && 
+      badgesWithMetadata.length > 0 && 
+      badgesWithPositions >= badgesWithMetadata.length * 0.9;
+    
+    if (canUsePositions) {
+      console.log(`[BadgesOverlay] Using pre-computed positions for sorting (${badgesWithPositions}/${badgesWithMetadata.length} badges have positions)`);
+      return [...badgesWithMetadata].sort((a, b) => {
+        const aPos = (a.badgebase_info as any)?.position;
+        const bPos = (b.badgebase_info as any)?.position;
+        
+        // If both have positions, use them
+        if (typeof aPos === 'number' && typeof bPos === 'number') {
+          return aPos - bPos;
+        }
+        
+        // If only one has a position, sort by date for fair comparison
+        const dateCompare = parseDate(b.badgebase_info?.date_added) - parseDate(a.badgebase_info?.date_added);
+        if (dateCompare !== 0) return dateCompare;
+        
+        // Fallback to stable sort
+        return `${a.set_id}-${a.id}`.localeCompare(`${b.set_id}-${b.id}`);
+      });
+    }
     
     // Log sample badge data for debugging
     if (badgesWithMetadata.length > 0) {

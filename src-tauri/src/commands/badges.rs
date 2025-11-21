@@ -1,9 +1,11 @@
 use serde::{Deserialize, Serialize};
 use crate::services::twitch_service::TwitchService;
+use crate::services::universal_cache_service::{get_cached_item, cache_item, CacheType};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 // --- HELIX API STRUCTS ---
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct HelixBadgeVersion {
     pub id: String,
     pub image_url_1x: String,
@@ -15,29 +17,44 @@ pub struct HelixBadgeVersion {
     pub click_url: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct HelixBadgeSet {
     pub set_id: String,
     pub versions: Vec<HelixBadgeVersion>,
 }
 
 /// This is the top-level response from the Helix API
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct HelixBadgesResponse {
     pub data: Vec<HelixBadgeSet>,
 }
 
+/// Cached badges with metadata
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CachedBadgesData {
+    pub badges: HelixBadgesResponse,
+    pub cached_at: u64,
+}
+
 // --- TAURI COMMANDS ---
 
-/// Fetch global Twitch badges using the Helix API
-#[tauri::command]
-pub async fn fetch_global_badges(
+/// Get current timestamp in seconds
+fn get_current_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
+/// Fetch global Twitch badges from API (no cache)
+async fn fetch_badges_from_api(
     client_id: String,
     token: String,
 ) -> Result<HelixBadgesResponse, String> {
     let url = "https://api.twitch.tv/helix/chat/badges/global";
     
-    // Use a client to add headers
+    println!("[Badges] Fetching global badges from Twitch API...");
+    
     let client = reqwest::Client::new();
     let response = client
         .get(url)
@@ -60,7 +77,124 @@ pub async fn fetch_global_badges(
         .await
         .map_err(|e| format!("Failed to parse global badges: {}", e))?;
 
+    println!("[Badges] Successfully fetched {} badge sets from API", badges.data.len());
+    
     Ok(badges)
+}
+
+/// Fetch global Twitch badges with caching support
+#[tauri::command]
+pub async fn fetch_global_badges(
+    client_id: String,
+    token: String,
+) -> Result<HelixBadgesResponse, String> {
+    // Try to get from cache first
+    let cache_key = "global_badges";
+    
+    match get_cached_item(CacheType::Badge, cache_key).await {
+        Ok(Some(cached)) => {
+            match serde_json::from_value::<CachedBadgesData>(cached.data) {
+                Ok(cached_data) => {
+                    // Check if cache is less than 7 days old
+                    let cache_age_days = (get_current_timestamp() - cached_data.cached_at) / (24 * 60 * 60);
+                    
+                    if cache_age_days < 7 {
+                        println!("[Badges] Using cached badges (age: {} days)", cache_age_days);
+                        return Ok(cached_data.badges);
+                    } else {
+                        println!("[Badges] Cache is {} days old, refreshing...", cache_age_days);
+                    }
+                }
+                Err(e) => {
+                    println!("[Badges] Failed to parse cached badges: {}", e);
+                }
+            }
+        }
+        Ok(None) => {
+            println!("[Badges] No cached badges found");
+        }
+        Err(e) => {
+            println!("[Badges] Error checking cache: {}", e);
+        }
+    }
+    
+    // Fetch from API
+    let badges = fetch_badges_from_api(client_id, token).await?;
+    
+    // Cache the result for 7 days
+    let cached_data = CachedBadgesData {
+        badges: badges.clone(),
+        cached_at: get_current_timestamp(),
+    };
+    
+    if let Ok(json_value) = serde_json::to_value(&cached_data) {
+        let _ = cache_item(
+            CacheType::Badge,
+            cache_key.to_string(),
+            json_value,
+            "twitch".to_string(),
+            7, // Cache for 7 days
+        ).await;
+        println!("[Badges] Cached global badges for 7 days");
+    }
+    
+    Ok(badges)
+}
+
+/// Get cached global badges without fetching from API
+#[tauri::command]
+pub async fn get_cached_global_badges() -> Result<Option<HelixBadgesResponse>, String> {
+    let cache_key = "global_badges";
+    
+    match get_cached_item(CacheType::Badge, cache_key).await {
+        Ok(Some(cached)) => {
+            match serde_json::from_value::<CachedBadgesData>(cached.data) {
+                Ok(cached_data) => {
+                    println!("[Badges] Retrieved {} badge sets from cache", cached_data.badges.data.len());
+                    Ok(Some(cached_data.badges))
+                }
+                Err(e) => {
+                    println!("[Badges] Failed to parse cached badges: {}", e);
+                    Ok(None)
+                }
+            }
+        }
+        Ok(None) => {
+            println!("[Badges] No cached badges found");
+            Ok(None)
+        }
+        Err(e) => {
+            println!("[Badges] Error checking cache: {}", e);
+            Err(format!("Cache error: {}", e))
+        }
+    }
+}
+
+/// Pre-fetch and cache global badges in the background
+#[tauri::command]
+pub async fn prefetch_global_badges() -> Result<(), String> {
+    println!("[Badges] Starting background badge pre-fetch...");
+    
+    let client_id = "1qgws7yzcp21g5ledlzffw3lmqdvie".to_string();
+    
+    match TwitchService::get_token().await {
+        Ok(token) => {
+            match fetch_global_badges(client_id, token).await {
+                Ok(badges) => {
+                    println!("[Badges] Pre-fetch complete: {} badge sets cached", badges.data.len());
+                    Ok(())
+                }
+                Err(e) => {
+                    println!("[Badges] Pre-fetch failed: {}", e);
+                    Err(e)
+                }
+            }
+        }
+        Err(e) => {
+            println!("[Badges] Failed to get token for pre-fetch: {}", e);
+            Err(format!("Failed to get token: {}", e))
+        }
+    }
 }
 
 /// Get Twitch credentials for badge fetching

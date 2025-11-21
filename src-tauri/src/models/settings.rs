@@ -2,6 +2,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::Mutex as TokioMutex;
 use serde::{Serialize, Deserialize};
 use crate::services::drops_service::DropsService;
+use crate::services::mining_service::MiningService;
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct VideoPlayerSettings {
@@ -189,4 +190,5 @@ impl Default for Settings {
 pub struct AppState {
     pub settings: Arc<Mutex<Settings>>,
     pub drops_service: Arc<TokioMutex<DropsService>>,
+    pub mining_service: Arc<TokioMutex<MiningService>>,
 }

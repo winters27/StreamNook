@@ -3,39 +3,53 @@ use scraper::{Html, Selector};
 use crate::services::universal_cache_service::{get_cached_item, cache_item, CacheType};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct BadgeBaseInfo {
+pub struct BadgeMetadata {
     pub date_added: Option<String>,
     pub usage_stats: Option<String>,
     pub more_info: Option<String>,
-    pub badgebase_url: String,
+    #[serde(skip_serializing)]
+    pub info_url: String,
 }
 
-/// Fetch additional badge information from BadgeBase.co
+/// Badge metadata for caching (without URL)
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct BadgeMetadataCached {
+    pub date_added: Option<String>,
+    pub usage_stats: Option<String>,
+    pub more_info: Option<String>,
+}
+
+/// Fetch additional badge metadata information
 #[tauri::command]
-pub async fn fetch_badgebase_info(
+pub async fn fetch_badge_metadata(
     badge_set_id: String,
     badge_version: String,
-) -> Result<BadgeBaseInfo, String> {
-    // Create cache key
-    let cache_key = format!("{}-v{}", badge_set_id, badge_version);
+) -> Result<BadgeMetadata, String> {
+    // Create cache key with metadata prefix to distinguish from badge data
+    let cache_key = format!("metadata:{}-v{}", badge_set_id, badge_version);
     
-    // Check universal cache first
-    println!("[BadgeBase] Checking cache for: {}", cache_key);
-    if let Ok(Some(cached)) = get_cached_item(CacheType::BadgebaseInfo, &cache_key).await {
-        println!("[BadgeBase] Found in cache: {}", cache_key);
-        if let Ok(info) = serde_json::from_value::<BadgeBaseInfo>(cached.data) {
-            return Ok(info);
-        }
-    }
-    
-    // Construct the BadgeBase URL
-    // Format: https://badgebase.co/badges/{badge-set-id}-v{version}/
+    // Construct the info URL for response
     let url = format!(
         "https://badgebase.co/badges/{}-v{}/",
         badge_set_id, badge_version
     );
 
-    println!("[BadgeBase] Fetching info from: {}", url);
+    // Check universal cache first
+    println!("[BadgeMetadata] Checking cache for: {}", cache_key);
+    if let Ok(Some(cached)) = get_cached_item(CacheType::Badge, &cache_key).await {
+        println!("[BadgeMetadata] Found in cache: {}", cache_key);
+        if let Ok(cached_info) = serde_json::from_value::<BadgeMetadataCached>(cached.data) {
+            // Return full info with URL
+            return Ok(BadgeMetadata {
+                date_added: cached_info.date_added,
+                usage_stats: cached_info.usage_stats,
+                more_info: cached_info.more_info,
+                info_url: url,
+            });
+        }
+    }
+    
+    println!("[BadgeMetadata] Fetching info from: {}", url);
 
     // Fetch the HTML page
     let client = reqwest::Client::builder()
@@ -47,11 +61,11 @@ pub async fn fetch_badgebase_info(
         .get(&url)
         .send()
         .await
-        .map_err(|e| format!("Failed to fetch BadgeBase page: {}", e))?;
+        .map_err(|e| format!("Failed to fetch badge metadata page: {}", e))?;
 
     if !response.status().is_success() {
         return Err(format!(
-            "BadgeBase returned status: {}",
+            "Badge metadata source returned status: {}",
             response.status()
         ));
     }
@@ -70,26 +84,32 @@ pub async fn fetch_badgebase_info(
         (date_added, usage_stats, more_info)
     }; // document is dropped here
 
-    let info = BadgeBaseInfo {
-        date_added,
-        usage_stats,
-        more_info,
-        badgebase_url: url,
+    // Create cached version without URL
+    let cached_info = BadgeMetadataCached {
+        date_added: date_added.clone(),
+        usage_stats: usage_stats.clone(),
+        more_info: more_info.clone(),
     };
     
     // Cache the result permanently (expiry_days = 0 means never expire)
-    if let Ok(json_value) = serde_json::to_value(&info) {
+    if let Ok(json_value) = serde_json::to_value(&cached_info) {
         let _ = cache_item(
-            CacheType::BadgebaseInfo,
+            CacheType::Badge,
             cache_key,
             json_value,
             "badgebase".to_string(),
             0, // Never expire
         ).await;
-        println!("[BadgeBase] Cached badge info permanently");
+        println!("[BadgeMetadata] Cached badge info permanently");
     }
     
-    Ok(info)
+    // Return full info with URL
+    Ok(BadgeMetadata {
+        date_added,
+        usage_stats,
+        more_info,
+        info_url: url,
+    })
 }
 
 fn extract_date_added(document: &Html) -> Option<String> {

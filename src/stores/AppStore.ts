@@ -30,6 +30,7 @@ interface AppState {
   showBadgesOverlay: boolean;
   isAuthenticated: boolean;
   currentUser: TwitchUser | null;
+  isMiningActive: boolean;
   toasts: Toast[];
   addToast: (message: string | React.ReactNode, type: 'info' | 'success' | 'warning' | 'error', action?: { label: string; onClick: () => void }) => void;
   removeToast: (id: number) => void;
@@ -71,9 +72,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   showBadgesOverlay: false,
   isAuthenticated: false,
   currentUser: null,
+  isMiningActive: false,
   toasts: [],
   addToast: (message, type, action) => {
-    const id = Date.now();
+    const id = Date.now() + Math.random();
     set(state => ({ toasts: [...state.toasts, { id, message, type, action }] }));
     // Auto-remove after 5 seconds
     setTimeout(() => {

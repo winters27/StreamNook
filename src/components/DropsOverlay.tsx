@@ -1,4 +1,4 @@
-import { X } from 'lucide-react';
+import { X, Droplet } from 'lucide-react';
 import { useAppStore } from '../stores/AppStore';
 import DropsWidget from './DropsWidget';
 
@@ -19,14 +19,7 @@ export default function DropsOverlay() {
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-borderLight bg-backgroundSecondary">
           <h2 className="text-lg font-semibold text-textPrimary flex items-center gap-2">
-            <svg 
-              xmlns="http://www.w3.org/2000/svg" 
-              fill="currentColor" 
-              viewBox="0 0 24 24"
-              className="w-5 h-5 text-accent"
-            >
-              <path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z"/>
-            </svg>
+            <Droplet size={20} className="text-accent" fill="currentColor" />
             Drops & Channel Points
           </h2>
           <button

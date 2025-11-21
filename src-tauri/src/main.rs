@@ -3,9 +3,10 @@
 use std::sync::{Arc, Mutex};
 use tokio::sync::Mutex as TokioMutex;
 use tauri::{Builder, Manager};
-use commands::{app::*, badges::*, badgebase::*, twitch::*, streaming::*, chat::*, discord::*, settings::*, cache::*, drops::*, universal_cache::*};
+use commands::{app::*, badges::*, badge_metadata::*, twitch::*, streaming::*, chat::*, discord::*, settings::*, cache::*, drops::*, universal_cache::*};
 use models::settings::{Settings, AppState};
 use services::drops_service::DropsService;
+use services::mining_service::MiningService;
 use services::cache_service;
 use services::live_notification_service::LiveNotificationService;
 
@@ -32,10 +33,17 @@ fn main() {
     // Load settings from our custom location in the same directory as cache
     let settings = load_settings_from_file().unwrap_or_else(|_| Settings::default());
     
+    // Initialize drops service
+    let drops_service = Arc::new(TokioMutex::new(DropsService::new()));
+    
+    // Initialize mining service with drops service reference
+    let mining_service = Arc::new(TokioMutex::new(MiningService::new(drops_service.clone())));
+    
     // Initialize application state (not wrapped in Arc yet)
     let app_state = AppState {
         settings: Arc::new(Mutex::new(settings)),
-        drops_service: Arc::new(TokioMutex::new(DropsService::new())),
+        drops_service,
+        mining_service,
     };
 
     // Initialize live notification service
@@ -55,12 +63,41 @@ fn main() {
             let app_state_arc = Arc::new(AppState {
                 settings: app_state_handle.settings.clone(),
                 drops_service: app_state_handle.drops_service.clone(),
+                mining_service: app_state_handle.mining_service.clone(),
             });
             
             // Start live notification service
             tauri::async_runtime::spawn(async move {
                 if let Err(e) = live_notif_service.start(app_handle, app_state_arc).await {
                     eprintln!("Failed to start live notification service: {}", e);
+                }
+            });
+            
+            // Pre-fetch badges in the background
+            tauri::async_runtime::spawn(async move {
+                use services::twitch_service::TwitchService;
+                use commands::badges::fetch_global_badges;
+                
+                println!("[Main] Starting background badge pre-fetch...");
+                
+                // Wait a few seconds to let the app fully initialize
+                tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+                
+                match TwitchService::get_token().await {
+                    Ok(token) => {
+                        let client_id = "1qgws7yzcp21g5ledlzffw3lmqdvie".to_string();
+                        match fetch_global_badges(client_id, token).await {
+                            Ok(badges) => {
+                                println!("[Main] Background badge pre-fetch complete: {} badge sets cached", badges.data.len());
+                            }
+                            Err(e) => {
+                                println!("[Main] Background badge pre-fetch failed: {}", e);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        println!("[Main] Failed to get token for background badge pre-fetch: {}", e);
+                    }
                 }
             });
             
@@ -122,11 +159,13 @@ fn main() {
             download_and_install_ttvlol_plugin,
             // Badge commands
             fetch_global_badges,
+            get_cached_global_badges,
+            prefetch_global_badges,
             fetch_channel_badges,
             get_twitch_credentials,
             get_user_badges,
-            // BadgeBase commands
-            fetch_badgebase_info,
+            // Badge Metadata commands
+            fetch_badge_metadata,
             // Cache commands
             save_emote_by_id,
             load_emote_by_id,
@@ -147,6 +186,8 @@ fn main() {
             cleanup_universal_cache,
             clear_all_universal_cache,
             get_universal_cache_statistics,
+            assign_badge_positions,
+            export_manifest,
             // Drops commands
             get_drops_settings,
             update_drops_settings,
@@ -161,7 +202,19 @@ fn main() {
             get_channel_points_balance,
             start_drops_monitoring,
             stop_drops_monitoring,
-            update_monitoring_channel
+            update_monitoring_channel,
+            // Mining commands
+            start_auto_mining,
+            start_campaign_mining,
+            stop_auto_mining,
+            get_mining_status,
+            is_auto_mining,
+            // Drops Authentication commands
+            start_drops_device_flow,
+            poll_drops_token,
+            drops_logout,
+            is_drops_authenticated,
+            validate_drops_token
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

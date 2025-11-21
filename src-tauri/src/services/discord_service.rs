@@ -354,8 +354,8 @@ impl DiscordService {
 
     /// Calculate similarity score (Python's _similarity_score)
     fn similarity_score(s1: &str, s2: &str) -> f64 {
-        let _score = normalized_levenshtein(s1, s2);
-        _score
+        let mut score = 0.0;
+        score
     }
 
     /// Extract the core game name (first part before colon or dash)

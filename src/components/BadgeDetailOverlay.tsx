@@ -13,11 +13,11 @@ interface BadgeVersion {
   click_url: string | null;
 }
 
-interface BadgeBaseInfo {
+interface BadgeMetadata {
   date_added: string | null;
   usage_stats: string | null;
   more_info: string | null;
-  badgebase_url: string;
+  info_url: string;
 }
 
 interface BadgeDetailOverlayProps {
@@ -28,7 +28,7 @@ interface BadgeDetailOverlayProps {
 }
 
 const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverlayProps) => {
-  const [badgeBaseInfo, setBadgeBaseInfo] = useState<BadgeBaseInfo | null>(null);
+  const [badgeBaseInfo, setBadgeBaseInfo] = useState<BadgeMetadata | null>(null);
   const [loadingBadgeBase, setLoadingBadgeBase] = useState(true);
 
   // Fetch BadgeBase.co information
@@ -36,7 +36,7 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
     const fetchBadgeBaseInfo = async () => {
       try {
         setLoadingBadgeBase(true);
-        const info = await invoke<BadgeBaseInfo>('fetch_badgebase_info', {
+        const info = await invoke<BadgeMetadata>('fetch_badge_metadata', {
           badgeSetId: setId,
           badgeVersion: badge.id,
         });

@@ -60,24 +60,9 @@ function App() {
         addToast(`Claimed ${claim.points_earned} channel points!`, 'success');
       });
       
-      const unlistenDropReady = await listen('drop-ready', (event: any) => {
-        const progress = event.payload;
-        addToast('Drop is ready to claim!', 'info', {
-          label: 'View Drops',
-          onClick: () => setShowDropsOverlay(true)
-        });
-      });
-      
-      const unlistenDropClaimed = await listen('drop-claimed', (event: any) => {
-        const claimed = event.payload;
-        addToast(`Drop claimed: ${claimed.benefit_name}`, 'success');
-      });
-      
       // Cleanup listeners on unmount
       return () => {
         unlistenChannelPoints();
-        unlistenDropReady();
-        unlistenDropClaimed();
       };
     };
     
