@@ -4,20 +4,18 @@ use reqwest::Client;
 use crate::models::{stream::TwitchStream, user::{ChannelInfo, UserInfo}};
 use crate::models::settings::AppState;
 use crate::services::cookie_jar_service::CookieJarService;
-use keyring::Entry;
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use chrono::{Utc, Duration as ChronoDuration};
 use tauri::Emitter;
-use std::fs;
-use std::path::PathBuf;
+use once_cell::sync::Lazy;
+use tokio::sync::Mutex;
+use std::sync::Arc;
 
 const CLIENT_ID: &str = "1qgws7yzcp21g5ledlzffw3lmqdvie";
-const KEYRING_SERVICE: &str = "streamnook_twitch_token";
-const KEYRING_USERNAME: &str = "user"; // Standardized username
-const REDIRECT_URI: &str = "http://localhost:3000/callback";
 const SCOPES: &str = "user:read:follows user:read:email chat:read chat:edit channel:read:redemptions channel:manage:redemptions moderator:read:followers";
-const TOKEN_FILE_NAME: &str = ".twitch_token";
+
+// Global cookie jar instance for main app auth
+static COOKIE_JAR: Lazy<Arc<Mutex<Option<CookieJarService>>>> = Lazy::new(|| Arc::new(Mutex::new(None)));
 
 #[derive(Debug, Deserialize)]
 struct DeviceCodeResponse {
@@ -28,17 +26,19 @@ struct DeviceCodeResponse {
     interval: u64,
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
-struct StorableToken {
-    access_token: String,
-    refresh_token: String,
-    expires_at: i64, // Unix timestamp
-}
-
 #[derive(Debug, Deserialize)]
 struct TokenResponse {
     access_token: String,
     refresh_token: Option<String>,
+    expires_in: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ValidateResponse {
+    client_id: String,
+    user_id: String,
+    login: Option<String>,
+    scopes: Vec<String>,
     expires_in: Option<u64>,
 }
 
@@ -54,94 +54,28 @@ pub struct DeviceCodeInfo {
 pub struct TwitchService;
 
 impl TwitchService {
-    fn get_token_file_path() -> Result<PathBuf> {
-        let mut path = dirs::config_dir()
-            .ok_or_else(|| anyhow::anyhow!("Could not find config directory"))?;
-        path.push("StreamNook");
+    /// Initialize the cookie jar on app startup
+    async fn get_cookie_jar() -> Result<CookieJarService> {
+        let mut jar_lock = COOKIE_JAR.lock().await;
         
-        // Create directory if it doesn't exist
-        if !path.exists() {
-            fs::create_dir_all(&path)?;
+        if jar_lock.is_none() {
+            println!("[TWITCH_AUTH] Initializing cookie jar...");
+            let jar = CookieJarService::new_main()?;
+            *jar_lock = Some(jar);
         }
         
-        path.push(TOKEN_FILE_NAME);
-        Ok(path)
-    }
-    
-    fn store_token_to_file(token: &StorableToken) -> Result<()> {
-        let path = Self::get_token_file_path()?;
-        let token_json = serde_json::to_string(token)?;
-        
-        // Simple XOR encryption with a fixed key for basic obfuscation
-        let key: Vec<u8> = "StreamNookTokenKey2024".bytes().cycle().take(token_json.len()).collect();
-        let encrypted: Vec<u8> = token_json.bytes()
-            .zip(key.iter())
-            .map(|(a, b)| a ^ b)
-            .collect();
-        
-        fs::write(&path, encrypted)?;
-        println!("[STORAGE] Token saved to file: {:?}", path);
-        Ok(())
-    }
-    
-    fn load_token_from_file() -> Result<StorableToken> {
-        let path = Self::get_token_file_path()?;
-        
-        if !path.exists() {
-            return Err(anyhow::anyhow!("Token file does not exist"));
-        }
-        
-        let encrypted = fs::read(&path)?;
-        
-        // Decrypt using the same XOR method
-        let key: Vec<u8> = "StreamNookTokenKey2024".bytes().cycle().take(encrypted.len()).collect();
-        let decrypted: String = encrypted.iter()
-            .zip(key.iter())
-            .map(|(a, b)| (a ^ b) as char)
-            .collect();
-        
-        let token: StorableToken = serde_json::from_str(&decrypted)?;
-        Ok(token)
-    }
-    
-    fn delete_token_file() -> Result<()> {
-        let path = Self::get_token_file_path()?;
-        if path.exists() {
-            fs::remove_file(&path)?;
-            println!("[STORAGE] Token file deleted: {:?}", path);
-        }
-        Ok(())
+        Ok(jar_lock.as_ref().unwrap().clone())
     }
 
-    // Cookie-based storage methods
-    async fn store_token_to_cookies(token: &StorableToken) -> Result<()> {
-        let cookie_jar = CookieJarService::new_main()?;
-        cookie_jar.set_auth_token(&token.access_token).await?;
-        println!("[STORAGE] ✅ Token saved to cookies");
-        Ok(())
-    }
-
-    async fn load_token_from_cookies() -> Result<String> {
-        let cookie_jar = CookieJarService::new_main()?;
-        cookie_jar.get_auth_token().await
-            .ok_or_else(|| anyhow::anyhow!("No auth token in cookies"))
-    }
-
-    async fn delete_cookies() -> Result<()> {
-        let cookie_jar = CookieJarService::new_main()?;
-        cookie_jar.clear().await?;
-        println!("[STORAGE] Cookies deleted");
-        Ok(())
-    }
-
-    // Device Code Flow - the main login method (like Python app)
+    /// Device Code Flow - the main login method (mimics TwitchDropsMiner)
     pub async fn login(_state: &AppState, app_handle: tauri::AppHandle) -> Result<String> {
         let client = Client::new();
+        let cookie_jar = Self::get_cookie_jar().await?;
         
         // Start device flow
         let device_response = Self::start_device_flow(&client).await?;
         
-        println!("Device code flow started. User code: {}", device_response.user_code);
+        println!("[TWITCH_AUTH] Device code flow started. User code: {}", device_response.user_code);
         
         // Clone values for the spawned task
         let device_code = device_response.device_code.clone();
@@ -151,72 +85,45 @@ impl TwitchService {
         
         // Spawn a task to poll for token
         tokio::task::spawn(async move {
-            println!("[LOGIN] Starting token polling task...");
+            println!("[TWITCH_AUTH] Starting token polling task...");
             let result = Self::poll_for_token(&client, &device_code, interval, expires_in).await;
             
             match result {
                 Ok(token_response) => {
-                    println!("[LOGIN] Token received from Twitch!");
-                    println!("[LOGIN] Access token (first 10 chars): {}...", &token_response.access_token[..10.min(token_response.access_token.len())]);
-                    println!("[LOGIN] Refresh token present: {}", token_response.refresh_token.is_some());
-                    println!("[LOGIN] Expires in: {} seconds", token_response.expires_in.unwrap_or(0));
+                    println!("[TWITCH_AUTH] ✅ Token received from Twitch!");
                     
-                    // Store the token
-                    let expires_at = chrono::Utc::now() + chrono::Duration::seconds(token_response.expires_in.unwrap_or(3600) as i64);
+                    // Store in cookies (mimicking TwitchDropsMiner's cookie jar approach)
+                    if let Err(e) = cookie_jar.set_auth_token(&token_response.access_token).await {
+                        eprintln!("[TWITCH_AUTH] ❌ Failed to save auth token to cookies: {}", e);
+                        let _ = app_handle.emit("twitch-login-error", format!("Failed to save token: {}", e));
+                        return;
+                    }
                     
-                    let storable_token = StorableToken {
-                        access_token: token_response.access_token.clone(),
-                        refresh_token: token_response.refresh_token.clone().unwrap_or_default(),
-                        expires_at: expires_at.timestamp(),
-                    };
-                    
-                    // Store token to both file and cookies for persistence
-                    println!("[LOGIN] Storing token to file and cookies...");
-                    
-                    // Store to file (backward compatibility)
-                    let file_result = Self::store_token_to_file(&storable_token);
-                    
-                    // Store to cookies (new persistent storage)
-                    let cookie_result = Self::store_token_to_cookies(&storable_token).await;
-                    
-                    match (file_result, cookie_result) {
-                        (Ok(_), Ok(_)) => {
-                            println!("[LOGIN] ✅ Token stored successfully to file and cookies!");
+                    // Validate the token and get user info
+                    match Self::validate_and_store_user_info(&token_response.access_token, &cookie_jar).await {
+                        Ok(user_id) => {
+                            println!("[TWITCH_AUTH] ✅ Login successful, user ID: {}", user_id);
                             
-                            // Try to also store in keyring as backup (but don't fail if it doesn't work)
-                            if let Ok(entry) = Entry::new(KEYRING_SERVICE, KEYRING_USERNAME) {
-                                if let Ok(token_json) = serde_json::to_string(&storable_token) {
-                                    let _ = entry.set_password(&token_json);
-                                    println!("[LOGIN] Also stored token in keyring as backup");
-                                }
+                            // Save cookies to disk
+                            if let Err(e) = cookie_jar.save().await {
+                                eprintln!("[TWITCH_AUTH] ⚠️ Failed to save cookies: {}", e);
                             }
                             
                             // Emit success event
-                            println!("[LOGIN] Emitting twitch-login-complete event...");
                             if let Err(e) = app_handle.emit("twitch-login-complete", ()) {
-                                eprintln!("[LOGIN] ❌ Failed to emit login-complete event: {}", e);
+                                eprintln!("[TWITCH_AUTH] ❌ Failed to emit login-complete event: {}", e);
                             } else {
-                                println!("[LOGIN] ✅ Event emitted successfully");
+                                println!("[TWITCH_AUTH] ✅ Login complete!");
                             }
                         }
-                        (Ok(_), Err(e)) => {
-                            eprintln!("[LOGIN] ⚠️ Token saved to file but cookies failed: {:?}", e);
-                            // Still emit success since file storage worked
-                            let _ = app_handle.emit("twitch-login-complete", ());
-                        }
-                        (Err(e), Ok(_)) => {
-                            eprintln!("[LOGIN] ⚠️ Token saved to cookies but file failed: {:?}", e);
-                            // Still emit success since cookies worked
-                            let _ = app_handle.emit("twitch-login-complete", ());
-                        }
-                        (Err(file_err), Err(cookie_err)) => {
-                            eprintln!("[LOGIN] ❌ Failed to store token anywhere! File: {:?}, Cookie: {:?}", file_err, cookie_err);
-                            let _ = app_handle.emit("twitch-login-error", format!("Failed to store token: {}", file_err));
+                        Err(e) => {
+                            eprintln!("[TWITCH_AUTH] ❌ Failed to validate token: {}", e);
+                            let _ = app_handle.emit("twitch-login-error", format!("Token validation failed: {}", e));
                         }
                     }
                 }
                 Err(e) => {
-                    eprintln!("[LOGIN] ❌ Token polling failed: {}", e);
+                    eprintln!("[TWITCH_AUTH] ❌ Token polling failed: {}", e);
                     let _ = app_handle.emit("twitch-login-error", e.to_string());
                 }
             }
@@ -225,53 +132,35 @@ impl TwitchService {
         // Return the verification URI for the frontend to open
         Ok(verification_uri)
     }
-    
-    // Device code flow methods (kept for backward compatibility if needed)
-    pub async fn start_device_login(_state: &AppState) -> Result<DeviceCodeInfo> {
-        let client = Client::new();
-        let device_response = Self::start_device_flow(&client).await?;
-        
-        Ok(DeviceCodeInfo {
-            user_code: device_response.user_code,
-            verification_uri: device_response.verification_uri,
-            device_code: device_response.device_code,
-            interval: device_response.interval,
-            expires_in: device_response.expires_in,
-        })
-    }
-    
-    pub async fn complete_device_login(device_code: &str, _state: &AppState) -> Result<String> {
+
+    /// Validate token and store user info in cookies (mimics TwitchDropsMiner's _validate)
+    async fn validate_and_store_user_info(access_token: &str, cookie_jar: &CookieJarService) -> Result<String> {
         let client = Client::new();
         
-        let token_response = Self::poll_for_token(
-            &client,
-            device_code,
-            5,
-            1800,
-        ).await?;
+        // Validate the token
+        let response = client
+            .get("https://id.twitch.tv/oauth2/validate")
+            .header("Authorization", format!("OAuth {}", access_token))
+            .send()
+            .await?;
         
-        let expires_at = Utc::now() + ChronoDuration::seconds(token_response.expires_in.unwrap_or(3600) as i64);
-        
-        let storable_token = StorableToken {
-            access_token: token_response.access_token.clone(),
-            refresh_token: token_response.refresh_token.clone().unwrap_or_default(),
-            expires_at: expires_at.timestamp(),
-        };
-        
-        // Store token to file (primary storage)
-        Self::store_token_to_file(&storable_token)?;
-        
-        // Also try to store in keyring as backup
-        if let Ok(entry) = Entry::new(KEYRING_SERVICE, KEYRING_USERNAME) {
-            let token_json = serde_json::to_string(&storable_token)?;
-            let _ = entry.set_password(&token_json);
+        if response.status() == 401 {
+            return Err(anyhow::anyhow!("Token is invalid"));
         }
         
-        // Log for debugging
-        println!("Token stored successfully in keyring. Service: {}, Username: {}", KEYRING_SERVICE, KEYRING_USERNAME);
-        println!("Access token: {}...", &token_response.access_token[..10.min(token_response.access_token.len())]);
+        let validate_response: ValidateResponse = response.json().await?;
         
-        Ok("Login successful".to_string())
+        // Verify client ID matches (like TwitchDropsMiner does)
+        if validate_response.client_id != CLIENT_ID {
+            println!("[TWITCH_AUTH] ⚠️ Cookie client ID mismatch, clearing cookies");
+            let _ = cookie_jar.clear().await;
+            return Err(anyhow::anyhow!("Client ID mismatch"));
+        }
+        
+        // Store user ID as persistent cookie (mimics TwitchDropsMiner)
+        let _ = cookie_jar.set_persistent_user_id(&validate_response.user_id).await;
+        
+        Ok(validate_response.user_id)
     }
     
     async fn start_device_flow(client: &Client) -> Result<DeviceCodeResponse> {
@@ -334,10 +223,8 @@ impl TwitchService {
             let error_text = response.text().await?;
             
             if error_text.contains("authorization_pending") {
-                // User hasn't authorized yet, continue polling
                 continue;
             } else if error_text.contains("slow_down") {
-                // Twitch wants us to slow down
                 poll_interval += 2;
                 continue;
             } else if error_text.contains("expired_token") {
@@ -349,125 +236,42 @@ impl TwitchService {
     }
 
     pub async fn logout(_state: &AppState) -> Result<()> {
-        // Delete token from file storage
-        let _ = Self::delete_token_file();
-        
-        // Delete cookies
-        let _ = Self::delete_cookies().await;
-        
-        // Also try to delete from all known keyring locations
-        if let Ok(entry) = Entry::new(KEYRING_SERVICE, KEYRING_USERNAME) {
-            let _ = entry.delete_credential();
-        }
-        
-        if let Ok(entry) = Entry::new("StreamNook", "twitch_token") {
-            let _ = entry.delete_credential();
-        }
-
-        if let Ok(entry) = Entry::new("streamnook", "twitch_token") {
-            let _ = entry.delete_credential();
-        }
-        
-        println!("[LOGOUT] Complete - all tokens cleared from all storage locations");
+        let cookie_jar = Self::get_cookie_jar().await?;
+        cookie_jar.clear().await?;
+        println!("[TWITCH_AUTH] Logout complete - cookies cleared");
         Ok(())
     }
 
-    async fn refresh_token(refresh_token: &str) -> Result<StorableToken> {
-        let client = Client::new();
-        let params = [
-            ("grant_type", "refresh_token"),
-            ("refresh_token", refresh_token),
-            ("client_id", CLIENT_ID),
-        ];
-
-        let response = client
-            .post("https://id.twitch.tv/oauth2/token")
-            .form(&params)
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            let error_text = response.text().await?;
-            return Err(anyhow::anyhow!("Failed to refresh token: {}", error_text));
-        }
-
-        let token_response: TokenResponse = response.json().await?;
-        let expires_at = Utc::now() + ChronoDuration::seconds(token_response.expires_in.unwrap_or(3600) as i64);
-
-        let new_storable_token = StorableToken {
-            access_token: token_response.access_token,
-            refresh_token: token_response.refresh_token.unwrap_or_else(|| refresh_token.to_string()),
-            expires_at: expires_at.timestamp(),
-        };
-
-        // Store the refreshed token
-        Self::store_token_to_file(&new_storable_token)?;
-        
-        // Also try keyring as backup
-        if let Ok(entry) = Entry::new(KEYRING_SERVICE, KEYRING_USERNAME) {
-            let _ = entry.set_password(&serde_json::to_string(&new_storable_token)?);
-        }
-
-        Ok(new_storable_token)
-    }
-
+    /// Get the current access token from cookies (mimics TwitchDropsMiner's approach)
     pub async fn get_token() -> Result<String> {
-        // println!("[GET_TOKEN] Attempting to retrieve token from storage...");
+        let cookie_jar = Self::get_cookie_jar().await?;
         
-        // Try to load from file first (primary storage)
-        match Self::load_token_from_file() {
-            Ok(mut token) => {
-                // println!("[GET_TOKEN] ✅ Token retrieved from file storage");
-                
-                if Utc::now().timestamp() >= token.expires_at {
-                    // Token is expired, refresh it
-                    println!("[GET_TOKEN] Token expired, refreshing...");
-                    token = Self::refresh_token(&token.refresh_token).await?;
-                }
-                
-                return Ok(token.access_token);
+        // Check if we have an auth token in cookies
+        if let Some(auth_token) = cookie_jar.get_auth_token().await {
+            println!("[TWITCH_AUTH] Token retrieved from cookies");
+            
+            // Validate the token
+            let client = Client::new();
+            let response = client
+                .get("https://id.twitch.tv/oauth2/validate")
+                .header("Authorization", format!("OAuth {}", auth_token))
+                .send()
+                .await?;
+            
+            if response.status() == 401 {
+                println!("[TWITCH_AUTH] Token is invalid, clearing cookies");
+                let _ = cookie_jar.clear().await;
+                return Err(anyhow::anyhow!("Not authenticated. Please log in to Twitch first."));
             }
-            Err(file_err) => {
-                println!("[GET_TOKEN] Could not read from file: {:?}", file_err);
-                
-                // Fallback to keyring if file doesn't exist
-                println!("[GET_TOKEN] Trying keyring as fallback...");
-                
-                if let Ok(entry) = Entry::new(KEYRING_SERVICE, KEYRING_USERNAME) {
-                    if let Ok(pwd) = entry.get_password() {
-                        println!("[GET_TOKEN] ✅ Token retrieved from keyring fallback");
-                        
-                        let mut token: StorableToken = match serde_json::from_str(&pwd) {
-                            Ok(t) => t,
-                            Err(e) => {
-                                eprintln!("[GET_TOKEN] Failed to parse keyring token: {:?}", e);
-                                return Err(anyhow::anyhow!("Not authenticated. Please log in to Twitch first."));
-                            }
-                        };
-                        
-                        // Save it to file for next time
-                        let _ = Self::store_token_to_file(&token);
-                        
-                        if Utc::now().timestamp() >= token.expires_at {
-                            println!("[GET_TOKEN] Token expired, refreshing...");
-                            token = Self::refresh_token(&token.refresh_token).await?;
-                        }
-                        
-                        return Ok(token.access_token);
-                    }
-                }
-                
-                eprintln!("[GET_TOKEN] ❌ No token found in file or keyring storage");
-                Err(anyhow::anyhow!("Not authenticated. Please log in to Twitch first."))
-            }
+            
+            return Ok(auth_token);
         }
+        
+        Err(anyhow::anyhow!("Not authenticated. Please log in to Twitch first."))
     }
 
     pub async fn get_followed_streams(_state: &AppState) -> Result<Vec<TwitchStream>> {
-        let token = match Self::get_token().await {
-            Ok(t) => t,
-            Err(_) => return Err(anyhow::anyhow!("Not authenticated. Please log in to Twitch first.")),
-        };
+        let token = Self::get_token().await?;
         let client = Client::new();
         
         // First, get the user ID
@@ -493,14 +297,12 @@ impl TwitchService {
             .json::<serde_json::Value>()
             .await?;
         
-        // Handle null or missing data field
         let data = response.get("data").and_then(|d| d.as_array());
         
         match data {
             Some(arr) => {
                 let mut streams: Vec<TwitchStream> = serde_json::from_value(serde_json::Value::Array(arr.clone()))?;
                 
-                // Fetch broadcaster types for all streams in a batch
                 if !streams.is_empty() {
                     let user_ids: Vec<String> = streams.iter().map(|s| s.user_id.clone()).collect();
                     let user_ids_param = user_ids.iter().map(|id| format!("id={}", id)).collect::<Vec<_>>().join("&");
@@ -515,7 +317,6 @@ impl TwitchService {
                         .await?;
                     
                     if let Some(users_data) = users_response.get("data").and_then(|d| d.as_array()) {
-                        // Create a map of user_id -> broadcaster_type
                         let mut broadcaster_types = std::collections::HashMap::new();
                         for user in users_data {
                             if let (Some(id), Some(broadcaster_type)) = (
@@ -528,7 +329,6 @@ impl TwitchService {
                             }
                         }
                         
-                        // Update streams with broadcaster types
                         for stream in &mut streams {
                             if let Some(broadcaster_type) = broadcaster_types.get(&stream.user_id) {
                                 stream.broadcaster_type = Some(broadcaster_type.clone());
@@ -539,15 +339,12 @@ impl TwitchService {
                 
                 Ok(streams)
             },
-            None => Ok(Vec::new()), // Return empty vec if no data
+            None => Ok(Vec::new()),
         }
     }
 
     pub async fn get_channel_info(channel_name: &str, _state: &AppState) -> Result<ChannelInfo> {
-        let token = match Self::get_token().await {
-            Ok(t) => t,
-            Err(_) => return Err(anyhow::anyhow!("Not authenticated. Please log in to Twitch first.")),
-        };
+        let token = Self::get_token().await?;
         let client = Client::new();
         let response = client.get(format!("https://api.twitch.tv/helix/channels?broadcaster_login={}", channel_name))
             .header(AUTHORIZATION, format!("Bearer {}", token))
@@ -557,7 +354,6 @@ impl TwitchService {
             .json::<serde_json::Value>()
             .await?;
         
-        // Check if data exists and has at least one element
         let data = response.get("data")
             .and_then(|d| d.as_array())
             .and_then(|arr| arr.first())
@@ -635,11 +431,9 @@ impl TwitchService {
         cursor: Option<String>,
         limit: u32,
     ) -> Result<(Vec<TwitchStream>, Option<String>)> {
-        // Try to get token, but don't fail if not authenticated
         let token = Self::get_token().await.ok();
         let client = Client::new();
         
-        // Build URL with pagination
         let mut url = format!("https://api.twitch.tv/helix/streams?first={}", limit);
         if let Some(cursor) = cursor {
             url.push_str(&format!("&after={}", cursor));
@@ -648,7 +442,6 @@ impl TwitchService {
         let mut request = client.get(&url)
             .header("Client-Id", CLIENT_ID);
         
-        // Add authorization if we have a token
         if let Some(token) = &token {
             request = request.header(AUTHORIZATION, format!("Bearer {}", token));
         }
@@ -659,21 +452,18 @@ impl TwitchService {
             .json::<serde_json::Value>()
             .await?;
         
-        // Get pagination cursor
         let next_cursor = response
             .get("pagination")
             .and_then(|p| p.get("cursor"))
             .and_then(|c| c.as_str())
             .map(|s| s.to_string());
         
-        // Handle null or missing data field
         let data = response.get("data").and_then(|d| d.as_array());
         
         match data {
             Some(arr) => {
                 let mut streams: Vec<TwitchStream> = serde_json::from_value(serde_json::Value::Array(arr.clone()))?;
                 
-                // Fetch broadcaster types for all streams in a batch
                 if !streams.is_empty() && token.is_some() {
                     let user_ids: Vec<String> = streams.iter().map(|s| s.user_id.clone()).collect();
                     let user_ids_param = user_ids.iter().map(|id| format!("id={}", id)).collect::<Vec<_>>().join("&");
@@ -688,7 +478,6 @@ impl TwitchService {
                         .await?;
                     
                     if let Some(users_data) = users_response.get("data").and_then(|d| d.as_array()) {
-                        // Create a map of user_id -> broadcaster_type
                         let mut broadcaster_types = std::collections::HashMap::new();
                         for user in users_data {
                             if let (Some(id), Some(broadcaster_type)) = (
@@ -701,7 +490,6 @@ impl TwitchService {
                             }
                         }
                         
-                        // Update streams with broadcaster types
                         for stream in &mut streams {
                             if let Some(broadcaster_type) = broadcaster_types.get(&stream.user_id) {
                                 stream.broadcaster_type = Some(broadcaster_type.clone());
@@ -718,38 +506,7 @@ impl TwitchService {
 
     pub async fn get_recommended_streams(_state: &AppState) -> Result<Vec<TwitchStream>> {
         let (streams, _) = Self::get_recommended_streams_paginated(_state, None, 20).await?;
-        
         Ok(streams)
-    }
-    
-    async fn populate_shared_chat_status(streams: &mut Vec<TwitchStream>) {
-        let token = match Self::get_token().await {
-            Ok(t) => t,
-            Err(_) => return, // Can't check without token
-        };
-        
-        let client = Client::new();
-        
-        for stream in streams.iter_mut() {
-            // Check if this broadcaster is in a shared chat session
-            let url = format!("https://api.twitch.tv/helix/chat/shared?broadcaster_id={}", stream.user_id);
-            
-            match client.get(&url)
-                .header("Client-Id", CLIENT_ID)
-                .header(AUTHORIZATION, format!("Bearer {}", token))
-                .send()
-                .await
-            {
-                Ok(response) => {
-                    // 200 OK means they're in a shared chat session
-                    // 404 means they're not
-                    stream.has_shared_chat = Some(response.status().is_success());
-                },
-                Err(_) => {
-                    stream.has_shared_chat = Some(false);
-                }
-            }
-        }
     }
 
     pub async fn get_top_games(_state: &AppState, limit: u32) -> Result<Vec<serde_json::Value>> {
@@ -775,15 +532,12 @@ impl TwitchService {
         
         match data {
             Some(arr) => {
-                // For each game, fetch the viewer count by getting streams for that game
                 let mut games_with_viewers = Vec::new();
                 
                 for game in arr {
                     let mut game_data = game.clone();
                     
-                    // Get game ID
                     if let Some(game_id) = game.get("id").and_then(|id| id.as_str()) {
-                        // Fetch streams for this game to get total viewer count
                         let streams_url = format!("https://api.twitch.tv/helix/streams?game_id={}&first=100", game_id);
                         
                         let mut streams_request = client.get(&streams_url)
@@ -795,13 +549,11 @@ impl TwitchService {
                         
                         if let Ok(streams_response) = streams_request.send().await {
                             if let Ok(streams_json) = streams_response.json::<serde_json::Value>().await {
-                                // Sum up viewer counts from all streams
                                 if let Some(streams_data) = streams_json.get("data").and_then(|d| d.as_array()) {
                                     let total_viewers: i64 = streams_data.iter()
                                         .filter_map(|s| s.get("viewer_count").and_then(|v| v.as_i64()))
                                         .sum();
                                     
-                                    // Add viewer_count to game data
                                     if let Some(obj) = game_data.as_object_mut() {
                                         obj.insert("viewer_count".to_string(), serde_json::json!(total_viewers));
                                     }
@@ -922,13 +674,12 @@ impl TwitchService {
         
         match data {
             Some(arr) => {
-                // Convert search results to TwitchStream format
                 let mut streams = Vec::new();
                 
                 for channel in arr {
                     if let (Some(id), Some(user_id), Some(user_name), Some(user_login), Some(title), Some(game_name)) = (
                         channel.get("id").and_then(|v| v.as_str()),
-                        channel.get("id").and_then(|v| v.as_str()), // Note: Search result 'id' is the user_id
+                        channel.get("id").and_then(|v| v.as_str()),
                         channel.get("display_name").and_then(|v| v.as_str()),
                         channel.get("broadcaster_login").and_then(|v| v.as_str()),
                         channel.get("title").and_then(|v| v.as_str()),
@@ -943,105 +694,3 @@ impl TwitchService {
                         let broadcaster_type = channel.get("broadcaster_type")
                             .and_then(|v| v.as_str())
                             .filter(|s| !s.is_empty())
-                            .map(|s| s.to_string());
-                        
-                        streams.push(TwitchStream {
-                            id: id.to_string(), // This is user_id, but search result doesn't provide stream_id
-                            user_id: user_id.to_string(),
-                            user_name: user_name.to_string(),
-                            user_login: user_login.to_string(),
-                            title: title.to_string(),
-                            viewer_count: 0, // Search API doesn't provide viewer count
-                            game_name: game_name.to_string(),
-                            thumbnail_url,
-                            started_at: channel.get("started_at")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string(),
-                            broadcaster_type,
-                            has_shared_chat: None, // Will be populated later
-                        });
-                    }
-                }
-                
-                Ok(streams)
-            },
-            None => Ok(Vec::new()),
-        }
-    }
-
-    pub async fn follow_channel(target_user_id: &str) -> Result<()> {
-        let token = Self::get_token().await?;
-        let client = Client::new();
-        
-        // Get the current user's ID
-        let user_info = Self::get_user_info().await?;
-        
-        let url = format!("https://api.twitch.tv/helix/users/follows?from_id={}&to_id={}", 
-            user_info.id, target_user_id);
-        
-        let response = client.post(&url)
-            .header(AUTHORIZATION, format!("Bearer {}", token))
-            .header("Client-Id", CLIENT_ID)
-            .send()
-            .await?;
-        
-        if !response.status().is_success() {
-            let error_text = response.text().await?;
-            return Err(anyhow::anyhow!("Failed to follow channel: {}", error_text));
-        }
-        
-        Ok(())
-    }
-
-    pub async fn unfollow_channel(target_user_id: &str) -> Result<()> {
-        let token = Self::get_token().await?;
-        let client = Client::new();
-        
-        // Get the current user's ID
-        let user_info = Self::get_user_info().await?;
-        
-        let url = format!("https://api.twitch.tv/helix/users/follows?from_id={}&to_id={}", 
-            user_info.id, target_user_id);
-        
-        let response = client.delete(&url)
-            .header(AUTHORIZATION, format!("Bearer {}", token))
-            .header("Client-Id", CLIENT_ID)
-            .send()
-            .await?;
-        
-        if !response.status().is_success() {
-            let error_text = response.text().await?;
-            return Err(anyhow::anyhow!("Failed to unfollow channel: {}", error_text));
-        }
-        
-        Ok(())
-    }
-
-    pub async fn check_following_status(target_user_id: &str) -> Result<bool> {
-        let token = Self::get_token().await?;
-        let client = Client::new();
-        
-        // Get the current user's ID
-        let user_info = Self::get_user_info().await?;
-        
-        let url = format!("https://api.twitch.tv/helix/users/follows?from_id={}&to_id={}", 
-            user_info.id, target_user_id);
-        
-        let response = client.get(&url)
-            .header(AUTHORIZATION, format!("Bearer {}", token))
-            .header("Client-Id", CLIENT_ID)
-            .send()
-            .await?
-            .json::<serde_json::Value>()
-            .await?;
-        
-        // If data array has items, user is following
-        let is_following = response.get("data")
-            .and_then(|d| d.as_array())
-            .map(|arr| !arr.is_empty())
-            .unwrap_or(false);
-        
-        Ok(is_following)
-    }
-}

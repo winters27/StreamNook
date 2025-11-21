@@ -25,6 +25,40 @@ export interface DropsSettings {
   notify_on_drop_claimed: boolean;
   notify_on_points_claimed: boolean;
   check_interval_seconds: number;
+  // Mining settings
+  auto_mining_enabled?: boolean;
+  priority_games?: string[];
+  excluded_games?: string[];
+  priority_mode?: 'PriorityOnly' | 'EndingSoonest' | 'LowAvailFirst';
+  watch_interval_seconds?: number;
+}
+
+export interface MiningChannel {
+  id: string;
+  name: string;
+  display_name: string;
+  game_name: string;
+  viewer_count: number;
+  is_live: boolean;
+  drops_enabled: boolean;
+}
+
+export interface CurrentDropInfo {
+  campaign_id: string;
+  campaign_name: string;
+  drop_id: string;
+  drop_name: string;
+  required_minutes: number;
+  current_minutes: number;
+  game_name: string;
+}
+
+export interface MiningStatus {
+  is_mining: boolean;
+  current_channel: MiningChannel | null;
+  current_drop: CurrentDropInfo | null;
+  eligible_channels: MiningChannel[];
+  last_update: string;
 }
 
 export interface ChatDesignSettings {

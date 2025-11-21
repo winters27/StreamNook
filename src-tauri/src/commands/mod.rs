@@ -1,6 +1,6 @@
 pub mod app;
 pub mod badges;
-pub mod badgebase;
+pub mod badge_metadata;
 pub mod twitch;
 pub mod streaming;
 pub mod chat;

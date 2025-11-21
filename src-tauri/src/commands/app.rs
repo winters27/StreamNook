@@ -1,4 +1,4 @@
-use tauri::{command, AppHandle, Manager};
+use tauri::command;
 use tauri::window::Window;
 
 #[command]
@@ -42,7 +42,7 @@ pub async fn calculate_aspect_ratio_size(
         "right" => {
             // Chat is on the right, so video width = total width - chat width
             let video_width = current_width.saturating_sub(chat_size);
-            let video_height = current_height.saturating_sub(title_bar_height);
+            let _video_height = current_height.saturating_sub(title_bar_height);
             
             // Calculate ideal height for the video to maintain 16:9
             let ideal_video_height = (video_width as f64 / video_aspect_ratio) as u32;
@@ -55,7 +55,7 @@ pub async fn calculate_aspect_ratio_size(
         "bottom" => {
             // Chat is on the bottom, so video height = total height - chat height - title bar
             let video_height = current_height.saturating_sub(chat_size).saturating_sub(title_bar_height);
-            let video_width = current_width;
+            let _video_width = current_width;
             
             // Calculate ideal width for the video to maintain 16:9
             let ideal_video_width = (video_height as f64 * video_aspect_ratio) as u32;

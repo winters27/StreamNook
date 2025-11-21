@@ -1,5 +1,5 @@
 use anyhow::Result;
-use reqwest::header::{AUTHORIZATION, ACCEPT};
+use reqwest::header::{AUTHORIZATION, ACCEPT, HeaderMap, HeaderValue};
 use reqwest::Client;
 use serde::Deserialize;
 use std::sync::Arc;
@@ -7,11 +7,18 @@ use tokio::sync::RwLock;
 use std::collections::HashMap;
 use chrono::{DateTime, Utc};
 use crate::models::drops::*;
-use crate::services::twitch_service::TwitchService;
+use crate::services::drops_auth_service::DropsAuthService;
 use tokio::time::Duration;
 use tauri::{AppHandle, Emitter};
+use uuid::Uuid;
 
-const CLIENT_ID: &str = "1qgws7yzcp21g5ledlzffw3lmqdvie";
+// Use Twitch ANDROID APP client ID for GQL operations (required for drops API access)
+// This is what TwitchDropsMiner uses - it works with NO SCOPES
+const CLIENT_ID: &str = "kd1unb4b3q4t58fwlpcbzcbnm76a8fp";
+const CLIENT_URL: &str = "https://www.twitch.tv";
+
+// Your app's client ID (for reference - used for other Helix API calls)
+const APP_CLIENT_ID: &str = "1qgws7yzcp21g5ledlzffw3lmqdvie";
 
 #[derive(Debug, Deserialize)]
 struct GraphQLResponse<T> {
@@ -136,10 +143,16 @@ pub struct DropsService {
     channel_points_balances: Arc<RwLock<HashMap<String, ChannelPointsBalance>>>,
     monitoring_active: Arc<RwLock<bool>>,
     current_channel: Arc<RwLock<Option<(String, String)>>>, // (channel_id, channel_name)
+    device_id: String,
+    session_id: String,
 }
 
 impl DropsService {
     pub fn new() -> Self {
+        // Generate persistent device ID and session ID (like TwitchDropsMiner does)
+        let device_id = Uuid::new_v4().to_string().replace("-", "");
+        let session_id = Uuid::new_v4().to_string().replace("-", "");
+        
         Self {
             client: Client::new(),
             settings: Arc::new(RwLock::new(DropsSettings::default())),
@@ -149,7 +162,24 @@ impl DropsService {
             channel_points_balances: Arc::new(RwLock::new(HashMap::new())),
             monitoring_active: Arc::new(RwLock::new(false)),
             current_channel: Arc::new(RwLock::new(None)),
+            device_id,
+            session_id,
         }
+    }
+    
+    /// Create headers for GQL requests (mimicking TwitchDropsMiner's auth_state.headers())
+    fn create_gql_headers(&self, token: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert("Client-ID", HeaderValue::from_static(CLIENT_ID));
+        headers.insert(ACCEPT, HeaderValue::from_static("*/*"));
+        headers.insert("Accept-Language", HeaderValue::from_static("en-US"));
+        headers.insert("Accept-Encoding", HeaderValue::from_static("gzip"));
+        headers.insert(AUTHORIZATION, HeaderValue::from_str(&format!("OAuth {}", token)).unwrap());
+        headers.insert("Origin", HeaderValue::from_static(CLIENT_URL));
+        headers.insert("Referer", HeaderValue::from_static(CLIENT_URL));
+        headers.insert("X-Device-Id", HeaderValue::from_str(&self.device_id).unwrap());
+        headers.insert("Client-Session-Id", HeaderValue::from_str(&self.session_id).unwrap());
+        headers
     }
 
     pub async fn get_settings(&self) -> DropsSettings {
@@ -161,101 +191,257 @@ impl DropsService {
         *settings = new_settings;
     }
 
-    pub async fn get_active_campaigns(&self) -> Result<Vec<DropCampaign>> {
-        let token = TwitchService::get_token().await?;
+    /// Get all active campaigns without filtering (for UI display)
+    /// Fetches all active campaigns from the Twitch API without modifying the service's state.
+    /// This method is now responsible for the network request and parsing only.
+    pub async fn fetch_all_active_campaigns_from_api(&self) -> Result<Vec<DropCampaign>> {
+        println!("🔍 [fetch_all_active_campaigns_from_api] Starting (no filters)...");
         
+        let token = match DropsAuthService::get_token().await {
+            Ok(t) => {
+                println!("✅ [get_all_active_campaigns] Got token (first 10 chars): {}", &t[..10.min(t.len())]);
+                t
+            }
+            Err(e) => {
+                println!("❌ [get_all_active_campaigns] Failed to get token: {}", e);
+                return Err(e);
+            }
+        };
+        
+        println!("🔍 Fetching drops campaigns using Android app client ID...");
+        
+        // Use GQL exactly like TwitchDropsMiner does
         let response = self.client
             .post("https://gql.twitch.tv/gql")
-            .header("Client-Id", CLIENT_ID)
-            .header(AUTHORIZATION, format!("OAuth {}", token))
-            .header(ACCEPT, "application/json")
+            .headers(self.create_gql_headers(&token))
             .json(&serde_json::json!({
                 "operationName": "ViewerDropsDashboard",
-                "variables": {"fetchRewardCampaigns": true},
+                "variables": {
+                    "fetchRewardCampaigns": false
+                },
                 "extensions": {
                     "persistedQuery": {
                         "version": 1,
-                        "sha256Hash": "5a4da2ab3d5b47c9f9ce864e727b2cb346af1e3ea8b897fe8f704a97ff017619",
+                        "sha256Hash": "5a4da2ab3d5b47c9f9ce864e727b2cb346af1e3ea8b897fe8f704a97ff017619"
                     }
                 }
             }))
             .send()
             .await?;
 
-        let gql_response: GraphQLResponse<DropCampaignsData> = response.json().await?;
-
-        if let Some(errors) = gql_response.errors {
+        println!("📡 Response status: {}", response.status());
+        
+        // Get the raw response text first
+        let response_text = response.text().await?;
+        
+        // Try to parse it as JSON
+        let response_json: serde_json::Value = match serde_json::from_str(&response_text) {
+            Ok(json) => json,
+            Err(e) => {
+                println!("❌ Failed to parse JSON: {}", e);
+                return Err(anyhow::anyhow!("Failed to parse response as JSON: {}", e));
+            }
+        };
+        
+        // Check for authorization errors
+        if let Some(error_msg) = response_json.get("error").and_then(|e| e.as_str()) {
+            if error_msg == "Unauthorized" {
+                return Err(anyhow::anyhow!(
+                    "Drops API requires authentication with Twitch web client."
+                ));
+            }
+        }
+        
+        if let Some(errors) = response_json.get("errors") {
+            println!("❌ GraphQL errors found: {:?}", errors);
             return Err(anyhow::anyhow!("GraphQL errors: {:?}", errors));
         }
 
-        let campaigns = gql_response
-            .data
-            .and_then(|d| d.current_user)
-            .map(|u| u.drop_campaigns)
-            .unwrap_or_default();
-
-        let mut result = Vec::new();
-        let mut progress_map = self.drop_progress.write().await;
-
-        for campaign in campaigns {
-            let time_based_drops: Vec<TimeBasedDrop> = campaign
-                .time_based_drops
-                .iter()
-                .map(|drop| {
-                    // Update progress tracking
-                    if let Some(self_progress) = &drop.self_progress {
-                        let progress = DropProgress {
-                            campaign_id: campaign.id.clone(),
-                            drop_id: drop.id.clone(),
-                            current_minutes_watched: self_progress.current_minutes_watched,
-                            required_minutes_watched: drop.required_minutes_watched,
-                            is_claimed: self_progress.is_claimed,
-                            last_updated: Utc::now(),
-                        };
-                        progress_map.insert(drop.id.clone(), progress);
-                    }
-
-                    TimeBasedDrop {
-                        id: drop.id.clone(),
-                        name: drop.name.clone(),
-                        required_minutes_watched: drop.required_minutes_watched,
-                        benefit_edges: drop
-                            .benefit_edges
-                            .iter()
-                            .map(|edge| DropBenefit {
-                                id: edge.benefit.id.clone(),
-                                name: edge.benefit.name.clone(),
-                                image_url: edge.benefit.image_asset_url.clone(),
-                            })
-                            .collect(),
-                    }
-                })
-                .collect();
-
-            result.push(DropCampaign {
-                id: campaign.id,
-                name: campaign.name,
-                game_id: campaign.game.id,
-                game_name: campaign.game.name,
-                description: campaign.description,
-                image_url: campaign.image_url,
-                start_at: DateTime::parse_from_rfc3339(&campaign.start_at)
-                    .unwrap_or_else(|_| DateTime::parse_from_rfc3339("2000-01-01T00:00:00Z").unwrap())
-                    .with_timezone(&Utc),
-                end_at: DateTime::parse_from_rfc3339(&campaign.end_at)
-                    .unwrap_or_else(|_| DateTime::parse_from_rfc3339("2099-12-31T23:59:59Z").unwrap())
-                    .with_timezone(&Utc),
-                time_based_drops,
-                is_account_connected: true, // User campaigns are always connected
-            });
+        // Check if data and currentUser exist
+        if response_json["data"].is_null() {
+            println!("⚠️ Response data is null");
+            return Err(anyhow::anyhow!(
+                "Unable to fetch drops data. This is likely due to client ID mismatch."
+            ));
+        }
+        
+        if response_json["data"]["currentUser"].is_null() {
+            println!("⚠️ currentUser is null - token/client ID mismatch");
+            return Err(anyhow::anyhow!(
+                "Authentication mismatch: Token was issued for app client ID but drops API requires web client ID"
+            ));
         }
 
+        let mut result = Vec::new();
+        
+        // The response structure is different for the persisted query
+        let campaigns_array = response_json["data"]["currentUser"]["dropCampaigns"]
+            .as_array()
+            .unwrap_or(&Vec::new())
+            .to_vec();
+        
+        println!("📊 Raw campaigns response: {} campaigns found", campaigns_array.len());
+        
+        if !campaigns_array.is_empty() {
+            for campaign_json in &campaigns_array {
+                // Check campaign status - accept ACTIVE and UPCOMING campaigns
+                let status = campaign_json["status"].as_str().unwrap_or("");
+                
+                // Skip only EXPIRED campaigns
+                if status == "EXPIRED" {
+                    continue;
+                }
+
+                // Parse game info - handle null game gracefully
+                let game = &campaign_json["game"];
+                if game.is_null() {
+                    continue;
+                }
+                
+                let game_id = game["id"].as_str().unwrap_or("").to_string();
+                let game_name = game["displayName"].as_str()
+                    .or_else(|| game["name"].as_str())
+                    .unwrap_or("")
+                    .to_string();
+                
+                let image_url = game["boxArtURL"].as_str().unwrap_or("").to_string();
+
+                if game_name.is_empty() {
+                    continue;
+                }
+
+                // Parse allowed channels (ACL)
+                let mut allowed_channels = Vec::new();
+                let mut is_acl_based = false;
+                
+                if let Some(allow) = campaign_json["allow"].as_object() {
+                    if allow.get("isEnabled").and_then(|v| v.as_bool()).unwrap_or(false) {
+                        if let Some(channels) = allow["channels"].as_array() {
+                            is_acl_based = !channels.is_empty();
+                            for channel in channels {
+                                if let (Some(id), Some(name)) = (
+                                    channel["id"].as_str(),
+                                    channel["name"].as_str()
+                                ) {
+                                    allowed_channels.push(AllowedChannel {
+                                        id: id.to_string(),
+                                        name: name.to_string(),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Parse time-based drops
+                let mut time_based_drops: Vec<TimeBasedDrop> = Vec::new();
+                if let Some(drops) = campaign_json["timeBasedDrops"].as_array() {
+                    for drop_json in drops {
+                        if let Ok(mut drop) = serde_json::from_value::<TimeBasedDrop>(drop_json.clone()) {
+                            if let Some(progress_json) = drop_json.get("self") {
+                                if let Ok(progress) = serde_json::from_value::<DropProgress>(progress_json.clone()) {
+                                    drop.progress = Some(progress);
+                                }
+                            }
+                            time_based_drops.push(drop);
+                        }
+                    }
+                }
+
+                // Parse dates
+                let start_at = campaign_json["startAt"].as_str()
+                    .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .unwrap_or_else(|| Utc::now());
+                    
+                let end_at = campaign_json["endAt"].as_str()
+                    .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .unwrap_or_else(|| Utc::now() + chrono::Duration::days(365));
+
+                // Check if campaign is active (not upcoming or expired)
+                let now = Utc::now();
+                if start_at > now || end_at < now {
+                    continue;
+                }
+
+                result.push(DropCampaign {
+                    id: campaign_json["id"].as_str().unwrap_or("").to_string(),
+                    name: campaign_json["name"].as_str().unwrap_or("").to_string(),
+                    game_id,
+                    game_name,
+                    description: campaign_json["description"].as_str().unwrap_or("").to_string(),
+                    image_url,
+                    start_at,
+                    end_at,
+                    time_based_drops,
+                    is_account_connected: true,
+                    allowed_channels,
+                    is_acl_based,
+                });
+            }
+        }
+
+        println!("📊 Returning {} total campaigns (unfiltered)", result.len());
         Ok(result)
+    }
+
+    /// Updates the service's internal state with fresh campaign data and calculates progress.
+    pub async fn update_campaigns_and_progress(&self, campaigns: &[DropCampaign]) {
+        let mut progress_map = self.drop_progress.write().await;
+        progress_map.clear(); // Clear old progress before updating
+
+        for campaign in campaigns {
+            for drop in &campaign.time_based_drops {
+                if let Some(mut progress) = drop.progress.clone() {
+                    progress.campaign_id = campaign.id.clone();
+                    progress.drop_id = drop.id.clone();
+                    progress_map.insert(drop.id.clone(), progress);
+                }
+            }
+        }
+    }
+    
+    /// Get active campaigns with settings filters applied (for mining)
+    pub async fn get_active_campaigns(&self) -> Result<Vec<DropCampaign>> {
+        // First get all campaigns from the API
+        let all_campaigns = self.fetch_all_active_campaigns_from_api().await?;
+
+        // Update internal progress map (this is a simplified version of the original logic)
+        self.update_campaigns_and_progress(&all_campaigns).await;
+        
+        // Apply settings filters
+        let settings = self.settings.read().await;
+        let mut filtered_result = Vec::new();
+        
+        println!("📊 Applying filters to {} campaigns", all_campaigns.len());
+        
+        for campaign in all_campaigns {
+            // Skip excluded games
+            if settings.excluded_games.contains(&campaign.game_name) {
+                println!("  ⛔ Filtered out: {} (excluded)", campaign.game_name);
+                continue;
+            }
+            
+            // Apply priority mode filter
+            if settings.priority_mode == PriorityMode::PriorityOnly 
+                && !settings.priority_games.is_empty()
+                && !settings.priority_games.contains(&campaign.game_name) {
+                println!("  ⛔ Filtered out: {} (not in priority list)", campaign.game_name);
+                continue;
+            }
+            
+            println!("  ✅ Included: {} ({})", campaign.name, campaign.game_name);
+            filtered_result.push(campaign);
+        }
+        
+        println!("📊 Returning {} filtered campaigns", filtered_result.len());
+        Ok(filtered_result)
     }
 
 
     pub async fn claim_drop(&self, drop_id: &str) -> Result<()> {
-        let token = TwitchService::get_token().await?;
+        let token = DropsAuthService::get_token().await?;
 
         let mutation = r#"
         mutation ClaimDrop($input: ClaimDropRewardsInput!) {
@@ -267,9 +453,7 @@ impl DropsService {
 
         let response = self.client
             .post("https://gql.twitch.tv/gql")
-            .header("Client-Id", CLIENT_ID)
-            .header(AUTHORIZATION, format!("OAuth {}", token))
-            .header(ACCEPT, "application/json")
+            .headers(self.create_gql_headers(&token))
             .json(&serde_json::json!({
                 "query": mutation,
                 "variables": {
@@ -298,7 +482,7 @@ impl DropsService {
     }
 
     pub async fn check_channel_points(&self, channel_id: &str, channel_name: &str) -> Result<Option<ChannelPointsClaim>> {
-        let token = TwitchService::get_token().await?;
+        let token = DropsAuthService::get_token().await?;
 
         let query = r#"
         query ChannelPointsContext($channelLogin: String!) {
@@ -320,9 +504,7 @@ impl DropsService {
 
         let response = self.client
             .post("https://gql.twitch.tv/gql")
-            .header("Client-Id", CLIENT_ID)
-            .header(AUTHORIZATION, format!("OAuth {}", token))
-            .header(ACCEPT, "application/json")
+            .headers(self.create_gql_headers(&token))
             .json(&serde_json::json!({
                 "query": query,
                 "variables": {
@@ -369,7 +551,7 @@ impl DropsService {
     }
 
     pub async fn claim_channel_points(&self, channel_id: &str, _channel_name: &str, claim_id: &str) -> Result<i32> {
-        let token = TwitchService::get_token().await?;
+        let token = DropsAuthService::get_token().await?;
 
         let mutation = r#"
         mutation ClaimCommunityPoints($input: ClaimCommunityPointsInput!) {
@@ -384,9 +566,7 @@ impl DropsService {
 
         let response = self.client
             .post("https://gql.twitch.tv/gql")
-            .header("Client-Id", CLIENT_ID)
-            .header(AUTHORIZATION, format!("OAuth {}", token))
-            .header(ACCEPT, "application/json")
+            .headers(self.create_gql_headers(&token))
             .json(&serde_json::json!({
                 "query": mutation,
                 "variables": {
@@ -441,10 +621,19 @@ impl DropsService {
             .filter(|p| !p.is_claimed && p.current_minutes_watched > 0)
             .count() as i32;
 
+        // Fetch active campaigns count
+        let active_campaigns = match self.fetch_all_active_campaigns_from_api().await {
+            Ok(campaigns) => campaigns.len() as i32,
+            Err(e) => {
+                eprintln!("Failed to fetch campaigns for statistics: {}", e);
+                0
+            }
+        };
+
         DropsStatistics {
             total_drops_claimed: claimed_drops.len() as i32,
             total_channel_points_earned,
-            active_campaigns: 0, // Will be updated when campaigns are fetched
+            active_campaigns,
             drops_in_progress,
             recent_claims: claimed_drops.iter().rev().take(10).cloned().collect(),
             channel_points_history: channel_points_history.iter().rev().take(20).cloned().collect(),
@@ -629,6 +818,35 @@ impl DropsService {
         let mut current = self.current_channel.write().await;
         *current = Some((channel_id, channel_name));
     }
+    
+    /// Update drop progress from WebSocket events
+    pub async fn update_drop_progress_from_websocket(&self, drop_id: String, current_minutes: i32, required_minutes: i32) {
+        let mut progress_map = self.drop_progress.write().await;
+        
+        if let Some(progress) = progress_map.get_mut(&drop_id) {
+            // Update existing progress
+            progress.current_minutes_watched = current_minutes;
+            progress.required_minutes_watched = required_minutes;
+            progress.last_updated = Utc::now();
+            
+            println!("✅ Updated drop progress from WebSocket: {}/{} minutes for drop {}", 
+                current_minutes, required_minutes, drop_id);
+        } else {
+            // Create new progress entry if it doesn't exist
+            let progress = DropProgress {
+                campaign_id: String::new(), // Will be filled in later
+                drop_id: drop_id.clone(),
+                current_minutes_watched: current_minutes,
+                required_minutes_watched: required_minutes,
+                is_claimed: false,
+                last_updated: Utc::now(),
+            };
+            progress_map.insert(drop_id.clone(), progress);
+            
+            println!("✅ Created new drop progress from WebSocket: {}/{} minutes for drop {}", 
+                current_minutes, required_minutes, drop_id);
+        }
+    }
 
     // Internal helper methods that don't require &self
     async fn check_channel_points_internal(
@@ -637,7 +855,17 @@ impl DropsService {
         channel_name: &str,
         balances: &Arc<RwLock<HashMap<String, ChannelPointsBalance>>>,
     ) -> Result<Option<ChannelPointsClaim>> {
-        let token = TwitchService::get_token().await?;
+        let token = DropsAuthService::get_token().await?;
+
+        // Create headers similar to the main methods
+        let mut headers = HeaderMap::new();
+        headers.insert("Client-ID", HeaderValue::from_static(CLIENT_ID));
+        headers.insert(ACCEPT, HeaderValue::from_static("*/*"));
+        headers.insert("Accept-Language", HeaderValue::from_static("en-US"));
+        headers.insert("Accept-Encoding", HeaderValue::from_static("gzip"));
+        headers.insert(AUTHORIZATION, HeaderValue::from_str(&format!("OAuth {}", token)).unwrap());
+        headers.insert("Origin", HeaderValue::from_static(CLIENT_URL));
+        headers.insert("Referer", HeaderValue::from_static(CLIENT_URL));
 
         let query = r#"
         query ChannelPointsContext($channelLogin: String!) {
@@ -659,9 +887,7 @@ impl DropsService {
 
         let response = client
             .post("https://gql.twitch.tv/gql")
-            .header("Client-Id", CLIENT_ID)
-            .header(AUTHORIZATION, format!("OAuth {}", token))
-            .header(ACCEPT, "application/json")
+            .headers(headers)
             .json(&serde_json::json!({
                 "query": query,
                 "variables": {
@@ -713,7 +939,17 @@ impl DropsService {
         _channel_name: &str,
         claim_id: &str,
     ) -> Result<i32> {
-        let token = TwitchService::get_token().await?;
+        let token = DropsAuthService::get_token().await?;
+
+        // Create headers similar to the main methods
+        let mut headers = HeaderMap::new();
+        headers.insert("Client-ID", HeaderValue::from_static(CLIENT_ID));
+        headers.insert(ACCEPT, HeaderValue::from_static("*/*"));
+        headers.insert("Accept-Language", HeaderValue::from_static("en-US"));
+        headers.insert("Accept-Encoding", HeaderValue::from_static("gzip"));
+        headers.insert(AUTHORIZATION, HeaderValue::from_str(&format!("OAuth {}", token)).unwrap());
+        headers.insert("Origin", HeaderValue::from_static(CLIENT_URL));
+        headers.insert("Referer", HeaderValue::from_static(CLIENT_URL));
 
         let mutation = r#"
         mutation ClaimCommunityPoints($input: ClaimCommunityPointsInput!) {
@@ -728,9 +964,7 @@ impl DropsService {
 
         let response = client
             .post("https://gql.twitch.tv/gql")
-            .header("Client-Id", CLIENT_ID)
-            .header(AUTHORIZATION, format!("OAuth {}", token))
-            .header(ACCEPT, "application/json")
+            .headers(headers)
             .json(&serde_json::json!({
                 "query": mutation,
                 "variables": {
@@ -761,7 +995,17 @@ impl DropsService {
         client: &Client,
         drop_progress: &Arc<RwLock<HashMap<String, DropProgress>>>,
     ) -> Result<Vec<DropCampaign>> {
-        let token = TwitchService::get_token().await?;
+        let token = DropsAuthService::get_token().await?;
+        
+        // Create headers similar to the main methods
+        let mut headers = HeaderMap::new();
+        headers.insert("Client-ID", HeaderValue::from_static(CLIENT_ID));
+        headers.insert(ACCEPT, HeaderValue::from_static("*/*"));
+        headers.insert("Accept-Language", HeaderValue::from_static("en-US"));
+        headers.insert("Accept-Encoding", HeaderValue::from_static("gzip"));
+        headers.insert(AUTHORIZATION, HeaderValue::from_str(&format!("OAuth {}", token)).unwrap());
+        headers.insert("Origin", HeaderValue::from_static(CLIENT_URL));
+        headers.insert("Referer", HeaderValue::from_static(CLIENT_URL));
         
         let query = r#"
         query DropCampaigns {
@@ -800,9 +1044,7 @@ impl DropsService {
 
         let response = client
             .post("https://gql.twitch.tv/gql")
-            .header("Client-Id", CLIENT_ID)
-            .header(AUTHORIZATION, format!("OAuth {}", token))
-            .header(ACCEPT, "application/json")
+            .headers(headers)
             .json(&serde_json::json!({
                 "query": query,
                 "variables": {}
@@ -856,6 +1098,7 @@ impl DropsService {
                                 image_url: edge.benefit.image_asset_url.clone(),
                             })
                             .collect(),
+                        progress: None,
                     }
                 })
                 .collect();
@@ -875,6 +1118,8 @@ impl DropsService {
                     .with_timezone(&Utc),
                 time_based_drops,
                 is_account_connected: true, // Internal campaigns are always connected
+                allowed_channels: Vec::new(),
+                is_acl_based: false,
             });
         }
 
@@ -886,7 +1131,17 @@ impl DropsService {
         drop_id: &str,
         drop_progress: &Arc<RwLock<HashMap<String, DropProgress>>>,
     ) -> Result<()> {
-        let token = TwitchService::get_token().await?;
+        let token = DropsAuthService::get_token().await?;
+
+        // Create headers similar to the main methods
+        let mut headers = HeaderMap::new();
+        headers.insert("Client-ID", HeaderValue::from_static(CLIENT_ID));
+        headers.insert(ACCEPT, HeaderValue::from_static("*/*"));
+        headers.insert("Accept-Language", HeaderValue::from_static("en-US"));
+        headers.insert("Accept-Encoding", HeaderValue::from_static("gzip"));
+        headers.insert(AUTHORIZATION, HeaderValue::from_str(&format!("OAuth {}", token)).unwrap());
+        headers.insert("Origin", HeaderValue::from_static(CLIENT_URL));
+        headers.insert("Referer", HeaderValue::from_static(CLIENT_URL));
 
         let mutation = r#"
         mutation ClaimDrop($input: ClaimDropRewardsInput!) {
@@ -898,9 +1153,7 @@ impl DropsService {
 
         let response = client
             .post("https://gql.twitch.tv/gql")
-            .header("Client-Id", CLIENT_ID)
-            .header(AUTHORIZATION, format!("OAuth {}", token))
-            .header(ACCEPT, "application/json")
+            .headers(headers)
             .json(&serde_json::json!({
                 "query": mutation,
                 "variables": {

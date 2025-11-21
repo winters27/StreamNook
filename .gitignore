@@ -5,6 +5,9 @@ node_modules/
 dist/
 src-tauri/target/
 
+# Drops folder (local mining tool)
+drops/
+
 # Update artifacts
 update_streamnook.bat
 StreamNook_new.exe

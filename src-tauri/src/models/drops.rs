@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
+use std::collections::HashSet;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DropCampaign {
@@ -14,6 +15,16 @@ pub struct DropCampaign {
     pub time_based_drops: Vec<TimeBasedDrop>,
     #[serde(default)]
     pub is_account_connected: bool,
+    #[serde(default)]
+    pub allowed_channels: Vec<AllowedChannel>,
+    #[serde(default)]
+    pub is_acl_based: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AllowedChannel {
+    pub id: String,
+    pub name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -22,6 +33,8 @@ pub struct TimeBasedDrop {
     pub name: String,
     pub required_minutes_watched: i32,
     pub benefit_edges: Vec<DropBenefit>,
+    #[serde(rename = "self")]
+    pub progress: Option<DropProgress>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,6 +111,19 @@ pub struct DropsSettings {
     pub notify_on_drop_claimed: bool,
     pub notify_on_points_claimed: bool,
     pub check_interval_seconds: u64,
+    // Mining-specific settings
+    pub auto_mining_enabled: bool,
+    pub priority_games: Vec<String>,
+    pub excluded_games: HashSet<String>,
+    pub priority_mode: PriorityMode,
+    pub watch_interval_seconds: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum PriorityMode {
+    PriorityOnly,    // Only mine priority games
+    EndingSoonest,   // Prioritize campaigns ending soon
+    LowAvailFirst,   // Prioritize low availability campaigns
 }
 
 impl Default for DropsSettings {
@@ -107,8 +133,66 @@ impl Default for DropsSettings {
             auto_claim_channel_points: true,
             notify_on_drop_available: true,
             notify_on_drop_claimed: true,
-            notify_on_points_claimed: false, // Less noisy by default
-            check_interval_seconds: 60, // Check every minute
+            notify_on_points_claimed: false,
+            check_interval_seconds: 60,
+            // Mining defaults
+            auto_mining_enabled: false,
+            priority_games: Vec::new(),
+            excluded_games: HashSet::new(),
+            priority_mode: PriorityMode::PriorityOnly,
+            watch_interval_seconds: 20,
+        }
+    }
+}
+
+// Channel information for mining
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MiningChannel {
+    pub id: String,
+    #[serde(rename = "display_name")]
+    pub name: String,
+    pub game_id: String,
+    pub game_name: String,
+    #[serde(rename = "viewer_count")]
+    pub viewers: i32,
+    pub drops_enabled: bool,
+    #[serde(rename = "is_live")]
+    pub is_online: bool,
+    pub is_acl_based: bool,
+}
+
+// Mining status information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MiningStatus {
+    pub is_mining: bool,
+    pub current_channel: Option<MiningChannel>,
+    pub current_campaign: Option<String>,
+    pub current_drop: Option<CurrentDropInfo>,
+    pub eligible_channels: Vec<MiningChannel>,
+    pub last_update: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CurrentDropInfo {
+    pub drop_id: String,
+    pub drop_name: String,
+    pub campaign_name: String,
+    pub game_name: String,
+    pub current_minutes: i32,
+    pub required_minutes: i32,
+    pub progress_percentage: f32,
+    pub estimated_completion: Option<DateTime<Utc>>,
+}
+
+impl Default for MiningStatus {
+    fn default() -> Self {
+        Self {
+            is_mining: false,
+            current_channel: None,
+            current_campaign: None,
+            current_drop: None,
+            eligible_channels: Vec::new(),
+            last_update: Utc::now(),
         }
     }
 }

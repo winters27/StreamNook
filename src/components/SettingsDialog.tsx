@@ -4,12 +4,11 @@ import { useState, useEffect } from 'react';
 import GeneralSettings from './settings/GeneralSettings';
 import PlayerSettings from './settings/PlayerSettings';
 import ChatSettings from './settings/ChatSettings';
-import DropsSettings from './settings/DropsSettings';
 import IntegrationsSettings from './settings/IntegrationsSettings';
 import CacheSettings from './settings/CacheSettings';
 import NotificationsSettings from './settings/NotificationsSettings';
 
-type Tab = 'General' | 'Player' | 'Chat' | 'Drops' | 'Integrations' | 'Notifications' | 'Cache';
+type Tab = 'General' | 'Player' | 'Chat' | 'Integrations' | 'Notifications' | 'Cache';
 
 const SettingsDialog = () => {
   const { settings, updateSettings, isSettingsOpen, closeSettings } = useAppStore();
@@ -145,7 +144,7 @@ const SettingsDialog = () => {
           {/* Tabs Navigation */}
           <div className="w-1/4 pr-6 border-r border-borderSubtle">
             <nav className="flex flex-col space-y-2">
-              {(['General', 'Player', 'Chat', 'Drops', 'Integrations', 'Notifications', 'Cache'] as Tab[]).map((tab) => (
+              {(['General', 'Player', 'Chat', 'Integrations', 'Notifications', 'Cache'] as Tab[]).map((tab) => (
                 <button
                   key={tab}
                   onClick={() => setActiveTab(tab)}
@@ -173,7 +172,6 @@ const SettingsDialog = () => {
             )}
             {activeTab === 'Player' && <PlayerSettings />}
             {activeTab === 'Chat' && <ChatSettings />}
-            {activeTab === 'Drops' && <DropsSettings />}
             {activeTab === 'Integrations' && <IntegrationsSettings />}
             {activeTab === 'Notifications' && <NotificationsSettings />}
             {activeTab === 'Cache' && <CacheSettings />}
