@@ -82,14 +82,12 @@ Built from the ground up with Rust and React, StreamNook delivers a buttery-smoo
 - Universal caching system for blazing-fast load times
 - Granular settings for every aspect of the app
 - Custom quality presets
-- Chat filters and moderation tools
-- Keyboard shortcuts for everything
 
 ### Lightweight Architecture
 - Built with Rust for maximum performance
 - React frontend for smooth, responsive UI
 - Native desktop integration via Tauri
-- Minimal memory footprint (~100MB vs. browser's 1GB+)
+- Minimal memory footprint (~500MB vs. browser's 1.5GB+)
 - No Electron bloat in sight
 
 ---
@@ -177,14 +175,13 @@ We're constantly improving StreamNook. Here's what's on the horizon:
 ### In Progress
 - Multi-stream viewing (watch multiple streams simultaneously)
 - VOD playback with chat replay
-- Enhanced drops campaign filtering and management
+- Suite of shortcuts
+- Moderation tools
 
 ### Planned
 - Clip creation and management
 - Custom themes and UI customization
-- Stream recording capabilities
-- Predictions and polls integration
-- Advanced chat moderation tools
+- Predictions and polls integration (already auto-farm with channel points mining though)
 - Stream analytics and statistics
 
 ### Recently Completed
