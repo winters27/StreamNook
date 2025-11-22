@@ -18,7 +18,8 @@
     "release:major": "npm run version:major && npm run tauri build",
     "release:patch:auto": "npm run version:patch:auto && npm run tauri build",
     "release:minor:auto": "npm run version:minor:auto && npm run tauri build",
-    "release:major:auto": "npm run version:major:auto && npm run tauri build"
+    "release:major:auto": "npm run version:major:auto && npm run tauri build",
+    "ship": "powershell -ExecutionPolicy Bypass -File ./scripts/release_manager.ps1"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.9.0",
