@@ -3,7 +3,7 @@
   <img src="src-tauri/images/logo.png" alt="Stream Nook Logo" width="200"/>
 </p>
 <div style="margin: 20px 0;">
-  <h1>🎮 StreamNook</h1>
+  <h1>StreamNook</h1>
 </div>
 
 <div align="center">
