@@ -4,6 +4,7 @@ node_modules/
 # Production
 dist/
 src-tauri/target/
+scripts/release_manager.ps1
 
 # Drops folder (local mining tool)
 drops/
