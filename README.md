@@ -43,41 +43,49 @@ Built from the ground up with Rust and React, StreamNook delivers a buttery-smoo
 
 ---
 
-## ✨ Key Features
+## Key Features
 
-**Native Video Playback**
+### Native Video Playback
 - Built-in player powered by Video.js and Streamlink
 - Adaptive quality selection (because your internet isn't always cooperating)
 - Picture-in-picture support for true multitasking
 - Low-latency streaming that keeps you in sync with chat
 
-**First-Class Chat Experience**
+### First-Class Chat Experience
 - Full Twitch chat integration with native IRC support
 - 7TV, BetterTTV, and FrankerFaceZ emote support (all the emotes, all the time)
 - Badge rendering for subs, mods, and VIPs
 - Third-party badge integration (show off those achievements)
 - Smooth scrolling and message rendering that doesn't stutter
 
-**Live Notifications**
+### Automated Farming & Rewards
+- **Auto Channel Points Mining** - Automatically collect channel points from your favorite streamers
+- **Auto Drops Farming** - Never miss a Twitch Drop again with automated campaign tracking
+- **Channel Points Leaderboard** - Track your channel points across all streamers you watch
+- **Twitch Inventory Viewer** - View and manage all your earned drops and rewards in one place
+- Set it and forget it - StreamNook handles the grinding while you sleep
+
+### Live Notifications
 - Get notified when your favorite streamers go live
 - Customizable notification settings
 - Stream preview thumbnails
 - Quick-launch to any live channel
 
-**Rich Integrations**
+### Rich Integrations
 - Discord Rich Presence (flex what you're watching)
 - Profile cards with detailed streamer stats
 - Subscribe overlay for easy sub management
 - Badge collection and display system
+- 7TV cosmetics support
 
-**Power User Features**
+### Power User Features
 - Universal caching system for blazing-fast load times
 - Granular settings for every aspect of the app
 - Custom quality presets
 - Chat filters and moderation tools
 - Keyboard shortcuts for everything
 
-**Lightweight Architecture**
+### Lightweight Architecture
 - Built with Rust for maximum performance
 - React frontend for smooth, responsive UI
 - Native desktop integration via Tauri
@@ -86,7 +94,27 @@ Built from the ground up with Rust and React, StreamNook delivers a buttery-smoo
 
 ---
 
-## 🚀 Installation
+## Screenshots
+
+<div align="center">
+
+### Main Interface
+> *Coming soon - Add your screenshot here*
+
+### Chat Experience
+> *Coming soon - Add your screenshot here*
+
+### Drops & Inventory Management
+> *Coming soon - Add your screenshot here*
+
+### Channel Points Leaderboard
+> *Coming soon - Add your screenshot here*
+
+</div>
+
+---
+
+## Installation
 
 ### Prerequisites
 
@@ -104,7 +132,7 @@ That's it. No configuration files to edit, no command-line wizardry required.
 
 ---
 
-## 🛠️ Tech Stack
+## Tech Stack
 
 StreamNook is built on a modern, performance-first stack:
 
@@ -133,28 +161,38 @@ StreamNook is built on a modern, performance-first stack:
 
 ---
 
-## 🎯 Roadmap
+## Roadmap
 
-We're constantly improving StreamNook. Here's what's cooking:
+We're constantly improving StreamNook. Here's what's on the horizon:
 
-- Drops automation and tracking
-- Channel points automation
+### In Progress
 - Multi-stream viewing (watch multiple streams simultaneously)
-- Clip creation and management
 - VOD playback with chat replay
+- Enhanced drops campaign filtering and management
+
+### Planned
+- Clip creation and management
 - Custom themes and UI customization
 - Stream recording capabilities
 - Predictions and polls integration
+- Advanced chat moderation tools
+- Stream analytics and statistics
+
+### Recently Completed
+- Drops automation and tracking
+- Channel points automation
+- Inventory management system
+- Channel points leaderboard
 
 ---
 
-## 🤝 Contributing
+## Contributing
 
 StreamNook is open source and we welcome contributions! Whether it's bug reports, feature requests, documentation improvements, or code contributions—we'd love to have you involved.
 
 ---
 
-## 🙏 Credits
+## Credits
 
 StreamNook stands on the shoulders of giants:
 
@@ -168,7 +206,7 @@ Special thanks to the open-source community for making projects like this possib
 
 ---
 
-## 📄 License
+## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
