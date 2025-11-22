@@ -99,16 +99,25 @@ Built from the ground up with Rust and React, StreamNook delivers a buttery-smoo
 <div align="center">
 
 ### Main Interface
-> *Coming soon - Add your screenshot here*
+<img src="src-tauri/images/watching.jpg" alt="Watching a stream" width="800">
 
-### Chat Experience
-> *Coming soon - Add your screenshot here*
+### Live Following
+<img src="src-tauri/images/following_live.jpg" alt="Live Following" width="800">
 
 ### Drops & Inventory Management
-> *Coming soon - Add your screenshot here*
+<p>
+  <img src="src-tauri/images/drops.png" alt="Drops" width="400">
+  <img src="src-tauri/images/drops_inventory.png" alt="Drops Inventory" width="400">
+</p>
+<p>
+    <img src="src-tauri/images/drops_stats.png" alt="Drops Stats" width="800">
+</p>
 
-### Channel Points Leaderboard
-> *Coming soon - Add your screenshot here*
+### Badges
+<p>
+    <img src="src-tauri/images/badges.png" alt="Badges" width="400">
+    <img src="src-tauri/images/badges_info.png" alt="Badge Info" width="400">
+</p>
 
 </div>
 

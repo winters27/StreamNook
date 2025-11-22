@@ -1,0 +1,32 @@
+<svg width="120" height="115" viewBox="0 0 120 115" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <symbol id="penrose-cube" overflow="visible">
+      <path d="M0,0 L7.5,-13 L15,0 L7.5,13 Z" 
+            fill="rgb(151, 177, 185)" fill-opacity="0.6" 
+            stroke="rgb(151, 177, 185)" stroke-opacity="0.6" stroke-width="1" stroke-linejoin="round"/>
+      
+      <path d="M0,0 L-15,0 L-7.5,-13 L7.5,-13 Z" 
+            fill="rgb(151, 177, 185)" fill-opacity="0.8" 
+            stroke="rgb(151, 177, 185)" stroke-opacity="0.6" stroke-width="1" stroke-linejoin="round"/>
+      
+      <path d="M0,0 L7.5,13 L-7.5,13 L-15,0 Z" 
+            fill="rgb(151, 177, 185)" fill-opacity="0.3" 
+            stroke="rgb(151, 177, 185)" stroke-opacity="0.6" stroke-width="1" stroke-linejoin="round"/>
+    </symbol>
+  </defs>
+
+  <g transform="translate(10, 0)">
+    <use href="#penrose-cube" x="36.67" y="90" />
+    <use href="#penrose-cube" x="63.33" y="90" />
+
+    <use href="#penrose-cube" x="90" y="90" />
+    <use href="#penrose-cube" x="76.67" y="66.91" />
+    <use href="#penrose-cube" x="63.33" y="43.81" />
+
+    <use href="#penrose-cube" x="50" y="20.72" />
+    <use href="#penrose-cube" x="36.67" y="43.81" />
+    <use href="#penrose-cube" x="23.33" y="66.91" />
+
+    <use href="#penrose-cube" x="10" y="90" />
+  </g>
+</svg>
