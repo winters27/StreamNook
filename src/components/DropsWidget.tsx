@@ -1124,7 +1124,7 @@ export default function DropsWidget() {
             {/* Channel Points Leaderboard */}
             <div className="bg-backgroundSecondary rounded-lg p-6 border border-borderLight">
               <ChannelPointsLeaderboard 
-                onStreamClick={(channelName) => {
+                onStreamClick={(_channelName) => {
                   // Close the drops overlay and start the stream
                   useAppStore.getState().setShowDropsOverlay(false);
                 }}
