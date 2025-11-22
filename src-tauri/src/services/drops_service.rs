@@ -451,6 +451,7 @@ impl DropsService {
                 is_account_connected,
                 allowed_channels,
                 is_acl_based,
+                details_url: None,
             };
 
             items.push(InventoryItem {
