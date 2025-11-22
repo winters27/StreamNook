@@ -9,3 +9,4 @@ pub mod settings;
 pub mod cache;
 pub mod drops;
 pub mod universal_cache;
+pub mod cosmetics_cache;

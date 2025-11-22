@@ -8,6 +8,7 @@ use crate::models::drops::*;
 use crate::services::drops_service::DropsService;
 use crate::services::drops_auth_service::DropsAuthService;
 use crate::services::drops_websocket_service::DropsWebSocketService;
+use crate::services::channel_points_service::ChannelPointsService;
 use base64::{Engine as _, engine::general_purpose};
 use regex::Regex;
 use serde_json::json;
@@ -18,21 +19,31 @@ const CLIENT_ID: &str = "kd1unb4b3q4t58fwlpcbzcbnm76a8fp";
 pub struct MiningService {
     client: Client,
     drops_service: Arc<tokio::sync::Mutex<DropsService>>,
+    channel_points_service: Arc<tokio::sync::Mutex<ChannelPointsService>>,
     mining_status: Arc<RwLock<MiningStatus>>,
     eligible_channels: Arc<RwLock<Vec<MiningChannel>>>,
     is_running: Arc<RwLock<bool>>,
     websocket_service: Arc<tokio::sync::Mutex<DropsWebSocketService>>,
+    cached_user_id: Arc<RwLock<Option<String>>>, // Cache user ID to avoid repeated validation calls
+    cached_spade_url: Arc<RwLock<Option<String>>>, // Cache spade URL to avoid repeated HTML fetches
 }
 
 impl MiningService {
     pub fn new(drops_service: Arc<tokio::sync::Mutex<DropsService>>) -> Self {
         Self {
-            client: Client::new(),
+            client: Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .connect_timeout(std::time::Duration::from_secs(10))
+                .build()
+                .unwrap_or_else(|_| Client::new()),
             drops_service,
+            channel_points_service: Arc::new(tokio::sync::Mutex::new(ChannelPointsService::new())),
             mining_status: Arc::new(RwLock::new(MiningStatus::default())),
             eligible_channels: Arc::new(RwLock::new(Vec::new())),
             is_running: Arc::new(RwLock::new(false)),
             websocket_service: Arc::new(tokio::sync::Mutex::new(DropsWebSocketService::new())),
+            cached_user_id: Arc::new(RwLock::new(None)),
+            cached_spade_url: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -61,6 +72,8 @@ impl MiningService {
         let mining_status = self.mining_status.clone();
         let eligible_channels = self.eligible_channels.clone();
         let is_running = self.is_running.clone();
+        let cached_user_id = self.cached_user_id.clone();
+        let cached_spade_url = self.cached_spade_url.clone();
         
         // Set up listener for WebSocket progress updates ONCE, outside the loop
         // The WebSocket updates the drops_service cache, and the regular polling will pick it up
@@ -93,27 +106,16 @@ impl MiningService {
         tokio::spawn(async move {
             println!("🎮 Starting manual campaign mining for campaign: {}", campaign_id);
             
-            loop {
-                // Check if mining should continue
-                let should_continue = *is_running.read().await;
-                if !should_continue {
-                    println!("🛑 Stopping campaign mining");
-                    break;
-                }
+            // Fetch campaigns ONCE at startup
+            let campaigns_result = {
+                let service = drops_service.lock().await;
+                service.fetch_all_active_campaigns_from_api().await
+            };
 
-                // Get current settings
-                let settings = drops_service.lock().await.get_settings().await;
-
-                // Fetch campaigns outside of the main lock
-                let campaigns_result = {
-                    let service = drops_service.lock().await;
-                    service.fetch_all_active_campaigns_from_api().await
-                };
-
-                match campaigns_result {
-                    Ok(all_campaigns) => {
-                        // Now, lock the service to update progress and get filtered campaigns
-                        let (target_campaign, settings) = {
+            match campaigns_result {
+                Ok(all_campaigns) => {
+                    // Now, lock the service to update progress and get filtered campaigns
+                    let (target_campaign, settings) = {
                             let service = drops_service.lock().await;
                             service.update_campaigns_and_progress(&all_campaigns).await;
                             let settings = service.get_settings().await;
@@ -134,7 +136,7 @@ impl MiningService {
 
                         if target_campaign.is_empty() {
                             println!("⚠️ Campaign {} not found or no longer active", campaign_id);
-                            break;
+                            return; // Exit the task
                         }
 
                         // Discover eligible channels for this specific campaign only
@@ -238,7 +240,7 @@ impl MiningService {
                                         },
                                         Err(e) => {
                                             eprintln!("❌ Failed to get token: {}", e);
-                                            continue;
+                                            return; // Exit the task
                                         }
                                     };
                                     
@@ -250,7 +252,7 @@ impl MiningService {
                                         },
                                         Err(e) => {
                                             eprintln!("❌ Failed to get user ID: {}", e);
-                                            continue;
+                                            return; // Exit the task
                                         }
                                     };
                                     
@@ -276,14 +278,19 @@ impl MiningService {
                                     let broadcast_id_clone = broadcast_id.clone();
                                     let token_clone = token.clone();
                                     let is_running_clone = is_running.clone();
-                                    let drops_service_clone = drops_service.clone();
                                     let mining_status_clone = mining_status.clone();
                                     let app_handle_clone = app_handle.clone();
                                     let target_campaign_clone = target_campaign.clone();
+                                    let eligible_channels_clone = eligible_channels.clone();
+                                    let cached_user_id_clone = cached_user_id.clone();
+                                    let cached_spade_url_clone = cached_spade_url.clone();
                                     
                                     tokio::spawn(async move {
+                                        let mut current_channel = best_channel_clone;
+                                        let mut current_broadcast_id = broadcast_id_clone;
                                         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
                                         let mut consecutive_failures = 0;
+                                        let mut channel_index = 0; // Track current channel index
                                         
                                         loop {
                                             // Check if still running
@@ -294,103 +301,75 @@ impl MiningService {
                                             
                                             // Send watch payload
                                             println!("📡 Sending watch payload...");
-                                            match Self::send_watch_payload(&client_clone, &best_channel_clone, &broadcast_id_clone, &token_clone).await {
+                                            match Self::send_watch_payload(&client_clone, &current_channel, &current_broadcast_id, &token_clone, &cached_user_id_clone, &cached_spade_url_clone).await {
                                                 Ok(true) => {
-                                                    println!("✅ Watch payload sent successfully");
+                                                    println!("✅ Watch payload sent successfully to {}", current_channel.name);
                                                     consecutive_failures = 0;
                                                     
-                                                    // Spawn a separate task for progress update to avoid blocking
-                                                    let drops_service_for_update = drops_service_clone.clone();
-                                                    let mining_status_for_update = mining_status_clone.clone();
-                                                    let best_channel_for_update = best_channel_clone.clone();
-                                                    let target_campaign_for_update = target_campaign_clone.clone();
-                                                    let app_handle_for_update = app_handle_clone.clone();
-                                                    
-                                                    tokio::spawn(async move {
-                                                        println!("🔄 Updating drop progress in background...");
-                                                        
-                                                        // Try to fetch drop progress with a shorter timeout
-                                                        match tokio::time::timeout(
-                                                            tokio::time::Duration::from_secs(5),
-                                                            async {
-                                                                drops_service_for_update.lock().await.get_drop_progress().await
-                                                            }
-                                                        ).await {
-                                                            Ok(drop_progress) => {
-                                                                if let Ok(mut status) = mining_status_for_update.try_write() {
-                                                                    if let Some(campaign) = Self::get_active_campaign_for_channel(&best_channel_for_update, &target_campaign_for_update) {
-                                                                        if let Some(drop) = campaign.time_based_drops.first() {
-                                                                            let current_minutes = drop_progress
-                                                                                .iter()
-                                                                                .find(|p| p.drop_id == drop.id)
-                                                                                .map(|p| p.current_minutes_watched)
-                                                                                .unwrap_or(0);
-                                                                            
-                                                                            let progress_percentage = 
-                                                                                (current_minutes as f32 / drop.required_minutes_watched as f32) * 100.0;
-                                                                            
-                                                                            let estimated_completion = if current_minutes > 0 && current_minutes < drop.required_minutes_watched {
-                                                                                let remaining_minutes = drop.required_minutes_watched - current_minutes;
-                                                                                Some(Utc::now() + Duration::minutes(remaining_minutes as i64))
-                                                                            } else {
-                                                                                None
-                                                                            };
-                                                                            
-                                                                            // Get the actual benefit name from the drop
-                                                                            let drop_name = if let Some(benefit) = drop.benefit_edges.first() {
-                                                                                benefit.name.clone()
-                                                                            } else {
-                                                                                drop.name.clone()
-                                                                            };
-                                                                            
-                                                                            status.current_drop = Some(CurrentDropInfo {
-                                                                                drop_id: drop.id.clone(),
-                                                                                drop_name,
-                                                                                campaign_name: campaign.name.clone(),
-                                                                                game_name: campaign.game_name.clone(),
-                                                                                current_minutes,
-                                                                                required_minutes: drop.required_minutes_watched,
-                                                                                progress_percentage,
-                                                                                estimated_completion,
-                                                                            });
-                                                                            
-                                                                            println!("📊 Drop progress: {}/{} minutes ({}%)", 
-                                                                                current_minutes, drop.required_minutes_watched, progress_percentage.round());
-                                                                        }
-                                                                    }
-                                                                    
-                                                                    status.last_update = Utc::now();
-                                                                    drop(status);
-                                                                    
-                                                                    if let Ok(current_status) = mining_status_for_update.try_read() {
-                                                                        let _ = app_handle_for_update.emit("mining-status-update", &current_status.clone());
-                                                                    }
-                                                                    
-                                                                    println!("✅ Drop progress updated");
-                                                                } else {
-                                                                    println!("⚠️ Could not acquire lock for status update");
-                                                                }
-                                                            }
-                                                            Err(_) => {
-                                                                println!("⚠️ Timeout fetching drop progress (5s)");
-                                                            }
-                                                        }
-                                                    });
-                                                },
-                                                Ok(false) => {
-                                                    println!("⚠️ Watch payload failed");
-                                                    consecutive_failures += 1;
-                                                    if consecutive_failures >= 3 {
-                                                        println!("❌ Too many consecutive failures, stopping mining");
-                                                        break;
+                                                    // Update the last_update timestamp
+                                                    if let Ok(mut status) = mining_status_clone.try_write() {
+                                                        status.last_update = Utc::now();
                                                     }
                                                 },
-                                                Err(e) => {
-                                                    eprintln!("❌ Failed to send watch payload: {}", e);
+                                                Ok(false) | Err(_) => {
                                                     consecutive_failures += 1;
+                                                    println!("⚠️ Watch payload failed for {} (failure {}/3)", current_channel.name, consecutive_failures);
+                                                    
                                                     if consecutive_failures >= 3 {
-                                                        println!("❌ Too many consecutive failures, stopping mining");
-                                                        break;
+                                                        println!("❌ Channel {} failed 3 times, attempting to switch...", current_channel.name);
+                                                        
+                                                        // Get the list of eligible channels
+                                                        let channels = eligible_channels_clone.read().await.clone();
+                                                        
+                                                        // Try to switch to another channel
+                                                        match Self::try_switch_channel(
+                                                            &client_clone,
+                                                            &token_clone,
+                                                            &channels,
+                                                            &current_channel.id,
+                                                            channel_index,
+                                                        ).await {
+                                                            Some((new_channel, new_broadcast_id, new_index)) => {
+                                                                let old_channel_name = current_channel.name.clone();
+                                                                current_channel = new_channel.clone();
+                                                                current_broadcast_id = new_broadcast_id;
+                                                                channel_index = new_index;
+                                                                consecutive_failures = 0;
+                                                                
+                                                                // Clear cached user ID when switching channels
+                                                                {
+                                                                    let mut cached = cached_user_id_clone.write().await;
+                                                                    *cached = None;
+                                                                    println!("🗑️ Cleared cached user ID on channel switch");
+                                                                }
+                                                                
+                                                                // Update mining status with new channel
+                                                                if let Ok(mut status) = mining_status_clone.try_write() {
+                                                                    status.current_channel = Some(new_channel.clone());
+                                                                    status.last_update = Utc::now();
+                                                                    
+                                                                    // Update campaign if needed
+                                                                    if let Some(campaign) = Self::get_active_campaign_for_channel(&new_channel, &target_campaign_clone) {
+                                                                        status.current_campaign = Some(campaign.name.clone());
+                                                                    }
+                                                                    
+                                                                    let current_status = status.clone();
+                                                                    drop(status);
+                                                                    let _ = app_handle_clone.emit("mining-status-update", &current_status);
+                                                                    let _ = app_handle_clone.emit("channel-switched", json!({
+                                                                        "from": old_channel_name,
+                                                                        "to": new_channel.name,
+                                                                        "reason": "offline_or_errors"
+                                                                    }));
+                                                                }
+                                                                
+                                                                println!("✅ Successfully switched to {}", new_channel.name);
+                                                            },
+                                                            None => {
+                                                                println!("❌ No alternative channels available, stopping mining");
+                                                                break;
+                                                            }
+                                                        }
                                                     }
                                                 }
                                             }
@@ -400,90 +379,17 @@ impl MiningService {
                                         }
                                     });
                                     
-                                    println!("🔍 DEBUG: About to fetch progress for manual campaign mining");
+                                    // WebSocket will handle all progress updates in real-time
+                                    // No need for periodic polling - this eliminates unnecessary API calls
                                     
-                                     // Refresh drop progress
-                                     println!("🔄 Fetching latest drop progress from Twitch API...");
-                                     
-                                     // Fetch campaigns outside the lock
-                                     let campaigns_result = {
-                                         let service = drops_service.lock().await;
-                                         service.fetch_all_active_campaigns_from_api().await
-                                     };
-
-                                     match campaigns_result {
-                                         Ok(campaigns) => {
-                                            // Lock to update progress and get the latest state
-                                            let drop_progress = {
-                                                let service = drops_service.lock().await;
-                                                service.update_campaigns_and_progress(&campaigns).await;
-                                                service.get_drop_progress().await
-                                            };
-
-                                             let mut status = mining_status.write().await;
-                                            
-                                            println!("📋 Retrieved {} drop progress entries", drop_progress.len());
-                                            
-                                            if let Some(campaign) = Self::get_active_campaign_for_channel(&best_channel, &target_campaign) {
-                                                if let Some(drop) = campaign.time_based_drops.first() {
-                                                    let current_minutes = drop_progress
-                                                        .iter()
-                                                        .find(|p| p.drop_id == drop.id)
-                                                        .map(|p| p.current_minutes_watched)
-                                                        .unwrap_or(0);
-                                                    
-                                                    let progress_percentage = 
-                                                        (current_minutes as f32 / drop.required_minutes_watched as f32) * 100.0;
-                                                    
-                                                    let estimated_completion = if current_minutes > 0 {
-                                                        let remaining_minutes = drop.required_minutes_watched - current_minutes;
-                                                        Some(Utc::now() + Duration::minutes(remaining_minutes as i64))
-                                                    } else {
-                                                        None
-                                                    };
-                                                    
-                                                    // Get the actual benefit name from the drop
-                                                    let drop_name = if let Some(benefit) = drop.benefit_edges.first() {
-                                                        benefit.name.clone()
-                                                    } else {
-                                                        drop.name.clone()
-                                                    };
-                                                    
-                                                    status.current_drop = Some(CurrentDropInfo {
-                                                        drop_id: drop.id.clone(),
-                                                        drop_name,
-                                                        campaign_name: campaign.name.clone(),
-                                                        game_name: campaign.game_name.clone(),
-                                                        current_minutes,
-                                                        required_minutes: drop.required_minutes_watched,
-                                                        progress_percentage,
-                                                        estimated_completion,
-                                                    });
-                                                    
-                                                    println!("📊 Updated drop progress: {}/{} minutes ({}%)", 
-                                                        current_minutes, drop.required_minutes_watched, progress_percentage.round());
-                                                }
-                                            }
-                                            
-                                            status.last_update = Utc::now();
-                                            drop(status);
-                                            
-                                            let current_status = mining_status.read().await.clone();
-                                            let _ = app_handle.emit("mining-status-update", &current_status);
-                                            
-                                            // NOW connect WebSocket AFTER status is fully populated
-                                            println!("🔌 Connecting WebSocket for drops updates (AFTER status populated)...");
-                                            let websocket_service = Arc::new(tokio::sync::Mutex::new(DropsWebSocketService::new()));
-                                            let mut ws_service = websocket_service.lock().await;
-                                            if let Err(e) = ws_service.connect(&user_id, &token, app_handle.clone()).await {
-                                                eprintln!("❌ Failed to connect WebSocket: {}", e);
-                                            }
-                                            drop(ws_service);
-                                        }
-                                         Err(e) => {
-                                             eprintln!("❌ Failed to refresh drop progress: {}", e);
-                                         }
-                                     }
+                                    // Connect WebSocket AFTER status is fully populated
+                                    println!("🔌 Connecting WebSocket for drops updates (AFTER status populated)...");
+                                    let websocket_service = Arc::new(tokio::sync::Mutex::new(DropsWebSocketService::new()));
+                                    let mut ws_service = websocket_service.lock().await;
+                                    if let Err(e) = ws_service.connect(&user_id, &token, app_handle.clone()).await {
+                                        eprintln!("❌ Failed to connect WebSocket: {}", e);
+                                    }
+                                    drop(ws_service);
                                  } else {
                                     println!("⚠️ No eligible channels found for this campaign");
                                     let mut status = mining_status.write().await;
@@ -496,17 +402,22 @@ impl MiningService {
                             Err(e) => {
                                 eprintln!("❌ Failed to discover eligible channels: {}", e);
                             }
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("❌ Failed to fetch campaigns: {}", e);
                     }
                 }
+                Err(e) => {
+                    eprintln!("❌ Failed to fetch campaigns: {}", e);
+                }
+            }
 
-                // Wait before checking if we need to re-select a channel
-                // This should be much longer than the watch payload interval
-                // Only re-evaluate channel selection every 5 minutes or if something goes wrong
-                tokio::time::sleep(tokio::time::Duration::from_secs(300)).await;
+            // Keep the mining running until stopped
+            loop {
+                let should_continue = *is_running.read().await;
+                if !should_continue {
+                    println!("🛑 Stopping campaign mining");
+                    break;
+                }
+                // Just sleep and let the periodic task handle refreshes
+                tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
             }
             
             // Clean up when stopping
@@ -544,6 +455,8 @@ impl MiningService {
         let mining_status = self.mining_status.clone();
         let eligible_channels = self.eligible_channels.clone();
         let is_running = self.is_running.clone();
+        let cached_user_id = self.cached_user_id.clone();
+        let cached_spade_url = self.cached_spade_url.clone();
         
         // Set up listener for WebSocket progress updates (same as manual mining)
         let mining_status_for_ws = mining_status.clone();
@@ -792,6 +705,8 @@ impl MiningService {
                                     let broadcast_id_clone = broadcast_id.clone();
                                     let token_clone = token.clone();
                                     let is_running_clone = is_running.clone();
+                                    let cached_user_id_clone = cached_user_id.clone();
+                                    let cached_spade_url_clone = cached_spade_url.clone();
                                     
                                     tokio::spawn(async move {
                                         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
@@ -804,7 +719,7 @@ impl MiningService {
                                             
                                             // Send watch payload
                                             println!("📡 Sending watch payload...");
-                                            match Self::send_watch_payload(&client_clone, &best_channel_clone, &broadcast_id_clone, &token_clone).await {
+                                            match Self::send_watch_payload(&client_clone, &best_channel_clone, &broadcast_id_clone, &token_clone, &cached_user_id_clone, &cached_spade_url_clone).await {
                                                 Ok(true) => println!("✅ Watch payload sent successfully"),
                                                 Ok(false) => println!("⚠️ Watch payload failed"),
                                                 Err(e) => eprintln!("❌ Failed to send watch payload: {}", e),
@@ -815,78 +730,8 @@ impl MiningService {
                                         }
                                     });
                                     
-                                    println!("🔄 About to fetch drop progress...");
-                                    
-                                     // Refresh drop progress from Twitch API to get latest progress
-                                     println!("🔄 Fetching latest drop progress from Twitch API...");
-                                     
-                                     // Fetch campaigns outside the lock
-                                     let campaigns_result = {
-                                         let service = drops_service.lock().await;
-                                         service.fetch_all_active_campaigns_from_api().await
-                                     };
-
-                                     match campaigns_result {
-                                         Ok(campaigns_from_api) => {
-                                            // Lock to update progress and get the latest state
-                                            let drop_progress = {
-                                                let service = drops_service.lock().await;
-                                                service.update_campaigns_and_progress(&campaigns_from_api).await;
-                                                service.get_drop_progress().await
-                                            };
-                                             let mut status = mining_status.write().await;
-                                            
-                                            println!("📋 Retrieved {} drop progress entries", drop_progress.len());
-                                            
-                                            if let Some(campaign) = Self::get_active_campaign_for_channel(&best_channel, &campaigns) {
-                                                if let Some(drop) = campaign.time_based_drops.first() {
-                                                    let current_minutes = drop_progress
-                                                        .iter()
-                                                        .find(|p| p.drop_id == drop.id)
-                                                        .map(|p| p.current_minutes_watched)
-                                                        .unwrap_or(0);
-                                                    
-                                                    let progress_percentage = 
-                                                        (current_minutes as f32 / drop.required_minutes_watched as f32) * 100.0;
-                                                    
-                                                    let estimated_completion = if current_minutes > 0 {
-                                                        let remaining_minutes = drop.required_minutes_watched - current_minutes;
-                                                        Some(Utc::now() + Duration::minutes(remaining_minutes as i64))
-                                                    } else {
-                                                        None
-                                                    };
-                                                    
-                                                    println!("📊 Drop: {} - Progress: {}/{} minutes ({}%)", 
-                                                        drop.name, current_minutes, drop.required_minutes_watched, progress_percentage.round());
-                                                    
-                                                    status.current_drop = Some(CurrentDropInfo {
-                                                        drop_id: drop.id.clone(),
-                                                        drop_name: drop.name.clone(),
-                                                        campaign_name: campaign.name.clone(),
-                                                        game_name: campaign.game_name.clone(),
-                                                        current_minutes,
-                                                        required_minutes: drop.required_minutes_watched,
-                                                        progress_percentage,
-                                                        estimated_completion,
-                                                    });
-                                                } else {
-                                                    println!("⚠️ No drops found in campaign");
-                                                }
-                                            } else {
-                                                println!("⚠️ No active campaign found for channel");
-                                            }
-                                            
-                                            status.last_update = Utc::now();
-                                            drop(status);
-                                            
-                                            // Emit updated status
-                                            let current_status = mining_status.read().await.clone();
-                                            let _ = app_handle.emit("mining-status-update", &current_status);
-                                        }
-                                         Err(e) => {
-                                             eprintln!("❌ Failed to refresh drop progress: {}", e);
-                                         }
-                                     }
+                                    // WebSocket provides all real-time progress updates
+                                    // No need for any additional campaign polling
                                  } else {
                                     println!("⚠️ No eligible channels found for mining");
                                     let mut status = mining_status.write().await;
@@ -930,6 +775,13 @@ impl MiningService {
         
         // Disconnect WebSocket
         self.websocket_service.lock().await.disconnect().await;
+        
+        // Clear cached user ID when stopping
+        {
+            let mut cached_id = self.cached_user_id.write().await;
+            *cached_id = None;
+            println!("🗑️ Cleared cached user ID on mining stop");
+        }
         
         let mut status = self.mining_status.write().await;
         status.is_mining = false;
@@ -1273,24 +1125,58 @@ impl MiningService {
         channel: &MiningChannel,
         broadcast_id: &str,
         token: &str,
+        cached_user_id: &Arc<RwLock<Option<String>>>,
+        cached_spade_url: &Arc<RwLock<Option<String>>>,
     ) -> Result<bool> {
-        // First, we need to get the spade URL from the channel page
-        let spade_url = match Self::get_spade_url(client, &channel.name).await {
-            Ok(url) => url,
-            Err(e) => {
-                eprintln!("❌ Failed to get spade URL for {}: {}", channel.name, e);
-                return Ok(false);
+        // Get spade URL (check cache first)
+        let spade_url = {
+            let cached = cached_spade_url.read().await;
+            if let Some(url) = cached.as_ref() {
+                url.clone()
+            } else {
+                drop(cached); // Release read lock before acquiring write lock
+                
+                // Fetch spade URL from HTML
+                let url = match Self::get_spade_url(client, &channel.name).await {
+                    Ok(url) => {
+                        println!("📡 Got spade URL for {}: {}", channel.name, url);
+                        url
+                    },
+                    Err(e) => {
+                        eprintln!("❌ Failed to get spade URL for {}: {}", channel.name, e);
+                        return Ok(false);
+                    }
+                };
+                
+                // Cache it
+                let mut cached_write = cached_spade_url.write().await;
+                *cached_write = Some(url.clone());
+                println!("💾 Cached spade URL for future use");
+                url
             }
         };
         
-        println!("📡 Got spade URL for {}: {}", channel.name, spade_url);
-        
-        // Get user ID from token validation
-        let user_id = match Self::get_user_id(client, token).await {
-            Ok(id) => id,
-            Err(e) => {
-                eprintln!("❌ Failed to get user ID: {}", e);
-                return Ok(false);
+        // Get user ID (check cache first)
+        let user_id = {
+            let cached = cached_user_id.read().await;
+            if let Some(id) = cached.as_ref() {
+                id.clone()
+            } else {
+                drop(cached); // Release read lock before acquiring write lock
+                
+                // Fetch user ID with retry logic
+                let id = match Self::get_user_id_with_retry(client, token, 3).await {
+                    Ok(id) => id,
+                    Err(e) => {
+                        eprintln!("❌ Failed to get user ID after retries: {}", e);
+                        return Ok(false);
+                    }
+                };
+                
+                // Cache it
+                let mut cached_write = cached_user_id.write().await;
+                *cached_write = Some(id.clone());
+                id
             }
         };
         
@@ -1379,11 +1265,34 @@ impl MiningService {
         Err(anyhow::anyhow!("Could not find spade URL for channel {}", channel_name))
     }
     
+    /// Get user ID from token validation with retry logic
+    async fn get_user_id_with_retry(client: &Client, token: &str, max_retries: u32) -> Result<String> {
+        let mut attempt = 0;
+        
+        loop {
+            attempt += 1;
+            
+            match Self::get_user_id(client, token).await {
+                Ok(id) => return Ok(id),
+                Err(e) if attempt >= max_retries => {
+                    return Err(anyhow::anyhow!("Failed to get user ID after {} attempts: {}", max_retries, e));
+                },
+                Err(e) => {
+                    eprintln!("⚠️ Failed to get user ID (attempt {}/{}): {}", attempt, max_retries, e);
+                    // Exponential backoff: 1s, 2s, 4s...
+                    let delay = tokio::time::Duration::from_secs(2_u64.pow(attempt - 1));
+                    tokio::time::sleep(delay).await;
+                }
+            }
+        }
+    }
+    
     /// Get user ID from token validation
     async fn get_user_id(client: &Client, token: &str) -> Result<String> {
         let response = client
             .get("https://id.twitch.tv/oauth2/validate")
             .header("Authorization", format!("OAuth {}", token))
+            .timeout(std::time::Duration::from_secs(10))
             .send()
             .await?;
         
@@ -1412,6 +1321,66 @@ impl MiningService {
                     && c.end_at >= now
             })
             .cloned()
+    }
+    
+    /// Try to switch to the next available online channel when current one fails
+    async fn try_switch_channel(
+        client: &Client,
+        token: &str,
+        channels: &[MiningChannel],
+        current_channel_id: &str,
+        current_index: usize,
+    ) -> Option<(MiningChannel, String, usize)> {
+        if channels.len() <= 1 {
+            println!("❌ Only one eligible channel available, cannot switch");
+            return None;
+        }
+        
+        println!("🔄 Attempting to switch from channel index {}...", current_index);
+        
+        // Try to find a different online channel
+        for i in 1..=channels.len() {
+            let next_index = (current_index + i) % channels.len();
+            let next_channel = &channels[next_index];
+            
+            // Skip the current failing channel
+            if next_channel.id == current_channel_id {
+                continue;
+            }
+            
+            println!("🔄 Trying channel: {} ({})", next_channel.name, next_channel.game_name);
+            
+            // Check if channel is still online
+            match Self::check_channel_status(client, &next_channel.id, token).await {
+                Ok(Some(status)) if status.is_online => {
+                    // Get new broadcast ID
+                    match Self::get_broadcast_id(client, &next_channel.id, token).await {
+                        Ok(Some(new_broadcast_id)) => {
+                            println!("✅ Successfully switched to {} (broadcast: {})", next_channel.name, new_broadcast_id);
+                            return Some((next_channel.clone(), new_broadcast_id, next_index));
+                        },
+                        Ok(None) => {
+                            println!("⚠️ Channel {} is not live", next_channel.name);
+                        },
+                        Err(e) => {
+                            println!("❌ Failed to get broadcast ID for {}: {}", next_channel.name, e);
+                        }
+                    }
+                },
+                Ok(Some(_)) => {
+                    println!("⚠️ Channel {} status check returned not online", next_channel.name);
+                },
+                Ok(None) => {
+                    println!("⚠️ Channel {} is offline", next_channel.name);
+                },
+                Err(e) => {
+                    println!("❌ Failed to check status for {}: {}", next_channel.name, e);
+                }
+            }
+        }
+        
+        println!("❌ No alternative channels available");
+        None
     }
 }
 

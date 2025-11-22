@@ -143,6 +143,8 @@ pub struct DropsService {
     channel_points_balances: Arc<RwLock<HashMap<String, ChannelPointsBalance>>>,
     monitoring_active: Arc<RwLock<bool>>,
     current_channel: Arc<RwLock<Option<(String, String)>>>, // (channel_id, channel_name)
+    cached_active_campaigns_count: Arc<RwLock<i32>>, // Cache campaign count to avoid repeated API calls
+    cached_campaigns: Arc<RwLock<Option<(Vec<DropCampaign>, DateTime<Utc>)>>>, // Cache campaigns with timestamp
     device_id: String,
     session_id: String,
 }
@@ -162,6 +164,8 @@ impl DropsService {
             channel_points_balances: Arc::new(RwLock::new(HashMap::new())),
             monitoring_active: Arc::new(RwLock::new(false)),
             current_channel: Arc::new(RwLock::new(None)),
+            cached_active_campaigns_count: Arc::new(RwLock::new(0)),
+            cached_campaigns: Arc::new(RwLock::new(None)),
             device_id,
             session_id,
         }
@@ -191,10 +195,324 @@ impl DropsService {
         *settings = new_settings;
     }
 
-    /// Get all active campaigns without filtering (for UI display)
-    /// Fetches all active campaigns from the Twitch API without modifying the service's state.
-    /// This method is now responsible for the network request and parsing only.
-    pub async fn fetch_all_active_campaigns_from_api(&self) -> Result<Vec<DropCampaign>> {
+    /// Fetch inventory (in-progress campaigns) using the Inventory GQL operation
+    /// This matches TwitchDropsMiner's fetch_inventory() function
+    pub async fn fetch_inventory(&self) -> Result<InventoryResponse> {
+        println!("🔍 [fetch_inventory] Fetching inventory (in-progress campaigns)...");
+        
+        let token = match DropsAuthService::get_token().await {
+            Ok(t) => {
+                println!("✅ [fetch_inventory] Got token");
+                t
+            }
+            Err(e) => {
+                println!("❌ [fetch_inventory] Failed to get token: {}", e);
+                return Err(e);
+            }
+        };
+        
+        // Use the exact same GQL operation as TwitchDropsMiner
+        let response = self.client
+            .post("https://gql.twitch.tv/gql")
+            .headers(self.create_gql_headers(&token))
+            .json(&serde_json::json!({
+                "operationName": "Inventory",
+                "variables": {
+                    "fetchRewardCampaigns": false
+                },
+                "extensions": {
+                    "persistedQuery": {
+                        "version": 1,
+                        "sha256Hash": "d86775d0ef16a63a33ad52e80eaff963b2d5b72fada7c991504a57496e1d8e4b"
+                    }
+                }
+            }))
+            .send()
+            .await?;
+
+        println!("📡 [fetch_inventory] Response status: {}", response.status());
+        
+        let response_text = response.text().await?;
+        let response_json: serde_json::Value = match serde_json::from_str(&response_text) {
+            Ok(json) => json,
+            Err(e) => {
+                println!("❌ Failed to parse JSON: {}", e);
+                return Err(anyhow::anyhow!("Failed to parse response as JSON: {}", e));
+            }
+        };
+        
+        // Check for errors
+        if let Some(errors) = response_json.get("errors") {
+            println!("❌ GraphQL errors found: {:?}", errors);
+            return Err(anyhow::anyhow!("GraphQL errors: {:?}", errors));
+        }
+
+        if response_json["data"].is_null() || response_json["data"]["currentUser"].is_null() {
+            return Err(anyhow::anyhow!("Unable to fetch inventory data"));
+        }
+
+        // Parse in-progress campaigns
+        let inventory = &response_json["data"]["currentUser"]["inventory"];
+        let campaigns_array = inventory["dropCampaignsInProgress"]
+            .as_array()
+            .map(|v| v.to_vec())
+            .unwrap_or_else(Vec::new);
+        
+        // Parse gameEventDrops for claimed benefits tracking
+        let empty_game_events = Vec::new();
+        let game_event_drops = inventory["gameEventDrops"]
+            .as_array()
+            .unwrap_or(&empty_game_events);
+        
+        let mut claimed_benefits: std::collections::HashMap<String, DateTime<Utc>> = std::collections::HashMap::new();
+        for event in game_event_drops {
+            if let (Some(id), Some(last_awarded)) = (
+                event["id"].as_str(),
+                event["lastAwardedAt"].as_str()
+            ) {
+                if let Ok(dt) = DateTime::parse_from_rfc3339(last_awarded) {
+                    claimed_benefits.insert(id.to_string(), dt.with_timezone(&Utc));
+                }
+            }
+        }
+
+        println!("📊 Found {} in-progress campaigns", campaigns_array.len());
+
+        let mut items = Vec::new();
+        let mut active_count = 0;
+        let mut upcoming_count = 0;
+        let mut expired_count = 0;
+        let now = Utc::now();
+
+        for campaign_json in &campaigns_array {
+            // Parse game info
+            let game = &campaign_json["game"];
+            if game.is_null() {
+                continue;
+            }
+            
+            let game_id = game["id"].as_str().unwrap_or("").to_string();
+            let game_name = game["displayName"].as_str()
+                .or_else(|| game["name"].as_str())
+                .unwrap_or("")
+                .to_string();
+            let image_url = game["boxArtURL"].as_str().unwrap_or("").to_string();
+
+            if game_name.is_empty() {
+                continue;
+            }
+
+            // Parse dates
+            let start_at = campaign_json["startAt"].as_str()
+                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|| Utc::now());
+                
+            let end_at = campaign_json["endAt"].as_str()
+                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|| Utc::now() + chrono::Duration::days(365));
+
+            // Determine status
+            let status = if start_at > now {
+                upcoming_count += 1;
+                CampaignStatus::Upcoming
+            } else if end_at < now {
+                expired_count += 1;
+                CampaignStatus::Expired
+            } else {
+                active_count += 1;
+                CampaignStatus::Active
+            };
+
+            // Parse allowed channels
+            let mut allowed_channels = Vec::new();
+            let mut is_acl_based = false;
+            
+            if let Some(allow) = campaign_json["allow"].as_object() {
+                if allow.get("isEnabled").and_then(|v| v.as_bool()).unwrap_or(false) {
+                    if let Some(channels) = allow["channels"].as_array() {
+                        is_acl_based = !channels.is_empty();
+                        for channel in channels {
+                            if let (Some(id), Some(name)) = (
+                                channel["id"].as_str(),
+                                channel["name"].as_str()
+                            ) {
+                                allowed_channels.push(AllowedChannel {
+                                    id: id.to_string(),
+                                    name: name.to_string(),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Parse time-based drops
+            let mut time_based_drops: Vec<TimeBasedDrop> = Vec::new();
+            let mut total_drops = 0;
+            let mut claimed_drops = 0;
+            let mut drops_in_progress = 0;
+            let mut total_progress: f32 = 0.0;
+
+            if let Some(drops) = campaign_json["timeBasedDrops"].as_array() {
+                total_drops = drops.len() as i32;
+                
+                for drop_json in drops {
+                    let drop_id = drop_json["id"].as_str().unwrap_or("").to_string();
+                    let drop_name = drop_json["name"].as_str().unwrap_or("").to_string();
+                    let required_minutes = drop_json["requiredMinutesWatched"].as_i64().unwrap_or(0) as i32;
+                    
+                    // Parse benefits
+                    let mut benefit_edges = Vec::new();
+                    if let Some(edges) = drop_json["benefitEdges"].as_array() {
+                        for edge in edges {
+                            if let Some(benefit) = edge.get("benefit") {
+                                benefit_edges.push(DropBenefit {
+                                    id: benefit["id"].as_str().unwrap_or("").to_string(),
+                                    name: benefit["name"].as_str().unwrap_or("").to_string(),
+                                    image_url: benefit["imageAssetURL"].as_str().unwrap_or("").to_string(),
+                                });
+                            }
+                        }
+                    }
+
+                    // Parse progress
+                    let mut progress = None;
+                    let mut is_claimed = false;
+                    let mut current_minutes = 0;
+
+                    if let Some(self_data) = drop_json.get("self") {
+                        current_minutes = self_data["currentMinutesWatched"].as_i64().unwrap_or(0) as i32;
+                        is_claimed = self_data["isClaimed"].as_bool().unwrap_or(false);
+                        
+                        let drop_instance_id = self_data["dropInstanceID"].as_str().map(|s| s.to_string());
+
+                        progress = Some(DropProgress {
+                            campaign_id: campaign_json["id"].as_str().unwrap_or("").to_string(),
+                            drop_id: drop_id.clone(),
+                            current_minutes_watched: current_minutes,
+                            required_minutes_watched: required_minutes,
+                            is_claimed,
+                            last_updated: Utc::now(),
+                        });
+                    } else {
+                        // Check claimed_benefits to determine if claimed
+                        for benefit in &benefit_edges {
+                            if let Some(awarded_at) = claimed_benefits.get(&benefit.id) {
+                                if start_at <= *awarded_at && *awarded_at < end_at {
+                                    is_claimed = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    if is_claimed {
+                        claimed_drops += 1;
+                        total_progress += 1.0;
+                    } else if current_minutes > 0 {
+                        drops_in_progress += 1;
+                        if required_minutes > 0 {
+                            total_progress += (current_minutes as f32 / required_minutes as f32).min(1.0);
+                        }
+                    }
+
+                    time_based_drops.push(TimeBasedDrop {
+                        id: drop_id,
+                        name: drop_name,
+                        required_minutes_watched: required_minutes,
+                        benefit_edges,
+                        progress,
+                    });
+                }
+            }
+
+            let progress_percentage = if total_drops > 0 {
+                (total_progress / total_drops as f32) * 100.0
+            } else {
+                0.0
+            };
+
+            let is_account_connected = campaign_json["self"]["isAccountConnected"]
+                .as_bool()
+                .unwrap_or(true);
+
+            let campaign = DropCampaign {
+                id: campaign_json["id"].as_str().unwrap_or("").to_string(),
+                name: campaign_json["name"].as_str().unwrap_or("").to_string(),
+                game_id,
+                game_name,
+                description: campaign_json["description"].as_str().unwrap_or("").to_string(),
+                image_url,
+                start_at,
+                end_at,
+                time_based_drops,
+                is_account_connected,
+                allowed_channels,
+                is_acl_based,
+            };
+
+            items.push(InventoryItem {
+                campaign,
+                status,
+                progress_percentage,
+                total_drops,
+                claimed_drops,
+                drops_in_progress,
+            });
+        }
+
+        let total_campaigns = items.len() as i32;
+
+        println!("📊 Inventory summary: {} total, {} active, {} upcoming, {} expired",
+            total_campaigns, active_count, upcoming_count, expired_count);
+
+        Ok(InventoryResponse {
+            items,
+            total_campaigns,
+            active_campaigns: active_count,
+            upcoming_campaigns: upcoming_count,
+            expired_campaigns: expired_count,
+        })
+    }
+
+    /// Get all active campaigns with smart caching (for UI display)
+    /// Uses cached campaigns if available and not stale (5 minute TTL)
+    /// Only fetches from API if cache is empty or expired
+    pub async fn get_all_active_campaigns_cached(&self) -> Result<Vec<DropCampaign>> {
+        const CACHE_TTL_SECONDS: i64 = 300; // 5 minutes
+        
+        // Check if we have valid cached data
+        {
+            let cache = self.cached_campaigns.read().await;
+            if let Some((campaigns, cached_at)) = cache.as_ref() {
+                let age = Utc::now().signed_duration_since(*cached_at);
+                if age.num_seconds() < CACHE_TTL_SECONDS {
+                    println!("📦 Using cached campaigns ({} seconds old)", age.num_seconds());
+                    return Ok(campaigns.clone());
+                } else {
+                    println!("⏰ Campaign cache expired ({} seconds old)", age.num_seconds());
+                }
+            }
+        }
+        
+        // Cache miss or expired - fetch from API
+        println!("🔄 Fetching fresh campaigns from API");
+        let campaigns = self.fetch_all_active_campaigns_from_api().await?;
+        
+        // Update cache
+        {
+            let mut cache = self.cached_campaigns.write().await;
+            *cache = Some((campaigns.clone(), Utc::now()));
+        }
+        
+        Ok(campaigns)
+    }
+    
+    /// Internal method to fetch campaigns from API (no caching)
+    /// This should only be called by get_all_active_campaigns_cached or during mining operations
+    pub(crate) async fn fetch_all_active_campaigns_from_api(&self) -> Result<Vec<DropCampaign>> {
         println!("🔍 [fetch_all_active_campaigns_from_api] Starting (no filters)...");
         
         let token = match DropsAuthService::get_token().await {
@@ -408,6 +726,14 @@ impl DropsService {
                 }
             }
         }
+        
+        // Update cached campaign count
+        let mut cached_count = self.cached_active_campaigns_count.write().await;
+        *cached_count = campaigns.len() as i32;
+        
+        // Update campaigns cache when mining fetches them
+        let mut cache = self.cached_campaigns.write().await;
+        *cache = Some((campaigns.to_vec(), Utc::now()));
     }
     
     /// Get active campaigns with settings filters applied (for mining)
@@ -629,14 +955,8 @@ impl DropsService {
             .filter(|p| !p.is_claimed && p.current_minutes_watched > 0)
             .count() as i32;
 
-        // Fetch active campaigns count
-        let active_campaigns = match self.fetch_all_active_campaigns_from_api().await {
-            Ok(campaigns) => campaigns.len() as i32,
-            Err(e) => {
-                eprintln!("Failed to fetch campaigns for statistics: {}", e);
-                0
-            }
-        };
+        // Use cached campaign count instead of fetching
+        let active_campaigns = *self.cached_active_campaigns_count.read().await;
 
         DropsStatistics {
             total_drops_claimed: claimed_drops.len() as i32,
@@ -661,6 +981,11 @@ impl DropsService {
     pub async fn get_channel_points_balance(&self, channel_id: &str) -> Option<ChannelPointsBalance> {
         let balances = self.channel_points_balances.read().await;
         balances.get(channel_id).cloned()
+    }
+
+    pub async fn get_all_channel_points_balances(&self) -> Vec<ChannelPointsBalance> {
+        let balances = self.channel_points_balances.read().await;
+        balances.values().cloned().collect()
     }
 
     pub async fn start_monitoring(&self, channel_id: String, channel_name: String, app_handle: AppHandle) {
@@ -750,58 +1075,52 @@ impl DropsService {
                         }
                     }
 
-                    // Check drops progress
-                    if let Ok(_campaigns) = Self::get_active_campaigns_internal(
-                        &client,
-                        &drop_progress,
-                    ).await {
-                        // Check for claimable drops
-                        let claimable_drops: Vec<DropProgress> = {
-                            let progress_map = drop_progress.read().await;
-                            progress_map.values()
-                                .filter(|p| !p.is_claimed && p.current_minutes_watched >= p.required_minutes_watched)
-                                .cloned()
-                                .collect()
-                        };
-                        
-                        for progress in claimable_drops {
-                            // Drop is ready to claim
-                            if current_settings.notify_on_drop_available {
-                                let _ = app_handle.emit("drop-ready", &progress);
-                            }
+                    // Check for claimable drops (progress is updated via WebSocket, no need to fetch campaigns)
+                    let claimable_drops: Vec<DropProgress> = {
+                        let progress_map = drop_progress.read().await;
+                        progress_map.values()
+                            .filter(|p| !p.is_claimed && p.current_minutes_watched >= p.required_minutes_watched)
+                            .cloned()
+                            .collect()
+                    };
+                    
+                    for progress in claimable_drops {
+                        // Drop is ready to claim
+                        if current_settings.notify_on_drop_available {
+                            let _ = app_handle.emit("drop-ready", &progress);
+                        }
 
-                            // Auto-claim if enabled
-                            if current_settings.auto_claim_drops {
-                                match Self::claim_drop_internal(
-                                    &client,
-                                    &progress.drop_id,
-                                    &drop_progress,
-                                ).await {
-                                    Ok(_) => {
-                                        println!("✅ Auto-claimed drop: {}", progress.drop_id);
-                                        
-                                        // Create claimed drop record
-                                        let claimed = ClaimedDrop {
-                                            id: uuid::Uuid::new_v4().to_string(),
-                                            campaign_id: progress.campaign_id.clone(),
-                                            drop_id: progress.drop_id.clone(),
-                                            drop_name: "Drop".to_string(), // Would need to fetch from campaign
-                                            game_name: "Game".to_string(),
-                                            benefit_name: "Reward".to_string(),
-                                            benefit_image_url: String::new(),
-                                            claimed_at: Utc::now(),
-                                        };
+                        // Auto-claim if enabled
+                        if current_settings.auto_claim_drops {
+                            match Self::claim_drop_internal(
+                                &client,
+                                &progress.drop_id,
+                                &drop_progress,
+                            ).await {
+                                Ok(_) => {
+                                    println!("✅ Auto-claimed drop: {}", progress.drop_id);
+                                    
+                                    // Create claimed drop record
+                                    let claimed = ClaimedDrop {
+                                        id: uuid::Uuid::new_v4().to_string(),
+                                        campaign_id: progress.campaign_id.clone(),
+                                        drop_id: progress.drop_id.clone(),
+                                        drop_name: "Drop".to_string(), // Would need to fetch from campaign
+                                        game_name: "Game".to_string(),
+                                        benefit_name: "Reward".to_string(),
+                                        benefit_image_url: String::new(),
+                                        claimed_at: Utc::now(),
+                                    };
 
-                                        let mut claimed_drops_lock = claimed_drops.write().await;
-                                        claimed_drops_lock.push(claimed.clone());
+                                    let mut claimed_drops_lock = claimed_drops.write().await;
+                                    claimed_drops_lock.push(claimed.clone());
 
-                                        if current_settings.notify_on_drop_claimed {
-                                            let _ = app_handle.emit("drop-claimed", &claimed);
-                                        }
+                                    if current_settings.notify_on_drop_claimed {
+                                        let _ = app_handle.emit("drop-claimed", &claimed);
                                     }
-                                    Err(e) => {
-                                        eprintln!("❌ Failed to auto-claim drop: {}", e);
-                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!("❌ Failed to auto-claim drop: {}", e);
                                 }
                             }
                         }

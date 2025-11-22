@@ -74,11 +74,13 @@ const ProfileOverlay = ({ isOpen, onClose, anchorPosition }: ProfileOverlayProps
           setTwitchBadges([]);
         }
         
-        // Fetch 7TV cosmetics
+        // Fetch 7TV cosmetics with cache fallback for instant loading
         try {
-          const cosmetics = await getUserCosmetics(currentUser.user_id);
+          const { getCosmeticsWithFallback } = await import('../services/cosmeticsCache');
+          const cosmetics = await getCosmeticsWithFallback(currentUser.user_id);
+          
           if (cosmetics) {
-            const selectedPaint = cosmetics.paints.find((p) => p.selected);
+            const selectedPaint = cosmetics.paints.find((p: any) => p.selected);
             if (selectedPaint) {
               setSeventvPaint(selectedPaint as any);
             }
@@ -88,9 +90,10 @@ const ProfileOverlay = ({ isOpen, onClose, anchorPosition }: ProfileOverlayProps
           console.error('[ProfileOverlay] Failed to fetch 7TV cosmetics:', err);
         }
         
-        // Fetch third-party badges
+        // Fetch third-party badges with cache fallback for instant loading
         try {
-          const thirdPartyBadgeData = await getAllThirdPartyBadges(currentUser.user_id);
+          const { getThirdPartyBadgesWithFallback } = await import('../services/cosmeticsCache');
+          const thirdPartyBadgeData = await getThirdPartyBadgesWithFallback(currentUser.user_id);
           setThirdPartyBadges(thirdPartyBadgeData);
         } catch (err) {
           console.error('[ProfileOverlay] Failed to fetch third-party badges:', err);
