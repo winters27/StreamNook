@@ -1,3 +1,7 @@
+## [2.9.2] - 2025-11-26
+### Chore
+- Added `openid` scope to Twitch authentication. This is needed for user identification.
+
 ## [2.9.1] - 2025-11-26
 ### Changed
 - Refactor release notes fetching to parse `CHANGELOG.md` instead of using the GitHub API.
@@ -55,6 +59,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
