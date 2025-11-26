@@ -1,3 +1,12 @@
+## [2.3.0] - 2025-11-26
+## v2.2.0
+
+### Changed
+- Bumped version to 2.2.0 to include a new desktop release build.
+
+### Added
+- Desktop release build `StreamNook-Desktop-Setup.7z` and associated checksums.
+
 # Changelog
 
 ## [2.2.0] - 2025-11-26
@@ -8,5 +17,6 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
