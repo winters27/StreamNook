@@ -98,6 +98,14 @@ export interface Settings {
   chat_history_max: number;
   chat_design?: ChatDesignSettings;
   live_notifications?: LiveNotificationSettings;
+  last_seen_version?: string;
+}
+
+export interface ReleaseNotes {
+  version: string;
+  name: string;
+  body: string;
+  published_at: string;
 }
 
 export interface TwitchStream {

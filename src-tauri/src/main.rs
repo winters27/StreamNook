@@ -200,6 +200,7 @@ fn main() {
             download_and_install_app_update,
             get_latest_ttvlol_version,
             download_and_install_ttvlol_plugin,
+            get_release_notes,
             // Badge commands
             fetch_global_badges,
             get_cached_global_badges,

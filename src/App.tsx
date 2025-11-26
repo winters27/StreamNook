@@ -12,6 +12,7 @@ import ProfileOverlay from './components/ProfileOverlay';
 import DropsOverlay from './components/DropsOverlay';
 import BadgesOverlay from './components/BadgesOverlay';
 import BadgeDetailOverlay from './components/BadgeDetailOverlay';
+import ChangelogOverlay from './components/ChangelogOverlay';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
@@ -29,11 +30,13 @@ interface BadgeVersion {
 }
 
 function App() {
-  const { loadSettings, chatPlacement, isLoading, currentStream, streamUrl, checkAuthStatus, showProfileOverlay, setShowProfileOverlay, addToast, setShowDropsOverlay, showBadgesOverlay, setShowBadgesOverlay, settings } = useAppStore();
+  const { loadSettings, chatPlacement, isLoading, currentStream, streamUrl, checkAuthStatus, showProfileOverlay, setShowProfileOverlay, addToast, setShowDropsOverlay, showBadgesOverlay, setShowBadgesOverlay, settings, updateSettings } = useAppStore();
   const [chatSize, setChatSize] = useState(384); // Default 384px (w-96)
   const [isResizing, setIsResizing] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const [selectedBadge, setSelectedBadge] = useState<{ badge: BadgeVersion; setId: string } | null>(null);
+  const [showChangelog, setShowChangelog] = useState(false);
+  const [changelogVersion, setChangelogVersion] = useState<string | null>(null);
 
   // Listen for badge detail events from chat
   useEffect(() => {
@@ -91,6 +94,53 @@ function App() {
     
     initializeApp();
   }, [loadSettings, checkAuthStatus]);
+
+  // Check if we need to show the changelog after an update
+  useEffect(() => {
+    const checkForVersionChange = async () => {
+      try {
+        // Get the current app version
+        const currentVersion = await invoke<string>('get_current_app_version');
+        const { settings } = useAppStore.getState();
+        const lastSeenVersion = settings.last_seen_version;
+        
+        console.log('[App] Version check - Current:', currentVersion, 'Last seen:', lastSeenVersion);
+        
+        // If there's no last seen version (first run) or the version has changed
+        if (lastSeenVersion && lastSeenVersion !== currentVersion) {
+          console.log('[App] Version changed, showing changelog');
+          setChangelogVersion(currentVersion);
+          setShowChangelog(true);
+        } else if (!lastSeenVersion) {
+          // First run - just update the last seen version without showing changelog
+          console.log('[App] First run, setting initial version');
+          updateSettings({ ...settings, last_seen_version: currentVersion });
+        }
+      } catch (error) {
+        console.error('[App] Failed to check version:', error);
+      }
+    };
+    
+    // Only run after settings are loaded
+    if (settings.streamlink_path !== undefined) {
+      checkForVersionChange();
+    }
+  }, [settings.streamlink_path, updateSettings]);
+
+  // Handle changelog close - update the last seen version
+  const handleChangelogClose = async () => {
+    setShowChangelog(false);
+    
+    if (changelogVersion) {
+      try {
+        const { settings } = useAppStore.getState();
+        await updateSettings({ ...settings, last_seen_version: changelogVersion });
+        console.log('[App] Updated last_seen_version to:', changelogVersion);
+      } catch (error) {
+        console.error('[App] Failed to update last_seen_version:', error);
+      }
+    }
+  };
 
   // Handle aspect ratio locking when setting changes or chat is resized
   useEffect(() => {
@@ -323,6 +373,12 @@ function App() {
             setShowBadgesOverlay(false);
           }}
           onBack={() => setSelectedBadge(null)}
+        />
+      )}
+      {showChangelog && changelogVersion && (
+        <ChangelogOverlay
+          version={changelogVersion}
+          onClose={handleChangelogClose}
         />
       )}
       <ToastManager />
