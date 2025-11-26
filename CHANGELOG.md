@@ -1,3 +1,12 @@
+## [2.8.0] - 2025-11-26
+### Added
+- Implemented automatic changelog display after app updates.  The changelog will now show on first launch after an update to inform users of new features and changes.
+
+### Changed
+- The app now checks for version changes on startup and displays the changelog if a new version is detected. This is powered by calls to GitHub releases API.
+
+
+
 ## [2.7.0] - 2025-11-26
 ### Changed
 - Upgraded StreamNook version to 2.6.0
@@ -36,6 +45,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
