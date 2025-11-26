@@ -1,3 +1,7 @@
+## [2.7.0] - 2025-11-26
+### Changed
+- Upgraded StreamNook version to 2.6.0
+
 ## [2.6.0] - 2025-11-26
 ## v2.5.0
 
@@ -32,6 +36,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
