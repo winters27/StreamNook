@@ -514,17 +514,27 @@ pub async fn download_and_install_app_update(
 
     // Create a batch script to replace the exe and restart
     // Using (goto) 2>nul & del trick to properly self-delete without leaving a window open
+    // Wait 3 seconds to ensure app is fully closed, retry delete if needed
     let batch_script = format!(
         r#"@echo off
-timeout /t 2 /nobreak > nul
-del /f /q "{}"
+timeout /t 3 /nobreak > nul
+:retry_delete
+del /f /q "{}" 2>nul
+if exist "{}" (
+    timeout /t 1 /nobreak > nul
+    goto retry_delete
+)
 move /y "{}" "{}"
+if exist "{}" del /f /q "{}"
 start "" "{}"
 (goto) 2>nul & del /f /q "%~f0"
 "#,
         current_exe.display(),
+        current_exe.display(),
         temp_new_exe.display(),
         current_exe.display(),
+        temp_new_exe.display(),
+        temp_new_exe.display(),
         current_exe.display()
     );
 

@@ -59,7 +59,31 @@ fn load_settings_from_file() -> Result<Settings, Box<dyn std::error::Error>> {
     Ok(settings)
 }
 
+/// Clean up leftover files from previous update attempts
+fn cleanup_update_artifacts() {
+    if let Ok(current_exe) = std::env::current_exe() {
+        if let Some(exe_dir) = current_exe.parent() {
+            // Remove leftover StreamNook_new.exe if it exists
+            let temp_exe = exe_dir.join("StreamNook_new.exe");
+            if temp_exe.exists() {
+                println!("[Main] Cleaning up leftover update file: {:?}", temp_exe);
+                let _ = std::fs::remove_file(&temp_exe);
+            }
+
+            // Remove leftover update batch script if it exists
+            let batch_file = exe_dir.join("update_streamnook.bat");
+            if batch_file.exists() {
+                println!("[Main] Cleaning up leftover batch file: {:?}", batch_file);
+                let _ = std::fs::remove_file(&batch_file);
+            }
+        }
+    }
+}
+
 fn main() {
+    // Clean up any leftover files from previous update attempts
+    cleanup_update_artifacts();
+
     // Load settings from our custom location in the same directory as cache
     let settings = load_settings_from_file().unwrap_or_else(|_| Settings::default());
 

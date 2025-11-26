@@ -1,3 +1,8 @@
+## [2.9.0] - 2025-11-26
+### Fixed
+- Improved robustness of app update installation by adding retries to file deletion in the batch script.
+- Added cleanup logic to remove leftover update files (StreamNook_new.exe, update_streamnook.bat) on application startup, addressing potential issues from interrupted update processes.
+
 ## [2.8.0] - 2025-11-26
 ### Added
 - Implemented automatic changelog display after app updates.  The changelog will now show on first launch after an update to inform users of new features and changes.
@@ -45,6 +50,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
