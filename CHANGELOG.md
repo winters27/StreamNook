@@ -1,3 +1,8 @@
+## [2.9.1] - 2025-11-26
+### Changed
+- Refactor release notes fetching to parse `CHANGELOG.md` instead of using the GitHub API.
+- Bumped version to 2.9.0
+
 ## [2.9.0] - 2025-11-26
 ### Fixed
 - Improved robustness of app update installation by adding retries to file deletion in the batch script.
@@ -50,6 +55,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
