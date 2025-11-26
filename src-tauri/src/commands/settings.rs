@@ -387,54 +387,87 @@ pub struct ReleaseNotes {
 pub async fn get_release_notes(version: Option<String>) -> Result<ReleaseNotes, String> {
     let client = reqwest::Client::new();
 
-    // If a specific version is provided, fetch that release
-    // Otherwise, fetch the latest release
-    let url = match version {
-        Some(v) => format!(
-            "https://api.github.com/repos/winters27/StreamNook/releases/tags/v{}",
-            v
-        ),
-        None => "https://api.github.com/repos/winters27/StreamNook/releases/latest".to_string(),
-    };
+    // Fetch the raw CHANGELOG.md from the GitHub repo
+    let url = "https://raw.githubusercontent.com/winters27/StreamNook/main/CHANGELOG.md";
 
     let response = client
-        .get(&url)
+        .get(url)
         .header("User-Agent", "StreamNook")
-        .header("Accept", "application/vnd.github+json")
         .send()
         .await
-        .map_err(|e| format!("Failed to fetch release notes: {}", e))?;
+        .map_err(|e| format!("Failed to fetch changelog: {}", e))?;
 
     if !response.status().is_success() {
         return Err(format!(
-            "Failed to fetch release notes: HTTP {}",
+            "Failed to fetch changelog: HTTP {}",
             response.status()
         ));
     }
 
-    let json: serde_json::Value = response
-        .json()
+    let changelog_content = response
+        .text()
         .await
-        .map_err(|e| format!("Failed to parse release notes: {}", e))?;
+        .map_err(|e| format!("Failed to read changelog: {}", e))?;
 
-    let version = json["tag_name"]
-        .as_str()
-        .unwrap_or("unknown")
-        .trim_start_matches('v')
-        .to_string();
+    // Determine which version to look for
+    let target_version = match version {
+        Some(v) => v,
+        None => {
+            // If no version specified, use the current app version
+            env!("CARGO_PKG_VERSION").to_string()
+        }
+    };
 
-    let name = json["name"]
-        .as_str()
-        .unwrap_or(&format!("Version {}", version))
-        .to_string();
+    // Parse the changelog to find the specific version section
+    // Version headers look like: ## [2.9.0] - 2025-11-26
+    let version_header_regex =
+        Regex::new(r"##\s*\[?v?(\d+\.\d+\.\d+)\]?\s*-?\s*(\d{4}-\d{2}-\d{2})?")
+            .map_err(|e| format!("Failed to create regex: {}", e))?;
 
-    let body = json["body"].as_str().unwrap_or("").to_string();
+    let lines: Vec<&str> = changelog_content.lines().collect();
+    let mut found_version = false;
+    let mut body_lines: Vec<&str> = Vec::new();
+    let mut published_at = String::new();
 
-    let published_at = json["published_at"].as_str().unwrap_or("").to_string();
+    for line in &lines {
+        if let Some(caps) = version_header_regex.captures(line) {
+            let line_version = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+
+            if found_version {
+                // We hit the next version header, stop collecting
+                break;
+            }
+
+            if line_version == target_version {
+                found_version = true;
+                // Extract the date if present
+                if let Some(date_match) = caps.get(2) {
+                    published_at = date_match.as_str().to_string();
+                }
+                continue;
+            }
+        } else if found_version {
+            body_lines.push(*line);
+        }
+    }
+
+    if !found_version {
+        return Err(format!("Version {} not found in changelog", target_version));
+    }
+
+    // Trim leading/trailing empty lines from body
+    while body_lines.first().is_some_and(|l| l.trim().is_empty()) {
+        body_lines.remove(0);
+    }
+    while body_lines.last().is_some_and(|l| l.trim().is_empty()) {
+        body_lines.pop();
+    }
+
+    let body = body_lines.join("\n");
 
     Ok(ReleaseNotes {
-        version,
-        name,
+        version: target_version.clone(),
+        name: format!("Version {}", target_version),
         body,
         published_at,
     })
