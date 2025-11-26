@@ -13,6 +13,11 @@ drops/
 update_streamnook.bat
 StreamNook_new.exe
 
+# Release artifacts (only uploaded to GitHub releases, not committed)
+*.7z
+checksums.txt
+StreamNook.exe
+
 # Documentation
 RELEASE.md
 

@@ -156,6 +156,8 @@ pub struct Settings {
     pub chat_design: ChatDesignSettings,
     #[serde(default)]
     pub live_notifications: LiveNotificationSettings,
+    #[serde(default)]
+    pub last_seen_version: Option<String>,
 }
 
 fn default_chat_history_max() -> u32 {
@@ -184,6 +186,7 @@ impl Default for Settings {
             chat_history_max: default_chat_history_max(),
             chat_design: ChatDesignSettings::default(),
             live_notifications: LiveNotificationSettings::default(),
+            last_seen_version: None,
         }
     }
 }

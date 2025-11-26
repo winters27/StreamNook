@@ -375,6 +375,71 @@ pub fn get_current_app_version() -> Result<String, String> {
     Ok(env!("CARGO_PKG_VERSION").to_string())
 }
 
+#[derive(serde::Serialize)]
+pub struct ReleaseNotes {
+    pub version: String,
+    pub name: String,
+    pub body: String,
+    pub published_at: String,
+}
+
+#[tauri::command]
+pub async fn get_release_notes(version: Option<String>) -> Result<ReleaseNotes, String> {
+    let client = reqwest::Client::new();
+
+    // If a specific version is provided, fetch that release
+    // Otherwise, fetch the latest release
+    let url = match version {
+        Some(v) => format!(
+            "https://api.github.com/repos/winters27/StreamNook/releases/tags/v{}",
+            v
+        ),
+        None => "https://api.github.com/repos/winters27/StreamNook/releases/latest".to_string(),
+    };
+
+    let response = client
+        .get(&url)
+        .header("User-Agent", "StreamNook")
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch release notes: {}", e))?;
+
+    if !response.status().is_success() {
+        return Err(format!(
+            "Failed to fetch release notes: HTTP {}",
+            response.status()
+        ));
+    }
+
+    let json: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse release notes: {}", e))?;
+
+    let version = json["tag_name"]
+        .as_str()
+        .unwrap_or("unknown")
+        .trim_start_matches('v')
+        .to_string();
+
+    let name = json["name"]
+        .as_str()
+        .unwrap_or(&format!("Version {}", version))
+        .to_string();
+
+    let body = json["body"].as_str().unwrap_or("").to_string();
+
+    let published_at = json["published_at"].as_str().unwrap_or("").to_string();
+
+    Ok(ReleaseNotes {
+        version,
+        name,
+        body,
+        published_at,
+    })
+}
+
 #[tauri::command]
 pub async fn download_and_install_app_update(
     app_handle: tauri::AppHandle,
@@ -448,13 +513,14 @@ pub async fn download_and_install_app_update(
         .map_err(|e| format!("Failed to write new executable: {}", e))?;
 
     // Create a batch script to replace the exe and restart
+    // Using (goto) 2>nul & del trick to properly self-delete without leaving a window open
     let batch_script = format!(
         r#"@echo off
 timeout /t 2 /nobreak > nul
 del /f /q "{}"
 move /y "{}" "{}"
 start "" "{}"
-del /f /q "%~f0"
+(goto) 2>nul & del /f /q "%~f0"
 "#,
         current_exe.display(),
         temp_new_exe.display(),
@@ -466,9 +532,10 @@ del /f /q "%~f0"
     std::fs::write(&batch_path, batch_script)
         .map_err(|e| format!("Failed to write update script: {}", e))?;
 
-    // Launch the batch script and exit the app
+    // Launch the batch script hidden - /b flag runs without creating a new window
+    // Using cmd /c with a hidden window to execute the batch file
     std::process::Command::new("cmd")
-        .args(&["/C", "start", "/min", batch_path.to_str().unwrap()])
+        .args(&["/C", "start", "/min", "/b", batch_path.to_str().unwrap()])
         .spawn()
         .map_err(|e| format!("Failed to launch update script: {}", e))?;
 
