@@ -1,3 +1,7 @@
+## [2.4.0] - 2025-11-26
+### Changed
+- Bumped version to 2.3.0
+
 ## [2.3.0] - 2025-11-26
 ## v2.2.0
 
@@ -17,6 +21,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
