@@ -1,11 +1,11 @@
 use anyhow::{Context, Result};
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex as StdMutex;
 use std::time::{SystemTime, UNIX_EPOCH};
-use once_cell::sync::Lazy;
 
 use crate::services::cache_service::get_cache_dir;
 
@@ -50,7 +50,8 @@ pub struct UniversalCacheManifest {
 }
 
 const CACHE_VERSION: u32 = 1;
-const UNIVERSAL_CACHE_URL: &str = "https://raw.githubusercontent.com/winters27/StreamNook/refs/heads/main/universal-cache/main";
+const UNIVERSAL_CACHE_URL: &str =
+    "https://raw.githubusercontent.com/winters27/StreamNook/refs/heads/main/universal-cache/main";
 
 /// Get the universal cache directory
 pub fn get_universal_cache_dir() -> Result<PathBuf> {
@@ -78,7 +79,7 @@ fn is_cache_expired(metadata: &CacheMetadata) -> bool {
     if metadata.expiry_days == 0 {
         return false;
     }
-    
+
     let current_time = get_current_timestamp();
     let expiry_seconds = metadata.expiry_days as u64 * 24 * 60 * 60;
     current_time > metadata.timestamp + expiry_seconds
@@ -112,12 +113,18 @@ pub fn load_manifest() -> Result<UniversalCacheManifest> {
     match serde_json::from_str::<UniversalCacheManifest>(&json) {
         Ok(manifest) => Ok(manifest),
         Err(e) => {
-            println!("[UniversalCache] Failed to parse manifest ({}), creating new one", e);
+            println!(
+                "[UniversalCache] Failed to parse manifest ({}), creating new one",
+                e
+            );
             // Backup the corrupted manifest
             let backup_path = manifest_path.with_extension("json.backup");
             let _ = fs::rename(&manifest_path, &backup_path);
-            println!("[UniversalCache] Backed up corrupted manifest to {:?}", backup_path);
-            
+            println!(
+                "[UniversalCache] Backed up corrupted manifest to {:?}",
+                backup_path
+            );
+
             // Create new manifest
             Ok(UniversalCacheManifest {
                 version: CACHE_VERSION,
@@ -161,7 +168,10 @@ pub async fn fetch_universal_cache_data(
     match client.get(&url).send().await {
         Ok(response) if response.status().is_success() => {
             let entry: UniversalCacheEntry = response.json().await?;
-            println!("[UniversalCache] Successfully fetched {} from universal cache", id);
+            println!(
+                "[UniversalCache] Successfully fetched {} from universal cache",
+                id
+            );
             Ok(Some(entry))
         }
         Ok(response) => {
@@ -172,7 +182,10 @@ pub async fn fetch_universal_cache_data(
             Ok(None)
         }
         Err(e) => {
-            println!("[UniversalCache] Failed to fetch from universal cache: {}", e);
+            println!(
+                "[UniversalCache] Failed to fetch from universal cache: {}",
+                e
+            );
             Ok(None)
         }
     }
@@ -181,9 +194,9 @@ pub async fn fetch_universal_cache_data(
 /// Download and merge the universal manifest from GitHub
 async fn download_universal_manifest() -> Result<()> {
     println!("[UniversalCache] Downloading universal manifest from GitHub...");
-    
+
     let url = format!("{}/manifest.json", UNIVERSAL_CACHE_URL);
-    
+
     let client = reqwest::Client::builder()
         .user_agent("StreamNook/1.0")
         .timeout(std::time::Duration::from_secs(30))
@@ -192,41 +205,52 @@ async fn download_universal_manifest() -> Result<()> {
     match client.get(&url).send().await {
         Ok(response) if response.status().is_success() => {
             let remote_manifest: UniversalCacheManifest = response.json().await?;
-            println!("[UniversalCache] Downloaded manifest with {} entries", remote_manifest.entries.len());
-            
+            println!(
+                "[UniversalCache] Downloaded manifest with {} entries",
+                remote_manifest.entries.len()
+            );
+
             // Merge with local manifest
             let _lock = MANIFEST_LOCK.lock().unwrap();
             let mut local_manifest = load_manifest()?;
-            
+
             // Only add entries that don't exist locally or are from "badgebase" source
             for (key, entry) in remote_manifest.entries {
                 if entry.metadata.source == "badgebase" {
                     local_manifest.entries.insert(key, entry);
                 }
             }
-            
+
             save_manifest(&local_manifest)?;
             println!("[UniversalCache] Merged universal manifest into local cache");
-            
+
             // Assign positions if not already set
-            let needs_positions = local_manifest.entries.iter()
+            let needs_positions = local_manifest
+                .entries
+                .iter()
                 .filter(|(_, entry)| entry.metadata.source == "badgebase")
                 .any(|(_, entry)| entry.position.is_none());
-            
+
             if needs_positions {
                 println!("[UniversalCache] Assigning positions to badge metadata...");
                 drop(_lock); // Release lock before calling assign function
                 let _ = assign_badge_metadata_positions().await;
             }
-            
+
             Ok(())
         }
         Ok(response) => {
-            println!("[UniversalCache] GitHub returned status: {}", response.status());
+            println!(
+                "[UniversalCache] GitHub returned status: {}",
+                response.status()
+            );
             Ok(())
         }
         Err(e) => {
-            println!("[UniversalCache] Failed to download universal manifest: {}", e);
+            println!(
+                "[UniversalCache] Failed to download universal manifest: {}",
+                e
+            );
             Ok(()) // Don't fail if GitHub is unavailable
         }
     }
@@ -261,15 +285,15 @@ pub async fn get_cached_item(
     if should_download {
         println!("[UniversalCache] Downloading universal manifest...");
         download_universal_manifest().await?;
-        
+
         // Reload manifest after download
         let manifest = load_manifest()?;
-        
+
         // Update last_sync time
         let mut updated_manifest = manifest.clone();
         updated_manifest.last_sync = Some(get_current_timestamp());
         save_manifest(&updated_manifest)?;
-        
+
         // Try to find the item again
         if let Some(entry) = manifest.entries.get(id) {
             if entry.cache_type == cache_type && !is_cache_expired(&entry.metadata) {
@@ -286,7 +310,7 @@ pub async fn get_cached_item(
 pub async fn save_cached_item(entry: UniversalCacheEntry) -> Result<()> {
     // Acquire lock to prevent concurrent writes
     let _lock = MANIFEST_LOCK.lock().unwrap();
-    
+
     let mut manifest = load_manifest()?;
 
     // Add or update entry
@@ -376,72 +400,78 @@ fn parse_date_to_timestamp(date_str: &str) -> i64 {
 /// Assign positions to badge metadata entries based on date and usage
 pub async fn assign_badge_metadata_positions() -> Result<usize> {
     let mut manifest = load_manifest()?;
-    
+
     // Collect all badge entries from badge metadata source
     let mut metadata_entries: Vec<(String, UniversalCacheEntry)> = manifest
         .entries
         .iter()
         .filter(|(_, entry)| {
-            entry.cache_type == CacheType::Badge && 
-            entry.metadata.source == "badgebase"
+            entry.cache_type == CacheType::Badge && entry.metadata.source == "badgebase"
         })
         .map(|(id, entry)| (id.clone(), entry.clone()))
         .collect();
-    
+
     // Sort by date (newest first), then by usage (highest first)
     metadata_entries.sort_by(|a, b| {
         let a_data = &a.1.data;
         let b_data = &b.1.data;
-        
-        // Extract and parse date_added
-        let a_date_str = a_data.get("date_added")
+
+        // Extract date_added
+        let a_date = a_data
+            .get("date_added")
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        let b_date_str = b_data.get("date_added")
+        let b_date = b_data
+            .get("date_added")
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        
-        let a_timestamp = parse_date_to_timestamp(a_date_str);
-        let b_timestamp = parse_date_to_timestamp(b_date_str);
-        
+
         // Parse usage stats
         let parse_usage = |stats: &str| -> u32 {
-            stats.split_whitespace()
+            stats
+                .split_whitespace()
                 .next()
                 .and_then(|s| s.replace(",", "").parse::<u32>().ok())
                 .unwrap_or(0)
         };
-        
-        let a_usage = a_data.get("usage_stats")
+
+        let a_usage = a_data
+            .get("usage_stats")
             .and_then(|v| v.as_str())
             .map(parse_usage)
             .unwrap_or(0);
-        let b_usage = b_data.get("usage_stats")
+        let b_usage = b_data
+            .get("usage_stats")
             .and_then(|v| v.as_str())
             .map(parse_usage)
             .unwrap_or(0);
-        
-        // Sort by timestamp (newest first), then usage (highest first)
-        b_timestamp.cmp(&a_timestamp).then(b_usage.cmp(&a_usage))
+
+        // Sort by date (newest first), then usage (highest first)
+        b_date.cmp(a_date).then(b_usage.cmp(&a_usage))
     });
-    
+
     // Assign positions
     for (position, (id, mut entry)) in metadata_entries.into_iter().enumerate() {
         entry.position = Some(position as u32);
         manifest.entries.insert(id, entry);
     }
-    
-    let count = manifest.entries.iter()
+
+    let count = manifest
+        .entries
+        .iter()
         .filter(|(_, entry)| {
-            entry.cache_type == CacheType::Badge && 
-            entry.metadata.source == "badgebase" &&
-            entry.position.is_some()
+            entry.cache_type == CacheType::Badge
+                && entry.metadata.source == "badgebase"
+                && entry.position.is_some()
         })
         .count();
-    
+
     save_manifest(&manifest)?;
-    println!("[UniversalCache] Assigned positions to {} badge metadata entries", count);
-    
+    println!(
+        "[UniversalCache] Assigned positions to {} badge metadata entries",
+        count
+    );
+
     Ok(count)
 }
 
@@ -513,7 +543,10 @@ pub async fn sync_universal_cache(item_types: Vec<CacheType>) -> Result<usize> {
     manifest.last_sync = Some(get_current_timestamp());
     save_manifest(&manifest)?;
 
-    println!("[UniversalCache] Sync complete. Synced {} items", synced_count);
+    println!(
+        "[UniversalCache] Sync complete. Synced {} items",
+        synced_count
+    );
 
     Ok(synced_count)
 }

@@ -1,17 +1,17 @@
-use anyhow::Result;
-use discord_rich_presence::{activity::*, DiscordIpc, DiscordIpcClient};
-use std::sync::Arc;
-use tokio::sync::Mutex;
 use crate::models::settings::AppState;
+use anyhow::Result;
+use discord_rich_presence::{DiscordIpc, DiscordIpcClient, activity::*};
 use lazy_static::lazy_static;
 use rand::prelude::IndexedRandom;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::sync::Mutex;
 
 // --- New Imports for matching logic ---
 use regex::Regex;
-use strsim::normalized_levenshtein;
 use std::collections::HashSet;
+use strsim::normalized_levenshtein;
 // --- End New Imports ---
 
 // Discord asset keys - these must match the asset names uploaded to Discord Developer Portal
@@ -28,7 +28,10 @@ struct DiscordState {
 lazy_static! {
     static ref DISCORD_STATE: Arc<Mutex<DiscordState>> = Arc::new(Mutex::new(DiscordState {
         client: None,
-        start_time: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64,
+        start_time: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64,
     }));
 }
 
@@ -102,13 +105,13 @@ impl DiscordService {
             let settings = app_state.settings.lock().unwrap();
             settings.discord_rpc_enabled
         };
-        
+
         if !discord_enabled {
             return Ok(());
         }
 
         let mut guard = DISCORD_STATE.lock().await;
-        
+
         // If already connected, just update to idle
         if guard.client.is_some() {
             return Self::set_idle_presence_internal(&mut guard).await;
@@ -116,12 +119,16 @@ impl DiscordService {
 
         // Create new connection
         let mut client = DiscordIpcClient::new("1436402207485464596");
-        client.connect()
+        client
+            .connect()
             .map_err(|e| anyhow::anyhow!("Failed to connect to Discord: {}", e))?;
-        
+
         guard.client = Some(client);
-        guard.start_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
-        
+        guard.start_time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
         // Set initial idle presence
         Self::set_idle_presence_internal(&mut guard).await
     }
@@ -142,7 +149,7 @@ impl DiscordService {
             let settings = app_state.settings.lock().unwrap();
             settings.discord_rpc_enabled
         };
-        
+
         if !discord_enabled {
             return Ok(());
         }
@@ -151,13 +158,17 @@ impl DiscordService {
         Self::set_idle_presence_internal(&mut guard).await
     }
 
-    async fn set_idle_presence_internal(guard: &mut tokio::sync::MutexGuard<'_, DiscordState>) -> Result<()> {
+    async fn set_idle_presence_internal(
+        guard: &mut tokio::sync::MutexGuard<'_, DiscordState>,
+    ) -> Result<()> {
         // Get timestamp before any borrows
         let timestamp = guard.start_time;
-        
+
         if let Some(client) = &mut guard.client {
             let mut rng = rand::rng();
-            let browsing = BROWSING_PHRASES.choose(&mut rng).unwrap_or(&"Browsing Twitch");
+            let browsing = BROWSING_PHRASES
+                .choose(&mut rng)
+                .unwrap_or(&"Browsing Twitch");
             let idle = IDLE_PHRASES.choose(&mut rng).unwrap_or(&"Just chilling");
 
             let activity = Activity::new()
@@ -166,12 +177,16 @@ impl DiscordService {
                 .assets(
                     Assets::new()
                         .large_image(DISCORD_LARGE_IMAGE)
-                        .large_text("Stream Nook")
+                        .large_text("Stream Nook"),
                 )
                 .timestamps(Timestamps::new().start(timestamp))
-                .buttons(vec![Button::new("Download Stream Nook", "https://github.com/winters27/StreamNook/")]);
+                .buttons(vec![Button::new(
+                    "Download Stream Nook",
+                    "https://github.com/winters27/StreamNook/",
+                )]);
 
-            client.set_activity(activity)
+            client
+                .set_activity(activity)
                 .map_err(|e| anyhow::anyhow!("Failed to set idle presence: {}", e))?;
         }
         Ok(())
@@ -179,30 +194,31 @@ impl DiscordService {
 
     /// Update presence when watching a stream
     pub async fn update_presence(
-        details: &str, 
-        state: &str, 
+        details: &str,
+        state: &str,
         _large_image: &str,
         _small_image: &str,
-        _start_time: u64, 
+        _start_time: u64,
         game_name: &str,
         stream_url: &str,
-        app_state: &AppState
+        app_state: &AppState,
     ) -> Result<()> {
         let discord_enabled = {
             let settings = app_state.settings.lock().unwrap();
             settings.discord_rpc_enabled
         };
-        
+
         if !discord_enabled {
             return Ok(());
         }
 
         let mut guard = DISCORD_STATE.lock().await;
-        
+
         // Ensure we're connected
         if guard.client.is_none() {
             let mut client = DiscordIpcClient::new("1436402207485464596");
-            client.connect()
+            client
+                .connect()
                 .map_err(|e| anyhow::anyhow!("Failed to connect to Discord: {}", e))?;
             guard.client = Some(client);
         }
@@ -210,23 +226,22 @@ impl DiscordService {
         // Get start time and drop the mutable borrow temporarily
         let timestamp = guard.start_time;
         let has_client = guard.client.is_some();
-        
+
         if !has_client {
             return Ok(());
         }
-        
+
         // Try to get game image from Discord's detectable games (outside the borrow)
         let game_image_url = if !game_name.is_empty() {
             Self::resolve_game_image(game_name).await.ok()
         } else {
             None
         };
-        
+
         // Now get mutable reference to client
         if let Some(client) = &mut guard.client {
-            
             let mut assets = Assets::new();
-            
+
             if let Some(ref url) = game_image_url {
                 assets = assets.large_image(url);
                 assets = assets.large_text(game_name);
@@ -235,7 +250,7 @@ impl DiscordService {
                 assets = assets.large_image(DISCORD_LARGE_IMAGE);
                 assets = assets.large_text("Stream Nook");
             }
-            
+
             // Add Twitch logo as small image
             assets = assets.small_image("https://raw.githubusercontent.com/winters27/StreamNook/refs/heads/main/assets/logo_1704751143960.JPG");
             assets = assets.small_text("Twitch");
@@ -251,11 +266,15 @@ impl DiscordService {
             if !stream_url.is_empty() {
                 activity = activity.buttons(vec![
                     Button::new("Watch Stream", stream_url),
-                    Button::new("Download Stream Nook", "https://github.com/winters27/StreamNook/")
+                    Button::new(
+                        "Download Stream Nook",
+                        "https://github.com/winters27/StreamNook/",
+                    ),
                 ]);
             }
 
-            client.set_activity(activity)
+            client
+                .set_activity(activity)
                 .map_err(|e| anyhow::anyhow!("Failed to set Discord activity: {}", e))?;
         }
 
@@ -268,14 +287,15 @@ impl DiscordService {
             let settings = app_state.settings.lock().unwrap();
             settings.discord_rpc_enabled
         };
-        
+
         if !discord_enabled {
             return Ok(());
         }
 
         let mut guard = DISCORD_STATE.lock().await;
         if let Some(client) = &mut guard.client {
-            client.clear_activity()
+            client
+                .clear_activity()
                 .map_err(|e| anyhow::anyhow!("Failed to clear Discord activity: {}", e))?;
         }
         Ok(())
@@ -289,22 +309,28 @@ impl DiscordService {
     async fn resolve_game_image(game_name: &str) -> Result<String> {
         // Fetch Discord's detectable games list
         let apps = Self::fetch_discord_detectables().await?;
-        
+
         // Try to match the game
         // We pass a threshold, just like the Python version
         if let Some(matched_app) = Self::match_game(&apps, game_name, 0.6) {
             // Prefer cover_image, fallback to icon_hash
             if let Some(cover) = &matched_app.cover_image {
-                return Ok(format!("https://cdn.discordapp.com/app-assets/{}/{}.png?size=512", matched_app.id, cover));
+                return Ok(format!(
+                    "https://cdn.discordapp.com/app-assets/{}/{}.png?size=512",
+                    matched_app.id, cover
+                ));
             }
-            if let Some(icon_hash) = &matched_app.icon_hash { // <--- CORRECTED
-                return Ok(format!("https://cdn.discordapp.com/app-icons/{}/{}.png?size=512", matched_app.id, icon_hash)); // <--- CORRECTED
+            if let Some(icon_hash) = &matched_app.icon_hash {
+                // <--- CORRECTED
+                return Ok(format!(
+                    "https://cdn.discordapp.com/app-icons/{}/{}.png?size=512",
+                    matched_app.id, icon_hash
+                )); // <--- CORRECTED
             }
         }
-        
+
         Err(anyhow::anyhow!("Game image not found"))
     }
-
 
     /// Fetch Discord's detectable games list
     async fn fetch_discord_detectables() -> Result<Vec<DiscordApp>> {
@@ -312,12 +338,12 @@ impl DiscordService {
             .user_agent("StreamNook/1.0")
             .timeout(std::time::Duration::from_secs(6))
             .build()?;
-        
+
         let response = client
             .get("https://discord.com/api/v9/applications/detectable")
             .send()
             .await?;
-        
+
         let apps: Vec<DiscordApp> = response.json().await?;
         Ok(apps)
     }
@@ -326,7 +352,7 @@ impl DiscordService {
     // (These functions are inside the `impl` block,
     //  but they correctly reference the `lazy_static!`
     //  vars defined at the module level)
-    
+
     /// Normalize string for comparison (Python's _norm)
     fn norm(s: &str) -> String {
         s.trim().to_lowercase()
@@ -337,17 +363,17 @@ impl DiscordService {
         if name.is_empty() {
             return String::new();
         }
-        
+
         let mut cleaned = name.to_string();
-        
+
         // Remove trademark symbols first (they aren't in the patterns)
         cleaned = CLEAN_PATTERNS[0].replace_all(&cleaned, "").to_string();
-        
+
         // Remove other patterns
         for pattern in CLEAN_PATTERNS.iter().skip(1) {
             cleaned = pattern.replace_all(&cleaned, " ").to_string();
         }
-        
+
         // Re-join whitespace and normalize
         Self::norm(&cleaned.split_whitespace().collect::<Vec<_>>().join(" "))
     }
@@ -360,7 +386,8 @@ impl DiscordService {
 
     /// Extract the core game name (first part before colon or dash)
     fn extract_core_name(name: &str) -> String {
-        for sep in [':', '–', '—', '-'] { // Added missing '-' from python ' - '
+        for sep in [':', '–', '—', '-'] {
+            // Added missing '-' from python ' - '
             if let Some((before, _)) = name.split_once(sep) {
                 return before.trim().to_string();
             }
@@ -388,7 +415,7 @@ impl DiscordService {
         let g_clean = Self::clean_game_name(game_name);
         let g_core = Self::norm(&Self::extract_core_name(game_name));
         let g_tokens = Self::tokenize(game_name);
-        
+
         let mut best_match: Option<DiscordApp> = None;
         let mut best_score = 0.0;
 
@@ -400,10 +427,10 @@ impl DiscordService {
 
             let mut names_to_check = vec![app_name.clone()];
             names_to_check.extend(app.aliases.clone());
-            
+
             for check_name in names_to_check {
                 let mut score = 0.0;
-                
+
                 let cn_norm = Self::norm(&check_name);
                 let cn_clean = Self::clean_game_name(&check_name);
                 let cn_core = Self::norm(&Self::extract_core_name(&check_name));
@@ -425,35 +452,37 @@ impl DiscordService {
                     let sim_clean = Self::similarity_score(&g_clean, &cn_clean);
                     let sim_core = if !g_core.is_empty() && !cn_core.is_empty() {
                         Self::similarity_score(&g_core, &cn_core)
-                    } else { 0.0 };
-                    
+                    } else {
+                        0.0
+                    };
+
                     score = sim_norm.max(sim_clean).max(sim_core);
                 }
-                
+
                 // Token-based score boost
                 if !g_tokens.is_empty() && !cn_tokens.is_empty() {
                     let common_tokens = g_tokens.intersection(&cn_tokens).count() as f64;
                     if common_tokens > 0.0 {
-                        let token_score = common_tokens / (g_tokens.len().max(cn_tokens.len()) as f64);
+                        let token_score =
+                            common_tokens / (g_tokens.len().max(cn_tokens.len()) as f64);
                         score = score.max(token_score * 0.85);
                     }
                 }
-                
+
                 if score > best_score && score >= threshold {
                     best_score = score;
                     best_match = Some(app.clone());
                 }
-                
+
                 // Perfect match, stop early
                 if best_score == 1.0 {
                     return best_match;
                 }
             }
         }
-        
+
         best_match
     }
-    
+
     // --- End: New Matching Logic ---
-    
 } // End impl DiscordService

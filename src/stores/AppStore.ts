@@ -54,6 +54,10 @@ interface AppState {
   isFavoriteStreamer: (userId: string) => boolean;
 }
 
+// Flags to ensure we only show session toasts once per app session
+let hasShownRestoreSessionToast = false;
+let hasShownWelcomeBackToast = false;
+
 export const useAppStore = create<AppState>((set, get) => ({
   settings: {} as Settings,
   followedStreams: [],
@@ -422,6 +426,17 @@ export const useAppStore = create<AppState>((set, get) => ({
   
   checkAuthStatus: async () => {
     try {
+      // Check if we have stored credentials first (only on initial check, not periodic checks)
+      const wasAuthenticated = get().isAuthenticated;
+      const hasCredentials = await invoke('has_stored_credentials') as boolean;
+      
+      // Only show "Restoring your session" once per app session
+      if (hasCredentials && !wasAuthenticated && !get().currentUser && !hasShownRestoreSessionToast) {
+        hasShownRestoreSessionToast = true;
+        // Show toast that we're attempting to login with stored credentials
+        get().addToast('Restoring your session...', 'info');
+      }
+      
       // Try to get user info - if it works, we're authenticated
       const userInfo = await invoke('get_user_info') as UserInfo;
       const user: TwitchUser = {
@@ -434,9 +449,31 @@ export const useAppStore = create<AppState>((set, get) => ({
       };
       
       set({ isAuthenticated: true, currentUser: user });
+      
+      // If we successfully restored session from stored credentials, show success (only once)
+      if (hasCredentials && !wasAuthenticated && !hasShownWelcomeBackToast) {
+        hasShownWelcomeBackToast = true;
+        get().addToast(`Welcome back, ${userInfo.display_name}!`, 'success');
+      }
     } catch (e) {
+      // Check if user was previously authenticated (session expired)
+      const wasAuthenticated = get().isAuthenticated;
+      const previousUser = get().currentUser;
+      
       // If it fails, we're not authenticated
       set({ isAuthenticated: false, currentUser: null, followedStreams: [] });
+      
+      // Show session expired toast if user was previously logged in
+      if (wasAuthenticated && previousUser) {
+        get().addToast(
+          'Your session has expired. Please log in again to continue.',
+          'warning',
+          {
+            label: 'Log In',
+            onClick: () => get().loginToTwitch()
+          }
+        );
+      }
     }
   },
   

@@ -1,12 +1,12 @@
-use anyhow::Result;
-use std::collections::HashSet;
-use std::sync::Arc;
-use tokio::sync::RwLock;
-use tokio::time::{interval, Duration};
-use tauri::{AppHandle, Emitter};
 use crate::models::settings::AppState;
 use crate::services::twitch_service::TwitchService;
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
+use std::sync::Arc;
+use tauri::{AppHandle, Emitter};
+use tokio::sync::RwLock;
+use tokio::time::{Duration, interval};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LiveNotification {
@@ -74,7 +74,7 @@ impl LiveNotificationService {
                 match TwitchService::get_followed_streams(&app_state).await {
                     Ok(streams) => {
                         let mut live_set = currently_live.write().await;
-                        
+
                         // On first run, just populate the set without sending notifications
                         if first_run {
                             for stream in streams {
@@ -95,20 +95,16 @@ impl LiveNotificationService {
                         }
 
                         // Remove streamers who are no longer live
-                        let current_live_logins: HashSet<String> = streams
-                            .iter()
-                            .map(|s| s.user_login.clone())
-                            .collect();
-                        
+                        let current_live_logins: HashSet<String> =
+                            streams.iter().map(|s| s.user_login.clone()).collect();
+
                         live_set.retain(|login| current_live_logins.contains(login));
 
                         // Send notifications for new live streamers
                         for stream in new_live_streamers {
-                            if let Err(e) = Self::send_notification(
-                                &app_handle,
-                                &app_state,
-                                &stream,
-                            ).await {
+                            if let Err(e) =
+                                Self::send_notification(&app_handle, &app_state, &stream).await
+                            {
                                 eprintln!("Failed to send live notification: {}", e);
                             }
                         }

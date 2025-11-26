@@ -1,7 +1,7 @@
 use crate::models::drops::*;
 use crate::models::settings::AppState;
 use crate::services::drops_auth_service::{DropsAuthService, DropsDeviceCodeInfo};
-use tauri::{State, AppHandle};
+use tauri::{AppHandle, State};
 
 #[tauri::command]
 pub async fn get_drops_settings(state: State<'_, AppState>) -> Result<DropsSettings, String> {
@@ -32,9 +32,7 @@ pub async fn get_active_drop_campaigns(
 }
 
 #[tauri::command]
-pub async fn get_drops_inventory(
-    state: State<'_, AppState>,
-) -> Result<InventoryResponse, String> {
+pub async fn get_drops_inventory(state: State<'_, AppState>) -> Result<InventoryResponse, String> {
     let drops_service = state.drops_service.lock().await;
     drops_service
         .fetch_inventory()
@@ -85,9 +83,7 @@ pub async fn claim_channel_points(
 }
 
 #[tauri::command]
-pub async fn get_drops_statistics(
-    state: State<'_, AppState>,
-) -> Result<DropsStatistics, String> {
+pub async fn get_drops_statistics(state: State<'_, AppState>) -> Result<DropsStatistics, String> {
     let drops_service = state.drops_service.lock().await;
     Ok(drops_service.get_statistics().await)
 }
@@ -131,14 +127,14 @@ pub async fn start_drops_monitoring(
     app_handle: AppHandle,
 ) -> Result<(), String> {
     let drops_service = state.drops_service.lock().await;
-    drops_service.start_monitoring(channel_id, channel_name, app_handle).await;
+    drops_service
+        .start_monitoring(channel_id, channel_name, app_handle)
+        .await;
     Ok(())
 }
 
 #[tauri::command]
-pub async fn stop_drops_monitoring(
-    state: State<'_, AppState>,
-) -> Result<(), String> {
+pub async fn stop_drops_monitoring(state: State<'_, AppState>) -> Result<(), String> {
     let drops_service = state.drops_service.lock().await;
     drops_service.stop_monitoring().await;
     Ok(())
@@ -151,7 +147,9 @@ pub async fn update_monitoring_channel(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let drops_service = state.drops_service.lock().await;
-    drops_service.update_current_channel(channel_id, channel_name).await;
+    drops_service
+        .update_current_channel(channel_id, channel_name)
+        .await;
     Ok(())
 }
 
@@ -192,17 +190,13 @@ pub async fn stop_auto_mining(
 }
 
 #[tauri::command]
-pub async fn get_mining_status(
-    state: State<'_, AppState>,
-) -> Result<MiningStatus, String> {
+pub async fn get_mining_status(state: State<'_, AppState>) -> Result<MiningStatus, String> {
     let mining_service = state.mining_service.lock().await;
     Ok(mining_service.get_mining_status().await)
 }
 
 #[tauri::command]
-pub async fn is_auto_mining(
-    state: State<'_, AppState>,
-) -> Result<bool, String> {
+pub async fn is_auto_mining(state: State<'_, AppState>) -> Result<bool, String> {
     let mining_service = state.mining_service.lock().await;
     Ok(mining_service.is_mining().await)
 }
@@ -228,9 +222,7 @@ pub async fn poll_drops_token(
 
 #[tauri::command]
 pub async fn drops_logout() -> Result<(), String> {
-    DropsAuthService::logout()
-        .await
-        .map_err(|e| e.to_string())
+    DropsAuthService::logout().await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]

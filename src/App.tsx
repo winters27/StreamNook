@@ -70,9 +70,22 @@ function App() {
         addToast(`Claimed ${claim.points_earned} channel points!`, 'success');
       });
       
+      // Set up periodic auth check to detect session expiry while watching
+      // Check every 5 minutes
+      const authCheckInterval = setInterval(async () => {
+        const { isAuthenticated: wasAuthenticated, currentStream } = useAppStore.getState();
+        
+        // Only check if we were authenticated and are currently watching a stream
+        if (wasAuthenticated && currentStream) {
+          console.log('[App] Performing periodic auth check...');
+          await checkAuthStatus();
+        }
+      }, 5 * 60 * 1000); // 5 minutes
+      
       // Cleanup listeners on unmount
       return () => {
         unlistenChannelPoints();
+        clearInterval(authCheckInterval);
       };
     };
     

@@ -1,9 +1,9 @@
-use std::sync::{Arc, Mutex};
-use tokio::sync::Mutex as TokioMutex;
-use serde::{Serialize, Deserialize};
+use crate::services::background_service::BackgroundService;
 use crate::services::drops_service::DropsService;
 use crate::services::mining_service::MiningService;
-use crate::services::background_service::BackgroundService;
+use serde::{Deserialize, Serialize};
+use std::sync::{Arc, Mutex};
+use tokio::sync::Mutex as TokioMutex;
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct VideoPlayerSettings {
@@ -64,13 +64,13 @@ impl Default for TtvlolPluginSettings {
 pub struct ChatDesignSettings {
     pub show_dividers: bool,
     pub alternating_backgrounds: bool,
-    pub dark_mode: bool,           // Use black background instead of gray
-    pub message_spacing: u32,      // 0-20 pixels
-    pub font_size: u32,            // 10-20 pixels
-    pub font_weight: u32,          // 300-700
-    pub mention_color: String,     // Hex color for @ mentions
-    pub reply_color: String,       // Hex color for reply threads
-    pub mention_animation: bool,   // Enable red-shift animation for mentions
+    pub dark_mode: bool,         // Use black background instead of gray
+    pub message_spacing: u32,    // 0-20 pixels
+    pub font_size: u32,          // 10-20 pixels
+    pub font_weight: u32,        // 300-700
+    pub mention_color: String,   // Hex color for @ mentions
+    pub reply_color: String,     // Hex color for reply threads
+    pub mention_animation: bool, // Enable red-shift animation for mentions
 }
 
 impl Default for ChatDesignSettings {

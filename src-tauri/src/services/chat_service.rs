@@ -1,9 +1,9 @@
 // This module now uses IRC for chat instead of EventSub
 // Simply re-exports the IrcService as ChatService for backwards compatibility
 
-use anyhow::Result;
-use crate::services::irc_service::IrcService;
 use crate::models::settings::AppState;
+use crate::services::irc_service::IrcService;
+use anyhow::Result;
 
 pub struct ChatService;
 

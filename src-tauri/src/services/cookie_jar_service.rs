@@ -12,6 +12,34 @@ use url::Url;
 const MAIN_COOKIES_FILE: &str = "cookies.json";
 const DROPS_COOKIES_FILE: &str = "cookies_drops.json";
 
+/// Get the app data directory (works consistently in dev and release)
+fn get_app_data_dir() -> Result<PathBuf> {
+    // Try to use the standard config directory first
+    if let Some(config_dir) = dirs::config_dir() {
+        let app_dir = config_dir.join("StreamNook");
+        println!("[COOKIE_JAR] Using config directory: {:?}", app_dir);
+        return Ok(app_dir);
+    }
+
+    // Fallback to data directory
+    if let Some(data_dir) = dirs::data_dir() {
+        let app_dir = data_dir.join("StreamNook");
+        println!("[COOKIE_JAR] Fallback to data directory: {:?}", app_dir);
+        return Ok(app_dir);
+    }
+
+    // Last resort: use current exe directory
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            let app_dir = exe_dir.join("data");
+            println!("[COOKIE_JAR] Fallback to exe directory: {:?}", app_dir);
+            return Ok(app_dir);
+        }
+    }
+
+    Err(anyhow::anyhow!("Could not determine app data directory"))
+}
+
 /// A service for managing persistent HTTP cookies similar to TwitchDropsMiner's cookies.jar
 pub struct CookieJarService {
     store: Arc<Mutex<CookieStore>>,
@@ -38,7 +66,10 @@ impl CookieJarService {
             println!("[COOKIE_JAR] Loading cookies from: {:?}", file_path);
             match Self::load_from_file(&file_path) {
                 Ok(store) => {
-                    println!("[COOKIE_JAR] ✅ Loaded {} cookies", store.iter_any().count());
+                    println!(
+                        "[COOKIE_JAR] ✅ Loaded {} cookies",
+                        store.iter_any().count()
+                    );
                     store
                 }
                 Err(e) => {
@@ -60,15 +91,15 @@ impl CookieJarService {
 
     /// Get the path for cookies file
     fn get_cookies_path(filename: &str) -> Result<PathBuf> {
-        let mut path = dirs::config_dir()
-            .ok_or_else(|| anyhow::anyhow!("Could not find config directory"))?;
-        path.push("StreamNook");
+        let mut path = get_app_data_dir()?;
 
         if !path.exists() {
+            println!("[COOKIE_JAR] Creating directory: {:?}", path);
             fs::create_dir_all(&path)?;
         }
 
         path.push(filename);
+        println!("[COOKIE_JAR] Cookie file path: {:?}", path);
         Ok(path)
     }
 
@@ -84,7 +115,7 @@ impl CookieJarService {
     /// Save cookies to disk
     pub async fn save(&self) -> Result<()> {
         let store = self.store.lock().await;
-        
+
         // Create parent directory if it doesn't exist
         if let Some(parent) = self.file_path.parent() {
             fs::create_dir_all(parent)?;
@@ -92,13 +123,17 @@ impl CookieJarService {
 
         let file = File::create(&self.file_path)?;
         let mut writer = BufWriter::new(file);
-        
-        store.save_json(&mut writer)
+
+        store
+            .save_json(&mut writer)
             .map_err(|e| anyhow::anyhow!("Failed to save cookies: {:?}", e))?;
-        
-        println!("[COOKIE_JAR] ✅ Saved {} cookies to {:?}", 
-            store.iter_any().count(), self.file_path);
-        
+
+        println!(
+            "[COOKIE_JAR] ✅ Saved {} cookies to {:?}",
+            store.iter_any().count(),
+            self.file_path
+        );
+
         Ok(())
     }
 
@@ -110,7 +145,10 @@ impl CookieJarService {
 
         if self.file_path.exists() {
             fs::remove_file(&self.file_path)?;
-            println!("[COOKIE_JAR] ✅ Cleared cookies and deleted file: {:?}", self.file_path);
+            println!(
+                "[COOKIE_JAR] ✅ Cleared cookies and deleted file: {:?}",
+                self.file_path
+            );
         }
 
         Ok(())
@@ -125,9 +163,10 @@ impl CookieJarService {
             .finish();
 
         let mut store = self.store.lock().await;
-        store.insert_raw(&cookie, &url)
+        store
+            .insert_raw(&cookie, &url)
             .map_err(|e| anyhow::anyhow!("Failed to insert cookie: {:?}", e))?;
-        
+
         Ok(())
     }
 
@@ -135,8 +174,9 @@ impl CookieJarService {
     pub async fn get_cookie(&self, url: &str, name: &str) -> Option<String> {
         let url = Url::parse(url).ok()?;
         let store = self.store.lock().await;
-        
-        store.get(&url.domain()?, "/", name)
+
+        store
+            .get(&url.domain()?, "/", name)
             .map(|cookie| cookie.value().to_string())
     }
 
@@ -144,13 +184,15 @@ impl CookieJarService {
     pub async fn create_client(&self) -> Result<Client> {
         let store = self.store.lock().await;
         let cookie_provider = reqwest::cookie::Jar::default();
-        
+
         // Copy cookies into the reqwest jar
         for cookie in store.iter_any() {
-            let url = format!("https://{}{}", 
+            let url = format!(
+                "https://{}{}",
                 cookie.domain().unwrap_or("twitch.tv"),
-                cookie.path().unwrap_or("/"));
-            
+                cookie.path().unwrap_or("/")
+            );
+
             if let Ok(url) = Url::parse(&url) {
                 let cookie_str = format!("{}={}", cookie.name(), cookie.value());
                 cookie_provider.add_cookie_str(&cookie_str, &url);
@@ -166,7 +208,11 @@ impl CookieJarService {
     }
 
     /// Update cookies from a response
-    pub async fn update_from_response(&self, url: &str, headers: &reqwest::header::HeaderMap) -> Result<()> {
+    pub async fn update_from_response(
+        &self,
+        url: &str,
+        headers: &reqwest::header::HeaderMap,
+    ) -> Result<()> {
         let url = Url::parse(url)?;
         let mut store = self.store.lock().await;
 
@@ -184,7 +230,9 @@ impl CookieJarService {
 
     /// Check if we have an auth token cookie
     pub async fn has_auth_token(&self) -> bool {
-        self.get_cookie("https://twitch.tv", "auth-token").await.is_some()
+        self.get_cookie("https://twitch.tv", "auth-token")
+            .await
+            .is_some()
     }
 
     /// Get the auth token from cookies
@@ -194,7 +242,8 @@ impl CookieJarService {
 
     /// Set the auth token cookie
     pub async fn set_auth_token(&self, token: &str) -> Result<()> {
-        self.add_cookie("https://twitch.tv", "auth-token", token).await?;
+        self.add_cookie("https://twitch.tv", "auth-token", token)
+            .await?;
         self.save().await
     }
 
@@ -205,7 +254,8 @@ impl CookieJarService {
 
     /// Set the device ID cookie
     pub async fn set_device_id(&self, device_id: &str) -> Result<()> {
-        self.add_cookie("https://twitch.tv", "unique_id", device_id).await?;
+        self.add_cookie("https://twitch.tv", "unique_id", device_id)
+            .await?;
         self.save().await
     }
 
@@ -216,7 +266,8 @@ impl CookieJarService {
 
     /// Set the persistent user ID cookie
     pub async fn set_persistent_user_id(&self, user_id: &str) -> Result<()> {
-        self.add_cookie("https://twitch.tv", "persistent", user_id).await?;
+        self.add_cookie("https://twitch.tv", "persistent", user_id)
+            .await?;
         self.save().await
     }
 

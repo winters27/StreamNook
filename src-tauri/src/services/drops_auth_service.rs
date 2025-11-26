@@ -1,12 +1,12 @@
+use crate::services::cookie_jar_service::CookieJarService;
 use anyhow::Result;
+use chrono::{Duration as ChronoDuration, Utc};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::time::{SystemTime, UNIX_EPOCH};
-use chrono::{Utc, Duration as ChronoDuration};
 use std::fs;
 use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::time::Duration;
-use crate::services::cookie_jar_service::CookieJarService;
 
 // Twitch Android App credentials (used by TwitchDropsMiner)
 const DROPS_CLIENT_ID: &str = "kd1unb4b3q4t58fwlpcbzcbnm76a8fp";
@@ -52,54 +52,64 @@ pub struct DropsAuthService;
 
 impl DropsAuthService {
     fn get_token_file_path() -> Result<PathBuf> {
-        let mut path = dirs::config_dir()
-            .ok_or_else(|| anyhow::anyhow!("Could not find config directory"))?;
+        let mut path =
+            dirs::config_dir().ok_or_else(|| anyhow::anyhow!("Could not find config directory"))?;
         path.push("StreamNook");
-        
+
         if !path.exists() {
             fs::create_dir_all(&path)?;
         }
-        
+
         path.push(DROPS_TOKEN_FILE_NAME);
         Ok(path)
     }
-    
+
     fn store_token_to_file(token: &StorableDropsToken) -> Result<()> {
         let path = Self::get_token_file_path()?;
         let token_json = serde_json::to_string(token)?;
-        
+
         // Simple XOR encryption with a fixed key for basic obfuscation
-        let key: Vec<u8> = "StreamNookDropsKey2024".bytes().cycle().take(token_json.len()).collect();
-        let encrypted: Vec<u8> = token_json.bytes()
+        let key: Vec<u8> = "StreamNookDropsKey2024"
+            .bytes()
+            .cycle()
+            .take(token_json.len())
+            .collect();
+        let encrypted: Vec<u8> = token_json
+            .bytes()
             .zip(key.iter())
             .map(|(a, b)| a ^ b)
             .collect();
-        
+
         fs::write(&path, encrypted)?;
         println!("[DROPS_AUTH] Token saved to file: {:?}", path);
         Ok(())
     }
-    
+
     fn load_token_from_file() -> Result<StorableDropsToken> {
         let path = Self::get_token_file_path()?;
-        
+
         if !path.exists() {
             return Err(anyhow::anyhow!("Drops token file does not exist"));
         }
-        
+
         let encrypted = fs::read(&path)?;
-        
+
         // Decrypt using the same XOR method
-        let key: Vec<u8> = "StreamNookDropsKey2024".bytes().cycle().take(encrypted.len()).collect();
-        let decrypted: String = encrypted.iter()
+        let key: Vec<u8> = "StreamNookDropsKey2024"
+            .bytes()
+            .cycle()
+            .take(encrypted.len())
+            .collect();
+        let decrypted: String = encrypted
+            .iter()
             .zip(key.iter())
             .map(|(a, b)| (a ^ b) as char)
             .collect();
-        
+
         let token: StorableDropsToken = serde_json::from_str(&decrypted)?;
         Ok(token)
     }
-    
+
     fn delete_token_file() -> Result<()> {
         let path = Self::get_token_file_path()?;
         if path.exists() {
@@ -119,7 +129,9 @@ impl DropsAuthService {
 
     async fn load_token_from_cookies() -> Result<String> {
         let cookie_jar = CookieJarService::new_drops()?;
-        cookie_jar.get_auth_token().await
+        cookie_jar
+            .get_auth_token()
+            .await
             .ok_or_else(|| anyhow::anyhow!("No drops auth token in cookies"))
     }
 
@@ -133,33 +145,39 @@ impl DropsAuthService {
     /// Start the device code flow for drops authentication
     pub async fn start_device_flow() -> Result<DropsDeviceCodeInfo> {
         let client = Client::new();
-        
+
         let params = [
             ("client_id", DROPS_CLIENT_ID),
             ("scopes", ""), // NO SCOPES - this is critical!
         ];
-        
+
         println!("[DROPS_AUTH] Starting device flow with Android app client ID");
         println!("[DROPS_AUTH] Client ID: {}", DROPS_CLIENT_ID);
         println!("[DROPS_AUTH] Scopes: (empty)");
-        
+
         let response = client
             .post("https://id.twitch.tv/oauth2/device")
             .form(&params)
             .send()
             .await?;
-        
+
         if !response.status().is_success() {
             let error_text = response.text().await?;
-            return Err(anyhow::anyhow!("Failed to start drops device flow: {}", error_text));
+            return Err(anyhow::anyhow!(
+                "Failed to start drops device flow: {}",
+                error_text
+            ));
         }
-        
+
         let device_response: DeviceCodeResponse = response.json().await?;
-        
+
         println!("[DROPS_AUTH] Device flow started successfully");
         println!("[DROPS_AUTH] User code: {}", device_response.user_code);
-        println!("[DROPS_AUTH] Verification URI: {}", device_response.verification_uri);
-        
+        println!(
+            "[DROPS_AUTH] Verification URI: {}",
+            device_response.verification_uri
+        );
+
         Ok(DropsDeviceCodeInfo {
             user_code: device_response.user_code,
             verification_uri: device_response.verification_uri,
@@ -168,7 +186,7 @@ impl DropsAuthService {
             expires_in: device_response.expires_in,
         })
     }
-    
+
     /// Poll for the token after the user has entered the code
     pub async fn poll_for_token(
         device_code: &str,
@@ -179,69 +197,84 @@ impl DropsAuthService {
         let start_time = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
         let expiry_time = start_time + expires_in;
         let mut poll_interval = interval;
-        
+
         println!("[DROPS_AUTH] Starting token polling...");
-        
+
         loop {
             let current_time = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
             if current_time >= expiry_time {
-                return Err(anyhow::anyhow!("Device code expired. Please try logging in again."));
+                return Err(anyhow::anyhow!(
+                    "Device code expired. Please try logging in again."
+                ));
             }
-            
+
             tokio::time::sleep(Duration::from_secs(poll_interval)).await;
-            
+
             let params = [
                 ("client_id", DROPS_CLIENT_ID),
                 ("scopes", ""), // NO SCOPES
                 ("device_code", device_code),
                 ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
             ];
-            
+
             let response = client
                 .post("https://id.twitch.tv/oauth2/token")
                 .form(&params)
                 .send()
                 .await?;
-            
+
             if response.status().is_success() {
                 let token_response: TokenResponse = response.json().await?;
-                
-                let expires_at = Utc::now() + ChronoDuration::seconds(token_response.expires_in.unwrap_or(3600) as i64);
-                
+
+                let expires_at = Utc::now()
+                    + ChronoDuration::seconds(token_response.expires_in.unwrap_or(3600) as i64);
+
                 let storable_token = StorableDropsToken {
                     access_token: token_response.access_token.clone(),
                     refresh_token: token_response.refresh_token.clone().unwrap_or_default(),
                     expires_at: expires_at.timestamp(),
                 };
-                
+
                 // Store token to both file and cookies for persistence
                 println!("[DROPS_AUTH] Storing token to file and cookies...");
                 let file_result = Self::store_token_to_file(&storable_token);
                 let cookie_result = Self::store_token_to_cookies(&storable_token).await;
-                
+
                 match (file_result, cookie_result) {
                     (Ok(_), Ok(_)) => {
                         println!("[DROPS_AUTH] ✅ Token stored successfully to file and cookies!");
                     }
                     (Ok(_), Err(e)) => {
-                        eprintln!("[DROPS_AUTH] ⚠️ Token saved to file but cookies failed: {:?}", e);
+                        eprintln!(
+                            "[DROPS_AUTH] ⚠️ Token saved to file but cookies failed: {:?}",
+                            e
+                        );
                     }
                     (Err(e), Ok(_)) => {
-                        eprintln!("[DROPS_AUTH] ⚠️ Token saved to cookies but file failed: {:?}", e);
+                        eprintln!(
+                            "[DROPS_AUTH] ⚠️ Token saved to cookies but file failed: {:?}",
+                            e
+                        );
                     }
                     (Err(file_err), Err(cookie_err)) => {
-                        eprintln!("[DROPS_AUTH] ⚠️ Failed to store token! File: {:?}, Cookie: {:?}", file_err, cookie_err);
+                        eprintln!(
+                            "[DROPS_AUTH] ⚠️ Failed to store token! File: {:?}, Cookie: {:?}",
+                            file_err, cookie_err
+                        );
                         // Still continue since we have the token in memory
                     }
                 }
-                
-                println!("[DROPS_AUTH] Access token (first 10 chars): {}...", &token_response.access_token[..10.min(token_response.access_token.len())]);
-                
+
+                println!(
+                    "[DROPS_AUTH] Access token (first 10 chars): {}...",
+                    &token_response.access_token[..10.min(token_response.access_token.len())]
+                );
+
                 return Ok(token_response.access_token);
             }
-            
+
             let error_text = response.text().await?;
-            
+
             if error_text.contains("authorization_pending") {
                 // User hasn't authorized yet, continue polling
                 println!("[DROPS_AUTH] Waiting for user authorization...");
@@ -249,10 +282,15 @@ impl DropsAuthService {
             } else if error_text.contains("slow_down") {
                 // Twitch wants us to slow down
                 poll_interval += 2;
-                println!("[DROPS_AUTH] Slowing down polling interval to {} seconds", poll_interval);
+                println!(
+                    "[DROPS_AUTH] Slowing down polling interval to {} seconds",
+                    poll_interval
+                );
                 continue;
             } else if error_text.contains("expired_token") {
-                return Err(anyhow::anyhow!("Device code expired. Please try logging in again."));
+                return Err(anyhow::anyhow!(
+                    "Device code expired. Please try logging in again."
+                ));
             } else {
                 return Err(anyhow::anyhow!("Token polling failed: {}", error_text));
             }
@@ -287,7 +325,7 @@ impl DropsAuthService {
         if !response.status().is_success() {
             let error_text = response.text().await?;
             let error_msg = format!("Failed to refresh drops token: {}", error_text);
-            
+
             // If refresh fails due to missing client secret or other OAuth issues,
             // delete the stored token so the user can re-authenticate
             if error_text.contains("client secret") || error_text.contains("invalid") {
@@ -295,24 +333,30 @@ impl DropsAuthService {
                 eprintln!("[DROPS_AUTH] Error: {}", error_text);
                 let _ = Self::delete_token_file();
                 let _ = Self::delete_cookies().await;
-                return Err(anyhow::anyhow!("{}\n\nPlease log in again for drops functionality.", error_msg));
+                return Err(anyhow::anyhow!(
+                    "{}\n\nPlease log in again for drops functionality.",
+                    error_msg
+                ));
             }
-            
+
             return Err(anyhow::anyhow!(error_msg));
         }
 
         let token_response: TokenResponse = response.json().await?;
-        let expires_at = Utc::now() + ChronoDuration::seconds(token_response.expires_in.unwrap_or(3600) as i64);
+        let expires_at =
+            Utc::now() + ChronoDuration::seconds(token_response.expires_in.unwrap_or(3600) as i64);
 
         let new_storable_token = StorableDropsToken {
             access_token: token_response.access_token,
-            refresh_token: token_response.refresh_token.unwrap_or_else(|| refresh_token.to_string()),
+            refresh_token: token_response
+                .refresh_token
+                .unwrap_or_else(|| refresh_token.to_string()),
             expires_at: expires_at.timestamp(),
         };
 
         // Store the refreshed token
         Self::store_token_to_file(&new_storable_token)?;
-        
+
         println!("[DROPS_AUTH] ✅ Token refreshed successfully");
 
         Ok(new_storable_token)
@@ -331,11 +375,9 @@ impl DropsAuthService {
                 // Twitch will reject it with 401 when it's actually invalid
                 Ok(token.access_token)
             }
-            Err(_) => {
-                Err(anyhow::anyhow!(
-                    "Not authenticated for drops. Please log in to Twitch for drops functionality."
-                ))
-            }
+            Err(_) => Err(anyhow::anyhow!(
+                "Not authenticated for drops. Please log in to Twitch for drops functionality."
+            )),
         }
     }
 

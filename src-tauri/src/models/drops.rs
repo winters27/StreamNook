@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -123,9 +123,9 @@ pub struct DropsSettings {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum PriorityMode {
-    PriorityOnly,    // Only mine priority games
-    EndingSoonest,   // Prioritize campaigns ending soon
-    LowAvailFirst,   // Prioritize low availability campaigns
+    PriorityOnly,  // Only mine priority games
+    EndingSoonest, // Prioritize campaigns ending soon
+    LowAvailFirst, // Prioritize low availability campaigns
 }
 
 impl Default for DropsSettings {
