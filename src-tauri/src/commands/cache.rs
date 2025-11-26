@@ -1,7 +1,7 @@
 use crate::services::cache_service::{
-    clear_all_cache, get_cache_stats, load_badge_cache, load_emote_cache, load_emote_from_cache,
-    save_badge_cache, save_emote_cache, save_emote_to_cache, CacheStats,
-    save_favorite_emotes, load_favorite_emotes, add_favorite_emote, remove_favorite_emote,
+    CacheStats, add_favorite_emote, clear_all_cache, get_cache_stats, load_badge_cache,
+    load_emote_cache, load_emote_from_cache, load_favorite_emotes, remove_favorite_emote,
+    save_badge_cache, save_emote_cache, save_emote_to_cache, save_favorite_emotes,
 };
 use tauri::command;
 
@@ -40,13 +40,8 @@ pub async fn save_badges_to_cache(
     data: String,
     expiry_days: u32,
 ) -> Result<(), String> {
-    save_badge_cache(
-        &cache_type,
-        channel_id.as_deref(),
-        &data,
-        expiry_days,
-    )
-    .map_err(|e| e.to_string())
+    save_badge_cache(&cache_type, channel_id.as_deref(), &data, expiry_days)
+        .map_err(|e| e.to_string())
 }
 
 #[command]
@@ -68,10 +63,7 @@ pub async fn get_cache_statistics() -> Result<CacheStats, String> {
 }
 
 #[command]
-pub async fn save_cosmetics_cache(
-    user_id: String,
-    data: String,
-) -> Result<(), String> {
+pub async fn save_cosmetics_cache(user_id: String, data: String) -> Result<(), String> {
     save_emote_to_cache(&format!("cosmetics_{}", user_id), &data, 1).map_err(|e| e.to_string())
 }
 

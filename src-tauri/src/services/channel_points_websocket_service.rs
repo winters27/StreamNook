@@ -1,15 +1,15 @@
 use anyhow::Result;
+use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::RwLock;
-use tokio::time::{interval, Duration};
+use tokio::time::{Duration, interval};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use uuid::Uuid;
-use chrono::Utc;
 
 const PUBSUB_URL: &str = "wss://pubsub-edge.twitch.tv";
 const MAX_TOPICS_PER_CONNECTION: usize = 50;
@@ -76,12 +76,16 @@ impl ChannelPointsWebSocketService {
         // Use 10 channels per connection - testing shows 48 topics fails but 6 succeeds
         // 10 channels * 2 topics + 2 global = 22 topics (very safe, matches working config)
         const MAX_CHANNELS_PER_CONNECTION: usize = 10;
-        
+
         // Calculate how many WebSocket connections we need
-        let num_connections = (channel_ids.len() + MAX_CHANNELS_PER_CONNECTION - 1) / MAX_CHANNELS_PER_CONNECTION;
-        
-        println!("🔌 Creating {} WebSocket connection(s) for {} channels", 
-            num_connections.min(10), channel_ids.len());
+        let num_connections =
+            (channel_ids.len() + MAX_CHANNELS_PER_CONNECTION - 1) / MAX_CHANNELS_PER_CONNECTION;
+
+        println!(
+            "🔌 Creating {} WebSocket connection(s) for {} channels",
+            num_connections.min(10),
+            channel_ids.len()
+        );
 
         // Split channels into chunks for each connection (max 10 connections)
         let chunks: Vec<_> = channel_ids
@@ -98,10 +102,10 @@ impl ChannelPointsWebSocketService {
                 // Longer delay between subsequent connections
                 tokio::time::sleep(Duration::from_secs(2)).await;
             }
-            
+
             let connection_id = Uuid::new_v4().to_string();
             let topics = self.build_topics_for_channels(chunk, user_id);
-            
+
             // Store connection info
             {
                 let mut connections = self.connections.write().await;
@@ -118,7 +122,7 @@ impl ChannelPointsWebSocketService {
             let auth_token = auth_token.to_string();
             let app_handle_clone = app_handle.clone();
             let connections = self.connections.clone();
-            
+
             tokio::spawn(async move {
                 if let Err(e) = Self::handle_connection(
                     connection_id.clone(),
@@ -127,7 +131,9 @@ impl ChannelPointsWebSocketService {
                     connections,
                     app_handle_clone,
                     index,
-                ).await {
+                )
+                .await
+                {
                     eprintln!("❌ WebSocket connection {} failed: {}", index, e);
                 }
             });
@@ -142,25 +148,25 @@ impl ChannelPointsWebSocketService {
     /// Build PubSub topics for a set of channels
     fn build_topics_for_channels(&self, channel_ids: &[String], user_id: &str) -> Vec<String> {
         let mut topics = Vec::new();
-        
+
         // Add community points topics for the user (global) - MOST IMPORTANT
         topics.push(format!("community-points-user-v1.{}", user_id));
-        
+
         // For each channel, add only essential topics (2 per channel instead of 3)
         for channel_id in channel_ids {
             // Video playback events (stream up/down)
             topics.push(format!("video-playback-by-id.{}", channel_id));
-            
+
             // Predictions (if we want to participate)
             topics.push(format!("predictions-channel-v1.{}", channel_id));
         }
-        
+
         // User predictions results
         topics.push(format!("predictions-user-v1.{}", user_id));
-        
+
         // Note: Removed raid topics to reduce count per channel
         // This allows 24 channels per connection: 24*2 + 2 global = 50 topics exactly
-        
+
         topics
     }
 
@@ -173,8 +179,12 @@ impl ChannelPointsWebSocketService {
         app_handle: AppHandle,
         index: usize,
     ) -> Result<()> {
-        println!("🔗 Connecting WebSocket #{} with {} topics", index, topics.len());
-        
+        println!(
+            "🔗 Connecting WebSocket #{} with {} topics",
+            index,
+            topics.len()
+        );
+
         let (ws_stream, _) = connect_async(PUBSUB_URL).await?;
         let (mut write, mut read) = ws_stream.split();
 
@@ -196,29 +206,35 @@ impl ChannelPointsWebSocketService {
             }
         });
 
-        write.send(Message::text(listen_message.to_string())).await?;
-        println!("📡 WebSocket #{} sent LISTEN for {} topics", index, topics.len());
+        write
+            .send(Message::text(listen_message.to_string()))
+            .await?;
+        println!(
+            "📡 WebSocket #{} sent LISTEN for {} topics",
+            index,
+            topics.len()
+        );
 
         let connections_ping = connections.clone();
         let connection_id_ping = connection_id.clone();
-        
+
         // Spawn ping task to keep connection alive
         let ping_task = tokio::spawn(async move {
             let mut ping_interval = interval(Duration::from_secs(240)); // Ping every 4 minutes
             ping_interval.tick().await; // Skip first immediate tick
-            
+
             loop {
                 ping_interval.tick().await;
-                
+
                 let ping_message = json!({
                     "type": "PING"
                 });
-                
+
                 if let Err(e) = write.send(Message::text(ping_message.to_string())).await {
                     eprintln!("❌ WebSocket #{} failed to send PING: {}", index, e);
                     break;
                 }
-                
+
                 // Update last ping time
                 {
                     let mut conns = connections_ping.write().await;
@@ -226,7 +242,7 @@ impl ChannelPointsWebSocketService {
                         conn.last_ping = Utc::now();
                     }
                 }
-                
+
                 println!("💓 WebSocket #{} sent PING", index);
             }
         });
@@ -243,7 +259,8 @@ impl ChannelPointsWebSocketService {
                             &connections,
                             &connection_id,
                             index,
-                        ).await;
+                        )
+                        .await;
                     }
                 }
                 Ok(Message::Close(_)) => {
@@ -275,7 +292,7 @@ impl ChannelPointsWebSocketService {
         if should_reconnect {
             tokio::time::sleep(Duration::from_secs(60)).await;
             println!("🔄 Attempting to reconnect WebSocket #{}...", index);
-            
+
             // Recursively reconnect
             Box::pin(Self::handle_connection(
                 connection_id,
@@ -284,7 +301,8 @@ impl ChannelPointsWebSocketService {
                 connections,
                 app_handle,
                 index,
-            )).await
+            ))
+            .await
         } else {
             Ok(())
         }
@@ -305,24 +323,27 @@ impl ChannelPointsWebSocketService {
                         // Parse the topic to get the type
                         let topic_parts: Vec<&str> = data.topic.split('.').collect();
                         let topic_type = topic_parts[0];
-                        let channel_id = if topic_parts.len() > 1 { 
-                            Some(topic_parts[1].to_string()) 
-                        } else { 
-                            None 
+                        let channel_id = if topic_parts.len() > 1 {
+                            Some(topic_parts[1].to_string())
+                        } else {
+                            None
                         };
 
                         match topic_type {
                             "community-points-user-v1" => {
-                                Self::handle_points_event(message_data, app_handle, channel_id).await;
+                                Self::handle_points_event(message_data, app_handle, channel_id)
+                                    .await;
                             }
                             "video-playback-by-id" => {
-                                Self::handle_stream_event(message_data, app_handle, channel_id).await;
+                                Self::handle_stream_event(message_data, app_handle, channel_id)
+                                    .await;
                             }
                             "raid" => {
                                 Self::handle_raid_event(message_data, app_handle, channel_id).await;
                             }
                             "predictions-channel-v1" => {
-                                Self::handle_prediction_event(message_data, app_handle, channel_id).await;
+                                Self::handle_prediction_event(message_data, app_handle, channel_id)
+                                    .await;
                             }
                             _ => {}
                         }
@@ -331,7 +352,7 @@ impl ChannelPointsWebSocketService {
             }
             "PONG" => {
                 println!("🏓 WebSocket #{} received PONG", index);
-                
+
                 // Update last pong time
                 let mut conns = connections.write().await;
                 if let Some(conn) = conns.iter_mut().find(|c| c.id == *connection_id) {
@@ -359,44 +380,70 @@ impl ChannelPointsWebSocketService {
     }
 
     /// Handle channel points events
-    async fn handle_points_event(message_data: Value, app_handle: &AppHandle, channel_id: Option<String>) {
+    async fn handle_points_event(
+        message_data: Value,
+        app_handle: &AppHandle,
+        channel_id: Option<String>,
+    ) {
         if let Some(event_type) = message_data["type"].as_str() {
             match event_type {
                 "points-earned" => {
-                    let points = message_data["data"]["point_gain"]["total_points"].as_i64().unwrap_or(0);
-                    let reason = message_data["data"]["point_gain"]["reason_code"].as_str().unwrap_or("unknown");
-                    let balance = message_data["data"]["balance"]["balance"].as_i64().unwrap_or(0);
-                    
-                    println!("💰 Points earned: +{} (reason: {}) - New balance: {}", points, reason, balance);
-                    
-                    let _ = app_handle.emit("channel-points-earned", json!({
-                        "channel_id": channel_id,
-                        "points": points,
-                        "reason": reason,
-                        "balance": balance
-                    }));
+                    let points = message_data["data"]["point_gain"]["total_points"]
+                        .as_i64()
+                        .unwrap_or(0);
+                    let reason = message_data["data"]["point_gain"]["reason_code"]
+                        .as_str()
+                        .unwrap_or("unknown");
+                    let balance = message_data["data"]["balance"]["balance"]
+                        .as_i64()
+                        .unwrap_or(0);
+
+                    println!(
+                        "💰 Points earned: +{} (reason: {}) - New balance: {}",
+                        points, reason, balance
+                    );
+
+                    let _ = app_handle.emit(
+                        "channel-points-earned",
+                        json!({
+                            "channel_id": channel_id,
+                            "points": points,
+                            "reason": reason,
+                            "balance": balance
+                        }),
+                    );
                 }
                 "claim-available" => {
                     let claim_id = message_data["data"]["claim"]["id"].as_str().unwrap_or("");
-                    
+
                     println!("🎁 Bonus claim available! ID: {}", claim_id);
-                    
-                    let _ = app_handle.emit("channel-points-claim-available", json!({
-                        "channel_id": channel_id,
-                        "claim_id": claim_id
-                    }));
+
+                    let _ = app_handle.emit(
+                        "channel-points-claim-available",
+                        json!({
+                            "channel_id": channel_id,
+                            "claim_id": claim_id
+                        }),
+                    );
                 }
                 "points-spent" => {
-                    let points = message_data["data"]["point_cost"]["cost"].as_i64().unwrap_or(0);
-                    let balance = message_data["data"]["balance"]["balance"].as_i64().unwrap_or(0);
-                    
+                    let points = message_data["data"]["point_cost"]["cost"]
+                        .as_i64()
+                        .unwrap_or(0);
+                    let balance = message_data["data"]["balance"]["balance"]
+                        .as_i64()
+                        .unwrap_or(0);
+
                     println!("💸 Points spent: -{} - New balance: {}", points, balance);
-                    
-                    let _ = app_handle.emit("channel-points-spent", json!({
-                        "channel_id": channel_id,
-                        "points": points,
-                        "balance": balance
-                    }));
+
+                    let _ = app_handle.emit(
+                        "channel-points-spent",
+                        json!({
+                            "channel_id": channel_id,
+                            "points": points,
+                            "balance": balance
+                        }),
+                    );
                 }
                 _ => {}
             }
@@ -404,20 +451,30 @@ impl ChannelPointsWebSocketService {
     }
 
     /// Handle stream up/down events
-    async fn handle_stream_event(message_data: Value, app_handle: &AppHandle, channel_id: Option<String>) {
+    async fn handle_stream_event(
+        message_data: Value,
+        app_handle: &AppHandle,
+        channel_id: Option<String>,
+    ) {
         if let Some(event_type) = message_data["type"].as_str() {
             match event_type {
                 "stream-up" => {
                     println!("📺 Stream went live: {:?}", channel_id);
-                    let _ = app_handle.emit("stream-up", json!({
-                        "channel_id": channel_id
-                    }));
+                    let _ = app_handle.emit(
+                        "stream-up",
+                        json!({
+                            "channel_id": channel_id
+                        }),
+                    );
                 }
                 "stream-down" => {
                     println!("📴 Stream went offline: {:?}", channel_id);
-                    let _ = app_handle.emit("stream-down", json!({
-                        "channel_id": channel_id
-                    }));
+                    let _ = app_handle.emit(
+                        "stream-down",
+                        json!({
+                            "channel_id": channel_id
+                        }),
+                    );
                 }
                 _ => {}
             }
@@ -425,7 +482,11 @@ impl ChannelPointsWebSocketService {
     }
 
     /// Handle raid events
-    async fn handle_raid_event(message_data: Value, _app_handle: &AppHandle, channel_id: Option<String>) {
+    async fn handle_raid_event(
+        message_data: Value,
+        _app_handle: &AppHandle,
+        channel_id: Option<String>,
+    ) {
         if let Some(raid_id) = message_data["raid"]["id"].as_str() {
             let target = message_data["raid"]["target_login"].as_str().unwrap_or("");
             println!("🎯 Raid detected from {:?} to {}", channel_id, target);
@@ -433,10 +494,16 @@ impl ChannelPointsWebSocketService {
     }
 
     /// Handle prediction events
-    async fn handle_prediction_event(message_data: Value, _app_handle: &AppHandle, channel_id: Option<String>) {
+    async fn handle_prediction_event(
+        message_data: Value,
+        _app_handle: &AppHandle,
+        channel_id: Option<String>,
+    ) {
         if let Some(event_type) = message_data["type"].as_str() {
             if event_type == "event-created" {
-                let title = message_data["data"]["event"]["title"].as_str().unwrap_or("");
+                let title = message_data["data"]["event"]["title"]
+                    .as_str()
+                    .unwrap_or("");
                 println!("🔮 Prediction created on {:?}: {}", channel_id, title);
             }
         }
@@ -445,20 +512,23 @@ impl ChannelPointsWebSocketService {
     /// Start ping keeper to maintain connections
     async fn start_ping_keeper(&self, app_handle: AppHandle) {
         let connections = self.connections.clone();
-        
+
         tokio::spawn(async move {
             let mut interval = interval(Duration::from_secs(240)); // Ping every 4 minutes
-            
+
             loop {
                 interval.tick().await;
-                
+
                 let conns = connections.read().await;
                 for (index, conn) in conns.iter().enumerate() {
                     if conn.is_connected {
                         let elapsed = Utc::now().signed_duration_since(conn.last_pong);
                         if elapsed.num_minutes() > 5 {
-                            println!("⚠️ WebSocket #{} hasn't received PONG in {} minutes", 
-                                index, elapsed.num_minutes());
+                            println!(
+                                "⚠️ WebSocket #{} hasn't received PONG in {} minutes",
+                                index,
+                                elapsed.num_minutes()
+                            );
                         }
                     }
                 }

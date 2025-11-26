@@ -1,10 +1,14 @@
-use tauri::State;
-use anyhow::Result;
-use crate::services::{streamlink_manager::StreamlinkManager, stream_server::StreamServer};
 use crate::models::settings::AppState;
+use crate::services::{stream_server::StreamServer, streamlink_manager::StreamlinkManager};
+use anyhow::Result;
+use tauri::State;
 
 #[tauri::command]
-pub async fn start_stream(url: String, quality: String, state: State<'_, AppState>) -> Result<String, String> {
+pub async fn start_stream(
+    url: String,
+    quality: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
     // Get settings values and determine which args to use
     let (streamlink_path, streamlink_args) = {
         let settings = state.settings.lock().unwrap();
@@ -17,13 +21,18 @@ pub async fn start_stream(url: String, quality: String, state: State<'_, AppStat
         };
         (settings.streamlink_path.clone(), args)
     };
-    
+
     // Start Streamlink to get stream URL
-    let stream_url = StreamlinkManager::get_stream_url(&url, &quality, &streamlink_path, &streamlink_args).await.map_err(|e| e.to_string())?;
-    
+    let stream_url =
+        StreamlinkManager::get_stream_url(&url, &quality, &streamlink_path, &streamlink_args)
+            .await
+            .map_err(|e| e.to_string())?;
+
     // Start local HTTP server to proxy the stream
-    let port = StreamServer::start_proxy_server(stream_url).await.map_err(|e| e.to_string())?;
-    
+    let port = StreamServer::start_proxy_server(stream_url)
+        .await
+        .map_err(|e| e.to_string())?;
+
     Ok(format!("http://localhost:{}/stream.m3u8", port))
 }
 
@@ -33,11 +42,16 @@ pub async fn stop_stream() -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn get_stream_qualities(url: String, state: State<'_, AppState>) -> Result<Vec<String>, String> {
+pub async fn get_stream_qualities(
+    url: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, String> {
     let streamlink_path = {
         let settings = state.settings.lock().unwrap();
         settings.streamlink_path.clone()
     };
-    
-    StreamlinkManager::get_qualities(&url, &streamlink_path).await.map_err(|e| e.to_string())
+
+    StreamlinkManager::get_qualities(&url, &streamlink_path)
+        .await
+        .map_err(|e| e.to_string())
 }

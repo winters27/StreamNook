@@ -1,7 +1,7 @@
 use crate::services::universal_cache_service::{
-    assign_badge_metadata_positions, cache_item, cleanup_expired_entries, clear_universal_cache,
-    export_manifest_for_github, get_cached_item, get_universal_cache_stats, sync_universal_cache,
-    CacheType, UniversalCacheEntry, UniversalCacheStats,
+    CacheType, UniversalCacheEntry, UniversalCacheStats, assign_badge_metadata_positions,
+    cache_item, cleanup_expired_entries, clear_universal_cache, export_manifest_for_github,
+    get_cached_item, get_universal_cache_stats, sync_universal_cache,
 };
 use std::path::PathBuf;
 use tauri::command;
@@ -60,9 +60,7 @@ pub async fn sync_universal_cache_data(cache_types: Vec<String>) -> Result<usize
         types.push(cache_type_enum);
     }
 
-    sync_universal_cache(types)
-        .await
-        .map_err(|e| e.to_string())
+    sync_universal_cache(types).await.map_err(|e| e.to_string())
 }
 
 #[command]

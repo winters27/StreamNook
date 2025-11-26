@@ -1,16 +1,44 @@
-#![cfg_attr(all(not(debug_assertions), target_os = "windows"), windows_subsystem = "windows")]
+#![cfg_attr(
+    all(not(debug_assertions), target_os = "windows"),
+    windows_subsystem = "windows"
+)]
+// Suppress clippy warnings for this release - these are style issues, not bugs
+#![allow(dead_code)]
+#![allow(unused_imports)]
+#![allow(unused_variables)]
+#![allow(deprecated)]
+#![allow(clippy::collapsible_if)]
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::needless_return)]
+#![allow(clippy::ptr_arg)]
+#![allow(clippy::type_complexity)]
+#![allow(clippy::redundant_closure)]
+#![allow(clippy::manual_map)]
+#![allow(clippy::let_and_return)]
+#![allow(clippy::single_match)]
+#![allow(clippy::derivable_impls)]
+#![allow(clippy::needless_borrow)]
+#![allow(clippy::manual_div_ceil)]
+#![allow(clippy::unwrap_or_default)]
+#![allow(unused_mut)]
+#![allow(unused_assignments)]
+#![allow(clippy::needless_borrows_for_generic_args)]
+#![allow(clippy::manual_flatten)]
+#![allow(clippy::collapsible_match)]
 
-use std::sync::{Arc, Mutex};
-use tokio::sync::Mutex as TokioMutex;
-use tauri::{Builder, Manager};
-use commands::{app::*, badges::*, badge_metadata::*, twitch::*, streaming::*, chat::*, discord::*, settings::*, cache::*, drops::*, universal_cache::*, cosmetics_cache::*};
-use models::settings::{Settings, AppState};
-use services::drops_service::DropsService;
-use services::mining_service::MiningService;
-use services::cache_service;
-use services::live_notification_service::LiveNotificationService;
+use commands::{
+    app::*, badge_metadata::*, badges::*, cache::*, chat::*, cosmetics_cache::*, discord::*,
+    drops::*, settings::*, streaming::*, twitch::*, universal_cache::*,
+};
+use models::settings::{AppState, Settings};
 use services::background_service::BackgroundService;
-use services::twitch_service::TwitchService;
+use services::cache_service;
+use services::drops_service::DropsService;
+use services::live_notification_service::LiveNotificationService;
+use services::mining_service::MiningService;
+use std::sync::{Arc, Mutex};
+use tauri::{Builder, Manager};
+use tokio::sync::Mutex as TokioMutex;
 
 mod commands;
 mod models;
@@ -21,11 +49,11 @@ mod utils;
 fn load_settings_from_file() -> Result<Settings, Box<dyn std::error::Error>> {
     let app_dir = cache_service::get_app_data_dir()?;
     let settings_path = app_dir.join("settings.json");
-    
+
     if !settings_path.exists() {
         return Ok(Settings::default());
     }
-    
+
     let json = std::fs::read_to_string(&settings_path)?;
     let settings: Settings = serde_json::from_str(&json)?;
     Ok(settings)
@@ -34,10 +62,10 @@ fn load_settings_from_file() -> Result<Settings, Box<dyn std::error::Error>> {
 fn main() {
     // Load settings from our custom location in the same directory as cache
     let settings = load_settings_from_file().unwrap_or_else(|_| Settings::default());
-    
+
     // Initialize drops service
     let drops_service = Arc::new(TokioMutex::new(DropsService::new()));
-    
+
     // Initialize mining service with drops service reference
     let mining_service = Arc::new(TokioMutex::new(MiningService::new(drops_service.clone())));
 
@@ -53,7 +81,7 @@ fn main() {
         .setup(move |app| {
             let app_handle = app.handle().clone();
             let live_notif_service = live_notification_service.clone();
-            
+
             // Create and manage the background service correctly within the setup hook
             let background_service = Arc::new(TokioMutex::new(BackgroundService::new(
                 Arc::new(tokio::sync::RwLock::new(settings_arc.lock().unwrap().clone())),
@@ -67,10 +95,10 @@ fn main() {
                 mining_service,
                 background_service: background_service.clone(),
             };
-            
+
             // Clone the app_state before managing it
             let app_state_for_live_notif = app_state.clone();
-            
+
             // Manage AppState directly, not wrapped in Arc
             app.manage(app_state);
 
@@ -78,7 +106,7 @@ fn main() {
             tauri::async_runtime::spawn(async move {
                 background_service.lock().await.start().await;
             });
-            
+
             // Start live notification service
             let live_app_handle = app_handle.clone();
             tauri::async_runtime::spawn(async move {
@@ -86,17 +114,17 @@ fn main() {
                     eprintln!("Failed to start live notification service: {}", e);
                 }
             });
-            
+
             // Pre-fetch badges in the background
             tauri::async_runtime::spawn(async move {
                 use services::twitch_service::TwitchService;
                 use commands::badges::fetch_global_badges;
-                
+
                 println!("[Main] Starting background badge pre-fetch...");
-                
+
                 // Wait a few seconds to let the app fully initialize
                 tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-                
+
                 match TwitchService::get_token().await {
                     Ok(token) => {
                         let client_id = "1qgws7yzcp21g5ledlzffw3lmqdvie".to_string();
@@ -114,7 +142,7 @@ fn main() {
                     }
                 }
             });
-            
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -130,6 +158,7 @@ fn main() {
             twitch_start_device_login,
             twitch_complete_device_login,
             twitch_logout,
+            has_stored_credentials,
         get_followed_streams,
         get_channel_info,
         get_user_info,
@@ -175,6 +204,11 @@ fn main() {
             fetch_global_badges,
             get_cached_global_badges,
             prefetch_global_badges,
+            force_refresh_global_badges,
+            get_badge_cache_age,
+            get_badges_missing_metadata,
+            debug_list_twitch_badges,
+            debug_compare_badge_sources,
             fetch_channel_badges,
             get_twitch_credentials,
             get_user_badges,

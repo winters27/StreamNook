@@ -1,6 +1,5 @@
-use crate::services::universal_cache_service::{cache_item, get_cached_item, CacheType};
+use crate::services::universal_cache_service::{CacheType, cache_item, get_cached_item};
 use anyhow::Result;
-use serde_json::json;
 use tauri::command;
 
 #[command]
@@ -20,7 +19,9 @@ pub async fn cache_user_cosmetics(
 }
 
 #[command]
-pub async fn get_cached_user_cosmetics(user_id: String) -> Result<Option<serde_json::Value>, String> {
+pub async fn get_cached_user_cosmetics(
+    user_id: String,
+) -> Result<Option<serde_json::Value>, String> {
     match get_cached_item(CacheType::Cosmetic, &format!("7tv_{}", user_id)).await {
         Ok(Some(entry)) => Ok(Some(entry.data)),
         Ok(None) => Ok(None),
@@ -45,7 +46,9 @@ pub async fn cache_third_party_badges(
 }
 
 #[command]
-pub async fn get_cached_third_party_badges(user_id: String) -> Result<Option<serde_json::Value>, String> {
+pub async fn get_cached_third_party_badges(
+    user_id: String,
+) -> Result<Option<serde_json::Value>, String> {
     match get_cached_item(CacheType::ThirdPartyBadge, &format!("tpb_{}", user_id)).await {
         Ok(Some(entry)) => Ok(Some(entry.data)),
         Ok(None) => Ok(None),

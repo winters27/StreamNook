@@ -1,8 +1,8 @@
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
-use serde::{Deserialize, Serialize};
-use anyhow::{Result, Context};
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct CacheMetadata {
@@ -25,14 +25,13 @@ pub struct BadgeCache {
 /// Get the StreamNook main directory in AppData/Local
 pub fn get_app_data_dir() -> Result<PathBuf> {
     // Use AppData/Local instead of Program Files (no admin rights needed)
-    let local_app_data = std::env::var("LOCALAPPDATA")
-        .unwrap_or_else(|_| {
-            // Fallback to %USERPROFILE%\AppData\Local
-            let user_profile = std::env::var("USERPROFILE")
-                .unwrap_or_else(|_| "C:\\Users\\Default".to_string());
-            format!("{}\\AppData\\Local", user_profile)
-        });
-    
+    let local_app_data = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| {
+        // Fallback to %USERPROFILE%\AppData\Local
+        let user_profile =
+            std::env::var("USERPROFILE").unwrap_or_else(|_| "C:\\Users\\Default".to_string());
+        format!("{}\\AppData\\Local", user_profile)
+    });
+
     // Check if we're in development mode by looking for TAURI_ENV or checking debug assertions
     let app_dir = if cfg!(debug_assertions) {
         // In development, use com.streamnook.dev
@@ -41,26 +40,24 @@ pub fn get_app_data_dir() -> Result<PathBuf> {
         // In production, use StreamNook
         PathBuf::from(local_app_data).join("StreamNook")
     };
-    
+
     // Create the directory if it doesn't exist
     if !app_dir.exists() {
-        fs::create_dir_all(&app_dir)
-            .context("Failed to create StreamNook directory")?;
+        fs::create_dir_all(&app_dir).context("Failed to create StreamNook directory")?;
     }
-    
+
     Ok(app_dir)
 }
 
 /// Get the StreamNook cache directory in AppData/Local
 pub fn get_cache_dir() -> Result<PathBuf> {
     let cache_dir = get_app_data_dir()?.join("cache");
-    
+
     // Create the directory if it doesn't exist
     if !cache_dir.exists() {
-        fs::create_dir_all(&cache_dir)
-            .context("Failed to create cache directory")?;
+        fs::create_dir_all(&cache_dir).context("Failed to create cache directory")?;
     }
-    
+
     Ok(cache_dir)
 }
 
@@ -82,15 +79,14 @@ fn is_cache_expired(metadata: &CacheMetadata) -> bool {
 /// Save individual emote to cache by emote ID
 pub fn save_emote_to_cache(emote_id: &str, data: &str, expiry_days: u32) -> Result<()> {
     let cache_dir = get_cache_dir()?.join("emotes");
-    
+
     // Create emotes subdirectory if it doesn't exist
     if !cache_dir.exists() {
-        fs::create_dir_all(&cache_dir)
-            .context("Failed to create emotes cache directory")?;
+        fs::create_dir_all(&cache_dir).context("Failed to create emotes cache directory")?;
     }
-    
+
     let cache_file = cache_dir.join(format!("{}.json", emote_id));
-    
+
     let cache = EmoteCache {
         metadata: CacheMetadata {
             timestamp: get_current_timestamp(),
@@ -98,11 +94,10 @@ pub fn save_emote_to_cache(emote_id: &str, data: &str, expiry_days: u32) -> Resu
         },
         data: data.to_string(),
     };
-    
+
     let json = serde_json::to_string(&cache)?;
-    fs::write(&cache_file, json)
-        .context("Failed to write emote cache file")?;
-    
+    fs::write(&cache_file, json).context("Failed to write emote cache file")?;
+
     Ok(())
 }
 
@@ -110,24 +105,22 @@ pub fn save_emote_to_cache(emote_id: &str, data: &str, expiry_days: u32) -> Resu
 pub fn load_emote_from_cache(emote_id: &str) -> Result<Option<String>> {
     let cache_dir = get_cache_dir()?.join("emotes");
     let cache_file = cache_dir.join(format!("{}.json", emote_id));
-    
+
     if !cache_file.exists() {
         return Ok(None);
     }
-    
-    let json = fs::read_to_string(&cache_file)
-        .context("Failed to read emote cache file")?;
-    
-    let cache: EmoteCache = serde_json::from_str(&json)
-        .context("Failed to parse emote cache")?;
-    
+
+    let json = fs::read_to_string(&cache_file).context("Failed to read emote cache file")?;
+
+    let cache: EmoteCache = serde_json::from_str(&json).context("Failed to parse emote cache")?;
+
     // Check if cache is expired
     if is_cache_expired(&cache.metadata) {
         // Delete expired cache
         let _ = fs::remove_file(&cache_file);
         return Ok(None);
     }
-    
+
     Ok(Some(cache.data))
 }
 
@@ -135,7 +128,7 @@ pub fn load_emote_from_cache(emote_id: &str) -> Result<Option<String>> {
 pub fn save_emote_cache(channel_id: &str, data: &str, expiry_days: u32) -> Result<()> {
     let cache_dir = get_cache_dir()?;
     let cache_file = cache_dir.join(format!("emotes_{}.json", channel_id));
-    
+
     let cache = EmoteCache {
         metadata: CacheMetadata {
             timestamp: get_current_timestamp(),
@@ -143,11 +136,10 @@ pub fn save_emote_cache(channel_id: &str, data: &str, expiry_days: u32) -> Resul
         },
         data: data.to_string(),
     };
-    
+
     let json = serde_json::to_string(&cache)?;
-    fs::write(&cache_file, json)
-        .context("Failed to write emote cache file")?;
-    
+    fs::write(&cache_file, json).context("Failed to write emote cache file")?;
+
     Ok(())
 }
 
@@ -155,29 +147,32 @@ pub fn save_emote_cache(channel_id: &str, data: &str, expiry_days: u32) -> Resul
 pub fn load_emote_cache(channel_id: &str) -> Result<Option<String>> {
     let cache_dir = get_cache_dir()?;
     let cache_file = cache_dir.join(format!("emotes_{}.json", channel_id));
-    
+
     if !cache_file.exists() {
         return Ok(None);
     }
-    
-    let json = fs::read_to_string(&cache_file)
-        .context("Failed to read emote cache file")?;
-    
-    let cache: EmoteCache = serde_json::from_str(&json)
-        .context("Failed to parse emote cache")?;
-    
+
+    let json = fs::read_to_string(&cache_file).context("Failed to read emote cache file")?;
+
+    let cache: EmoteCache = serde_json::from_str(&json).context("Failed to parse emote cache")?;
+
     // Check if cache is expired
     if is_cache_expired(&cache.metadata) {
         // Delete expired cache
         let _ = fs::remove_file(&cache_file);
         return Ok(None);
     }
-    
+
     Ok(Some(cache.data))
 }
 
 /// Save badge cache to disk
-pub fn save_badge_cache(cache_type: &str, channel_id: Option<&str>, data: &str, expiry_days: u32) -> Result<()> {
+pub fn save_badge_cache(
+    cache_type: &str,
+    channel_id: Option<&str>,
+    data: &str,
+    expiry_days: u32,
+) -> Result<()> {
     let cache_dir = get_cache_dir()?;
     let filename = if let Some(id) = channel_id {
         format!("badges_{}_{}.json", cache_type, id)
@@ -185,7 +180,7 @@ pub fn save_badge_cache(cache_type: &str, channel_id: Option<&str>, data: &str, 
         format!("badges_{}.json", cache_type)
     };
     let cache_file = cache_dir.join(filename);
-    
+
     let cache = BadgeCache {
         metadata: CacheMetadata {
             timestamp: get_current_timestamp(),
@@ -193,11 +188,10 @@ pub fn save_badge_cache(cache_type: &str, channel_id: Option<&str>, data: &str, 
         },
         data: data.to_string(),
     };
-    
+
     let json = serde_json::to_string(&cache)?;
-    fs::write(&cache_file, json)
-        .context("Failed to write badge cache file")?;
-    
+    fs::write(&cache_file, json).context("Failed to write badge cache file")?;
+
     Ok(())
 }
 
@@ -210,36 +204,33 @@ pub fn load_badge_cache(cache_type: &str, channel_id: Option<&str>) -> Result<Op
         format!("badges_{}.json", cache_type)
     };
     let cache_file = cache_dir.join(filename);
-    
+
     if !cache_file.exists() {
         return Ok(None);
     }
-    
-    let json = fs::read_to_string(&cache_file)
-        .context("Failed to read badge cache file")?;
-    
-    let cache: BadgeCache = serde_json::from_str(&json)
-        .context("Failed to parse badge cache")?;
-    
+
+    let json = fs::read_to_string(&cache_file).context("Failed to read badge cache file")?;
+
+    let cache: BadgeCache = serde_json::from_str(&json).context("Failed to parse badge cache")?;
+
     // Check if cache is expired
     if is_cache_expired(&cache.metadata) {
         // Delete expired cache
         let _ = fs::remove_file(&cache_file);
         return Ok(None);
     }
-    
+
     Ok(Some(cache.data))
 }
 
 /// Delete all cache files
 pub fn clear_all_cache() -> Result<()> {
     let cache_dir = get_cache_dir()?;
-    
+
     if cache_dir.exists() {
         // Read all files in the cache directory
-        let entries = fs::read_dir(&cache_dir)
-            .context("Failed to read cache directory")?;
-        
+        let entries = fs::read_dir(&cache_dir).context("Failed to read cache directory")?;
+
         for entry in entries {
             if let Ok(entry) = entry {
                 let path = entry.path();
@@ -249,7 +240,7 @@ pub fn clear_all_cache() -> Result<()> {
             }
         }
     }
-    
+
     Ok(())
 }
 
@@ -265,11 +256,10 @@ pub fn get_cache_stats() -> Result<CacheStats> {
     let cache_dir = get_cache_dir()?;
     let mut total_files = 0;
     let mut total_size = 0u64;
-    
+
     if cache_dir.exists() {
-        let entries = fs::read_dir(&cache_dir)
-            .context("Failed to read cache directory")?;
-        
+        let entries = fs::read_dir(&cache_dir).context("Failed to read cache directory")?;
+
         for entry in entries {
             if let Ok(entry) = entry {
                 let path = entry.path();
@@ -282,7 +272,7 @@ pub fn get_cache_stats() -> Result<CacheStats> {
             }
         }
     }
-    
+
     Ok(CacheStats {
         total_files,
         total_size_bytes: total_size,
@@ -294,10 +284,9 @@ pub fn get_cache_stats() -> Result<CacheStats> {
 pub fn save_favorite_emotes(data: &str) -> Result<()> {
     let cache_dir = get_cache_dir()?;
     let cache_file = cache_dir.join("favorite_emotes.json");
-    
-    fs::write(&cache_file, data)
-        .context("Failed to write favorite emotes cache file")?;
-    
+
+    fs::write(&cache_file, data).context("Failed to write favorite emotes cache file")?;
+
     Ok(())
 }
 
@@ -305,14 +294,14 @@ pub fn save_favorite_emotes(data: &str) -> Result<()> {
 pub fn load_favorite_emotes() -> Result<Option<String>> {
     let cache_dir = get_cache_dir()?;
     let cache_file = cache_dir.join("favorite_emotes.json");
-    
+
     if !cache_file.exists() {
         return Ok(None);
     }
-    
-    let data = fs::read_to_string(&cache_file)
-        .context("Failed to read favorite emotes cache file")?;
-    
+
+    let data =
+        fs::read_to_string(&cache_file).context("Failed to read favorite emotes cache file")?;
+
     Ok(Some(data))
 }
 
@@ -320,33 +309,35 @@ pub fn load_favorite_emotes() -> Result<Option<String>> {
 pub fn add_favorite_emote(emote_data: &str) -> Result<()> {
     let cache_dir = get_cache_dir()?;
     let cache_file = cache_dir.join("favorite_emotes.json");
-    
+
     // Load existing favorites
     let mut favorites: Vec<serde_json::Value> = if cache_file.exists() {
-        let data = fs::read_to_string(&cache_file)
-            .context("Failed to read favorite emotes cache file")?;
+        let data =
+            fs::read_to_string(&cache_file).context("Failed to read favorite emotes cache file")?;
         serde_json::from_str(&data).unwrap_or_else(|_| Vec::new())
     } else {
         Vec::new()
     };
-    
+
     // Parse the new emote
-    let new_emote: serde_json::Value = serde_json::from_str(emote_data)
-        .context("Failed to parse emote data")?;
-    
+    let new_emote: serde_json::Value =
+        serde_json::from_str(emote_data).context("Failed to parse emote data")?;
+
     // Check if emote already exists (by id)
     let emote_id = new_emote.get("id").and_then(|v| v.as_str());
     if let Some(id) = emote_id {
-        if !favorites.iter().any(|e| e.get("id").and_then(|v| v.as_str()) == Some(id)) {
+        if !favorites
+            .iter()
+            .any(|e| e.get("id").and_then(|v| v.as_str()) == Some(id))
+        {
             favorites.push(new_emote);
         }
     }
-    
+
     // Save back to file
     let json = serde_json::to_string(&favorites)?;
-    fs::write(&cache_file, json)
-        .context("Failed to write favorite emotes cache file")?;
-    
+    fs::write(&cache_file, json).context("Failed to write favorite emotes cache file")?;
+
     Ok(())
 }
 
@@ -354,26 +345,23 @@ pub fn add_favorite_emote(emote_data: &str) -> Result<()> {
 pub fn remove_favorite_emote(emote_id: &str) -> Result<()> {
     let cache_dir = get_cache_dir()?;
     let cache_file = cache_dir.join("favorite_emotes.json");
-    
+
     if !cache_file.exists() {
         return Ok(());
     }
-    
+
     // Load existing favorites
-    let data = fs::read_to_string(&cache_file)
-        .context("Failed to read favorite emotes cache file")?;
-    let mut favorites: Vec<serde_json::Value> = serde_json::from_str(&data)
-        .unwrap_or_else(|_| Vec::new());
-    
+    let data =
+        fs::read_to_string(&cache_file).context("Failed to read favorite emotes cache file")?;
+    let mut favorites: Vec<serde_json::Value> =
+        serde_json::from_str(&data).unwrap_or_else(|_| Vec::new());
+
     // Remove the emote with matching id
-    favorites.retain(|e| {
-        e.get("id").and_then(|v| v.as_str()) != Some(emote_id)
-    });
-    
+    favorites.retain(|e| e.get("id").and_then(|v| v.as_str()) != Some(emote_id));
+
     // Save back to file
     let json = serde_json::to_string(&favorites)?;
-    fs::write(&cache_file, json)
-        .context("Failed to write favorite emotes cache file")?;
-    
+    fs::write(&cache_file, json).context("Failed to write favorite emotes cache file")?;
+
     Ok(())
 }

@@ -1,15 +1,15 @@
-use anyhow::Result;
-use reqwest::header::{AUTHORIZATION, ACCEPT, HeaderMap, HeaderValue};
-use reqwest::Client;
-use serde::Deserialize;
-use std::sync::Arc;
-use tokio::sync::RwLock;
-use std::collections::HashMap;
-use chrono::{DateTime, Utc};
 use crate::models::drops::*;
 use crate::services::drops_auth_service::DropsAuthService;
-use tokio::time::Duration;
+use anyhow::Result;
+use chrono::{DateTime, Utc};
+use reqwest::Client;
+use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderMap, HeaderValue};
+use serde::Deserialize;
+use std::collections::HashMap;
+use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
+use tokio::sync::RwLock;
+use tokio::time::Duration;
 use uuid::Uuid;
 
 // Use Twitch ANDROID APP client ID for GQL operations (required for drops API access)
@@ -154,7 +154,7 @@ impl DropsService {
         // Generate persistent device ID and session ID (like TwitchDropsMiner does)
         let device_id = Uuid::new_v4().to_string().replace("-", "");
         let session_id = Uuid::new_v4().to_string().replace("-", "");
-        
+
         Self {
             client: Client::new(),
             settings: Arc::new(RwLock::new(DropsSettings::default())),
@@ -170,7 +170,7 @@ impl DropsService {
             session_id,
         }
     }
-    
+
     /// Create headers for GQL requests (mimicking TwitchDropsMiner's auth_state.headers())
     fn create_gql_headers(&self, token: &str) -> HeaderMap {
         let mut headers = HeaderMap::new();
@@ -178,11 +178,20 @@ impl DropsService {
         headers.insert(ACCEPT, HeaderValue::from_static("*/*"));
         headers.insert("Accept-Language", HeaderValue::from_static("en-US"));
         headers.insert("Accept-Encoding", HeaderValue::from_static("gzip"));
-        headers.insert(AUTHORIZATION, HeaderValue::from_str(&format!("OAuth {}", token)).unwrap());
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("OAuth {}", token)).unwrap(),
+        );
         headers.insert("Origin", HeaderValue::from_static(CLIENT_URL));
         headers.insert("Referer", HeaderValue::from_static(CLIENT_URL));
-        headers.insert("X-Device-Id", HeaderValue::from_str(&self.device_id).unwrap());
-        headers.insert("Client-Session-Id", HeaderValue::from_str(&self.session_id).unwrap());
+        headers.insert(
+            "X-Device-Id",
+            HeaderValue::from_str(&self.device_id).unwrap(),
+        );
+        headers.insert(
+            "Client-Session-Id",
+            HeaderValue::from_str(&self.session_id).unwrap(),
+        );
         headers
     }
 
@@ -199,7 +208,7 @@ impl DropsService {
     /// This matches TwitchDropsMiner's fetch_inventory() function
     pub async fn fetch_inventory(&self) -> Result<InventoryResponse> {
         println!("🔍 [fetch_inventory] Fetching inventory (in-progress campaigns)...");
-        
+
         let token = match DropsAuthService::get_token().await {
             Ok(t) => {
                 println!("✅ [fetch_inventory] Got token");
@@ -210,7 +219,7 @@ impl DropsService {
                 return Err(e);
             }
         };
-        
+
         // Use the exact same GQL operation as TwitchDropsMiner
         let response = self.client
             .post("https://gql.twitch.tv/gql")
@@ -230,8 +239,11 @@ impl DropsService {
             .send()
             .await?;
 
-        println!("📡 [fetch_inventory] Response status: {}", response.status());
-        
+        println!(
+            "📡 [fetch_inventory] Response status: {}",
+            response.status()
+        );
+
         let response_text = response.text().await?;
         let response_json: serde_json::Value = match serde_json::from_str(&response_text) {
             Ok(json) => json,
@@ -240,7 +252,7 @@ impl DropsService {
                 return Err(anyhow::anyhow!("Failed to parse response as JSON: {}", e));
             }
         };
-        
+
         // Check for errors
         if let Some(errors) = response_json.get("errors") {
             println!("❌ GraphQL errors found: {:?}", errors);
@@ -257,19 +269,19 @@ impl DropsService {
             .as_array()
             .map(|v| v.to_vec())
             .unwrap_or_else(Vec::new);
-        
+
         // Parse gameEventDrops for claimed benefits tracking
         let empty_game_events = Vec::new();
         let game_event_drops = inventory["gameEventDrops"]
             .as_array()
             .unwrap_or(&empty_game_events);
-        
-        let mut claimed_benefits: std::collections::HashMap<String, DateTime<Utc>> = std::collections::HashMap::new();
+
+        let mut claimed_benefits: std::collections::HashMap<String, DateTime<Utc>> =
+            std::collections::HashMap::new();
         for event in game_event_drops {
-            if let (Some(id), Some(last_awarded)) = (
-                event["id"].as_str(),
-                event["lastAwardedAt"].as_str()
-            ) {
+            if let (Some(id), Some(last_awarded)) =
+                (event["id"].as_str(), event["lastAwardedAt"].as_str())
+            {
                 if let Ok(dt) = DateTime::parse_from_rfc3339(last_awarded) {
                     claimed_benefits.insert(id.to_string(), dt.with_timezone(&Utc));
                 }
@@ -290,9 +302,10 @@ impl DropsService {
             if game.is_null() {
                 continue;
             }
-            
+
             let game_id = game["id"].as_str().unwrap_or("").to_string();
-            let game_name = game["displayName"].as_str()
+            let game_name = game["displayName"]
+                .as_str()
                 .or_else(|| game["name"].as_str())
                 .unwrap_or("")
                 .to_string();
@@ -303,12 +316,14 @@ impl DropsService {
             }
 
             // Parse dates
-            let start_at = campaign_json["startAt"].as_str()
+            let start_at = campaign_json["startAt"]
+                .as_str()
                 .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
                 .map(|dt| dt.with_timezone(&Utc))
                 .unwrap_or_else(|| Utc::now());
-                
-            let end_at = campaign_json["endAt"].as_str()
+
+            let end_at = campaign_json["endAt"]
+                .as_str()
                 .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
                 .map(|dt| dt.with_timezone(&Utc))
                 .unwrap_or_else(|| Utc::now() + chrono::Duration::days(365));
@@ -328,16 +343,19 @@ impl DropsService {
             // Parse allowed channels
             let mut allowed_channels = Vec::new();
             let mut is_acl_based = false;
-            
+
             if let Some(allow) = campaign_json["allow"].as_object() {
-                if allow.get("isEnabled").and_then(|v| v.as_bool()).unwrap_or(false) {
+                if allow
+                    .get("isEnabled")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+                {
                     if let Some(channels) = allow["channels"].as_array() {
                         is_acl_based = !channels.is_empty();
                         for channel in channels {
-                            if let (Some(id), Some(name)) = (
-                                channel["id"].as_str(),
-                                channel["name"].as_str()
-                            ) {
+                            if let (Some(id), Some(name)) =
+                                (channel["id"].as_str(), channel["name"].as_str())
+                            {
                                 allowed_channels.push(AllowedChannel {
                                     id: id.to_string(),
                                     name: name.to_string(),
@@ -357,12 +375,13 @@ impl DropsService {
 
             if let Some(drops) = campaign_json["timeBasedDrops"].as_array() {
                 total_drops = drops.len() as i32;
-                
+
                 for drop_json in drops {
                     let drop_id = drop_json["id"].as_str().unwrap_or("").to_string();
                     let drop_name = drop_json["name"].as_str().unwrap_or("").to_string();
-                    let required_minutes = drop_json["requiredMinutesWatched"].as_i64().unwrap_or(0) as i32;
-                    
+                    let required_minutes =
+                        drop_json["requiredMinutesWatched"].as_i64().unwrap_or(0) as i32;
+
                     // Parse benefits
                     let mut benefit_edges = Vec::new();
                     if let Some(edges) = drop_json["benefitEdges"].as_array() {
@@ -371,7 +390,10 @@ impl DropsService {
                                 benefit_edges.push(DropBenefit {
                                     id: benefit["id"].as_str().unwrap_or("").to_string(),
                                     name: benefit["name"].as_str().unwrap_or("").to_string(),
-                                    image_url: benefit["imageAssetURL"].as_str().unwrap_or("").to_string(),
+                                    image_url: benefit["imageAssetURL"]
+                                        .as_str()
+                                        .unwrap_or("")
+                                        .to_string(),
                                 });
                             }
                         }
@@ -383,10 +405,12 @@ impl DropsService {
                     let mut current_minutes = 0;
 
                     if let Some(self_data) = drop_json.get("self") {
-                        current_minutes = self_data["currentMinutesWatched"].as_i64().unwrap_or(0) as i32;
+                        current_minutes =
+                            self_data["currentMinutesWatched"].as_i64().unwrap_or(0) as i32;
                         is_claimed = self_data["isClaimed"].as_bool().unwrap_or(false);
-                        
-                        let drop_instance_id = self_data["dropInstanceID"].as_str().map(|s| s.to_string());
+
+                        let drop_instance_id =
+                            self_data["dropInstanceID"].as_str().map(|s| s.to_string());
 
                         progress = Some(DropProgress {
                             campaign_id: campaign_json["id"].as_str().unwrap_or("").to_string(),
@@ -414,7 +438,8 @@ impl DropsService {
                     } else if current_minutes > 0 {
                         drops_in_progress += 1;
                         if required_minutes > 0 {
-                            total_progress += (current_minutes as f32 / required_minutes as f32).min(1.0);
+                            total_progress +=
+                                (current_minutes as f32 / required_minutes as f32).min(1.0);
                         }
                     }
 
@@ -443,7 +468,10 @@ impl DropsService {
                 name: campaign_json["name"].as_str().unwrap_or("").to_string(),
                 game_id,
                 game_name,
-                description: campaign_json["description"].as_str().unwrap_or("").to_string(),
+                description: campaign_json["description"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string(),
                 image_url,
                 start_at,
                 end_at,
@@ -465,8 +493,10 @@ impl DropsService {
 
         let total_campaigns = items.len() as i32;
 
-        println!("📊 Inventory summary: {} total, {} active, {} upcoming, {} expired",
-            total_campaigns, active_count, upcoming_count, expired_count);
+        println!(
+            "📊 Inventory summary: {} total, {} active, {} upcoming, {} expired",
+            total_campaigns, active_count, upcoming_count, expired_count
+        );
 
         Ok(InventoryResponse {
             items,
@@ -482,42 +512,51 @@ impl DropsService {
     /// Only fetches from API if cache is empty or expired
     pub async fn get_all_active_campaigns_cached(&self) -> Result<Vec<DropCampaign>> {
         const CACHE_TTL_SECONDS: i64 = 300; // 5 minutes
-        
+
         // Check if we have valid cached data
         {
             let cache = self.cached_campaigns.read().await;
             if let Some((campaigns, cached_at)) = cache.as_ref() {
                 let age = Utc::now().signed_duration_since(*cached_at);
                 if age.num_seconds() < CACHE_TTL_SECONDS {
-                    println!("📦 Using cached campaigns ({} seconds old)", age.num_seconds());
+                    println!(
+                        "📦 Using cached campaigns ({} seconds old)",
+                        age.num_seconds()
+                    );
                     return Ok(campaigns.clone());
                 } else {
-                    println!("⏰ Campaign cache expired ({} seconds old)", age.num_seconds());
+                    println!(
+                        "⏰ Campaign cache expired ({} seconds old)",
+                        age.num_seconds()
+                    );
                 }
             }
         }
-        
+
         // Cache miss or expired - fetch from API
         println!("🔄 Fetching fresh campaigns from API");
         let campaigns = self.fetch_all_active_campaigns_from_api().await?;
-        
+
         // Update cache
         {
             let mut cache = self.cached_campaigns.write().await;
             *cache = Some((campaigns.clone(), Utc::now()));
         }
-        
+
         Ok(campaigns)
     }
-    
+
     /// Internal method to fetch campaigns from API (no caching)
     /// This should only be called by get_all_active_campaigns_cached or during mining operations
     pub(crate) async fn fetch_all_active_campaigns_from_api(&self) -> Result<Vec<DropCampaign>> {
         println!("🔍 [fetch_all_active_campaigns_from_api] Starting (no filters)...");
-        
+
         let token = match DropsAuthService::get_token().await {
             Ok(t) => {
-                println!("✅ [get_all_active_campaigns] Got token (first 10 chars): {}", &t[..10.min(t.len())]);
+                println!(
+                    "✅ [get_all_active_campaigns] Got token (first 10 chars): {}",
+                    &t[..10.min(t.len())]
+                );
                 t
             }
             Err(e) => {
@@ -525,9 +564,9 @@ impl DropsService {
                 return Err(e);
             }
         };
-        
+
         println!("🔍 Fetching drops campaigns using Android app client ID...");
-        
+
         // Use GQL exactly like TwitchDropsMiner does
         let response = self.client
             .post("https://gql.twitch.tv/gql")
@@ -548,10 +587,10 @@ impl DropsService {
             .await?;
 
         println!("📡 Response status: {}", response.status());
-        
+
         // Get the raw response text first
         let response_text = response.text().await?;
-        
+
         // Try to parse it as JSON
         let response_json: serde_json::Value = match serde_json::from_str(&response_text) {
             Ok(json) => json,
@@ -560,7 +599,7 @@ impl DropsService {
                 return Err(anyhow::anyhow!("Failed to parse response as JSON: {}", e));
             }
         };
-        
+
         // Check for authorization errors
         if let Some(error_msg) = response_json.get("error").and_then(|e| e.as_str()) {
             if error_msg == "Unauthorized" {
@@ -569,7 +608,7 @@ impl DropsService {
                 ));
             }
         }
-        
+
         if let Some(errors) = response_json.get("errors") {
             println!("❌ GraphQL errors found: {:?}", errors);
             return Err(anyhow::anyhow!("GraphQL errors: {:?}", errors));
@@ -582,7 +621,7 @@ impl DropsService {
                 "Unable to fetch drops data. This is likely due to client ID mismatch."
             ));
         }
-        
+
         if response_json["data"]["currentUser"].is_null() {
             println!("⚠️ currentUser is null - token/client ID mismatch");
             return Err(anyhow::anyhow!(
@@ -591,20 +630,23 @@ impl DropsService {
         }
 
         let mut result = Vec::new();
-        
+
         // The response structure is different for the persisted query
         let campaigns_array = response_json["data"]["currentUser"]["dropCampaigns"]
             .as_array()
             .unwrap_or(&Vec::new())
             .to_vec();
-        
-        println!("📊 Raw campaigns response: {} campaigns found", campaigns_array.len());
-        
+
+        println!(
+            "📊 Raw campaigns response: {} campaigns found",
+            campaigns_array.len()
+        );
+
         if !campaigns_array.is_empty() {
             for campaign_json in &campaigns_array {
                 // Check campaign status - accept ACTIVE and UPCOMING campaigns
                 let status = campaign_json["status"].as_str().unwrap_or("");
-                
+
                 // Skip only EXPIRED campaigns
                 if status == "EXPIRED" {
                     continue;
@@ -615,13 +657,14 @@ impl DropsService {
                 if game.is_null() {
                     continue;
                 }
-                
+
                 let game_id = game["id"].as_str().unwrap_or("").to_string();
-                let game_name = game["displayName"].as_str()
+                let game_name = game["displayName"]
+                    .as_str()
                     .or_else(|| game["name"].as_str())
                     .unwrap_or("")
                     .to_string();
-                
+
                 let image_url = game["boxArtURL"].as_str().unwrap_or("").to_string();
 
                 if game_name.is_empty() {
@@ -631,16 +674,19 @@ impl DropsService {
                 // Parse allowed channels (ACL)
                 let mut allowed_channels = Vec::new();
                 let mut is_acl_based = false;
-                
+
                 if let Some(allow) = campaign_json["allow"].as_object() {
-                    if allow.get("isEnabled").and_then(|v| v.as_bool()).unwrap_or(false) {
+                    if allow
+                        .get("isEnabled")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false)
+                    {
                         if let Some(channels) = allow["channels"].as_array() {
                             is_acl_based = !channels.is_empty();
                             for channel in channels {
-                                if let (Some(id), Some(name)) = (
-                                    channel["id"].as_str(),
-                                    channel["name"].as_str()
-                                ) {
+                                if let (Some(id), Some(name)) =
+                                    (channel["id"].as_str(), channel["name"].as_str())
+                                {
                                     allowed_channels.push(AllowedChannel {
                                         id: id.to_string(),
                                         name: name.to_string(),
@@ -655,9 +701,13 @@ impl DropsService {
                 let mut time_based_drops: Vec<TimeBasedDrop> = Vec::new();
                 if let Some(drops) = campaign_json["timeBasedDrops"].as_array() {
                     for drop_json in drops {
-                        if let Ok(mut drop) = serde_json::from_value::<TimeBasedDrop>(drop_json.clone()) {
+                        if let Ok(mut drop) =
+                            serde_json::from_value::<TimeBasedDrop>(drop_json.clone())
+                        {
                             if let Some(progress_json) = drop_json.get("self") {
-                                if let Ok(progress) = serde_json::from_value::<DropProgress>(progress_json.clone()) {
+                                if let Ok(progress) =
+                                    serde_json::from_value::<DropProgress>(progress_json.clone())
+                                {
                                     drop.progress = Some(progress);
                                 }
                             }
@@ -667,12 +717,14 @@ impl DropsService {
                 }
 
                 // Parse dates
-                let start_at = campaign_json["startAt"].as_str()
+                let start_at = campaign_json["startAt"]
+                    .as_str()
                     .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
                     .map(|dt| dt.with_timezone(&Utc))
                     .unwrap_or_else(|| Utc::now());
-                    
-                let end_at = campaign_json["endAt"].as_str()
+
+                let end_at = campaign_json["endAt"]
+                    .as_str()
                     .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
                     .map(|dt| dt.with_timezone(&Utc))
                     .unwrap_or_else(|| Utc::now() + chrono::Duration::days(365));
@@ -688,7 +740,10 @@ impl DropsService {
                     name: campaign_json["name"].as_str().unwrap_or("").to_string(),
                     game_id,
                     game_name,
-                    description: campaign_json["description"].as_str().unwrap_or("").to_string(),
+                    description: campaign_json["description"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_string(),
                     image_url,
                     start_at,
                     end_at,
@@ -718,16 +773,16 @@ impl DropsService {
                 }
             }
         }
-        
+
         // Update cached campaign count
         let mut cached_count = self.cached_active_campaigns_count.write().await;
         *cached_count = campaigns.len() as i32;
-        
+
         // Update campaigns cache when mining fetches them
         let mut cache = self.cached_campaigns.write().await;
         *cache = Some((campaigns.to_vec(), Utc::now()));
     }
-    
+
     /// Get active campaigns with settings filters applied (for mining)
     pub async fn get_active_campaigns(&self) -> Result<Vec<DropCampaign>> {
         // First get all campaigns from the API
@@ -735,36 +790,39 @@ impl DropsService {
 
         // Update internal progress map (this is a simplified version of the original logic)
         self.update_campaigns_and_progress(&all_campaigns).await;
-        
+
         // Apply settings filters
         let settings = self.settings.read().await;
         let mut filtered_result = Vec::new();
-        
+
         println!("📊 Applying filters to {} campaigns", all_campaigns.len());
-        
+
         for campaign in all_campaigns {
             // Skip excluded games
             if settings.excluded_games.contains(&campaign.game_name) {
                 println!("  ⛔ Filtered out: {} (excluded)", campaign.game_name);
                 continue;
             }
-            
+
             // Apply priority mode filter
-            if settings.priority_mode == PriorityMode::PriorityOnly 
+            if settings.priority_mode == PriorityMode::PriorityOnly
                 && !settings.priority_games.is_empty()
-                && !settings.priority_games.contains(&campaign.game_name) {
-                println!("  ⛔ Filtered out: {} (not in priority list)", campaign.game_name);
+                && !settings.priority_games.contains(&campaign.game_name)
+            {
+                println!(
+                    "  ⛔ Filtered out: {} (not in priority list)",
+                    campaign.game_name
+                );
                 continue;
             }
-            
+
             println!("  ✅ Included: {} ({})", campaign.name, campaign.game_name);
             filtered_result.push(campaign);
         }
-        
+
         println!("📊 Returning {} filtered campaigns", filtered_result.len());
         Ok(filtered_result)
     }
-
 
     pub async fn claim_drop(&self, drop_id: &str) -> Result<()> {
         let token = DropsAuthService::get_token().await?;
@@ -777,7 +835,8 @@ impl DropsService {
         }
         "#;
 
-        let response = self.client
+        let response = self
+            .client
             .post("https://gql.twitch.tv/gql")
             .headers(self.create_gql_headers(&token))
             .json(&serde_json::json!({
@@ -807,7 +866,11 @@ impl DropsService {
         Ok(())
     }
 
-    pub async fn check_channel_points(&self, channel_id: &str, channel_name: &str) -> Result<Option<ChannelPointsClaim>> {
+    pub async fn check_channel_points(
+        &self,
+        channel_id: &str,
+        channel_name: &str,
+    ) -> Result<Option<ChannelPointsClaim>> {
         let token = DropsAuthService::get_token().await?;
 
         let query = r#"
@@ -828,7 +891,8 @@ impl DropsService {
         }
         "#;
 
-        let response = self.client
+        let response = self
+            .client
             .post("https://gql.twitch.tv/gql")
             .headers(self.create_gql_headers(&token))
             .json(&serde_json::json!({
@@ -848,7 +912,7 @@ impl DropsService {
 
         if let Some(data) = gql_response.data {
             let self_points = &data.community.channel.self_points;
-            
+
             // Update balance
             let balance = ChannelPointsBalance {
                 channel_id: channel_id.to_string(),
@@ -856,7 +920,7 @@ impl DropsService {
                 balance: self_points.community_points.balance,
                 last_updated: Utc::now(),
             };
-            
+
             let mut balances = self.channel_points_balances.write().await;
             balances.insert(channel_id.to_string(), balance);
 
@@ -876,7 +940,12 @@ impl DropsService {
         Ok(None)
     }
 
-    pub async fn claim_channel_points(&self, channel_id: &str, _channel_name: &str, claim_id: &str) -> Result<i32> {
+    pub async fn claim_channel_points(
+        &self,
+        channel_id: &str,
+        _channel_name: &str,
+        claim_id: &str,
+    ) -> Result<i32> {
         let token = DropsAuthService::get_token().await?;
 
         let mutation = r#"
@@ -890,7 +959,8 @@ impl DropsService {
         }
         "#;
 
-        let response = self.client
+        let response = self
+            .client
             .post("https://gql.twitch.tv/gql")
             .headers(self.create_gql_headers(&token))
             .json(&serde_json::json!({
@@ -908,7 +978,10 @@ impl DropsService {
         let status = response.status();
         if !status.is_success() {
             let error_text = response.text().await?;
-            return Err(anyhow::anyhow!("Failed to claim channel points: {}", error_text));
+            return Err(anyhow::anyhow!(
+                "Failed to claim channel points: {}",
+                error_text
+            ));
         }
 
         // Parse response to get points earned
@@ -937,10 +1010,8 @@ impl DropsService {
         let channel_points_history = self.channel_points_history.read().await;
         let drop_progress = self.drop_progress.read().await;
 
-        let total_channel_points_earned: i32 = channel_points_history
-            .iter()
-            .map(|c| c.points_earned)
-            .sum();
+        let total_channel_points_earned: i32 =
+            channel_points_history.iter().map(|c| c.points_earned).sum();
 
         let drops_in_progress = drop_progress
             .values()
@@ -956,7 +1027,12 @@ impl DropsService {
             active_campaigns,
             drops_in_progress,
             recent_claims: claimed_drops.iter().rev().take(10).cloned().collect(),
-            channel_points_history: channel_points_history.iter().rev().take(20).cloned().collect(),
+            channel_points_history: channel_points_history
+                .iter()
+                .rev()
+                .take(20)
+                .cloned()
+                .collect(),
         }
     }
 
@@ -970,7 +1046,10 @@ impl DropsService {
         history.push(claim);
     }
 
-    pub async fn get_channel_points_balance(&self, channel_id: &str) -> Option<ChannelPointsBalance> {
+    pub async fn get_channel_points_balance(
+        &self,
+        channel_id: &str,
+    ) -> Option<ChannelPointsBalance> {
         let balances = self.channel_points_balances.read().await;
         balances.get(channel_id).cloned()
     }
@@ -980,7 +1059,12 @@ impl DropsService {
         balances.values().cloned().collect()
     }
 
-    pub async fn start_monitoring(&self, channel_id: String, channel_name: String, app_handle: AppHandle) {
+    pub async fn start_monitoring(
+        &self,
+        channel_id: String,
+        channel_name: String,
+        app_handle: AppHandle,
+    ) {
         // Set current channel
         {
             let mut current = self.current_channel.write().await;
@@ -1008,8 +1092,11 @@ impl DropsService {
 
         // Spawn background monitoring task
         tokio::spawn(async move {
-            println!("🎮 Started drops and channel points monitoring for {}", channel_name);
-            
+            println!(
+                "🎮 Started drops and channel points monitoring for {}",
+                channel_name
+            );
+
             loop {
                 // Check if monitoring should continue
                 let should_continue = *monitoring_active.read().await;
@@ -1031,7 +1118,9 @@ impl DropsService {
                         &ch_id,
                         &ch_name,
                         &channel_points_balances,
-                    ).await {
+                    )
+                    .await
+                    {
                         if let Some(claim) = claim_available {
                             // Notify about available claim
                             if current_settings.notify_on_drop_available {
@@ -1041,22 +1130,24 @@ impl DropsService {
                             // Auto-claim if enabled
                             if current_settings.auto_claim_channel_points {
                                 match Self::claim_channel_points_internal(
-                                    &client,
-                                    &ch_id,
-                                    &ch_name,
-                                    &claim.id,
-                                ).await {
+                                    &client, &ch_id, &ch_name, &claim.id,
+                                )
+                                .await
+                                {
                                     Ok(new_balance) => {
-                                        println!("✅ Auto-claimed {} channel points! New balance: {}", 
-                                            claim.points_earned, new_balance);
-                                        
+                                        println!(
+                                            "✅ Auto-claimed {} channel points! New balance: {}",
+                                            claim.points_earned, new_balance
+                                        );
+
                                         // Add to history
                                         let mut history = channel_points_history.write().await;
                                         history.push(claim.clone());
 
                                         // Notify about successful claim
                                         if current_settings.notify_on_points_claimed {
-                                            let _ = app_handle.emit("channel-points-claimed", &claim);
+                                            let _ =
+                                                app_handle.emit("channel-points-claimed", &claim);
                                         }
                                     }
                                     Err(e) => {
@@ -1070,12 +1161,16 @@ impl DropsService {
                     // Check for claimable drops (progress is updated via WebSocket, no need to fetch campaigns)
                     let claimable_drops: Vec<DropProgress> = {
                         let progress_map = drop_progress.read().await;
-                        progress_map.values()
-                            .filter(|p| !p.is_claimed && p.current_minutes_watched >= p.required_minutes_watched)
+                        progress_map
+                            .values()
+                            .filter(|p| {
+                                !p.is_claimed
+                                    && p.current_minutes_watched >= p.required_minutes_watched
+                            })
                             .cloned()
                             .collect()
                     };
-                    
+
                     for progress in claimable_drops {
                         // Drop is ready to claim
                         if current_settings.notify_on_drop_available {
@@ -1088,10 +1183,12 @@ impl DropsService {
                                 &client,
                                 &progress.drop_id,
                                 &drop_progress,
-                            ).await {
+                            )
+                            .await
+                            {
                                 Ok(_) => {
                                     println!("✅ Auto-claimed drop: {}", progress.drop_id);
-                                    
+
                                     // Create claimed drop record
                                     let claimed = ClaimedDrop {
                                         id: uuid::Uuid::new_v4().to_string(),
@@ -1128,7 +1225,7 @@ impl DropsService {
     pub async fn stop_monitoring(&self) {
         let mut monitoring = self.monitoring_active.write().await;
         *monitoring = false;
-        
+
         let mut current = self.current_channel.write().await;
         *current = None;
     }
@@ -1137,19 +1234,26 @@ impl DropsService {
         let mut current = self.current_channel.write().await;
         *current = Some((channel_id, channel_name));
     }
-    
+
     /// Update drop progress from WebSocket events
-    pub async fn update_drop_progress_from_websocket(&self, drop_id: String, current_minutes: i32, required_minutes: i32) {
+    pub async fn update_drop_progress_from_websocket(
+        &self,
+        drop_id: String,
+        current_minutes: i32,
+        required_minutes: i32,
+    ) {
         let mut progress_map = self.drop_progress.write().await;
-        
+
         if let Some(progress) = progress_map.get_mut(&drop_id) {
             // Update existing progress
             progress.current_minutes_watched = current_minutes;
             progress.required_minutes_watched = required_minutes;
             progress.last_updated = Utc::now();
-            
-            println!("✅ Updated drop progress from WebSocket: {}/{} minutes for drop {}", 
-                current_minutes, required_minutes, drop_id);
+
+            println!(
+                "✅ Updated drop progress from WebSocket: {}/{} minutes for drop {}",
+                current_minutes, required_minutes, drop_id
+            );
         } else {
             // Create new progress entry if it doesn't exist
             let progress = DropProgress {
@@ -1161,9 +1265,11 @@ impl DropsService {
                 last_updated: Utc::now(),
             };
             progress_map.insert(drop_id.clone(), progress);
-            
-            println!("✅ Created new drop progress from WebSocket: {}/{} minutes for drop {}", 
-                current_minutes, required_minutes, drop_id);
+
+            println!(
+                "✅ Created new drop progress from WebSocket: {}/{} minutes for drop {}",
+                current_minutes, required_minutes, drop_id
+            );
         }
     }
 
@@ -1182,7 +1288,10 @@ impl DropsService {
         headers.insert(ACCEPT, HeaderValue::from_static("*/*"));
         headers.insert("Accept-Language", HeaderValue::from_static("en-US"));
         headers.insert("Accept-Encoding", HeaderValue::from_static("gzip"));
-        headers.insert(AUTHORIZATION, HeaderValue::from_str(&format!("OAuth {}", token)).unwrap());
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("OAuth {}", token)).unwrap(),
+        );
         headers.insert("Origin", HeaderValue::from_static(CLIENT_URL));
         headers.insert("Referer", HeaderValue::from_static(CLIENT_URL));
 
@@ -1224,7 +1333,7 @@ impl DropsService {
 
         if let Some(data) = gql_response.data {
             let self_points = &data.community.channel.self_points;
-            
+
             // Update balance
             let balance = ChannelPointsBalance {
                 channel_id: channel_id.to_string(),
@@ -1232,7 +1341,7 @@ impl DropsService {
                 balance: self_points.community_points.balance,
                 last_updated: Utc::now(),
             };
-            
+
             let mut balances_lock = balances.write().await;
             balances_lock.insert(channel_id.to_string(), balance);
 
@@ -1266,7 +1375,10 @@ impl DropsService {
         headers.insert(ACCEPT, HeaderValue::from_static("*/*"));
         headers.insert("Accept-Language", HeaderValue::from_static("en-US"));
         headers.insert("Accept-Encoding", HeaderValue::from_static("gzip"));
-        headers.insert(AUTHORIZATION, HeaderValue::from_str(&format!("OAuth {}", token)).unwrap());
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("OAuth {}", token)).unwrap(),
+        );
         headers.insert("Origin", HeaderValue::from_static(CLIENT_URL));
         headers.insert("Referer", HeaderValue::from_static(CLIENT_URL));
 
@@ -1299,7 +1411,10 @@ impl DropsService {
         let status = response.status();
         if !status.is_success() {
             let error_text = response.text().await?;
-            return Err(anyhow::anyhow!("Failed to claim channel points: {}", error_text));
+            return Err(anyhow::anyhow!(
+                "Failed to claim channel points: {}",
+                error_text
+            ));
         }
 
         let result: serde_json::Value = response.json().await?;
@@ -1315,17 +1430,20 @@ impl DropsService {
         drop_progress: &Arc<RwLock<HashMap<String, DropProgress>>>,
     ) -> Result<Vec<DropCampaign>> {
         let token = DropsAuthService::get_token().await?;
-        
+
         // Create headers similar to the main methods
         let mut headers = HeaderMap::new();
         headers.insert("Client-ID", HeaderValue::from_static(CLIENT_ID));
         headers.insert(ACCEPT, HeaderValue::from_static("*/*"));
         headers.insert("Accept-Language", HeaderValue::from_static("en-US"));
         headers.insert("Accept-Encoding", HeaderValue::from_static("gzip"));
-        headers.insert(AUTHORIZATION, HeaderValue::from_str(&format!("OAuth {}", token)).unwrap());
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("OAuth {}", token)).unwrap(),
+        );
         headers.insert("Origin", HeaderValue::from_static(CLIENT_URL));
         headers.insert("Referer", HeaderValue::from_static(CLIENT_URL));
-        
+
         let query = r#"
         query DropCampaigns {
             currentUser {
@@ -1430,10 +1548,14 @@ impl DropsService {
                 description: campaign.description,
                 image_url: campaign.image_url,
                 start_at: DateTime::parse_from_rfc3339(&campaign.start_at)
-                    .unwrap_or_else(|_| DateTime::parse_from_rfc3339("2000-01-01T00:00:00Z").unwrap())
+                    .unwrap_or_else(|_| {
+                        DateTime::parse_from_rfc3339("2000-01-01T00:00:00Z").unwrap()
+                    })
                     .with_timezone(&Utc),
                 end_at: DateTime::parse_from_rfc3339(&campaign.end_at)
-                    .unwrap_or_else(|_| DateTime::parse_from_rfc3339("2099-12-31T23:59:59Z").unwrap())
+                    .unwrap_or_else(|_| {
+                        DateTime::parse_from_rfc3339("2099-12-31T23:59:59Z").unwrap()
+                    })
                     .with_timezone(&Utc),
                 time_based_drops,
                 is_account_connected: true, // Internal campaigns are always connected
@@ -1458,7 +1580,10 @@ impl DropsService {
         headers.insert(ACCEPT, HeaderValue::from_static("*/*"));
         headers.insert("Accept-Language", HeaderValue::from_static("en-US"));
         headers.insert("Accept-Encoding", HeaderValue::from_static("gzip"));
-        headers.insert(AUTHORIZATION, HeaderValue::from_str(&format!("OAuth {}", token)).unwrap());
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("OAuth {}", token)).unwrap(),
+        );
         headers.insert("Origin", HeaderValue::from_static(CLIENT_URL));
         headers.insert("Referer", HeaderValue::from_static(CLIENT_URL));
 

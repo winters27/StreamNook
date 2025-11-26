@@ -1,6 +1,6 @@
-use serde::{Deserialize, Serialize};
+use crate::services::universal_cache_service::{CacheType, cache_item, get_cached_item};
 use scraper::{Html, Selector};
-use crate::services::universal_cache_service::{get_cached_item, cache_item, CacheType};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct BadgeMetadata {
@@ -27,7 +27,7 @@ pub async fn fetch_badge_metadata(
 ) -> Result<BadgeMetadata, String> {
     // Create cache key with metadata prefix to distinguish from badge data
     let cache_key = format!("metadata:{}-v{}", badge_set_id, badge_version);
-    
+
     // Construct the info URL for response
     let url = format!(
         "https://badgebase.co/badges/{}-v{}/",
@@ -48,7 +48,7 @@ pub async fn fetch_badge_metadata(
             });
         }
     }
-    
+
     println!("[BadgeMetadata] Fetching info from: {}", url);
 
     // Fetch the HTML page
@@ -90,7 +90,7 @@ pub async fn fetch_badge_metadata(
         usage_stats: usage_stats.clone(),
         more_info: more_info.clone(),
     };
-    
+
     // Cache the result permanently (expiry_days = 0 means never expire)
     if let Ok(json_value) = serde_json::to_value(&cached_info) {
         let _ = cache_item(
@@ -99,10 +99,11 @@ pub async fn fetch_badge_metadata(
             json_value,
             "badgebase".to_string(),
             0, // Never expire
-        ).await;
+        )
+        .await;
         println!("[BadgeMetadata] Cached badge info permanently");
     }
-    
+
     // Return full info with URL
     Ok(BadgeMetadata {
         date_added,
@@ -115,7 +116,7 @@ pub async fn fetch_badge_metadata(
 fn extract_date_added(document: &Html) -> Option<String> {
     // Look for the "Date of addition" label and get the next span
     let selector = Selector::parse("li").ok()?;
-    
+
     for element in document.select(&selector) {
         let text = element.text().collect::<String>();
         if text.contains("Date of addition") {
@@ -126,14 +127,14 @@ fn extract_date_added(document: &Html) -> Option<String> {
             }
         }
     }
-    
+
     None
 }
 
 fn extract_usage_stats(document: &Html) -> Option<String> {
     // Look for the "Usage Statistics" section
     let selector = Selector::parse("li").ok()?;
-    
+
     for element in document.select(&selector) {
         let text = element.text().collect::<String>();
         if text.contains("Usage Statistics") {
@@ -147,14 +148,14 @@ fn extract_usage_stats(document: &Html) -> Option<String> {
             }
         }
     }
-    
+
     None
 }
 
 fn extract_more_info(document: &Html) -> Option<String> {
     // Look for the h2 or h6 with "More Info From Us" and get the following div.text content
     let heading_selector = Selector::parse("h2.h6.text-primary, h6.text-primary").ok()?;
-    
+
     for heading in document.select(&heading_selector) {
         let heading_text = heading.text().collect::<String>();
         if heading_text.contains("More Info From Us") {
@@ -176,7 +177,7 @@ fn extract_more_info(document: &Html) -> Option<String> {
                     return Some(result.trim().to_string());
                 }
             }
-            
+
             // Alternative: try to find the next div.text element in the document
             let mut found_heading = false;
             let all_selector = Selector::parse("*").ok()?;
@@ -192,7 +193,7 @@ fn extract_more_info(document: &Html) -> Option<String> {
                         }
                     }
                 }
-                
+
                 if element.value().name() == "h2" || element.value().name() == "h6" {
                     let text = element.text().collect::<String>();
                     if text.contains("More Info From Us") {
@@ -202,13 +203,13 @@ fn extract_more_info(document: &Html) -> Option<String> {
             }
         }
     }
-    
+
     None
 }
 
 fn extract_text_with_timestamps(element: &scraper::ElementRef, result: &mut String) {
     use scraper::node::Node;
-    
+
     for child in element.children() {
         match child.value() {
             Node::Text(text) => {
@@ -221,7 +222,9 @@ fn extract_text_with_timestamps(element: &scraper::ElementRef, result: &mut Stri
                         if let Some(class) = child_element.value().attr("class") {
                             if class.contains("timezone-converter") {
                                 // Extract the data-original attribute
-                                if let Some(original_time) = child_element.value().attr("data-original") {
+                                if let Some(original_time) =
+                                    child_element.value().attr("data-original")
+                                {
                                     result.push_str(original_time);
                                     continue;
                                 }

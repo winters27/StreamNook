@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from 'react';
-import { X, ArrowUpDown } from 'lucide-react';
+import { X, ArrowUpDown, RefreshCw } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 
 interface BadgeVersion {
@@ -42,8 +42,11 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
   const [badgesWithMetadata, setBadgesWithMetadata] = useState<BadgeWithMetadata[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingMetadata, setLoadingMetadata] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sortBy, setSortBy] = useState<SortOption>('date-newest');
+  const [cacheAge, setCacheAge] = useState<number | null>(null);
+  const [newBadgesCount, setNewBadgesCount] = useState(0);
 
   useEffect(() => {
     loadBadges();
@@ -57,6 +60,10 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
       // Try to load from cache first
       console.log('[BadgesOverlay] Checking for cached badges...');
       const cachedBadges = await invoke<{ data: BadgeSet[] } | null>('get_cached_global_badges');
+      
+      // Also check cache age
+      const age = await invoke<number | null>('get_badge_cache_age');
+      setCacheAge(age);
       
       if (cachedBadges && cachedBadges.data && cachedBadges.data.length > 0) {
         console.log('[BadgesOverlay] Found cached badges, loading immediately');
@@ -73,8 +80,9 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
         // Fetch metadata for all badges in the background
         fetchAllBadgeMetadata(flattened);
         
-        // Optionally refresh badges in the background if cache is old
-        // (This happens automatically in the backend if cache is > 7 days old)
+        // Check for badges missing metadata (new badges that need BadgeBase data)
+        checkAndFetchMissingMetadata();
+        
         return;
       }
 
@@ -106,6 +114,96 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
       setError('Failed to load badges. Please try again.');
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Check for badges that don't have metadata and fetch from BadgeBase
+  const checkAndFetchMissingMetadata = async () => {
+    try {
+      console.log('[BadgesOverlay] Checking for badges missing metadata...');
+      const missing = await invoke<[string, string][]>('get_badges_missing_metadata');
+      
+      if (missing.length > 0) {
+        console.log(`[BadgesOverlay] Found ${missing.length} badges missing metadata, fetching from BadgeBase...`);
+        setNewBadgesCount(missing.length);
+        
+        // Fetch metadata for missing badges in batches
+        const batchSize = 5;
+        for (let i = 0; i < missing.length; i += batchSize) {
+          const batch = missing.slice(i, i + batchSize);
+          
+          await Promise.allSettled(
+            batch.map(([setId, version]) =>
+              invoke<BadgeMetadata>('fetch_badge_metadata', {
+                badgeSetId: setId,
+                badgeVersion: version,
+              })
+            )
+          );
+          
+          // Update progress
+          setNewBadgesCount(Math.max(0, missing.length - (i + batchSize)));
+        }
+        
+        console.log('[BadgesOverlay] Finished fetching missing badge metadata');
+        setNewBadgesCount(0);
+        
+        // Reload metadata to update display
+        if (badgesWithMetadata.length > 0) {
+          fetchAllBadgeMetadata(badgesWithMetadata);
+        }
+      }
+    } catch (err) {
+      console.error('[BadgesOverlay] Error checking for missing metadata:', err);
+    }
+  };
+
+  // Force refresh badges from Twitch API (bypasses cache)
+  const forceRefreshBadges = async () => {
+    try {
+      setRefreshing(true);
+      console.log('[BadgesOverlay] Force refreshing badges from Twitch API...');
+      
+      const response = await invoke<{ data: BadgeSet[] }>('force_refresh_global_badges');
+      
+      console.log(`[BadgesOverlay] Refreshed ${response.data.length} badge sets from Twitch API`);
+      
+      // Log all badge set IDs for debugging
+      const badgeSetIds = response.data.map(s => s.set_id);
+      console.log('[BadgesOverlay] Badge set IDs received:', badgeSetIds);
+      
+      // Count total versions
+      const totalVersions = response.data.reduce((acc, set) => acc + set.versions.length, 0);
+      console.log(`[BadgesOverlay] Total badge versions: ${totalVersions}`);
+      
+      // Log each badge set with its versions
+      response.data.forEach(set => {
+        console.log(`[BadgesOverlay] Set "${set.set_id}": ${set.versions.length} versions - ${set.versions.map(v => v.title).join(', ')}`);
+      });
+      
+      setBadges(response.data);
+      setCacheAge(0);
+      
+      // Flatten all badge versions
+      const flattened = response.data.flatMap(set => 
+        set.versions.map(version => ({ ...version, set_id: set.set_id } as BadgeWithMetadata))
+      );
+      
+      console.log(`[BadgesOverlay] Flattened to ${flattened.length} badge items`);
+      
+      setBadgesWithMetadata(flattened);
+      
+      // Fetch metadata for all badges
+      await fetchAllBadgeMetadata(flattened);
+      
+      // Check for and fetch any new badges that don't have metadata yet
+      await checkAndFetchMissingMetadata();
+      
+    } catch (err) {
+      console.error('Failed to refresh badges:', err);
+      setError('Failed to refresh badges. Please try again.');
+    } finally {
+      setRefreshing(false);
     }
   };
 
@@ -490,10 +588,34 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
                     Coming Soon
                   </button>
                 </div>
-                {loadingMetadata && (
+              {loadingMetadata && (
                   <div className="ml-auto flex items-center gap-2 text-textSecondary text-sm">
                     <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-accent"></div>
                     <span>Loading badge data...</span>
+                  </div>
+                )}
+                {newBadgesCount > 0 && !loadingMetadata && (
+                  <div className="ml-auto flex items-center gap-2 text-yellow-500 text-sm">
+                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-yellow-500"></div>
+                    <span>Fetching {newBadgesCount} new badges from BadgeBase...</span>
+                  </div>
+                )}
+                {!loadingMetadata && newBadgesCount === 0 && (
+                  <div className="ml-auto flex items-center gap-2">
+                    {cacheAge !== null && cacheAge > 0 && (
+                      <span className="text-textSecondary text-xs">
+                        Cache age: {cacheAge} day{cacheAge !== 1 ? 's' : ''}
+                      </span>
+                    )}
+                    <button
+                      onClick={forceRefreshBadges}
+                      disabled={refreshing}
+                      className="flex items-center gap-1 px-2 py-1 bg-glass hover:bg-glass/80 rounded text-xs text-textSecondary hover:text-textPrimary transition-colors disabled:opacity-50"
+                      title="Force refresh badges from Twitch API"
+                    >
+                      <RefreshCw size={12} className={refreshing ? 'animate-spin' : ''} />
+                      {refreshing ? 'Refreshing...' : 'Refresh'}
+                    </button>
                   </div>
                 )}
               </div>
