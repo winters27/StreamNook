@@ -43,6 +43,8 @@ interface AppState {
   loadMoreRecommendedStreams: () => Promise<void>;
   startStream: (channel: string, streamInfo?: TwitchStream) => Promise<void>;
   stopStream: () => Promise<void>;
+  getAvailableQualities: () => Promise<string[]>;
+  changeStreamQuality: (quality: string) => Promise<void>;
   openSettings: () => void;
   closeSettings: () => void;
   setShowLiveStreamsOverlay: (show: boolean) => void;
@@ -246,6 +248,56 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
     } catch (e) {
       console.error('Failed to stop stream:', e);
+    }
+  },
+  
+  getAvailableQualities: async () => {
+    const currentStream = get().currentStream;
+    if (!currentStream) {
+      return [];
+    }
+    
+    try {
+      const qualities = await invoke('get_stream_qualities', {
+        url: `https://twitch.tv/${currentStream.user_login}`
+      }) as string[];
+      
+      console.log('[Qualities] Available from Streamlink:', qualities);
+      return qualities;
+    } catch (e) {
+      console.error('Failed to get stream qualities:', e);
+      return [];
+    }
+  },
+  
+  changeStreamQuality: async (quality: string) => {
+    const currentStream = get().currentStream;
+    if (!currentStream) {
+      console.warn('No active stream to change quality');
+      return;
+    }
+    
+    try {
+      console.log(`[Quality] Changing to: ${quality}`);
+      set({ isLoading: true });
+      
+      const url = await invoke('change_stream_quality', {
+        url: `https://twitch.tv/${currentStream.user_login}`,
+        quality: quality
+      }) as string;
+      
+      // Update settings to persist the quality choice
+      const newSettings = { ...get().settings, quality: quality };
+      await invoke('save_settings', { settings: newSettings });
+      
+      set({ streamUrl: url, settings: newSettings, isLoading: false });
+      get().addToast(`Quality changed to ${quality}`, 'success');
+      console.log('[Quality] Stream URL updated:', url);
+      console.log('[Quality] Settings updated with new quality:', quality);
+    } catch (e) {
+      console.error('Failed to change quality:', e);
+      get().addToast(`Failed to change quality: ${e}`, 'error');
+      set({ isLoading: false });
     }
   },
   startStream: async (channel, providedStreamInfo?) => {

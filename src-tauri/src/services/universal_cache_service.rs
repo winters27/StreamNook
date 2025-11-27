@@ -348,43 +348,53 @@ pub async fn cache_item(
 
 /// Parse date string in format "DD Month YYYY" to timestamp for sorting
 fn parse_date_to_timestamp(date_str: &str) -> i64 {
-    use chrono::{NaiveDate, Datelike, Timelike};
-    
+    use chrono::{Datelike, NaiveDate, Timelike};
+
     // Try to parse "DD Month YYYY" format
     let months = [
-        ("January", 1), ("February", 2), ("March", 3), ("April", 4),
-        ("May", 5), ("June", 6), ("July", 7), ("August", 8),
-        ("September", 9), ("October", 10), ("November", 11), ("December", 12)
+        ("January", 1),
+        ("February", 2),
+        ("March", 3),
+        ("April", 4),
+        ("May", 5),
+        ("June", 6),
+        ("July", 7),
+        ("August", 8),
+        ("September", 9),
+        ("October", 10),
+        ("November", 11),
+        ("December", 12),
     ];
-    
+
     // Split the date string
     let parts: Vec<&str> = date_str.split_whitespace().collect();
     if parts.len() != 3 {
         return 0; // Invalid format
     }
-    
+
     // Parse day
     let day = match parts[0].parse::<u32>() {
-        Ok(d) if d >= 1 && d <= 31 => d,
+        Ok(d) if (1..=31).contains(&d) => d,
         _ => return 0,
     };
-    
+
     // Parse month
-    let month = months.iter()
+    let month = months
+        .iter()
         .find(|(name, _)| *name == parts[1])
         .map(|(_, num)| *num)
         .unwrap_or(0);
-    
+
     if month == 0 {
         return 0;
     }
-    
+
     // Parse year
     let year = match parts[2].parse::<i32>() {
-        Ok(y) if y >= 1900 && y <= 3000 => y,
+        Ok(y) if (1900..=3000).contains(&y) => y,
         _ => return 0,
     };
-    
+
     // Create a date and convert to timestamp
     match NaiveDate::from_ymd_opt(year, month, day) {
         Some(date) => {
@@ -392,7 +402,7 @@ fn parse_date_to_timestamp(date_str: &str) -> i64 {
             date.and_hms_opt(0, 0, 0)
                 .map(|dt| dt.and_utc().timestamp())
                 .unwrap_or(0)
-        },
+        }
         None => 0,
     }
 }

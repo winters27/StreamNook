@@ -503,6 +503,11 @@ body {
   background: rgba(151, 177, 185, 0.25);
 }
 
+/* Settings button wrapper needs relative positioning for menu */
+.video-player-container .plyr__controls__item.plyr__menu {
+  position: relative;
+}
+
 /* Progress bar */
 .video-player-container .plyr__progress {
   flex: 1;
@@ -582,6 +587,26 @@ body {
   -webkit-backdrop-filter: blur(10px);
   border: 1px solid rgba(151, 177, 185, 0.2);
   border-radius: 4px;
+  position: absolute;
+  bottom: 100%;
+  right: 0;
+  margin-bottom: 10px;
+  z-index: 10;
+}
+
+/* Quality submenu styling - matches Plyr's native submenu behavior */
+.video-player-container .plyr__menu__container [data-quality-menu] {
+  padding: 7px;
+}
+
+.video-player-container .plyr__menu__container [data-quality-menu][hidden] {
+  display: none;
+}
+
+/* Ensure smooth transitions match Plyr's native behavior */
+.video-player-container .plyr__menu__container > div {
+  overflow: hidden;
+  transition: height 0.35s cubic-bezier(0.4, 0, 0.2, 1), width 0.35s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .video-player-container .plyr__menu__container .plyr__control {
@@ -593,8 +618,36 @@ body {
   color: #97b1b9;
 }
 
+.video-player-container .plyr__menu__container .plyr__control[role="menuitemradio"]::before {
+  content: '';
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  margin-right: 8px;
+  border-radius: 2px;
+  border: 1.5px solid rgba(151, 177, 185, 0.3);
+  background: transparent;
+  flex-shrink: 0;
+  transition: all 0.2s ease;
+}
+
 .video-player-container .plyr__menu__container .plyr__control[role="menuitemradio"][aria-checked="true"]::before {
   background: #6b9dff;
+  border-color: #6b9dff;
+  /* Checkmark using Unicode */
+  content: '✓';
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: bold;
+  line-height: 1;
+}
+
+/* Hide Plyr's default radio button indicator */
+.video-player-container .plyr__menu__container .plyr__control[role="menuitemradio"]::after {
+  display: none !important;
 }
 
 .video-player-container .plyr__menu__container .plyr__control--back {
@@ -603,6 +656,12 @@ body {
 
 .video-player-container .plyr__menu__container .plyr__control--back:hover {
   background: rgba(151, 177, 185, 0.15);
+}
+
+.video-player-container .plyr__menu__container .plyr__control--back > span {
+  margin-left: 4px;
+  text-align: center;
+  width: 100%;
 }
 
 /* Menu items */

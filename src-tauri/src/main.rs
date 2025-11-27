@@ -201,6 +201,7 @@ fn main() {
             start_stream,
             stop_stream,
             get_stream_qualities,
+            change_stream_quality,
             // Chat commands
             start_chat,
             stop_chat,

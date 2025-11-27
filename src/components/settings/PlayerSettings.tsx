@@ -3,6 +3,20 @@ import { useAppStore } from '../../stores/AppStore';
 const PlayerSettings = () => {
   const { settings, updateSettings } = useAppStore();
 
+  // Default values for streamlink settings
+  const streamlinkDefaults = {
+    low_latency_enabled: true,
+    hls_live_edge: 3,
+    stream_timeout: 60,
+    retry_streams: 3,
+    disable_hosting: true,
+    skip_ssl_verify: false,
+    use_proxy: true,
+    proxy_playlist: '--twitch-proxy-playlist=https://lb-na.cdn-perfprod.com,https://eu.luminous.dev --twitch-proxy-playlist-fallback',
+  };
+
+  const streamlink = settings.streamlink || streamlinkDefaults;
+
   return (
     <div className="space-y-6">
       <div className="mb-4">
@@ -12,8 +26,198 @@ const PlayerSettings = () => {
         </p>
       </div>
 
+      {/* Streamlink Optimization Settings */}
+      <div className="space-y-4">
+        <h3 className="text-lg font-semibold text-textPrimary border-b border-borderColor pb-2">
+          Streamlink Optimization
+        </h3>
+
+        {/* Twitch Low Latency */}
+        <div>
+          <label className="flex items-center gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={streamlink.low_latency_enabled}
+              onChange={(e) =>
+                updateSettings({
+                  ...settings,
+                  streamlink: { ...streamlink, low_latency_enabled: e.target.checked },
+                })
+              }
+              className="w-5 h-5 accent-accent cursor-pointer"
+            />
+            <div>
+              <span className="text-sm font-medium text-textPrimary">Twitch Low Latency Mode</span>
+              <p className="text-xs text-textSecondary">Uses Twitch's low latency streaming (forces --twitch-low-latency)</p>
+            </div>
+          </label>
+        </div>
+
+        {/* HLS Live Edge */}
+        <div>
+          <label className="block text-sm font-medium text-textPrimary mb-2">
+            HLS Live Edge: {streamlink.hls_live_edge} segments
+          </label>
+          <input
+            type="range"
+            min="1"
+            max="10"
+            step="1"
+            value={streamlink.hls_live_edge}
+            onChange={(e) =>
+              updateSettings({
+                ...settings,
+                streamlink: { ...streamlink, hls_live_edge: parseInt(e.target.value) },
+              })
+            }
+            className="w-full accent-accent cursor-pointer"
+          />
+          <p className="text-xs text-textSecondary mt-1">
+            How many segments from the live edge to stay (lower = less latency, less stability)
+          </p>
+        </div>
+
+        {/* Stream Timeout */}
+        <div>
+          <label className="block text-sm font-medium text-textPrimary mb-2">
+            Stream Timeout: {streamlink.stream_timeout}s
+          </label>
+          <input
+            type="range"
+            min="30"
+            max="120"
+            step="5"
+            value={streamlink.stream_timeout}
+            onChange={(e) =>
+              updateSettings({
+                ...settings,
+                streamlink: { ...streamlink, stream_timeout: parseInt(e.target.value) },
+              })
+            }
+            className="w-full accent-accent cursor-pointer"
+          />
+          <p className="text-xs text-textSecondary mt-1">
+            How long to wait for stream response before timing out
+          </p>
+        </div>
+
+        {/* Retry Streams */}
+        <div>
+          <label className="block text-sm font-medium text-textPrimary mb-2">
+            Auto-Retry Count: {streamlink.retry_streams}
+          </label>
+          <input
+            type="range"
+            min="0"
+            max="5"
+            step="1"
+            value={streamlink.retry_streams}
+            onChange={(e) =>
+              updateSettings({
+                ...settings,
+                streamlink: { ...streamlink, retry_streams: parseInt(e.target.value) },
+              })
+            }
+            className="w-full accent-accent cursor-pointer"
+          />
+          <p className="text-xs text-textSecondary mt-1">
+            Number of times to automatically retry on stream errors (0 = no retry)
+          </p>
+        </div>
+
+        {/* Disable Hosting */}
+        <div>
+          <label className="flex items-center gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={streamlink.disable_hosting}
+              onChange={(e) =>
+                updateSettings({
+                  ...settings,
+                  streamlink: { ...streamlink, disable_hosting: e.target.checked },
+                })
+              }
+              className="w-5 h-5 accent-accent cursor-pointer"
+            />
+            <div>
+              <span className="text-sm font-medium text-textPrimary">Disable Hosting</span>
+              <p className="text-xs text-textSecondary">Skip streams that are hosting other channels</p>
+            </div>
+          </label>
+        </div>
+
+        {/* Use Proxy */}
+        <div>
+          <label className="flex items-center gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={streamlink.use_proxy}
+              onChange={(e) =>
+                updateSettings({
+                  ...settings,
+                  streamlink: { ...streamlink, use_proxy: e.target.checked },
+                })
+              }
+              className="w-5 h-5 accent-accent cursor-pointer"
+            />
+            <div>
+              <span className="text-sm font-medium text-textPrimary">Use Proxy Routing</span>
+              <p className="text-xs text-textSecondary">Route playlists through CDN proxies (recommended for ad-blocking)</p>
+            </div>
+          </label>
+        </div>
+
+        {/* Proxy Playlist Args */}
+        {streamlink.use_proxy && (
+          <div>
+            <label className="block text-sm font-medium text-textPrimary mb-2">
+              Proxy Arguments
+            </label>
+            <input
+              type="text"
+              value={streamlink.proxy_playlist}
+              onChange={(e) =>
+                updateSettings({
+                  ...settings,
+                  streamlink: { ...streamlink, proxy_playlist: e.target.value },
+                })
+              }
+              className="w-full glass-input text-textPrimary text-sm px-3 py-2 font-mono"
+              placeholder="--twitch-proxy-playlist=https://..."
+            />
+            <p className="text-xs text-textSecondary mt-1">
+              Custom proxy playlist arguments (used with ttvlol plugin)
+            </p>
+          </div>
+        )}
+
+        {/* Skip SSL Verify */}
+        <div>
+          <label className="flex items-center gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={streamlink.skip_ssl_verify}
+              onChange={(e) =>
+                updateSettings({
+                  ...settings,
+                  streamlink: { ...streamlink, skip_ssl_verify: e.target.checked },
+                })
+              }
+              className="w-5 h-5 accent-accent cursor-pointer"
+            />
+            <div>
+              <span className="text-sm font-medium text-textPrimary">Skip SSL Verification</span>
+              <p className="text-xs text-textSecondary">⚠️ Only enable if you have connection issues (not recommended)</p>
+            </div>
+          </label>
+        </div>
+      </div>
+
       {/* Video Player Settings */}
       <div className="space-y-4">
+        <h3 className="text-lg font-semibold text-textPrimary border-b border-borderColor pb-2 mt-6">
+          Video Player
+        </h3>
         {/* Autoplay */}
         <div>
           <label className="flex items-center gap-3 cursor-pointer">
@@ -83,33 +287,34 @@ const PlayerSettings = () => {
           </p>
         </div>
 
-        {/* Start Quality */}
+        {/* Stream Quality */}
         <div>
           <label className="block text-sm font-medium text-textPrimary mb-2">
-            Initial Quality
+            Default Stream Quality
           </label>
           <select
-            value={settings.video_player?.start_quality ?? -1}
+            value={settings.quality}
             onChange={(e) =>
               updateSettings({
                 ...settings,
-                video_player: {
-                  ...settings.video_player,
-                  start_quality: parseInt(e.target.value),
-                },
+                quality: e.target.value,
               })
             }
             className="w-full glass-input text-textPrimary text-sm px-3 py-2"
           >
-            <option value="-1">Auto (Recommended)</option>
-            <option value="0">Lowest Quality</option>
-            <option value="1">Low Quality</option>
-            <option value="2">Medium Quality</option>
-            <option value="3">High Quality</option>
-            <option value="4">Highest Quality</option>
+            <option value="best">Best (Highest Available)</option>
+            <option value="1080p60">1080p 60fps</option>
+            <option value="1080p">1080p</option>
+            <option value="720p60">720p 60fps</option>
+            <option value="720p">720p</option>
+            <option value="480p">480p</option>
+            <option value="360p">360p</option>
+            <option value="160p">160p (Lowest)</option>
+            <option value="audio_only">Audio Only</option>
+            <option value="worst">Worst (Fallback)</option>
           </select>
           <p className="text-xs text-textSecondary mt-1">
-            Starting quality level (you can change quality anytime using the player controls)
+            Quality to use when starting streams (you can change quality anytime using the player controls)
           </p>
         </div>
 

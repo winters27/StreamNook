@@ -18,6 +18,17 @@ export interface TtvlolPluginSettings {
   installed_version: string | null;
 }
 
+export interface StreamlinkSettings {
+  low_latency_enabled: boolean;
+  hls_live_edge: number;          // Segments from live edge (1-10)
+  stream_timeout: number;          // Timeout in seconds (30-120)
+  retry_streams: number;           // Auto-retry on errors (0-5)
+  disable_hosting: boolean;        // Avoid hosted streams
+  skip_ssl_verify: boolean;        // Skip SSL verification
+  use_proxy: boolean;              // Use proxy servers
+  proxy_playlist: string;          // Proxy playlist URLs
+}
+
 export interface DropsSettings {
   auto_claim_drops: boolean;
   auto_claim_channel_points: boolean;
@@ -93,6 +104,7 @@ export interface Settings {
   video_player: VideoPlayerSettings;
   cache: CacheSettings;
   ttvlol_plugin: TtvlolPluginSettings;
+  streamlink?: StreamlinkSettings;
   drops: DropsSettings;
   favorite_streamers: string[];
   chat_design?: ChatDesignSettings;

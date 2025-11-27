@@ -20,7 +20,7 @@ pub struct DropCampaign {
     #[serde(default)]
     pub is_acl_based: bool,
     #[serde(default)]
-    pub details_url: Option<String>,  // "About this drop" link
+    pub details_url: Option<String>, // "About this drop" link
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

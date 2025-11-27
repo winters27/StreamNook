@@ -240,8 +240,9 @@ pub async fn validate_drops_token() -> Result<bool, String> {
 #[tauri::command]
 pub async fn open_drop_details(app_handle: AppHandle, url: String) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
-    
-    app_handle.opener()
+
+    app_handle
+        .opener()
         .open_url(url, None::<String>)
         .map_err(|e| format!("Failed to open drops details: {}", e))
 }

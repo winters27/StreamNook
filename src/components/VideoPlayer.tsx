@@ -1,4 +1,4 @@
-import { useRef, useEffect, useCallback } from 'react';
+import { useRef, useEffect, useCallback, useState } from 'react';
 import Hls from 'hls.js';
 import Plyr from 'plyr';
 import 'plyr/dist/plyr.css';
@@ -10,10 +10,11 @@ const VideoPlayer = () => {
   const hlsRef = useRef<Hls | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const progressUpdateIntervalRef = useRef<number | null>(null);
-  const { streamUrl, settings } = useAppStore();
+  const { streamUrl, settings, getAvailableQualities, changeStreamQuality } = useAppStore();
   const playerSettings = settings.video_player;
   const isLiveRef = useRef<boolean>(true);
   const userInitiatedPauseRef = useRef<boolean>(false);
+  const [availableQualities, setAvailableQualities] = useState<string[]>([]);
 
   // Sync volume with store
   const syncVolumeToPlayer = useCallback(() => {
@@ -22,6 +23,145 @@ const VideoPlayer = () => {
       playerRef.current.muted = playerSettings.muted;
     }
   }, [playerSettings.volume, playerSettings.muted]);
+
+  // Fetch available qualities from Streamlink
+  useEffect(() => {
+    if (streamUrl) {
+      getAvailableQualities().then(qualities => {
+        if (qualities.length > 0) {
+          setAvailableQualities(qualities);
+          console.log('[Quality] Fetched from Streamlink:', qualities);
+        }
+      });
+    }
+  }, [streamUrl, getAvailableQualities]);
+
+  // Update quality menu when qualities are available
+  const updateQualityMenu = useCallback(() => {
+    const container = containerRef.current;
+    if (!container || availableQualities.length === 0) return;
+
+    console.log('[Quality] Setting up menu with Streamlink qualities:', availableQualities);
+    console.log('[Quality] Current selected quality from settings:', settings.quality);
+
+    setTimeout(() => {
+      const settingsMenu = container.querySelector('.plyr__menu');
+      if (!settingsMenu) {
+        console.warn('[Quality] Could not find Plyr settings menu');
+        return;
+      }
+
+      // Remove existing quality menu if any
+      const existingQualityMenu = settingsMenu.querySelector('[data-quality-menu]');
+      if (existingQualityMenu) {
+        existingQualityMenu.remove();
+      }
+
+      const existingQualityButton = settingsMenu.querySelector('[data-plyr="quality"]');
+      if (existingQualityButton) {
+        existingQualityButton.remove();
+      }
+
+      // Determine the display value - use the actual quality being streamed
+      const currentQualityDisplay = settings.quality.charAt(0).toUpperCase() + settings.quality.slice(1);
+
+      // Create quality menu item in main settings
+      const settingsHome = settingsMenu.querySelector('[role="menu"]');
+      if (settingsHome) {
+        const qualityMenuItem = document.createElement('button');
+        qualityMenuItem.className = 'plyr__control';
+        qualityMenuItem.setAttribute('data-plyr', 'quality');
+        qualityMenuItem.setAttribute('type', 'button');
+        qualityMenuItem.setAttribute('role', 'menuitem');
+        qualityMenuItem.innerHTML = `
+          <span>Quality<span class="plyr__menu__value">${currentQualityDisplay}</span></span>
+        `;
+        
+        qualityMenuItem.addEventListener('click', () => {
+          const qualitySubmenu = settingsMenu.querySelector('[data-quality-menu]');
+          if (qualitySubmenu) {
+            settingsHome.setAttribute('hidden', '');
+            qualitySubmenu.removeAttribute('hidden');
+          }
+        });
+        
+        // Insert before speed option
+        const speedOption = settingsHome.querySelector('[data-plyr="speed"]');
+        if (speedOption) {
+          settingsHome.insertBefore(qualityMenuItem, speedOption);
+        } else {
+          settingsHome.appendChild(qualityMenuItem);
+        }
+
+        // Create quality submenu (as sibling to settingsHome, not a new menu container)
+        const qualitySubmenu = document.createElement('div');
+        qualitySubmenu.setAttribute('role', 'menu');
+        qualitySubmenu.setAttribute('data-quality-menu', '');
+        qualitySubmenu.setAttribute('hidden', '');
+        qualitySubmenu.innerHTML = `
+          <button class="plyr__control plyr__control--back" type="button" data-plyr="back">
+            <span>Quality</span>
+          </button>
+          ${availableQualities.map(quality => `
+            <button 
+              class="plyr__control" 
+              type="button" 
+              data-quality="${quality}"
+              role="menuitemradio"
+              aria-checked="${quality.toLowerCase() === settings.quality.toLowerCase() ? 'true' : 'false'}"
+            >
+              <span>${quality.charAt(0).toUpperCase() + quality.slice(1)}</span>
+            </button>
+          `).join('')}
+        `;
+
+        // Add as sibling to settings home inside the menu container
+        const menuContainer = settingsMenu.querySelector('.plyr__menu__container');
+        if (menuContainer) {
+          menuContainer.appendChild(qualitySubmenu);
+        }
+
+        // Handle back button
+        const backBtn = qualitySubmenu.querySelector('[data-plyr="back"]');
+        backBtn?.addEventListener('click', () => {
+          qualitySubmenu.setAttribute('hidden', '');
+          settingsHome.removeAttribute('hidden');
+        });
+
+        // Handle quality selection
+        qualitySubmenu.querySelectorAll('[data-quality]').forEach(btn => {
+          if (btn.getAttribute('data-plyr') === 'back') return;
+          
+          btn.addEventListener('click', async () => {
+            const selectedQuality = btn.getAttribute('data-quality');
+            if (!selectedQuality) return;
+
+            console.log(`[Quality] User selected: ${selectedQuality}`);
+            
+            // Update UI - mark selected
+            qualitySubmenu.querySelectorAll('[data-quality]').forEach(b => {
+              if (b.getAttribute('data-plyr') === 'back') return;
+              b.setAttribute('aria-checked', 'false');
+            });
+            btn.setAttribute('aria-checked', 'true');
+            
+            // Update value in main menu (with capitalization)
+            const qualityValueSpan = settingsHome.querySelector('[data-plyr="quality"] .plyr__menu__value');
+            if (qualityValueSpan) {
+              qualityValueSpan.textContent = selectedQuality.charAt(0).toUpperCase() + selectedQuality.slice(1);
+            }
+            
+            // Close menu
+            qualitySubmenu.setAttribute('hidden', '');
+            settingsHome.removeAttribute('hidden');
+
+            // Change stream quality via Streamlink
+            await changeStreamQuality(selectedQuality);
+          });
+        });
+      }
+    }, 200);
+  }, [availableQualities, settings.quality, changeStreamQuality]);
 
   // Update time display for live streams to show "LIVE" or time behind
   const updateLiveTimeDisplay = useCallback(() => {
@@ -111,7 +251,7 @@ const VideoPlayer = () => {
       // HLS.js event handlers
       hls.on(Hls.Events.MANIFEST_PARSED, (_event, data) => {
         console.log('[HLS] Manifest parsed, starting playback');
-        console.log('[HLS] Available quality levels:', data.levels.map(l => `${l.height}p`).join(', '));
+        console.log('[HLS] Available quality levels:', data.levels.map(l => `${l.height}p @ ${l.bitrate}bps`).join(', '));
         
         // Initialize Plyr AFTER we have the video loaded
         if (!playerRef.current) {
@@ -127,24 +267,7 @@ const VideoPlayer = () => {
               'pip',
               'fullscreen',
             ],
-            settings: ['quality', 'speed'],
-            quality: {
-              default: playerSettings.start_quality || 0,
-              options: [0, ...data.levels.map(l => l.height)],
-              forced: true,
-              onChange: (quality: number) => {
-                if (quality === 0) {
-                  hls.currentLevel = -1;
-                  console.log('[HLS] Quality set to Auto');
-                } else {
-                  const levelIndex = data.levels.findIndex(l => l.height === quality);
-                  if (levelIndex !== -1) {
-                    hls.currentLevel = levelIndex;
-                    console.log(`[HLS] Quality set to ${quality}p (level ${levelIndex})`);
-                  }
-                }
-              },
-            },
+            settings: ['speed'], // Remove 'quality' - we'll add it manually
             speed: {
               selected: 1,
               options: [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2],
@@ -157,11 +280,6 @@ const VideoPlayer = () => {
             tooltips: { controls: true, seek: true },
             hideControls: true,
             clickToPlay: true,
-            i18n: {
-              qualityLabel: {
-                0: 'Auto',
-              },
-            },
           });
 
           playerRef.current = player;
@@ -237,7 +355,17 @@ const VideoPlayer = () => {
       });
 
       hls.on(Hls.Events.LEVEL_SWITCHED, (_event, data) => {
-        console.log(`[HLS] Level switched to: ${data.level}`);
+        const level = hls.levels[data.level];
+        console.log(`[HLS] Level switched to: ${data.level} (${level?.height}p @ ${level?.bitrate}bps)`);
+        
+        // Update Plyr's quality display if in auto mode
+        if (playerRef.current && hls.currentLevel === -1) {
+          // In auto mode, update the display to show current quality
+          const qualityBadge = containerRef.current?.querySelector('.plyr__menu__container [data-plyr="quality"][aria-checked="true"]');
+          if (qualityBadge && level) {
+            console.log(`[HLS] Auto selected: ${level.height}p`);
+          }
+        }
       });
 
       hls.on(Hls.Events.FRAG_LOADED, (_event, data) => {
@@ -309,7 +437,14 @@ const VideoPlayer = () => {
     // Start time display update loop
     progressUpdateIntervalRef.current = requestAnimationFrame(updateLiveTimeDisplay);
 
-    // Create the HLS player
+    // If HLS instance already exists and player exists, just change the source
+    if (hlsRef.current && playerRef.current) {
+      console.log('[HLS] Stream URL changed, loading new source:', streamUrl);
+      hlsRef.current.loadSource(streamUrl);
+      return; // Don't run cleanup, just update the source
+    }
+
+    // Create the HLS player (first time only)
     createPlayer();
 
     // Cleanup
@@ -346,6 +481,13 @@ const VideoPlayer = () => {
   useEffect(() => {
     syncVolumeToPlayer();
   }, [syncVolumeToPlayer]);
+
+  // Update quality menu when qualities become available
+  useEffect(() => {
+    if (availableQualities.length > 0 && playerRef.current) {
+      updateQualityMenu();
+    }
+  }, [availableQualities, updateQualityMenu]);
 
   return (
     <div

@@ -12,16 +12,28 @@ pub struct StreamServer;
 static SERVER_HANDLE: Lazy<Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>> =
     Lazy::new(|| Arc::new(Mutex::new(None)));
 static PROXY_URL: Lazy<Arc<Mutex<Option<String>>>> = Lazy::new(|| Arc::new(Mutex::new(None)));
+static CURRENT_PORT: Lazy<Arc<Mutex<Option<u16>>>> = Lazy::new(|| Arc::new(Mutex::new(None)));
 
 impl StreamServer {
     pub async fn start_proxy_server(stream_url: String) -> Result<u16> {
-        // Stop any existing server first
-        Self::stop().await?;
+        // Check if server is already running
+        let server_exists = SERVER_HANDLE.lock().await.is_some();
 
+        if server_exists {
+            // Server already running - just update the URL
+            *PROXY_URL.lock().await = Some(stream_url);
+            // Return the existing port by parsing it from a static variable
+            return Self::get_current_port().await;
+        }
+
+        // Start new server
         let port = rand::rng().random_range(10000..20000);
         let addr = SocketAddr::from(([127, 0, 0, 1], port));
 
         *PROXY_URL.lock().await = Some(stream_url);
+
+        // Store the port
+        *CURRENT_PORT.lock().await = Some(port);
 
         let proxy_url_clone = PROXY_URL.clone();
         let handle = tokio::spawn(async move {
@@ -103,6 +115,14 @@ impl StreamServer {
             handle.abort();
         }
         *PROXY_URL.lock().await = None;
+        *CURRENT_PORT.lock().await = None;
         Ok(())
+    }
+
+    async fn get_current_port() -> Result<u16> {
+        CURRENT_PORT
+            .lock()
+            .await
+            .ok_or_else(|| anyhow::anyhow!("No server running"))
     }
 }

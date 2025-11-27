@@ -737,7 +737,8 @@ impl DropsService {
                 }
 
                 // Look for detailsURL or any URL field that might be the "about this drop" link
-                let details_url = campaign_json["detailsURL"].as_str()
+                let details_url = campaign_json["detailsURL"]
+                    .as_str()
                     .or_else(|| campaign_json["aboutDropsURL"].as_str())
                     .or_else(|| campaign_json["aboutURL"].as_str())
                     .or_else(|| campaign_json["url"].as_str())

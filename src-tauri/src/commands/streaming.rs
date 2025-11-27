@@ -64,3 +64,14 @@ pub async fn get_stream_qualities(
         .await
         .map_err(|e| e.to_string())
 }
+
+#[tauri::command]
+pub async fn change_stream_quality(
+    url: String,
+    quality: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    // Don't stop the server - just update the stream URL
+    // The server will keep running on the same port
+    start_stream(url, quality, state).await
+}
