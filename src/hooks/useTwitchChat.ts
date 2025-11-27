@@ -12,49 +12,105 @@ const CHAT_MAX_WITH_BUFFER = CHAT_HISTORY_MAX + CHAT_BUFFER_SIZE;
 export const useTwitchChat = () => {
   const [messages, setMessages] = useState<any[]>([]);
   const [isPausedForBuffer, setIsPausedForBuffer] = useState(false);
-  const [ws, setWs] = useState<WebSocket | null>(null);
   const [isConnected, setIsConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [seenMessageIds, setSeenMessageIds] = useState<Set<string>>(new Set());
+  
+  // Use refs for all mutable state that needs to be accessed in callbacks
+  const wsRef = useRef<WebSocket | null>(null);
+  const seenMessageIdsRef = useRef<Set<string>>(new Set());
   const isConnectingRef = useRef(false);
   const currentChannelRef = useRef<string | null>(null);
   const currentUserIdRef = useRef<string | null>(null);
+  const isPausedForBufferRef = useRef(false);
+  
+  // Track the user's badge string from IRC for optimistic updates
+  const userBadgesFromIrcRef = useRef<string | null>(null);
+  
+  // Track intentional disconnects to prevent reconnection attempts
+  const isIntentionalDisconnectRef = useRef(false);
 
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const reconnectAttemptsRef = useRef<number>(0);
   const maxReconnectAttempts = 10;
   const healthCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const lastMessageTimeRef = useRef<number>(Date.now());
+  const isConnectedRef = useRef(false);
+
+  // Keep ref in sync with state
+  useEffect(() => {
+    isPausedForBufferRef.current = isPausedForBuffer;
+  }, [isPausedForBuffer]);
+
+  useEffect(() => {
+    isConnectedRef.current = isConnected;
+  }, [isConnected]);
+
+  // Cleanup function to properly close WebSocket and clear handlers
+  const cleanupWebSocket = useCallback(() => {
+    // Clear any pending reconnect
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
+    }
+    
+    // Clear health check interval
+    if (healthCheckIntervalRef.current) {
+      clearInterval(healthCheckIntervalRef.current);
+      healthCheckIntervalRef.current = null;
+    }
+    
+    // Close existing WebSocket if any
+    if (wsRef.current) {
+      const ws = wsRef.current;
+      
+      // Remove event handlers to prevent any callbacks during cleanup
+      ws.onmessage = null;
+      ws.onerror = null;
+      ws.onclose = null;
+      ws.onopen = null;
+      
+      if (ws.readyState !== WebSocket.CLOSED && ws.readyState !== WebSocket.CLOSING) {
+        console.log('[Chat] Closing existing WebSocket connection');
+        ws.close(1000, 'Cleanup'); // Normal closure
+      }
+      
+      wsRef.current = null;
+    }
+  }, []);
 
   const connectChat = useCallback(async (channel: string) => {
-    // Prevent duplicate connection attempts
+    // Prevent duplicate connection attempts to the same channel
     if (isConnectingRef.current && currentChannelRef.current === channel) {
       console.log('[Chat] Already connecting to this channel, skipping duplicate request');
       return;
     }
     
+    console.log(`[Chat] Attempting to connect to channel: ${channel}`);
+    
+    // Mark as intentional disconnect before cleanup
+    isIntentionalDisconnectRef.current = true;
+    
+    // Clean up any existing connection first
+    cleanupWebSocket();
+    
     isConnectingRef.current = true;
     currentChannelRef.current = channel;
-    console.log(`[Chat] Attempting to connect to channel: ${channel}`);
     setError(null);
     
+    // Clear old messages and seen IDs
+    setMessages([]);
+    seenMessageIdsRef.current = new Set();
+    
+    // Reset reconnect attempts for new channel
+    reconnectAttemptsRef.current = 0;
+    
+    // Allow time for cleanup to complete
+    await new Promise(resolve => setTimeout(resolve, 150));
+    
+    // Clear the intentional disconnect flag now that we're starting a new connection
+    isIntentionalDisconnectRef.current = false;
+    
     try {
-      // Close existing connection if any
-      setWs(prevWs => {
-        if (prevWs && prevWs.readyState !== WebSocket.CLOSED) {
-          console.log('[Chat] Closing existing WebSocket connection');
-          prevWs.close();
-        }
-        return null;
-      });
-      
-      // Small delay to ensure cleanup
-      await new Promise(resolve => setTimeout(resolve, 100));
-      
-      // Clear old messages and seen IDs
-      setMessages([]);
-      setSeenMessageIds(new Set());
-      
       console.log('[Chat] Invoking start_chat command');
       const port = await invoke<number>('start_chat', { channel });
       console.log(`[Chat] Received port: ${port}`);
@@ -67,6 +123,11 @@ export const useTwitchChat = () => {
             const delay = 500 + (i * 500);
             console.log(`[Chat] Waiting ${delay}ms before connection attempt ${i + 1}/${retries}`);
             await new Promise(resolve => setTimeout(resolve, delay));
+            
+            // Check if we've been cleaned up or channel changed
+            if (currentChannelRef.current !== channel) {
+              throw new Error('Channel changed during connection attempt');
+            }
             
             const wsUrl = `ws://localhost:${port}`;
             console.log(`[Chat] Connecting to ${wsUrl}`);
@@ -103,10 +164,14 @@ export const useTwitchChat = () => {
       
       const newWs = await connectWithRetry();
       
+      // Store the WebSocket reference
+      wsRef.current = newWs;
+      
       // Set connected state immediately since connectWithRetry already waited for connection
       console.log('[Chat] Setting connected state to true');
       setIsConnected(true);
-      reconnectAttemptsRef.current = 0; // Reset reconnect attempts on successful connection
+      reconnectAttemptsRef.current = 0;
+      lastMessageTimeRef.current = Date.now();
       
       newWs.onmessage = (event) => {
         const message = event.data;
@@ -135,7 +200,6 @@ export const useTwitchChat = () => {
         if (message.startsWith('RECONNECTING:')) {
           const attempt = message.split(':')[1];
           console.log(`[Chat] Backend attempting to reconnect (attempt ${attempt})`);
-          // Don't show error to user - handle silently in background
           setIsConnected(false);
           return;
         }
@@ -143,7 +207,6 @@ export const useTwitchChat = () => {
         if (message.startsWith('RECONNECT_FAILED:')) {
           const attempt = message.split(':')[1];
           console.log(`[Chat] Reconnection attempt ${attempt} failed`);
-          // Don't show error to user - handle silently in background
           return;
         }
         
@@ -161,58 +224,110 @@ export const useTwitchChat = () => {
           return;
         }
         
+        // Handle USER_BADGES message from backend - contains user's IRC badges
+        if (message.startsWith('USER_BADGES:')) {
+          const badges = message.substring('USER_BADGES:'.length);
+          console.log('[Chat] Received user badges from IRC:', badges);
+          userBadgesFromIrcRef.current = badges;
+          return;
+        }
+        
         console.log('[Chat] Received message:', message);
         
         // Extract message ID and user ID from IRC tags
         // IMPORTANT: Match the actual message ID, not reply-parent-msg-id
-        // Use word boundary to ensure we match 'id=' and not 'reply-parent-msg-id=' or other IDs
         const idMatch = message.match(/(?:^|;)id=([^;]+)/);
         const messageId = idMatch ? idMatch[1] : null;
         const userIdMatch = message.match(/user-id=([^;]+)/);
         const userId = userIdMatch ? userIdMatch[1] : null;
         
-        // Filter out our own messages from the server (we show optimistic versions)
+        // Handle our own messages from the server - replace optimistic version with server version
+        // This ensures we get the correct badges from IRC
         if (userId && currentUserIdRef.current && userId === currentUserIdRef.current) {
-          console.log('[Chat] Filtering out own message from server:', messageId);
+          console.log('[Chat] Received own message from server:', messageId);
+          
+          // Extract badges from the server message and store for future optimistic updates
+          const badgesMatch = message.match(/(?:^|;)badges=([^;]*)/);
+          if (badgesMatch && badgesMatch[1]) {
+            userBadgesFromIrcRef.current = badgesMatch[1];
+            console.log('[Chat] Stored user badges from IRC:', userBadgesFromIrcRef.current);
+          }
+          
+          // Find and replace the optimistic message with the server message
+          setMessages(prevMessages => {
+            // Look for an optimistic message (local-*) from the same user with similar content
+            const msgContentMatch = message.match(/PRIVMSG #\w+ :(.+)$/);
+            const serverContent = msgContentMatch ? msgContentMatch[1] : null;
+            
+            if (serverContent) {
+              // Find the optimistic message to replace
+              const optimisticIndex = prevMessages.findIndex(msg => {
+                // Check if it's a local/optimistic message
+                if (!msg.includes('id=local-')) return false;
+                
+                // Check if content matches
+                const localContentMatch = msg.match(/PRIVMSG #\w+ :(.+)$/);
+                const localContent = localContentMatch ? localContentMatch[1] : null;
+                
+                return localContent === serverContent;
+              });
+              
+              if (optimisticIndex !== -1) {
+                console.log('[Chat] Replacing optimistic message at index', optimisticIndex, 'with server message');
+                const updated = [...prevMessages];
+                updated[optimisticIndex] = message;
+                
+                // Add the server message ID to seen set
+                if (messageId) {
+                  seenMessageIdsRef.current.add(messageId);
+                }
+                
+                return updated;
+              }
+            }
+            
+            // If no optimistic message found to replace, just add the server message
+            // (This handles cases where the optimistic message was already removed)
+            console.log('[Chat] No optimistic message found to replace, adding server message');
+            if (messageId) {
+              seenMessageIdsRef.current.add(messageId);
+            }
+            return [...prevMessages, message];
+          });
+          
           return;
         }
         
         if (messageId) {
-          // Check if we've seen this message before
-          setSeenMessageIds(prev => {
-            if (prev.has(messageId)) {
-              console.log('[Chat] Duplicate message detected, skipping:', messageId);
-              return prev;
+          // Check if we've seen this message before using ref
+          if (seenMessageIdsRef.current.has(messageId)) {
+            console.log('[Chat] Duplicate message detected, skipping:', messageId);
+            return;
+          }
+          
+          // New message - add to seen set
+          console.log('[Chat] New message:', messageId);
+          seenMessageIdsRef.current.add(messageId);
+          
+          // Keep seen IDs manageable
+          if (seenMessageIdsRef.current.size > CHAT_MAX_WITH_BUFFER) {
+            const arr = Array.from(seenMessageIdsRef.current);
+            seenMessageIdsRef.current = new Set(arr.slice(-CHAT_MAX_WITH_BUFFER));
+          }
+          
+          // Add message to state
+          setMessages(prevMessages => {
+            const updated = [...prevMessages, message];
+            // Use ref for paused state to get current value
+            const limit = isPausedForBufferRef.current ? CHAT_MAX_WITH_BUFFER : CHAT_HISTORY_MAX;
+            
+            if (updated.length > limit) {
+              const trimmed = updated.slice(updated.length - limit);
+              console.log(`[Chat] Total messages: ${trimmed.length} (limit: ${limit})`);
+              return trimmed;
             }
-            
-            // New message - add it
-            console.log('[Chat] New message:', messageId);
-            setMessages(prevMessages => {
-              const updated = [...prevMessages, message];
-              // If paused, allow buffering up to max with buffer
-              // If not paused, trim to normal limit
-              const limit = isPausedForBuffer ? CHAT_MAX_WITH_BUFFER : CHAT_HISTORY_MAX;
-              
-              if (updated.length > limit) {
-                const trimmed = updated.slice(updated.length - limit);
-                console.log(`[Chat] Trimmed to ${limit} messages (paused: ${isPausedForBuffer})`);
-                return trimmed;
-              }
-              console.log(`[Chat] Total messages: ${updated.length} (limit: ${limit})`);
-              return updated;
-            });
-            
-            // Add to seen messages
-            const newSet = new Set(prev);
-            newSet.add(messageId);
-            
-            // Keep message IDs up to max with buffer to prevent memory issues
-            if (newSet.size > CHAT_MAX_WITH_BUFFER) {
-              const arr = Array.from(newSet);
-              return new Set(arr.slice(-CHAT_MAX_WITH_BUFFER));
-            }
-            
-            return newSet;
+            console.log(`[Chat] Total messages: ${updated.length} (limit: ${limit})`);
+            return updated;
           });
         } else {
           // If no ID, just add it (shouldn't happen with Twitch messages)
@@ -231,8 +346,19 @@ export const useTwitchChat = () => {
         console.log('[Chat] WebSocket closed:', event.code, event.reason);
         setIsConnected(false);
         
-        // Attempt to reconnect the local WebSocket (not the backend IRC connection)
-        // The backend handles IRC reconnection, but we need to handle local WS reconnection
+        // Don't attempt to reconnect if this was an intentional disconnect
+        if (isIntentionalDisconnectRef.current) {
+          console.log('[Chat] Intentional disconnect, not reconnecting');
+          return;
+        }
+        
+        // Don't reconnect if channel has changed
+        if (currentChannelRef.current !== channel) {
+          console.log('[Chat] Channel changed, not reconnecting to old channel');
+          return;
+        }
+        
+        // Attempt to reconnect the local WebSocket for abnormal closures
         if (event.code === 1006 || event.code === 1001) {
           console.log('[Chat] Abnormal closure detected, attempting to reconnect local WebSocket');
           
@@ -252,7 +378,7 @@ export const useTwitchChat = () => {
             reconnectTimeoutRef.current = setTimeout(() => {
               console.log('[Chat] Executing reconnect attempt');
               const channelToReconnect = currentChannelRef.current;
-              if (channelToReconnect) {
+              if (channelToReconnect && !isIntentionalDisconnectRef.current) {
                 // Reset the connecting flag to allow reconnection
                 isConnectingRef.current = false;
                 connectChat(channelToReconnect);
@@ -275,32 +401,38 @@ export const useTwitchChat = () => {
         const timeSinceLastMessage = Date.now() - lastMessageTimeRef.current;
         const threeMinutes = 3 * 60 * 1000;
         
+        // Use ref for current connected state
+        if (!isConnectedRef.current) {
+          return; // Skip health check if not connected
+        }
+        
         // If no messages for 3 minutes, show warning
-        if (timeSinceLastMessage > threeMinutes && isConnected) {
+        if (timeSinceLastMessage > threeMinutes) {
           console.warn('[Chat] No messages received for 3 minutes, connection may be stale');
           setError(`No activity for ${Math.floor(timeSinceLastMessage / 1000)}s - connection may be stale`);
         }
         
         // If no messages for 5 minutes, force reconnect
-        if (timeSinceLastMessage > 5 * 60 * 1000 && isConnected) {
+        if (timeSinceLastMessage > 5 * 60 * 1000) {
           console.error('[Chat] No messages for 5 minutes, forcing reconnect');
           setError('Connection appears dead - reconnecting...');
           setIsConnected(false);
           
           // Close and reconnect
-          if (newWs.readyState === WebSocket.OPEN) {
-            newWs.close();
+          const currentWs = wsRef.current;
+          if (currentWs && currentWs.readyState === WebSocket.OPEN) {
+            currentWs.close();
           }
           
           // Trigger reconnection
           isConnectingRef.current = false;
-          if (currentChannelRef.current) {
-            connectChat(currentChannelRef.current);
+          const channelToReconnect = currentChannelRef.current;
+          if (channelToReconnect) {
+            connectChat(channelToReconnect);
           }
         }
       }, 30000); // Check every 30 seconds
       
-      setWs(newWs);
       console.log('[Chat] Connection setup complete with health monitoring');
     } catch (e) {
       const errorMsg = e instanceof Error ? e.message : String(e);
@@ -310,7 +442,7 @@ export const useTwitchChat = () => {
     } finally {
       isConnectingRef.current = false;
     }
-  }, []);
+  }, [cleanupWebSocket]);
 
   // Send message with optimistic update, filter out our own messages from server
   const sendMessage = useCallback(async (messageText: string, userInfo: { username: string; displayName: string; userId: string; color?: string; badges?: string }, replyParentMsgId?: string) => {
@@ -327,49 +459,45 @@ export const useTwitchChat = () => {
     // Create an optimistic message in IRC format
     const timestamp = Date.now();
     const color = userInfo.color || '#8A2BE2';
-    const badges = userInfo.badges || '';
+    // Prefer IRC badges from previous messages, fall back to provided badges
+    const badges = userBadgesFromIrcRef.current || userInfo.badges || '';
+    console.log('[Chat] Using badges for optimistic message:', badges, '(from IRC:', !!userBadgesFromIrcRef.current, ')');
     
-    // Build reply tags if replying - need to include parent message info for proper display
+    // Build reply tags if replying
     let replyTags = '';
     if (replyParentMsgId) {
-      // Find the parent message to extract its details
-      const parentMessage = messages.find(msg => msg.includes(`id=${replyParentMsgId}`));
-      
-      if (parentMessage) {
-        // Extract parent message details
-        const parentDisplayNameMatch = parentMessage.match(/display-name=([^;]+)/);
-        const parentUsernameMatch = parentMessage.match(/:(\w+)!\w+@\w+\.tmi\.twitch\.tv PRIVMSG/);
-        const parentUserIdMatch = parentMessage.match(/user-id=([^;]+)/);
-        const parentMsgBodyMatch = parentMessage.match(/PRIVMSG #\w+ :(.+)$/);
+      setMessages(currentMessages => {
+        const parentMessage = currentMessages.find(msg => msg.includes(`id=${replyParentMsgId}`));
         
-        const parentDisplayName = parentDisplayNameMatch ? parentDisplayNameMatch[1] : '';
-        const parentUsername = parentUsernameMatch ? parentUsernameMatch[1] : '';
-        const parentUserId = parentUserIdMatch ? parentUserIdMatch[1] : '';
-        const parentMsgBody = parentMsgBodyMatch ? parentMsgBodyMatch[1] : '';
+        if (parentMessage) {
+          const parentDisplayNameMatch = parentMessage.match(/display-name=([^;]+)/);
+          const parentUsernameMatch = parentMessage.match(/:(\w+)!\w+@\w+\.tmi\.twitch\.tv PRIVMSG/);
+          const parentUserIdMatch = parentMessage.match(/user-id=([^;]+)/);
+          const parentMsgBodyMatch = parentMessage.match(/PRIVMSG #\w+ :(.+)$/);
+          
+          const parentDisplayName = parentDisplayNameMatch ? parentDisplayNameMatch[1] : '';
+          const parentUsername = parentUsernameMatch ? parentUsernameMatch[1] : '';
+          const parentUserId = parentUserIdMatch ? parentUserIdMatch[1] : '';
+          const parentMsgBody = parentMsgBodyMatch ? parentMsgBodyMatch[1] : '';
+          
+          const escapedParentMsgBody = parentMsgBody.replace(/\\/g, '\\\\').replace(/;/g, '\\:').replace(/ /g, '\\s').replace(/\r/g, '\\r').replace(/\n/g, '\\n');
+          
+          replyTags = `reply-parent-msg-id=${replyParentMsgId};reply-parent-user-id=${parentUserId};reply-parent-user-login=${parentUsername};reply-parent-display-name=${parentDisplayName};reply-parent-msg-body=${escapedParentMsgBody};`;
+        } else {
+          replyTags = `reply-parent-msg-id=${replyParentMsgId};`;
+        }
         
-        // Escape special characters in the message body for IRC format
-        const escapedParentMsgBody = parentMsgBody.replace(/\\/g, '\\\\').replace(/;/g, '\\:').replace(/ /g, '\\s').replace(/\r/g, '\\r').replace(/\n/g, '\\n');
-        
-        replyTags = `reply-parent-msg-id=${replyParentMsgId};reply-parent-user-id=${parentUserId};reply-parent-user-login=${parentUsername};reply-parent-display-name=${parentDisplayName};reply-parent-msg-body=${escapedParentMsgBody};`;
-      } else {
-        // Fallback if parent message not found
-        replyTags = `reply-parent-msg-id=${replyParentMsgId};`;
-      }
+        return currentMessages; // Don't modify messages in this setter
+      });
     }
     
     const optimisticMessage = `@badge-info=;badges=${badges};color=${color};display-name=${userInfo.displayName};emotes=;first-msg=0;flags=;id=${tempId};mod=0;${replyTags}returning-chatter=0;room-id=;subscriber=0;tmi-sent-ts=${timestamp};turbo=0;user-id=${userInfo.userId};user-type= :${userInfo.username}!${userInfo.username}@${userInfo.username}.tmi.twitch.tv PRIVMSG #${currentChannelRef.current} :${messageText}`;
 
-    // Always append optimistic message to the end (newest message)
+    // Add to seen IDs and messages
+    seenMessageIdsRef.current.add(tempId);
     setMessages(prev => [...prev, optimisticMessage]);
-    
-    setSeenMessageIds(prev => {
-      const newSet = new Set(prev);
-      newSet.add(tempId);
-      return newSet;
-    });
 
     try {
-      // Send the message - the real message from server will be filtered out
       await invoke('send_chat_message', { 
         message: messageText,
         replyParentMsgId: replyParentMsgId || null
@@ -380,13 +508,8 @@ export const useTwitchChat = () => {
       
       // Remove the optimistic message on error
       setMessages(prev => prev.filter(msg => !msg.includes(`id=${tempId}`)));
-      setSeenMessageIds(prev => {
-        const newSet = new Set(prev);
-        newSet.delete(tempId);
-        return newSet;
-      });
+      seenMessageIdsRef.current.delete(tempId);
       
-      // Re-throw so the UI can show an error
       throw err;
     }
   }, [isConnected]);
@@ -399,7 +522,8 @@ export const useTwitchChat = () => {
       } else {
         console.log('[Chat] App visible again');
         // Check if connection is still alive
-        if (ws && ws.readyState !== WebSocket.OPEN && currentChannelRef.current) {
+        const ws = wsRef.current;
+        if (ws && ws.readyState !== WebSocket.OPEN && currentChannelRef.current && !isIntentionalDisconnectRef.current) {
           console.log('[Chat] Connection lost while hidden, reconnecting...');
           isConnectingRef.current = false;
           connectChat(currentChannelRef.current);
@@ -412,26 +536,16 @@ export const useTwitchChat = () => {
     return () => {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [ws, connectChat]);
+  }, [connectChat]);
 
+  // Cleanup on unmount
   useEffect(() => {
     return () => {
-      // Clear reconnect timeout on unmount
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-      }
-      
-      // Clear health check interval
-      if (healthCheckIntervalRef.current) {
-        clearInterval(healthCheckIntervalRef.current);
-      }
-      
-      if (ws) {
-        console.log('[Chat] Cleanup: closing WebSocket');
-        ws.close();
-      }
+      console.log('[Chat] Cleanup: unmounting');
+      isIntentionalDisconnectRef.current = true;
+      cleanupWebSocket();
     };
-  }, [ws]);
+  }, [cleanupWebSocket]);
 
   // Trim messages back to normal limit (called when resuming from pause)
   const trimToLimit = useCallback(() => {

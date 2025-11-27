@@ -23,6 +23,7 @@ static IRC_HANDLE: OnceLock<Mutex<Option<tokio::task::JoinHandle<()>>>> = OnceLo
 static IRC_WRITER: OnceLock<Mutex<Option<Arc<Mutex<tokio::io::WriteHalf<TcpStream>>>>>> =
     OnceLock::new();
 static SHARED_CHAT_ROOMS: OnceLock<Mutex<HashMap<String, Vec<String>>>> = OnceLock::new();
+static USER_BADGES_CACHE: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 
 const IRC_SERVER: &str = "irc.chat.twitch.tv";
 const IRC_PORT: u16 = 6667;
@@ -53,6 +54,10 @@ fn get_irc_writer() -> &'static Mutex<Option<Arc<Mutex<tokio::io::WriteHalf<TcpS
 
 fn get_shared_chat_rooms() -> &'static Mutex<HashMap<String, Vec<String>>> {
     SHARED_CHAT_ROOMS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn get_user_badges_cache() -> &'static Mutex<Option<String>> {
+    USER_BADGES_CACHE.get_or_init(|| Mutex::new(None))
 }
 
 impl IrcService {
@@ -346,7 +351,19 @@ impl IrcService {
             }
         } else if trimmed.contains("USERSTATE") {
             // User state in channel (mod status, badges, etc.)
+            // USERSTATE is sent when joining a channel AND after sending a message
+            // It contains the user's badges which we need for optimistic message display
             println!("[IRC Chat] User state update: {}", trimmed);
+
+            // Extract badges from USERSTATE and cache them
+            if let Some(badges) = Self::extract_tag_value(trimmed, "badges") {
+                println!("[IRC Chat] Caching user badges from USERSTATE: {}", badges);
+                *get_user_badges_cache().lock().await = Some(badges.clone());
+
+                // Send badges to frontend via special message
+                let badges_message = format!("USER_BADGES:{}", badges);
+                let _ = tx.send(badges_message);
+            }
         } else if trimmed.contains("NOTICE") {
             // System notices
             println!("[IRC Chat] Notice: {}", trimmed);
