@@ -1,3 +1,15 @@
+## [3.3.1] - 2025-11-27
+## [3.3.0]
+
+### Added
+- Cache and forward user badges from IRC USERSTATE messages for accurate badge representation.
+- Replace optimistic chat messages with server messages to ensure badge accuracy.
+- Health checks to detect and recover from stale connections.
+
+### Fixed
+- Improved reconnection logic to handle abnormal closures and channel changes gracefully.
+- Prevented duplicate message display.
+
 ## [3.3.0] - 2025-11-27
 ### Added
 - Enhanced `BadgeDetailOverlay` with highlighted dates in the More Info section.
@@ -142,6 +154,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
