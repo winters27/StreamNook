@@ -1,3 +1,14 @@
+## [3.1.0] - 2025-11-26
+### Fixed
+- Fixed unexpected video pausing during initial load and throughout playback.
+- Fixed ChatWidget pausing when scrolling and added chat buffer.
+
+### Changed
+- Optimized chat history and set a fixed limit of 200 messages for improved performance and stability.
+
+### Added
+- Added Twitch user cosmetics and clickable usernames for system messages in chat.
+
 ## [3.0.2] - 2025-11-26
 ### Fixed
 - Prevent `fetchBTTVEmotes` from crashing on undefined `channelName` by removing the paramater. This function is now called without any `channelName` argument.
@@ -81,6 +92,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
