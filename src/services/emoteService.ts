@@ -38,7 +38,7 @@ const GLOBAL_TWITCH_EMOTES: Emote[] = [
   { id: '1902', name: 'Keepo', url: 'https://static-cdn.jtvnw.net/emoticons/v2/1902/default/dark/1.0', provider: 'twitch' },
 ];
 
-export async function fetchBTTVEmotes(channelName?: string, channelId?: string): Promise<Emote[]> {
+export async function fetchBTTVEmotes(_channelName?: string, channelId?: string): Promise<Emote[]> {
   try {
     const emotes: Emote[] = [];
     
