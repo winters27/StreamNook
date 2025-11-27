@@ -1,3 +1,14 @@
+## [3.3.0] - 2025-11-27
+### Added
+- Enhanced `BadgeDetailOverlay` with highlighted dates in the More Info section.
+- Improved badge loading and metadata fetching process in `BadgesOverlay`.
+  - Pre-load metadata from cache for instant sorting.
+  - Background fetching of missing metadata.
+  - Updated UI to reflect fetching status.
+
+### Changed
+- Improved logging clarity in `update-universal-cache.js`.
+
 ## [3.2.3] - 2025-11-27
 ### Added
 - Ability to dynamically switch stream quality within the video player.
@@ -131,6 +142,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 

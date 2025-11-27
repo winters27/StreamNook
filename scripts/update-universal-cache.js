@@ -289,7 +289,7 @@ async function main() {
     console.log(`[Badges] ${badgeSets.length} sets, ${totalVersions} total versions`);
 
     // Step 5: Fetch metadata for each badge
-    console.log('\n[BadgeBase] Fetching metadata...');
+    console.log('\n[Metadata] Fetching badge metadata...');
     let fetched = 0;
     let skipped = 0;
     let failed = 0;
@@ -309,7 +309,7 @@ async function main() {
           }
         }
 
-        // Fetch from BadgeBase
+        // Fetch metadata from external source
         await sleep(BADGEBASE_DELAY_MS);
         const metadata = await fetchBadgeMetadata(badgeSet.set_id, version.id);
         
@@ -327,10 +327,10 @@ async function main() {
           };
           fetched++;
           newBadges.push(`${badgeSet.set_id}-v${version.id} (${version.title})`);
-          console.log(`[BadgeBase] ✓ ${badgeSet.set_id}-v${version.id} (${version.title})`);
+          console.log(`[Metadata] ✓ ${badgeSet.set_id}-v${version.id} (${version.title})`);
         } else {
           failed++;
-          console.log(`[BadgeBase] ✗ ${badgeSet.set_id}-v${version.id} (not found)`);
+          console.log(`[Metadata] ✗ ${badgeSet.set_id}-v${version.id} (not found)`);
         }
       }
     }

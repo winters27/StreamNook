@@ -85,16 +85,31 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
   const isAvailable = badgeStatus === 'available';
   const isComingSoon = badgeStatus === 'coming-soon';
 
-  // Convert ISO timestamps to local time
-  const convertTimestampsToLocal = (text: string): string => {
+  // Convert ISO timestamps to local time and return as JSX with highlighted dates
+  const convertTimestampsToLocalJSX = (text: string): JSX.Element => {
     // Match ISO 8601 timestamps in the format: 2025-09-12T17:00 or 2025-09-12T17:00:00Z
     const isoRegex = /(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?(?:Z)?)/g;
     
-    return text.replace(isoRegex, (match) => {
+    // Extract all timestamps first to determine start and end
+    const timestamps = text.match(isoRegex);
+    const now = Date.now();
+    
+    const parts: (string | JSX.Element)[] = [];
+    let lastIndex = 0;
+    let match;
+    let matchIndex = 0;
+    
+    while ((match = isoRegex.exec(text)) !== null) {
+      // Add text before the match
+      if (match.index > lastIndex) {
+        parts.push(text.substring(lastIndex, match.index));
+      }
+      
+      // Format and add the highlighted timestamp
       try {
-        const date = new Date(match);
-        // Format to local time with readable format
-        return date.toLocaleString(undefined, {
+        const date = new Date(match[0]);
+        const dateTime = date.getTime();
+        const formattedDate = date.toLocaleString(undefined, {
           year: 'numeric',
           month: 'long',
           day: 'numeric',
@@ -102,10 +117,63 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
           minute: '2-digit',
           hour12: true
         });
+        
+        // Determine if this is the start date (first timestamp) or end date (last timestamp)
+        const isStartDate = timestamps && matchIndex === 0;
+        const isEndDate = timestamps && matchIndex === timestamps.length - 1;
+        
+        // Determine styling based on badge status and which date this is
+        let className = 'px-2 py-0.5 rounded font-medium inline-block ';
+        
+        if (isAvailable) {
+          // Badge is available now - highlight the active period
+          if (isStartDate) {
+            // Start date - when it became available (green with glow)
+            className += 'bg-green-500/20 text-green-400 ring-1 ring-green-500/50 shadow-[0_0_10px_rgba(34,197,94,0.3)]';
+          } else if (isEndDate) {
+            // End date - when it expires (softer green)
+            className += 'bg-green-500/10 text-green-300 ring-1 ring-green-500/30';
+          } else {
+            // Other dates
+            className += 'bg-accent/20 text-accent';
+          }
+        } else if (isComingSoon) {
+          // Badge is coming soon - highlight the start date
+          if (isStartDate) {
+            // Start date - when it will become available (blue with glow)
+            className += 'bg-blue-500/20 text-blue-400 ring-1 ring-blue-500/50 shadow-[0_0_10px_rgba(59,130,246,0.3)]';
+          } else if (isEndDate) {
+            // End date - when it will expire (softer blue)
+            className += 'bg-blue-500/10 text-blue-300 ring-1 ring-blue-500/30';
+          } else {
+            // Other dates
+            className += 'bg-accent/20 text-accent';
+          }
+        } else {
+          // Badge is expired or no special status - use neutral accent color
+          className += 'bg-accent/20 text-accent';
+        }
+        
+        parts.push(
+          <span key={match.index} className={className}>
+            {formattedDate}
+          </span>
+        );
       } catch (e) {
-        return match; // Return original if parsing fails
+        // If parsing fails, add original text
+        parts.push(match[0]);
       }
-    });
+      
+      lastIndex = match.index + match[0].length;
+      matchIndex++;
+    }
+    
+    // Add remaining text after last match
+    if (lastIndex < text.length) {
+      parts.push(text.substring(lastIndex));
+    }
+    
+    return <>{parts}</>;
   };
 
   // Format the badge ID for display
@@ -247,8 +315,8 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
                   <span className="text-textPrimary">{badge.title}</span>
                 </div>
                 <div className="flex py-3 px-4">
-                  <span className="text-textSecondary font-medium w-40">Description</span>
-                  <span className="text-textPrimary">
+                  <span className="text-textSecondary font-medium w-40 self-start">Description</span>
+                  <span className="text-textPrimary flex-1">
                     {badge.description || 'No description available'}
                   </span>
                 </div>
@@ -292,7 +360,7 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
                   <div className="flex py-3 px-4">
                     <span className="text-textSecondary font-medium w-40 self-start">More Info</span>
                     <span className="text-textPrimary flex-1">
-                      {convertTimestampsToLocal(badgeBaseInfo.more_info)}
+                      {convertTimestampsToLocalJSX(badgeBaseInfo.more_info)}
                     </span>
                   </div>
                 )}

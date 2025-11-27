@@ -74,11 +74,37 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
           set.versions.map(version => ({ ...version, set_id: set.set_id } as BadgeWithMetadata))
         );
         
-        setBadgesWithMetadata(flattened);
+        // Pre-load metadata from cache to enable instant sorting
+        const badgesWithPreloadedMetadata = await Promise.all(
+          flattened.map(async (badge) => {
+            const cacheKey = `metadata:${badge.set_id}-v${badge.id}`;
+            try {
+              const cached = await invoke<{ data: any; position?: number } | null>('get_universal_cached_item', {
+                cacheType: 'badge',
+                id: cacheKey,
+              });
+              
+              if (cached) {
+                return {
+                  ...badge,
+                  badgebase_info: {
+                    ...cached.data,
+                    position: cached.position
+                  }
+                };
+              }
+            } catch (err) {
+              // Silently fail for individual badges
+            }
+            return badge;
+          })
+        );
+        
+        setBadgesWithMetadata(badgesWithPreloadedMetadata);
         setLoading(false);
         
-        // Fetch metadata for all badges in the background
-        fetchAllBadgeMetadata(flattened);
+        // Fetch any missing metadata in the background
+        fetchAllBadgeMetadata(badgesWithPreloadedMetadata);
         
         // Check for badges missing metadata (new badges that need BadgeBase data)
         checkAndFetchMissingMetadata();
@@ -124,7 +150,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
       const missing = await invoke<[string, string][]>('get_badges_missing_metadata');
       
       if (missing.length > 0) {
-        console.log(`[BadgesOverlay] Found ${missing.length} badges missing metadata, fetching from BadgeBase...`);
+        console.log(`[BadgesOverlay] Found ${missing.length} badges missing metadata, fetching...`);
         setNewBadgesCount(missing.length);
         
         // Fetch metadata for missing badges in batches
@@ -620,7 +646,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
                 {newBadgesCount > 0 && !loadingMetadata && (
                   <div className="ml-auto flex items-center gap-2 text-yellow-500 text-sm">
                     <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-yellow-500"></div>
-                    <span>Fetching {newBadgesCount} new badges from BadgeBase...</span>
+                    <span>Fetching {newBadgesCount} new badge{newBadgesCount !== 1 ? 's' : ''}...</span>
                   </div>
                 )}
                 {!loadingMetadata && newBadgesCount === 0 && (
