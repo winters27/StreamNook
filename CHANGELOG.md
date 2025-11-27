@@ -1,3 +1,9 @@
+## [3.2.1] - 2025-11-27
+## v3.2.0
+
+### Changed
+- Updated version to 3.2.0.
+
 ## [3.2.0] - 2025-11-27
 ### Added
 - Implemented advanced Streamlink settings to allow configuring options such as low-latency mode, HLS live edge, and proxy settings.
@@ -111,6 +117,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
