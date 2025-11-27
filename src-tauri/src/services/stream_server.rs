@@ -15,6 +15,9 @@ static PROXY_URL: Lazy<Arc<Mutex<Option<String>>>> = Lazy::new(|| Arc::new(Mutex
 
 impl StreamServer {
     pub async fn start_proxy_server(stream_url: String) -> Result<u16> {
+        // Stop any existing server first
+        Self::stop().await?;
+
         let port = rand::rng().random_range(10000..20000);
         let addr = SocketAddr::from(([127, 0, 0, 1], port));
 

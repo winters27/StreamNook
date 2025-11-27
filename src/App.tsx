@@ -30,11 +30,12 @@ interface BadgeVersion {
 }
 
 function App() {
-  const { loadSettings, chatPlacement, isLoading, currentStream, streamUrl, checkAuthStatus, showProfileOverlay, setShowProfileOverlay, addToast, setShowDropsOverlay, showBadgesOverlay, setShowBadgesOverlay, settings, updateSettings } = useAppStore();
+  const { loadSettings, chatPlacement, isLoading, currentStream, streamUrl, checkAuthStatus, showProfileOverlay, setShowProfileOverlay, addToast, setShowDropsOverlay, showBadgesOverlay, setShowBadgesOverlay, settings, updateSettings, isTheaterMode } = useAppStore();
   const [chatSize, setChatSize] = useState(384); // Default 384px (w-96)
   const [isResizing, setIsResizing] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const [selectedBadge, setSelectedBadge] = useState<{ badge: BadgeVersion; setId: string } | null>(null);
+  const [savedWindowSize, setSavedWindowSize] = useState<{ width: number; height: number } | null>(null);
   const [showChangelog, setShowChangelog] = useState(false);
   const [changelogVersion, setChangelogVersion] = useState<string | null>(null);
 
@@ -56,42 +57,42 @@ function App() {
     const initializeApp = async () => {
       await loadSettings();
       await checkAuthStatus();
-      
+
       // Pre-fetch cosmetics for current user
       const { currentUser, isAuthenticated } = useAppStore.getState();
       if (isAuthenticated && currentUser?.user_id) {
         console.log('[App] Pre-fetching cosmetics for current user...');
         const { prefetchAllUserData } = await import('./services/cosmeticsCache');
-        prefetchAllUserData(currentUser.user_id).catch(err => 
+        prefetchAllUserData(currentUser.user_id).catch(err =>
           console.error('[App] Failed to pre-fetch user cosmetics:', err)
         );
       }
-      
+
       // Set up event listeners for drops and channel points
       const unlistenChannelPoints = await listen('channel-points-claimed', (event: any) => {
         const claim = event.payload;
         addToast(`Claimed ${claim.points_earned} channel points!`, 'success');
       });
-      
+
       // Set up periodic auth check to detect session expiry while watching
       // Check every 5 minutes
       const authCheckInterval = setInterval(async () => {
         const { isAuthenticated: wasAuthenticated, currentStream } = useAppStore.getState();
-        
+
         // Only check if we were authenticated and are currently watching a stream
         if (wasAuthenticated && currentStream) {
           console.log('[App] Performing periodic auth check...');
           await checkAuthStatus();
         }
       }, 5 * 60 * 1000); // 5 minutes
-      
+
       // Cleanup listeners on unmount
       return () => {
         unlistenChannelPoints();
         clearInterval(authCheckInterval);
       };
     };
-    
+
     initializeApp();
   }, [loadSettings, checkAuthStatus]);
 
@@ -103,9 +104,9 @@ function App() {
         const currentVersion = await invoke<string>('get_current_app_version');
         const { settings } = useAppStore.getState();
         const lastSeenVersion = settings.last_seen_version;
-        
+
         console.log('[App] Version check - Current:', currentVersion, 'Last seen:', lastSeenVersion);
-        
+
         // If there's no last seen version (first run) or the version has changed
         if (lastSeenVersion && lastSeenVersion !== currentVersion) {
           console.log('[App] Version changed, showing changelog');
@@ -120,7 +121,7 @@ function App() {
         console.error('[App] Failed to check version:', error);
       }
     };
-    
+
     // Only run after settings are loaded
     if (settings.streamlink_path !== undefined) {
       checkForVersionChange();
@@ -130,7 +131,7 @@ function App() {
   // Handle changelog close - update the last seen version
   const handleChangelogClose = async () => {
     setShowChangelog(false);
-    
+
     if (changelogVersion) {
       try {
         const { settings } = useAppStore.getState();
@@ -142,26 +143,62 @@ function App() {
     }
   };
 
-  // Handle aspect ratio locking when setting changes or chat is resized
+  // Handle theater mode - resize window to 16:9 (1920x1080)
   useEffect(() => {
-    const adjustWindowForAspectRatio = async () => {
-      if (!settings.video_player?.lock_aspect_ratio || !streamUrl) return;
-
+    const handleTheaterMode = async () => {
+      if (!streamUrl) return; // Only apply when a stream is playing
+      
       try {
         const window = getCurrentWindow();
         
+        if (isTheaterMode) {
+          // Entering theater mode - save current size and resize to 16:9
+          const currentSize = await window.innerSize();
+          setSavedWindowSize({ width: currentSize.width, height: currentSize.height });
+          
+          // Title bar height is approximately 32px
+          const titleBarHeight = 32;
+          const targetWidth = 1080;
+          // Calculate 16:9 height: 1080 / 16 * 9 = 607.5, rounded to 608
+          const targetHeight = Math.round(targetWidth / 16 * 9) + titleBarHeight;
+          
+          console.log('Entering theater mode - resizing to:', targetWidth, 'x', targetHeight);
+          await window.setSize(new LogicalSize(targetWidth, targetHeight));
+        } else if (savedWindowSize) {
+          // Exiting theater mode - restore previous size
+          console.log('Exiting theater mode - restoring to:', savedWindowSize.width, 'x', savedWindowSize.height);
+          await window.setSize(new LogicalSize(savedWindowSize.width, savedWindowSize.height));
+          setSavedWindowSize(null);
+        }
+      } catch (error) {
+        console.error('Failed to resize window for theater mode:', error);
+      }
+    };
+    
+    handleTheaterMode();
+  }, [isTheaterMode, streamUrl, savedWindowSize]);
+
+  // Handle aspect ratio locking when setting changes or chat is resized
+  useEffect(() => {
+    const adjustWindowForAspectRatio = async () => {
+      // Don't adjust if in theater mode - theater mode handles its own sizing
+      if (isTheaterMode || !settings.video_player?.lock_aspect_ratio || !streamUrl) return;
+
+      try {
+        const window = getCurrentWindow();
+
         // Get current window size using Tauri's API
         const size = await window.innerSize();
         const width = size.width;
         const height = size.height;
-        
+
         console.log('Current window size:', width, height);
         console.log('Chat size:', chatSize);
         console.log('Chat placement:', chatPlacement);
-        
+
         // Title bar height is approximately 32px
         const titleBarHeight = 32;
-        
+
         const [newWidth, newHeight] = await invoke<[number, number]>('calculate_aspect_ratio_size', {
           currentWidth: width,
           currentHeight: height,
@@ -189,28 +226,28 @@ function App() {
 
   useEffect(() => {
     const checkUpdates = async () => {
-      
+
       // Check for updates on startup (only once per component type)
       let streamlinkUpdateShown = false;
       let ttvlolUpdateShown = false;
       try {
         const { invoke } = await import('@tauri-apps/api/core');
         const settings = useAppStore.getState().settings;
-        
+
         // Check Streamlink updates
         if (settings.streamlink_path && !streamlinkUpdateShown) {
-          const isInstalled = await invoke('verify_streamlink_installation', { 
-            path: settings.streamlink_path 
+          const isInstalled = await invoke('verify_streamlink_installation', {
+            path: settings.streamlink_path
           }) as boolean;
-          
+
           if (isInstalled) {
-            const installedVersion = await invoke('get_installed_streamlink_version', { 
-              path: settings.streamlink_path 
+            const installedVersion = await invoke('get_installed_streamlink_version', {
+              path: settings.streamlink_path
             }) as string | null;
-            
+
             if (installedVersion) {
               const latestVersion = await invoke('get_latest_streamlink_version') as string;
-              
+
               if (installedVersion !== latestVersion) {
                 streamlinkUpdateShown = true;
                 const { addToast, openSettings } = useAppStore.getState();
@@ -226,14 +263,14 @@ function App() {
             }
           }
         }
-        
+
         // Check TTV LOL plugin updates (if enabled)
         if (settings.ttvlol_plugin?.enabled && !ttvlolUpdateShown) {
           const installedVersion = await invoke('get_installed_ttvlol_version') as string | null;
-          
+
           if (installedVersion) {
             const latestVersion = await invoke('get_latest_ttvlol_version') as string;
-            
+
             if (installedVersion !== latestVersion) {
               ttvlolUpdateShown = true;
               const { addToast, openSettings } = useAppStore.getState();
@@ -317,12 +354,12 @@ function App() {
         </div>
       ) : (
         // Show video player and chat when stream is playing
-        <div 
+        <div
           ref={containerRef}
           className={`flex flex-1 overflow-hidden ${chatPlacement === 'bottom' ? 'flex-col' : 'flex-row'}`}
         >
           <div className="flex-1 relative overflow-hidden">
-            <VideoPlayer />
+            <VideoPlayer key={streamUrl} />
             {isLoading && <LoadingWidget useFunnyMessages={true} />}
           </div>
           {chatPlacement !== 'hidden' && (
@@ -338,7 +375,7 @@ function App() {
                 title={chatPlacement === 'right' ? 'Drag to resize chat width' : 'Drag to resize chat height'}
               />
               {/* Chat Widget */}
-              <div 
+              <div
                 className="flex-shrink-0 overflow-hidden"
                 style={{
                   [chatPlacement === 'right' ? 'width' : 'height']: `${chatSize}px`
@@ -353,7 +390,7 @@ function App() {
       <SettingsDialog />
       <LiveStreamsOverlay />
       <DropsOverlay />
-      <ProfileOverlay 
+      <ProfileOverlay
         isOpen={showProfileOverlay}
         onClose={() => setShowProfileOverlay(false)}
         anchorPosition={{ x: window.innerWidth, y: 32 }}
