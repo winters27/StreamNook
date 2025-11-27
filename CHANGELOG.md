@@ -1,3 +1,7 @@
+## [3.1.2] - 2025-11-26
+### Fixed
+- Improved live stream latency with dynamic playback adjustment based on buffer growth rate.
+
 ## [3.1.1] - 2025-11-26
 ## v3.1.0
 
@@ -98,6 +102,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
