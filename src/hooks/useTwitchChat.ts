@@ -2,8 +2,16 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../stores/AppStore';
 
+// Hardcoded message limit for optimal performance and stability
+const CHAT_HISTORY_MAX = 200;
+// Buffer size to allow when chat is paused (scrolled up)
+const CHAT_BUFFER_SIZE = 150;
+// Total max including buffer
+const CHAT_MAX_WITH_BUFFER = CHAT_HISTORY_MAX + CHAT_BUFFER_SIZE;
+
 export const useTwitchChat = () => {
   const [messages, setMessages] = useState<any[]>([]);
+  const [isPausedForBuffer, setIsPausedForBuffer] = useState(false);
   const [ws, setWs] = useState<WebSocket | null>(null);
   const [isConnected, setIsConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -180,15 +188,17 @@ export const useTwitchChat = () => {
             // New message - add it
             console.log('[Chat] New message:', messageId);
             setMessages(prevMessages => {
-              const { settings } = useAppStore.getState();
-              const chatHistoryMax = settings.chat_history_max || 500; // Default to 500 if not set
-              
               const updated = [...prevMessages, message];
-              // Trim chat history if it exceeds the max
-              if (updated.length > chatHistoryMax) {
-                return updated.slice(updated.length - chatHistoryMax);
+              // If paused, allow buffering up to max with buffer
+              // If not paused, trim to normal limit
+              const limit = isPausedForBuffer ? CHAT_MAX_WITH_BUFFER : CHAT_HISTORY_MAX;
+              
+              if (updated.length > limit) {
+                const trimmed = updated.slice(updated.length - limit);
+                console.log(`[Chat] Trimmed to ${limit} messages (paused: ${isPausedForBuffer})`);
+                return trimmed;
               }
-              console.log(`[Chat] Total messages: ${updated.length}`);
+              console.log(`[Chat] Total messages: ${updated.length} (limit: ${limit})`);
               return updated;
             });
             
@@ -196,12 +206,10 @@ export const useTwitchChat = () => {
             const newSet = new Set(prev);
             newSet.add(messageId);
             
-            // Keep only last `chatHistoryMax` message IDs to prevent memory issues
-            const { settings } = useAppStore.getState();
-            const chatHistoryMax = settings.chat_history_max || 500; // Default to 500 if not set
-            if (newSet.size > chatHistoryMax) {
+            // Keep message IDs up to max with buffer to prevent memory issues
+            if (newSet.size > CHAT_MAX_WITH_BUFFER) {
               const arr = Array.from(newSet);
-              return new Set(arr.slice(-chatHistoryMax));
+              return new Set(arr.slice(-CHAT_MAX_WITH_BUFFER));
             }
             
             return newSet;
@@ -425,5 +433,27 @@ export const useTwitchChat = () => {
     };
   }, [ws]);
 
-  return { messages, connectChat, sendMessage, isConnected, error };
+  // Trim messages back to normal limit (called when resuming from pause)
+  const trimToLimit = useCallback(() => {
+    setMessages(prev => {
+      if (prev.length > CHAT_HISTORY_MAX) {
+        console.log(`[Chat] Trimming from ${prev.length} to ${CHAT_HISTORY_MAX} messages`);
+        return prev.slice(prev.length - CHAT_HISTORY_MAX);
+      }
+      return prev;
+    });
+  }, []);
+
+  // Set pause state for buffering
+  const setPaused = useCallback((paused: boolean) => {
+    console.log(`[Chat] Buffer pause state: ${paused}`);
+    setIsPausedForBuffer(paused);
+    
+    // If unpausing, trim messages back to limit
+    if (!paused) {
+      trimToLimit();
+    }
+  }, [trimToLimit]);
+
+  return { messages, connectChat, sendMessage, isConnected, error, setPaused };
 };

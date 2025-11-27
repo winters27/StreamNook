@@ -22,6 +22,8 @@ const VideoPlayer = () => {
   const playerSettings = settings.video_player;
   const isLiveRef = useRef<boolean>(false);
   const isInitialLoadRef = useRef<boolean>(true);
+  const userInitiatedPauseRef = useRef<boolean>(false);
+  const lastPlayTimeRef = useRef<number>(0);
 
   // Sync volume with store
   const syncVolumeToPlayer = useCallback(() => {
@@ -120,31 +122,75 @@ const VideoPlayer = () => {
       hls.loadSource(streamUrl);
       hls.attachMedia(video);
 
-      // Prevent unwanted pausing during initial load when video is positioned at live edge
+      // Prevent unwanted pausing throughout playback
+      // This handles cases where the browser automatically pauses the stream
       const handlePause = (e: Event) => {
-        if (isInitialLoadRef.current && video.readyState >= 2) {
-          console.log('Preventing initial pause at live edge, resuming playback');
+        const now = Date.now();
+        const timeSinceLastPlay = now - lastPlayTimeRef.current;
+        
+        // If this pause happened very soon after play (< 500ms), it's likely automatic
+        // Also check if user didn't initiate the pause
+        const isAutomaticPause = !userInitiatedPauseRef.current && timeSinceLastPlay < 500;
+        
+        // For live streams, also check buffer status
+        const hasBuffer = video.buffered.length > 0 && 
+                         video.buffered.end(video.buffered.length - 1) - video.currentTime > 1;
+        
+        if ((isInitialLoadRef.current || isAutomaticPause || (isLiveRef.current && hasBuffer)) && video.readyState >= 2) {
+          console.log('Preventing unexpected pause, resuming playback (buffer available:', hasBuffer, ')');
           e.preventDefault();
-          video.play().catch(err => console.log('Resume play failed:', err));
+          
+          // Reset the flag
+          userInitiatedPauseRef.current = false;
+          
+          // Resume playback
+          video.play().catch(err => {
+            console.log('Resume play failed:', err);
+            // Try again after a short delay
+            setTimeout(() => {
+              if (video.paused && !userInitiatedPauseRef.current) {
+                video.play().catch(e => console.log('Second resume attempt failed:', e));
+              }
+            }, 100);
+          });
+        } else {
+          // This was a legitimate user pause
+          console.log('User-initiated pause detected');
         }
       };
 
       const handlePlaying = () => {
+        // Track when playback starts for pause detection
+        lastPlayTimeRef.current = Date.now();
+        
         // After first successful play, disable initial load protection
         if (isInitialLoadRef.current) {
           console.log('First playback started, disabling initial load protection');
           setTimeout(() => {
             isInitialLoadRef.current = false;
-          }, 2000); // Give it 2 seconds of playback before disabling
+          }, 2000);
         }
+      };
+      
+      // Track user-initiated play/pause from controls
+      const handlePlayClick = () => {
+        userInitiatedPauseRef.current = false;
+        lastPlayTimeRef.current = Date.now();
+      };
+      
+      const handlePauseClick = () => {
+        userInitiatedPauseRef.current = true;
       };
 
       // Store handlers for cleanup
       (video as any)._handlePause = handlePause;
       (video as any)._handlePlaying = handlePlaying;
+      (video as any)._handlePlayClick = handlePlayClick;
+      (video as any)._handlePauseClick = handlePauseClick;
 
       video.addEventListener('pause', handlePause);
       video.addEventListener('playing', handlePlaying);
+      video.addEventListener('play', handlePlayClick);
 
       // Track available quality levels
       const qualityLevels: QualityLevel[] = [];
@@ -346,6 +392,22 @@ const VideoPlayer = () => {
         // Initial volume sync
         syncVolumeToPlayer();
 
+        // Listen for Plyr pause/play events to track user intention
+        player.on('play', () => {
+          userInitiatedPauseRef.current = false;
+          lastPlayTimeRef.current = Date.now();
+        });
+        
+        player.on('pause', () => {
+          // Only mark as user-initiated if the video is actually paused
+          // (not if it's a brief pause during seeking)
+          setTimeout(() => {
+            if (video.paused) {
+              userInitiatedPauseRef.current = true;
+            }
+          }, 50);
+        });
+
         // Handle autoplay
         if (playerSettings.autoplay) {
           video.play().catch((err) => {
@@ -449,6 +511,14 @@ const VideoPlayer = () => {
         video.removeEventListener('playing', (video as any)._handlePlaying);
         delete (video as any)._handlePlaying;
       }
+      if (video && (video as any)._handlePlayClick) {
+        video.removeEventListener('play', (video as any)._handlePlayClick);
+        delete (video as any)._handlePlayClick;
+      }
+      if (video && (video as any)._handlePauseClick) {
+        video.removeEventListener('pause', (video as any)._handlePauseClick);
+        delete (video as any)._handlePauseClick;
+      }
 
       // Restore original video element property descriptors if they were overridden
       if (video && (video as any)._originalCurrentTime) {
@@ -477,6 +547,8 @@ const VideoPlayer = () => {
       // Reset state for next stream
       isLiveRef.current = false;
       isInitialLoadRef.current = true;
+      userInitiatedPauseRef.current = false;
+      lastPlayTimeRef.current = 0;
     };
   }, [streamUrl, playerSettings.autoplay, playerSettings.low_latency_mode, playerSettings.max_buffer_length, playerSettings.start_quality, syncVolumeToPlayer, updateLiveTimeDisplay]);
 

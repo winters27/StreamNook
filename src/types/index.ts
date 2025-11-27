@@ -95,7 +95,6 @@ export interface Settings {
   ttvlol_plugin: TtvlolPluginSettings;
   drops: DropsSettings;
   favorite_streamers: string[];
-  chat_history_max: number;
   chat_design?: ChatDesignSettings;
   live_notifications?: LiveNotificationSettings;
   last_seen_version?: string;
