@@ -1,3 +1,7 @@
+## [3.0.2] - 2025-11-26
+### Fixed
+- Prevent `fetchBTTVEmotes` from crashing on undefined `channelName` by removing the paramater. This function is now called without any `channelName` argument.
+
 ## [3.0.1] - 2025-11-26
 ### Changes
 
@@ -77,6 +81,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
