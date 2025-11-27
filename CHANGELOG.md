@@ -1,3 +1,13 @@
+## [3.2.3] - 2025-11-27
+### Added
+- Ability to dynamically switch stream quality within the video player.
+- Exposed additional Streamlink parameters within settings.
+
+### Fixed
+- More resilient drops URL parsing.
+- Correctly chain opener function calls.
+- More resilient date parsing.
+
 ## [3.2.2] - 2025-11-27
 ### Fixed
 - Suppressed unused variable warning in HLS manifest parsed event in VideoPlayer component.
@@ -121,6 +131,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
