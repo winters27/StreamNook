@@ -30,7 +30,7 @@ interface ParsedMessage {
 }
 
 const ChatWidget = () => {
-  const { messages, connectChat, sendMessage, isConnected, error } = useTwitchChat();
+  const { messages, connectChat, sendMessage, isConnected, error, setPaused: setBufferPaused } = useTwitchChat();
   const { currentStream, currentUser } = useAppStore();
   const listRef = useRef<List>(null);
   const rowHeights = useRef<{ [key: number]: number }>({});
@@ -286,23 +286,25 @@ const ChatWidget = () => {
     // Check for any manual scroll (not programmatic)
     // Or if the user has been scrolling recently
     if (!scrollUpdateWasRequested || isUserScrollingRef.current) {
-      // Immediately pause if user scrolls up from bottom
-      if (!isAtBottom) {
-        if (!isPaused) {
-          setIsPaused(true);
-          isUserScrollingRef.current = true;
-          console.log('[Chat] Paused - user scrolled up');
+        // Immediately pause if user scrolls up from bottom
+        if (!isAtBottom) {
+          if (!isPaused) {
+            setIsPaused(true);
+            setBufferPaused(true);
+            isUserScrollingRef.current = true;
+            console.log('[Chat] Paused - user scrolled up');
+          }
+        } else {
+          // User scrolled to bottom - unpause after a short delay
+          if (isPaused) {
+            scrollTimeoutRef.current = setTimeout(() => {
+              setIsPaused(false);
+              setBufferPaused(false);
+              isUserScrollingRef.current = false;
+              console.log('[Chat] Unpaused - user scrolled to bottom');
+            }, 300);
+          }
         }
-      } else {
-        // User scrolled to bottom - unpause after a short delay
-        if (isPaused) {
-          scrollTimeoutRef.current = setTimeout(() => {
-            setIsPaused(false);
-            isUserScrollingRef.current = false;
-            console.log('[Chat] Unpaused - user scrolled to bottom');
-          }, 300);
-        }
-      }
     }
   };
 
@@ -313,6 +315,7 @@ const ChatWidget = () => {
       isUserScrollingRef.current = true;
       if (!isPaused) {
         setIsPaused(true);
+        setBufferPaused(true);
         console.log('[Chat] Paused - scrolled up');
       }
       return;
@@ -333,6 +336,7 @@ const ChatWidget = () => {
         isUserScrollingRef.current = true;
         if (!isPaused) {
           setIsPaused(true);
+          setBufferPaused(true);
           console.log('[Chat] Paused - scrolled while not at bottom');
         }
       }
@@ -342,6 +346,7 @@ const ChatWidget = () => {
   // Resume chat (scroll to bottom)
   const handleResume = () => {
     setIsPaused(false);
+    setBufferPaused(false);
     isUserScrollingRef.current = false;
     if (listRef.current && messages.length > 0) {
       listRef.current.scrollToItem(messages.length - 1, 'end');

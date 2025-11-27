@@ -104,10 +104,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!settings.favorite_streamers) {
       settings.favorite_streamers = [];
     }
-    // Ensure chat_history_max has a default if not present
-    if (!settings.chat_history_max) {
-      settings.chat_history_max = 500; // Default value
-    }
     set({ settings, chatPlacement: settings.chat_placement });
     
     // Connect to Discord if enabled

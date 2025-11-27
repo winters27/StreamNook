@@ -150,18 +150,12 @@ pub struct Settings {
     pub drops: DropsSettings,
     #[serde(default)]
     pub favorite_streamers: Vec<String>,
-    #[serde(default = "default_chat_history_max")]
-    pub chat_history_max: u32,
     #[serde(default)]
     pub chat_design: ChatDesignSettings,
     #[serde(default)]
     pub live_notifications: LiveNotificationSettings,
     #[serde(default)]
     pub last_seen_version: Option<String>,
-}
-
-fn default_chat_history_max() -> u32 {
-    500
 }
 
 impl Default for Settings {
@@ -183,7 +177,6 @@ impl Default for Settings {
             },
             drops: DropsSettings::default(),
             favorite_streamers: vec![],
-            chat_history_max: default_chat_history_max(),
             chat_design: ChatDesignSettings::default(),
             live_notifications: LiveNotificationSettings::default(),
             last_seen_version: None,

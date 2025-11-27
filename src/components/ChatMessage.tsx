@@ -43,6 +43,8 @@ const ChatMessage = ({ message, emoteSet, messageIndex = 0, onUsernameClick, onR
     
     return parseMessage(message, channelId);
   }, [message]);
+  
+  const isAction = parsed.isAction || false;
   const contentWithEmotes = useMemo(
     () => parseEmotesWithThirdParty(parsed.content, parsed.emotes, emoteSet || undefined),
     [parsed, emoteSet]
@@ -523,6 +525,86 @@ const ChatMessage = ({ message, emoteSet, messageIndex = 0, onUsernameClick, onR
       );
     };
     
+    // Component to render a username with its own cosmetics
+    const UsernameWithCosmetics = ({ 
+      username, 
+      userIdProp, 
+      displayName 
+    }: { 
+      username: string; 
+      userIdProp: string | null; 
+      displayName?: string;
+    }) => {
+      const [userCosmetics, setUserCosmetics] = useState<{ badges: any[]; paints: any[] } | null>(null);
+      const [userBadges, setUserBadges] = useState<Array<{ key: string; info: any }>>([]);
+      
+      useEffect(() => {
+        if (!userIdProp) return;
+        
+        let cancelled = false;
+        
+        // Fetch 7TV cosmetics
+        getUserCosmetics(userIdProp).then((cosmetics) => {
+          if (cancelled || !cosmetics) return;
+          setUserCosmetics(cosmetics);
+        });
+        
+        // Fetch Twitch badges - we don't have badge string from recipient, so skip for now
+        // Recipients will just show their 7TV cosmetics
+        
+        return () => {
+          cancelled = true;
+        };
+      }, [userIdProp]);
+      
+      const userPaint = userCosmetics?.paints.find((p) => p.selected);
+      const userBadge = userCosmetics?.badges.find((b) => b.selected);
+      
+      const userStyle = useMemo(() => {
+        if (!userPaint) {
+          return { color: '#9147FF' }; // Default Twitch purple
+        }
+        return computePaintStyle(userPaint, '#9147FF');
+      }, [userPaint]);
+      
+      return (
+        <span className="inline-flex items-center">
+          {userBadge && (
+            <span className="inline-flex items-center gap-1 mr-1">
+              <img 
+                src={getBadgeImageUrl(userBadge)}
+                alt={userBadge.description || userBadge.name}
+                title={userBadge.description || userBadge.name}
+                className="w-4 h-4 inline-block"
+                onError={(e) => {
+                  e.currentTarget.style.display = 'none';
+                }}
+              />
+            </span>
+          )}
+          <span
+            className="font-bold cursor-pointer hover:underline"
+            style={userStyle}
+            onClick={(e) => {
+              if (userIdProp && onUsernameClick) {
+                onUsernameClick(
+                  userIdProp,
+                  username,
+                  displayName || username,
+                  userStyle.color as string || '#9147FF',
+                  userBadges,
+                  e
+                );
+              }
+            }}
+            title="Click to view profile"
+          >
+            {displayName || username}
+          </span>
+        </span>
+      );
+    };
+    
     // Helper function to parse system message and make usernames clickable
     const parseSystemMessageWithClickableNames = (message: string) => {
       if (!message) return null;
@@ -535,6 +617,11 @@ const ChatMessage = ({ message, emoteSet, messageIndex = 0, onUsernameClick, onR
       let match;
       let keyIndex = 0;
       
+      // Get recipient info from tags
+      const recipientUserId = parsed.tags.get('msg-param-recipient-id');
+      const recipientUserName = parsed.tags.get('msg-param-recipient-user-name');
+      const recipientDisplayName = msgParamRecipientDisplayName;
+      
       while ((match = usernamePattern.exec(message)) !== null) {
         const matchedName = match[1];
         
@@ -545,11 +632,11 @@ const ChatMessage = ({ message, emoteSet, messageIndex = 0, onUsernameClick, onR
         
         // Check if this is the subscriber's username or recipient's username
         const isSubscriber = matchedName.toLowerCase() === parsed.username.toLowerCase();
-        const isRecipient = msgParamRecipientDisplayName && 
-                           matchedName.toLowerCase() === msgParamRecipientDisplayName.toLowerCase();
+        const isRecipient = recipientUserName && 
+                           matchedName.toLowerCase() === recipientUserName.toLowerCase();
         
-        if (isSubscriber || isRecipient) {
-          // Make it clickable with badges
+        if (isSubscriber) {
+          // Gifter with their badges and cosmetics
           parts.push(
             <span
               key={`username-${keyIndex++}`}
@@ -576,6 +663,16 @@ const ChatMessage = ({ message, emoteSet, messageIndex = 0, onUsernameClick, onR
                 {matchedName}
               </span>
             </span>
+          );
+        } else if (isRecipient && recipientUserId) {
+          // Recipient with their own cosmetics
+          parts.push(
+            <UsernameWithCosmetics
+              key={`username-${keyIndex++}`}
+              username={recipientUserName}
+              userIdProp={recipientUserId}
+              displayName={recipientDisplayName}
+            />
           );
         } else {
           // Keep as plain text
@@ -791,8 +888,8 @@ const ChatMessage = ({ message, emoteSet, messageIndex = 0, onUsernameClick, onR
       
       {/* First message indicator */}
       {isFirstMessage && (
-        <div className="mb-1.5 flex items-center justify-end gap-1.5">
-          <span className="text-xs text-purple-400 font-normal">First message in chat</span>
+        <div className="mt-1.5 flex items-center justify-end gap-1.5">
+          <span className="text-xs text-purple-400 font-normal opacity-60">First message in chat</span>
         </div>
       )}
       {/* Reply indicator */}
@@ -812,7 +909,7 @@ const ChatMessage = ({ message, emoteSet, messageIndex = 0, onUsernameClick, onR
         </div>
       )}
       
-      <div className="flex items-start">
+      <div className={`flex items-start ${isFirstMessage ? 'mb-3' : ''}`}>
         {/* Badges and Message content in a single flex container */}
         <div className="flex flex-wrap items-start gap-2 flex-1 min-w-0">
           {/* Badges */}
@@ -879,47 +976,94 @@ const ChatMessage = ({ message, emoteSet, messageIndex = 0, onUsernameClick, onR
               fontWeight: chatDesign?.font_weight ?? 400,
             }}
           >
-            <span 
-              style={usernameStyle} 
-              className="font-bold cursor-pointer hover:underline inline-flex items-center gap-1"
-              onClick={(e) => {
-                const userId = parsed.tags.get('user-id');
-                const displayName = parsed.tags.get('display-name') || parsed.username;
-                if (userId && onUsernameClick) {
-                  onUsernameClick(
-                    userId,
-                    parsed.username,
-                    displayName,
-                    parsed.color,
-                    parsed.badges,
-                    e
-                  );
-                }
-              }}
-              onContextMenu={(e) => {
-                e.preventDefault();
-                const messageId = parsed.tags.get('id');
-                if (messageId && onUsernameRightClick) {
-                  onUsernameRightClick(messageId, parsed.username);
-                }
-              }}
-              title="Right-click to reply"
-            >
-              {parsed.username}
-              {broadcasterType === 'partner' && (
-                <svg 
-                  className="w-3.5 h-3.5 inline-block flex-shrink-0" 
-                  viewBox="0 0 16 16" 
-                  fill="#9146FF"
-                  style={{ verticalAlign: 'middle' }}
+            {isAction ? (
+              // ACTION messages: entire content in username color
+              <span style={usernameStyle} className="break-words italic">
+                <span 
+                  className="font-bold cursor-pointer hover:underline inline-flex items-center gap-1"
+                  onClick={(e) => {
+                    const userId = parsed.tags.get('user-id');
+                    const displayName = parsed.tags.get('display-name') || parsed.username;
+                    if (userId && onUsernameClick) {
+                      onUsernameClick(
+                        userId,
+                        parsed.username,
+                        displayName,
+                        parsed.color,
+                        parsed.badges,
+                        e
+                      );
+                    }
+                  }}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    const messageId = parsed.tags.get('id');
+                    if (messageId && onUsernameRightClick) {
+                      onUsernameRightClick(messageId, parsed.username);
+                    }
+                  }}
+                  title="Right-click to reply"
                 >
-                  <path fillRule="evenodd" d="M12.5 3.5 8 2 3.5 3.5 2 8l1.5 4.5L8 14l4.5-1.5L14 8l-1.5-4.5ZM7 11l4.5-4.5L10 5 7 8 5.5 6.5 4 8l3 3Z" clipRule="evenodd"></path>
-                </svg>
-              )}
-            </span>
-            <span className="text-textPrimary break-words">
-              {' '}{renderContent(contentWithEmotes)}
-            </span>
+                  {parsed.username}
+                  {broadcasterType === 'partner' && (
+                    <svg 
+                      className="w-3.5 h-3.5 inline-block flex-shrink-0" 
+                      viewBox="0 0 16 16" 
+                      fill="#9146FF"
+                      style={{ verticalAlign: 'middle' }}
+                    >
+                      <path fillRule="evenodd" d="M12.5 3.5 8 2 3.5 3.5 2 8l1.5 4.5L8 14l4.5-1.5L14 8l-1.5-4.5ZM7 11l4.5-4.5L10 5 7 8 5.5 6.5 4 8l3 3Z" clipRule="evenodd"></path>
+                    </svg>
+                  )}
+                </span>
+                {' '}{renderContent(contentWithEmotes)}
+              </span>
+            ) : (
+              // Regular messages: username in color, content in default color
+              <>
+                <span 
+                  style={usernameStyle} 
+                  className="font-bold cursor-pointer hover:underline inline-flex items-center gap-1"
+                  onClick={(e) => {
+                    const userId = parsed.tags.get('user-id');
+                    const displayName = parsed.tags.get('display-name') || parsed.username;
+                    if (userId && onUsernameClick) {
+                      onUsernameClick(
+                        userId,
+                        parsed.username,
+                        displayName,
+                        parsed.color,
+                        parsed.badges,
+                        e
+                      );
+                    }
+                  }}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    const messageId = parsed.tags.get('id');
+                    if (messageId && onUsernameRightClick) {
+                      onUsernameRightClick(messageId, parsed.username);
+                    }
+                  }}
+                  title="Right-click to reply"
+                >
+                  {parsed.username}
+                  {broadcasterType === 'partner' && (
+                    <svg 
+                      className="w-3.5 h-3.5 inline-block flex-shrink-0" 
+                      viewBox="0 0 16 16" 
+                      fill="#9146FF"
+                      style={{ verticalAlign: 'middle' }}
+                    >
+                      <path fillRule="evenodd" d="M12.5 3.5 8 2 3.5 3.5 2 8l1.5 4.5L8 14l4.5-1.5L14 8l-1.5-4.5ZM7 11l4.5-4.5L10 5 7 8 5.5 6.5 4 8l3 3Z" clipRule="evenodd"></path>
+                    </svg>
+                  )}
+                </span>
+                <span className="text-textPrimary break-words">
+                  {' '}{renderContent(contentWithEmotes)}
+                </span>
+              </>
+            )}
           </div>
         </div>
       </div>

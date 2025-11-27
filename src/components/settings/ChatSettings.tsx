@@ -6,28 +6,20 @@ const ChatSettings = () => {
 
   return (
     <div className="space-y-6">
-      {/* Chat History */}
-      <div>
-        <label className="block text-sm font-medium text-textPrimary mb-2">
-          Chat History Max: {settings.chat_history_max ?? 500} messages
-        </label>
-        <input
-          type="range"
-          min="50"
-          max="1500"
-          step="50"
-          value={settings.chat_history_max ?? 500}
-          onChange={(e) =>
-            updateSettings({
-              ...settings,
-              chat_history_max: parseInt(e.target.value),
-            })
-          }
-          className="w-full accent-accent cursor-pointer"
-        />
-        <p className="text-xs text-textSecondary mt-1">
-          Maximum number of chat messages to keep in history (lower = better for RAM)
-        </p>
+      {/* Chat History Info */}
+      <div className="glass-panel p-4 rounded-lg">
+        <div className="flex items-start gap-3">
+          <div className="text-accent text-xl">ℹ️</div>
+          <div>
+            <h4 className="text-sm font-medium text-textPrimary mb-1">
+              Chat History: 200 messages
+            </h4>
+            <p className="text-xs text-textSecondary">
+              Chat history is optimized and fixed at 200 messages for best performance and stability.
+              This ensures smooth chat operation even in high-traffic streams.
+            </p>
+          </div>
+        </div>
       </div>
 
       {/* Chat Design Section */}

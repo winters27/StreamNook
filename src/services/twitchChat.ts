@@ -44,6 +44,7 @@ export const parseMessage = (raw: string, channelId?: string) => {
   
   // Extract the actual message content
   let content = '';
+  let isAction = false;
   if (isUserNotice) {
     // For USERNOTICE, content comes after USERNOTICE #channel :
     const contentMatch = message.match(/USERNOTICE\s+#\S+\s+:(.+)$/);
@@ -52,6 +53,13 @@ export const parseMessage = (raw: string, channelId?: string) => {
     // For PRIVMSG, content comes after PRIVMSG #channel :
     const contentMatch = message.match(/PRIVMSG\s+#\S+\s+:(.+)$/);
     content = contentMatch ? contentMatch[1] : '';
+    
+    // Check if this is an ACTION message (like /me command)
+    if (content.startsWith('\u0001ACTION ') && content.endsWith('\u0001')) {
+      isAction = true;
+      // Strip the ACTION wrapper
+      content = content.slice(8, -1);
+    }
   }
   
   // Parse badges using the badge service
@@ -91,5 +99,6 @@ export const parseMessage = (raw: string, channelId?: string) => {
     badges: badgeData,
     emotes: tags.get('emotes') || '',
     replyInfo,
+    isAction,
   };
 };
