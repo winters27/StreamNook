@@ -1,3 +1,9 @@
+## [3.0.1] - 2025-11-26
+### Changes
+
+- chore: update Cargo.lock after build
+
+
 ## [3.0.0] - 2025-11-26
 ### Added
 - Replaced video.js with Plyr for a better streaming experience. This includes HLS support through HLS.js.
@@ -71,6 +77,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
