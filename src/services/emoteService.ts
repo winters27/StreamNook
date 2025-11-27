@@ -38,7 +38,7 @@ const GLOBAL_TWITCH_EMOTES: Emote[] = [
   { id: '1902', name: 'Keepo', url: 'https://static-cdn.jtvnw.net/emoticons/v2/1902/default/dark/1.0', provider: 'twitch' },
 ];
 
-export async function fetchBTTVEmotes(channelName?: string): Promise<Emote[]> {
+export async function fetchBTTVEmotes(channelName?: string, channelId?: string): Promise<Emote[]> {
   try {
     const emotes: Emote[] = [];
     
@@ -55,11 +55,11 @@ export async function fetchBTTVEmotes(channelName?: string): Promise<Emote[]> {
       })));
     }
     
-    // Fetch channel-specific BTTV emotes if channel is provided
-    if (channelName) {
+    // Fetch channel-specific BTTV emotes if channel ID is provided
+    if (channelId) {
       try {
-        // First get the user ID from Twitch
-        const userResponse = await fetch(`https://api.betterttv.net/3/cached/users/twitch/${channelName}`);
+        // Use the Twitch user ID (providerId) as required by the API
+        const userResponse = await fetch(`https://api.betterttv.net/3/cached/users/twitch/${channelId}`);
         if (userResponse.ok) {
           const userData = await userResponse.json();
           if (userData.channelEmotes) {
@@ -311,7 +311,7 @@ export async function fetchAllEmotes(channelName?: string, channelId?: string): 
   
   // Fetch all emotes in parallel
   const [bttvEmotes, sevenTVEmotes, ffzEmotes] = await Promise.all([
-    fetchBTTVEmotes(channelName),
+    fetchBTTVEmotes(channelName, channelId),
     fetch7TVEmotes(channelName, channelId),
     fetchFFZEmotes(channelName)
   ]);

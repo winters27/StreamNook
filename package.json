@@ -24,17 +24,16 @@
   "dependencies": {
     "@tauri-apps/api": "^2.9.0",
     "@tauri-apps/plugin-shell": "^2.3.3",
-    "@types/video.js": "^7.3.58",
     "autoprefixer": "^10.4.22",
     "framer-motion": "^12.23.24",
+    "hls.js": "^1.5.17",
     "lucide-react": "^0.553.0",
+    "plyr": "^3.7.8",
     "postcss": "^8.5.6",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-virtualized-auto-sizer": "^1.0.26",
     "react-window": "^1.8.11",
-    "video.js": "^8.23.4",
-    "videojs-contrib-quality-levels": "^4.1.0",
     "zustand": "^5.0.2"
   },
   "devDependencies": {
@@ -49,13 +48,3 @@
     "vite": "^5.4.21"
   }
 }
-
-
-
-
-
-
-
-
-
-

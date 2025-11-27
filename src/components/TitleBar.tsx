@@ -1,5 +1,5 @@
 import { Window } from '@tauri-apps/api/window';
-import { Minus, Square, X, Radio, Droplet, Award, User, Settings } from 'lucide-react';
+import { Minus, Square, X, Radio, Droplet, Award, User, Settings, Proportions } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
 import { useAppStore } from '../stores/AppStore';
 import PenroseLogo from './PenroseLogo';
@@ -7,7 +7,7 @@ import AboutWidget from './AboutWidget';
 import { invoke } from '@tauri-apps/api/core';
 
 const TitleBar = () => {
-  const { openSettings, setShowLiveStreamsOverlay, setShowProfileOverlay, setShowDropsOverlay, setShowBadgesOverlay, showProfileOverlay, isAuthenticated, currentUser, isMiningActive } = useAppStore();
+  const { openSettings, setShowLiveStreamsOverlay, setShowProfileOverlay, setShowDropsOverlay, setShowBadgesOverlay, showProfileOverlay, isAuthenticated, currentUser, isMiningActive, isTheaterMode, toggleTheaterMode, streamUrl } = useAppStore();
   const [showAbout, setShowAbout] = useState(false);
   const [showSplash, setShowSplash] = useState(false);
   const [dropsSettings, setDropsSettings] = useState<any>(null);
@@ -173,6 +173,18 @@ const TitleBar = () => {
         </div>
 
         <div className="flex space-x-1" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+          {/* Compact View Button - only show when stream is playing */}
+          {streamUrl && (
+            <button 
+              onClick={toggleTheaterMode}
+              className={`p-1.5 hover:bg-glass rounded transition-all duration-200 ${
+                isTheaterMode ? 'text-accent' : 'text-textSecondary hover:text-textPrimary'
+              }`}
+              title={isTheaterMode ? 'Exit Compact View' : 'Compact View (1080x608)'}
+            >
+              <Proportions size={14} />
+            </button>
+          )}
           <button 
             onClick={handleMinimize}
             className="p-1.5 text-textSecondary hover:text-textPrimary hover:bg-glass rounded transition-all duration-200"

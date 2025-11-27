@@ -31,6 +31,8 @@ interface AppState {
   isAuthenticated: boolean;
   currentUser: TwitchUser | null;
   isMiningActive: boolean;
+  isTheaterMode: boolean;
+  originalChatPlacement: string | null;
   toasts: Toast[];
   addToast: (message: string | React.ReactNode, type: 'info' | 'success' | 'warning' | 'error', action?: { label: string; onClick: () => void }) => void;
   removeToast: (id: number) => void;
@@ -47,6 +49,7 @@ interface AppState {
   setShowProfileOverlay: (show: boolean) => void;
   setShowDropsOverlay: (show: boolean) => void;
   setShowBadgesOverlay: (show: boolean) => void;
+  toggleTheaterMode: () => void;
   loginToTwitch: () => Promise<void>;
   logoutFromTwitch: () => Promise<void>;
   checkAuthStatus: () => Promise<void>;
@@ -77,6 +80,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   isAuthenticated: false,
   currentUser: null,
   isMiningActive: false,
+  isTheaterMode: false,
+  originalChatPlacement: null,
   toasts: [],
   addToast: (message, type, action) => {
     const id = Date.now() + Math.random();
@@ -346,6 +351,26 @@ export const useAppStore = create<AppState>((set, get) => ({
   setShowProfileOverlay: (show: boolean) => set({ showProfileOverlay: show }),
   setShowDropsOverlay: (show: boolean) => set({ showDropsOverlay: show }),
   setShowBadgesOverlay: (show: boolean) => set({ showBadgesOverlay: show }),
+  
+  toggleTheaterMode: () => {
+    const state = get();
+    const newTheaterMode = !state.isTheaterMode;
+    
+    if (newTheaterMode) {
+      // Entering theater mode - save current chat placement and hide chat
+      set({ 
+        isTheaterMode: true, 
+        originalChatPlacement: state.chatPlacement,
+        chatPlacement: 'hidden' 
+      });
+    } else {
+      // Exiting theater mode - restore original chat placement
+      set({ 
+        isTheaterMode: false, 
+        chatPlacement: state.originalChatPlacement || 'right'
+      });
+    }
+  },
   
   loginToTwitch: async () => {
     try {

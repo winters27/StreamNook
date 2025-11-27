@@ -1,245 +1,501 @@
-import { useRef, useEffect } from 'react';
-import videojs from 'video.js';
-import type Player from 'video.js/dist/types/player';
-import 'video.js/dist/video-js.css';
-import 'videojs-contrib-quality-levels';
-import './QualitySelector';
+import { useRef, useEffect, useCallback } from 'react';
+import Hls, { Events, ManifestParsedData, ErrorData, LevelSwitchedData, Level } from 'hls.js';
+import Plyr from 'plyr';
+import 'plyr/dist/plyr.css';
 import { useAppStore } from '../stores/AppStore';
 
+// Type for HLS quality levels
+interface QualityLevel {
+  height: number;
+  width: number;
+  bitrate: number;
+  name: string;
+}
+
 const VideoPlayer = () => {
-  const videoRef = useRef<HTMLDivElement>(null);
-  const playerRef = useRef<Player | null>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const playerRef = useRef<Plyr | null>(null);
+  const hlsRef = useRef<Hls | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const progressUpdateIntervalRef = useRef<number | null>(null);
   const { streamUrl, settings } = useAppStore();
   const playerSettings = settings.video_player;
+  const isLiveRef = useRef<boolean>(false);
+  const isInitialLoadRef = useRef<boolean>(true);
+
+  // Sync volume with store
+  const syncVolumeToPlayer = useCallback(() => {
+    if (playerRef.current) {
+      playerRef.current.volume = playerSettings.volume;
+      playerRef.current.muted = playerSettings.muted;
+    }
+  }, [playerSettings.volume, playerSettings.muted]);
+
+  // Update time display for live streams to show "LIVE" or time behind
+  const updateLiveTimeDisplay = useCallback(() => {
+    const video = videoRef.current;
+    const container = containerRef.current;
+    if (!video || !container || !isLiveRef.current) return;
+
+    const seekable = video.seekable;
+    if (seekable.length > 0) {
+      const seekableEnd = seekable.end(0);
+      const seekableStart = seekable.start(0);
+      // Get actual current time (bypass our override)
+      const originalCurrentTimeDesc = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'currentTime');
+      const actualTime = originalCurrentTimeDesc?.get?.call(video) ?? 0;
+      const timeFromLive = seekableEnd - actualTime;
+
+      // Update time display
+      const currentTimeDisplay = container.querySelector('.plyr__time--current');
+      if (currentTimeDisplay) {
+        // Consider anything less than 8 seconds behind as "LIVE" to account for buffer
+        if (timeFromLive < 8) {
+          currentTimeDisplay.textContent = 'LIVE';
+        } else {
+          // Show how far behind live we are (negative time)
+          const behindSeconds = Math.floor(timeFromLive);
+          const mins = Math.floor(behindSeconds / 60);
+          const secs = behindSeconds % 60;
+          currentTimeDisplay.textContent = `-${mins}:${secs.toString().padStart(2, '0')}`;
+        }
+      }
+
+      // Update buffer bar with correct values
+      const buffered = video.buffered;
+      if (buffered.length > 0) {
+        const bufferedEnd = buffered.end(buffered.length - 1);
+        const seekableDuration = seekableEnd - seekableStart;
+        const bufferPercent = ((bufferedEnd - seekableStart) / seekableDuration) * 100;
+        const bufferBar = container.querySelector('.plyr__progress__buffer') as HTMLProgressElement;
+        if (bufferBar) {
+          bufferBar.value = Math.min(100, Math.max(0, bufferPercent));
+        }
+      }
+    }
+
+    // Continue the animation loop
+    if (isLiveRef.current) {
+      progressUpdateIntervalRef.current = requestAnimationFrame(updateLiveTimeDisplay);
+    }
+  }, []);
 
   useEffect(() => {
     if (!videoRef.current || !streamUrl) return;
 
-    // Initialize Video.js player
-    const videoElement = document.createElement('video-js');
-    videoElement.classList.add('vjs-big-play-centered');
-    videoRef.current.appendChild(videoElement);
+    const video = videoRef.current;
 
-    const player = videojs(videoElement, {
-      controls: true,
-      autoplay: playerSettings.autoplay,
-      preload: 'auto',
-      fluid: true,
-      responsive: true,
-      playbackRates: [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2],
-      liveui: true,
-      controlBar: {
-        children: [
-          'playToggle',
-          'volumePanel',
-          'currentTimeDisplay',
-          'timeDivider',
-          'durationDisplay',
-          'progressControl',
-          'liveDisplay',
-          'seekToLive',
-          'remainingTimeDisplay',
-          // 'customControlSpacer', // Removed to allow progressControl to expand
-          'playbackRateMenuButton',
-          'chaptersButton',
-          'descriptionsButton',
-          'subsCapsButton',
-          'audioTrackButton',
-          'QualityMenuButton',
-          'pictureInPictureToggle',
-          'fullscreenToggle',
-        ],
-      },
-      html5: {
-        vhs: {
-          overrideNative: true,
-          enableLowInitialPlaylist: playerSettings.low_latency_mode,
-          smoothQualityChange: true,
-          useBandwidthFromLocalStorage: true,
-          // Low latency configuration
-          liveRangeSafeTimeDelta: playerSettings.low_latency_mode ? 0.5 : 3,
-          // Max buffer length controls how much video is buffered ahead
-          maxMaxBufferLength: playerSettings.max_buffer_length || 120,
-          // Target duration affects how aggressively the player tries to stay live
-          targetDuration: playerSettings.low_latency_mode ? 2 : undefined,
-        },
-        nativeAudioTracks: false,
-        nativeVideoTracks: false,
-      },
-    });
+    // Initialize HLS.js
+    if (Hls.isSupported()) {
+      // Map start_quality setting to HLS startLevel
+      // -1 = Auto, 0 = Lowest, 1 = Low, 2 = Medium, 3 = High, 4 = Highest
+      const startQuality = playerSettings.start_quality ?? -1;
 
-    playerRef.current = player;
+      const hls = new Hls({
+        // Low latency configuration
+        enableWorker: true,
+        lowLatencyMode: playerSettings.low_latency_mode,
+        backBufferLength: 90,
+        // Max buffer settings
+        maxBufferLength: playerSettings.max_buffer_length || 30,
+        maxMaxBufferLength: playerSettings.max_buffer_length || 120,
+        // Live sync configuration for low latency
+        // Use segment counts for more stability (Twitch segments are usually 2s)
+        liveSyncDurationCount: playerSettings.low_latency_mode ? 3 : 6,
+        liveMaxLatencyDurationCount: playerSettings.low_latency_mode ? 6 : 12,
+        liveDurationInfinity: true,
+        // Smooth level switching
+        abrEwmaDefaultEstimate: 500000,
+        abrBandWidthFactor: 0.95,
+        abrBandWidthUpFactor: 0.7,
+        // Start quality level (-1 = auto)
+        startLevel: startQuality,
+        // Buffer settings for smooth playback
+        maxBufferHole: 0.5,
+      });
 
-    // Set initial volume and muted state
-    player.volume(playerSettings.volume);
-    player.muted(playerSettings.muted);
+      hlsRef.current = hls;
 
-    // Set the source
-    player.src({
-      src: streamUrl,
-      type: 'application/x-mpegURL',
-    });
+      // Load the HLS stream
+      hls.loadSource(streamUrl);
+      hls.attachMedia(video);
 
+      // Prevent unwanted pausing during initial load when video is positioned at live edge
+      const handlePause = (e: Event) => {
+        if (isInitialLoadRef.current && video.readyState >= 2) {
+          console.log('Preventing initial pause at live edge, resuming playback');
+          e.preventDefault();
+          video.play().catch(err => console.log('Resume play failed:', err));
+        }
+      };
 
-    // Wait for the player to be ready before initializing plugins and adding event listeners
-    player.ready(() => {
-      // Override the duration property for live streams to match seekable end
-      const originalDurationDescriptor = Object.getOwnPropertyDescriptor(player.tech_, 'duration');
-      if (originalDurationDescriptor && originalDurationDescriptor.configurable && typeof originalDurationDescriptor.get === 'function') {
-        const originalGet = originalDurationDescriptor.get;
-        Object.defineProperty(player.tech_, 'duration', {
-          get: function() { // Use a regular function to get 'this' context
-            const seekable = (player as any).seekable();
-            if (seekable.length > 0 && !isFinite(originalGet.call(this))) { // Use 'this' here
-              const seekableEnd = seekable.end(0);
-              return isFinite(seekableEnd) ? seekableEnd : originalGet.call(this); // Use 'this' here
-            }
-            return originalGet.call(this); // Use 'this' here
-          },
-          configurable: true,
+      const handlePlaying = () => {
+        // After first successful play, disable initial load protection
+        if (isInitialLoadRef.current) {
+          console.log('First playback started, disabling initial load protection');
+          setTimeout(() => {
+            isInitialLoadRef.current = false;
+          }, 2000); // Give it 2 seconds of playback before disabling
+        }
+      };
+
+      // Store handlers for cleanup
+      (video as any)._handlePause = handlePause;
+      (video as any)._handlePlaying = handlePlaying;
+
+      video.addEventListener('pause', handlePause);
+      video.addEventListener('playing', handlePlaying);
+
+      // Track available quality levels
+      const qualityLevels: QualityLevel[] = [];
+
+      hls.on(Hls.Events.MANIFEST_PARSED, (_event: Events.MANIFEST_PARSED, data: ManifestParsedData) => {
+        console.log('HLS manifest parsed, levels:', data.levels.length);
+        data.levels.forEach((level, index) => {
+          console.log(`Level ${index}: ${level.height}p, bitrate: ${level.bitrate}, video: ${level.videoCodec}, audio: ${level.audioCodec}`);
         });
-      }
 
-      // Initialize quality levels plugin
-      const qualityLevels = (player as any).qualityLevels();
-      
-      // Listen for quality level changes and log them
-      qualityLevels.on('addqualitylevel', () => {
-        console.log('Quality levels available:', qualityLevels.length);
-      });
+        // Check if this is a live stream using HLS.js (more reliable than video.duration)
+        // Check after a short delay when the stream type is determined
+        const checkLiveStream = () => {
+          // Use HLS.js live detection - check if it's a live manifest
+          const isLive = hls.levels.length > 0 && (
+            !isFinite(video.duration) ||
+            video.duration === Infinity ||
+            hls.liveSyncPosition !== undefined
+          );
 
-      // Get the seek bar component
-      const seekBar = (player as any).controlBar.progressControl.seekBar;
+          if (isLive && !isLiveRef.current) {
+            isLiveRef.current = true;
+            console.log('Detected live stream, setting up overrides');
 
-      // Create a custom element to show the seekable end position (live edge)
-      const liveEdgeMarker = document.createElement('div');
-      liveEdgeMarker.className = 'vjs-live-edge-marker';
-      liveEdgeMarker.style.cssText = `
-        position: absolute;
-        top: 0;
-        bottom: 0;
-        width: 2px;
-        background-color: rgba(255, 0, 0, 0.7);
-        z-index: 2;
-        pointer-events: none;
-      `;
-      seekBar.el().appendChild(liveEdgeMarker);
+            // Store original getters
+            const originalCurrentTime = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'currentTime');
+            const originalDuration = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'duration');
 
-      // Override getPercent to use buffered range instead of duration
-      const originalGetPercent = seekBar.getPercent;
-      seekBar.getPercent = function() {
-        const seekable = player.seekable();
-        const buffered = player.buffered();
-        const currentTime = player.currentTime();
-        
-        if (seekable && seekable.length > 0 && buffered && buffered.length > 0 && typeof currentTime === 'number') {
-          const seekableStart = seekable.start(0);
-          const bufferedEnd = buffered.end(0);
-          const rangeDuration = bufferedEnd - seekableStart;
-          
-          if (isFinite(seekableStart) && isFinite(bufferedEnd) && rangeDuration > 0) {
-            return Math.max(0, Math.min(1, (currentTime - seekableStart) / rangeDuration));
-          }
-        }
-        
-        return originalGetPercent.call(this);
-      };
+            // Override duration to return seekable range duration
+            Object.defineProperty(video, 'duration', {
+              get: function () {
+                const seekable = this.seekable;
+                if (seekable.length > 0) {
+                  const seekableStart = seekable.start(0);
+                  const seekableEnd = seekable.end(0);
+                  const duration = seekableEnd - seekableStart;
+                  if (isFinite(duration) && duration > 0) {
+                    return duration;
+                  }
+                }
+                // Fallback to original
+                return originalDuration?.get?.call(this) ?? Infinity;
+              },
+              configurable: true,
+            });
 
-      // Override handleMouseMove to show correct time tooltip
-      const originalHandleMouseMove = seekBar.handleMouseMove.bind(seekBar);
-      seekBar.handleMouseMove = function(event: MouseEvent) {
-        originalHandleMouseMove(event);
-        
-        const seekable = player.seekable();
-        const buffered = player.buffered();
-        
-        if (seekable && seekable.length > 0 && buffered && buffered.length > 0) {
-          const seekableStart = seekable.start(0);
-          const bufferedEnd = buffered.end(0);
-          const rangeDuration = bufferedEnd - seekableStart;
-          
-          if (isFinite(seekableStart) && isFinite(bufferedEnd) && rangeDuration > 0) {
-            // Calculate the position along the seek bar
-            const rect = this.el().getBoundingClientRect();
-            const position = (event.clientX - rect.left) / rect.width;
-            const time = seekableStart + (position * rangeDuration);
-            
-            // Update the time tooltip
-            const timeTooltip = this.getChild('timeTooltip');
-            if (timeTooltip) {
-              timeTooltip.update(rect, position, time);
+            // Override currentTime getter to return time relative to seekable start
+            // but keep the setter working normally
+            const originalCurrentTimeGetter = originalCurrentTime?.get;
+            const originalCurrentTimeSetter = originalCurrentTime?.set;
+
+            Object.defineProperty(video, 'currentTime', {
+              get: function () {
+                const actualTime = originalCurrentTimeGetter?.call(this) ?? 0;
+                const seekable = this.seekable;
+                if (seekable.length > 0 && seekable.end(0) - seekable.start(0) > 0) {
+                  const seekableStart = seekable.start(0);
+                  const seekableEnd = seekable.end(0);
+                  const seekableDuration = seekableEnd - seekableStart;
+                  // Return time relative to seekable start
+                  const relativeTime = Math.max(0, actualTime - seekableStart);
+                  // Clamp to prevent going past duration (with small buffer for live edge)
+                  return Math.min(relativeTime, Math.max(0, seekableDuration - 0.1));
+                }
+                return actualTime;
+              },
+              set: function (value: number) {
+                // When setting, add back the seekable start
+                const seekable = this.seekable;
+                if (seekable.length > 0 && seekable.end(0) - seekable.start(0) > 0) {
+                  const seekableStart = seekable.start(0);
+                  const seekableEnd = seekable.end(0);
+                  const absoluteTime = value + seekableStart;
+                  const clampedTime = Math.max(seekableStart, Math.min(seekableEnd, absoluteTime));
+                  originalCurrentTimeSetter?.call(this, clampedTime);
+                } else {
+                  originalCurrentTimeSetter?.call(this, value);
+                }
+              },
+              configurable: true,
+            });
+
+            // Store references for cleanup
+            (video as any)._originalCurrentTime = originalCurrentTime;
+            (video as any)._originalDuration = originalDuration;
+
+            // Start time display update loop
+            progressUpdateIntervalRef.current = requestAnimationFrame(updateLiveTimeDisplay);
+
+            // Handle seeking on the progress bar for live streams
+            const container = containerRef.current;
+            if (container) {
+              const progressContainer = container.querySelector('.plyr__progress__container');
+              if (progressContainer && !(progressContainer as any)._handleSeek) {
+                const handleSeek = (e: Event) => {
+                  const mouseEvent = e as MouseEvent;
+                  const rect = (progressContainer as HTMLElement).getBoundingClientRect();
+                  const clickX = mouseEvent.clientX - rect.left;
+                  const percentage = clickX / rect.width;
+
+                  const seekable = video.seekable;
+                  if (seekable.length > 0) {
+                    const seekableStart = seekable.start(0);
+                    const seekableEnd = seekable.end(0);
+                    const seekableDuration = seekableEnd - seekableStart;
+                    // Calculate relative target time (since currentTime setter expects relative time)
+                    const relativeTargetTime = percentage * seekableDuration;
+
+                    console.log(`Seeking to ${relativeTargetTime.toFixed(2)}s relative (${(percentage * 100).toFixed(1)}%)`);
+                    // The setter will convert this to absolute time
+                    video.currentTime = Math.max(0, Math.min(seekableDuration, relativeTargetTime));
+                  }
+                };
+
+                progressContainer.addEventListener('click', handleSeek);
+                // Store cleanup function
+                (progressContainer as any)._handleSeek = handleSeek;
+              }
             }
           }
+        };
+
+        // Check immediately and also when playback starts (seekable range may not be ready yet)
+        checkLiveStream();
+        video.addEventListener('playing', checkLiveStream, { once: true });
+        video.addEventListener('loadeddata', checkLiveStream, { once: true });
+
+        // Build quality levels array
+        qualityLevels.length = 0;
+        data.levels.forEach((level: Level) => {
+          qualityLevels.push({
+            height: level.height,
+            width: level.width,
+            bitrate: level.bitrate,
+            name: `${level.height}p`,
+          });
+        });
+
+        // Sort by height (descending)
+        qualityLevels.sort((a, b) => b.height - a.height);
+
+        // Get unique heights for Plyr quality options
+        const uniqueHeights = [...new Set(qualityLevels.map((q) => q.height))];
+
+        // Initialize Plyr with quality options
+        const player = new Plyr(video, {
+          controls: [
+            'play-large',
+            'play',
+            'progress',
+            'current-time',
+            'mute',
+            'volume',
+            'settings',
+            'pip',
+            'fullscreen',
+          ],
+          settings: ['quality', 'speed'],
+          quality: {
+            default: 0, // 0 means auto
+            options: [0, ...uniqueHeights],
+            forced: true,
+            onChange: (quality: number) => {
+              if (quality === 0) {
+                // Auto quality - let HLS.js decide
+                hls.currentLevel = -1;
+                console.log('Quality set to Auto');
+              } else {
+                // Find the level index for the selected height
+                const levelIndex = data.levels.findIndex(
+                  (level: Level) => level.height === quality
+                );
+                if (levelIndex !== -1) {
+                  hls.currentLevel = levelIndex;
+                  console.log(`Quality set to ${quality}p (level ${levelIndex})`);
+                }
+              }
+            },
+          },
+          speed: {
+            selected: 1,
+            options: [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2],
+          },
+          autoplay: playerSettings.autoplay,
+          muted: playerSettings.muted,
+          volume: playerSettings.volume,
+          invertTime: false,
+          keyboard: { focused: true, global: true },
+          tooltips: { controls: true, seek: true },
+          i18n: {
+            qualityLabel: {
+              0: 'Auto',
+            },
+          },
+        });
+
+        playerRef.current = player;
+
+        // Initial volume sync
+        syncVolumeToPlayer();
+
+        // Handle autoplay
+        if (playerSettings.autoplay) {
+          video.play().catch((err) => {
+            console.log('Autoplay prevented:', err);
+            // Try muted autoplay as fallback
+            video.muted = true;
+            video.play().catch(() => {
+              console.log('Even muted autoplay was prevented');
+            });
+          });
         }
-      };
+      });
 
-      // Override calculateDistance for seeking
-      const originalCalculateDistance = seekBar.calculateDistance;
-      seekBar.calculateDistance = function(event: MouseEvent) {
-        const distance = originalCalculateDistance.call(this, event);
-        const seekable = player.seekable();
-        const buffered = player.buffered();
-        
-        if (seekable && seekable.length > 0 && buffered && buffered.length > 0) {
-          const seekableStart = seekable.start(0);
-          const bufferedEnd = buffered.end(0);
-          const rangeDuration = bufferedEnd - seekableStart;
-          
-          if (isFinite(seekableStart) && isFinite(bufferedEnd) && rangeDuration > 0) {
-            const targetTime = seekableStart + (distance * rangeDuration);
-            player.currentTime(targetTime);
-            return distance;
-          }
-        }
-        
-        return distance;
-      };
-
-      // Update live edge marker position
-      player.on('timeupdate', () => {
-        const buffered = player.buffered();
-        const seekable = player.seekable();
-
-        // Update live edge marker position
-        if (seekable && seekable.length > 0 && buffered && buffered.length > 0) {
-          const seekableStart = seekable.start(0);
-          const seekableEnd = seekable.end(0);
-          const bufferedEnd = buffered.end(0);
-          const rangeDuration = bufferedEnd - seekableStart;
-
-          if (isFinite(seekableStart) && isFinite(seekableEnd) && isFinite(bufferedEnd) && rangeDuration > 0) {
-            // Calculate where the seekable end (live edge) is relative to the buffered range
-            const liveEdgePosition = ((seekableEnd - seekableStart) / rangeDuration) * 100;
-            liveEdgeMarker.style.left = `${Math.min(100, Math.max(0, liveEdgePosition))}%`;
+      // Handle HLS errors
+      hls.on(Hls.Events.ERROR, (_event: Events.ERROR, data: ErrorData) => {
+        if (data.fatal) {
+          switch (data.type) {
+            case Hls.ErrorTypes.NETWORK_ERROR:
+              console.error('Network error, attempting recovery...');
+              hls.startLoad();
+              break;
+            case Hls.ErrorTypes.MEDIA_ERROR:
+              console.error('Media error, attempting recovery...');
+              hls.recoverMediaError();
+              break;
+            default:
+              console.error('Fatal HLS error, destroying...');
+              hls.destroy();
+              break;
           }
         }
       });
 
-    });
+      // Handle level switching (quality change)
+      hls.on(Hls.Events.LEVEL_SWITCHED, (_event: Events.LEVEL_SWITCHED, data: LevelSwitchedData) => {
+        const level = hls.levels[data.level];
+        if (level) {
+          console.log(`Switched to quality: ${level.height}p, video: ${level.videoCodec}, audio: ${level.audioCodec}`);
+        }
+      });
+    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+      // Native HLS support (Safari)
+      video.src = streamUrl;
+
+      // Initialize Plyr for native HLS
+      const player = new Plyr(video, {
+        controls: [
+          'play-large',
+          'play',
+          'progress',
+          'current-time',
+          'mute',
+          'volume',
+          'settings',
+          'pip',
+          'fullscreen',
+        ],
+        settings: ['speed'],
+        speed: {
+          selected: 1,
+          options: [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2],
+        },
+        autoplay: playerSettings.autoplay,
+        muted: playerSettings.muted,
+        volume: playerSettings.volume,
+        invertTime: false,
+        keyboard: { focused: true, global: true },
+        tooltips: { controls: true, seek: true },
+      });
+
+      playerRef.current = player;
+      syncVolumeToPlayer();
+    } else {
+      console.error('HLS is not supported in this browser');
+    }
 
     // Cleanup
     return () => {
+      // Cancel progress update animation frame
+      if (progressUpdateIntervalRef.current) {
+        cancelAnimationFrame(progressUpdateIntervalRef.current);
+        progressUpdateIntervalRef.current = null;
+      }
+
+      // Remove seek event listener
+      const container = containerRef.current;
+      if (container) {
+        const progressContainer = container.querySelector('.plyr__progress__container');
+        if (progressContainer && (progressContainer as any)._handleSeek) {
+          progressContainer.removeEventListener('click', (progressContainer as any)._handleSeek);
+          delete (progressContainer as any)._handleSeek;
+        }
+      }
+
+      // Remove pause and playing event listeners
+      if (video && (video as any)._handlePause) {
+        video.removeEventListener('pause', (video as any)._handlePause);
+        delete (video as any)._handlePause;
+      }
+      if (video && (video as any)._handlePlaying) {
+        video.removeEventListener('playing', (video as any)._handlePlaying);
+        delete (video as any)._handlePlaying;
+      }
+
+      // Restore original video element property descriptors if they were overridden
+      if (video && (video as any)._originalCurrentTime) {
+        Object.defineProperty(video, 'currentTime', (video as any)._originalCurrentTime);
+        delete (video as any)._originalCurrentTime;
+      }
+      if (video && (video as any)._originalDuration) {
+        Object.defineProperty(video, 'duration', (video as any)._originalDuration);
+        delete (video as any)._originalDuration;
+      }
+
+      if (hlsRef.current) {
+        hlsRef.current.destroy();
+        hlsRef.current = null;
+      }
+
+      if (videoRef.current) {
+        videoRef.current.removeAttribute('src');
+        videoRef.current.load();
+      }
       if (playerRef.current) {
-        playerRef.current.dispose();
+        playerRef.current.destroy();
         playerRef.current = null;
       }
+
+      // Reset state for next stream
+      isLiveRef.current = false;
+      isInitialLoadRef.current = true;
     };
-  }, [streamUrl, playerSettings.autoplay, playerSettings.low_latency_mode, playerSettings.max_buffer_length]);
+  }, [streamUrl, playerSettings.autoplay, playerSettings.low_latency_mode, playerSettings.max_buffer_length, playerSettings.start_quality, syncVolumeToPlayer, updateLiveTimeDisplay]);
 
   // Update volume and muted state when settings change
   useEffect(() => {
-    if (playerRef.current) {
-      playerRef.current.volume(playerSettings.volume);
-      playerRef.current.muted(playerSettings.muted);
-    }
-  }, [playerSettings.muted, playerSettings.volume]);
+    syncVolumeToPlayer();
+  }, [syncVolumeToPlayer]);
 
   return (
-    <div 
-      ref={videoRef} 
-      className="w-full h-full bg-black flex items-center justify-center"
-      data-vjs-player
-    />
+    <div
+      ref={containerRef}
+      className="w-full h-full bg-black flex items-center justify-center video-player-container"
+    >
+      <video
+        ref={videoRef}
+        className="w-full h-full"
+        playsInline
+      />
+    </div>
   );
 };
 
