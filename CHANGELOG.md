@@ -1,3 +1,15 @@
+## [3.0.0] - 2025-11-26
+### Added
+- Replaced video.js with Plyr for a better streaming experience. This includes HLS support through HLS.js.
+- Implemented theater mode, which automatically resizes the window to a 16:9 aspect ratio.
+- Added a check for new versions on startup, displaying the changelog if the app has been updated.
+
+### Changed
+- Updated dependencies to their latest versions for improved stability and security.
+
+### Removed
+- Removed video.js and related dependencies as they are no longer needed.
+
 ## [2.9.2] - 2025-11-26
 ### Chore
 - Added `openid` scope to Twitch authentication. This is needed for user identification.
@@ -59,6 +71,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
