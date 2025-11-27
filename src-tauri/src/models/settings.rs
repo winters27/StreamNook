@@ -61,6 +61,33 @@ impl Default for TtvlolPluginSettings {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
+pub struct StreamlinkSettings {
+    pub low_latency_enabled: bool,
+    pub hls_live_edge: u32,     // Segments from live edge (1-10)
+    pub stream_timeout: u32,    // Timeout in seconds (30-120)
+    pub retry_streams: u32,     // Auto-retry on errors (0-5)
+    pub disable_hosting: bool,  // Avoid hosted streams
+    pub skip_ssl_verify: bool,  // Skip SSL verification
+    pub use_proxy: bool,        // Use proxy servers
+    pub proxy_playlist: String, // Proxy playlist URLs
+}
+
+impl Default for StreamlinkSettings {
+    fn default() -> Self {
+        Self {
+            low_latency_enabled: true,
+            hls_live_edge: 3,
+            stream_timeout: 60,
+            retry_streams: 3,
+            disable_hosting: true,
+            skip_ssl_verify: false,
+            use_proxy: true,
+            proxy_playlist: "--twitch-proxy-playlist=https://lb-na.cdn-perfprod.com,https://eu.luminous.dev --twitch-proxy-playlist-fallback".to_string(),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone)]
 pub struct ChatDesignSettings {
     pub show_dividers: bool,
     pub alternating_backgrounds: bool,
@@ -147,6 +174,8 @@ pub struct Settings {
     pub cache: CacheSettings,
     pub ttvlol_plugin: TtvlolPluginSettings,
     #[serde(default)]
+    pub streamlink: StreamlinkSettings,
+    #[serde(default)]
     pub drops: DropsSettings,
     #[serde(default)]
     pub favorite_streamers: Vec<String>,
@@ -175,6 +204,7 @@ impl Default for Settings {
                 enabled: true, // Enable by default since the plugin is already installed
                 installed_version: None,
             },
+            streamlink: StreamlinkSettings::default(),
             drops: DropsSettings::default(),
             favorite_streamers: vec![],
             chat_design: ChatDesignSettings::default(),

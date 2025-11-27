@@ -10,7 +10,7 @@ pub async fn start_stream(
     state: State<'_, AppState>,
 ) -> Result<String, String> {
     // Get settings values and determine which args to use
-    let (streamlink_path, streamlink_args) = {
+    let (streamlink_path, streamlink_args, streamlink_settings) = {
         let settings = state.settings.lock().unwrap();
         let args = if settings.ttvlol_plugin.enabled {
             // Use the ttvlol plugin args
@@ -19,14 +19,23 @@ pub async fn start_stream(
             // Don't use any special args if plugin is disabled
             String::new()
         };
-        (settings.streamlink_path.clone(), args)
+        (
+            settings.streamlink_path.clone(),
+            args,
+            settings.streamlink.clone(),
+        )
     };
 
-    // Start Streamlink to get stream URL
-    let stream_url =
-        StreamlinkManager::get_stream_url(&url, &quality, &streamlink_path, &streamlink_args)
-            .await
-            .map_err(|e| e.to_string())?;
+    // Start Streamlink with enhanced settings to get stream URL
+    let stream_url = StreamlinkManager::get_stream_url_with_settings(
+        &url,
+        &quality,
+        &streamlink_path,
+        &streamlink_args,
+        &streamlink_settings,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
 
     // Start local HTTP server to proxy the stream
     let port = StreamServer::start_proxy_server(stream_url)
