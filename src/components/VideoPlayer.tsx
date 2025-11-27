@@ -24,6 +24,10 @@ const VideoPlayer = () => {
   const isInitialLoadRef = useRef<boolean>(true);
   const userInitiatedPauseRef = useRef<boolean>(false);
   const lastPlayTimeRef = useRef<number>(0);
+  
+  // Buffer rate tracking for low latency mode
+  const bufferHistoryRef = useRef<Array<{ time: number; buffered: number }>>([]);
+  const lowLatencyCheckIntervalRef = useRef<number | null>(null);
 
   // Sync volume with store
   const syncVolumeToPlayer = useCallback(() => {
@@ -32,6 +36,95 @@ const VideoPlayer = () => {
       playerRef.current.muted = playerSettings.muted;
     }
   }, [playerSettings.volume, playerSettings.muted]);
+
+  // Calculate buffer growth rate (seconds of buffer gained per second of real time)
+  const calculateBufferRate = useCallback((): number => {
+    const history = bufferHistoryRef.current;
+    if (history.length < 2) return 0;
+
+    // Use last 10 seconds of data for calculation
+    const now = Date.now();
+    const recentHistory = history.filter(entry => now - entry.time < 10000);
+    
+    if (recentHistory.length < 2) return 0;
+
+    const oldest = recentHistory[0];
+    const newest = recentHistory[recentHistory.length - 1];
+    
+    const timeDiff = (newest.time - oldest.time) / 1000; // Convert to seconds
+    const bufferDiff = newest.buffered - oldest.buffered;
+    
+    if (timeDiff <= 0) return 0;
+    
+    // Return seconds of buffer gained per second of real time
+    return bufferDiff / timeDiff;
+  }, []);
+
+  // Adjust playback position for low latency mode
+  const adjustForLowLatency = useCallback(() => {
+    const video = videoRef.current;
+    if (!video || !isLiveRef.current || !playerSettings.low_latency_mode) return;
+
+    const seekable = video.seekable;
+    if (seekable.length === 0) return;
+
+    const seekableEnd = seekable.end(0);
+    const seekableStart = seekable.start(0);
+    
+    // Get actual current time (bypass our override)
+    const originalCurrentTimeDesc = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'currentTime');
+    const actualTime = originalCurrentTimeDesc?.get?.call(video) ?? 0;
+    
+    const buffered = video.buffered;
+    if (buffered.length === 0) return;
+
+    const bufferedEnd = buffered.end(buffered.length - 1);
+    const availableBuffer = bufferedEnd - actualTime;
+    
+    // Track buffer history for rate calculation
+    const now = Date.now();
+    bufferHistoryRef.current.push({ time: now, buffered: availableBuffer });
+    
+    // Keep only last 20 seconds of history
+    bufferHistoryRef.current = bufferHistoryRef.current.filter(entry => now - entry.time < 20000);
+    
+    // Calculate buffer rate
+    const bufferRate = calculateBufferRate();
+    
+    // If we have a positive buffer rate, we can stay closer to live
+    // We want to maintain a safety margin based on buffer growth rate
+    if (bufferRate > 0 && availableBuffer > 0) {
+      // Safety margin: buffer rate + 2 seconds
+      // This provides a base cushion plus accommodation for buffer rate
+      const baseSafetyMargin = bufferRate + 2;
+      
+      // Adjust safety margin based on total available buffer
+      // If we have lots of buffer (e.g., 18s), we can get much closer to live
+      // Scale down the safety margin as buffer increases
+      let safetyMargin = baseSafetyMargin;
+      if (availableBuffer > 10) {
+        // With abundant buffer, reduce safety margin to get closer to live
+        // But never go below 1.5 seconds for stability
+        const bufferFactor = Math.max(0.3, 1 - (availableBuffer - 10) / 30);
+        safetyMargin = Math.max(1.5, baseSafetyMargin * bufferFactor);
+      }
+      
+      // Calculate optimal position (as close to live as safely possible)
+      const timeFromLive = seekableEnd - actualTime;
+      const targetTimeFromLive = safetyMargin;
+      
+      // Only adjust if we're more than 1 second away from target AND we have enough buffer
+      if (timeFromLive > targetTimeFromLive + 1 && availableBuffer > baseSafetyMargin) {
+        const targetTime = seekableEnd - targetTimeFromLive;
+        
+        // Clamp to safe range
+        if (targetTime > actualTime && targetTime < bufferedEnd - 1) {
+          console.log(`Low latency adjust: moving from ${timeFromLive.toFixed(2)}s to ${targetTimeFromLive.toFixed(2)}s behind live (buffer rate: ${bufferRate.toFixed(2)}s/s, available: ${availableBuffer.toFixed(2)}s, margin: ${safetyMargin.toFixed(2)}s)`);
+          video.currentTime = targetTime;
+        }
+      }
+    }
+  }, [playerSettings.low_latency_mode, calculateBufferRate]);
 
   // Update time display for live streams to show "LIVE" or time behind
   const updateLiveTimeDisplay = useCallback(() => {
@@ -81,6 +174,23 @@ const VideoPlayer = () => {
       progressUpdateIntervalRef.current = requestAnimationFrame(updateLiveTimeDisplay);
     }
   }, []);
+
+  // Start low latency adjustment interval when in low latency mode
+  useEffect(() => {
+    if (isLiveRef.current && playerSettings.low_latency_mode) {
+      // Check every 2 seconds if we need to adjust position
+      lowLatencyCheckIntervalRef.current = window.setInterval(() => {
+        adjustForLowLatency();
+      }, 2000);
+
+      return () => {
+        if (lowLatencyCheckIntervalRef.current !== null) {
+          clearInterval(lowLatencyCheckIntervalRef.current);
+          lowLatencyCheckIntervalRef.current = null;
+        }
+      };
+    }
+  }, [playerSettings.low_latency_mode, adjustForLowLatency]);
 
   useEffect(() => {
     if (!videoRef.current || !streamUrl) return;
@@ -492,6 +602,15 @@ const VideoPlayer = () => {
         progressUpdateIntervalRef.current = null;
       }
 
+      // Cancel low latency check interval
+      if (lowLatencyCheckIntervalRef.current !== null) {
+        clearInterval(lowLatencyCheckIntervalRef.current);
+        lowLatencyCheckIntervalRef.current = null;
+      }
+
+      // Clear buffer history
+      bufferHistoryRef.current = [];
+
       // Remove seek event listener
       const container = containerRef.current;
       if (container) {
@@ -549,8 +668,9 @@ const VideoPlayer = () => {
       isInitialLoadRef.current = true;
       userInitiatedPauseRef.current = false;
       lastPlayTimeRef.current = 0;
+      bufferHistoryRef.current = [];
     };
-  }, [streamUrl, playerSettings.autoplay, playerSettings.low_latency_mode, playerSettings.max_buffer_length, playerSettings.start_quality, syncVolumeToPlayer, updateLiveTimeDisplay]);
+  }, [streamUrl, playerSettings.autoplay, playerSettings.low_latency_mode, playerSettings.max_buffer_length, playerSettings.start_quality, syncVolumeToPlayer, updateLiveTimeDisplay, adjustForLowLatency]);
 
   // Update volume and muted state when settings change
   useEffect(() => {
