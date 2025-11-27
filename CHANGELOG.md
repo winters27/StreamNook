@@ -1,3 +1,7 @@
+## [3.2.2] - 2025-11-27
+### Fixed
+- Suppressed unused variable warning in HLS manifest parsed event in VideoPlayer component.
+
 ## [3.2.1] - 2025-11-27
 ## v3.2.0
 
@@ -117,6 +121,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
