@@ -1,3 +1,12 @@
+## [3.2.0] - 2025-11-27
+### Added
+- Implemented advanced Streamlink settings to allow configuring options such as low-latency mode, HLS live edge, and proxy settings.
+- Added quality selection to the Plyr video player using HLS.js.
+
+### Fixed
+- Corrected Discord rich presence logo path.
+- Optimized HLS.js settings for more stable playback and buffer management.
+
 ## [3.1.2] - 2025-11-26
 ### Fixed
 - Improved live stream latency with dynamic playback adjustment based on buffer growth rate.
@@ -102,6 +111,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
