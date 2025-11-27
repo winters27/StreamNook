@@ -1,3 +1,9 @@
+## [3.1.1] - 2025-11-26
+## v3.1.0
+
+### Changed
+- Updated application version to 3.1.0.
+
 ## [3.1.0] - 2025-11-26
 ### Fixed
 - Fixed unexpected video pausing during initial load and throughout playback.
@@ -92,6 +98,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
