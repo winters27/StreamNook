@@ -109,7 +109,7 @@ const VideoPlayer = () => {
       hlsRef.current = hls;
 
       // HLS.js event handlers
-      hls.on(Hls.Events.MANIFEST_PARSED, (event, data) => {
+      hls.on(Hls.Events.MANIFEST_PARSED, (_event, data) => {
         console.log('[HLS] Manifest parsed, starting playback');
         console.log('[HLS] Available quality levels:', data.levels.map(l => `${l.height}p`).join(', '));
         
