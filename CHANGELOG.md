@@ -1,3 +1,8 @@
+## [3.4.7] - 2025-11-28
+### 🔧 Maintenance
+- Added Dependabot configuration for automated dependency updates.
+- Added `update-deps` script for interactive and automatic dependency updates using npm and cargo.
+
 ## [3.4.6] - 2025-11-28
 ### 🔧 Maintenance
 - Updated the build date comment in the README.
@@ -230,6 +235,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
