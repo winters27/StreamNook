@@ -1,3 +1,8 @@
+## [3.4.9] - 2025-11-28
+### ✨ Features
+- Penrose triangle colors now dynamically adjust based on the selected theme.
+- Added new themes: Antidepressant's Tactical, prince0fdubai's OLED v2, GitHub Dark, Solarized Sand, Material Theme, Ayu Dark, Night Owl, Synthwave '84.
+
 ## [3.4.8] - 2025-11-28
 ### ✨ Features
 - Implemented a new theming system, allowing users to customize the application's appearance. Users can now select from a variety of themes in the settings menu.
@@ -242,6 +247,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
