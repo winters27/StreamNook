@@ -16,6 +16,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::Emitter;
 
 const CLIENT_ID: &str = "1qgws7yzcp21g5ledlzffw3lmqdvie";
+const CLIENT_SECRET: &str = "b0lftwt9jvyhlg50cxtrnijd06grn0";
 const KEYRING_SERVICE: &str = "streamnook_twitch_token";
 const KEYRING_USERNAME: &str = "user"; // Standardized username
 const REDIRECT_URI: &str = "http://localhost:3000/callback";
@@ -502,7 +503,10 @@ impl TwitchService {
             ("grant_type", "refresh_token"),
             ("refresh_token", refresh_token),
             ("client_id", CLIENT_ID),
+            ("client_secret", CLIENT_SECRET),
         ];
+
+        println!("[REFRESH] Attempting to refresh token...");
 
         let response = client
             .post("https://id.twitch.tv/oauth2/token")

@@ -1,3 +1,8 @@
+## [3.4.4] - 2025-11-28
+### Fixed
+- Fixed stream caching issues by adding a timestamp to the stream URL.
+- Added `client_secret` when refreshing Twitch token to keep the service running.
+
 ## [3.4.3] - 2025-11-27
 ### Fixed
 - Fixes a rendering issue with chat messages overlapping one another.
@@ -213,6 +218,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 

@@ -1,6 +1,7 @@
 use crate::models::settings::AppState;
 use crate::services::{stream_server::StreamServer, streamlink_manager::StreamlinkManager};
 use anyhow::Result;
+use chrono::Utc;
 use tauri::State;
 
 #[tauri::command]
@@ -42,7 +43,11 @@ pub async fn start_stream(
         .await
         .map_err(|e| e.to_string())?;
 
-    Ok(format!("http://localhost:{}/stream.m3u8", port))
+    Ok(format!(
+        "http://localhost:{}/stream.m3u8?t={}",
+        port,
+        chrono::Utc::now().timestamp_millis()
+    ))
 }
 
 #[tauri::command]
