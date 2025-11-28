@@ -214,13 +214,24 @@ impl DiscordService {
 
         let mut guard = DISCORD_STATE.lock().await;
 
-        // Ensure we're connected
-        if guard.client.is_none() {
+        // Helper function to create and connect a new client
+        fn create_client() -> Result<DiscordIpcClient> {
             let mut client = DiscordIpcClient::new("1436402207485464596");
             client
                 .connect()
                 .map_err(|e| anyhow::anyhow!("Failed to connect to Discord: {}", e))?;
-            guard.client = Some(client);
+            Ok(client)
+        }
+
+        // Ensure we're connected
+        if guard.client.is_none() {
+            match create_client() {
+                Ok(client) => guard.client = Some(client),
+                Err(_) => {
+                    // Discord not running - silently fail
+                    return Ok(());
+                }
+            }
         }
 
         // Get start time and drop the mutable borrow temporarily
@@ -238,47 +249,71 @@ impl DiscordService {
             None
         };
 
-        // Now get mutable reference to client
-        if let Some(client) = &mut guard.client {
-            let mut assets = Assets::new();
+        // Build the activity
+        let mut assets = Assets::new();
 
-            if let Some(ref url) = game_image_url {
-                assets = assets.large_image(url);
-                assets = assets.large_text(game_name);
-            } else {
-                // Fallback to StreamNook icon if game not found
-                assets = assets.large_image(DISCORD_LARGE_IMAGE);
-                assets = assets.large_text("Stream Nook");
-            }
-
-            // Add Twitch logo as small image
-            assets = assets.small_image("https://raw.githubusercontent.com/winters27/StreamNook/refs/heads/main/src-tauri/images/logo_1704751143960.JPG");
-            assets = assets.small_text("Twitch");
-
-            let mut activity = Activity::new()
-                .details(details)
-                .state(state)
-                .assets(assets)
-                .timestamps(Timestamps::new().start(timestamp))
-                .activity_type(ActivityType::Watching); // Set activity type to "Watching"
-
-            // Add buttons - always include both if stream_url is available
-            if !stream_url.is_empty() {
-                activity = activity.buttons(vec![
-                    Button::new("Watch Stream", stream_url),
-                    Button::new(
-                        "Download Stream Nook",
-                        "https://github.com/winters27/StreamNook/",
-                    ),
-                ]);
-            }
-
-            client
-                .set_activity(activity)
-                .map_err(|e| anyhow::anyhow!("Failed to set Discord activity: {}", e))?;
+        if let Some(ref url) = game_image_url {
+            assets = assets.large_image(url);
+            assets = assets.large_text(game_name);
+        } else {
+            // Fallback to StreamNook icon if game not found
+            assets = assets.large_image(DISCORD_LARGE_IMAGE);
+            assets = assets.large_text("Stream Nook");
         }
 
-        Ok(())
+        // Add Twitch logo as small image
+        assets = assets.small_image("https://raw.githubusercontent.com/winters27/StreamNook/refs/heads/main/src-tauri/images/logo_1704751143960.JPG");
+        assets = assets.small_text("Twitch");
+
+        let mut activity = Activity::new()
+            .details(details)
+            .state(state)
+            .assets(assets)
+            .timestamps(Timestamps::new().start(timestamp))
+            .activity_type(ActivityType::Watching); // Set activity type to "Watching"
+
+        // Add buttons - always include both if stream_url is available
+        if !stream_url.is_empty() {
+            activity = activity.buttons(vec![
+                Button::new("Watch Stream", stream_url),
+                Button::new(
+                    "Download Stream Nook",
+                    "https://github.com/winters27/StreamNook/",
+                ),
+            ]);
+        }
+
+        // Try to set activity, reconnect if IPC socket fails
+        if let Some(client) = &mut guard.client {
+            match client.set_activity(activity.clone()) {
+                Ok(_) => return Ok(()),
+                Err(_) => {
+                    // Connection lost - clear the broken client
+                    guard.client = None;
+                }
+            }
+        }
+
+        // Attempt reconnection once
+        match create_client() {
+            Ok(mut new_client) => {
+                // Try to set activity on the new connection
+                match new_client.set_activity(activity) {
+                    Ok(_) => {
+                        guard.client = Some(new_client);
+                        Ok(())
+                    }
+                    Err(_) => {
+                        // Still failing - Discord probably not running
+                        Ok(()) // Silently fail - don't block stream
+                    }
+                }
+            }
+            Err(_) => {
+                // Discord not running - silently fail
+                Ok(()) // Don't propagate error - this is non-critical
+            }
+        }
     }
 
     /// Clear presence

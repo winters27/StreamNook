@@ -437,14 +437,27 @@ const VideoPlayer = () => {
     // Start time display update loop
     progressUpdateIntervalRef.current = requestAnimationFrame(updateLiveTimeDisplay);
 
-    // If HLS instance already exists and player exists, just change the source
-    if (hlsRef.current && playerRef.current) {
-      console.log('[HLS] Stream URL changed, loading new source:', streamUrl);
-      hlsRef.current.loadSource(streamUrl);
-      return; // Don't run cleanup, just update the source
+    // If HLS instance already exists, fully destroy it before creating new one
+    // HLS.js doesn't handle reusing instances well after detach/attach cycles
+    if (hlsRef.current) {
+      console.log('[HLS] Stream URL changed, destroying old HLS instance before creating new one:', streamUrl);
+      
+      try {
+        hlsRef.current.stopLoad();
+        hlsRef.current.destroy();
+      } catch (e) {
+        console.warn('[HLS] Error destroying old HLS instance:', e);
+      }
+      hlsRef.current = null;
+      
+      // Reset video element
+      const video = videoRef.current;
+      video.pause();
+      video.removeAttribute('src');
+      video.load();
     }
 
-    // Create the HLS player (first time only)
+    // Create the HLS player (always create fresh instance for new stream)
     createPlayer();
 
     // Cleanup

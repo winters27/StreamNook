@@ -383,7 +383,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         }).then(() => {
           console.log('[Discord] Presence updated successfully');
         }).catch((e) => {
-          console.error('[Discord] Failed to update presence:', e);
+          // Discord errors are non-critical - log as warning, don't show to user
+          console.warn('[Discord] Could not update presence (Discord may not be running):', e);
         });
       }
     } catch (e) {
