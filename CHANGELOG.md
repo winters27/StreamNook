@@ -1,3 +1,16 @@
+## [3.4.3] - 2025-11-27
+### Fixed
+- Fixes a rendering issue with chat messages overlapping one another.
+- Resolved stability issues due to frequent re-renders. Improves ChatWidget performance.
+
+### Changed
+- Increased thumbnail resolution in LiveOverlay and LiveStreamsOverlay for better quality.
+- Improved video player buffering for smoother playback.
+
+### Added
+- Added scroll anchoring to maintain stable scroll position when messages are removed from the chat.
+- Badge click will now open a badge details overlay.
+
 ## [3.4.2] - 2025-11-27
 ### Added
 - Implemented an auto-switch feature that automatically switches to another stream when the current stream goes offline.
@@ -200,6 +213,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 

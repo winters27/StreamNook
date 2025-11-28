@@ -228,7 +228,7 @@ const VideoPlayer = () => {
         debug: false,
         enableWorker: true,
         lowLatencyMode: playerSettings.low_latency_mode,
-        backBufferLength: 90, // Keep 90 seconds of back buffer
+        backBufferLength: 30, // Keep 30 seconds of back buffer
         maxBufferLength: playerSettings.max_buffer_length || 30, // Buffer ahead
         maxMaxBufferLength: playerSettings.max_buffer_length || 120, // Max buffer
         maxBufferSize: 60 * 1000 * 1000, // 60 MB
@@ -487,27 +487,46 @@ const VideoPlayer = () => {
     // Start time display update loop
     progressUpdateIntervalRef.current = requestAnimationFrame(updateLiveTimeDisplay);
 
+    const video = videoRef.current;
+    
     // If HLS instance already exists, fully destroy it before creating new one
     // HLS.js doesn't handle reusing instances well after detach/attach cycles
     if (hlsRef.current) {
       console.log('[HLS] Stream URL changed, destroying old HLS instance before creating new one:', streamUrl);
       
       try {
+        // Stop loading new data
         hlsRef.current.stopLoad();
+        // Detach from media element first
+        hlsRef.current.detachMedia();
+        // Then destroy the instance
         hlsRef.current.destroy();
       } catch (e) {
         console.warn('[HLS] Error destroying old HLS instance:', e);
       }
       hlsRef.current = null;
       
-      // Reset video element
-      const video = videoRef.current;
+      // Thoroughly reset video element to clear any buffered data
       video.pause();
       video.removeAttribute('src');
+      
+      // Clear any existing source buffers if MediaSource is attached
+      if (video.srcObject) {
+        video.srcObject = null;
+      }
+      
       video.load();
+      
+      // Small delay to ensure video element is fully reset before loading new stream
+      // This prevents corrupted TS packets from old stream mixing with new stream
+      const timeoutId = setTimeout(() => {
+        createPlayer();
+      }, 100);
+      
+      return () => clearTimeout(timeoutId);
     }
 
-    // Create the HLS player (always create fresh instance for new stream)
+    // Create the HLS player (fresh instance for initial load)
     createPlayer();
 
     // Cleanup

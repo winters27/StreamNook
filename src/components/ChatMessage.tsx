@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect } from 'react';
+import React, { useMemo, useState, useEffect, memo } from 'react';
 import { parseMessage } from '../services/twitchChat';
 import { parseEmotesWithThirdParty, EmoteSegment } from '../services/emoteParser';
 import { EmoteSet } from '../services/emoteService';
@@ -29,7 +29,24 @@ interface ChatMessageProps {
   onBadgeClick?: (badgeKey: string, badgeInfo: any) => void;
 }
 
-const ChatMessage = ({ message, emoteSet, messageIndex = 0, onUsernameClick, onReplyClick, isHighlighted = false, onEmoteRightClick, onUsernameRightClick, onBadgeClick }: ChatMessageProps) => {
+// Custom comparison function for React.memo
+// Only re-render if the message content or highlight state actually changes
+const chatMessageAreEqual = (prevProps: ChatMessageProps, nextProps: ChatMessageProps): boolean => {
+  // Only re-render if these props actually changed
+  if (prevProps.message !== nextProps.message) return false;
+  if (prevProps.messageIndex !== nextProps.messageIndex) return false;
+  if (prevProps.isHighlighted !== nextProps.isHighlighted) return false;
+  // EmoteSet reference may change but content is the same - do deep comparison by checking if it's null/undefined
+  if ((prevProps.emoteSet === null) !== (nextProps.emoteSet === null)) return false;
+  
+  // All other props (callbacks) can be ignored for re-render decisions
+  // since they don't affect the visual output of the message
+  return true;
+};
+
+// Memoized ChatMessage component to prevent unnecessary re-renders
+// This is critical for preventing animation restarts when new messages arrive
+const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageIndex = 0, onUsernameClick, onReplyClick, isHighlighted = false, onEmoteRightClick, onUsernameRightClick, onBadgeClick }: ChatMessageProps) {
   const { settings, currentUser } = useAppStore();
   const chatDesign = settings.chat_design;
   const parsed = useMemo(() => {
@@ -1069,6 +1086,6 @@ const ChatMessage = ({ message, emoteSet, messageIndex = 0, onUsernameClick, onR
       </div>
     </div>
   );
-};
+}, chatMessageAreEqual);
 
 export default ChatMessage;

@@ -5,6 +5,11 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Chat scroll anchoring for stable scroll position when messages are removed */
+.scrollbar-thin {
+  overflow-anchor: auto;
+}
+
 /* Custom scrollbar styles - Frost Glass theme */
 .scrollbar-thin::-webkit-scrollbar,
 .custom-scrollbar::-webkit-scrollbar {

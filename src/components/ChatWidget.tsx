@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useMemo } from 'react';
+import React, { useEffect, useRef, useState, useMemo, useCallback, useLayoutEffect, memo } from 'react';
 import { VariableSizeList as List } from 'react-window';
 import AutoSizer from 'react-virtualized-auto-sizer';
 import { invoke } from '@tauri-apps/api/core';
@@ -29,13 +29,124 @@ interface ParsedMessage {
   emotes: string;
 }
 
+// ChatMessageRow component with ResizeObserver for dynamic height measurement
+// This solves the overlap bug by re-measuring when content changes (images load, text wraps, etc.)
+interface ChatMessageRowProps {
+  message: string;
+  messageIndex: number;
+  messageId: string | null;
+  emoteSet: EmoteSet | null;
+  onUsernameClick: (
+    userId: string,
+    username: string,
+    displayName: string,
+    color: string,
+    badges: Array<{ key: string; info: any }>,
+    event: React.MouseEvent
+  ) => void;
+  onReplyClick: (parentMsgId: string) => void;
+  isHighlighted: boolean;
+  onEmoteRightClick: (emoteName: string) => void;
+  onUsernameRightClick: (messageId: string, username: string) => void;
+  onBadgeClick: (badgeKey: string, badgeInfo: any) => void;
+  setItemSize: (index: number, size: number, messageId?: string | null) => void;
+}
+
+const ChatMessageRow = memo(({
+  message,
+  messageIndex,
+  messageId,
+  emoteSet,
+  onUsernameClick,
+  onReplyClick,
+  isHighlighted,
+  onEmoteRightClick,
+  onUsernameRightClick,
+  onBadgeClick,
+  setItemSize,
+}: ChatMessageRowProps) => {
+  const rowRef = useRef<HTMLDivElement>(null);
+  const observerRef = useRef<ResizeObserver | null>(null);
+  const lastHeightRef = useRef<number>(0);
+
+  // Use useLayoutEffect to set up ResizeObserver for accurate height measurement
+  useLayoutEffect(() => {
+    const element = rowRef.current;
+    if (!element) return;
+
+    // Initial measurement
+    const measureHeight = () => {
+      if (element) {
+        const height = element.getBoundingClientRect().height;
+        // Only update if height changed significantly (more than 1px)
+        if (Math.abs(height - lastHeightRef.current) > 1) {
+          lastHeightRef.current = height;
+          setItemSize(messageIndex, height, messageId);
+        }
+      }
+    };
+
+    // Measure immediately
+    measureHeight();
+
+    // Set up ResizeObserver to watch for size changes (e.g., images loading)
+    observerRef.current = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const height = entry.contentRect.height;
+        // Account for padding/border if using border-box
+        const computedStyle = getComputedStyle(entry.target);
+        const paddingTop = parseFloat(computedStyle.paddingTop) || 0;
+        const paddingBottom = parseFloat(computedStyle.paddingBottom) || 0;
+        const totalHeight = height + paddingTop + paddingBottom;
+        
+        if (Math.abs(totalHeight - lastHeightRef.current) > 1) {
+          lastHeightRef.current = totalHeight;
+          setItemSize(messageIndex, totalHeight, messageId);
+        }
+      }
+    });
+
+    observerRef.current.observe(element);
+
+    return () => {
+      if (observerRef.current) {
+        observerRef.current.disconnect();
+        observerRef.current = null;
+      }
+    };
+  }, [messageIndex, messageId, setItemSize]);
+
+  return (
+    <div ref={rowRef}>
+      <ChatMessage
+        message={message}
+        emoteSet={emoteSet}
+        messageIndex={messageIndex}
+        onUsernameClick={onUsernameClick}
+        onReplyClick={onReplyClick}
+        isHighlighted={isHighlighted}
+        onEmoteRightClick={onEmoteRightClick}
+        onUsernameRightClick={onUsernameRightClick}
+        onBadgeClick={onBadgeClick}
+      />
+    </div>
+  );
+});
+
+ChatMessageRow.displayName = 'ChatMessageRow';
+
 const ChatWidget = () => {
   const { messages, connectChat, sendMessage, isConnected, error, setPaused: setBufferPaused } = useTwitchChat();
   const { currentStream, currentUser } = useAppStore();
   const listRef = useRef<List>(null);
+  // Use message IDs as keys for height storage to survive message trimming
+  const messageHeightsById = useRef<Map<string, number>>(new Map());
   const rowHeights = useRef<{ [key: number]: number }>({});
   const messageRefs = useRef<{ [key: number]: HTMLDivElement | null }>({});
   const containerHeightRef = useRef<number>(0);
+  // Track previous message count for scroll compensation
+  const prevMessageCountRef = useRef<number>(0);
+  const prevFirstMessageIdRef = useRef<string | null>(null);
   const [messageInput, setMessageInput] = useState('');
   const [showEmotePicker, setShowEmotePicker] = useState(false);
   const [emotes, setEmotes] = useState<EmoteSet | null>(null);
@@ -249,20 +360,96 @@ const ChatWidget = () => {
     }
   }, [isPaused, messages.length]);
 
-  // Get item size for variable height list
-  const getItemSize = (index: number) => {
-    return rowHeights.current[index] || 60; // Default estimate
-  };
+  // Get message ID from raw IRC message
+  const getMessageId = useCallback((message: string): string | null => {
+    const idMatch = message.match(/(?:^|;)id=([^;]+)/);
+    return idMatch ? idMatch[1] : null;
+  }, []);
 
-  // Set item size after render
-  const setItemSize = (index: number, size: number) => {
-    if (rowHeights.current[index] !== size) {
-      rowHeights.current[index] = size;
-      if (listRef.current) {
-        listRef.current.resetAfterIndex(index);
+  // Sync row heights from message ID map to index-based cache
+  // This is called when messages change to update the index-based heights
+  useEffect(() => {
+    // Rebuild index-based heights from message ID map
+    const newRowHeights: { [key: number]: number } = {};
+    
+    messages.forEach((message, index) => {
+      const msgId = getMessageId(message);
+      if (msgId && messageHeightsById.current.has(msgId)) {
+        newRowHeights[index] = messageHeightsById.current.get(msgId)!;
+      }
+    });
+    
+    rowHeights.current = newRowHeights;
+    
+    // Detect if messages were trimmed from the beginning
+    const currentFirstId = messages.length > 0 ? getMessageId(messages[0]) : null;
+    const messagesTrimmed = prevFirstMessageIdRef.current !== null && 
+                           currentFirstId !== null && 
+                           prevFirstMessageIdRef.current !== currentFirstId;
+    
+    // If messages were trimmed and we're paused, we need to reset the list
+    // but only for indices that changed
+    if (messagesTrimmed && isPaused && listRef.current) {
+      // Reset from index 0 since all indices shifted
+      listRef.current.resetAfterIndex(0, false);
+    }
+    
+    // Update tracking refs
+    prevMessageCountRef.current = messages.length;
+    prevFirstMessageIdRef.current = currentFirstId;
+    
+    // Cleanup old entries from messageHeightsById (keep it bounded)
+    if (messageHeightsById.current.size > 500) {
+      const currentIds = new Set(messages.map(m => getMessageId(m)).filter(Boolean));
+      for (const [id] of messageHeightsById.current) {
+        if (!currentIds.has(id)) {
+          messageHeightsById.current.delete(id);
+        }
       }
     }
-  };
+  }, [messages, isPaused, getMessageId]);
+
+  // Get item size for variable height list
+  const getItemSize = useCallback((index: number) => {
+    // First check index-based cache
+    if (rowHeights.current[index]) {
+      return rowHeights.current[index];
+    }
+    
+    // Then check message ID based cache
+    const message = messages[index];
+    if (message) {
+      const msgId = getMessageId(message);
+      if (msgId && messageHeightsById.current.has(msgId)) {
+        const height = messageHeightsById.current.get(msgId)!;
+        rowHeights.current[index] = height;
+        return height;
+      }
+    }
+    
+    return 60; // Default estimate for new messages
+  }, [messages, getMessageId]);
+
+  // Set item size after render - stores by both index and message ID
+  const setItemSize = useCallback((index: number, size: number, messageId?: string | null) => {
+    // Only update if the size actually changed significantly (avoid micro-adjustments)
+    const currentSize = rowHeights.current[index] || 0;
+    const sizeDiff = Math.abs(currentSize - size);
+    
+    if (sizeDiff > 1) { // Only update if difference is more than 1px
+      rowHeights.current[index] = size;
+      
+      // Store by message ID for persistence across trimming
+      if (messageId) {
+        messageHeightsById.current.set(messageId, size);
+      }
+      
+      if (listRef.current) {
+        // Use false for shouldForceUpdate to avoid cascading resets
+        listRef.current.resetAfterIndex(index, false);
+      }
+    }
+  }, []);
 
   // Handle scroll events to pause/unpause based on manual scrolling
   const handleScroll = ({ scrollOffset, scrollUpdateWasRequested }: { scrollOffset: number; scrollUpdateWasRequested: boolean }) => {
@@ -352,6 +539,46 @@ const ChatWidget = () => {
       listRef.current.scrollToItem(messages.length - 1, 'end');
     }
   };
+
+  // Handle badge click - open badge detail overlay (moved before early returns)
+  const handleBadgeClick = useCallback(async (badgeKey: string, badgeInfo: any) => {
+    // Open badge detail overlay
+    useAppStore.getState().setShowBadgesOverlay(true);
+    
+    // Extract set_id from badge key (format: "set_id/version")
+    const [setId] = badgeKey.split('/');
+    
+    // Set the selected badge in App.tsx by dispatching a custom event
+    window.dispatchEvent(new CustomEvent('show-badge-detail', {
+      detail: { badge: badgeInfo, setId }
+    }));
+  }, []);
+
+  // Handle reply click - scroll to parent message (moved before early returns)
+  const handleReplyClick = useCallback((parentMsgId: string) => {
+    const parentIndex = messageIdToIndexRef.current.get(parentMsgId);
+    
+    if (parentIndex !== undefined && listRef.current) {
+      // Pause auto-scroll temporarily
+      setIsPaused(true);
+      
+      // Scroll to the parent message
+      listRef.current.scrollToItem(parentIndex, 'center');
+      
+      // Highlight the message
+      setHighlightedMessageId(parentMsgId);
+      
+      // Remove highlight after animation completes
+      setTimeout(() => {
+        setHighlightedMessageId(null);
+      }, 2000);
+      
+      console.log('[Chat] Scrolled to parent message at index:', parentIndex);
+    } else {
+      console.warn('[Chat] Parent message not found in current chat history:', parentMsgId);
+      useAppStore.getState().addToast('Parent message not found in current chat history', 'info');
+    }
+  }, []);
 
   const loadEmotes = async (channelName: string, channelId?: string) => {
     setIsLoadingEmotes(true);
@@ -653,32 +880,6 @@ const ChatWidget = () => {
     }
   };
 
-  // Handle reply click - scroll to parent message
-  const handleReplyClick = (parentMsgId: string) => {
-    const parentIndex = messageIdToIndexRef.current.get(parentMsgId);
-    
-    if (parentIndex !== undefined && listRef.current) {
-      // Pause auto-scroll temporarily
-      setIsPaused(true);
-      
-      // Scroll to the parent message
-      listRef.current.scrollToItem(parentIndex, 'center');
-      
-      // Highlight the message
-      setHighlightedMessageId(parentMsgId);
-      
-      // Remove highlight after animation completes
-      setTimeout(() => {
-        setHighlightedMessageId(null);
-      }, 2000);
-      
-      console.log('[Chat] Scrolled to parent message at index:', parentIndex);
-    } else {
-      console.warn('[Chat] Parent message not found in current chat history:', parentMsgId);
-      useAppStore.getState().addToast('Parent message not found in current chat history', 'info');
-    }
-  };
-
   return (
     <>
     <div className="h-full bg-secondary backdrop-blur-md overflow-hidden flex flex-col relative">
@@ -733,40 +934,25 @@ const ChatWidget = () => {
                     
                     const messageIndex = needsPadding ? index - 1 : index;
                     
+                    // Get the message ID for this row
+                    const currentMessage = messages[messageIndex];
+                    const currentMsgId = getMessageId(currentMessage);
+                    
                     return (
                       <div style={style}>
-                        <div
-                          ref={(el) => {
-                            if (el) {
-                              const height = el.getBoundingClientRect().height;
-                              setItemSize(messageIndex, height);
-                            }
-                          }}
-                        >
-                          <ChatMessage 
-                            message={messages[messageIndex]} 
-                            emoteSet={emotes}
-                            messageIndex={messageIndex}
-                            onUsernameClick={handleUsernameClick}
-                            onReplyClick={handleReplyClick}
-                            isHighlighted={highlightedMessageId !== null && messages[messageIndex].includes(`id=${highlightedMessageId}`)}
-                            onEmoteRightClick={handleEmoteRightClick}
-                            onUsernameRightClick={handleUsernameRightClick}
-                            onBadgeClick={async (badgeKey, badgeInfo) => {
-                              // Open badge detail overlay
-                              const { useAppStore } = await import('../stores/AppStore');
-                              useAppStore.getState().setShowBadgesOverlay(true);
-                              
-                              // Extract set_id from badge key (format: "set_id/version")
-                              const [setId] = badgeKey.split('/');
-                              
-                              // Set the selected badge in App.tsx by dispatching a custom event
-                              window.dispatchEvent(new CustomEvent('show-badge-detail', {
-                                detail: { badge: badgeInfo, setId }
-                              }));
-                            }}
-                          />
-                        </div>
+                        <ChatMessageRow
+                          message={currentMessage}
+                          messageIndex={messageIndex}
+                          messageId={currentMsgId}
+                          emoteSet={emotes}
+                          onUsernameClick={handleUsernameClick}
+                          onReplyClick={handleReplyClick}
+                          isHighlighted={highlightedMessageId !== null && currentMessage.includes(`id=${highlightedMessageId}`)}
+                          onEmoteRightClick={handleEmoteRightClick}
+                          onUsernameRightClick={handleUsernameRightClick}
+                          onBadgeClick={handleBadgeClick}
+                          setItemSize={setItemSize}
+                        />
                       </div>
                     );
                   }}

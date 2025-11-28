@@ -1369,8 +1369,7 @@ impl TwitchService {
                             .get("thumbnail_url")
                             .and_then(|v| v.as_str())
                             .unwrap_or("")
-                            .replace("{width}", "320")
-                            .replace("{height}", "180");
+                            .to_string();
 
                         let broadcaster_type = channel
                             .get("broadcaster_type")
@@ -1460,9 +1459,7 @@ impl TwitchService {
                                             .get("thumbnail_url")
                                             .and_then(|v| v.as_str())
                                         {
-                                            stream.thumbnail_url = thumbnail
-                                                .replace("{width}", "320")
-                                                .replace("{height}", "180");
+                                            stream.thumbnail_url = thumbnail.to_string();
                                         }
 
                                         // Update started_at if available

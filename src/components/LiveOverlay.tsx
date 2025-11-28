@@ -31,8 +31,8 @@ const LiveOverlay = () => {
 
   const getThumbnailUrl = (url: string) => {
     // Replace {width} and {height} placeholders with actual dimensions
-    // Using higher quality 640x360 for better display in full screen mode
-    return url.replace('{width}', '640').replace('{height}', '360');
+    // Using HD 1280x720 for crisp quality when displayed
+    return url.replace('{width}', '1280').replace('{height}', '720');
   };
 
   const handleFavoriteClick = (e: React.MouseEvent, userId: string) => {

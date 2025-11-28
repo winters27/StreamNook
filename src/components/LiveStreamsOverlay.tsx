@@ -119,12 +119,13 @@ const LiveStreamsOverlay = () => {
   if (!showLiveStreamsOverlay) return null;
 
   const getThumbnailUrl = (url: string) => {
-    // Using higher quality 640x360 for better display in full screen mode
-    return url.replace('{width}', '640').replace('{height}', '360');
+    // Using HD 1280x720 for crisp quality when displayed in the overlay
+    return url.replace('{width}', '1280').replace('{height}', '720');
   };
 
   const getGameBoxArt = (url: string) => {
-    return url.replace('{width}', '285').replace('{height}', '380');
+    // Using high resolution 1200x1600 for crisp quality when displayed large
+    return url.replace('{width}', '1200').replace('{height}', '1600');
   };
 
   const handleStreamClick = (stream: TwitchStream) => {
