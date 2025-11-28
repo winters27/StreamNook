@@ -213,6 +213,12 @@ pub struct Settings {
     pub last_seen_version: Option<String>,
     #[serde(default)]
     pub auto_switch: AutoSwitchSettings,
+    #[serde(default = "default_theme")]
+    pub theme: String,
+}
+
+fn default_theme() -> String {
+    "winters-glass".to_string()
 }
 
 impl Default for Settings {
@@ -239,6 +245,7 @@ impl Default for Settings {
             live_notifications: LiveNotificationSettings::default(),
             last_seen_version: None,
             auto_switch: AutoSwitchSettings::default(),
+            theme: default_theme(),
         }
     }
 }

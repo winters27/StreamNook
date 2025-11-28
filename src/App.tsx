@@ -16,6 +16,7 @@ import ChangelogOverlay from './components/ChangelogOverlay';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
+import { getThemeById, applyTheme, DEFAULT_THEME_ID } from './themes';
 
 interface BadgeVersion {
   id: string;
@@ -95,6 +96,16 @@ function App() {
 
     initializeApp();
   }, [loadSettings, checkAuthStatus]);
+
+  // Apply theme when settings are loaded or theme changes
+  useEffect(() => {
+    const themeId = settings.theme || DEFAULT_THEME_ID;
+    const theme = getThemeById(themeId);
+    if (theme) {
+      console.log('[App] Applying theme:', theme.name);
+      applyTheme(theme);
+    }
+  }, [settings.theme]);
 
   // Check if we need to show the changelog after an update
   useEffect(() => {

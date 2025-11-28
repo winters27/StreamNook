@@ -119,6 +119,7 @@ export interface Settings {
   live_notifications?: LiveNotificationSettings;
   last_seen_version?: string;
   auto_switch?: AutoSwitchSettings;
+  theme?: string; // Theme ID (e.g., 'winters-glass', 'dracula', 'nord')
 }
 
 export interface ReleaseNotes {

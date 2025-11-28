@@ -5,12 +5,67 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ============================================
+   CSS Variables - Theme System (Winters' Glass Default)
+   ============================================ */
+:root {
+  /* Core colors */
+  --color-background: #0c0c0d;
+  --color-background-secondary: rgba(255, 255, 255, 0.03);
+  --color-background-tertiary: #1a1a1b;
+
+  /* Surface colors */
+  --color-surface: rgba(151, 177, 185, 0.15);
+  --color-surface-hover: rgba(151, 177, 185, 0.25);
+  --color-surface-active: rgba(151, 177, 185, 0.35);
+
+  /* Text colors */
+  --color-text-primary: #ffffff;
+  --color-text-secondary: #97b1b9;
+  --color-text-muted: rgba(151, 177, 185, 0.6);
+
+  /* Accent colors */
+  --color-accent: #97b1b9;
+  --color-accent-hover: #adc4cc;
+  --color-accent-muted: rgba(151, 177, 185, 0.5);
+
+  /* Border colors */
+  --color-border: rgba(151, 177, 185, 0.3);
+  --color-border-light: rgba(151, 177, 185, 0.2);
+  --color-border-subtle: rgba(151, 177, 185, 0.1);
+
+  /* Semantic colors */
+  --color-success: #22c55e;
+  --color-warning: #eab308;
+  --color-error: #ef4444;
+  --color-info: #6b9dff;
+
+  /* Scrollbar colors */
+  --color-scrollbar-thumb: rgba(151, 177, 185, 0.3);
+  --color-scrollbar-track: transparent;
+
+  /* Glass effect opacities */
+  --glass-opacity: 0.15;
+  --glass-hover-opacity: 0.25;
+  --glass-active-opacity: 0.35;
+
+  /* Highlight colors */
+  --color-highlight-pink: #ff6b9d;
+  --color-highlight-purple: #c06bff;
+  --color-highlight-blue: #6b9dff;
+  --color-highlight-cyan: #6bffc0;
+  --color-highlight-green: #22c55e;
+  --color-highlight-yellow: #ffc06b;
+  --color-highlight-orange: #ff9f6b;
+  --color-highlight-red: #ff6b6b;
+}
+
 /* Chat scroll anchoring for stable scroll position when messages are removed */
 .scrollbar-thin {
   overflow-anchor: auto;
 }
 
-/* Custom scrollbar styles - Frost Glass theme */
+/* Custom scrollbar styles - Theme aware */
 .scrollbar-thin::-webkit-scrollbar,
 .custom-scrollbar::-webkit-scrollbar {
   width: 8px;
@@ -18,25 +73,25 @@
 
 .scrollbar-thin::-webkit-scrollbar-track,
 .custom-scrollbar::-webkit-scrollbar-track {
-  background: transparent;
+  background: var(--color-scrollbar-track);
 }
 
 .scrollbar-thin::-webkit-scrollbar-thumb,
 .custom-scrollbar::-webkit-scrollbar-thumb {
-  background: rgba(151, 177, 185, 0.3);
+  background: var(--color-scrollbar-thumb);
   border-radius: 4px;
 }
 
 .scrollbar-thin::-webkit-scrollbar-thumb:hover,
 .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: rgba(151, 177, 185, 0.5);
+  background: var(--color-accent-muted);
 }
 
 /* Firefox scrollbar */
 .scrollbar-thin,
 .custom-scrollbar {
   scrollbar-width: thin;
-  scrollbar-color: rgba(151, 177, 185, 0.3) transparent;
+  scrollbar-color: var(--color-scrollbar-thumb) var(--color-scrollbar-track);
 }
 
 * {
@@ -56,17 +111,19 @@ html, body, #root {
 body {
   margin: 0;
   font-family: 'Satoshi', -apple-system, BlinkMacSystemFont, sans-serif;
-  background-color: #0c0c0d;
-  color: white;
+  background-color: var(--color-background);
+  color: var(--color-text-primary);
   font-size: 13px;
+  transition: background-color 0.3s ease, color 0.3s ease;
 }
 
-/* Frost Glass effect utility classes */
+/* Glass effect utility classes - Theme aware */
 .glass-panel {
-  background-color: rgba(255, 255, 255, 0.03);
+  background-color: var(--color-background-secondary);
   border-radius: 8px;
   backdrop-filter: blur(10px);
-  border: 1px solid rgba(151, 177, 185, 0.1);
+  border: 1px solid var(--color-border-subtle);
+  transition: background-color 0.3s ease, border-color 0.3s ease;
 }
 
 /* User Profile Card specific styling with black transparency */
@@ -74,50 +131,50 @@ body {
   background-color: rgba(0, 0, 0, 0.65);
   border-radius: 8px;
   backdrop-filter: blur(10px);
-  border: 1px solid rgba(151, 177, 185, 0.1);
+  border: 1px solid var(--color-border-subtle);
 }
 
 .glass-button {
-  background-color: rgba(151, 177, 185, 0.15);
-  border: 1px solid rgba(151, 177, 185, 0.3);
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border);
   border-radius: 4px;
   backdrop-filter: blur(5px);
   transition: all 0.2s ease;
 }
 
 .glass-button:hover {
-  background-color: rgba(151, 177, 185, 0.3);
-  box-shadow: 0 4px 15px rgba(151, 177, 185, 0.2);
+  background-color: var(--color-surface-hover);
+  box-shadow: 0 4px 15px var(--color-accent-muted);
 }
 
 .glass-button:active {
-  background-color: rgba(151, 177, 185, 0.4);
+  background-color: var(--color-surface-active);
   transform: translateY(1px);
 }
 
 .glass-input {
-  background-color: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(151, 177, 185, 0.2);
+  background-color: var(--color-background-secondary);
+  border: 1px solid var(--color-border-light);
   border-radius: 4px;
   backdrop-filter: blur(5px);
   transition: all 0.2s ease;
 }
 
 .glass-input:focus {
-  border-color: rgba(151, 177, 185, 0.5);
+  border-color: var(--color-accent-muted);
   outline: none;
-  box-shadow: 0 0 0 2px rgba(151, 177, 185, 0.1);
+  box-shadow: 0 0 0 2px var(--color-border-subtle);
 }
 
 /* Dropdown option styling */
 .glass-input option {
-  background-color: #1a1a1b;
-  color: #e0e0e0;
+  background-color: var(--color-background-tertiary);
+  color: var(--color-text-primary);
   padding: 8px;
 }
 
 .glass-input option:hover {
-  background-color: #2a2a2b;
+  background-color: var(--color-surface-hover);
 }
 
 /* Add custom styles for splitters */
@@ -149,24 +206,24 @@ body {
 /* Mention Flash Animation (Red-shift effect) */
 @keyframes mention-flash {
   0% {
-    background-color: rgba(255, 68, 68, 0.5);
-    border-left-color: #ff4444;
-    box-shadow: 0 0 20px rgba(255, 68, 68, 0.5);
+    background-color: color-mix(in srgb, var(--color-error) 50%, transparent);
+    border-left-color: var(--color-error);
+    box-shadow: 0 0 20px color-mix(in srgb, var(--color-error) 50%, transparent);
   }
   25% {
-    background-color: rgba(255, 107, 107, 0.4);
-    border-left-color: #ff6b6b;
-    box-shadow: 0 0 15px rgba(255, 107, 107, 0.4);
+    background-color: color-mix(in srgb, var(--color-highlight-red) 40%, transparent);
+    border-left-color: var(--color-highlight-red);
+    box-shadow: 0 0 15px color-mix(in srgb, var(--color-highlight-red) 40%, transparent);
   }
   50% {
-    background-color: rgba(255, 68, 68, 0.3);
-    border-left-color: #ff4444;
-    box-shadow: 0 0 10px rgba(255, 68, 68, 0.3);
+    background-color: color-mix(in srgb, var(--color-error) 30%, transparent);
+    border-left-color: var(--color-error);
+    box-shadow: 0 0 10px color-mix(in srgb, var(--color-error) 30%, transparent);
   }
   75% {
-    background-color: rgba(255, 107, 107, 0.2);
-    border-left-color: #ff6b6b;
-    box-shadow: 0 0 5px rgba(255, 107, 107, 0.2);
+    background-color: color-mix(in srgb, var(--color-highlight-red) 20%, transparent);
+    border-left-color: var(--color-highlight-red);
+    box-shadow: 0 0 5px color-mix(in srgb, var(--color-highlight-red) 20%, transparent);
   }
   100% {
     background-color: transparent;
@@ -183,12 +240,12 @@ body {
 /* Reply Flash Animation */
 @keyframes reply-flash {
   0% {
-    background-color: rgba(255, 107, 107, 0.3);
-    border-left-color: #ff6b6b;
+    background-color: color-mix(in srgb, var(--color-highlight-red) 30%, transparent);
+    border-left-color: var(--color-highlight-red);
   }
   50% {
-    background-color: rgba(255, 107, 107, 0.15);
-    border-left-color: #ff6b6b;
+    background-color: color-mix(in srgb, var(--color-highlight-red) 15%, transparent);
+    border-left-color: var(--color-highlight-red);
   }
   100% {
     background-color: transparent;
@@ -217,31 +274,28 @@ body {
 .subscription-gradient {
   background: linear-gradient(
     90deg,
-    rgba(255, 107, 157, 0.15) 0%,
-    rgba(192, 107, 255, 0.12) 20%,
-    rgba(107, 157, 255, 0.1) 40%,
-    rgba(107, 255, 192, 0.08) 60%,
-    rgba(255, 192, 107, 0.1) 80%,
-    rgba(255, 107, 157, 0.15) 100%
+    color-mix(in srgb, var(--color-highlight-pink) 15%, transparent) 0%,
+    color-mix(in srgb, var(--color-highlight-purple) 12%, transparent) 20%,
+    color-mix(in srgb, var(--color-highlight-blue) 10%, transparent) 40%,
+    color-mix(in srgb, var(--color-highlight-cyan) 8%, transparent) 60%,
+    color-mix(in srgb, var(--color-highlight-yellow) 10%, transparent) 80%,
+    color-mix(in srgb, var(--color-highlight-pink) 15%, transparent) 100%
   );
   background-size: 200% 100%;
-  /* Use animation-play-state to control animation independently of DOM position */
   animation: iridescent-sub 4s ease-in-out infinite;
-  /* Prevent animation from restarting when element moves in DOM */
   animation-fill-mode: both;
-  /* Use will-change to optimize animation performance */
   will-change: background-position;
 }
 
 .subscription-gradient:hover {
   background: linear-gradient(
     90deg,
-    rgba(255, 107, 157, 0.2) 0%,
-    rgba(192, 107, 255, 0.17) 20%,
-    rgba(107, 157, 255, 0.15) 40%,
-    rgba(107, 255, 192, 0.13) 60%,
-    rgba(255, 192, 107, 0.15) 80%,
-    rgba(255, 107, 157, 0.2) 100%
+    color-mix(in srgb, var(--color-highlight-pink) 20%, transparent) 0%,
+    color-mix(in srgb, var(--color-highlight-purple) 17%, transparent) 20%,
+    color-mix(in srgb, var(--color-highlight-blue) 15%, transparent) 40%,
+    color-mix(in srgb, var(--color-highlight-cyan) 13%, transparent) 60%,
+    color-mix(in srgb, var(--color-highlight-yellow) 15%, transparent) 80%,
+    color-mix(in srgb, var(--color-highlight-pink) 20%, transparent) 100%
   );
   background-size: 200% 100%;
 }
@@ -262,11 +316,11 @@ body {
 .donation-gradient {
   background: linear-gradient(
     90deg,
-    rgba(34, 197, 94, 0.15) 0%,
-    rgba(16, 185, 129, 0.12) 25%,
-    rgba(5, 150, 105, 0.1) 50%,
-    rgba(16, 185, 129, 0.12) 75%,
-    rgba(34, 197, 94, 0.15) 100%
+    color-mix(in srgb, var(--color-success) 15%, transparent) 0%,
+    color-mix(in srgb, var(--color-success) 12%, transparent) 25%,
+    color-mix(in srgb, var(--color-success) 10%, transparent) 50%,
+    color-mix(in srgb, var(--color-success) 12%, transparent) 75%,
+    color-mix(in srgb, var(--color-success) 15%, transparent) 100%
   );
   background-size: 200% 100%;
   animation: donation-glow 3s ease-in-out infinite;
@@ -277,11 +331,11 @@ body {
 .donation-gradient:hover {
   background: linear-gradient(
     90deg,
-    rgba(34, 197, 94, 0.2) 0%,
-    rgba(16, 185, 129, 0.17) 25%,
-    rgba(5, 150, 105, 0.15) 50%,
-    rgba(16, 185, 129, 0.17) 75%,
-    rgba(34, 197, 94, 0.2) 100%
+    color-mix(in srgb, var(--color-success) 20%, transparent) 0%,
+    color-mix(in srgb, var(--color-success) 17%, transparent) 25%,
+    color-mix(in srgb, var(--color-success) 15%, transparent) 50%,
+    color-mix(in srgb, var(--color-success) 17%, transparent) 75%,
+    color-mix(in srgb, var(--color-success) 20%, transparent) 100%
   );
   background-size: 200% 100%;
 }
@@ -308,12 +362,12 @@ body {
 .iridescent-title {
   background: linear-gradient(
     90deg,
-    #ff6b9d 0%,
-    #c06bff 20%,
-    #6b9dff 40%,
-    #6bffc0 60%,
-    #ffc06b 80%,
-    #ff6b9d 100%
+    var(--color-highlight-pink) 0%,
+    var(--color-highlight-purple) 20%,
+    var(--color-highlight-blue) 40%,
+    var(--color-highlight-cyan) 60%,
+    var(--color-highlight-yellow) 80%,
+    var(--color-highlight-pink) 100%
   );
   background-size: 200% 100%;
   -webkit-background-clip: text;
@@ -336,12 +390,12 @@ body {
   height: 1px;
   background: linear-gradient(
     90deg,
-    #ff6b9d 0%,
-    #c06bff 20%,
-    #6b9dff 40%,
-    #6bffc0 60%,
-    #ffc06b 80%,
-    #ff6b9d 100%
+    var(--color-highlight-pink) 0%,
+    var(--color-highlight-purple) 20%,
+    var(--color-highlight-blue) 40%,
+    var(--color-highlight-cyan) 60%,
+    var(--color-highlight-yellow) 80%,
+    var(--color-highlight-pink) 100%
   );
   background-size: 200% 100%;
   animation: iridescent-shift 4s ease-in-out infinite;
@@ -386,12 +440,12 @@ body {
   0%, 100% {
     opacity: 1;
     transform: scale(1);
-    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-error) 70%, transparent);
   }
   50% {
     opacity: 1;
     transform: scale(1.15);
-    box-shadow: 0 0 8px 2px rgba(239, 68, 68, 0.9);
+    box-shadow: 0 0 8px 2px color-mix(in srgb, var(--color-error) 90%, transparent);
   }
 }
 
@@ -404,7 +458,7 @@ body {
   border-radius: 4px;
   font-size: 11px;
   font-weight: 700;
-  color: white;
+  color: var(--color-text-primary);
   letter-spacing: 0.5px;
 }
 
@@ -412,7 +466,7 @@ body {
   content: '';
   width: 8px;
   height: 8px;
-  background-color: #ef4444;
+  background-color: var(--color-error);
   border-radius: 50%;
   animation: pulse-dot 2s ease-in-out infinite;
 }
@@ -431,27 +485,27 @@ body {
   animation: penrose-rotate 3s linear infinite;
 }
 
-/* Plyr Custom Styling - Frost Glass Theme */
+/* Plyr Custom Styling - Theme aware */
 .video-player-container {
-  --plyr-color-main: #6b9dff;
-  --plyr-video-control-color: #e0e0e0;
-  --plyr-video-control-color-hover: #97b1b9;
-  --plyr-video-control-background-hover: rgba(151, 177, 185, 0.15);
+  --plyr-color-main: var(--color-info);
+  --plyr-video-control-color: var(--color-text-primary);
+  --plyr-video-control-color-hover: var(--color-accent);
+  --plyr-video-control-background-hover: var(--color-surface);
   --plyr-menu-background: rgba(0, 0, 0, 0.85);
-  --plyr-menu-color: #e0e0e0;
-  --plyr-menu-border-color: rgba(151, 177, 185, 0.2);
+  --plyr-menu-color: var(--color-text-primary);
+  --plyr-menu-border-color: var(--color-border-light);
   --plyr-menu-radius: 4px;
   --plyr-tooltip-background: rgba(0, 0, 0, 0.85);
-  --plyr-tooltip-color: #e0e0e0;
+  --plyr-tooltip-color: var(--color-text-primary);
   --plyr-tooltip-radius: 4px;
   --plyr-font-family: 'Satoshi', -apple-system, BlinkMacSystemFont, sans-serif;
   --plyr-control-radius: 4px;
-  --plyr-range-thumb-background: #6b9dff;
-  --plyr-range-thumb-shadow: 0 0 10px rgba(107, 157, 255, 0.5);
+  --plyr-range-thumb-background: var(--color-info);
+  --plyr-range-thumb-shadow: 0 0 10px color-mix(in srgb, var(--color-info) 50%, transparent);
   --plyr-range-track-height: 4px;
-  --plyr-range-fill-background: linear-gradient(90deg, #97b1b9 0%, #6b9dff 100%);
-  --plyr-video-progress-buffered-background: rgba(151, 177, 185, 0.3);
-  --plyr-audio-progress-buffered-background: rgba(151, 177, 185, 0.3);
+  --plyr-range-fill-background: linear-gradient(90deg, var(--color-accent) 0%, var(--color-info) 100%);
+  --plyr-video-progress-buffered-background: var(--color-accent-muted);
+  --plyr-audio-progress-buffered-background: var(--color-accent-muted);
 }
 
 /* Plyr container styling */
@@ -470,27 +524,27 @@ body {
   background: rgba(0, 0, 0, 0.7);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
-  border-top: 1px solid rgba(151, 177, 185, 0.1);
+  border-top: 1px solid var(--color-border-subtle);
   padding: 10px;
 }
 
 /* Big play button */
 .video-player-container .plyr__control--overlaid {
-  background: rgba(151, 177, 185, 0.15) !important;
-  border: 2px solid rgba(151, 177, 185, 0.3);
+  background: var(--color-surface) !important;
+  border: 2px solid var(--color-border);
   backdrop-filter: blur(5px);
   -webkit-backdrop-filter: blur(5px);
   transition: all 0.3s ease;
 }
 
 .video-player-container .plyr__control--overlaid:hover {
-  background: rgba(151, 177, 185, 0.3) !important;
-  border-color: rgba(151, 177, 185, 0.5);
-  box-shadow: 0 4px 20px rgba(151, 177, 185, 0.3);
+  background: var(--color-surface-hover) !important;
+  border-color: var(--color-accent-muted);
+  box-shadow: 0 4px 20px var(--color-accent-muted);
 }
 
 .video-player-container .plyr__control--overlaid svg {
-  color: #e0e0e0;
+  color: var(--color-text-primary);
 }
 
 /* Control buttons */
@@ -499,13 +553,13 @@ body {
 }
 
 .video-player-container .plyr__control:hover {
-  color: #97b1b9;
-  text-shadow: 0 0 10px rgba(151, 177, 185, 0.5);
-  background: rgba(151, 177, 185, 0.15);
+  color: var(--color-accent);
+  text-shadow: 0 0 10px var(--color-accent-muted);
+  background: var(--color-surface);
 }
 
 .video-player-container .plyr__control[aria-expanded="true"] {
-  background: rgba(151, 177, 185, 0.25);
+  background: var(--color-surface-hover);
 }
 
 /* Settings button wrapper needs relative positioning for menu */
@@ -533,18 +587,18 @@ body {
 }
 
 .video-player-container .plyr__progress__buffer {
-  background: rgba(151, 177, 185, 0.3);
+  background: var(--color-accent-muted);
 }
 
 /* Volume slider */
 .video-player-container .plyr__volume input[type="range"] {
-  color: #6b9dff;
+  color: var(--color-info);
 }
 
 /* Slider thumb */
 .video-player-container .plyr--full-ui input[type="range"]::-webkit-slider-thumb {
-  background: #6b9dff;
-  box-shadow: 0 0 10px rgba(107, 157, 255, 0.5);
+  background: var(--color-info);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--color-info) 50%, transparent);
   border: none;
   transition: all 0.2s ease;
 }
@@ -554,8 +608,8 @@ body {
 }
 
 .video-player-container .plyr--full-ui input[type="range"]::-moz-range-thumb {
-  background: #6b9dff;
-  box-shadow: 0 0 10px rgba(107, 157, 255, 0.5);
+  background: var(--color-info);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--color-info) 50%, transparent);
   border: none;
 }
 
@@ -570,7 +624,7 @@ body {
 
 /* Time display */
 .video-player-container .plyr__time {
-  color: #e0e0e0;
+  color: var(--color-text-primary);
   font-size: 13px;
 }
 
@@ -579,9 +633,9 @@ body {
   background: rgba(0, 0, 0, 0.85);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
-  border: 1px solid rgba(151, 177, 185, 0.2);
+  border: 1px solid var(--color-border-light);
   border-radius: 4px;
-  color: #e0e0e0;
+  color: var(--color-text-primary);
   font-size: 13px;
 }
 
@@ -590,7 +644,7 @@ body {
   background: rgba(0, 0, 0, 0.85);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
-  border: 1px solid rgba(151, 177, 185, 0.2);
+  border: 1px solid var(--color-border-light);
   border-radius: 4px;
   position: absolute;
   bottom: 100%;
@@ -615,12 +669,12 @@ body {
 }
 
 .video-player-container .plyr__menu__container .plyr__control {
-  color: #e0e0e0;
+  color: var(--color-text-primary);
 }
 
 .video-player-container .plyr__menu__container .plyr__control:hover {
-  background: rgba(151, 177, 185, 0.15);
-  color: #97b1b9;
+  background: var(--color-surface);
+  color: var(--color-accent);
 }
 
 .video-player-container .plyr__menu__container .plyr__control[role="menuitemradio"]::before {
@@ -630,15 +684,15 @@ body {
   height: 16px;
   margin-right: 8px;
   border-radius: 2px;
-  border: 1.5px solid rgba(151, 177, 185, 0.3);
+  border: 1.5px solid var(--color-border);
   background: transparent;
   flex-shrink: 0;
   transition: all 0.2s ease;
 }
 
 .video-player-container .plyr__menu__container .plyr__control[role="menuitemradio"][aria-checked="true"]::before {
-  background: #6b9dff;
-  border-color: #6b9dff;
+  background: var(--color-info);
+  border-color: var(--color-info);
   /* Checkmark using Unicode */
   content: '✓';
   color: white;
@@ -656,11 +710,11 @@ body {
 }
 
 .video-player-container .plyr__menu__container .plyr__control--back {
-  border-bottom: 1px solid rgba(151, 177, 185, 0.1);
+  border-bottom: 1px solid var(--color-border-subtle);
 }
 
 .video-player-container .plyr__menu__container .plyr__control--back:hover {
-  background: rgba(151, 177, 185, 0.15);
+  background: var(--color-surface);
 }
 
 .video-player-container .plyr__menu__container .plyr__control--back > span {
@@ -671,7 +725,7 @@ body {
 
 /* Menu items */
 .video-player-container .plyr__menu__container .plyr__menu__value {
-  color: rgba(151, 177, 185, 0.7);
+  color: var(--color-text-muted);
 }
 
 /* Loading spinner */
@@ -704,7 +758,7 @@ body {
   padding: 8px 16px;
   width: 100%;
   text-align: left;
-  border-bottom: 1px solid rgba(151, 177, 185, 0.1);
+  border-bottom: 1px solid var(--color-border-subtle);
 }
 
 .video-player-container .plyr__menu__container [role="menu"] button:last-child {
@@ -756,9 +810,9 @@ body {
     90deg,
     transparent 0%,
     transparent 25%,
-    rgba(34, 197, 94, 0.3) 40%,
-    rgba(34, 197, 94, 0.8) 50%,
-    rgba(34, 197, 94, 0.3) 60%,
+    color-mix(in srgb, var(--color-success) 30%, transparent) 40%,
+    color-mix(in srgb, var(--color-success) 80%, transparent) 50%,
+    color-mix(in srgb, var(--color-success) 30%, transparent) 60%,
     transparent 75%,
     transparent 100%
   );
@@ -784,9 +838,9 @@ body {
     90deg,
     transparent 0%,
     transparent 25%,
-    rgba(59, 130, 246, 0.3) 40%,
-    rgba(59, 130, 246, 0.8) 50%,
-    rgba(59, 130, 246, 0.3) 60%,
+    color-mix(in srgb, var(--color-info) 30%, transparent) 40%,
+    color-mix(in srgb, var(--color-info) 80%, transparent) 50%,
+    color-mix(in srgb, var(--color-info) 30%, transparent) 60%,
     transparent 75%,
     transparent 100%
   );
@@ -817,15 +871,15 @@ body {
   background: linear-gradient(
     90deg,
     transparent 0%,
-    rgba(255, 107, 157, 0.4) 10%,
-    rgba(192, 107, 255, 0.5) 20%,
-    rgba(107, 157, 255, 0.6) 30%,
-    rgba(107, 255, 192, 0.7) 40%,
-    rgba(255, 192, 107, 0.8) 50%,
-    rgba(255, 107, 157, 0.7) 60%,
-    rgba(192, 107, 255, 0.6) 70%,
-    rgba(107, 157, 255, 0.5) 80%,
-    rgba(107, 255, 192, 0.4) 90%,
+    color-mix(in srgb, var(--color-highlight-pink) 40%, transparent) 10%,
+    color-mix(in srgb, var(--color-highlight-purple) 50%, transparent) 20%,
+    color-mix(in srgb, var(--color-highlight-blue) 60%, transparent) 30%,
+    color-mix(in srgb, var(--color-highlight-cyan) 70%, transparent) 40%,
+    color-mix(in srgb, var(--color-highlight-yellow) 80%, transparent) 50%,
+    color-mix(in srgb, var(--color-highlight-pink) 70%, transparent) 60%,
+    color-mix(in srgb, var(--color-highlight-purple) 60%, transparent) 70%,
+    color-mix(in srgb, var(--color-highlight-blue) 50%, transparent) 80%,
+    color-mix(in srgb, var(--color-highlight-cyan) 40%, transparent) 90%,
     transparent 100%
   );
   background-size: 200% 100%;
@@ -834,11 +888,11 @@ body {
 
 /* Puddle/glow effects for mining indicators */
 .green-puddle {
-  box-shadow: 0 0 20px rgba(34, 197, 94, 0.4), 0 0 40px rgba(34, 197, 94, 0.2);
+  box-shadow: 0 0 20px color-mix(in srgb, var(--color-success) 40%, transparent), 0 0 40px color-mix(in srgb, var(--color-success) 20%, transparent);
 }
 
 .blue-puddle {
-  box-shadow: 0 0 20px rgba(59, 130, 246, 0.4), 0 0 40px rgba(59, 130, 246, 0.2);
+  box-shadow: 0 0 20px color-mix(in srgb, var(--color-info) 40%, transparent), 0 0 40px color-mix(in srgb, var(--color-info) 20%, transparent);
 }
 
 .rainbow-puddle {
@@ -847,38 +901,38 @@ body {
 
 @keyframes rainbow-glow {
   0%, 100% {
-    box-shadow: 0 0 20px rgba(255, 107, 157, 0.5), 0 0 40px rgba(255, 107, 157, 0.3);
+    box-shadow: 0 0 20px color-mix(in srgb, var(--color-highlight-pink) 50%, transparent), 0 0 40px color-mix(in srgb, var(--color-highlight-pink) 30%, transparent);
   }
   20% {
-    box-shadow: 0 0 20px rgba(192, 107, 255, 0.5), 0 0 40px rgba(192, 107, 255, 0.3);
+    box-shadow: 0 0 20px color-mix(in srgb, var(--color-highlight-purple) 50%, transparent), 0 0 40px color-mix(in srgb, var(--color-highlight-purple) 30%, transparent);
   }
   40% {
-    box-shadow: 0 0 20px rgba(107, 157, 255, 0.5), 0 0 40px rgba(107, 157, 255, 0.3);
+    box-shadow: 0 0 20px color-mix(in srgb, var(--color-highlight-blue) 50%, transparent), 0 0 40px color-mix(in srgb, var(--color-highlight-blue) 30%, transparent);
   }
   60% {
-    box-shadow: 0 0 20px rgba(107, 255, 192, 0.5), 0 0 40px rgba(107, 255, 192, 0.3);
+    box-shadow: 0 0 20px color-mix(in srgb, var(--color-highlight-cyan) 50%, transparent), 0 0 40px color-mix(in srgb, var(--color-highlight-cyan) 30%, transparent);
   }
   80% {
-    box-shadow: 0 0 20px rgba(255, 192, 107, 0.5), 0 0 40px rgba(255, 192, 107, 0.3);
+    box-shadow: 0 0 20px color-mix(in srgb, var(--color-highlight-yellow) 50%, transparent), 0 0 40px color-mix(in srgb, var(--color-highlight-yellow) 30%, transparent);
   }
 }
 
 /* Rainbow droplet icon color animation */
 @keyframes rainbow-icon-color {
   0%, 100% {
-    color: rgb(255, 107, 157);
+    color: var(--color-highlight-pink);
   }
   20% {
-    color: rgb(192, 107, 255);
+    color: var(--color-highlight-purple);
   }
   40% {
-    color: rgb(107, 157, 255);
+    color: var(--color-highlight-blue);
   }
   60% {
-    color: rgb(107, 255, 192);
+    color: var(--color-highlight-cyan);
   }
   80% {
-    color: rgb(255, 192, 107);
+    color: var(--color-highlight-yellow);
   }
 }
 
@@ -891,35 +945,41 @@ body {
   0%, 75% {
     transform: scale(0.8);
     opacity: 0;
-    background-color: rgba(255, 107, 157, 0.3);
+    background-color: color-mix(in srgb, var(--color-highlight-pink) 30%, transparent);
   }
   78% {
     transform: scale(1.0);
     opacity: 0.5;
-    background-color: rgba(192, 107, 255, 0.3);
+    background-color: color-mix(in srgb, var(--color-highlight-purple) 30%, transparent);
   }
   84% {
     transform: scale(1.3);
     opacity: 0.4;
-    background-color: rgba(107, 157, 255, 0.3);
+    background-color: color-mix(in srgb, var(--color-highlight-blue) 30%, transparent);
   }
   90% {
     transform: scale(1.6);
     opacity: 0.2;
-    background-color: rgba(107, 255, 192, 0.3);
+    background-color: color-mix(in srgb, var(--color-highlight-cyan) 30%, transparent);
   }
   96% {
     transform: scale(1.9);
     opacity: 0.1;
-    background-color: rgba(255, 192, 107, 0.3);
+    background-color: color-mix(in srgb, var(--color-highlight-yellow) 30%, transparent);
   }
   100% {
     transform: scale(2.2);
     opacity: 0;
-    background-color: rgba(255, 107, 157, 0.3);
+    background-color: color-mix(in srgb, var(--color-highlight-pink) 30%, transparent);
   }
 }
 
 .rainbow-puddle-icon {
   animation: rainbow-puddle-ripple 2.5s ease-out infinite;
+}
+
+/* Theme transition effects */
+.theme-transition,
+.theme-transition * {
+  transition: background-color 0.3s ease, border-color 0.3s ease, color 0.3s ease !important;
 }

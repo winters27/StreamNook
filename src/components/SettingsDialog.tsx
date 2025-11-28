@@ -32,17 +32,17 @@ const SettingsDialog = () => {
 
       try {
         const { invoke } = await import('@tauri-apps/api/core');
-        
+
         // Check if installed
-        const isInstalled = await invoke('verify_streamlink_installation', { 
-          path: settings.streamlink_path 
+        const isInstalled = await invoke('verify_streamlink_installation', {
+          path: settings.streamlink_path
         }) as boolean;
         setIsStreamlinkInstalled(isInstalled);
 
         if (isInstalled) {
           // Get installed version
-          const installed = await invoke('get_installed_streamlink_version', { 
-            path: settings.streamlink_path 
+          const installed = await invoke('get_installed_streamlink_version', {
+            path: settings.streamlink_path
           }) as string | null;
           setInstalledVersion(installed);
 
@@ -50,7 +50,7 @@ const SettingsDialog = () => {
             // Get latest version
             const latest = await invoke('get_latest_streamlink_version') as string;
             setLatestVersion(latest);
-            
+
             // Compare versions (simple string comparison works for semantic versioning)
             const needsUpdate = installed !== latest;
             setUpdateAvailable(needsUpdate);
@@ -85,11 +85,11 @@ const SettingsDialog = () => {
 
       try {
         const { invoke } = await import('@tauri-apps/api/core');
-        
+
         // Get installed version
         const installed = await invoke('get_installed_ttvlol_version') as string | null;
         setTtvlolInstalledVersion(installed);
-        
+
         // Update settings with the version if not already set
         if (installed && installed !== settings.ttvlol_plugin.installed_version) {
           updateSettings({
@@ -102,7 +102,7 @@ const SettingsDialog = () => {
           // Get latest version
           const latest = await invoke('get_latest_ttvlol_version') as string;
           setTtvlolLatestVersion(latest);
-          
+
           // Compare versions
           const needsUpdate = installed !== latest;
           setTtvlolUpdateAvailable(needsUpdate);
@@ -125,9 +125,8 @@ const SettingsDialog = () => {
 
   return (
     <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50">
-      <div className={`glass-panel backdrop-blur-lg p-6 rounded-lg w-full mx-4 shadow-2xl max-h-[90vh] flex flex-col ${
-        activeTab === 'Notifications' ? 'max-w-fit' : 'max-w-2xl'
-      }`}>
+      <div className={`glass-panel backdrop-blur-lg p-6 rounded-lg w-full mx-4 shadow-2xl max-h-[90vh] flex flex-col ${activeTab === 'Notifications' ? 'max-w-fit' : 'max-w-2xl'
+        }`}>
         {/* Header */}
         <div className="flex items-center justify-between mb-6 pb-4 border-b border-borderSubtle">
           <h2 className="text-xl font-bold text-textPrimary">Settings</h2>
@@ -148,11 +147,10 @@ const SettingsDialog = () => {
                 <button
                   key={tab}
                   onClick={() => setActiveTab(tab)}
-                  className={`px-4 py-2 text-left text-sm font-medium rounded transition-all ${
-                    activeTab === tab
-                      ? 'glass-button text-white'
-                      : 'text-textSecondary hover:bg-glass-hover'
-                  }`}
+                  className={`px-4 py-2 text-left text-sm font-medium rounded transition-all ${activeTab === tab
+                    ? 'glass-button text-white'
+                    : 'text-textSecondary hover:bg-glass-hover'
+                    }`}
                 >
                   {tab}
                 </button>

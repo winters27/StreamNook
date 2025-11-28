@@ -6,19 +6,43 @@ module.exports = {
   theme: {
     extend: {
       colors: {
-        // Frost Glass Theme Colors
-        background: '#0c0c0d',
-        secondary: 'rgba(255, 255, 255, 0.03)',
-        accent: '#97b1b9',
-        textPrimary: '#ffffff',
-        textSecondary: '#97b1b9',
-        border: 'rgba(151, 177, 185, 0.3)',
-        borderLight: 'rgba(151, 177, 185, 0.2)',
-        borderSubtle: 'rgba(151, 177, 185, 0.1)',
+        // Theme-aware colors using CSS variables
+        background: 'var(--color-background)',
+        secondary: 'var(--color-background-secondary)',
+        tertiary: 'var(--color-background-tertiary)',
+        accent: 'var(--color-accent)',
+        'accent-hover': 'var(--color-accent-hover)',
+        'accent-muted': 'var(--color-accent-muted)',
+        textPrimary: 'var(--color-text-primary)',
+        textSecondary: 'var(--color-text-secondary)',
+        textMuted: 'var(--color-text-muted)',
+        border: 'var(--color-border)',
+        borderLight: 'var(--color-border-light)',
+        borderSubtle: 'var(--color-border-subtle)',
+        surface: 'var(--color-surface)',
+        'surface-hover': 'var(--color-surface-hover)',
+        'surface-active': 'var(--color-surface-active)',
+        // Semantic colors
+        success: 'var(--color-success)',
+        warning: 'var(--color-warning)',
+        error: 'var(--color-error)',
+        info: 'var(--color-info)',
+        // Glass utility
         glass: {
-          DEFAULT: 'rgba(151, 177, 185, 0.15)',
-          hover: 'rgba(151, 177, 185, 0.3)',
-          active: 'rgba(151, 177, 185, 0.4)',
+          DEFAULT: 'var(--color-surface)',
+          hover: 'var(--color-surface-hover)',
+          active: 'var(--color-surface-active)',
+        },
+        // Highlight colors
+        highlight: {
+          pink: 'var(--color-highlight-pink)',
+          purple: 'var(--color-highlight-purple)',
+          blue: 'var(--color-highlight-blue)',
+          cyan: 'var(--color-highlight-cyan)',
+          green: 'var(--color-highlight-green)',
+          yellow: 'var(--color-highlight-yellow)',
+          orange: 'var(--color-highlight-orange)',
+          red: 'var(--color-highlight-red)',
         },
       },
       fontFamily: {
@@ -33,23 +57,23 @@ module.exports = {
           '100%': { backgroundPosition: '200% 0' },
         },
         droplet: {
-          '0%, 100%': { 
+          '0%, 100%': {
             transform: 'translateY(-8px)',
             opacity: '0'
           },
-          '20%': { 
+          '20%': {
             transform: 'translateY(-8px)',
             opacity: '1'
           },
-          '40%': { 
+          '40%': {
             transform: 'translateY(-8px)',
             opacity: '1'
           },
-          '60%': { 
+          '60%': {
             transform: 'translateY(8px)',
             opacity: '1'
           },
-          '80%': { 
+          '80%': {
             transform: 'translateY(12px)',
             opacity: '0'
           },
