@@ -1,3 +1,7 @@
+## [3.4.0] - 2025-11-27
+### Added
+- Manual channel selection for drops mining. Users can now choose a specific Twitch channel to watch for drops, providing more control over the mining process.
+
 ## [3.3.3] - 2025-11-27
 ### Added
 - Implemented token refresh mechanism to automatically renew access tokens when they expire or are about to expire, ensuring uninterrupted access to Twitch services.
@@ -177,6 +181,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 

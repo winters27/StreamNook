@@ -322,6 +322,8 @@ fn main() {
             // Mining commands
             start_auto_mining,
             start_campaign_mining,
+            get_eligible_channels_for_campaign,
+            start_campaign_mining_with_channel,
             stop_auto_mining,
             get_mining_status,
             is_auto_mining,

@@ -55,6 +55,434 @@ impl MiningService {
         *self.is_running.read().await
     }
 
+    /// Get eligible channels for a specific campaign without starting mining
+    /// This allows the user to preview and select which channel they want to watch
+    pub async fn get_eligible_channels_for_campaign(
+        &self,
+        campaign_id: String,
+    ) -> Result<Vec<MiningChannel>> {
+        let client = self.client.clone();
+        let drops_service = self.drops_service.clone();
+
+        // Fetch campaigns
+        let campaigns_result = {
+            let service = drops_service.lock().await;
+            service.fetch_all_active_campaigns_from_api().await
+        };
+
+        match campaigns_result {
+            Ok(all_campaigns) => {
+                let (target_campaign, settings) = {
+                    let service = drops_service.lock().await;
+                    service.update_campaigns_and_progress(&all_campaigns).await;
+                    let settings = service.get_settings().await;
+
+                    // Apply filters and find the target campaign
+                    let filtered_campaigns = all_campaigns
+                        .into_iter()
+                        .filter(|c| {
+                            !settings.excluded_games.contains(&c.game_name)
+                                && (settings.priority_mode != PriorityMode::PriorityOnly
+                                    || settings.priority_games.is_empty()
+                                    || settings.priority_games.contains(&c.game_name))
+                        })
+                        .collect::<Vec<_>>();
+
+                    let target = filtered_campaigns
+                        .into_iter()
+                        .filter(|c| c.id == campaign_id)
+                        .collect::<Vec<_>>();
+                    (target, settings)
+                };
+
+                if target_campaign.is_empty() {
+                    return Err(anyhow::anyhow!(
+                        "Campaign {} not found or no longer active",
+                        campaign_id
+                    ));
+                }
+
+                // Discover eligible channels for this specific campaign only
+                let mut channels =
+                    Self::discover_eligible_channels_internal(&client, &target_campaign, &settings)
+                        .await?;
+
+                // Sort by viewer count descending so highest viewers are first
+                channels.sort_by(|a, b| b.viewers.cmp(&a.viewers));
+
+                Ok(channels)
+            }
+            Err(e) => Err(anyhow::anyhow!("Failed to fetch campaigns: {}", e)),
+        }
+    }
+
+    /// Start mining a specific campaign with a specific channel
+    /// This allows the user to choose which channel to watch
+    pub async fn start_campaign_mining_with_channel(
+        &self,
+        campaign_id: String,
+        channel_id: String,
+        app_handle: AppHandle,
+    ) -> Result<()> {
+        // Check if already running
+        {
+            let mut is_running = self.is_running.write().await;
+            if *is_running {
+                return Ok(());
+            }
+            *is_running = true;
+        }
+
+        // Clone Arc references for the background task
+        let client = self.client.clone();
+        let drops_service = self.drops_service.clone();
+        let mining_status = self.mining_status.clone();
+        let eligible_channels = self.eligible_channels.clone();
+        let is_running = self.is_running.clone();
+        let cached_user_id = self.cached_user_id.clone();
+        let cached_spade_url = self.cached_spade_url.clone();
+
+        // Set up listener for WebSocket progress updates
+        let drops_service_for_ws = drops_service.clone();
+
+        let _unlisten = app_handle.listen("drops-progress-update", move |event| {
+            let drops_service = drops_service_for_ws.clone();
+
+            tokio::spawn(async move {
+                if let Ok(payload) = serde_json::from_str::<serde_json::Value>(&event.payload()) {
+                    let drop_id = payload["drop_id"].as_str().unwrap_or("");
+                    let current_minutes = payload["current_minutes"].as_i64().unwrap_or(0) as i32;
+                    let required_minutes = payload["required_minutes"].as_i64().unwrap_or(0) as i32;
+
+                    drops_service
+                        .lock()
+                        .await
+                        .update_drop_progress_from_websocket(
+                            drop_id.to_string(),
+                            current_minutes,
+                            required_minutes,
+                        )
+                        .await;
+                }
+            });
+        });
+
+        // Spawn the mining loop for a specific campaign with a specific channel
+        tokio::spawn(async move {
+            println!(
+                "🎮 Starting manual campaign mining for campaign: {} with channel: {}",
+                campaign_id, channel_id
+            );
+
+            // Fetch campaigns
+            let campaigns_result = {
+                let service = drops_service.lock().await;
+                service.fetch_all_active_campaigns_from_api().await
+            };
+
+            match campaigns_result {
+                Ok(all_campaigns) => {
+                    let (target_campaign, settings) = {
+                        let service = drops_service.lock().await;
+                        service.update_campaigns_and_progress(&all_campaigns).await;
+                        let settings = service.get_settings().await;
+
+                        let filtered_campaigns = all_campaigns
+                            .into_iter()
+                            .filter(|c| {
+                                !settings.excluded_games.contains(&c.game_name)
+                                    && (settings.priority_mode != PriorityMode::PriorityOnly
+                                        || settings.priority_games.is_empty()
+                                        || settings.priority_games.contains(&c.game_name))
+                            })
+                            .collect::<Vec<_>>();
+
+                        let target = filtered_campaigns
+                            .into_iter()
+                            .filter(|c| c.id == campaign_id)
+                            .collect::<Vec<_>>();
+                        (target, settings)
+                    };
+
+                    if target_campaign.is_empty() {
+                        println!("⚠️ Campaign {} not found or no longer active", campaign_id);
+                        return;
+                    }
+
+                    // Discover eligible channels to find the selected one
+                    match Self::discover_eligible_channels_internal(
+                        &client,
+                        &target_campaign,
+                        &settings,
+                    )
+                    .await
+                    {
+                        Ok(channels) => {
+                            // Store all channels
+                            let mut eligible = eligible_channels.write().await;
+                            *eligible = channels.clone();
+                            drop(eligible);
+
+                            // Find the user-selected channel
+                            let selected_channel = channels.iter().find(|ch| ch.id == channel_id);
+
+                            if let Some(best_channel) = selected_channel.cloned() {
+                                println!(
+                                    "✅ Using user-selected channel: {} ({})",
+                                    best_channel.name, best_channel.id
+                                );
+
+                                let eligible = eligible_channels.read().await;
+                                let mut status = mining_status.write().await;
+                                status.is_mining = true;
+                                status.current_channel = Some(best_channel.clone());
+                                status.eligible_channels = eligible.clone();
+                                status.last_update = Utc::now();
+                                drop(eligible);
+
+                                if let Some(campaign) = Self::get_active_campaign_for_channel(
+                                    &best_channel,
+                                    &target_campaign,
+                                ) {
+                                    status.current_campaign = Some(campaign.name.clone());
+
+                                    if let Some(drop) = campaign.time_based_drops.first() {
+                                        let drop_progress =
+                                            drops_service.lock().await.get_drop_progress().await;
+                                        let current_minutes = drop_progress
+                                            .iter()
+                                            .find(|p| p.drop_id == drop.id)
+                                            .map(|p| p.current_minutes_watched)
+                                            .unwrap_or(0);
+
+                                        let progress_percentage = (current_minutes as f32
+                                            / drop.required_minutes_watched as f32)
+                                            * 100.0;
+
+                                        let estimated_completion = if current_minutes > 0 {
+                                            let remaining_minutes =
+                                                drop.required_minutes_watched - current_minutes;
+                                            Some(
+                                                Utc::now()
+                                                    + Duration::minutes(remaining_minutes as i64),
+                                            )
+                                        } else {
+                                            None
+                                        };
+
+                                        let drop_name =
+                                            if let Some(benefit) = drop.benefit_edges.first() {
+                                                benefit.name.clone()
+                                            } else {
+                                                drop.name.clone()
+                                            };
+
+                                        status.current_drop = Some(CurrentDropInfo {
+                                            drop_id: drop.id.clone(),
+                                            drop_name,
+                                            campaign_name: campaign.name.clone(),
+                                            game_name: campaign.game_name.clone(),
+                                            current_minutes,
+                                            required_minutes: drop.required_minutes_watched,
+                                            progress_percentage,
+                                            estimated_completion,
+                                        });
+                                    }
+                                }
+
+                                drop(status);
+
+                                let current_status = mining_status.read().await.clone();
+                                let _ = app_handle.emit("mining-status-update", &current_status);
+
+                                println!(
+                                    "⛏️ Mining drops on user-selected channel: {} ({})",
+                                    best_channel.name, best_channel.game_name
+                                );
+
+                                // Get token and user ID
+                                let token = match DropsAuthService::get_token().await {
+                                    Ok(t) => t,
+                                    Err(e) => {
+                                        eprintln!("❌ Failed to get token: {}", e);
+                                        return;
+                                    }
+                                };
+
+                                let user_id = match Self::get_user_id(&client, &token).await {
+                                    Ok(id) => id,
+                                    Err(e) => {
+                                        eprintln!("❌ Failed to get user ID: {}", e);
+                                        return;
+                                    }
+                                };
+
+                                let broadcast_id =
+                                    match Self::get_broadcast_id(&client, &best_channel.id, &token)
+                                        .await
+                                    {
+                                        Ok(Some(id)) => id,
+                                        Ok(None) => best_channel.id.clone(),
+                                        Err(_) => best_channel.id.clone(),
+                                    };
+
+                                // Start watch payload loop
+                                let client_clone = client.clone();
+                                let best_channel_clone = best_channel.clone();
+                                let broadcast_id_clone = broadcast_id.clone();
+                                let token_clone = token.clone();
+                                let is_running_clone = is_running.clone();
+                                let mining_status_clone = mining_status.clone();
+                                let app_handle_clone = app_handle.clone();
+                                let target_campaign_clone = target_campaign.clone();
+                                let eligible_channels_clone = eligible_channels.clone();
+                                let cached_user_id_clone = cached_user_id.clone();
+                                let cached_spade_url_clone = cached_spade_url.clone();
+
+                                tokio::spawn(async move {
+                                    let mut current_channel = best_channel_clone;
+                                    let mut current_broadcast_id = broadcast_id_clone;
+                                    let mut interval =
+                                        tokio::time::interval(tokio::time::Duration::from_secs(60));
+                                    let mut consecutive_failures = 0;
+                                    let mut channel_index = 0;
+
+                                    loop {
+                                        if !*is_running_clone.read().await {
+                                            break;
+                                        }
+
+                                        match Self::send_watch_payload(
+                                            &client_clone,
+                                            &current_channel,
+                                            &current_broadcast_id,
+                                            &token_clone,
+                                            &cached_user_id_clone,
+                                            &cached_spade_url_clone,
+                                        )
+                                        .await
+                                        {
+                                            Ok(true) => {
+                                                consecutive_failures = 0;
+                                                if let Ok(mut status) =
+                                                    mining_status_clone.try_write()
+                                                {
+                                                    status.last_update = Utc::now();
+                                                }
+                                            }
+                                            Ok(false) | Err(_) => {
+                                                consecutive_failures += 1;
+                                                if consecutive_failures >= 3 {
+                                                    let channels = eligible_channels_clone
+                                                        .read()
+                                                        .await
+                                                        .clone();
+
+                                                    match Self::try_switch_channel(
+                                                        &client_clone,
+                                                        &token_clone,
+                                                        &channels,
+                                                        &current_channel.id,
+                                                        channel_index,
+                                                    )
+                                                    .await
+                                                    {
+                                                        Some((
+                                                            new_channel,
+                                                            new_broadcast_id,
+                                                            new_index,
+                                                        )) => {
+                                                            current_channel = new_channel.clone();
+                                                            current_broadcast_id = new_broadcast_id;
+                                                            channel_index = new_index;
+                                                            consecutive_failures = 0;
+
+                                                            {
+                                                                let mut cached =
+                                                                    cached_user_id_clone
+                                                                        .write()
+                                                                        .await;
+                                                                *cached = None;
+                                                            }
+
+                                                            if let Ok(mut status) =
+                                                                mining_status_clone.try_write()
+                                                            {
+                                                                status.current_channel =
+                                                                    Some(new_channel.clone());
+                                                                status.last_update = Utc::now();
+
+                                                                if let Some(campaign) = Self::get_active_campaign_for_channel(&new_channel, &target_campaign_clone) {
+                                                                    status.current_campaign = Some(campaign.name.clone());
+                                                                }
+
+                                                                let current_status = status.clone();
+                                                                drop(status);
+                                                                let _ = app_handle_clone.emit(
+                                                                    "mining-status-update",
+                                                                    &current_status,
+                                                                );
+                                                            }
+                                                        }
+                                                        None => break,
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        interval.tick().await;
+                                    }
+                                });
+
+                                // Connect WebSocket
+                                let websocket_service =
+                                    Arc::new(tokio::sync::Mutex::new(DropsWebSocketService::new()));
+                                let mut ws_service = websocket_service.lock().await;
+                                if let Err(e) = ws_service
+                                    .connect(&user_id, &token, app_handle.clone())
+                                    .await
+                                {
+                                    eprintln!("❌ Failed to connect WebSocket: {}", e);
+                                }
+                                drop(ws_service);
+                            } else {
+                                println!(
+                                    "⚠️ Selected channel {} not found in eligible channels",
+                                    channel_id
+                                );
+                                let mut status = mining_status.write().await;
+                                status.is_mining = false;
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("❌ Failed to discover eligible channels: {}", e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("❌ Failed to fetch campaigns: {}", e);
+                }
+            }
+
+            // Keep mining running until stopped
+            loop {
+                let should_continue = *is_running.read().await;
+                if !should_continue {
+                    break;
+                }
+                tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+            }
+
+            let mut status = mining_status.write().await;
+            status.is_mining = false;
+            status.current_channel = None;
+            status.current_campaign = None;
+            status.current_drop = None;
+        });
+
+        Ok(())
+    }
+
     /// Start mining a specific campaign (manual mode - like clicking "Start Mining" on a campaign)
     pub async fn start_campaign_mining(
         &self,

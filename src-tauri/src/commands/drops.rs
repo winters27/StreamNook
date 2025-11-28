@@ -180,6 +180,32 @@ pub async fn start_campaign_mining(
 }
 
 #[tauri::command]
+pub async fn get_eligible_channels_for_campaign(
+    campaign_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::models::drops::MiningChannel>, String> {
+    let mining_service = state.mining_service.lock().await;
+    mining_service
+        .get_eligible_channels_for_campaign(campaign_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn start_campaign_mining_with_channel(
+    campaign_id: String,
+    channel_id: String,
+    state: State<'_, AppState>,
+    app_handle: AppHandle,
+) -> Result<(), String> {
+    let mining_service = state.mining_service.lock().await;
+    mining_service
+        .start_campaign_mining_with_channel(campaign_id, channel_id, app_handle)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn stop_auto_mining(
     state: State<'_, AppState>,
     app_handle: AppHandle,

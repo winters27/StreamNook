@@ -6,6 +6,7 @@ import { listen } from '@tauri-apps/api/event';
 import { X, Search, TrendingUp, Settings as SettingsIcon, BarChart3, Gift, Lock, ExternalLink, Play, Pause, Package } from 'lucide-react';
 import { InventoryOverlay } from './InventoryOverlay';
 import ChannelPointsLeaderboard from './ChannelPointsLeaderboard';
+import ChannelPickerModal from './drops/ChannelPickerModal';
 
 // Twitch SVG Icon Component
 const TwitchIcon = ({ size = 20 }: { size?: number }) => (
@@ -131,6 +132,10 @@ export default function DropsWidget() {
   const [showInventory, setShowInventory] = useState(false);
   const { addToast } = useAppStore();
   const prevProgressRef = useRef<DropProgress[]>([]);
+
+  // Channel picker modal state
+  const [channelPickerOpen, setChannelPickerOpen] = useState(false);
+  const [selectedCampaign, setSelectedCampaign] = useState<{id: string; name: string; gameName: string} | null>(null);
 
   useEffect(() => {
     prevProgressRef.current = progress;
@@ -629,9 +634,56 @@ export default function DropsWidget() {
     );
   }
 
+  // Handle mining from channel picker modal
+  const handleMiningFromModal = async (channelId: string | null) => {
+    setChannelPickerOpen(false);
+    if (!selectedCampaign) return;
+
+    try {
+      setIsStartingMining(true);
+      
+      // When starting manual mining, disable auto mining first
+      if (dropsSettings?.auto_mining_enabled) {
+        await updateDropsSettings({ auto_mining_enabled: false });
+      }
+      
+      if (channelId) {
+        // Start mining on the selected channel
+        await invoke('start_campaign_mining_with_channel', { 
+          campaignId: selectedCampaign.id,
+          channelId,
+        });
+      } else {
+        // Auto-select (use the original behavior)
+        await invoke('start_campaign_mining', { campaignId: selectedCampaign.id });
+      }
+    } catch (err) {
+      console.error('Failed to start mining:', err);
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsStartingMining(false);
+      setSelectedCampaign(null);
+    }
+  };
+
   return (
     <>
       {showInventory && <InventoryOverlay onClose={() => setShowInventory(false)} />}
+      
+      {/* Channel Picker Modal */}
+      {selectedCampaign && (
+        <ChannelPickerModal
+          isOpen={channelPickerOpen}
+          onClose={() => {
+            setChannelPickerOpen(false);
+            setSelectedCampaign(null);
+          }}
+          campaignId={selectedCampaign.id}
+          campaignName={selectedCampaign.name}
+          gameName={selectedCampaign.gameName}
+          onStartMining={handleMiningFromModal}
+        />
+      )}
       
       <div className="flex flex-col h-full bg-background">
       {/* Tab Navigation */}
@@ -835,7 +887,14 @@ export default function DropsWidget() {
                               </button>
                             ) : (
                               <button
-                                onClick={() => handleStartMining(campaign.id)}
+                                onClick={() => {
+                                  setSelectedCampaign({
+                                    id: campaign.id,
+                                    name: campaign.name,
+                                    gameName: campaign.game_name,
+                                  });
+                                  setChannelPickerOpen(true);
+                                }}
                                 disabled={isStartingMining || (miningStatus?.is_mining || false)}
                                 className="p-2 bg-glass hover:bg-glassHover border border-borderLight hover:border-accent/50 text-textPrimary hover:text-accent rounded transition-all disabled:opacity-50 disabled:cursor-not-allowed hover:shadow-lg hover:shadow-accent/20"
                                 title="Start mining"
