@@ -1,3 +1,7 @@
+## [3.4.6] - 2025-11-28
+### 🔧 Maintenance
+- Updated the build date comment in the README.
+
 ## [3.4.5] - 2025-11-28
 ### ✨ Features
 - Added React DevTools connection script for development.
@@ -226,6 +230,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 

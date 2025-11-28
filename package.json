@@ -1,6 +1,6 @@
 {
   "name": "streamnook",
-  "version": "3.4.5",
+  "version": "3.4.6",
   "private": true,
   "scripts": {
     "dev": "vite",
@@ -52,3 +52,4 @@
     "vite": "^5.4.21"
   }
 }
+
