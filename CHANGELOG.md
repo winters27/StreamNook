@@ -1,3 +1,14 @@
+## [3.4.2] - 2025-11-27
+### Added
+- Implemented an auto-switch feature that automatically switches to another stream when the current stream goes offline.
+  - Settings allow enabling/disabling auto-switch.
+  - Option to switch to a stream in the same category or a followed stream.
+  - Toggle notification for auto-switch events.
+- Added commands `check_stream_online` and `get_streams_by_game_name` to check stream status and retrieve streams by game name.
+
+### Improved
+- Improved video player error handling for fatal network errors, now triggering auto-switch when appropriate.
+
 ## [3.4.1] - 2025-11-27
 ### Added
 - Implemented stream switching with API refresh: If the current stream fails repeatedly, StreamNook will attempt to find a new one by refreshing the eligible channels from the API. This significantly improves reliability.
@@ -189,6 +200,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 

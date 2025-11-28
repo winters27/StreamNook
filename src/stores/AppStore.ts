@@ -34,6 +34,8 @@ interface AppState {
   isTheaterMode: boolean;
   originalChatPlacement: string | null;
   toasts: Toast[];
+  isAutoSwitching: boolean;
+  handleStreamOffline: () => Promise<void>;
   addToast: (message: string | React.ReactNode, type: 'info' | 'success' | 'warning' | 'error', action?: { label: string; onClick: () => void }) => void;
   removeToast: (id: number) => void;
   loadSettings: () => Promise<void>;
@@ -85,6 +87,187 @@ export const useAppStore = create<AppState>((set, get) => ({
   isTheaterMode: false,
   originalChatPlacement: null,
   toasts: [],
+  isAutoSwitching: false,
+  
+  handleStreamOffline: async () => {
+    const state = get();
+    const { currentStream, settings, isAutoSwitching } = state;
+    
+    // Prevent multiple auto-switch attempts
+    if (isAutoSwitching) {
+      console.log('[AutoSwitch] Already in progress, skipping');
+      return;
+    }
+    
+    // Check if auto-switch is enabled
+    const autoSwitchEnabled = settings.auto_switch?.enabled ?? true;
+    if (!autoSwitchEnabled) {
+      console.log('[AutoSwitch] Disabled in settings');
+      return;
+    }
+    
+    if (!currentStream) {
+      console.log('[AutoSwitch] No current stream to switch from');
+      return;
+    }
+    
+    const gameName = currentStream.game_name;
+    const currentUserLogin = currentStream.user_login;
+    
+    console.log(`[AutoSwitch] Stream ${currentUserLogin} appears offline, verifying...`);
+    set({ isAutoSwitching: true });
+    
+    try {
+      // Step 1: Verify the stream is actually offline via Twitch API
+      // We'll check twice with a delay to be sure (streams can have brief interruptions)
+      let isOffline = false;
+      
+      for (let attempt = 0; attempt < 2; attempt++) {
+        if (attempt > 0) {
+          // Wait 3 seconds before second check
+          await new Promise(resolve => setTimeout(resolve, 3000));
+        }
+        
+        const streamData = await invoke('check_stream_online', { userLogin: currentUserLogin }) as TwitchStream | null;
+        
+        if (streamData) {
+          console.log(`[AutoSwitch] Stream is still online (attempt ${attempt + 1}), aborting auto-switch`);
+          set({ isAutoSwitching: false });
+          return;
+        }
+        
+        console.log(`[AutoSwitch] Stream confirmed offline (attempt ${attempt + 1})`);
+      }
+      
+      isOffline = true;
+      
+      if (!isOffline) {
+        set({ isAutoSwitching: false });
+        return;
+      }
+      
+      console.log(`[AutoSwitch] Stream ${currentUserLogin} confirmed offline`);
+      
+      // Step 2: Clean up current stream connections thoroughly
+      console.log('[AutoSwitch] Cleaning up current stream connections...');
+      
+      try {
+        await invoke('stop_stream');
+        console.log('[AutoSwitch] Stream stopped');
+      } catch (e) {
+        console.warn('[AutoSwitch] Error stopping stream:', e);
+      }
+      
+      try {
+        await invoke('stop_chat');
+        console.log('[AutoSwitch] Chat stopped');
+      } catch (e) {
+        console.warn('[AutoSwitch] Error stopping chat:', e);
+      }
+      
+      try {
+        await invoke('stop_drops_monitoring');
+        console.log('[AutoSwitch] Drops monitoring stopped');
+      } catch (e) {
+        console.warn('[AutoSwitch] Error stopping drops monitoring:', e);
+      }
+      
+      // Clear current stream state
+      set({ streamUrl: null, currentStream: null });
+      
+      // Step 3: Find the next best stream based on mode
+      const switchMode = settings.auto_switch?.mode ?? 'same_category';
+      let streams: TwitchStream[] = [];
+      
+      if (switchMode === 'same_category') {
+        // Switch to same category - find streams in the same game
+        if (!gameName) {
+          console.log('[AutoSwitch] No game category for current stream');
+          if (settings.auto_switch?.show_notification ?? true) {
+            state.addToast(`${currentUserLogin} went offline. Unable to find similar streams.`, 'info');
+          }
+          set({ isAutoSwitching: false });
+          return;
+        }
+        
+        console.log(`[AutoSwitch] Looking for streams in category: ${gameName}`);
+        
+        streams = await invoke('get_streams_by_game_name', {
+          gameName: gameName,
+          excludeUserLogin: currentUserLogin,
+          limit: 10
+        }) as TwitchStream[];
+        
+        if (!streams || streams.length === 0) {
+          console.log('[AutoSwitch] No other streams found in this category');
+          if (settings.auto_switch?.show_notification ?? true) {
+            state.addToast(`${currentUserLogin} went offline. No other ${gameName} streams available.`, 'info');
+          }
+          set({ isAutoSwitching: false });
+          return;
+        }
+      } else if (switchMode === 'followed_streams') {
+        // Switch to followed streams - get live followed streamers
+        console.log('[AutoSwitch] Looking for live followed streams');
+        
+        try {
+          // Load fresh followed streams data
+          const followedStreams = await invoke('get_followed_streams') as TwitchStream[];
+          
+          // Filter out the current (now offline) streamer
+          streams = followedStreams.filter(s => s.user_login.toLowerCase() !== currentUserLogin.toLowerCase());
+          
+          if (!streams || streams.length === 0) {
+            console.log('[AutoSwitch] No other followed streams are live');
+            if (settings.auto_switch?.show_notification ?? true) {
+              state.addToast(`${currentUserLogin} went offline. No other followed streams are live.`, 'info');
+            }
+            set({ isAutoSwitching: false });
+            return;
+          }
+          
+          // Sort by viewer count (highest first) to pick the most popular one
+          streams.sort((a, b) => (b.viewer_count || 0) - (a.viewer_count || 0));
+          
+        } catch (e) {
+          console.error('[AutoSwitch] Error fetching followed streams:', e);
+          if (settings.auto_switch?.show_notification ?? true) {
+            state.addToast(`${currentUserLogin} went offline. Unable to load followed streams.`, 'error');
+          }
+          set({ isAutoSwitching: false });
+          return;
+        }
+      }
+      
+      // The first stream is the highest viewer count (already sorted by API)
+      const nextStream = streams[0];
+      
+      console.log(`[AutoSwitch] Found next stream: ${nextStream.user_name} (${nextStream.viewer_count} viewers)`);
+      
+      // Step 4: Show notification if enabled
+      if (settings.auto_switch?.show_notification ?? true) {
+        state.addToast(
+          `${currentUserLogin} went offline. Switching to ${nextStream.user_name}...`,
+          'info'
+        );
+      }
+      
+      // Step 5: Start the new stream
+      // Small delay to ensure clean transition
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      await state.startStream(nextStream.user_login, nextStream);
+      
+      console.log(`[AutoSwitch] Successfully switched to ${nextStream.user_name}`);
+      
+    } catch (e) {
+      console.error('[AutoSwitch] Error during auto-switch:', e);
+      state.addToast('Auto-switch failed. Please select a new stream manually.', 'error');
+    } finally {
+      set({ isAutoSwitching: false });
+    }
+  },
+  
   addToast: (message, type, action) => {
     const id = Date.now() + Math.random();
     set(state => ({ toasts: [...state.toasts, { id, message, type, action }] }));

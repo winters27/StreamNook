@@ -160,6 +160,32 @@ impl Default for DropsSettings {
     }
 }
 
+#[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AutoSwitchMode {
+    #[default]
+    SameCategory, // Switch to a stream in the same game/category
+    FollowedStreams, // Switch to one of your live followed streamers
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct AutoSwitchSettings {
+    pub enabled: bool,
+    #[serde(default)]
+    pub mode: AutoSwitchMode, // What to switch to when stream goes offline
+    pub show_notification: bool, // Show toast when auto-switching
+}
+
+impl Default for AutoSwitchSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            mode: AutoSwitchMode::SameCategory,
+            show_notification: true,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Settings {
     pub streamlink_path: String,
@@ -185,6 +211,8 @@ pub struct Settings {
     pub live_notifications: LiveNotificationSettings,
     #[serde(default)]
     pub last_seen_version: Option<String>,
+    #[serde(default)]
+    pub auto_switch: AutoSwitchSettings,
 }
 
 impl Default for Settings {
@@ -210,6 +238,7 @@ impl Default for Settings {
             chat_design: ChatDesignSettings::default(),
             live_notifications: LiveNotificationSettings::default(),
             last_seen_version: None,
+            auto_switch: AutoSwitchSettings::default(),
         }
     }
 }

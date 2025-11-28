@@ -92,6 +92,14 @@ export interface LiveNotificationSettings {
   show_streamer_avatar: boolean;
 }
 
+export type AutoSwitchMode = 'same_category' | 'followed_streams';
+
+export interface AutoSwitchSettings {
+  enabled: boolean;
+  mode: AutoSwitchMode;         // 'same_category' = switch to stream in same game, 'followed_streams' = switch to a followed streamer
+  show_notification: boolean;   // Show toast when auto-switching
+}
+
 export interface Settings {
   streamlink_path: string;
   streamlink_args: string;
@@ -110,6 +118,7 @@ export interface Settings {
   chat_design?: ChatDesignSettings;
   live_notifications?: LiveNotificationSettings;
   last_seen_version?: string;
+  auto_switch?: AutoSwitchSettings;
 }
 
 export interface ReleaseNotes {
@@ -126,6 +135,7 @@ export interface TwitchStream {
   user_login: string;
   title: string;
   viewer_count: number;
+  game_id?: string;
   game_name: string;
   thumbnail_url: string;
   started_at: string;

@@ -1387,6 +1387,7 @@ impl TwitchService {
                             user_login: user_login.to_string(),
                             title: title.to_string(),
                             viewer_count: 0, // Will be populated from streams API
+                            game_id: String::new(), // Will be populated from streams API
                             game_name: game_name.to_string(),
                             thumbnail_url,
                             started_at: channel
@@ -1396,6 +1397,7 @@ impl TwitchService {
                                 .to_string(),
                             broadcaster_type,
                             has_shared_chat: None, // Will be populated later
+                            profile_image_url: None,
                         });
                     }
                 }
@@ -1568,5 +1570,166 @@ impl TwitchService {
             .unwrap_or(false);
 
         Ok(is_following)
+    }
+
+    /// Check if a specific stream is currently online by user login
+    /// Returns the stream data if online, None if offline
+    pub async fn check_stream_online(user_login: &str) -> Result<Option<TwitchStream>> {
+        let token = Self::get_token().await.ok();
+        let client = Client::new();
+
+        let url = format!(
+            "https://api.twitch.tv/helix/streams?user_login={}",
+            urlencoding::encode(user_login)
+        );
+
+        let mut request = client.get(&url).header("Client-Id", CLIENT_ID);
+
+        if let Some(token) = &token {
+            request = request.header(AUTHORIZATION, format!("Bearer {}", token));
+        }
+
+        let response = request.send().await?.json::<serde_json::Value>().await?;
+
+        let data = response.get("data").and_then(|d| d.as_array());
+
+        match data {
+            Some(arr) if !arr.is_empty() => {
+                let stream: TwitchStream = serde_json::from_value(arr[0].clone())?;
+                Ok(Some(stream))
+            }
+            _ => Ok(None), // Stream is offline
+        }
+    }
+
+    /// Get the game ID by game name
+    pub async fn get_game_id_by_name(game_name: &str) -> Result<Option<String>> {
+        let token = Self::get_token().await.ok();
+        let client = Client::new();
+
+        let url = format!(
+            "https://api.twitch.tv/helix/games?name={}",
+            urlencoding::encode(game_name)
+        );
+
+        let mut request = client.get(&url).header("Client-Id", CLIENT_ID);
+
+        if let Some(token) = &token {
+            request = request.header(AUTHORIZATION, format!("Bearer {}", token));
+        }
+
+        let response = request.send().await?.json::<serde_json::Value>().await?;
+
+        let game_id = response
+            .get("data")
+            .and_then(|d| d.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|game| game.get("id"))
+            .and_then(|id| id.as_str())
+            .map(|s| s.to_string());
+
+        Ok(game_id)
+    }
+
+    /// Get streams by game name (convenience method that resolves game name to ID)
+    /// Returns streams sorted by viewer count (highest first)
+    pub async fn get_streams_by_game_name(
+        _state: &AppState,
+        game_name: &str,
+        exclude_user_login: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<TwitchStream>> {
+        // First, get the game ID from the game name
+        let game_id = match Self::get_game_id_by_name(game_name).await? {
+            Some(id) => id,
+            None => return Ok(Vec::new()), // Game not found
+        };
+
+        let token = Self::get_token().await.ok();
+        let client = Client::new();
+
+        let url = format!(
+            "https://api.twitch.tv/helix/streams?game_id={}&first={}",
+            game_id, limit
+        );
+
+        let mut request = client.get(&url).header("Client-Id", CLIENT_ID);
+
+        if let Some(token) = &token {
+            request = request.header(AUTHORIZATION, format!("Bearer {}", token));
+        }
+
+        let response = request.send().await?.json::<serde_json::Value>().await?;
+
+        let data = response.get("data").and_then(|d| d.as_array());
+
+        match data {
+            Some(arr) => {
+                let mut streams: Vec<TwitchStream> =
+                    serde_json::from_value(serde_json::Value::Array(arr.clone()))?;
+
+                // Filter out the excluded user if provided
+                if let Some(exclude_login) = exclude_user_login {
+                    streams.retain(|s| s.user_login.to_lowercase() != exclude_login.to_lowercase());
+                }
+
+                // Fetch broadcaster types for all streams in a batch
+                if !streams.is_empty() && token.is_some() {
+                    let user_ids: Vec<String> = streams.iter().map(|s| s.user_id.clone()).collect();
+                    let user_ids_param = user_ids
+                        .iter()
+                        .map(|id| format!("id={}", id))
+                        .collect::<Vec<_>>()
+                        .join("&");
+
+                    let users_url = format!("https://api.twitch.tv/helix/users?{}", user_ids_param);
+                    let users_response = client
+                        .get(&users_url)
+                        .header("Client-Id", CLIENT_ID)
+                        .header(AUTHORIZATION, format!("Bearer {}", token.unwrap()))
+                        .send()
+                        .await?
+                        .json::<serde_json::Value>()
+                        .await?;
+
+                    if let Some(users_data) = users_response.get("data").and_then(|d| d.as_array())
+                    {
+                        let mut broadcaster_types = std::collections::HashMap::new();
+                        let mut profile_images = std::collections::HashMap::new();
+                        for user in users_data {
+                            if let Some(id) = user.get("id").and_then(|v| v.as_str()) {
+                                if let Some(broadcaster_type) =
+                                    user.get("broadcaster_type").and_then(|v| v.as_str())
+                                {
+                                    if !broadcaster_type.is_empty() {
+                                        broadcaster_types
+                                            .insert(id.to_string(), broadcaster_type.to_string());
+                                    }
+                                }
+                                if let Some(profile_image) =
+                                    user.get("profile_image_url").and_then(|v| v.as_str())
+                                {
+                                    profile_images
+                                        .insert(id.to_string(), profile_image.to_string());
+                                }
+                            }
+                        }
+
+                        for stream in &mut streams {
+                            if let Some(broadcaster_type) = broadcaster_types.get(&stream.user_id) {
+                                stream.broadcaster_type = Some(broadcaster_type.clone());
+                            }
+                            if let Some(profile_image) = profile_images.get(&stream.user_id) {
+                                stream.profile_image_url = Some(profile_image.clone());
+                            }
+                        }
+                    }
+                }
+
+                // Streams are already sorted by viewer count (highest first) from the API
+                Ok(streams)
+            }
+            None => Ok(Vec::new()),
+        }
     }
 }

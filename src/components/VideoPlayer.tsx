@@ -10,11 +10,17 @@ const VideoPlayer = () => {
   const hlsRef = useRef<Hls | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const progressUpdateIntervalRef = useRef<number | null>(null);
-  const { streamUrl, settings, getAvailableQualities, changeStreamQuality } = useAppStore();
+  const { streamUrl, settings, getAvailableQualities, changeStreamQuality, handleStreamOffline, isAutoSwitching } = useAppStore();
   const playerSettings = settings.video_player;
   const isLiveRef = useRef<boolean>(true);
   const userInitiatedPauseRef = useRef<boolean>(false);
   const [availableQualities, setAvailableQualities] = useState<string[]>([]);
+  
+  // Track consecutive fatal errors to determine when stream is truly offline
+  const fatalErrorCountRef = useRef<number>(0);
+  const lastErrorTimeRef = useRef<number>(0);
+  const maxFatalErrorsBeforeOffline = 3;
+  const errorResetTimeMs = 30000; // Reset error count after 30 seconds of stability
 
   // Sync volume with store
   const syncVolumeToPlayer = useCallback(() => {
@@ -333,9 +339,53 @@ const VideoPlayer = () => {
         console.error('[HLS] Error:', data);
 
         if (data.fatal) {
+          const now = Date.now();
+          
+          // Reset error count if enough time has passed since last error
+          if (now - lastErrorTimeRef.current > errorResetTimeMs) {
+            fatalErrorCountRef.current = 0;
+          }
+          
+          fatalErrorCountRef.current++;
+          lastErrorTimeRef.current = now;
+          
+          console.log(`[HLS] Fatal error count: ${fatalErrorCountRef.current}/${maxFatalErrorsBeforeOffline}`);
+          
+          // Check if we've exceeded max fatal errors - likely stream is offline
+          if (fatalErrorCountRef.current >= maxFatalErrorsBeforeOffline && !isAutoSwitching) {
+            console.log('[HLS] Max fatal errors reached, stream appears to be offline. Triggering auto-switch...');
+            
+            // Reset error count
+            fatalErrorCountRef.current = 0;
+            
+            // Trigger auto-switch
+            handleStreamOffline();
+            return;
+          }
+          
           switch (data.type) {
             case Hls.ErrorTypes.NETWORK_ERROR:
               console.log('[HLS] Fatal network error, attempting recovery...');
+              
+              // Check if this is a manifest/playlist load error (strong indicator of offline stream)
+              if (data.details === 'manifestLoadError' || 
+                  data.details === 'manifestLoadTimeOut' ||
+                  data.details === 'manifestParsingError' ||
+                  data.details === 'levelLoadError' ||
+                  data.details === 'levelLoadTimeOut') {
+                console.log(`[HLS] Manifest/level loading failed: ${data.details}`);
+                
+                // For manifest errors, count them more aggressively
+                fatalErrorCountRef.current++;
+                
+                if (fatalErrorCountRef.current >= 2 && !isAutoSwitching) {
+                  console.log('[HLS] Multiple manifest errors, stream likely offline. Triggering auto-switch...');
+                  fatalErrorCountRef.current = 0;
+                  handleStreamOffline();
+                  return;
+                }
+              }
+              
               hls.startLoad();
               break;
             case Hls.ErrorTypes.MEDIA_ERROR:
@@ -345,7 +395,7 @@ const VideoPlayer = () => {
             default:
               console.error('[HLS] Fatal error, cannot recover. Recreating player...');
               setTimeout(() => {
-                if (videoRef.current && isLiveRef.current) {
+                if (videoRef.current && isLiveRef.current && !isAutoSwitching) {
                   createPlayer();
                 }
               }, 2000);

@@ -208,3 +208,31 @@ pub async fn force_refresh_token() -> Result<String, String> {
         .await
         .map_err(|e| e.to_string())
 }
+
+/// Check if a specific stream is currently online by user login
+/// Returns the stream data if online, None if offline
+#[tauri::command]
+pub async fn check_stream_online(user_login: String) -> Result<Option<TwitchStream>, String> {
+    TwitchService::check_stream_online(&user_login)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Get streams by game name (convenience method that resolves game name to ID)
+/// Returns streams sorted by viewer count (highest first)
+#[tauri::command]
+pub async fn get_streams_by_game_name(
+    state: State<'_, AppState>,
+    game_name: String,
+    exclude_user_login: Option<String>,
+    limit: u32,
+) -> Result<Vec<TwitchStream>, String> {
+    TwitchService::get_streams_by_game_name(
+        &state,
+        &game_name,
+        exclude_user_login.as_deref(),
+        limit,
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
