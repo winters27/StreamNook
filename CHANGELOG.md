@@ -1,3 +1,11 @@
+## [3.4.10] - 2025-11-28
+### ✨ Features
+- Implemented aspect ratio lock for the video player, with adjustments during window resize.
+- Enhanced subscription and donation messages in chat with clickable usernames and cosmetics.
+
+### 🔧 Maintenance
+- Removed the unused `dark_mode` setting from chat design settings.
+
 ## [3.4.9] - 2025-11-28
 ### ✨ Features
 - Penrose triangle colors now dynamically adjust based on the selected theme.
@@ -247,6 +255,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
