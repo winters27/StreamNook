@@ -1,3 +1,10 @@
+## [3.4.8] - 2025-11-28
+### ✨ Features
+- Implemented a new theming system, allowing users to customize the application's appearance. Users can now select from a variety of themes in the settings menu.
+
+### 🔧 Maintenance
+- Refactored the UI to support dynamic theme switching and persistent theme settings.
+
 ## [3.4.7] - 2025-11-28
 ### 🔧 Maintenance
 - Added Dependabot configuration for automated dependency updates.
@@ -235,6 +242,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
