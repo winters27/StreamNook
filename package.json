@@ -9,19 +9,9 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "version:patch": "node scripts/increment-version.js patch",
-    "version:minor": "node scripts/increment-version.js minor",
-    "version:major": "node scripts/increment-version.js major",
-    "version:patch:auto": "node scripts/increment-version.js patch --commit --tag --push",
-    "version:minor:auto": "node scripts/increment-version.js minor --commit --tag --push",
-    "version:major:auto": "node scripts/increment-version.js major --commit --tag --push",
-    "release:patch": "npm run version:patch && npm run tauri build",
-    "release:minor": "npm run version:minor && npm run tauri build",
-    "release:major": "npm run version:major && npm run tauri build",
-    "release:patch:auto": "npm run version:patch:auto && npm run tauri build",
-    "release:minor:auto": "npm run version:minor:auto && npm run tauri build",
-    "release:major:auto": "npm run version:major:auto && npm run tauri build",
-    "ship": "powershell -ExecutionPolicy Bypass -File ./scripts/release_manager.ps1"
+    "ship": "powershell -ExecutionPolicy Bypass -File ./scripts/release_manager.ps1",
+    "update-deps": "powershell -ExecutionPolicy Bypass -File ./scripts/update-dependencies.ps1",
+    "update-deps:auto": "powershell -ExecutionPolicy Bypass -File ./scripts/update-dependencies.ps1 -Auto"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.9.0",
@@ -52,4 +42,3 @@
     "vite": "^5.4.21"
   }
 }
-
