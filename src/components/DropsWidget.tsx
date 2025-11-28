@@ -323,6 +323,9 @@ export default function DropsWidget() {
     let unlisten: (() => void) | undefined;
     let unlistenProgress: (() => void) | undefined;
     
+    let unlistenNoChannels: (() => void) | undefined;
+    let unlistenChannelSwitched: (() => void) | undefined;
+
     const setupMiningListener = async () => {
       // Listen for full mining status updates
       unlisten = await listen<MiningStatus>('mining-status-update', (event) => {
@@ -330,6 +333,25 @@ export default function DropsWidget() {
         setMiningStatus(event.payload);
         useAppStore.setState({ isMiningActive: event.payload.is_mining });
         setLastProgressUpdate(Date.now());
+      });
+
+      // Listen for mining stopped due to no channels available
+      unlistenNoChannels = await listen<{
+        reason: string;
+        timestamp: string;
+      }>('mining-stopped-no-channels', (event) => {
+        console.log('⚠️ Mining stopped - no channels available:', event.payload);
+        addToast(event.payload.reason, 'warning');
+      });
+
+      // Listen for channel switch events
+      unlistenChannelSwitched = await listen<{
+        from: string;
+        to: string;
+        reason: string;
+      }>('channel-switched', (event) => {
+        console.log('🔄 Channel switched:', event.payload);
+        addToast(`Stream switched: ${event.payload.from} → ${event.payload.to}`, 'info');
       });
 
       // Listen for direct progress updates from WebSocket
@@ -418,6 +440,12 @@ export default function DropsWidget() {
       }
       if (unlistenProgress) {
         unlistenProgress();
+      }
+      if (unlistenNoChannels) {
+        unlistenNoChannels();
+      }
+      if (unlistenChannelSwitched) {
+        unlistenChannelSwitched();
       }
     };
   }, []);

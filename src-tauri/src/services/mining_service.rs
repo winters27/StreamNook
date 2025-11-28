@@ -335,6 +335,7 @@ impl MiningService {
                                 let mining_status_clone = mining_status.clone();
                                 let app_handle_clone = app_handle.clone();
                                 let target_campaign_clone = target_campaign.clone();
+                                let settings_clone = settings.clone();
                                 let eligible_channels_clone = eligible_channels.clone();
                                 let cached_user_id_clone = cached_user_id.clone();
                                 let cached_spade_url_clone = cached_spade_url.clone();
@@ -349,9 +350,16 @@ impl MiningService {
 
                                     loop {
                                         if !*is_running_clone.read().await {
+                                            println!(
+                                                "🛑 Stopping watch payload loop (with channel)"
+                                            );
                                             break;
                                         }
 
+                                        println!(
+                                            "📡 Sending watch payload to {}...",
+                                            current_channel.name
+                                        );
                                         match Self::send_watch_payload(
                                             &client_clone,
                                             &current_channel,
@@ -363,6 +371,10 @@ impl MiningService {
                                         .await
                                         {
                                             Ok(true) => {
+                                                println!(
+                                                    "✅ Watch payload sent successfully to {}",
+                                                    current_channel.name
+                                                );
                                                 consecutive_failures = 0;
                                                 if let Ok(mut status) =
                                                     mining_status_clone.try_write()
@@ -372,37 +384,66 @@ impl MiningService {
                                             }
                                             Ok(false) | Err(_) => {
                                                 consecutive_failures += 1;
+                                                println!(
+                                                    "⚠️ Watch payload failed for {} (failure {}/3)",
+                                                    current_channel.name, consecutive_failures
+                                                );
+
                                                 if consecutive_failures >= 3 {
+                                                    println!(
+                                                        "❌ Channel {} failed 3 times, attempting to switch with API refresh...",
+                                                        current_channel.name
+                                                    );
+
                                                     let channels = eligible_channels_clone
                                                         .read()
                                                         .await
                                                         .clone();
 
-                                                    match Self::try_switch_channel(
+                                                    // Try to switch to another channel with API refresh fallback
+                                                    match Self::try_switch_channel_with_refresh(
                                                         &client_clone,
                                                         &token_clone,
                                                         &channels,
                                                         &current_channel.id,
                                                         channel_index,
+                                                        &target_campaign_clone,
+                                                        &settings_clone,
                                                     )
                                                     .await
                                                     {
                                                         Some((
                                                             new_channel,
                                                             new_broadcast_id,
+                                                            fresh_channels,
                                                             new_index,
                                                         )) => {
+                                                            let old_channel_name =
+                                                                current_channel.name.clone();
                                                             current_channel = new_channel.clone();
                                                             current_broadcast_id = new_broadcast_id;
                                                             channel_index = new_index;
                                                             consecutive_failures = 0;
 
+                                                            // Update the cached eligible channels with fresh list
+                                                            {
+                                                                let mut eligible =
+                                                                    eligible_channels_clone
+                                                                        .write()
+                                                                        .await;
+                                                                *eligible = fresh_channels.clone();
+                                                            }
+
+                                                            // Clear cached spade URL when switching channels (channel-specific)
                                                             {
                                                                 let mut cached =
-                                                                    cached_user_id_clone
+                                                                    cached_spade_url_clone
                                                                         .write()
                                                                         .await;
                                                                 *cached = None;
+                                                                println!(
+                                                                    "🗑️ Cleared cached spade URL on channel switch"
+                                                                );
                                                             }
 
                                                             if let Ok(mut status) =
@@ -410,6 +451,8 @@ impl MiningService {
                                                             {
                                                                 status.current_channel =
                                                                     Some(new_channel.clone());
+                                                                status.eligible_channels =
+                                                                    fresh_channels;
                                                                 status.last_update = Utc::now();
 
                                                                 if let Some(campaign) = Self::get_active_campaign_for_channel(&new_channel, &target_campaign_clone) {
@@ -422,9 +465,33 @@ impl MiningService {
                                                                     "mining-status-update",
                                                                     &current_status,
                                                                 );
+                                                                let _ = app_handle_clone.emit("channel-switched", json!({
+                                                                    "from": old_channel_name,
+                                                                    "to": new_channel.name,
+                                                                    "reason": "offline_or_errors"
+                                                                }));
                                                             }
+
+                                                            println!(
+                                                                "✅ Successfully switched to {}",
+                                                                new_channel.name
+                                                            );
                                                         }
-                                                        None => break,
+                                                        None => {
+                                                            println!(
+                                                                "❌ No channels available after API refresh, stopping mining"
+                                                            );
+
+                                                            // Stop mining and notify user
+                                                            Self::stop_mining_no_channels(
+                                                                &is_running_clone,
+                                                                &mining_status_clone,
+                                                                &app_handle_clone,
+                                                                "All streams for this campaign are offline. Mining has been stopped.",
+                                                            ).await;
+
+                                                            break;
+                                                        }
                                                     }
                                                 }
                                             }
@@ -750,6 +817,7 @@ impl MiningService {
                                 let mining_status_clone = mining_status.clone();
                                 let app_handle_clone = app_handle.clone();
                                 let target_campaign_clone = target_campaign.clone();
+                                let settings_clone = settings.clone();
                                 let eligible_channels_clone = eligible_channels.clone();
                                 let cached_user_id_clone = cached_user_id.clone();
                                 let cached_spade_url_clone = cached_spade_url.clone();
@@ -804,7 +872,7 @@ impl MiningService {
 
                                                 if consecutive_failures >= 3 {
                                                     println!(
-                                                        "❌ Channel {} failed 3 times, attempting to switch...",
+                                                        "❌ Channel {} failed 3 times, attempting to switch with API refresh...",
                                                         current_channel.name
                                                     );
 
@@ -814,19 +882,22 @@ impl MiningService {
                                                         .await
                                                         .clone();
 
-                                                    // Try to switch to another channel
-                                                    match Self::try_switch_channel(
+                                                    // Try to switch to another channel with API refresh fallback
+                                                    match Self::try_switch_channel_with_refresh(
                                                         &client_clone,
                                                         &token_clone,
                                                         &channels,
                                                         &current_channel.id,
                                                         channel_index,
+                                                        &target_campaign_clone,
+                                                        &settings_clone,
                                                     )
                                                     .await
                                                     {
                                                         Some((
                                                             new_channel,
                                                             new_broadcast_id,
+                                                            fresh_channels,
                                                             new_index,
                                                         )) => {
                                                             let old_channel_name =
@@ -836,15 +907,24 @@ impl MiningService {
                                                             channel_index = new_index;
                                                             consecutive_failures = 0;
 
-                                                            // Clear cached user ID when switching channels
+                                                            // Update the cached eligible channels with fresh list
+                                                            {
+                                                                let mut eligible =
+                                                                    eligible_channels_clone
+                                                                        .write()
+                                                                        .await;
+                                                                *eligible = fresh_channels.clone();
+                                                            }
+
+                                                            // Clear cached spade URL when switching channels (channel-specific)
                                                             {
                                                                 let mut cached =
-                                                                    cached_user_id_clone
+                                                                    cached_spade_url_clone
                                                                         .write()
                                                                         .await;
                                                                 *cached = None;
                                                                 println!(
-                                                                    "🗑️ Cleared cached user ID on channel switch"
+                                                                    "🗑️ Cleared cached spade URL on channel switch"
                                                                 );
                                                             }
 
@@ -854,6 +934,8 @@ impl MiningService {
                                                             {
                                                                 status.current_channel =
                                                                     Some(new_channel.clone());
+                                                                status.eligible_channels =
+                                                                    fresh_channels;
                                                                 status.last_update = Utc::now();
 
                                                                 // Update campaign if needed
@@ -881,8 +963,17 @@ impl MiningService {
                                                         }
                                                         None => {
                                                             println!(
-                                                                "❌ No alternative channels available, stopping mining"
+                                                                "❌ No channels available after API refresh, stopping mining"
                                                             );
+
+                                                            // Stop mining and notify user
+                                                            Self::stop_mining_no_channels(
+                                                                &is_running_clone,
+                                                                &mining_status_clone,
+                                                                &app_handle_clone,
+                                                                "All streams for this campaign are offline. Mining has been stopped.",
+                                                            ).await;
+
                                                             break;
                                                         }
                                                     }
@@ -1957,6 +2048,7 @@ impl MiningService {
     }
 
     /// Try to switch to the next available online channel when current one fails
+    /// This now includes refreshing the eligible channels from the API if all cached channels fail
     async fn try_switch_channel(
         client: &Client,
         token: &str,
@@ -1964,17 +2056,13 @@ impl MiningService {
         current_channel_id: &str,
         current_index: usize,
     ) -> Option<(MiningChannel, String, usize)> {
-        if channels.len() <= 1 {
-            println!("❌ Only one eligible channel available, cannot switch");
-            return None;
-        }
-
         println!(
-            "🔄 Attempting to switch from channel index {}...",
-            current_index
+            "🔄 Attempting to switch from channel index {} (have {} cached channels)...",
+            current_index,
+            channels.len()
         );
 
-        // Try to find a different online channel
+        // Try to find a different online channel from the cached list
         for i in 1..=channels.len() {
             let next_index = (current_index + i) % channels.len();
             let next_channel = &channels[next_index];
@@ -1985,7 +2073,7 @@ impl MiningService {
             }
 
             println!(
-                "🔄 Trying channel: {} ({})",
+                "🔄 Trying cached channel: {} ({})",
                 next_channel.name, next_channel.game_name
             );
 
@@ -2027,8 +2115,154 @@ impl MiningService {
             }
         }
 
-        println!("❌ No alternative channels available");
+        println!("❌ No alternative channels available in cached list");
         None
+    }
+
+    /// Extended channel switching that refreshes the eligible channels from API if needed
+    /// Returns the new channel, broadcast ID, updated channel list, and index
+    async fn try_switch_channel_with_refresh(
+        client: &Client,
+        token: &str,
+        cached_channels: &[MiningChannel],
+        current_channel_id: &str,
+        current_index: usize,
+        campaigns: &[DropCampaign],
+        settings: &DropsSettings,
+    ) -> Option<(MiningChannel, String, Vec<MiningChannel>, usize)> {
+        println!("🔄 Attempting channel switch with potential refresh...");
+
+        // First, try the cached channels
+        if let Some((channel, broadcast_id, new_index)) = Self::try_switch_channel(
+            client,
+            token,
+            cached_channels,
+            current_channel_id,
+            current_index,
+        )
+        .await
+        {
+            return Some((channel, broadcast_id, cached_channels.to_vec(), new_index));
+        }
+
+        // If no cached channels work, refresh the eligible channels from API
+        println!("🔄 All cached channels failed, refreshing eligible channels from API...");
+
+        match Self::discover_eligible_channels_internal(client, campaigns, settings).await {
+            Ok(fresh_channels) => {
+                if fresh_channels.is_empty() {
+                    println!(
+                        "❌ API returned no eligible channels - all streams appear to be offline"
+                    );
+                    return None;
+                }
+
+                println!(
+                    "✅ Refreshed channel list: found {} eligible channels",
+                    fresh_channels.len()
+                );
+
+                // Try to find an online channel from the fresh list
+                for (index, channel) in fresh_channels.iter().enumerate() {
+                    // Skip the current failing channel
+                    if channel.id == current_channel_id {
+                        continue;
+                    }
+
+                    println!(
+                        "🔄 Trying fresh channel: {} ({})",
+                        channel.name, channel.game_name
+                    );
+
+                    match Self::check_channel_status(client, &channel.id, token).await {
+                        Ok(Some(status)) if status.is_online => {
+                            match Self::get_broadcast_id(client, &channel.id, token).await {
+                                Ok(Some(broadcast_id)) => {
+                                    println!(
+                                        "✅ Successfully switched to fresh channel {} (broadcast: {})",
+                                        channel.name, broadcast_id
+                                    );
+                                    return Some((
+                                        channel.clone(),
+                                        broadcast_id,
+                                        fresh_channels,
+                                        index,
+                                    ));
+                                }
+                                Ok(None) => {
+                                    println!("⚠️ Fresh channel {} is not live", channel.name);
+                                }
+                                Err(e) => {
+                                    println!(
+                                        "❌ Failed to get broadcast ID for fresh channel {}: {}",
+                                        channel.name, e
+                                    );
+                                }
+                            }
+                        }
+                        Ok(Some(_)) => {
+                            println!("⚠️ Fresh channel {} is not online", channel.name);
+                        }
+                        Ok(None) => {
+                            println!("⚠️ Fresh channel {} is offline", channel.name);
+                        }
+                        Err(e) => {
+                            println!(
+                                "❌ Failed to check status for fresh channel {}: {}",
+                                channel.name, e
+                            );
+                        }
+                    }
+                }
+
+                println!("❌ No online channels found even after API refresh");
+                None
+            }
+            Err(e) => {
+                println!("❌ Failed to refresh eligible channels from API: {}", e);
+                None
+            }
+        }
+    }
+
+    /// Cleanly stop mining and notify the user
+    async fn stop_mining_no_channels(
+        is_running: &Arc<RwLock<bool>>,
+        mining_status: &Arc<RwLock<MiningStatus>>,
+        app_handle: &AppHandle,
+        reason: &str,
+    ) {
+        println!("🛑 Stopping mining: {}", reason);
+
+        // Set running to false
+        {
+            let mut running = is_running.write().await;
+            *running = false;
+        }
+
+        // Clear mining status
+        {
+            let mut status = mining_status.write().await;
+            status.is_mining = false;
+            status.current_channel = None;
+            status.current_campaign = None;
+            status.current_drop = None;
+            status.eligible_channels = Vec::new();
+            status.last_update = Utc::now();
+        }
+
+        // Emit status update
+        let current_status = mining_status.read().await.clone();
+        let _ = app_handle.emit("mining-status-update", &current_status);
+
+        // Emit specific event for no channels available
+        let _ = app_handle.emit(
+            "mining-stopped-no-channels",
+            json!({
+                "reason": reason,
+                "timestamp": Utc::now().to_rfc3339()
+            }),
+        );
     }
 }
 

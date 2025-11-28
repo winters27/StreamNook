@@ -151,7 +151,7 @@ const ChangelogOverlay = ({ version, onClose }: ChangelogOverlayProps) => {
         <div className="h-px bg-borderSubtle mb-4" />
 
         {/* Content */}
-        <div className="flex-1 overflow-y-auto pr-2 space-y-4">
+        <div className="flex-1 overflow-y-auto custom-scrollbar pr-2 space-y-4">
           {isLoading ? (
             <div className="flex items-center justify-center py-8">
               <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-accent"></div>
@@ -190,22 +190,16 @@ const ChangelogOverlay = ({ version, onClose }: ChangelogOverlayProps) => {
         </div>
 
         {/* Footer */}
-        <div className="mt-4 pt-4 border-t border-borderSubtle flex items-center justify-between">
+        <div className="mt-4 pt-4 border-t border-borderSubtle">
           <a
-            href={`https://github.com/winters27/StreamNook/releases/tag/v${version}`}
+            href="https://github.com/winters27/StreamNook/blob/main/CHANGELOG.md"
             target="_blank"
             rel="noopener noreferrer"
             className="text-xs text-accent hover:text-accent/80 flex items-center gap-1 transition-colors"
           >
-            View on GitHub
+            View Full Changelog
             <ExternalLink size={12} />
           </a>
-          <button
-            onClick={onClose}
-            className="px-4 py-2 bg-accent hover:bg-accent/90 text-white text-sm font-medium rounded-lg transition-all"
-          >
-            Got it!
-          </button>
         </div>
       </div>
     </div>
