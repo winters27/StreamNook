@@ -91,7 +91,6 @@ impl Default for StreamlinkSettings {
 pub struct ChatDesignSettings {
     pub show_dividers: bool,
     pub alternating_backgrounds: bool,
-    pub dark_mode: bool,         // Use black background instead of gray
     pub message_spacing: u32,    // 0-20 pixels
     pub font_size: u32,          // 10-20 pixels
     pub font_weight: u32,        // 300-700
@@ -105,7 +104,6 @@ impl Default for ChatDesignSettings {
         Self {
             show_dividers: false,
             alternating_backgrounds: false,
-            dark_mode: false,
             message_spacing: 16,
             font_size: 18,
             font_weight: 400,

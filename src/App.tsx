@@ -40,6 +40,14 @@ function App() {
   const [showChangelog, setShowChangelog] = useState(false);
   const [changelogVersion, setChangelogVersion] = useState<string | null>(null);
 
+  // Refs for aspect ratio lock to avoid stale closures
+  const aspectRatioLockEnabledRef = useRef(false);
+  const chatSizeRef = useRef(384);
+  const chatPlacementRef = useRef(chatPlacement);
+  const isTheaterModeRef = useRef(false);
+  const streamUrlRef = useRef<string | null>(null);
+  const isAdjustingRef = useRef(false);
+
   // Listen for badge detail events from chat
   useEffect(() => {
     const handleBadgeDetail = (event: CustomEvent) => {
@@ -189,11 +197,43 @@ function App() {
     handleTheaterMode();
   }, [isTheaterMode, streamUrl, savedWindowSize]);
 
+  // Keep refs in sync with current values for use in resize listener
+  useEffect(() => {
+    aspectRatioLockEnabledRef.current = settings.video_player?.lock_aspect_ratio ?? false;
+  }, [settings.video_player?.lock_aspect_ratio]);
+
+  useEffect(() => {
+    chatSizeRef.current = chatSize;
+  }, [chatSize]);
+
+  useEffect(() => {
+    chatPlacementRef.current = chatPlacement;
+  }, [chatPlacement]);
+
+  useEffect(() => {
+    isTheaterModeRef.current = isTheaterMode;
+  }, [isTheaterMode]);
+
+  useEffect(() => {
+    streamUrlRef.current = streamUrl;
+  }, [streamUrl]);
+
   // Handle aspect ratio locking when setting changes or chat is resized
   useEffect(() => {
     const adjustWindowForAspectRatio = async () => {
+      // Use refs for values that might be stale in closures
+      const lockEnabled = aspectRatioLockEnabledRef.current;
+      const currentChatSize = chatSizeRef.current;
+      const currentChatPlacement = chatPlacementRef.current;
+      const theaterMode = isTheaterModeRef.current;
+      const currentStreamUrl = streamUrlRef.current;
+
       // Don't adjust if in theater mode - theater mode handles its own sizing
-      if (isTheaterMode || !settings.video_player?.lock_aspect_ratio || !streamUrl) return;
+      if (theaterMode || !lockEnabled || !currentStreamUrl) return;
+
+      // Prevent re-entrant calls
+      if (isAdjustingRef.current) return;
+      isAdjustingRef.current = true;
 
       try {
         const window = getCurrentWindow();
@@ -202,6 +242,7 @@ function App() {
         const isMaximized = await window.isMaximized();
         if (isMaximized) {
           console.log('Window is maximized, skipping aspect ratio adjustment');
+          isAdjustingRef.current = false;
           return;
         }
 
@@ -210,9 +251,9 @@ function App() {
         const width = size.width;
         const height = size.height;
 
-        console.log('Current window size:', width, height);
-        console.log('Chat size:', chatSize);
-        console.log('Chat placement:', chatPlacement);
+        console.log('[AspectRatio] Current window size:', width, height);
+        console.log('[AspectRatio] Chat size:', currentChatSize);
+        console.log('[AspectRatio] Chat placement:', currentChatPlacement);
 
         // Title bar height is approximately 32px
         const titleBarHeight = 32;
@@ -220,27 +261,109 @@ function App() {
         const [newWidth, newHeight] = await invoke<[number, number]>('calculate_aspect_ratio_size', {
           currentWidth: width,
           currentHeight: height,
-          chatSize: chatSize,
-          chatPlacement: chatPlacement,
+          chatSize: currentChatSize,
+          chatPlacement: currentChatPlacement,
           titleBarHeight: titleBarHeight,
         });
 
-        console.log('Calculated new size:', newWidth, newHeight);
+        console.log('[AspectRatio] Calculated new size:', newWidth, newHeight);
 
         // Only resize if dimensions changed significantly (more than 5px difference)
         if (Math.abs(width - newWidth) > 5 || Math.abs(height - newHeight) > 5) {
-          console.log('Resizing window to:', newWidth, newHeight);
+          console.log('[AspectRatio] Resizing window to:', newWidth, newHeight);
           await window.setSize(new LogicalSize(newWidth, newHeight));
         } else {
-          console.log('Size difference too small, not resizing');
+          console.log('[AspectRatio] Size difference too small, not resizing');
         }
       } catch (error) {
         console.error('Failed to adjust window for aspect ratio:', error);
+      } finally {
+        isAdjustingRef.current = false;
       }
     };
 
+    // Initial adjustment when settings change
     adjustWindowForAspectRatio();
-  }, [settings.video_player?.lock_aspect_ratio, chatSize, chatPlacement, streamUrl]);
+  }, [settings.video_player?.lock_aspect_ratio, chatSize, chatPlacement, streamUrl, isTheaterMode]);
+
+  // Separate effect for the resize listener - only set up once and use refs
+  useEffect(() => {
+    let resizeUnlisten: (() => void) | null = null;
+    let debounceTimeout: NodeJS.Timeout | null = null;
+
+    const adjustWindowForAspectRatio = async () => {
+      // Use refs for current values
+      const lockEnabled = aspectRatioLockEnabledRef.current;
+      const currentChatSize = chatSizeRef.current;
+      const currentChatPlacement = chatPlacementRef.current;
+      const theaterMode = isTheaterModeRef.current;
+      const currentStreamUrl = streamUrlRef.current;
+
+      if (theaterMode || !lockEnabled || !currentStreamUrl) return;
+      if (isAdjustingRef.current) return;
+      isAdjustingRef.current = true;
+
+      try {
+        const window = getCurrentWindow();
+
+        const isMaximized = await window.isMaximized();
+        if (isMaximized) {
+          isAdjustingRef.current = false;
+          return;
+        }
+
+        const size = await window.innerSize();
+        const width = size.width;
+        const height = size.height;
+
+        const titleBarHeight = 32;
+
+        const [newWidth, newHeight] = await invoke<[number, number]>('calculate_aspect_ratio_size', {
+          currentWidth: width,
+          currentHeight: height,
+          chatSize: currentChatSize,
+          chatPlacement: currentChatPlacement,
+          titleBarHeight: titleBarHeight,
+        });
+
+        if (Math.abs(width - newWidth) > 5 || Math.abs(height - newHeight) > 5) {
+          console.log('[AspectRatio] Resize event - adjusting to:', newWidth, newHeight);
+          await window.setSize(new LogicalSize(newWidth, newHeight));
+        }
+      } catch (error) {
+        console.error('Failed to adjust window for aspect ratio:', error);
+      } finally {
+        isAdjustingRef.current = false;
+      }
+    };
+
+    const setupResizeListener = async () => {
+      const window = getCurrentWindow();
+      resizeUnlisten = await window.onResized(async () => {
+        // Debounce resize events
+        if (debounceTimeout) {
+          clearTimeout(debounceTimeout);
+        }
+        debounceTimeout = setTimeout(async () => {
+          // Check refs for current state
+          if (aspectRatioLockEnabledRef.current && !isTheaterModeRef.current && streamUrlRef.current) {
+            await adjustWindowForAspectRatio();
+          }
+        }, 100);
+      });
+    };
+
+    setupResizeListener();
+
+    return () => {
+      if (resizeUnlisten) {
+        resizeUnlisten();
+      }
+      if (debounceTimeout) {
+        clearTimeout(debounceTimeout);
+      }
+    };
+  }, []); // Empty deps - set up once and use refs for current values
 
   useEffect(() => {
     const checkUpdates = async () => {

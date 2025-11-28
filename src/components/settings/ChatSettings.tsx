@@ -27,40 +27,6 @@ const ChatSettings = () => {
         <h3 className="text-lg font-semibold text-textPrimary mb-4">Chat Design</h3>
 
         <div className="space-y-4">
-          {/* Dark Mode */}
-          <div>
-            <label className="flex items-center gap-3 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={settings.chat_design?.dark_mode ?? false}
-                onChange={(e) =>
-                  updateSettings({
-                    ...settings,
-                    chat_design: {
-                      ...settings.chat_design,
-                      show_dividers: settings.chat_design?.show_dividers ?? true,
-                      alternating_backgrounds: settings.chat_design?.alternating_backgrounds ?? false,
-                      dark_mode: e.target.checked,
-                      message_spacing: settings.chat_design?.message_spacing ?? 2,
-                      font_size: settings.chat_design?.font_size ?? 14,
-                      font_weight: settings.chat_design?.font_weight ?? 400,
-                      mention_color: settings.chat_design?.mention_color ?? '#ff4444',
-                      reply_color: settings.chat_design?.reply_color ?? '#ff6b6b',
-                      mention_animation: settings.chat_design?.mention_animation ?? true,
-                    },
-                  })
-                }
-                className="w-5 h-5 accent-accent cursor-pointer"
-              />
-              <div>
-                <span className="text-sm font-medium text-textPrimary">Dark Mode</span>
-                <p className="text-xs text-textSecondary">
-                  Use black background for chat messages (inverts alternating colors)
-                </p>
-              </div>
-            </label>
-          </div>
-
           {/* Show Dividers */}
           <div>
             <label className="flex items-center gap-3 cursor-pointer">
@@ -74,7 +40,6 @@ const ChatSettings = () => {
                       ...settings.chat_design,
                       show_dividers: e.target.checked,
                       alternating_backgrounds: settings.chat_design?.alternating_backgrounds ?? false,
-                      dark_mode: settings.chat_design?.dark_mode ?? false,
                       message_spacing: settings.chat_design?.message_spacing ?? 2,
                       font_size: settings.chat_design?.font_size ?? 14,
                       font_weight: settings.chat_design?.font_weight ?? 400,
@@ -108,7 +73,6 @@ const ChatSettings = () => {
                       ...settings.chat_design,
                       show_dividers: settings.chat_design?.show_dividers ?? true,
                       alternating_backgrounds: e.target.checked,
-                      dark_mode: settings.chat_design?.dark_mode ?? false,
                       message_spacing: settings.chat_design?.message_spacing ?? 2,
                       font_size: settings.chat_design?.font_size ?? 14,
                       font_weight: settings.chat_design?.font_weight ?? 400,
@@ -125,7 +89,7 @@ const ChatSettings = () => {
                   Alternating Backgrounds
                 </span>
                 <p className="text-xs text-textSecondary">
-                  Alternate message background colors for better readability
+                  Alternate message background colors using your theme palette
                 </p>
               </div>
             </label>
@@ -149,7 +113,6 @@ const ChatSettings = () => {
                     ...settings.chat_design,
                     show_dividers: settings.chat_design?.show_dividers ?? true,
                     alternating_backgrounds: settings.chat_design?.alternating_backgrounds ?? false,
-                    dark_mode: settings.chat_design?.dark_mode ?? false,
                     message_spacing: parseInt(e.target.value),
                     font_size: settings.chat_design?.font_size ?? 14,
                     font_weight: settings.chat_design?.font_weight ?? 400,
@@ -182,7 +145,6 @@ const ChatSettings = () => {
                     ...settings.chat_design,
                     show_dividers: settings.chat_design?.show_dividers ?? true,
                     alternating_backgrounds: settings.chat_design?.alternating_backgrounds ?? false,
-                    dark_mode: settings.chat_design?.dark_mode ?? false,
                     message_spacing: settings.chat_design?.message_spacing ?? 2,
                     font_size: parseInt(e.target.value),
                     font_weight: settings.chat_design?.font_weight ?? 400,
@@ -209,7 +171,6 @@ const ChatSettings = () => {
                     ...settings.chat_design,
                     show_dividers: settings.chat_design?.show_dividers ?? true,
                     alternating_backgrounds: settings.chat_design?.alternating_backgrounds ?? false,
-                    dark_mode: settings.chat_design?.dark_mode ?? false,
                     message_spacing: settings.chat_design?.message_spacing ?? 2,
                     font_size: settings.chat_design?.font_size ?? 14,
                     font_weight: parseInt(e.target.value),
@@ -242,7 +203,6 @@ const ChatSettings = () => {
                       ...settings.chat_design,
                       show_dividers: settings.chat_design?.show_dividers ?? true,
                       alternating_backgrounds: settings.chat_design?.alternating_backgrounds ?? false,
-                      dark_mode: settings.chat_design?.dark_mode ?? false,
                       message_spacing: settings.chat_design?.message_spacing ?? 2,
                       font_size: settings.chat_design?.font_size ?? 14,
                       font_weight: settings.chat_design?.font_weight ?? 400,
@@ -274,7 +234,6 @@ const ChatSettings = () => {
                   ...settings.chat_design,
                   show_dividers: settings.chat_design?.show_dividers ?? true,
                   alternating_backgrounds: settings.chat_design?.alternating_backgrounds ?? false,
-                  dark_mode: settings.chat_design?.dark_mode ?? false,
                   message_spacing: settings.chat_design?.message_spacing ?? 2,
                   font_size: settings.chat_design?.font_size ?? 14,
                   font_weight: settings.chat_design?.font_weight ?? 400,
@@ -297,7 +256,6 @@ const ChatSettings = () => {
                   ...settings.chat_design,
                   show_dividers: settings.chat_design?.show_dividers ?? true,
                   alternating_backgrounds: settings.chat_design?.alternating_backgrounds ?? false,
-                  dark_mode: settings.chat_design?.dark_mode ?? false,
                   message_spacing: settings.chat_design?.message_spacing ?? 2,
                   font_size: settings.chat_design?.font_size ?? 14,
                   font_weight: settings.chat_design?.font_weight ?? 400,

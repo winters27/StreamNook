@@ -75,7 +75,6 @@ export interface MiningStatus {
 export interface ChatDesignSettings {
   show_dividers: boolean;
   alternating_backgrounds: boolean;
-  dark_mode: boolean; // Use black background instead of gray
   message_spacing: number; // 0-20 pixels
   font_size: number; // 10-20 pixels
   font_weight: number; // 300-700
