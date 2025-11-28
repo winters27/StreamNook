@@ -231,6 +231,8 @@ fn main() {
         check_following_status,
         verify_token_health,
         force_refresh_token,
+        check_stream_online,
+        get_streams_by_game_name,
             // Streaming commands
             start_stream,
             stop_stream,
