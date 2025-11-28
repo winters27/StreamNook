@@ -1,3 +1,13 @@
+## [3.3.2] - 2025-11-27
+## v3.3.1
+
+### Fixed
+- **Discord Presence Reliability**: Implemented reconnection logic to handle Discord IPC socket failures, ensuring presence updates remain functional even if the initial connection is lost.
+- **HLS.js Memory Leaks**: Fixed memory leaks by completely destroying the existing HLS instance when switching streams, ensuring a fresh instance is created each time.
+
+### Improved
+- **Discord Error Handling**: Downgraded Discord presence errors to warnings, preventing UI errors when Discord is not running. Stream Nook will not block if it cannot connect.
+
 ## [3.3.1] - 2025-11-27
 ## [3.3.0]
 
@@ -154,6 +164,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
