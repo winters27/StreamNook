@@ -147,21 +147,21 @@ function App() {
   useEffect(() => {
     const handleTheaterMode = async () => {
       if (!streamUrl) return; // Only apply when a stream is playing
-      
+
       try {
         const window = getCurrentWindow();
-        
+
         if (isTheaterMode) {
           // Entering theater mode - save current size and resize to 16:9
           const currentSize = await window.innerSize();
           setSavedWindowSize({ width: currentSize.width, height: currentSize.height });
-          
+
           // Title bar height is approximately 32px
           const titleBarHeight = 32;
           const targetWidth = 1080;
           // Calculate 16:9 height: 1080 / 16 * 9 = 607.5, rounded to 608
           const targetHeight = Math.round(targetWidth / 16 * 9) + titleBarHeight;
-          
+
           console.log('Entering theater mode - resizing to:', targetWidth, 'x', targetHeight);
           await window.setSize(new LogicalSize(targetWidth, targetHeight));
         } else if (savedWindowSize) {
@@ -174,7 +174,7 @@ function App() {
         console.error('Failed to resize window for theater mode:', error);
       }
     };
-    
+
     handleTheaterMode();
   }, [isTheaterMode, streamUrl, savedWindowSize]);
 
@@ -186,6 +186,13 @@ function App() {
 
       try {
         const window = getCurrentWindow();
+
+        // Don't adjust if window is maximized
+        const isMaximized = await window.isMaximized();
+        if (isMaximized) {
+          console.log('Window is maximized, skipping aspect ratio adjustment');
+          return;
+        }
 
         // Get current window size using Tauri's API
         const size = await window.innerSize();

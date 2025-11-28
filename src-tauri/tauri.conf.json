@@ -32,8 +32,11 @@
       {
         "label": "main",
         "title": "Stream Nook",
-        "width": 1280,
-        "height": 720,
+        "width": 1600,
+        "height": 1000,
+        "minWidth": 800,
+        "minHeight": 600,
+        "center": true,
         "resizable": true,
         "fullscreen": false,
         "decorations": false,
