@@ -1,3 +1,11 @@
+## [3.4.5] - 2025-11-28
+### ✨ Features
+- Added React DevTools connection script for development.
+- Added `react-devtools` and `concurrently` dependencies for debugging.
+- Added `dev:debug` script to run React DevTools and Tauri concurrently.
+- Set initial window size to 1600x1000, minimum size to 800x600, and centered the window.
+- Skip aspect ratio adjustment when window is maximized.
+
 ## [3.4.4] - 2025-11-28
 ### Fixed
 - Fixed stream caching issues by adding a timestamp to the stream URL.
@@ -218,6 +226,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
