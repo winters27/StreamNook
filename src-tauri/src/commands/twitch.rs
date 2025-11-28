@@ -1,7 +1,7 @@
 use crate::models::settings::AppState;
 use crate::models::stream::TwitchStream;
 use crate::models::user::{ChannelInfo, UserInfo};
-use crate::services::twitch_service::{DeviceCodeInfo, TwitchService};
+use crate::services::twitch_service::{DeviceCodeInfo, TokenHealthStatus, TwitchService};
 use anyhow::Result;
 use tauri::{AppHandle, State};
 
@@ -188,6 +188,23 @@ pub async fn unfollow_channel(target_user_id: String) -> Result<(), String> {
 #[tauri::command]
 pub async fn check_following_status(target_user_id: String) -> Result<bool, String> {
     TwitchService::check_following_status(&target_user_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Verify the current token's health and return detailed status
+/// This should be called on app startup to proactively check/refresh the token
+#[tauri::command]
+pub async fn verify_token_health() -> Result<TokenHealthStatus, String> {
+    TwitchService::verify_token_health()
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Force refresh the token even if it hasn't expired yet
+#[tauri::command]
+pub async fn force_refresh_token() -> Result<String, String> {
+    TwitchService::force_refresh_token()
         .await
         .map_err(|e| e.to_string())
 }

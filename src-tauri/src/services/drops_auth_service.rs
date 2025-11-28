@@ -122,17 +122,31 @@ impl DropsAuthService {
     // Cookie-based storage methods
     async fn store_token_to_cookies(token: &StorableDropsToken) -> Result<()> {
         let cookie_jar = CookieJarService::new_drops()?;
-        cookie_jar.set_auth_token(&token.access_token).await?;
-        println!("[DROPS_AUTH] ✅ Token saved to cookies");
+        // Store full token data for consistency (even though refresh isn't used for drops)
+        cookie_jar
+            .set_full_token_data(&token.access_token, &token.refresh_token, token.expires_at)
+            .await?;
+        println!("[DROPS_AUTH] ✅ Full token data saved to cookies");
         Ok(())
     }
 
-    async fn load_token_from_cookies() -> Result<String> {
+    async fn load_token_from_cookies() -> Result<StorableDropsToken> {
         let cookie_jar = CookieJarService::new_drops()?;
-        cookie_jar
+
+        let access_token = cookie_jar
             .get_auth_token()
             .await
-            .ok_or_else(|| anyhow::anyhow!("No drops auth token in cookies"))
+            .ok_or_else(|| anyhow::anyhow!("No drops auth token in cookies"))?;
+
+        let refresh_token = cookie_jar.get_refresh_token().await.unwrap_or_default();
+
+        let expires_at = cookie_jar.get_token_expires_at().await.unwrap_or(0);
+
+        Ok(StorableDropsToken {
+            access_token,
+            refresh_token,
+            expires_at,
+        })
     }
 
     async fn delete_cookies() -> Result<()> {
@@ -368,16 +382,34 @@ impl DropsAuthService {
     /// at which point validate_token() will delete it and require re-authentication.
     /// This matches TwitchDropsMiner's behavior.
     pub async fn get_token() -> Result<String> {
-        // Try to load from file
+        // Try to load from file first (primary storage)
         match Self::load_token_from_file() {
             Ok(token) => {
                 // NOTE: We don't check expires_at here - just use the token until it fails
                 // Twitch will reject it with 401 when it's actually invalid
                 Ok(token.access_token)
             }
-            Err(_) => Err(anyhow::anyhow!(
-                "Not authenticated for drops. Please log in to Twitch for drops functionality."
-            )),
+            Err(file_err) => {
+                println!(
+                    "[DROPS_AUTH] Could not read from file: {:?}, trying cookies...",
+                    file_err
+                );
+
+                // Try cookies as fallback
+                match Self::load_token_from_cookies().await {
+                    Ok(cookie_token) => {
+                        println!("[DROPS_AUTH] ✅ Token retrieved from cookies");
+
+                        // Save to file for next time
+                        let _ = Self::store_token_to_file(&cookie_token);
+
+                        Ok(cookie_token.access_token)
+                    }
+                    Err(_) => Err(anyhow::anyhow!(
+                        "Not authenticated for drops. Please log in to Twitch for drops functionality."
+                    )),
+                }
+            }
         }
     }
 
@@ -401,8 +433,10 @@ impl DropsAuthService {
             .await?;
 
         if response.status() == 401 {
-            // Token is invalid, delete it
+            // Token is invalid, delete it from both file and cookies
+            println!("[DROPS_AUTH] Token validation failed (401) - clearing stored tokens");
             let _ = Self::delete_token_file();
+            let _ = Self::delete_cookies().await;
             return Ok(false);
         }
 

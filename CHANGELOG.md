@@ -1,3 +1,16 @@
+## [3.3.3] - 2025-11-27
+### Added
+- Implemented token refresh mechanism to automatically renew access tokens when they expire or are about to expire, ensuring uninterrupted access to Twitch services.
+- Introduced a token health check API (`verify_token_health`) that validates the current token and proactively refreshes it on app startup, enhancing reliability.
+- Added new Tauri commands (`verify_token_health`, `force_refresh_token`) for manual token management.
+- Enhanced cookie and file storage to include refresh tokens and expiration times for persistence across sessions.
+- Add token validation for drops authentication
+
+### Changed
+- Refactored token loading logic to prioritize file storage, fallback to cookies, and then keyring for redundancy.
+
+
+
 ## [3.3.2] - 2025-11-27
 ## v3.3.1
 
@@ -164,6 +177,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 

@@ -275,4 +275,61 @@ impl CookieJarService {
     pub async fn is_valid(&self) -> bool {
         self.has_auth_token().await && self.get_device_id().await.is_some()
     }
+
+    /// Get the refresh token from cookies
+    pub async fn get_refresh_token(&self) -> Option<String> {
+        self.get_cookie("https://twitch.tv", "refresh-token").await
+    }
+
+    /// Set the refresh token cookie
+    pub async fn set_refresh_token(&self, token: &str) -> Result<()> {
+        self.add_cookie("https://twitch.tv", "refresh-token", token)
+            .await?;
+        self.save().await
+    }
+
+    /// Get the token expiration timestamp from cookies
+    pub async fn get_token_expires_at(&self) -> Option<i64> {
+        self.get_cookie("https://twitch.tv", "token-expires-at")
+            .await
+            .and_then(|s| s.parse::<i64>().ok())
+    }
+
+    /// Set the token expiration timestamp cookie
+    pub async fn set_token_expires_at(&self, expires_at: i64) -> Result<()> {
+        self.add_cookie(
+            "https://twitch.tv",
+            "token-expires-at",
+            &expires_at.to_string(),
+        )
+        .await?;
+        self.save().await
+    }
+
+    /// Store complete token data (access_token, refresh_token, expires_at)
+    pub async fn set_full_token_data(
+        &self,
+        access_token: &str,
+        refresh_token: &str,
+        expires_at: i64,
+    ) -> Result<()> {
+        self.add_cookie("https://twitch.tv", "auth-token", access_token)
+            .await?;
+        self.add_cookie("https://twitch.tv", "refresh-token", refresh_token)
+            .await?;
+        self.add_cookie(
+            "https://twitch.tv",
+            "token-expires-at",
+            &expires_at.to_string(),
+        )
+        .await?;
+        self.save().await
+    }
+
+    /// Check if we have complete token data (including refresh token)
+    pub async fn has_full_token_data(&self) -> bool {
+        self.has_auth_token().await
+            && self.get_refresh_token().await.is_some()
+            && self.get_token_expires_at().await.is_some()
+    }
 }

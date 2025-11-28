@@ -139,6 +139,38 @@ fn main() {
                 }
             });
 
+            // Verify token health on startup (proactively refresh if needed)
+            tauri::async_runtime::spawn(async {
+                use services::twitch_service::TwitchService;
+
+                println!("[Main] Starting token health verification...");
+
+                // Wait a moment to let the app fully initialize
+                tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+
+                match TwitchService::verify_token_health().await {
+                    Ok(status) => {
+                        if status.is_valid {
+                            println!(
+                                "[Main] ✅ Token health check passed: {}h {}m remaining",
+                                status.hours_remaining, status.minutes_remaining
+                            );
+                            if status.needs_refresh {
+                                println!("[Main] ⚠️ Token expires soon, but will auto-refresh on next API call");
+                            }
+                        } else {
+                            println!(
+                                "[Main] ❌ Token health check failed: {:?}",
+                                status.error.unwrap_or_else(|| "Unknown error".to_string())
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        println!("[Main] ❌ Token health verification error: {}", e);
+                    }
+                }
+            });
+
             // Pre-fetch badges in the background
             tauri::async_runtime::spawn(async move {
                 use services::twitch_service::TwitchService;
@@ -146,8 +178,8 @@ fn main() {
 
                 println!("[Main] Starting background badge pre-fetch...");
 
-                // Wait a few seconds to let the app fully initialize
-                tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+                // Wait a few seconds to let the app fully initialize (after token health check)
+                tokio::time::sleep(tokio::time::Duration::from_secs(4)).await;
 
                 match TwitchService::get_token().await {
                     Ok(token) => {
@@ -197,6 +229,8 @@ fn main() {
         follow_channel,
         unfollow_channel,
         check_following_status,
+        verify_token_health,
+        force_refresh_token,
             // Streaming commands
             start_stream,
             stop_stream,
