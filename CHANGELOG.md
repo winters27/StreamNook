@@ -1,3 +1,11 @@
+## [3.4.1] - 2025-11-27
+### Added
+- Implemented stream switching with API refresh: If the current stream fails repeatedly, StreamNook will attempt to find a new one by refreshing the eligible channels from the API. This significantly improves reliability.
+- Added toast notifications for stream switches and for when mining is stopped due to no available streams.
+
+### Improved
+- Overall channel switching logic and error handling for more reliable mining.
+
 ## [3.4.0] - 2025-11-27
 ### Added
 - Manual channel selection for drops mining. Users can now choose a specific Twitch channel to watch for drops, providing more control over the mining process.
@@ -181,6 +189,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
