@@ -67,11 +67,11 @@ export interface Theme {
 // SIGNATURE THEMES
 // ============================================
 
-// Antidepressants - OE Military inspired, olive greens, tan, light browns
-export const antidepressants: Theme = {
-    id: 'antidepressants',
-    name: 'Antidepressants',
-    description: 'OE military aesthetic with olive greens, tan, and warm browns. Stark and grounding.',
+// Antidepressant's Tactical - Military inspired, olive greens, tan, light browns
+export const antidepressantsTactical: Theme = {
+    id: 'antidepressants-tactical',
+    name: "Antidepressant's Tactical",
+    description: 'Military aesthetic with olive greens, tan, and warm browns. Stark and grounding.',
     category: 'signature',
     palette: {
         background: '#1c1c18',
@@ -152,6 +152,58 @@ export const prince0fdubaiOLED: Theme = {
         info: '#66b3ff',
 
         scrollbarThumb: 'rgba(160, 100, 255, 0.25)',
+        scrollbarTrack: 'transparent',
+
+        glassOpacity: '0.08',
+        glassHoverOpacity: '0.14',
+        glassActiveOpacity: '0.20',
+
+        highlight: {
+            pink: '#ff66b2',
+            purple: '#a064ff',
+            blue: '#66b3ff',
+            cyan: '#66ffcc',
+            green: '#00ff88',
+            yellow: '#ffcc00',
+            orange: '#ff9933',
+            red: '#ff4466',
+        },
+    },
+};
+
+// prince0fdubai's OLED v2 - True black with vibrant orange accents
+export const prince0fdubaiOLEDv2: Theme = {
+    id: 'prince0fdubai-oled-v2',
+    name: "prince0fdubai's OLED v2",
+    description: 'Pitch black OLED-friendly theme with vibrant orange accents.',
+    category: 'signature',
+    palette: {
+        background: '#000000',
+        backgroundSecondary: 'rgba(255, 255, 255, 0.02)',
+        backgroundTertiary: '#080808',
+
+        surface: 'rgba(255, 255, 255, 0.08)',
+        surfaceHover: 'rgba(255, 255, 255, 0.14)',
+        surfaceActive: 'rgba(255, 255, 255, 0.20)',
+
+        textPrimary: '#ffffff',
+        textSecondary: '#ffb366',
+        textMuted: 'rgba(255, 255, 255, 0.45)',
+
+        accent: '#ff9933',
+        accentHover: '#ffb366',
+        accentMuted: 'rgba(255, 153, 51, 0.5)',
+
+        border: 'rgba(255, 255, 255, 0.15)',
+        borderLight: 'rgba(255, 255, 255, 0.10)',
+        borderSubtle: 'rgba(255, 255, 255, 0.05)',
+
+        success: '#00ff88',
+        warning: '#ffcc00',
+        error: '#ff4466',
+        info: '#66b3ff',
+
+        scrollbarThumb: 'rgba(255, 153, 51, 0.25)',
         scrollbarTrack: 'transparent',
 
         glassOpacity: '0.08',
@@ -541,6 +593,108 @@ export const kanagawa: Theme = {
 // CLASSICS - Strict & Functional Themes
 // ============================================
 
+export const githubDark: Theme = {
+    id: 'github-dark',
+    name: 'GitHub Dark',
+    description: 'Clean, professional dark theme inspired by GitHub\'s interface.',
+    category: 'classic',
+    palette: {
+        background: '#0d1117',
+        backgroundSecondary: '#161b22',
+        backgroundTertiary: '#21262d',
+
+        surface: 'rgba(56, 139, 253, 0.1)',
+        surfaceHover: 'rgba(56, 139, 253, 0.18)',
+        surfaceActive: 'rgba(56, 139, 253, 0.26)',
+
+        textPrimary: '#c9d1d9',
+        textSecondary: '#58a6ff',
+        textMuted: 'rgba(201, 209, 217, 0.5)',
+
+        accent: '#58a6ff',
+        accentHover: '#79b8ff',
+        accentMuted: 'rgba(88, 166, 255, 0.5)',
+
+        border: 'rgba(48, 54, 61, 0.6)',
+        borderLight: 'rgba(48, 54, 61, 0.4)',
+        borderSubtle: 'rgba(48, 54, 61, 0.2)',
+
+        success: '#3fb950',
+        warning: '#d29922',
+        error: '#f85149',
+        info: '#58a6ff',
+
+        scrollbarThumb: 'rgba(88, 166, 255, 0.4)',
+        scrollbarTrack: 'transparent',
+
+        glassOpacity: '0.1',
+        glassHoverOpacity: '0.18',
+        glassActiveOpacity: '0.26',
+
+        highlight: {
+            pink: '#f778ba',
+            purple: '#bc8cff',
+            blue: '#58a6ff',
+            cyan: '#39c5cf',
+            green: '#3fb950',
+            yellow: '#d29922',
+            orange: '#db6d28',
+            red: '#f85149',
+        },
+    },
+};
+
+export const solarizedSand: Theme = {
+    id: 'solarized-sand',
+    name: 'Solarized Sand',
+    description: 'Warm sandy desert aesthetic inspired by Solarized with beige and tan tones.',
+    category: 'cozy',
+    palette: {
+        background: '#d4c5a9',
+        backgroundSecondary: '#e3d7c1',
+        backgroundTertiary: '#c9b89b',
+
+        surface: 'rgba(139, 116, 87, 0.15)',
+        surfaceHover: 'rgba(139, 116, 87, 0.25)',
+        surfaceActive: 'rgba(139, 116, 87, 0.35)',
+
+        textPrimary: '#3d3426',
+        textSecondary: '#8b7457',
+        textMuted: 'rgba(61, 52, 38, 0.6)',
+
+        accent: '#9c8364',
+        accentHover: '#8b7457',
+        accentMuted: 'rgba(156, 131, 100, 0.6)',
+
+        border: 'rgba(139, 116, 87, 0.35)',
+        borderLight: 'rgba(139, 116, 87, 0.25)',
+        borderSubtle: 'rgba(139, 116, 87, 0.15)',
+
+        success: '#7a8a3f',
+        warning: '#b88932',
+        error: '#c55a4d',
+        info: '#5a8a8a',
+
+        scrollbarThumb: 'rgba(139, 116, 87, 0.45)',
+        scrollbarTrack: 'transparent',
+
+        glassOpacity: '0.15',
+        glassHoverOpacity: '0.25',
+        glassActiveOpacity: '0.35',
+
+        highlight: {
+            pink: '#c96a84',
+            purple: '#9080b4',
+            blue: '#5a8a8a',
+            cyan: '#67968a',
+            green: '#7a8a3f',
+            yellow: '#b88932',
+            orange: '#c67a34',
+            red: '#c55a4d',
+        },
+    },
+};
+
 export const solarizedDark: Theme = {
     id: 'solarized-dark',
     name: 'Solarized Dark',
@@ -800,6 +954,210 @@ export const catppuccinLatte: Theme = {
     },
 };
 
+export const materialTheme: Theme = {
+    id: 'material-theme',
+    name: 'Material Theme',
+    description: 'Google\'s Material Design with vibrant teal, purple, and amber accents.',
+    category: 'modern',
+    palette: {
+        background: '#263238',
+        backgroundSecondary: '#1e272c',
+        backgroundTertiary: '#2c3b41',
+
+        surface: 'rgba(128, 203, 196, 0.12)',
+        surfaceHover: 'rgba(128, 203, 196, 0.2)',
+        surfaceActive: 'rgba(128, 203, 196, 0.28)',
+
+        textPrimary: '#eeffff',
+        textSecondary: '#80cbc4',
+        textMuted: 'rgba(238, 255, 255, 0.5)',
+
+        accent: '#80cbc4',
+        accentHover: '#99d5cf',
+        accentMuted: 'rgba(128, 203, 196, 0.5)',
+
+        border: 'rgba(128, 203, 196, 0.3)',
+        borderLight: 'rgba(128, 203, 196, 0.2)',
+        borderSubtle: 'rgba(128, 203, 196, 0.1)',
+
+        success: '#c3e88d',
+        warning: '#ffcb6b',
+        error: '#f07178',
+        info: '#82aaff',
+
+        scrollbarThumb: 'rgba(128, 203, 196, 0.4)',
+        scrollbarTrack: 'transparent',
+
+        glassOpacity: '0.12',
+        glassHoverOpacity: '0.2',
+        glassActiveOpacity: '0.28',
+
+        highlight: {
+            pink: '#f07178',
+            purple: '#c792ea',
+            blue: '#82aaff',
+            cyan: '#89ddff',
+            green: '#c3e88d',
+            yellow: '#ffcb6b',
+            orange: '#f78c6c',
+            red: '#f07178',
+        },
+    },
+};
+
+export const ayuDark: Theme = {
+    id: 'ayu-dark',
+    name: 'Ayu Dark',
+    description: 'Sublime, minimalist theme with perfect contrast and warm orange accents.',
+    category: 'modern',
+    palette: {
+        background: '#0a0e14',
+        backgroundSecondary: '#01060e',
+        backgroundTertiary: '#0d1016',
+
+        surface: 'rgba(255, 160, 122, 0.1)',
+        surfaceHover: 'rgba(255, 160, 122, 0.18)',
+        surfaceActive: 'rgba(255, 160, 122, 0.26)',
+
+        textPrimary: '#b3b1ad',
+        textSecondary: '#ff8f40',
+        textMuted: 'rgba(179, 177, 173, 0.5)',
+
+        accent: '#ff8f40',
+        accentHover: '#ffa759',
+        accentMuted: 'rgba(255, 143, 64, 0.5)',
+
+        border: 'rgba(255, 143, 64, 0.25)',
+        borderLight: 'rgba(255, 143, 64, 0.15)',
+        borderSubtle: 'rgba(255, 143, 64, 0.08)',
+
+        success: '#bae67e',
+        warning: '#ffd580',
+        error: '#ff3333',
+        info: '#59c2ff',
+
+        scrollbarThumb: 'rgba(255, 143, 64, 0.4)',
+        scrollbarTrack: 'transparent',
+
+        glassOpacity: '0.1',
+        glassHoverOpacity: '0.18',
+        glassActiveOpacity: '0.26',
+
+        highlight: {
+            pink: '#f29668',
+            purple: '#d4bfff',
+            blue: '#59c2ff',
+            cyan: '#95e6cb',
+            green: '#bae67e',
+            yellow: '#ffd580',
+            orange: '#ff8f40',
+            red: '#ff3333',
+        },
+    },
+};
+
+export const nightOwl: Theme = {
+    id: 'night-owl',
+    name: 'Night Owl',
+    description: 'Fine-tuned for those who code late into the night with blue accents.',
+    category: 'modern',
+    palette: {
+        background: '#011627',
+        backgroundSecondary: '#01111d',
+        backgroundTertiary: '#0b2942',
+
+        surface: 'rgba(128, 203, 196, 0.1)',
+        surfaceHover: 'rgba(128, 203, 196, 0.18)',
+        surfaceActive: 'rgba(128, 203, 196, 0.26)',
+
+        textPrimary: '#d6deeb',
+        textSecondary: '#7fdbca',
+        textMuted: 'rgba(214, 222, 235, 0.5)',
+
+        accent: '#7fdbca',
+        accentHover: '#9ce7d7',
+        accentMuted: 'rgba(127, 219, 202, 0.5)',
+
+        border: 'rgba(127, 219, 202, 0.25)',
+        borderLight: 'rgba(127, 219, 202, 0.15)',
+        borderSubtle: 'rgba(127, 219, 202, 0.08)',
+
+        success: '#addb67',
+        warning: '#ecc48d',
+        error: '#ef5350',
+        info: '#82aaff',
+
+        scrollbarThumb: 'rgba(127, 219, 202, 0.4)',
+        scrollbarTrack: 'transparent',
+
+        glassOpacity: '0.1',
+        glassHoverOpacity: '0.18',
+        glassActiveOpacity: '0.26',
+
+        highlight: {
+            pink: '#c792ea',
+            purple: '#c792ea',
+            blue: '#82aaff',
+            cyan: '#7fdbca',
+            green: '#addb67',
+            yellow: '#ecc48d',
+            orange: '#f78c6c',
+            red: '#ef5350',
+        },
+    },
+};
+
+export const synthwave84: Theme = {
+    id: 'synthwave84',
+    name: 'Synthwave \'84',
+    description: 'Neon-soaked cyberpunk vibes with hot pink, electric blue, and neon green.',
+    category: 'modern',
+    palette: {
+        background: '#241b2f',
+        backgroundSecondary: '#1a1423',
+        backgroundTertiary: '#2a2139',
+
+        surface: 'rgba(255, 71, 176, 0.12)',
+        surfaceHover: 'rgba(255, 71, 176, 0.2)',
+        surfaceActive: 'rgba(255, 71, 176, 0.28)',
+
+        textPrimary: '#f2f2f2',
+        textSecondary: '#ff7edb',
+        textMuted: 'rgba(242, 242, 242, 0.5)',
+
+        accent: '#ff7edb',
+        accentHover: '#ff9ce5',
+        accentMuted: 'rgba(255, 126, 219, 0.5)',
+
+        border: 'rgba(255, 126, 219, 0.3)',
+        borderLight: 'rgba(255, 126, 219, 0.2)',
+        borderSubtle: 'rgba(255, 126, 219, 0.1)',
+
+        success: '#72f1b8',
+        warning: '#fede5d',
+        error: '#fe4450',
+        info: '#36f9f6',
+
+        scrollbarThumb: 'rgba(255, 126, 219, 0.4)',
+        scrollbarTrack: 'transparent',
+
+        glassOpacity: '0.12',
+        glassHoverOpacity: '0.2',
+        glassActiveOpacity: '0.28',
+
+        highlight: {
+            pink: '#ff7edb',
+            purple: '#b893ce',
+            blue: '#36f9f6',
+            cyan: '#36f9f6',
+            green: '#72f1b8',
+            yellow: '#fede5d',
+            orange: '#fe9867',
+            red: '#fe4450',
+        },
+    },
+};
+
 export const everforest: Theme = {
     id: 'everforest',
     name: 'Everforest',
@@ -859,20 +1217,27 @@ export const themes: Theme[] = [
     // Signature
     wintersGlass,
     prince0fdubaiOLED,
-    antidepressants,
+    prince0fdubaiOLEDv2,
+    antidepressantsTactical,
     // Universal
     dracula,
     nord,
     gruvbox,
     // Modern
+    materialTheme,
+    ayuDark,
+    nightOwl,
+    synthwave84,
     rosePine,
     tokyoNight,
     kanagawa,
     // Classic
+    githubDark,
     solarizedDark,
     monokai,
     oneDark,
     // Cozy
+    solarizedSand,
     catppuccinMocha,
     catppuccinLatte,
     everforest,

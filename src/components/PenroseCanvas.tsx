@@ -20,7 +20,7 @@ class PenroseTriangle {
   private lineWidth: number;
   private lineColor: string;
   private cubeColors: [string, string, string];
-  
+
   private canvas: HTMLCanvasElement;
   private context: CanvasRenderingContext2D;
   private triangleHeight: number;
@@ -59,7 +59,7 @@ class PenroseTriangle {
     this.lineWidth = lineWidth;
     this.lineColor = lineColor;
     this.cubeColors = [cubeColors[0], cubeColors[1], cubeColors[2]];
-    
+
     // prepare graphics context
     this.canvas = canvas;
     const ctx = this.canvas.getContext('2d');
@@ -68,12 +68,12 @@ class PenroseTriangle {
     this.context.lineJoin = 'round';
     this.context.lineWidth = this.lineWidth;
     this.context.strokeStyle = this.lineColor;
-    
+
     // precalculate lengths and cube coordinates
     this.triangleHeight = this.triangleEdge * Math.sqrt(3) / 2;
     this.ch = this.cubeEdge * Math.sqrt(3) / 2;
     this.chb = this.cubeEdge / 2;
-    
+
     // Initialize arrays
     this.v = new Float64Array(6 * this.cubesPerTriangleEdge);
     this.vt = new Float64Array(6 * this.cubesPerTriangleEdge);
@@ -81,9 +81,9 @@ class PenroseTriangle {
     this.finc = 0;
     this.vinc1 = [0, 0];
     this.vinc2 = [0, 0];
-    
+
     this.calculateCubesCoords();
-    
+
     // start at frame 0
     this.frame = 0;
   }
@@ -92,57 +92,57 @@ class PenroseTriangle {
   private calculateCubesCoords() {
     // triangle vertices
     const va = [                                           // bottom-left
-      this.padding[0], 
-      this.triangleEdge + this.padding[1] 
-    ];                      
+      this.padding[0],
+      this.triangleEdge + this.padding[1]
+    ];
     const vb = [                                           // bottom-right
-      this.triangleEdge + this.padding[0], 
-      this.triangleEdge + this.padding[1] 
-    ];  
+      this.triangleEdge + this.padding[0],
+      this.triangleEdge + this.padding[1]
+    ];
     const vc = [                                           // top
-      this.triangleEdge / 2.0 + this.padding[0], 
-      this.triangleEdge - this.triangleHeight + this.padding[1] 
-    ];  
-  
+      this.triangleEdge / 2.0 + this.padding[0],
+      this.triangleEdge - this.triangleHeight + this.padding[1]
+    ];
+
     const minc = this.cubesPerTriangleEdge * this.loopFrames;
     this.finc = this.triangleEdge / minc;   // length increment for a frame
     this.vinc1 = [                          // increment vector along the right edge
-      (vc[0] - vb[0]) / minc, 
-      (vc[1] - vb[1]) / minc 
+      (vc[0] - vb[0]) / minc,
+      (vc[1] - vb[1]) / minc
     ];
     this.vinc2 = [                          // vector increment along the left edge
-      (va[0] - vc[0]) / minc, 
-      (va[1] - vc[1]) / minc 
+      (va[0] - vc[0]) / minc,
+      (va[1] - vc[1]) / minc
     ];
-    
+
     // cubes' coordinates
     this.cubeMid = Math.floor((this.cubesPerTriangleEdge - 1) / 2);         // the 1st cube to draw
     const inc = this.triangleEdge / this.cubesPerTriangleEdge;          // separation between cubes
     let j = 0;
-    
+
     for (let i = this.cubeMid; i < this.cubesPerTriangleEdge; ++i) {  // bottom-right
       this.v[j++] = va[0] + inc * i;
       this.v[j++] = va[1];
     }
-    
+
     let vdir = [                                      // right edge Euclidean vector
-      (vc[0] - vb[0]) / this.cubesPerTriangleEdge, 
-      (vc[1] - vb[1]) / this.cubesPerTriangleEdge 
+      (vc[0] - vb[0]) / this.cubesPerTriangleEdge,
+      (vc[1] - vb[1]) / this.cubesPerTriangleEdge
     ];
     for (let i = 0; i < this.cubesPerTriangleEdge; ++i) {             // right edge
       this.v[j++] = vb[0] + vdir[0] * i;
-      this.v[j++] = vb[1] + vdir[1] * i;  
+      this.v[j++] = vb[1] + vdir[1] * i;
     }
-    
+
     vdir = [                                          // left edge vector
-      (va[0] - vc[0]) / this.cubesPerTriangleEdge, 
-      (va[1] - vc[1]) / this.cubesPerTriangleEdge 
+      (va[0] - vc[0]) / this.cubesPerTriangleEdge,
+      (va[1] - vc[1]) / this.cubesPerTriangleEdge
     ];
     for (let i = 0; i < this.cubesPerTriangleEdge; ++i) {             // left edge
       this.v[j++] = vc[0] + vdir[0] * i;
       this.v[j++] = vc[1] + vdir[1] * i;
     }
-    
+
     for (let i = 0; i < this.cubeMid; ++i) {                          // bottom-left
       this.v[j++] = va[0] + inc * i;
       this.v[j++] = va[1];
@@ -157,7 +157,7 @@ class PenroseTriangle {
     const inc1Y = this.vinc1[1] * this.frame;
     const inc2X = this.vinc2[0] * this.frame;
     const inc2Y = this.vinc2[1] * this.frame;
-    
+
     let j = 0;
     for (let i = this.cubeMid; i < this.cubesPerTriangleEdge; ++i) {  // bottom-right
       this.vt[j] = this.v[j++] + inc;
@@ -169,14 +169,14 @@ class PenroseTriangle {
     }
     for (let i = 0; i < this.cubesPerTriangleEdge; ++i) {             // left edge
       this.vt[j] = this.v[j++] + inc2X;
-      this.vt[j] = this.v[j++] + inc2Y;   
-    }  
+      this.vt[j] = this.v[j++] + inc2Y;
+    }
     for (let i = 0; i < this.cubeMid; ++i) {                          // bottom-left
       this.vt[j] = this.v[j++] + inc;
-      this.vt[j] = this.v[j++];          
+      this.vt[j] = this.v[j++];
     }
   }
-  
+
   // draw the triangle
   private drawTriangle() {
     this.drawCubePart1(this.vt[0], this.vt[1]);
@@ -192,41 +192,41 @@ class PenroseTriangle {
     this.drawCubePart1(x, y);
     this.drawCubePart2(x, y);
   }
-  
+
   // draw face 0
   private drawCubePart1(x: number, y: number) {
     this.drawCubeSide(
-      x, y, 
+      x, y,
       x + this.chb, y - this.ch,
       x + this.cubeEdge, y,
       x + this.chb, y + this.ch,
       this.cubeColors[0]
     );
   }
-  
+
   // draw faces 1 and 2
   private drawCubePart2(x: number, y: number) {
     this.drawCubeSide(
-      x, y, 
+      x, y,
       x - this.cubeEdge, y,
       x - this.chb, y - this.ch,
       x + this.chb, y - this.ch,
       this.cubeColors[1]
     );
     this.drawCubeSide(
-      x, y, 
+      x, y,
       x + this.chb, y + this.ch,
       x - this.chb, y + this.ch,
       x - this.cubeEdge, y,
       this.cubeColors[2]
     );
   }
-  
+
   private drawCubeSide(
-    x0: number, y0: number, 
-    x1: number, y1: number, 
-    x2: number, y2: number, 
-    x3: number, y3: number, 
+    x0: number, y0: number,
+    x1: number, y1: number,
+    x2: number, y2: number,
+    x3: number, y3: number,
     color: string
   ) {
     this.context.beginPath();
@@ -243,13 +243,13 @@ class PenroseTriangle {
   render() {
     // calculate cube positions 
     this.updateCubesPositions();
-    
+
     // clear canvas and draw
     this.context.clearRect(0, 0, this.canvas.width, this.canvas.height);
-    
+
     // Save the current context state
     this.context.save();
-    
+
     // Rotate the canvas 90 degrees clockwise (to the right)
     // Move to center of canvas, rotate, then translate back
     const centerX = this.canvas.width / 2;
@@ -257,12 +257,12 @@ class PenroseTriangle {
     this.context.translate(centerX, centerY);
     this.context.rotate(Math.PI / 2); // 90 degrees in radians
     this.context.translate(-centerX, -centerY);
-    
+
     this.drawTriangle();
-    
+
     // Restore the context state
     this.context.restore();
-    
+
     // decrement current frame (reverse direction)
     if (this.isPaused) {
       // Count pause frames
@@ -284,12 +284,12 @@ class PenroseTriangle {
     this.render();
     this.animationId = requestAnimationFrame(this.renderLoop);
   }
-  
+
   // call 'start()' to begin the animation
   start() {
     this.animationId = requestAnimationFrame(this.renderLoop);
   }
-  
+
   // stop the animation
   stop() {
     if (this.animationId !== null) {
@@ -306,6 +306,17 @@ const PenroseCanvas = (props: PenroseCanvasProps) => {
   useEffect(() => {
     if (!canvasRef.current) return;
 
+    // Get accent color from CSS variables (theme system)
+    const accentColor = getComputedStyle(document.documentElement)
+      .getPropertyValue('--color-accent')
+      .trim();
+
+    // Convert the accent color to rgba with different opacities for the cube faces
+    const rgbaAccent = hexToRgba(accentColor, 0.4);
+    const rgbaFace1 = hexToRgba(accentColor, 0.28);
+    const rgbaFace2 = hexToRgba(accentColor, 0.4);
+    const rgbaFace3 = hexToRgba(accentColor, 0.15);
+
     // Scale down for the loading widget
     const scaledProps = {
       ...props,
@@ -315,9 +326,14 @@ const PenroseCanvas = (props: PenroseCanvasProps) => {
       padding: [10, 10] as [number, number],
       loopFrames: 100,
       lineWidth: 1,
-      lineColor: 'rgba(151, 177, 185, 0.4)',
-      cubeColors: ['rgba(151, 177, 185, 0.28)', 'rgba(151, 177, 185, 0.4)', 'rgba(151, 177, 185, 0.15)'] as [string, string, string]
+      lineColor: rgbaAccent,
+      cubeColors: [rgbaFace1, rgbaFace2, rgbaFace3] as [string, string, string]
     };
+
+    // Stop any existing animation before creating new one
+    if (triangleRef.current) {
+      triangleRef.current.stop();
+    }
 
     triangleRef.current = new PenroseTriangle(canvasRef.current, scaledProps);
     triangleRef.current.start();
@@ -333,22 +349,89 @@ const PenroseCanvas = (props: PenroseCanvasProps) => {
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
+    // Listen for theme changes via custom event or data-theme attribute changes
+    const handleThemeChange = () => {
+      // Re-trigger effect by forcing a component update
+      // This will be handled by the data-theme attribute observer
+    };
+
+    // Watch for theme changes on the body element
+    const observer = new MutationObserver((mutations) => {
+      mutations.forEach((mutation) => {
+        if (mutation.type === 'attributes' && mutation.attributeName === 'data-theme') {
+          // Theme changed, recreate the triangle with new colors
+          const newAccentColor = getComputedStyle(document.documentElement)
+            .getPropertyValue('--color-accent')
+            .trim();
+
+          const newRgbaAccent = hexToRgba(newAccentColor, 0.4);
+          const newRgbaFace1 = hexToRgba(newAccentColor, 0.28);
+          const newRgbaFace2 = hexToRgba(newAccentColor, 0.4);
+          const newRgbaFace3 = hexToRgba(newAccentColor, 0.15);
+
+          const newScaledProps = {
+            ...props,
+            triangleEdge: 80,
+            cubeEdge: 15,
+            cubesPerTriangleEdge: 3,
+            padding: [10, 10] as [number, number],
+            loopFrames: 100,
+            lineWidth: 1,
+            lineColor: newRgbaAccent,
+            cubeColors: [newRgbaFace1, newRgbaFace2, newRgbaFace3] as [string, string, string]
+          };
+
+          if (triangleRef.current && canvasRef.current) {
+            triangleRef.current.stop();
+            triangleRef.current = new PenroseTriangle(canvasRef.current, newScaledProps);
+            triangleRef.current.start();
+          }
+        }
+      });
+    });
+
+    observer.observe(document.body, {
+      attributes: true,
+      attributeFilter: ['data-theme']
+    });
+
     return () => {
       triangleRef.current?.stop();
       document.removeEventListener('visibilitychange', handleVisibilityChange);
+      observer.disconnect();
     };
-  }, []);
+  }, [props.lineColor, props.cubeColors]);
 
   return (
-    <canvas 
-      ref={canvasRef} 
-      width={100} 
+    <canvas
+      ref={canvasRef}
+      width={100}
       height={110}
       style={{
         display: 'block'
       }}
     />
   );
+};
+
+// Helper function to convert hex/rgb colors to rgba with specified opacity
+const hexToRgba = (color: string, opacity: number): string => {
+  // If already rgba, replace opacity
+  if (color.startsWith('rgba')) {
+    return color.replace(/[\d.]+\)$/g, `${opacity})`);
+  }
+
+  // If rgb, convert to rgba
+  if (color.startsWith('rgb')) {
+    return color.replace('rgb', 'rgba').replace(')', `, ${opacity})`);
+  }
+
+  // If hex, convert to rgba
+  const hex = color.replace('#', '');
+  const r = parseInt(hex.substring(0, 2), 16);
+  const g = parseInt(hex.substring(2, 4), 16);
+  const b = parseInt(hex.substring(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${opacity})`;
 };
 
 export default PenroseCanvas;
