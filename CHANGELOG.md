@@ -1,3 +1,16 @@
+## [3.4.15] - 2025-11-29
+### ✨ Features
+- Implemented drops websocket error reporting to the frontend.
+- Improved offline detection logic in the video player, considering non-fatal errors and fragment stalling.
+- Added activity tracking and user context (Twitch username, current stream) to error reports for better debugging.
+
+### 🐛 Bug Fixes
+- Fixed a bug where offline stream detection was too aggressive causing early auto-switch.
+
+### 🔧 Maintenance
+- Added user activity tracking to improve error context.
+- Saved user and stream context to local storage for error reporting purposes.
+
 ## [3.4.14] - 2025-11-29
 ### ✨ Features
 - Added a toggle to enable or disable anonymous error reporting to help improve StreamNook. The toggle is located in the settings under the 'Support' section.
@@ -297,6 +310,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
