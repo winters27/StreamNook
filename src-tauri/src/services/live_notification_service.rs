@@ -132,45 +132,26 @@ impl LiveNotificationService {
         app_state: &AppState,
         stream: &crate::models::stream::TwitchStream,
     ) -> Result<()> {
-        let settings = app_state.settings.lock().unwrap().clone();
-        let notification_settings = &settings.live_notifications;
-
-        // Fetch streamer avatar if needed
-        let streamer_avatar = if notification_settings.show_streamer_avatar {
-            match TwitchService::get_user_by_login(&stream.user_login).await {
-                Ok(user) => user.profile_image_url,
-                Err(_) => None,
-            }
-        } else {
-            None
+        // Always fetch streamer avatar
+        let streamer_avatar = match TwitchService::get_user_by_login(&stream.user_login).await {
+            Ok(user) => user.profile_image_url,
+            Err(_) => None,
         };
 
-        // Get game image if needed
-        let game_image = if notification_settings.show_game_image && !stream.game_name.is_empty() {
+        // Always get game image if game name is available
+        let game_image = if !stream.game_name.is_empty() {
             Self::get_game_box_art(&stream.game_name).await.ok()
         } else {
             None
         };
 
         let notification = LiveNotification {
-            streamer_name: if notification_settings.show_streamer_name {
-                stream.user_name.clone()
-            } else {
-                "A streamer".to_string()
-            },
+            streamer_name: stream.user_name.clone(),
             streamer_login: stream.user_login.clone(),
             streamer_avatar,
-            game_name: if notification_settings.show_game_details {
-                Some(stream.game_name.clone())
-            } else {
-                None
-            },
+            game_name: Some(stream.game_name.clone()),
             game_image,
-            stream_title: if notification_settings.show_game_details {
-                Some(stream.title.clone())
-            } else {
-                None
-            },
+            stream_title: Some(stream.title.clone()),
             stream_url: format!("https://twitch.tv/{}", stream.user_login),
         };
 

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::{AppHandle, Listener, Manager};
 use tokio::sync::{Mutex, RwLock};
@@ -10,7 +11,7 @@ use crate::services::channel_points_websocket_service::ChannelPointsWebSocketSer
 use crate::services::drops_auth_service::DropsAuthService;
 use crate::services::drops_service::DropsService;
 use crate::services::twitch_service::TwitchService;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 
 pub struct BackgroundService {
     is_running: Arc<RwLock<bool>>,
@@ -221,6 +222,7 @@ impl BackgroundService {
         });
 
         // Stream watching loop for earning channel points (separate from bonus claiming)
+        // This implements proper rotation through all followed live streams
         let is_running_watch = is_running.clone();
         let settings_watch = settings.clone();
         let cps_watch = channel_points_service.clone();
@@ -230,6 +232,12 @@ impl BackgroundService {
             let mut watch_interval = interval(Duration::from_secs(60)); // Send watch payload every minute
             let mut minutes_since_rotation = 0u32; // Track minutes since last rotation
             const ROTATION_INTERVAL_MINUTES: u32 = 15; // Rotate every 15 minutes
+            const MAX_CONCURRENT_STREAMS: usize = 2; // Twitch allows earning points on 2 streams concurrently
+
+            // Track when each stream was last watched (channel_id -> last_watched_time)
+            // This persists across rotations to ensure fair distribution
+            let mut stream_watch_history: HashMap<String, DateTime<Utc>> = HashMap::new();
+            let mut current_rotation_index: usize = 0; // Track where we are in the rotation
 
             while *is_running_watch.read().await {
                 watch_interval.tick().await;
@@ -259,53 +267,118 @@ impl BackgroundService {
                     }
                 };
 
+                // Get current live streams
+                let live_streams =
+                    match TwitchService::get_followed_streams(&app_handle_watch.state()).await {
+                        Ok(streams) => streams,
+                        Err(e) => {
+                            eprintln!("Error fetching followed streams: {}", e);
+                            continue;
+                        }
+                    };
+
+                if live_streams.is_empty() {
+                    // No streams live, clear watching
+                    let cps = cps_watch.lock().await;
+                    let watching = cps.get_watching_streams().await;
+                    for stream in watching {
+                        let _ = cps.stop_watching_stream(&stream.channel_id).await;
+                    }
+                    continue;
+                }
+
                 // Check if it's time to rotate streams
                 if minutes_since_rotation >= ROTATION_INTERVAL_MINUTES {
                     minutes_since_rotation = 0; // Reset counter
-                    println!("🔄 Rotating streams for channel points farming...");
 
-                    match TwitchService::get_followed_streams(&app_handle_watch.state()).await {
-                        Ok(live_streams) => {
-                            if live_streams.is_empty() {
-                                println!("No followed streams are currently live for rotation.");
-                                continue;
-                            }
+                    let total_streams = live_streams.len();
+                    println!(
+                        "🔄 Rotating streams for channel points farming ({} live streams)...",
+                        total_streams
+                    );
 
-                            let cps = cps_watch.lock().await;
+                    let cps = cps_watch.lock().await;
 
-                            // Stop watching current streams
-                            let currently_watching = cps.get_watching_streams().await;
-                            for stream in currently_watching {
-                                let _ = cps.stop_watching_stream(&stream.channel_id).await;
-                            }
+                    // Stop watching current streams
+                    let currently_watching = cps.get_watching_streams().await;
+                    for stream in &currently_watching {
+                        // Record when we last watched this stream
+                        stream_watch_history.insert(stream.channel_id.clone(), Utc::now());
+                        let _ = cps.stop_watching_stream(&stream.channel_id).await;
+                    }
 
-                            // Start watching up to 2 new streams (Twitch limit)
-                            // Prioritize streams we haven't watched recently
-                            let streams_to_watch: Vec<_> = live_streams.iter().take(2).collect();
+                    // Select next streams using round-robin rotation
+                    // This ensures we cycle through ALL streams, not just top 2
+                    let mut streams_to_watch: Vec<_> = Vec::new();
 
-                            for stream in streams_to_watch {
-                                // Get channel ID from the stream data
-                                let channel_id = &stream.user_id;
-                                let channel_login = &stream.user_login;
+                    // Sort streams by when they were last watched (oldest first)
+                    // Streams that have never been watched get priority
+                    let mut stream_priority: Vec<_> = live_streams
+                        .iter()
+                        .map(|s| {
+                            let last_watched = stream_watch_history
+                                .get(&s.user_id)
+                                .copied()
+                                .unwrap_or(DateTime::<Utc>::MIN_UTC);
+                            (s, last_watched)
+                        })
+                        .collect();
 
-                                println!(
-                                    "🎬 Starting to watch {} for channel points",
-                                    stream.user_name
-                                );
-                                if let Err(e) = cps
-                                    .start_watching_stream(channel_id, channel_login, &token)
-                                    .await
-                                {
-                                    eprintln!(
-                                        "Failed to start watching {}: {}",
-                                        stream.user_name, e
-                                    );
-                                }
-                            }
+                    // Sort by last watched time (oldest/never watched first)
+                    stream_priority.sort_by(|a, b| a.1.cmp(&b.1));
+
+                    // Take the streams that were watched longest ago (or never)
+                    for (stream, last_watched) in
+                        stream_priority.iter().take(MAX_CONCURRENT_STREAMS)
+                    {
+                        streams_to_watch.push(*stream);
+                        let time_since = if *last_watched == DateTime::<Utc>::MIN_UTC {
+                            "never watched".to_string()
+                        } else {
+                            let duration = Utc::now().signed_duration_since(*last_watched);
+                            format!("{} min ago", duration.num_minutes())
+                        };
+                        println!(
+                            "  📌 Selected {} (last watched: {})",
+                            stream.user_name, time_since
+                        );
+                    }
+
+                    // Update rotation index for logging
+                    current_rotation_index =
+                        (current_rotation_index + MAX_CONCURRENT_STREAMS) % total_streams.max(1);
+
+                    // Start watching the selected streams
+                    for stream in &streams_to_watch {
+                        let channel_id = &stream.user_id;
+                        let channel_login = &stream.user_login;
+
+                        println!(
+                            "🎬 Starting to watch {} for channel points (rotation {}/{})",
+                            stream.user_name,
+                            streams_to_watch
+                                .iter()
+                                .position(|s| s.user_id == stream.user_id)
+                                .unwrap_or(0)
+                                + 1,
+                            total_streams
+                        );
+                        if let Err(e) = cps
+                            .start_watching_stream(channel_id, channel_login, &token)
+                            .await
+                        {
+                            eprintln!("Failed to start watching {}: {}", stream.user_name, e);
                         }
-                        Err(e) => {
-                            eprintln!("Error fetching streams for rotation: {}", e);
-                        }
+                    }
+
+                    // Log rotation status
+                    if total_streams > MAX_CONCURRENT_STREAMS {
+                        let rotation_cycle =
+                            (total_streams + MAX_CONCURRENT_STREAMS - 1) / MAX_CONCURRENT_STREAMS;
+                        println!(
+                            "🔄 Full rotation cycle: {} streams / {} per rotation = ~{} rotations needed",
+                            total_streams, MAX_CONCURRENT_STREAMS, rotation_cycle
+                        );
                     }
                 }
 
@@ -314,12 +387,20 @@ impl BackgroundService {
                 let watching = cps.get_watching_streams().await;
                 if !watching.is_empty() {
                     println!(
-                        "📡 Sending minute-watched payloads for {} streams",
-                        watching.len()
+                        "📡 Sending minute-watched payloads for {} streams (farming {} total live)",
+                        watching.len(),
+                        live_streams.len()
                     );
                     if let Err(e) = cps.send_minute_watched_for_streams(&token).await {
                         eprintln!("Error sending minute-watched payloads: {}", e);
                     }
+                } else if !live_streams.is_empty() {
+                    // We have live streams but aren't watching any - start immediately
+                    println!(
+                        "⚠️ Have {} live streams but not watching any, starting immediately",
+                        live_streams.len()
+                    );
+                    minutes_since_rotation = ROTATION_INTERVAL_MINUTES; // Force rotation on next tick
                 }
             }
             println!("Stream watching loop stopped.");

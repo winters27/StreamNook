@@ -120,7 +120,7 @@ module.exports = {
         },
       },
       animation: {
-        shimmer: 'shimmer 3s linear infinite',
+        shimmer: 'shimmer 2s ease-in-out infinite',
         droplet: 'droplet 2.5s ease-in-out infinite',
         splash: 'splash 0.6s ease-out forwards',
         ripple: 'ripple 2.5s ease-out infinite',

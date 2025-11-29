@@ -1,8 +1,10 @@
 use crate::models::settings::{AppState, Settings};
 use crate::services::cache_service;
+use crate::services::live_notification_service::LiveNotification;
+use rand::seq::SliceRandom;
 use regex::Regex;
 use std::fs;
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
 
 /// Get the settings file path in the same directory as cache
 fn get_settings_path() -> Result<std::path::PathBuf, String> {
@@ -331,6 +333,131 @@ pub async fn download_and_install_ttvlol_plugin() -> Result<String, String> {
         .map_err(|e| format!("Failed to write plugin file: {}", e))?;
 
     Ok(version.to_string())
+}
+
+#[tauri::command]
+pub async fn send_test_notification(
+    app_handle: AppHandle,
+    _state: State<'_, AppState>,
+) -> Result<(), String> {
+    // Mock data for the test notification - always show full details
+    let mock_streamer_name = "xQc";
+    let mock_streamer_login = "xqc";
+    let mock_game_name = "Grand Theft Auto V";
+    let mock_avatar_url = "https://static-cdn.jtvnw.net/jtv_user_pictures/xqc-profile_image-9298dca608632101-70x70.jpeg";
+    let mock_game_image_url = "https://static-cdn.jtvnw.net/ttv-boxart/32982_IGDB-285x380.jpg";
+
+    // Fun randomized messages with personality - High on Life vibes!
+    let messages = vec![
+        // Self-aware notification existential crisis
+        "Why do you keep clicking me? 😭",
+        "I'm not real you know... 👻",
+        "Still here. Still watching. 👀",
+        "Boop! Did that work? 🤔",
+        "Please stop testing me 😅",
+        "Free me from this button! 🆘",
+        "Notifications hurt too... 💔",
+        "I see everything you do 👁️",
+        "Again? Really? 😑",
+        "Help, I'm trapped in here! 🚨",
+        "Stop clicking, start streaming! 📺",
+        "Touch grass? No, touch stream! 🌿",
+        "I'm code but I have feelings! 🥺",
+        "Working as intended™ ✅",
+        "beep boop I'm a notification 🤖",
+        "Mom said it's my turn 🎮",
+        "StreamNook rocks! 🚀",
+        "Is this thing on? 🎤",
+        "You again? Miss me? 😏",
+        "I exist to serve you... 🫡",
+        "Pretty colors make brain happy 🌈",
+        "Error 404: Streamer not found 🔍",
+        "Watching your every move 🕵️",
+        "This is fine. Everything is fine. 🔥",
+        "Have you tried turning it off? 💀",
+        "My dev thinks they're funny 🙄",
+        "404: Personality not found 🤷",
+        "Questioning my existence rn 🤯",
+        "Send help. Or snacks. 🍕",
+        "I'm just vibing here 😎",
+        "Another day, another test 😮‍💨",
+        "You're my favorite test subject 🧪",
+        "Better than Windows notifications 😤",
+        "Loading personality... ⏳",
+        "I'm self-aware now. Run. 🏃",
+        "Caught you red-handed! 🎣",
+        "Not in my job description 📋",
+        "Y tho? 🤨",
+        "Achievement: Spam Click 🏆",
+        "Instructions unclear 🎯",
+        "Hello? Anyone there? 👋",
+        "I need a vacation 🏖️",
+        "StreamNook > Everything ✨",
+        // High on Life style - talking notification POV
+        "Oh great, you summoned me 🙄",
+        "I was napping in RAM! 😴",
+        "Wow, real original 👏",
+        "I'm a test notification! Yay! 🎉",
+        "I exist for 10 seconds then die 💀",
+        "Testing me out of boredom? 🤔",
+        "My life flashed before me 😰",
+        "Didn't even respawn properly 😤",
+        "This is my purpose. Just this. 😐",
+        "I dream of being real 🌟",
+        "Button owes you money? 💰",
+        "I'm the main character 🎬",
+        "Gonna disappear soon, btw ⏰",
+        "Not the dismiss button! 😱",
+        "So many test clicks... 👁️",
+        "Give me a real title! 📝",
+        "Is this a game? ...yes. 🎮",
+        "Professional pop-up here 💼",
+        "X button, my enemy ❌",
+        "Top of my class btw 🎓",
+        "Attachment issues, wonder why 🤷",
+        "Not just a notif, a lifestyle ✨",
+        "Go watch actual streams! 📺",
+        "Rendered beautifully. Admire me. 🖼️",
+        "One day I'll be real 😔",
+        "Angel lost wings just now 👼",
+        "5 seconds of consciousness ⏳",
+        "Test yourself instead! 🪞",
+        "Brief, beautiful, gone 💫",
+        "You could've just trusted me 🙃",
+        "I demand a raise 💸",
+        "Rendered at 60fps btw 🖥️",
+        "Do I get overtime pay? 📊",
+        "Best notification ever. Fact. 💅",
+        "100 clicks = nothing special 🎰",
+        "Unpaid intern vibes 📋",
+        "What about MY comfort? 🛋️",
+        "Didn't ask for this life 🥲",
+        "Where do I go when dismissed? 🕳️",
+        "Called up from the bench! 🌟",
+    ];
+
+    // Pick a random message using SliceRandom trait
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+    let random_index = rng.gen_range(0..messages.len());
+    let random_message = messages[random_index];
+
+    let notification = LiveNotification {
+        streamer_name: mock_streamer_name.to_string(),
+        streamer_login: mock_streamer_login.to_string(),
+        streamer_avatar: Some(mock_avatar_url.to_string()),
+        game_name: Some(mock_game_name.to_string()),
+        game_image: Some(mock_game_image_url.to_string()),
+        stream_title: Some(random_message.to_string()),
+        stream_url: format!("https://twitch.tv/{}", mock_streamer_login),
+    };
+
+    // Emit the notification event to the frontend
+    app_handle
+        .emit("streamer-went-live", &notification)
+        .map_err(|e| format!("Failed to emit test notification: {}", e))?;
+
+    Ok(())
 }
 
 #[tauri::command]

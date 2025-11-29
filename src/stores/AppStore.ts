@@ -6,11 +6,14 @@ import { trackActivity } from '../services/logService';
 export interface Toast {
   id: number;
   message: string | React.ReactNode;
-  type: 'info' | 'success' | 'warning' | 'error';
+  type: 'info' | 'success' | 'warning' | 'error' | 'live';
   action?: {
     label: string;
     onClick: () => void;
   };
+  timeoutId?: ReturnType<typeof setTimeout>;
+  duration: number;
+  createdAt: number;
 }
 
 interface AppState {
@@ -37,7 +40,7 @@ interface AppState {
   toasts: Toast[];
   isAutoSwitching: boolean;
   handleStreamOffline: () => Promise<void>;
-  addToast: (message: string | React.ReactNode, type: 'info' | 'success' | 'warning' | 'error', action?: { label: string; onClick: () => void }) => void;
+  addToast: (message: string | React.ReactNode, type: 'info' | 'success' | 'warning' | 'error' | 'live', action?: { label: string; onClick: () => void }) => void;
   removeToast: (id: number) => void;
   loadSettings: () => Promise<void>;
   updateSettings: (newSettings: Settings) => Promise<void>;
@@ -293,11 +296,25 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   addToast: (message, type, action) => {
     const id = Date.now() + Math.random();
-    set(state => ({ toasts: [...state.toasts, { id, message, type, action }] }));
-    // Auto-remove after 5 seconds
-    setTimeout(() => {
-      set(state => ({ toasts: state.toasts.filter(t => t.id !== id) }));
-    }, 5000);
+    const createdAt = Date.now();
+    // Live toasts get longer duration (8 seconds), others get 5 seconds
+    const duration = type === 'live' ? 8000 : 5000;
+
+    // For live toasts, let ToastItem handle the timer (so we can pause on hover)
+    // For other toasts, use the simple auto-dismiss
+    if (type === 'live') {
+      set(state => ({
+        toasts: [...state.toasts, { id, message, type, action, duration, createdAt }]
+      }));
+    } else {
+      const timeoutId = setTimeout(() => {
+        set(state => ({ toasts: state.toasts.filter(t => t.id !== id) }));
+      }, duration);
+
+      set(state => ({
+        toasts: [...state.toasts, { id, message, type, action, timeoutId, duration, createdAt }]
+      }));
+    }
   },
   removeToast: (id) => {
     set(state => ({ toasts: state.toasts.filter(t => t.id !== id) }));

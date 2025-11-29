@@ -96,7 +96,7 @@ const SupportSettings = () => {
                         </div>
                         <button
                             onClick={handleToggleErrorReporting}
-                            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${errorReportingEnabled ? 'bg-green-500' : 'bg-gray-600'
+                            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${errorReportingEnabled ? 'bg-accent' : 'bg-gray-600'
                                 }`}
                         >
                             <span
@@ -173,8 +173,8 @@ const SupportSettings = () => {
                                 <div
                                     key={index}
                                     className={`text-xs font-mono p-1.5 rounded ${log.level === 'error' ? 'bg-red-500/10' :
-                                            log.level === 'warn' ? 'bg-yellow-500/10' :
-                                                'bg-transparent'
+                                        log.level === 'warn' ? 'bg-yellow-500/10' :
+                                            'bg-transparent'
                                         }`}
                                 >
                                     <div className="flex items-start gap-2">

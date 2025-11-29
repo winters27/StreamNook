@@ -6,20 +6,28 @@ const ChatSettings = () => {
 
   return (
     <div className="space-y-6">
-      {/* Chat History Info */}
-      <div className="glass-panel p-4 rounded-lg">
-        <div className="flex items-start gap-3">
-          <div className="text-accent text-xl">ℹ️</div>
-          <div>
-            <h4 className="text-sm font-medium text-textPrimary mb-1">
-              Chat History: 200 messages
-            </h4>
-            <p className="text-xs text-textSecondary">
-              Chat history is optimized and fixed at 200 messages for best performance and stability.
-              This ensures smooth chat operation even in high-traffic streams.
-            </p>
-          </div>
+      {/* Chat Placement */}
+      <div>
+        <label className="block text-sm font-medium text-textPrimary mb-2">
+          Chat Placement
+        </label>
+        <div className="flex gap-2">
+          {['right', 'bottom', 'hidden'].map((placement) => (
+            <button
+              key={placement}
+              onClick={() => updateSettings({ ...settings, chat_placement: placement as any })}
+              className={`flex-1 px-4 py-2 text-sm font-medium rounded transition-all ${settings.chat_placement === placement
+                  ? 'glass-button text-white'
+                  : 'bg-glass text-textSecondary hover:bg-glass-hover'
+                }`}
+            >
+              {placement.charAt(0).toUpperCase() + placement.slice(1)}
+            </button>
+          ))}
         </div>
+        <p className="text-xs text-textSecondary mt-2">
+          Choose where to display the chat window or hide it completely
+        </p>
       </div>
 
       {/* Chat Design Section */}

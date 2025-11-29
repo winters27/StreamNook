@@ -117,20 +117,17 @@ impl Default for ChatDesignSettings {
 #[derive(Serialize, Deserialize, Clone)]
 pub struct LiveNotificationSettings {
     pub enabled: bool,
-    pub show_streamer_name: bool,
-    pub show_game_details: bool,
-    pub show_game_image: bool,
-    pub show_streamer_avatar: bool,
+    pub play_sound: bool,
+    #[serde(default)]
+    pub sound_type: Option<String>,
 }
 
 impl Default for LiveNotificationSettings {
     fn default() -> Self {
         Self {
             enabled: true,
-            show_streamer_name: true,
-            show_game_details: true,
-            show_game_image: true,
-            show_streamer_avatar: true,
+            play_sound: true,
+            sound_type: None,
         }
     }
 }

@@ -423,6 +423,7 @@ export const useTwitchChat = () => {
       healthCheckIntervalRef.current = setInterval(() => {
         const timeSinceLastMessage = Date.now() - lastMessageTimeRef.current;
         const threeMinutes = 3 * 60 * 1000;
+        const fiveMinutes = 5 * 60 * 1000;
 
         // Use ref for current connected state
         if (!isConnectedRef.current) {
@@ -430,28 +431,29 @@ export const useTwitchChat = () => {
         }
 
         // If no messages for 3 minutes, show warning
-        if (timeSinceLastMessage > threeMinutes) {
+        if (timeSinceLastMessage > threeMinutes && timeSinceLastMessage <= fiveMinutes) {
           console.warn('[Chat] No messages received for 3 minutes, connection may be stale');
           setError(`No activity for ${Math.floor(timeSinceLastMessage / 1000)}s - connection may be stale`);
         }
 
-        // If no messages for 5 minutes, force reconnect
-        if (timeSinceLastMessage > 5 * 60 * 1000) {
-          console.error('[Chat] No messages for 5 minutes, forcing reconnect');
-          setError('Connection appears dead - reconnecting...');
-          setIsConnected(false);
+        // If no messages for 5 minutes, the stream might be offline
+        // Trigger the auto-switch check which will verify via Twitch API
+        if (timeSinceLastMessage > fiveMinutes) {
+          console.log('[Chat] No messages for 5+ minutes, triggering stream offline check');
 
-          // Close and reconnect
-          const currentWs = wsRef.current;
-          if (currentWs && currentWs.readyState === WebSocket.OPEN) {
-            currentWs.close();
-          }
+          // Get the handleStreamOffline function from AppStore
+          // This will verify if the stream is actually offline via Twitch API
+          // and trigger auto-switch if enabled
+          const { handleStreamOffline, currentStream, isAutoSwitching } = useAppStore.getState();
 
-          // Trigger reconnection
-          isConnectingRef.current = false;
-          const channelToReconnect = currentChannelRef.current;
-          if (channelToReconnect) {
-            connectChat(channelToReconnect);
+          // Only trigger if we have a current stream and aren't already switching
+          if (currentStream && !isAutoSwitching) {
+            console.log('[Chat] Triggering handleStreamOffline from chat inactivity detection');
+            handleStreamOffline();
+
+            // Reset last message time to prevent repeated triggers
+            // The handleStreamOffline will verify and handle appropriately
+            lastMessageTimeRef.current = Date.now();
           }
         }
       }, 30000); // Check every 30 seconds

@@ -85,10 +85,8 @@ export interface ChatDesignSettings {
 
 export interface LiveNotificationSettings {
   enabled: boolean;
-  show_streamer_name: boolean;
-  show_game_details: boolean;
-  show_game_image: boolean;
-  show_streamer_avatar: boolean;
+  play_sound: boolean;
+  sound_type?: string; // 'boop' | 'tick' | 'gentle' | 'soft' | 'whisper'
 }
 
 export type AutoSwitchMode = 'same_category' | 'followed_streams';

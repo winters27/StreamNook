@@ -1,19 +1,19 @@
 import { useAppStore } from '../stores/AppStore';
 import { X } from 'lucide-react';
 import { useState, useEffect } from 'react';
-import GeneralSettings from './settings/GeneralSettings';
 import PlayerSettings from './settings/PlayerSettings';
 import ChatSettings from './settings/ChatSettings';
 import IntegrationsSettings from './settings/IntegrationsSettings';
 import CacheSettings from './settings/CacheSettings';
 import NotificationsSettings from './settings/NotificationsSettings';
 import SupportSettings from './settings/SupportSettings';
+import UpdatesSettings from './settings/UpdatesSettings';
 
-type Tab = 'General' | 'Player' | 'Chat' | 'Integrations' | 'Notifications' | 'Cache' | 'Support';
+type Tab = 'Player' | 'Chat' | 'Integrations' | 'Notifications' | 'Updates' | 'Cache' | 'Support';
 
 const SettingsDialog = () => {
   const { settings, updateSettings, isSettingsOpen, closeSettings } = useAppStore();
-  const [activeTab, setActiveTab] = useState<Tab>('General');
+  const [activeTab, setActiveTab] = useState<Tab>('Player');
   const [isStreamlinkInstalled, setIsStreamlinkInstalled] = useState<boolean | null>(null);
   const [updateAvailable, setUpdateAvailable] = useState<boolean>(false);
   const [installedVersion, setInstalledVersion] = useState<string | null>(null);
@@ -126,8 +126,7 @@ const SettingsDialog = () => {
 
   return (
     <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50">
-      <div className={`glass-panel backdrop-blur-lg p-6 rounded-lg w-full mx-4 shadow-2xl max-h-[90vh] flex flex-col ${activeTab === 'Notifications' ? 'max-w-fit' : 'max-w-2xl'
-        }`}>
+      <div className="glass-panel backdrop-blur-lg p-6 rounded-lg w-full max-w-2xl mx-4 shadow-2xl max-h-[90vh] flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between mb-6 pb-4 border-b border-borderSubtle">
           <h2 className="text-xl font-bold text-textPrimary">Settings</h2>
@@ -144,7 +143,7 @@ const SettingsDialog = () => {
           {/* Tabs Navigation */}
           <div className="w-1/4 pr-6 border-r border-borderSubtle">
             <nav className="flex flex-col space-y-2">
-              {(['General', 'Player', 'Chat', 'Integrations', 'Notifications', 'Cache', 'Support'] as Tab[]).map((tab) => (
+              {(['Player', 'Chat', 'Integrations', 'Notifications', 'Updates', 'Cache', 'Support'] as Tab[]).map((tab) => (
                 <button
                   key={tab}
                   onClick={() => setActiveTab(tab)}
@@ -161,18 +160,18 @@ const SettingsDialog = () => {
 
           {/* Settings Form */}
           <div className="flex-1 pl-6 overflow-y-auto scrollbar-thin">
-            {activeTab === 'General' && (
-              <GeneralSettings
+            {activeTab === 'Player' && <PlayerSettings />}
+            {activeTab === 'Chat' && <ChatSettings />}
+            {activeTab === 'Integrations' && <IntegrationsSettings />}
+            {activeTab === 'Notifications' && <NotificationsSettings />}
+            {activeTab === 'Updates' && (
+              <UpdatesSettings
                 isStreamlinkInstalled={isStreamlinkInstalled}
                 updateAvailable={updateAvailable}
                 installedVersion={installedVersion}
                 latestVersion={latestVersion}
               />
             )}
-            {activeTab === 'Player' && <PlayerSettings />}
-            {activeTab === 'Chat' && <ChatSettings />}
-            {activeTab === 'Integrations' && <IntegrationsSettings />}
-            {activeTab === 'Notifications' && <NotificationsSettings />}
             {activeTab === 'Cache' && <CacheSettings />}
             {activeTab === 'Support' && <SupportSettings />}
           </div>
