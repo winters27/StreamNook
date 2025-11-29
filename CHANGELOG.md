@@ -1,3 +1,15 @@
+## [3.4.12] - 2025-11-28
+### ✨ Features
+- Added support for displaying Bits cheers in chat with animated icons and tier colors.
+- Improved shared chat functionality, including fetching channel names and profile images.
+- Integrated IVR user data (moderator, VIP, subscriber status) into the User Profile Card.
+
+### 🐛 Bug Fixes
+- Fixed issues with chat scrolling when historical messages are loaded, ensuring proper scrolling to the bottom.
+
+### 🔧 Maintenance
+- Updated badge display logic in User Profile Card to prioritize display badges and filter broadcaster badges when necessary.
+
 ## [3.4.11] - 2025-11-28
 ### ✨ Features
 - Added support for native emojis in chat messages.
@@ -261,6 +273,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
