@@ -1,3 +1,15 @@
+## [3.4.16] - 2025-11-29
+### ✨ Features
+- Added a "Test Notification" button in settings to trigger a sample notification.
+- Implemented proper stream rotation for channel points farming, cycling through all followed live streams.
+- Implemented notification sounds with customizable options.
+
+### 🐛 Bug Fixes
+- Stream watching loop now properly handles cases where no streams are live.
+
+### 🔧 Maintenance
+- Settings UI now has updates settings at the right spot.
+
 ## [3.4.15] - 2025-11-29
 ### ✨ Features
 - Implemented drops websocket error reporting to the frontend.
@@ -310,6 +322,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
