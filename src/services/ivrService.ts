@@ -373,10 +373,10 @@ export function convertIVRMessageToIRC(msg: IVRRecentMessage, channel: string, r
 /**
  * Fetches recent messages (already in IRC format from robotty.de API)
  * @param channel - Channel name
- * @param roomId - Channel/room ID (not used, kept for API compatibility)
+ * @param _roomId - Channel/room ID (not used, kept for API compatibility)
  * @returns Array of IRC-formatted message strings
  */
-export async function fetchRecentMessagesAsIRC(channel: string, roomId: string): Promise<string[]> {
+export async function fetchRecentMessagesAsIRC(channel: string, _roomId: string): Promise<string[]> {
     // The robotty.de API already returns raw IRC messages, so just fetch them directly
     return fetchRecentMessages(channel);
 }
