@@ -1,3 +1,9 @@
+## [3.4.11] - 2025-11-28
+### ✨ Features
+- Added support for native emojis in chat messages.
+- Implemented an emoji picker for easy emoji selection in the chat input.
+- Added window `isMaximized` permission to prevent potential UI issues with glass morphism.
+
 ## [3.4.10] - 2025-11-28
 ### ✨ Features
 - Implemented aspect ratio lock for the video player, with adjustments during window resize.
@@ -255,6 +261,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
