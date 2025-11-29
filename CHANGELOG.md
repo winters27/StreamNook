@@ -1,3 +1,7 @@
+## [3.4.14] - 2025-11-29
+### ✨ Features
+- Added a toggle to enable or disable anonymous error reporting to help improve StreamNook. The toggle is located in the settings under the 'Support' section.
+
 ## [3.4.13] - 2025-11-29
 ### ✨ Features
 - Added a "Support" settings tab with a log viewer and bug report export functionality.
@@ -293,6 +297,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
