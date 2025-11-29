@@ -1,3 +1,11 @@
+## [3.4.13] - 2025-11-29
+### ✨ Features
+- Added a "Support" settings tab with a log viewer and bug report export functionality.
+- Implemented automatic error reporting for easier debugging.
+
+### 🐛 Bug Fixes
+- Improved stream offline detection logic in the video player.
+
 ## [3.4.12] - 2025-11-28
 ### ✨ Features
 - Added support for displaying Bits cheers in chat with animated icons and tier colors.
@@ -285,6 +293,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
