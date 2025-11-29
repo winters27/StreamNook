@@ -1,0 +1,136 @@
+/**
+ * Emoji Service - Converts Unicode emojis to iOS-style emoji images
+ * Uses CDN-hosted Apple emoji images for cross-platform consistency
+ */
+
+// Regular expression to match emoji characters
+// This regex covers most common emojis including:
+// - Basic emojis (😀-🙏)
+// - Skin tone modifiers
+// - ZWJ sequences (family, profession emojis)
+// - Regional indicators (flags)
+// - Keycap emojis
+const EMOJI_REGEX = /(?:\p{Emoji_Presentation}|\p{Emoji}\uFE0F)(?:\p{Emoji_Modifier})?(?:\u200D(?:\p{Emoji_Presentation}|\p{Emoji}\uFE0F)(?:\p{Emoji_Modifier})?)*|\p{Regional_Indicator}{2}/gu;
+
+// CDN URL for Apple emoji images
+// Using jsDelivr CDN with emoji-datasource-apple package
+const APPLE_EMOJI_CDN = 'https://cdn.jsdelivr.net/npm/emoji-datasource-apple@15.1.2/img/apple/64';
+
+/**
+ * Converts a single emoji character/sequence to its hex codepoint representation
+ * Used to build the image URL
+ */
+export function emojiToCodepoint(emoji: string): string {
+    const codepoints: string[] = [];
+
+    for (const char of emoji) {
+        const codepoint = char.codePointAt(0);
+        if (codepoint !== undefined) {
+            // Skip variation selector-16 (FE0F) as it's not always in filenames
+            if (codepoint !== 0xFE0F) {
+                codepoints.push(codepoint.toString(16).toLowerCase());
+            }
+        }
+    }
+
+    return codepoints.join('-');
+}
+
+/**
+ * Gets the Apple emoji image URL for a given emoji
+ */
+export function getAppleEmojiUrl(emoji: string): string {
+    const codepoint = emojiToCodepoint(emoji);
+    return `${APPLE_EMOJI_CDN}/${codepoint}.png`;
+}
+
+/**
+ * Checks if a string contains any emoji characters
+ */
+export function containsEmoji(text: string): boolean {
+    return EMOJI_REGEX.test(text);
+}
+
+/**
+ * Parses text and returns segments with emojis separated
+ * Returns an array of objects with type 'text' or 'emoji'
+ */
+export interface EmojiSegment {
+    type: 'text' | 'emoji';
+    content: string;
+    emojiUrl?: string;
+}
+
+export function parseEmojis(text: string): EmojiSegment[] {
+    if (!text) {
+        return [];
+    }
+
+    // Reset regex lastIndex
+    EMOJI_REGEX.lastIndex = 0;
+
+    const segments: EmojiSegment[] = [];
+    let lastIndex = 0;
+    let match: RegExpExecArray | null;
+
+    while ((match = EMOJI_REGEX.exec(text)) !== null) {
+        // Add text before the emoji
+        if (match.index > lastIndex) {
+            segments.push({
+                type: 'text',
+                content: text.substring(lastIndex, match.index),
+            });
+        }
+
+        // Add the emoji
+        const emoji = match[0];
+        segments.push({
+            type: 'emoji',
+            content: emoji,
+            emojiUrl: getAppleEmojiUrl(emoji),
+        });
+
+        lastIndex = match.index + emoji.length;
+    }
+
+    // Add remaining text after the last emoji
+    if (lastIndex < text.length) {
+        segments.push({
+            type: 'text',
+            content: text.substring(lastIndex),
+        });
+    }
+
+    return segments.length > 0 ? segments : [{ type: 'text', content: text }];
+}
+
+/**
+ * Cache for emoji URL validity to avoid repeated 404s
+ * Maps codepoint to boolean indicating if the URL is valid
+ */
+const emojiUrlCache = new Map<string, boolean>();
+
+/**
+ * Preloads and validates an emoji URL
+ * Returns true if the image loads successfully
+ */
+export async function validateEmojiUrl(emoji: string): Promise<boolean> {
+    const codepoint = emojiToCodepoint(emoji);
+
+    if (emojiUrlCache.has(codepoint)) {
+        return emojiUrlCache.get(codepoint)!;
+    }
+
+    return new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => {
+            emojiUrlCache.set(codepoint, true);
+            resolve(true);
+        };
+        img.onerror = () => {
+            emojiUrlCache.set(codepoint, false);
+            resolve(false);
+        };
+        img.src = getAppleEmojiUrl(emoji);
+    });
+}

@@ -2,7 +2,9 @@ import { useRef, useEffect, useCallback, useState } from 'react';
 import Hls from 'hls.js';
 import Plyr from 'plyr';
 import 'plyr/dist/plyr.css';
+import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { useAppStore } from '../stores/AppStore';
+import { getBadgeInfo } from '../services/twitchBadges';
 
 const VideoPlayer = () => {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -10,12 +12,14 @@ const VideoPlayer = () => {
   const hlsRef = useRef<Hls | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const progressUpdateIntervalRef = useRef<number | null>(null);
-  const { streamUrl, settings, getAvailableQualities, changeStreamQuality, handleStreamOffline, isAutoSwitching } = useAppStore();
+  const { streamUrl, settings, getAvailableQualities, changeStreamQuality, handleStreamOffline, isAutoSwitching, currentStream } = useAppStore();
   const playerSettings = settings.video_player;
   const isLiveRef = useRef<boolean>(true);
   const userInitiatedPauseRef = useRef<boolean>(false);
   const [availableQualities, setAvailableQualities] = useState<string[]>([]);
-  
+  const [isHovering, setIsHovering] = useState(false);
+  const [subscriberBadgeUrl, setSubscriberBadgeUrl] = useState<string | null>(null);
+
   // Track consecutive fatal errors to determine when stream is truly offline
   const fatalErrorCountRef = useRef<number>(0);
   const lastErrorTimeRef = useRef<number>(0);
@@ -82,7 +86,7 @@ const VideoPlayer = () => {
         qualityMenuItem.innerHTML = `
           <span>Quality<span class="plyr__menu__value">${currentQualityDisplay}</span></span>
         `;
-        
+
         qualityMenuItem.addEventListener('click', () => {
           const qualitySubmenu = settingsMenu.querySelector('[data-quality-menu]');
           if (qualitySubmenu) {
@@ -90,7 +94,7 @@ const VideoPlayer = () => {
             qualitySubmenu.removeAttribute('hidden');
           }
         });
-        
+
         // Insert before speed option
         const speedOption = settingsHome.querySelector('[data-plyr="speed"]');
         if (speedOption) {
@@ -137,26 +141,26 @@ const VideoPlayer = () => {
         // Handle quality selection
         qualitySubmenu.querySelectorAll('[data-quality]').forEach(btn => {
           if (btn.getAttribute('data-plyr') === 'back') return;
-          
+
           btn.addEventListener('click', async () => {
             const selectedQuality = btn.getAttribute('data-quality');
             if (!selectedQuality) return;
 
             console.log(`[Quality] User selected: ${selectedQuality}`);
-            
+
             // Update UI - mark selected
             qualitySubmenu.querySelectorAll('[data-quality]').forEach(b => {
               if (b.getAttribute('data-plyr') === 'back') return;
               b.setAttribute('aria-checked', 'false');
             });
             btn.setAttribute('aria-checked', 'true');
-            
+
             // Update value in main menu (with capitalization)
             const qualityValueSpan = settingsHome.querySelector('[data-plyr="quality"] .plyr__menu__value');
             if (qualityValueSpan) {
               qualityValueSpan.textContent = selectedQuality.charAt(0).toUpperCase() + selectedQuality.slice(1);
             }
-            
+
             // Close menu
             qualitySubmenu.setAttribute('hidden', '');
             settingsHome.removeAttribute('hidden');
@@ -258,7 +262,7 @@ const VideoPlayer = () => {
       hls.on(Hls.Events.MANIFEST_PARSED, (_event, data) => {
         console.log('[HLS] Manifest parsed, starting playback');
         console.log('[HLS] Available quality levels:', data.levels.map(l => `${l.height}p @ ${l.bitrate}bps`).join(', '));
-        
+
         // Initialize Plyr AFTER we have the video loaded
         if (!playerRef.current) {
           const player = new Plyr(video, {
@@ -340,44 +344,44 @@ const VideoPlayer = () => {
 
         if (data.fatal) {
           const now = Date.now();
-          
+
           // Reset error count if enough time has passed since last error
           if (now - lastErrorTimeRef.current > errorResetTimeMs) {
             fatalErrorCountRef.current = 0;
           }
-          
+
           fatalErrorCountRef.current++;
           lastErrorTimeRef.current = now;
-          
+
           console.log(`[HLS] Fatal error count: ${fatalErrorCountRef.current}/${maxFatalErrorsBeforeOffline}`);
-          
+
           // Check if we've exceeded max fatal errors - likely stream is offline
           if (fatalErrorCountRef.current >= maxFatalErrorsBeforeOffline && !isAutoSwitching) {
             console.log('[HLS] Max fatal errors reached, stream appears to be offline. Triggering auto-switch...');
-            
+
             // Reset error count
             fatalErrorCountRef.current = 0;
-            
+
             // Trigger auto-switch
             handleStreamOffline();
             return;
           }
-          
+
           switch (data.type) {
             case Hls.ErrorTypes.NETWORK_ERROR:
               console.log('[HLS] Fatal network error, attempting recovery...');
-              
+
               // Check if this is a manifest/playlist load error (strong indicator of offline stream)
-              if (data.details === 'manifestLoadError' || 
-                  data.details === 'manifestLoadTimeOut' ||
-                  data.details === 'manifestParsingError' ||
-                  data.details === 'levelLoadError' ||
-                  data.details === 'levelLoadTimeOut') {
+              if (data.details === 'manifestLoadError' ||
+                data.details === 'manifestLoadTimeOut' ||
+                data.details === 'manifestParsingError' ||
+                data.details === 'levelLoadError' ||
+                data.details === 'levelLoadTimeOut') {
                 console.log(`[HLS] Manifest/level loading failed: ${data.details}`);
-                
+
                 // For manifest errors, count them more aggressively
                 fatalErrorCountRef.current++;
-                
+
                 if (fatalErrorCountRef.current >= 2 && !isAutoSwitching) {
                   console.log('[HLS] Multiple manifest errors, stream likely offline. Triggering auto-switch...');
                   fatalErrorCountRef.current = 0;
@@ -385,7 +389,7 @@ const VideoPlayer = () => {
                   return;
                 }
               }
-              
+
               hls.startLoad();
               break;
             case Hls.ErrorTypes.MEDIA_ERROR:
@@ -407,7 +411,7 @@ const VideoPlayer = () => {
       hls.on(Hls.Events.LEVEL_SWITCHED, (_event, data) => {
         const level = hls.levels[data.level];
         console.log(`[HLS] Level switched to: ${data.level} (${level?.height}p @ ${level?.bitrate}bps)`);
-        
+
         // Update Plyr's quality display if in auto mode
         if (playerRef.current && hls.currentLevel === -1) {
           // In auto mode, update the display to show current quality
@@ -443,7 +447,7 @@ const VideoPlayer = () => {
       // Native HLS support (Safari)
       console.log('[HLS] Using native HLS support');
       video.src = streamUrl;
-      
+
       // Initialize Plyr for Safari
       const player = new Plyr(video, {
         controls: [
@@ -472,7 +476,7 @@ const VideoPlayer = () => {
 
       playerRef.current = player;
       syncVolumeToPlayer();
-      
+
       video.addEventListener('loadedmetadata', () => {
         video.play().catch(e => console.log('Initial play failed:', e));
       });
@@ -488,12 +492,12 @@ const VideoPlayer = () => {
     progressUpdateIntervalRef.current = requestAnimationFrame(updateLiveTimeDisplay);
 
     const video = videoRef.current;
-    
+
     // If HLS instance already exists, fully destroy it before creating new one
     // HLS.js doesn't handle reusing instances well after detach/attach cycles
     if (hlsRef.current) {
       console.log('[HLS] Stream URL changed, destroying old HLS instance before creating new one:', streamUrl);
-      
+
       try {
         // Stop loading new data
         hlsRef.current.stopLoad();
@@ -505,24 +509,24 @@ const VideoPlayer = () => {
         console.warn('[HLS] Error destroying old HLS instance:', e);
       }
       hlsRef.current = null;
-      
+
       // Thoroughly reset video element to clear any buffered data
       video.pause();
       video.removeAttribute('src');
-      
+
       // Clear any existing source buffers if MediaSource is attached
       if (video.srcObject) {
         video.srcObject = null;
       }
-      
+
       video.load();
-      
+
       // Small delay to ensure video element is fully reset before loading new stream
       // This prevents corrupted TS packets from old stream mixing with new stream
       const timeoutId = setTimeout(() => {
         createPlayer();
       }, 100);
-      
+
       return () => clearTimeout(timeoutId);
     }
 
@@ -571,14 +575,88 @@ const VideoPlayer = () => {
     }
   }, [availableQualities, updateQualityMenu]);
 
+  // Fetch subscriber badge when channel changes
+  // Uses retry logic since badges may be loaded asynchronously by ChatWidget
+  useEffect(() => {
+    if (!currentStream?.user_id) {
+      setSubscriberBadgeUrl(null);
+      return;
+    }
+
+    const tryGetBadge = () => {
+      const badge = getBadgeInfo('subscriber/0', currentStream.user_id);
+      if (badge?.image_url_2x) {
+        setSubscriberBadgeUrl(badge.image_url_2x);
+        return true;
+      }
+      return false;
+    };
+
+    // Try immediately
+    if (tryGetBadge()) {
+      return;
+    }
+
+    // Set up retries since badges are loaded asynchronously by ChatWidget
+    const retryIntervals = [500, 1000, 2000, 5000]; // Retry at these intervals
+    let retryIndex = 0;
+    let timeoutId: NodeJS.Timeout;
+
+    const retry = () => {
+      if (retryIndex >= retryIntervals.length) {
+        console.log('[VideoPlayer] Could not find subscriber badge after retries');
+        return;
+      }
+
+      timeoutId = setTimeout(() => {
+        if (tryGetBadge()) {
+          console.log('[VideoPlayer] Found subscriber badge on retry', retryIndex + 1);
+        } else {
+          retryIndex++;
+          retry();
+        }
+      }, retryIntervals[retryIndex]);
+    };
+
+    retry();
+
+    return () => {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+    };
+  }, [currentStream?.user_id]);
+
+  // Handle subscribe button click
+  const handleSubscribeClick = useCallback(() => {
+    if (currentStream?.user_login) {
+      const webview = new WebviewWindow(`subscribe-${currentStream.user_login}`, {
+        url: `https://www.twitch.tv/subs/${currentStream.user_login}`,
+        title: `Subscribe to ${currentStream.user_name}`,
+        width: 800,
+        height: 900,
+        center: true,
+        resizable: true,
+        minimizable: true,
+        maximizable: true,
+      });
+
+      webview.once('tauri://error', (e) => {
+        console.error('Error opening subscribe window:', e);
+      });
+    }
+  }, [currentStream]);
+
   return (
     <div
       ref={containerRef}
-      className="w-full h-full bg-black flex items-center justify-center video-player-container"
-      style={{ 
-        minHeight: '300px', 
+      className="w-full h-full bg-black flex items-center justify-center video-player-container group"
+      style={{
+        minHeight: '300px',
         position: 'relative',
       }}
+      onMouseEnter={() => setIsHovering(true)}
+      onMouseLeave={() => setIsHovering(false)}
     >
       <video
         ref={videoRef}
@@ -591,6 +669,36 @@ const VideoPlayer = () => {
         }}
         playsInline
       />
+
+      {/* Subscribe Button Overlay */}
+      {currentStream && (
+        <div
+          className={`absolute top-3 right-3 z-50 transition-all duration-200 ${isHovering ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-2 pointer-events-none'
+            }`}
+        >
+          <button
+            onClick={handleSubscribeClick}
+            className="flex items-center gap-2 px-4 py-2 glass-button text-textPrimary text-sm font-semibold rounded-lg shadow-lg transition-all duration-200 hover:scale-105"
+            title={`Subscribe to ${currentStream.user_name}`}
+          >
+            <span>Subscribe</span>
+            {subscriberBadgeUrl ? (
+              <img
+                src={subscriberBadgeUrl}
+                alt="Subscriber badge"
+                className="w-5 h-5"
+                onError={(e) => {
+                  e.currentTarget.style.display = 'none';
+                }}
+              />
+            ) : (
+              <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
+              </svg>
+            )}
+          </button>
+        </div>
+      )}
     </div>
   );
 };

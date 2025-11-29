@@ -159,6 +159,23 @@ const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageI
         );
       }
 
+      if (segment.type === 'emoji' && segment.emojiUrl) {
+        return (
+          <img
+            key={`emoji-${segment.content}-${index}`}
+            src={segment.emojiUrl}
+            alt={segment.content}
+            className="inline h-5 w-5 align-middle mx-0.5"
+            title={segment.content}
+            onError={(e) => {
+              // Fallback to native emoji if image fails to load
+              e.currentTarget.style.display = 'none';
+              e.currentTarget.insertAdjacentText('afterend', segment.content);
+            }}
+          />
+        );
+      }
+
       // Parse text for URLs and make them clickable
       return <span key={index}>{parseTextWithLinks(segment.content)}</span>;
     });

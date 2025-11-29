@@ -1,10 +1,12 @@
 import { Emote, EmoteSet } from './emoteService';
+import { parseEmojis } from './emojiService';
 
 export interface EmoteSegment {
-  type: 'text' | 'emote';
+  type: 'text' | 'emote' | 'emoji';
   content: string;
   emoteId?: string;
   emoteUrl?: string;
+  emojiUrl?: string;
 }
 
 // Parse Twitch native emotes from the emotes tag
@@ -74,17 +76,14 @@ export function parseEmotesWithThirdParty(
   // First parse Twitch native emotes
   let segments = parseEmotes(text, emotesTag);
 
-  // If no third-party emotes available, return Twitch emotes only
-  if (!emoteSet) {
-    return segments;
-  }
-
   // Build a map of all third-party emotes by name
   const thirdPartyEmotes = new Map<string, Emote>();
-  
-  [...emoteSet.bttv, ...emoteSet['7tv'], ...emoteSet.ffz].forEach(emote => {
-    thirdPartyEmotes.set(emote.name, emote);
-  });
+
+  if (emoteSet) {
+    [...emoteSet.bttv, ...emoteSet['7tv'], ...emoteSet.ffz].forEach(emote => {
+      thirdPartyEmotes.set(emote.name, emote);
+    });
+  }
 
   // Process each text segment to find third-party emotes
   const finalSegments: EmoteSegment[] = [];
@@ -96,7 +95,7 @@ export function parseEmotesWithThirdParty(
     } else {
       // Split text by spaces and check each word
       const words = segment.content.split(' ');
-      
+
       for (let i = 0; i < words.length; i++) {
         const word = words[i];
         const emote = thirdPartyEmotes.get(word);
@@ -109,11 +108,23 @@ export function parseEmotesWithThirdParty(
             emoteUrl: emote.url,
           });
         } else {
-          // Regular text
-          finalSegments.push({
-            type: 'text',
-            content: word,
-          });
+          // Regular text - parse for emojis
+          const emojiSegments = parseEmojis(word);
+
+          for (const emojiSeg of emojiSegments) {
+            if (emojiSeg.type === 'emoji') {
+              finalSegments.push({
+                type: 'emoji',
+                content: emojiSeg.content,
+                emojiUrl: emojiSeg.emojiUrl,
+              });
+            } else {
+              finalSegments.push({
+                type: 'text',
+                content: emojiSeg.content,
+              });
+            }
+          }
         }
 
         // Add space between words (except after last word)
