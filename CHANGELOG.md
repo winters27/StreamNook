@@ -1,3 +1,7 @@
+## [3.4.17] - 2025-11-29
+### ✨ Features
+- Added joke messages when clicking test notifications. Test notifications now have an `is_test` flag.
+
 ## [3.4.16] - 2025-11-29
 ### ✨ Features
 - Added a "Test Notification" button in settings to trigger a sample notification.
@@ -322,6 +326,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
