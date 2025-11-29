@@ -119,6 +119,7 @@ export interface Settings {
   last_seen_version?: string;
   auto_switch?: AutoSwitchSettings;
   theme?: string; // Theme ID (e.g., 'winters-glass', 'dracula', 'nord')
+  error_reporting_enabled?: boolean; // Opt-in error reporting (default: true)
 }
 
 export interface ReleaseNotes {

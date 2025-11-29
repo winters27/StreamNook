@@ -1,19 +1,15 @@
 import { useState, useEffect } from 'react';
-import { Bug, Copy, Download, Trash2, AlertTriangle, Info, AlertCircle, RefreshCw } from 'lucide-react';
+import { AlertTriangle, AlertCircle, RefreshCw, Trash2, Shield } from 'lucide-react';
 import { useAppStore } from '../../stores/AppStore';
-import {
-    getLogs,
-    clearLogs,
-    copyBugReportToClipboard,
-    saveBugReportToFile,
-    type LogEntry
-} from '../../services/logService';
+import { getLogs, clearLogs, type LogEntry } from '../../services/logService';
 
 const SupportSettings = () => {
-    const { addToast } = useAppStore();
+    const { settings, updateSettings, addToast } = useAppStore();
     const [logs, setLogs] = useState<LogEntry[]>([]);
-    const [isExporting, setIsExporting] = useState(false);
     const [filter, setFilter] = useState<'all' | 'errors' | 'warnings'>('all');
+
+    // Default to enabled if not set
+    const errorReportingEnabled = settings.error_reporting_enabled !== false;
 
     // Refresh logs periodically
     useEffect(() => {
@@ -35,32 +31,15 @@ const SupportSettings = () => {
     const errorCount = logs.filter(l => l.level === 'error').length;
     const warningCount = logs.filter(l => l.level === 'warn').length;
 
-    const handleCopyToClipboard = async () => {
-        setIsExporting(true);
-        try {
-            const success = await copyBugReportToClipboard();
-            if (success) {
-                addToast('Bug report copied to clipboard! You can now paste it to share.', 'success');
-            } else {
-                addToast('Failed to copy bug report', 'error');
-            }
-        } catch {
-            addToast('Failed to copy bug report', 'error');
-        }
-        setIsExporting(false);
-    };
-
-    const handleSaveToFile = async () => {
-        setIsExporting(true);
-        try {
-            const success = await saveBugReportToFile();
-            if (success) {
-                addToast('Bug report saved! You can share this file.', 'success');
-            }
-        } catch {
-            addToast('Failed to save bug report', 'error');
-        }
-        setIsExporting(false);
+    const handleToggleErrorReporting = () => {
+        const newValue = !errorReportingEnabled;
+        updateSettings({ ...settings, error_reporting_enabled: newValue });
+        addToast(
+            newValue
+                ? 'Error reporting enabled - thank you for helping improve StreamNook!'
+                : 'Error reporting disabled',
+            newValue ? 'success' : 'info'
+        );
     };
 
     const handleClearLogs = () => {
@@ -80,7 +59,7 @@ const SupportSettings = () => {
             case 'warn':
                 return <AlertTriangle className="w-3 h-3 text-yellow-400" />;
             default:
-                return <Info className="w-3 h-3 text-blue-400" />;
+                return <AlertCircle className="w-3 h-3 text-blue-400" />;
         }
     };
 
@@ -97,56 +76,50 @@ const SupportSettings = () => {
 
     return (
         <div className="space-y-6">
-            {/* Bug Report Section */}
+            {/* Error Reporting Toggle */}
             <div>
                 <h3 className="text-sm font-semibold text-textPrimary mb-3 flex items-center gap-2">
-                    <Bug className="w-4 h-4" />
-                    Bug Report
+                    <Shield className="w-4 h-4" />
+                    Anonymous Error Reporting
                 </h3>
-                <p className="text-xs text-textSecondary mb-4">
-                    Having issues? Export a bug report to share with the developer. The report includes
-                    system info and recent logs to help diagnose problems.
-                </p>
 
-                <div className="flex gap-3">
-                    <button
-                        onClick={handleCopyToClipboard}
-                        disabled={isExporting}
-                        className="flex items-center gap-2 px-4 py-2 glass-button text-textPrimary text-sm font-medium disabled:opacity-50"
-                    >
-                        <Copy className="w-4 h-4" />
-                        Copy to Clipboard
-                    </button>
-                    <button
-                        onClick={handleSaveToFile}
-                        disabled={isExporting}
-                        className="flex items-center gap-2 px-4 py-2 glass-button text-textPrimary text-sm font-medium disabled:opacity-50"
-                    >
-                        <Download className="w-4 h-4" />
-                        Save to File
-                    </button>
-                </div>
+                <div className="glass-panel p-4 rounded-lg">
+                    <div className="flex items-center justify-between">
+                        <div className="flex-1 pr-4">
+                            <p className="text-sm text-textPrimary font-medium">
+                                Help improve StreamNook
+                            </p>
+                            <p className="text-xs text-textSecondary mt-1">
+                                Automatically send anonymous error reports when something goes wrong.
+                                No personal data is collected.
+                            </p>
+                        </div>
+                        <button
+                            onClick={handleToggleErrorReporting}
+                            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${errorReportingEnabled ? 'bg-green-500' : 'bg-gray-600'
+                                }`}
+                        >
+                            <span
+                                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${errorReportingEnabled ? 'translate-x-6' : 'translate-x-1'
+                                    }`}
+                            />
+                        </button>
+                    </div>
 
-                <div className="mt-3 p-3 glass-panel rounded-lg">
-                    <p className="text-xs text-textSecondary">
-                        <strong>How to report a bug:</strong>
-                    </p>
-                    <ol className="text-xs text-textSecondary mt-2 space-y-1 list-decimal list-inside">
-                        <li>Reproduce the issue if possible</li>
-                        <li>Click "Copy to Clipboard" or "Save to File"</li>
-                        <li>Share the report in the StreamNook Discord or GitHub issues</li>
-                    </ol>
+                    <div className="mt-3 pt-3 border-t border-borderSubtle">
+                        <p className="text-xs text-textSecondary opacity-70">
+                            {errorReportingEnabled
+                                ? '✓ Error reports are being sent to help diagnose issues'
+                                : '✗ Error reporting is disabled'}
+                        </p>
+                    </div>
                 </div>
             </div>
 
-            {/* Log Statistics */}
+            {/* Error & Warning Stats */}
             <div>
-                <h3 className="text-sm font-semibold text-textPrimary mb-3">Log Statistics</h3>
-                <div className="grid grid-cols-3 gap-3">
-                    <div className="p-3 glass-panel rounded-lg text-center">
-                        <div className="text-2xl font-bold text-textPrimary">{logs.length}</div>
-                        <div className="text-xs text-textSecondary">Total Logs</div>
-                    </div>
+                <h3 className="text-sm font-semibold text-textPrimary mb-3">Session Statistics</h3>
+                <div className="grid grid-cols-2 gap-3">
                     <div className="p-3 glass-panel rounded-lg text-center">
                         <div className="text-2xl font-bold text-red-400">{errorCount}</div>
                         <div className="text-xs text-textSecondary">Errors</div>
@@ -158,10 +131,10 @@ const SupportSettings = () => {
                 </div>
             </div>
 
-            {/* Recent Logs */}
+            {/* Recent Errors & Warnings */}
             <div>
                 <div className="flex items-center justify-between mb-3">
-                    <h3 className="text-sm font-semibold text-textPrimary">Recent Logs</h3>
+                    <h3 className="text-sm font-semibold text-textPrimary">Recent Errors & Warnings</h3>
                     <div className="flex items-center gap-2">
                         <select
                             value={filter}
@@ -189,19 +162,19 @@ const SupportSettings = () => {
                     </div>
                 </div>
 
-                <div className="glass-panel rounded-lg p-2 max-h-64 overflow-y-auto scrollbar-thin">
+                <div className="glass-panel rounded-lg p-2 max-h-48 overflow-y-auto scrollbar-thin">
                     {filteredLogs.length === 0 ? (
-                        <div className="text-center text-textSecondary text-xs py-8">
-                            No logs to display
+                        <div className="text-center text-textSecondary text-xs py-6">
+                            No errors or warnings recorded 🎉
                         </div>
                     ) : (
                         <div className="space-y-1">
-                            {filteredLogs.slice(-50).reverse().map((log, index) => (
+                            {filteredLogs.slice(-30).reverse().map((log, index) => (
                                 <div
                                     key={index}
                                     className={`text-xs font-mono p-1.5 rounded ${log.level === 'error' ? 'bg-red-500/10' :
-                                        log.level === 'warn' ? 'bg-yellow-500/10' :
-                                            'bg-transparent hover:bg-glass'
+                                            log.level === 'warn' ? 'bg-yellow-500/10' :
+                                                'bg-transparent'
                                         }`}
                                 >
                                     <div className="flex items-start gap-2">
@@ -213,7 +186,7 @@ const SupportSettings = () => {
                                             [{log.category}]
                                         </span>
                                         <span className={getLevelColor(log.level)}>
-                                            {log.message}
+                                            {log.message.slice(0, 80)}{log.message.length > 80 ? '...' : ''}
                                         </span>
                                     </div>
                                 </div>

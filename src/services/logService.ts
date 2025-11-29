@@ -71,10 +71,25 @@ const extractCategory = (message: string): { category: string; cleanMessage: str
     return { category: 'App', cleanMessage: message };
 };
 
+// Check if error reporting is enabled in settings
+const isErrorReportingEnabled = (): boolean => {
+    try {
+        const settingsJson = localStorage.getItem('streamnook-settings');
+        if (settingsJson) {
+            const settings = JSON.parse(settingsJson);
+            // Default to true if not explicitly set to false
+            return settings.error_reporting_enabled !== false;
+        }
+    } catch {
+        // If we can't read settings, default to enabled
+    }
+    return true; // Default enabled
+};
+
 // Send errors to Discord webhook (batched to prevent spam)
 const sendToDiscordWebhook = async (errors: LogEntry[]): Promise<void> => {
-    // Don't send if no webhook configured
-    if (!DISCORD_ERROR_WEBHOOK) {
+    // Don't send if no webhook configured or error reporting is disabled
+    if (!DISCORD_ERROR_WEBHOOK || !isErrorReportingEnabled()) {
         return;
     }
 
@@ -208,14 +223,15 @@ const addLog = (level: LogLevel, args: unknown[]): void => {
 };
 
 // Initialize the log capture by wrapping console methods
+// Only captures errors and warnings - info/debug logs are passed through but not stored
 export const initLogCapture = (): void => {
     console.log = (...args: unknown[]) => {
-        addLog('info', args);
+        // Don't store info logs, just pass through
         originalConsole.log(...args);
     };
 
     console.info = (...args: unknown[]) => {
-        addLog('info', args);
+        // Don't store info logs, just pass through
         originalConsole.info(...args);
     };
 
