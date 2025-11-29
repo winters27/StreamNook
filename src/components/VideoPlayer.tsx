@@ -22,9 +22,13 @@ const VideoPlayer = () => {
 
   // Track consecutive fatal errors to determine when stream is truly offline
   const fatalErrorCountRef = useRef<number>(0);
+  const manifestErrorCountRef = useRef<number>(0);
   const lastErrorTimeRef = useRef<number>(0);
-  const maxFatalErrorsBeforeOffline = 3;
+  const lastSuccessfulPlayRef = useRef<number>(0);
+  const maxFatalErrorsBeforeOffline = 5; // Increased from 3 - be more tolerant
+  const maxManifestErrorsBeforeOffline = 4; // Increased from 2 - be more tolerant
   const errorResetTimeMs = 30000; // Reset error count after 30 seconds of stability
+  const minPlayTimeBeforeOfflineMs = 5000; // Must have played at least 5 seconds before considering offline
 
   // Sync volume with store
   const syncVolumeToPlayer = useCallback(() => {
@@ -263,6 +267,10 @@ const VideoPlayer = () => {
         console.log('[HLS] Manifest parsed, starting playback');
         console.log('[HLS] Available quality levels:', data.levels.map(l => `${l.height}p @ ${l.bitrate}bps`).join(', '));
 
+        // Reset error counts on successful manifest parse - stream is working
+        fatalErrorCountRef.current = 0;
+        manifestErrorCountRef.current = 0;
+
         // Initialize Plyr AFTER we have the video loaded
         if (!playerRef.current) {
           const player = new Plyr(video, {
@@ -379,11 +387,21 @@ const VideoPlayer = () => {
                 data.details === 'levelLoadTimeOut') {
                 console.log(`[HLS] Manifest/level loading failed: ${data.details}`);
 
-                // For manifest errors, count them more aggressively
-                fatalErrorCountRef.current++;
+                // For manifest errors, use separate counter to be more careful
+                manifestErrorCountRef.current++;
+                console.log(`[HLS] Manifest error count: ${manifestErrorCountRef.current}/${maxManifestErrorsBeforeOffline}`);
 
-                if (fatalErrorCountRef.current >= 2 && !isAutoSwitching) {
+                // Only trigger offline if we've had multiple manifest errors AND 
+                // either never played successfully OR it's been a while since we started
+                const timeSinceStart = Date.now() - lastSuccessfulPlayRef.current;
+                const hasPlayedSuccessfully = lastSuccessfulPlayRef.current > 0;
+                const shouldTriggerOffline = manifestErrorCountRef.current >= maxManifestErrorsBeforeOffline &&
+                  (!hasPlayedSuccessfully || timeSinceStart > minPlayTimeBeforeOfflineMs);
+
+                if (shouldTriggerOffline && !isAutoSwitching) {
                   console.log('[HLS] Multiple manifest errors, stream likely offline. Triggering auto-switch...');
+                  console.log(`[HLS] Has played: ${hasPlayedSuccessfully}, Time since start: ${timeSinceStart}ms`);
+                  manifestErrorCountRef.current = 0;
                   fatalErrorCountRef.current = 0;
                   handleStreamOffline();
                   return;
@@ -441,6 +459,17 @@ const VideoPlayer = () => {
       video.addEventListener('playing', () => {
         console.log(`[Video] Playing: ${video.videoWidth}x${video.videoHeight}, paused: ${video.paused}, readyState: ${video.readyState}`);
         console.log(`[Video] Audio state: muted=${video.muted}, volume=${video.volume}`);
+
+        // Track successful playback - this helps us distinguish between
+        // "stream never loaded" vs "stream was playing and then had issues"
+        if (lastSuccessfulPlayRef.current === 0) {
+          lastSuccessfulPlayRef.current = Date.now();
+          console.log('[Video] First successful playback recorded');
+        }
+
+        // Reset error counts on successful playback - stream is working
+        fatalErrorCountRef.current = 0;
+        manifestErrorCountRef.current = 0;
       });
 
     } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
@@ -560,6 +589,12 @@ const VideoPlayer = () => {
       // Reset state
       isLiveRef.current = true;
       userInitiatedPauseRef.current = false;
+
+      // Reset error tracking for next stream
+      fatalErrorCountRef.current = 0;
+      manifestErrorCountRef.current = 0;
+      lastSuccessfulPlayRef.current = 0;
+      lastErrorTimeRef.current = 0;
     };
   }, [streamUrl, createPlayer, updateLiveTimeDisplay]);
 

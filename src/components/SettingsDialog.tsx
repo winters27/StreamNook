@@ -7,8 +7,9 @@ import ChatSettings from './settings/ChatSettings';
 import IntegrationsSettings from './settings/IntegrationsSettings';
 import CacheSettings from './settings/CacheSettings';
 import NotificationsSettings from './settings/NotificationsSettings';
+import SupportSettings from './settings/SupportSettings';
 
-type Tab = 'General' | 'Player' | 'Chat' | 'Integrations' | 'Notifications' | 'Cache';
+type Tab = 'General' | 'Player' | 'Chat' | 'Integrations' | 'Notifications' | 'Cache' | 'Support';
 
 const SettingsDialog = () => {
   const { settings, updateSettings, isSettingsOpen, closeSettings } = useAppStore();
@@ -143,7 +144,7 @@ const SettingsDialog = () => {
           {/* Tabs Navigation */}
           <div className="w-1/4 pr-6 border-r border-borderSubtle">
             <nav className="flex flex-col space-y-2">
-              {(['General', 'Player', 'Chat', 'Integrations', 'Notifications', 'Cache'] as Tab[]).map((tab) => (
+              {(['General', 'Player', 'Chat', 'Integrations', 'Notifications', 'Cache', 'Support'] as Tab[]).map((tab) => (
                 <button
                   key={tab}
                   onClick={() => setActiveTab(tab)}
@@ -173,6 +174,7 @@ const SettingsDialog = () => {
             {activeTab === 'Integrations' && <IntegrationsSettings />}
             {activeTab === 'Notifications' && <NotificationsSettings />}
             {activeTab === 'Cache' && <CacheSettings />}
+            {activeTab === 'Support' && <SupportSettings />}
           </div>
         </div>
 

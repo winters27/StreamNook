@@ -1,3 +1,4 @@
+use std::env;
 use tauri::command;
 use tauri::window::Window;
 
@@ -75,4 +76,13 @@ pub async fn calculate_aspect_ratio_size(
     };
 
     Ok((new_width, new_height))
+}
+
+#[command]
+pub fn get_system_info() -> String {
+    let os = env::consts::OS;
+    let arch = env::consts::ARCH;
+    let family = env::consts::FAMILY;
+
+    format!("{} {} ({})", os, arch, family)
 }
