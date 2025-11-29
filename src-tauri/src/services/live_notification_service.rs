@@ -17,6 +17,8 @@ pub struct LiveNotification {
     pub game_image: Option<String>,
     pub stream_title: Option<String>,
     pub stream_url: String,
+    #[serde(default)]
+    pub is_test: bool,
 }
 
 pub struct LiveNotificationService {
@@ -153,6 +155,7 @@ impl LiveNotificationService {
             game_image,
             stream_title: Some(stream.title.clone()),
             stream_url: format!("https://twitch.tv/{}", stream.user_login),
+            is_test: false,
         };
 
         // Emit event to frontend

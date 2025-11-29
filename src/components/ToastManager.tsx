@@ -13,7 +13,63 @@ interface LiveNotification {
   game_image?: string;
   stream_title?: string;
   stream_url: string;
+  is_test?: boolean;
 }
+
+// Funny joke messages for when users click on test notifications
+const TEST_NOTIFICATION_JOKES = [
+  "Gotcha! Did you really think xQc was streaming right now?",
+  "This is just a test, silly! But nice reflexes.",
+  "Almost freed the notification... but not quite!",
+  "Congratulations! You clicked on nothing!",
+  "Plot twist: There is no stream. There never was.",
+  "xQc isn't live, but your disappointment is!",
+  "Your click accuracy is immaculate. Shame it was wasted here.",
+  "*poof* The stream disappears into thin air...",
+  "What did you expect? A real stream? In THIS economy?",
+  "RIP your hopes and dreams of catching a live stream",
+  "You've been bamboozled! +100 XP in gullibility",
+  "The real stream was the friends we made along the way",
+  "Welcome to the circus! Population: you",
+  "My evil plan worked perfectly! MUAHAHAHA!",
+  "This message brought to you by: False Hope™",
+  "Error 418: I'm a teapot, not a real notification",
+  "Ta-da! Magic trick: making your excitement disappear!",
+  "Cool people don't click test notifications... just saying",
+  "This notification is as real as unicorns",
+  "Achievement Unlocked: Clicked a Fake Stream",
+  "Surprise! The surprise is there's no surprise!",
+  "The notification played you like a fiddle",
+  "Experiment complete: Human clicks shiny button",
+  "And the Oscar for Best Click goes to... YOU!",
+  "Trust issues? You should have some after this.",
+  "The stream was in your heart all along",
+  "Awkward... this is just a test...",
+  "Of course we weren't going to a real stream, silly!",
+  "Nice try, but this notification leads nowhere",
+  "You really fell for that? Classic.",
+  // Harsh roast additions
+  "Bro read TEST notification and still clicked. L.",
+  "Imagine clicking a test notification. Couldn't be me.",
+  "Your reading comprehension needs work.",
+  "Tell me you don't read without telling me you don't read.",
+  "The word TEST is right there. In the settings. Where you clicked.",
+  "Did you skip the part where it said TEST?",
+  "Smartest StreamNook user right here.",
+  "This is why we can't have nice things.",
+  "I've seen better judgment from a Magic 8-Ball.",
+  "Your clicks have negative value. Impressive.",
+  "Speedrunning embarrassment any%",
+  "You click TEST buttons at job interviews too?",
+  "Brain.exe has stopped working",
+  "Congratulations, you played yourself.",
+  "Even the notification feels second-hand embarrassment.",
+  "Peak performance. This is it. This is the top.",
+  "Did the word TEST stutter?",
+  "Reading is free, you know.",
+  "Not your proudest click, is it?",
+  "You really woke up and chose gullibility today.",
+];
 
 const ToastManager = () => {
   const { toasts, removeToast, addToast, settings } = useAppStore();
@@ -167,10 +223,18 @@ const ToastManager = () => {
         </div>
       );
 
-      // Add toast with click action to open stream
+      // Add toast with click action to open stream (or show joke for test notifications)
       addToast(toastContent, 'live', {
-        label: 'Watch',
+        label: notification.is_test ? 'Test' : 'Watch',
         onClick: async () => {
+          // If this is a test notification, show a funny joke popup instead of navigating
+          if (notification.is_test) {
+            const randomJoke = TEST_NOTIFICATION_JOKES[Math.floor(Math.random() * TEST_NOTIFICATION_JOKES.length)];
+            const { addToast: showJoke } = useAppStore.getState();
+            showJoke(randomJoke, 'info');
+            return;
+          }
+
           try {
             // Use the AppStore's startStream method which properly handles all state updates
             const { startStream } = useAppStore.getState();

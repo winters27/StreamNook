@@ -450,6 +450,7 @@ pub async fn send_test_notification(
         game_image: Some(mock_game_image_url.to_string()),
         stream_title: Some(random_message.to_string()),
         stream_url: format!("https://twitch.tv/{}", mock_streamer_login),
+        is_test: true,
     };
 
     // Emit the notification event to the frontend
