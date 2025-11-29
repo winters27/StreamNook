@@ -20,6 +20,7 @@ import {
   getFavoriteEmotes
 } from '../services/favoriteEmoteService';
 import { getAppleEmojiUrl } from '../services/emojiService';
+import { fetchRecentMessagesAsIRC } from '../services/ivrService';
 
 interface ParsedMessage {
   username: string;
@@ -195,6 +196,7 @@ const ChatWidget = () => {
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
   const [isSharedChat, setIsSharedChat] = useState<boolean>(false);
   const [replyingTo, setReplyingTo] = useState<{ messageId: string; username: string } | null>(null);
+  const lastMessageCountRef = useRef<number>(0);
 
   useEffect(() => {
     const newMessages = messages.slice(lastProcessedCountRef.current);
@@ -283,7 +285,8 @@ const ChatWidget = () => {
   useEffect(() => {
     if (currentStream?.user_login && connectedChannelRef.current !== currentStream.user_login) {
       connectedChannelRef.current = currentStream.user_login;
-      connectChat(currentStream.user_login);
+      // Pass roomId (user_id) to enable fetching recent messages from IVR API
+      connectChat(currentStream.user_login, currentStream.user_id);
       loadEmotes(currentStream.user_login, currentStream.user_id);
       userMessageHistory.current.clear();
     }
@@ -292,16 +295,40 @@ const ChatWidget = () => {
     };
   }, [currentStream?.user_login, currentStream?.user_id]);
 
+  // Handle historical messages being loaded (bulk load) vs new messages being appended
   useEffect(() => {
     if (!listRef.current || messages.length === 0) return;
     const lastIndex = messages.length - 1;
-    if (!isPaused) {
+    const prevCount = lastMessageCountRef.current;
+    const countDiff = messages.length - prevCount;
+
+    // Detect if this is a bulk load (many messages at once, likely historical)
+    // vs a normal append (1-2 messages at a time)
+    const isBulkLoad = prevCount === 0 && messages.length > 5;
+
+    if (isBulkLoad) {
+      // Historical messages were loaded - reset all heights and the entire list
+      console.log('[ChatWidget] Bulk load detected, resetting list from index 0');
+      rowHeights.current = {};
+      messageHeightsById.current.clear();
+      listRef.current.resetAfterIndex(0, true);
+      // Scroll to bottom after a short delay to allow heights to be measured
+      setTimeout(() => {
+        if (listRef.current && messages.length > 0) {
+          listRef.current.scrollToItem(messages.length - 1, 'end');
+          maxScrollPositionRef.current = lastScrollPositionRef.current;
+        }
+      }, 100);
+    } else if (!isPaused) {
+      // Normal message append
       listRef.current.resetAfterIndex(Math.max(0, lastIndex - 1));
       listRef.current.scrollToItem(lastIndex, 'end');
       setTimeout(() => {
         maxScrollPositionRef.current = lastScrollPositionRef.current;
       }, 50);
     }
+
+    lastMessageCountRef.current = messages.length;
   }, [messages, isPaused]);
 
   useEffect(() => {

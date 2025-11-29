@@ -340,6 +340,48 @@ body {
   background-size: 200% 100%;
 }
 
+/* Bits cheer gradient animation - purple/blue theme matching Twitch bits */
+@keyframes bits-sparkle {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+.bits-gradient {
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--color-highlight-purple) 18%, transparent) 0%,
+    color-mix(in srgb, var(--color-highlight-blue) 15%, transparent) 20%,
+    color-mix(in srgb, var(--color-highlight-cyan) 12%, transparent) 40%,
+    color-mix(in srgb, var(--color-highlight-blue) 12%, transparent) 60%,
+    color-mix(in srgb, var(--color-highlight-purple) 15%, transparent) 80%,
+    color-mix(in srgb, var(--color-highlight-pink) 18%, transparent) 100%
+  );
+  background-size: 200% 100%;
+  animation: bits-sparkle 3s ease-in-out infinite;
+  animation-fill-mode: both;
+  will-change: background-position;
+}
+
+.bits-gradient:hover {
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--color-highlight-purple) 25%, transparent) 0%,
+    color-mix(in srgb, var(--color-highlight-blue) 22%, transparent) 20%,
+    color-mix(in srgb, var(--color-highlight-cyan) 18%, transparent) 40%,
+    color-mix(in srgb, var(--color-highlight-blue) 18%, transparent) 60%,
+    color-mix(in srgb, var(--color-highlight-purple) 22%, transparent) 80%,
+    color-mix(in srgb, var(--color-highlight-pink) 25%, transparent) 100%
+  );
+  background-size: 200% 100%;
+}
+
 /* Custom ultra-blur for floating header */
 .backdrop-blur-ultra {
   backdrop-filter: blur(64px) saturate(180%);

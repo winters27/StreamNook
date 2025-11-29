@@ -236,11 +236,189 @@ const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageI
   // Check if this is a charity donation message
   const isDonation = msgId === 'charitydonation' || sourceMsgId === 'charitydonation';
 
+  // Check if this is a bits cheer message
+  const bitsAmount = parsed.tags.get('bits');
+  const isBitsCheer = bitsAmount && parseInt(bitsAmount, 10) > 0;
+
   // Get system message for subscriptions and donations
   const systemMessage = parsed.tags.get('system-msg')?.replace(/\\s/g, ' ');
 
   // Check if this is a first-time message
   const isFirstMessage = parsed.tags.get('first-msg') === '1';
+
+  // Extract source room info for shared chat (needed for all message types)
+  const sourceRoomId = parsed.tags.get('source-room-id');
+  const currentRoomId = parsed.tags.get('room-id');
+  const isFromSharedChat = sourceRoomId && currentRoomId && sourceRoomId !== currentRoomId;
+
+  // State to store the fetched channel name - initialize from cache if available
+  // These hooks must be declared before any conditional returns
+  const [fetchedChannelName, setFetchedChannelName] = useState<string | null>(() => {
+    if (sourceRoomId && channelNameCache.has(sourceRoomId)) {
+      return channelNameCache.get(sourceRoomId) || null;
+    }
+    return null;
+  });
+
+  // State to store the channel profile image
+  const [channelProfileImage, setChannelProfileImage] = useState<string | null>(() => {
+    if (sourceRoomId && channelProfileImageCache.has(sourceRoomId)) {
+      return channelProfileImageCache.get(sourceRoomId) || null;
+    }
+    return null;
+  });
+
+  // Fetch source channel name and profile image if this is a shared chat message (only once per sourceRoomId)
+  useEffect(() => {
+    if (!isFromSharedChat || !sourceRoomId) return;
+
+    // Check if we already have it in cache
+    if (channelNameCache.has(sourceRoomId)) {
+      const cachedName = channelNameCache.get(sourceRoomId);
+      if (cachedName && cachedName !== fetchedChannelName) {
+        setFetchedChannelName(cachedName);
+      }
+    }
+
+    if (channelProfileImageCache.has(sourceRoomId)) {
+      const cachedImage = channelProfileImageCache.get(sourceRoomId);
+      if (cachedImage && cachedImage !== channelProfileImage) {
+        setChannelProfileImage(cachedImage);
+      }
+      return;
+    }
+
+    // Fetch the channel name and profile image
+    import('@tauri-apps/api/core').then(({ invoke }) => {
+      invoke<any>('get_user_by_id', { userId: sourceRoomId })
+        .then((user) => {
+          if (user && user.login) {
+            // Store name in cache
+            channelNameCache.set(sourceRoomId, user.login);
+            setFetchedChannelName(user.login);
+
+            // Store profile image in cache
+            if (user.profile_image_url) {
+              channelProfileImageCache.set(sourceRoomId, user.profile_image_url);
+              setChannelProfileImage(user.profile_image_url);
+            }
+          }
+        })
+        .catch((err) => {
+          console.warn('[ChatMessage] Failed to fetch source channel info:', err);
+        });
+    });
+  }, [isFromSharedChat, sourceRoomId, fetchedChannelName, channelProfileImage]);
+
+  // Handle bits cheers
+  if (isBitsCheer) {
+    // Generate a unique key based on message ID to prevent animation restarts
+    const messageId = parsed.tags.get('id') || `bits-${parsed.username}-${Date.now()}`;
+    const bitsCount = parseInt(bitsAmount!, 10);
+
+    // Format bits count with commas for readability
+    const formattedBits = bitsCount.toLocaleString();
+
+    // Determine bits tier color based on amount (matching Twitch's color scheme)
+    const getBitsTierColor = (bits: number): string => {
+      if (bits >= 10000) return '#ff1f1f'; // Red
+      if (bits >= 5000) return '#0099fe'; // Blue
+      if (bits >= 1000) return '#1db2a6'; // Teal
+      if (bits >= 100) return '#9c3ee8'; // Purple
+      return '#979797'; // Gray (1-99)
+    };
+
+    const bitsTierColor = getBitsTierColor(bitsCount);
+
+    // Helper function to render username as clickable
+    const renderClickableUsername = (username: string, displayName?: string) => {
+      const userIdForClick = userId;
+      return (
+        <span
+          className="font-bold cursor-pointer hover:underline"
+          style={usernameStyle}
+          onClick={(e) => {
+            if (userIdForClick && onUsernameClick) {
+              onUsernameClick(
+                userIdForClick,
+                username,
+                displayName || username,
+                parsed.color,
+                parsed.badges,
+                e
+              );
+            }
+          }}
+          title="Click to view profile"
+        >
+          {displayName || username}
+        </span>
+      );
+    };
+
+    // Helper function to render badges
+    const renderBadges = () => {
+      if (parsed.badges.length === 0 && !seventvBadge) return null;
+
+      return (
+        <span className="inline-flex items-center gap-1 mr-1">
+          {parsed.badges.map((badge, idx) => (
+            <img
+              key={`bits-badge-${badge.key}-${idx}`}
+              src={badge.info.image_url_1x}
+              srcSet={`${badge.info.image_url_1x} 1x, ${badge.info.image_url_2x} 2x, ${badge.info.image_url_4x} 4x`}
+              alt={badge.info.title}
+              title={badge.info.title}
+              className="w-4 h-4 inline-block cursor-pointer hover:scale-110 transition-transform"
+              onClick={() => onBadgeClick?.(badge.key, badge.info)}
+              onError={(e) => {
+                console.warn('[Badge] Failed to load badge:', badge.key, badge.info.image_url_1x);
+                e.currentTarget.style.display = 'none';
+              }}
+            />
+          ))}
+          {seventvBadge && (
+            <img
+              src={getBadgeImageUrl(seventvBadge)}
+              alt={seventvBadge.description || seventvBadge.name}
+              title={seventvBadge.description || seventvBadge.name}
+              className="w-4 h-4 inline-block"
+              onError={(e) => {
+                e.currentTarget.style.display = 'none';
+              }}
+            />
+          )}
+        </span>
+      );
+    };
+
+    return (
+      <div key={messageId} className="px-3 py-2 border-b border-borderSubtle bits-gradient">
+        <div className="flex items-start gap-2.5">
+          <div className="flex-shrink-0 mt-0.5">
+            {/* Bits/gem icon */}
+            <svg className="w-5 h-5" viewBox="0 0 20 20" fill={bitsTierColor}>
+              <path d="M10 2L3 10l7 8 7-8-7-8z" />
+              <path d="M10 2L3 10h14L10 2z" opacity="0.7" />
+              <path d="M10 18l7-8H3l7 8z" opacity="0.5" />
+            </svg>
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-white font-semibold text-sm leading-relaxed">
+              {renderBadges()}
+              {renderClickableUsername(parsed.username, parsed.tags.get('display-name') || parsed.username)}
+              <span style={{ color: bitsTierColor }} className="font-bold"> cheered {formattedBits} bits</span>
+            </p>
+            {parsed.content && (
+              <p className="text-textSecondary text-sm mt-1 leading-relaxed">
+                {renderContent(contentWithEmotes)}
+              </p>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   // Handle charity donations
   if (isDonation) {
@@ -264,53 +442,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageI
 
     // Check if this is a shared chat notice (from another channel)
     const isSharedChat = msgId === 'sharedchatnotice';
-    const sourceRoomId = parsed.tags.get('source-room-id');
-    const currentRoomId = parsed.tags.get('room-id');
-    const isFromDifferentChannel = isSharedChat && sourceRoomId && currentRoomId && sourceRoomId !== currentRoomId;
-
-    // Initialize from cache if available
-    const [sharedChannelName, setSharedChannelName] = useState<string | null>(() => {
-      if (sourceRoomId && channelNameCache.has(sourceRoomId)) {
-        return channelNameCache.get(sourceRoomId) || null;
-      }
-      return null;
-    });
-
-    useEffect(() => {
-      if (isFromDifferentChannel && systemMessage && sourceRoomId) {
-        // Check if we already have it in cache
-        if (channelNameCache.has(sourceRoomId)) {
-          const cachedName = channelNameCache.get(sourceRoomId);
-          if (cachedName && cachedName !== sharedChannelName) {
-            setSharedChannelName(cachedName);
-          }
-          return;
-        }
-
-        // Try to extract channel name from system message
-        const channelMatch = systemMessage.match(/to\s+support\s+(\w+)/i);
-        if (channelMatch && channelMatch[1]) {
-          // Store in cache
-          channelNameCache.set(sourceRoomId, channelMatch[1]);
-          setSharedChannelName(channelMatch[1]);
-        } else {
-          // Fallback: fetch channel info from Twitch API using sourceRoomId
-          import('@tauri-apps/api/core').then(({ invoke }) => {
-            invoke<any>('get_user_by_id', { userId: sourceRoomId })
-              .then((user) => {
-                if (user && user.login) {
-                  // Store in cache
-                  channelNameCache.set(sourceRoomId, user.login);
-                  setSharedChannelName(user.login);
-                }
-              })
-              .catch((err) => {
-                console.warn('[ChatMessage] Failed to fetch source channel info:', err);
-              });
-          });
-        }
-      }
-    }, [isFromDifferentChannel, systemMessage, sourceRoomId, sharedChannelName]);
+    const isFromDifferentChannel = isSharedChat && isFromSharedChat;
 
     // Helper function to render username as clickable
     const renderClickableUsername = (username: string, displayName?: string) => {
@@ -383,24 +515,24 @@ const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageI
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
             </svg>
             <span className="text-xs text-accent font-semibold">From Shared Chat</span>
-            {sharedChannelName && (
+            {fetchedChannelName && (
               <>
                 <span className="text-xs text-textSecondary">-</span>
                 <button
                   onClick={async () => {
                     try {
                       const { useAppStore } = await import('../stores/AppStore');
-                      await useAppStore.getState().startStream(sharedChannelName);
+                      await useAppStore.getState().startStream(fetchedChannelName);
                     } catch (err) {
                       console.error('[ChatMessage] Failed to switch to shared channel:', err);
                       const { useAppStore } = await import('../stores/AppStore');
-                      useAppStore.getState().addToast(`Failed to switch to ${sharedChannelName}'s stream`, 'error');
+                      useAppStore.getState().addToast(`Failed to switch to ${fetchedChannelName}'s stream`, 'error');
                     }
                   }}
                   className="text-xs text-blue-400 font-semibold hover:underline cursor-pointer"
-                  title={`Switch to ${sharedChannelName}'s stream`}
+                  title={`Switch to ${fetchedChannelName}'s stream`}
                 >
-                  {sharedChannelName}
+                  {fetchedChannelName}
                 </button>
               </>
             )}
@@ -437,7 +569,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageI
     const messageId = parsed.tags.get('id') || `sub-${parsed.username}-${Date.now()}`;
 
     // Get subscription details
-    const msgId = parsed.tags.get('msg-id');
+    const subMsgId = parsed.tags.get('msg-id');
     const msgParamRecipientDisplayName = parsed.tags.get('msg-param-recipient-display-name');
     const msgParamSubPlan = parsed.tags.get('msg-param-sub-plan');
     const msgParamSubPlanName = parsed.tags.get('msg-param-sub-plan-name')?.replace(/\\s/g, ' ');
@@ -446,56 +578,8 @@ const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageI
     const msgParamSenderCount = parsed.tags.get('msg-param-sender-count');
 
     // Check if this is a shared chat notice (from another channel)
-    const isSharedChat = msgId === 'sharedchatnotice';
-    const sourceRoomId = parsed.tags.get('source-room-id');
-    const currentRoomId = parsed.tags.get('room-id');
-    const isFromDifferentChannel = isSharedChat && sourceRoomId && currentRoomId && sourceRoomId !== currentRoomId;
-
-    // Extract channel name from system message (e.g., "Maasaw19 is gifting 5 Tier 1 Subs to Nadeshot's community!")
-    // Initialize from cache if available
-    const [sharedChannelName, setSharedChannelName] = useState<string | null>(() => {
-      if (sourceRoomId && channelNameCache.has(sourceRoomId)) {
-        return channelNameCache.get(sourceRoomId) || null;
-      }
-      return null;
-    });
-
-    useEffect(() => {
-      if (isFromDifferentChannel && systemMessage && sourceRoomId) {
-        // Check if we already have it in cache
-        if (channelNameCache.has(sourceRoomId)) {
-          const cachedName = channelNameCache.get(sourceRoomId);
-          if (cachedName && cachedName !== sharedChannelName) {
-            setSharedChannelName(cachedName);
-          }
-          return;
-        }
-
-        // Try to extract channel name from system message
-        // Pattern: "to [ChannelName]'s community" or similar
-        const channelMatch = systemMessage.match(/to\s+(\w+)'s\s+community/i);
-        if (channelMatch && channelMatch[1]) {
-          // Store in cache
-          channelNameCache.set(sourceRoomId, channelMatch[1]);
-          setSharedChannelName(channelMatch[1]);
-        } else {
-          // Fallback: fetch channel info from Twitch API using sourceRoomId
-          import('@tauri-apps/api/core').then(({ invoke }) => {
-            invoke<any>('get_user_by_id', { userId: sourceRoomId })
-              .then((user) => {
-                if (user && user.login) {
-                  // Store in cache
-                  channelNameCache.set(sourceRoomId, user.login);
-                  setSharedChannelName(user.login);
-                }
-              })
-              .catch((err) => {
-                console.warn('[ChatMessage] Failed to fetch source channel info:', err);
-              });
-          });
-        }
-      }
-    }, [isFromDifferentChannel, systemMessage, sourceRoomId, sharedChannelName]);
+    const isSharedChat = subMsgId === 'sharedchatnotice';
+    const isFromDifferentChannel = isSharedChat && isFromSharedChat;
 
     // Helper function to render username as clickable
     const renderClickableUsername = (username: string, displayName?: string) => {
@@ -751,7 +835,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageI
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
             </svg>
             <span className="text-xs text-accent font-semibold">From Shared Chat</span>
-            {sharedChannelName && (
+            {fetchedChannelName && (
               <>
                 <span className="text-xs text-textSecondary">-</span>
                 <button
@@ -760,17 +844,17 @@ const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageI
                       const { useAppStore } = await import('../stores/AppStore');
 
                       // Use the startStream method to switch to the shared channel
-                      await useAppStore.getState().startStream(sharedChannelName);
+                      await useAppStore.getState().startStream(fetchedChannelName);
                     } catch (err) {
                       console.error('[ChatMessage] Failed to switch to shared channel:', err);
                       const { useAppStore } = await import('../stores/AppStore');
-                      useAppStore.getState().addToast(`Failed to switch to ${sharedChannelName}'s stream`, 'error');
+                      useAppStore.getState().addToast(`Failed to switch to ${fetchedChannelName}'s stream`, 'error');
                     }
                   }}
                   className="text-xs text-blue-400 font-semibold hover:underline cursor-pointer"
-                  title={`Switch to ${sharedChannelName}'s stream`}
+                  title={`Switch to ${fetchedChannelName}'s stream`}
                 >
-                  {sharedChannelName}
+                  {fetchedChannelName}
                 </button>
               </>
             )}
@@ -799,69 +883,6 @@ const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageI
       </div>
     );
   }
-
-  // Check if this is a shared chat message (from a different channel)
-  const sourceRoomId = parsed.tags.get('source-room-id');
-  const currentRoomId = parsed.tags.get('room-id');
-  const isFromSharedChat = sourceRoomId && currentRoomId && sourceRoomId !== currentRoomId;
-
-  // State to store the fetched channel name - initialize from cache if available
-  const [fetchedChannelName, setFetchedChannelName] = useState<string | null>(() => {
-    if (sourceRoomId && channelNameCache.has(sourceRoomId)) {
-      return channelNameCache.get(sourceRoomId) || null;
-    }
-    return null;
-  });
-
-  // State to store the channel profile image
-  const [channelProfileImage, setChannelProfileImage] = useState<string | null>(() => {
-    if (sourceRoomId && channelProfileImageCache.has(sourceRoomId)) {
-      return channelProfileImageCache.get(sourceRoomId) || null;
-    }
-    return null;
-  });
-
-  // Fetch source channel name and profile image if this is a shared chat message (only once per sourceRoomId)
-  useEffect(() => {
-    if (!isFromSharedChat || !sourceRoomId) return;
-
-    // Check if we already have it in cache
-    if (channelNameCache.has(sourceRoomId)) {
-      const cachedName = channelNameCache.get(sourceRoomId);
-      if (cachedName && cachedName !== fetchedChannelName) {
-        setFetchedChannelName(cachedName);
-      }
-    }
-
-    if (channelProfileImageCache.has(sourceRoomId)) {
-      const cachedImage = channelProfileImageCache.get(sourceRoomId);
-      if (cachedImage && cachedImage !== channelProfileImage) {
-        setChannelProfileImage(cachedImage);
-      }
-      return;
-    }
-
-    // Fetch the channel name and profile image
-    import('@tauri-apps/api/core').then(({ invoke }) => {
-      invoke<any>('get_user_by_id', { userId: sourceRoomId })
-        .then((user) => {
-          if (user && user.login) {
-            // Store name in cache
-            channelNameCache.set(sourceRoomId, user.login);
-            setFetchedChannelName(user.login);
-
-            // Store profile image in cache
-            if (user.profile_image_url) {
-              channelProfileImageCache.set(sourceRoomId, user.profile_image_url);
-              setChannelProfileImage(user.profile_image_url);
-            }
-          }
-        })
-        .catch((err) => {
-          console.warn('[ChatMessage] Failed to fetch source channel info:', err);
-        });
-    });
-  }, [isFromSharedChat, sourceRoomId, fetchedChannelName, channelProfileImage]);
 
   // Build dynamic styles based on chat design settings
   const messageStyle: React.CSSProperties = {
