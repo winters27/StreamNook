@@ -12,6 +12,38 @@ export interface LogEntry {
 // Maximum number of logs to keep in memory
 const MAX_LOGS = 500;
 
+// Activity history for error context
+const MAX_ACTIVITY_HISTORY = 15;
+let activityHistory: { timestamp: string; action: string }[] = [];
+
+// Track user activity for error context
+export const trackActivity = (action: string): void => {
+    const entry = {
+        timestamp: new Date().toISOString(),
+        action: action.slice(0, 100), // Limit action length
+    };
+
+    activityHistory.push(entry);
+
+    // Keep only the last MAX_ACTIVITY_HISTORY entries
+    if (activityHistory.length > MAX_ACTIVITY_HISTORY) {
+        activityHistory = activityHistory.slice(-MAX_ACTIVITY_HISTORY);
+    }
+};
+
+// Get recent activity for error reports
+const getRecentActivity = (): string[] => {
+    return activityHistory.map(entry => {
+        const time = new Date(entry.timestamp).toLocaleTimeString('en-US', {
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hour12: false,
+        });
+        return `${time} → ${entry.action}`;
+    });
+};
+
 // Discord webhook URL for error reporting (your webhook)
 const DISCORD_ERROR_WEBHOOK = 'https://ptb.discord.com/api/webhooks/1444242659739697204/GpZDi70IWHCIObS-LOtFr89uU-J8tbnQLG7DRhHACR1Wn-26YchRTPCdWKUYf47zHyv7';
 
@@ -86,6 +118,63 @@ const isErrorReportingEnabled = (): boolean => {
     return true; // Default enabled
 };
 
+// Get current user context from the app store
+const getUserContext = (): { twitchUser: string | null; currentActivity: string | null } => {
+    try {
+        // Try to get user info from the Zustand store persisted state or direct store access
+        // The app store state is available in memory via the window object in dev, 
+        // but we'll use a more reliable approach by checking localStorage for cached user data
+
+        let twitchUser: string | null = null;
+        let currentActivity: string | null = null;
+
+        // Try to get from the app's cached state in localStorage
+        const appStateJson = localStorage.getItem('streamnook-app-state');
+        if (appStateJson) {
+            try {
+                const appState = JSON.parse(appStateJson);
+                if (appState.currentUser?.display_name) {
+                    twitchUser = appState.currentUser.display_name;
+                } else if (appState.currentUser?.login) {
+                    twitchUser = appState.currentUser.login;
+                }
+
+                if (appState.currentStream?.user_name) {
+                    currentActivity = `Watching: ${appState.currentStream.user_name}`;
+                    if (appState.currentStream.game_name) {
+                        currentActivity += ` (${appState.currentStream.game_name})`;
+                    }
+                }
+            } catch { /* ignore parse errors */ }
+        }
+
+        // Fallback: try to access the Zustand store directly if available
+        if (!twitchUser) {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const store = (window as any).__STREAMNOOK_STORE__;
+            if (store) {
+                const state = store.getState?.();
+                if (state?.currentUser?.display_name) {
+                    twitchUser = state.currentUser.display_name;
+                } else if (state?.currentUser?.login) {
+                    twitchUser = state.currentUser.login;
+                }
+
+                if (!currentActivity && state?.currentStream?.user_name) {
+                    currentActivity = `Watching: ${state.currentStream.user_name}`;
+                    if (state.currentStream.game_name) {
+                        currentActivity += ` (${state.currentStream.game_name})`;
+                    }
+                }
+            }
+        }
+
+        return { twitchUser, currentActivity };
+    } catch {
+        return { twitchUser: null, currentActivity: null };
+    }
+};
+
 // Send errors to Discord webhook (batched to prevent spam)
 const sendToDiscordWebhook = async (errors: LogEntry[]): Promise<void> => {
     // Don't send if no webhook configured or error reporting is disabled
@@ -110,6 +199,9 @@ const sendToDiscordWebhook = async (errors: LogEntry[]): Promise<void> => {
             osInfo = 'Unknown';
         }
 
+        // Get user context for the error report
+        const { twitchUser, currentActivity } = getUserContext();
+
         // Format errors for Discord embed (using code block for easy copying)
         const errorMessages = errors.slice(-10).map(e => {
             const data = e.data ? ` | ${JSON.stringify(e.data).slice(0, 80)}` : '';
@@ -119,31 +211,62 @@ const sendToDiscordWebhook = async (errors: LogEntry[]): Promise<void> => {
         // Create a copyable code block version
         const codeBlockErrors = '```\n' + errorMessages.slice(0, 900) + '\n```';
 
+        // Build fields array dynamically
+        const fields = [
+            {
+                name: 'Twitch User',
+                value: twitchUser ? `\`@${twitchUser}\`` : '`Not logged in`',
+                inline: true,
+            },
+            {
+                name: 'App Version',
+                value: `\`${appVersion}\``,
+                inline: true,
+            },
+            {
+                name: 'Platform',
+                value: `\`${osInfo}\``,
+                inline: true,
+            },
+        ];
+
+        // Add current activity if available
+        if (currentActivity) {
+            fields.push({
+                name: 'Current Activity',
+                value: `\`${currentActivity}\``,
+                inline: false,
+            });
+        }
+
+        // Add recent activity history
+        const recentActivity = getRecentActivity();
+        if (recentActivity.length > 0) {
+            const activityLog = recentActivity.slice(-10).join('\n');
+            fields.push({
+                name: `📋 Recent Actions (${recentActivity.length})`,
+                value: '```\n' + activityLog.slice(0, 800) + '\n```',
+                inline: false,
+            });
+        }
+
+        fields.push(
+            {
+                name: 'Error Count',
+                value: `\`${errors.length}\``,
+                inline: true,
+            },
+            {
+                name: 'Errors (click to copy)',
+                value: codeBlockErrors || '```No details```',
+                inline: false,
+            }
+        );
+
         const embed = {
             title: '🚨 StreamNook Error Report',
             color: 0xFF0000, // Red
-            fields: [
-                {
-                    name: 'App Version',
-                    value: `\`${appVersion}\``,
-                    inline: true,
-                },
-                {
-                    name: 'Platform',
-                    value: `\`${osInfo}\``,
-                    inline: true,
-                },
-                {
-                    name: 'Error Count',
-                    value: `\`${errors.length}\``,
-                    inline: true,
-                },
-                {
-                    name: 'Errors (click to copy)',
-                    value: codeBlockErrors || '```No details```',
-                    inline: false,
-                },
-            ],
+            fields,
             timestamp: new Date().toISOString(),
             footer: {
                 text: 'StreamNook Auto Error Report • Triple-click code block to select all',
@@ -394,6 +517,7 @@ export const saveBugReportToFile = async (): Promise<boolean> => {
 
 export default {
     initLogCapture,
+    trackActivity,
     getLogs,
     getLogsByLevel,
     getLogsByCategory,

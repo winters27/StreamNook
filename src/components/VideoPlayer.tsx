@@ -23,12 +23,16 @@ const VideoPlayer = () => {
   // Track consecutive fatal errors to determine when stream is truly offline
   const fatalErrorCountRef = useRef<number>(0);
   const manifestErrorCountRef = useRef<number>(0);
+  const nonFatalErrorCountRef = useRef<number>(0); // Track non-fatal errors like bufferStalled, fragParsing
   const lastErrorTimeRef = useRef<number>(0);
   const lastSuccessfulPlayRef = useRef<number>(0);
+  const lastFragLoadedTimeRef = useRef<number>(0); // Track when we last received a fragment
   const maxFatalErrorsBeforeOffline = 5; // Increased from 3 - be more tolerant
   const maxManifestErrorsBeforeOffline = 4; // Increased from 2 - be more tolerant
+  const maxNonFatalErrorsBeforeOffline = 8; // Non-fatal errors threshold (bufferStalled, fragParsing)
   const errorResetTimeMs = 30000; // Reset error count after 30 seconds of stability
   const minPlayTimeBeforeOfflineMs = 5000; // Must have played at least 5 seconds before considering offline
+  const noFragmentTimeoutMs = 15000; // If no fragments received for 15 seconds with errors, stream is likely offline
 
   // Sync volume with store
   const syncVolumeToPlayer = useCallback(() => {
@@ -348,8 +352,63 @@ const VideoPlayer = () => {
       });
 
       hls.on(Hls.Events.ERROR, (_event, data) => {
-        console.error('[HLS] Error:', data);
+        console.error('[HLS] Error:', JSON.stringify({ type: data.type, details: data.details, fatal: data.fatal }));
 
+        // Handle non-fatal errors that indicate stream end (bufferStalled, fragParsing)
+        if (!data.fatal) {
+          const now = Date.now();
+
+          // Check for errors that indicate stream might be ending
+          if (data.details === 'bufferStalledError' ||
+            data.details === 'fragParsingError' ||
+            data.details === 'bufferNudgeOnStall') {
+
+            // Reset error count if enough time has passed since last error
+            if (now - lastErrorTimeRef.current > errorResetTimeMs) {
+              nonFatalErrorCountRef.current = 0;
+            }
+
+            nonFatalErrorCountRef.current++;
+            lastErrorTimeRef.current = now;
+
+            console.log(`[HLS] Non-fatal error count: ${nonFatalErrorCountRef.current}/${maxNonFatalErrorsBeforeOffline}`);
+            console.log(`[HLS] Time since last fragment: ${now - lastFragLoadedTimeRef.current}ms`);
+
+            // Check if we should trigger offline detection
+            // Conditions: 
+            // 1. Multiple non-fatal errors accumulated
+            // 2. No new fragments received for a while (stream is stalled)
+            // 3. Stream has been playing successfully before (not initial load issues)
+            const hasPlayedSuccessfully = lastSuccessfulPlayRef.current > 0;
+            const timeSinceLastFrag = now - lastFragLoadedTimeRef.current;
+            const fragmentsStalled = lastFragLoadedTimeRef.current > 0 && timeSinceLastFrag > noFragmentTimeoutMs;
+
+            const shouldTriggerOffline =
+              nonFatalErrorCountRef.current >= maxNonFatalErrorsBeforeOffline &&
+              hasPlayedSuccessfully &&
+              fragmentsStalled &&
+              !isAutoSwitching;
+
+            if (shouldTriggerOffline) {
+              console.log('[HLS] Multiple non-fatal errors with stalled fragments detected. Stream appears to have ended.');
+              console.log(`[HLS] Non-fatal errors: ${nonFatalErrorCountRef.current}, Time since frag: ${timeSinceLastFrag}ms`);
+
+              // Reset error counts
+              nonFatalErrorCountRef.current = 0;
+              fatalErrorCountRef.current = 0;
+              manifestErrorCountRef.current = 0;
+
+              // Trigger auto-switch
+              handleStreamOffline();
+              return;
+            }
+          }
+
+          // For non-fatal errors, return early - HLS.js will try to recover
+          return;
+        }
+
+        // Handle fatal errors
         if (data.fatal) {
           const now = Date.now();
 
@@ -441,6 +500,13 @@ const VideoPlayer = () => {
       });
 
       hls.on(Hls.Events.FRAG_LOADED, (_event, data) => {
+        // Track when we last successfully received a fragment
+        lastFragLoadedTimeRef.current = Date.now();
+
+        // Reset non-fatal error count on successful fragment load
+        // This means the stream is still working
+        nonFatalErrorCountRef.current = 0;
+
         // Log occasionally to avoid spam
         if (Math.random() < 0.05) {
           console.log(`[HLS] Fragment loaded: ${data.frag.sn}`);
@@ -470,6 +536,7 @@ const VideoPlayer = () => {
         // Reset error counts on successful playback - stream is working
         fatalErrorCountRef.current = 0;
         manifestErrorCountRef.current = 0;
+        nonFatalErrorCountRef.current = 0;
       });
 
     } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
@@ -593,8 +660,10 @@ const VideoPlayer = () => {
       // Reset error tracking for next stream
       fatalErrorCountRef.current = 0;
       manifestErrorCountRef.current = 0;
+      nonFatalErrorCountRef.current = 0;
       lastSuccessfulPlayRef.current = 0;
       lastErrorTimeRef.current = 0;
+      lastFragLoadedTimeRef.current = 0;
     };
   }, [streamUrl, createPlayer, updateLiveTimeDisplay]);
 

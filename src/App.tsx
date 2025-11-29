@@ -83,6 +83,13 @@ function App() {
         addToast(`Claimed ${claim.points_earned} channel points!`, 'success');
       });
 
+      // Listen for drops farming errors and report them to Discord via logService
+      const unlistenDropsError = await listen('drops-error', (event: any) => {
+        const { category, message } = event.payload;
+        // Log as error - this will be picked up by logService and sent to Discord
+        console.error(`[${category}] ${message}`);
+      });
+
       // Set up periodic auth check to detect session expiry while watching
       // Check every 5 minutes
       const authCheckInterval = setInterval(async () => {
@@ -98,6 +105,7 @@ function App() {
       // Cleanup listeners on unmount
       return () => {
         unlistenChannelPoints();
+        unlistenDropsError();
         clearInterval(authCheckInterval);
       };
     };

@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
 import type { Settings, TwitchUser, TwitchStream, UserInfo } from '../types';
+import { trackActivity } from '../services/logService';
 
 export interface Toast {
   id: number;
@@ -65,6 +66,28 @@ interface AppState {
 let hasShownRestoreSessionToast = false;
 let hasShownWelcomeBackToast = false;
 
+// Helper to save user context to localStorage for error reporting
+const saveUserContextToLocalStorage = (currentUser: TwitchUser | null, currentStream: TwitchStream | null) => {
+  try {
+    const context = {
+      currentUser: currentUser ? {
+        display_name: currentUser.display_name,
+        login: currentUser.login,
+        user_id: currentUser.user_id,
+      } : null,
+      currentStream: currentStream ? {
+        user_name: currentStream.user_name,
+        user_login: currentStream.user_login,
+        game_name: currentStream.game_name,
+        title: currentStream.title,
+      } : null,
+    };
+    localStorage.setItem('streamnook-app-state', JSON.stringify(context));
+  } catch {
+    // Ignore localStorage errors
+  }
+};
+
 export const useAppStore = create<AppState>((set, get) => ({
   settings: {} as Settings,
   followedStreams: [],
@@ -88,97 +111,97 @@ export const useAppStore = create<AppState>((set, get) => ({
   originalChatPlacement: null,
   toasts: [],
   isAutoSwitching: false,
-  
+
   handleStreamOffline: async () => {
     const state = get();
     const { currentStream, settings, isAutoSwitching } = state;
-    
+
     // Prevent multiple auto-switch attempts
     if (isAutoSwitching) {
       console.log('[AutoSwitch] Already in progress, skipping');
       return;
     }
-    
+
     // Check if auto-switch is enabled
     const autoSwitchEnabled = settings.auto_switch?.enabled ?? true;
     if (!autoSwitchEnabled) {
       console.log('[AutoSwitch] Disabled in settings');
       return;
     }
-    
+
     if (!currentStream) {
       console.log('[AutoSwitch] No current stream to switch from');
       return;
     }
-    
+
     const gameName = currentStream.game_name;
     const currentUserLogin = currentStream.user_login;
-    
+
     console.log(`[AutoSwitch] Stream ${currentUserLogin} appears offline, verifying...`);
     set({ isAutoSwitching: true });
-    
+
     try {
       // Step 1: Verify the stream is actually offline via Twitch API
       // We'll check twice with a delay to be sure (streams can have brief interruptions)
       let isOffline = false;
-      
+
       for (let attempt = 0; attempt < 2; attempt++) {
         if (attempt > 0) {
           // Wait 3 seconds before second check
           await new Promise(resolve => setTimeout(resolve, 3000));
         }
-        
+
         const streamData = await invoke('check_stream_online', { userLogin: currentUserLogin }) as TwitchStream | null;
-        
+
         if (streamData) {
           console.log(`[AutoSwitch] Stream is still online (attempt ${attempt + 1}), aborting auto-switch`);
           set({ isAutoSwitching: false });
           return;
         }
-        
+
         console.log(`[AutoSwitch] Stream confirmed offline (attempt ${attempt + 1})`);
       }
-      
+
       isOffline = true;
-      
+
       if (!isOffline) {
         set({ isAutoSwitching: false });
         return;
       }
-      
+
       console.log(`[AutoSwitch] Stream ${currentUserLogin} confirmed offline`);
-      
+
       // Step 2: Clean up current stream connections thoroughly
       console.log('[AutoSwitch] Cleaning up current stream connections...');
-      
+
       try {
         await invoke('stop_stream');
         console.log('[AutoSwitch] Stream stopped');
       } catch (e) {
         console.warn('[AutoSwitch] Error stopping stream:', e);
       }
-      
+
       try {
         await invoke('stop_chat');
         console.log('[AutoSwitch] Chat stopped');
       } catch (e) {
         console.warn('[AutoSwitch] Error stopping chat:', e);
       }
-      
+
       try {
         await invoke('stop_drops_monitoring');
         console.log('[AutoSwitch] Drops monitoring stopped');
       } catch (e) {
         console.warn('[AutoSwitch] Error stopping drops monitoring:', e);
       }
-      
+
       // Clear current stream state
       set({ streamUrl: null, currentStream: null });
-      
+
       // Step 3: Find the next best stream based on mode
       const switchMode = settings.auto_switch?.mode ?? 'same_category';
       let streams: TwitchStream[] = [];
-      
+
       if (switchMode === 'same_category') {
         // Switch to same category - find streams in the same game
         if (!gameName) {
@@ -189,15 +212,15 @@ export const useAppStore = create<AppState>((set, get) => ({
           set({ isAutoSwitching: false });
           return;
         }
-        
+
         console.log(`[AutoSwitch] Looking for streams in category: ${gameName}`);
-        
+
         streams = await invoke('get_streams_by_game_name', {
           gameName: gameName,
           excludeUserLogin: currentUserLogin,
           limit: 10
         }) as TwitchStream[];
-        
+
         if (!streams || streams.length === 0) {
           console.log('[AutoSwitch] No other streams found in this category');
           if (settings.auto_switch?.show_notification ?? true) {
@@ -209,14 +232,14 @@ export const useAppStore = create<AppState>((set, get) => ({
       } else if (switchMode === 'followed_streams') {
         // Switch to followed streams - get live followed streamers
         console.log('[AutoSwitch] Looking for live followed streams');
-        
+
         try {
           // Load fresh followed streams data
           const followedStreams = await invoke('get_followed_streams') as TwitchStream[];
-          
+
           // Filter out the current (now offline) streamer
           streams = followedStreams.filter(s => s.user_login.toLowerCase() !== currentUserLogin.toLowerCase());
-          
+
           if (!streams || streams.length === 0) {
             console.log('[AutoSwitch] No other followed streams are live');
             if (settings.auto_switch?.show_notification ?? true) {
@@ -225,10 +248,10 @@ export const useAppStore = create<AppState>((set, get) => ({
             set({ isAutoSwitching: false });
             return;
           }
-          
+
           // Sort by viewer count (highest first) to pick the most popular one
           streams.sort((a, b) => (b.viewer_count || 0) - (a.viewer_count || 0));
-          
+
         } catch (e) {
           console.error('[AutoSwitch] Error fetching followed streams:', e);
           if (settings.auto_switch?.show_notification ?? true) {
@@ -238,12 +261,12 @@ export const useAppStore = create<AppState>((set, get) => ({
           return;
         }
       }
-      
+
       // The first stream is the highest viewer count (already sorted by API)
       const nextStream = streams[0];
-      
+
       console.log(`[AutoSwitch] Found next stream: ${nextStream.user_name} (${nextStream.viewer_count} viewers)`);
-      
+
       // Step 4: Show notification if enabled
       if (settings.auto_switch?.show_notification ?? true) {
         state.addToast(
@@ -251,15 +274,15 @@ export const useAppStore = create<AppState>((set, get) => ({
           'info'
         );
       }
-      
+
       // Step 5: Start the new stream
       // Small delay to ensure clean transition
       await new Promise(resolve => setTimeout(resolve, 500));
-      
+
       await state.startStream(nextStream.user_login, nextStream);
-      
+
       console.log(`[AutoSwitch] Successfully switched to ${nextStream.user_name}`);
-      
+
     } catch (e) {
       console.error('[AutoSwitch] Error during auto-switch:', e);
       state.addToast('Auto-switch failed. Please select a new stream manually.', 'error');
@@ -267,7 +290,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({ isAutoSwitching: false });
     }
   },
-  
+
   addToast: (message, type, action) => {
     const id = Date.now() + Math.random();
     set(state => ({ toasts: [...state.toasts, { id, message, type, action }] }));
@@ -290,7 +313,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       settings.favorite_streamers = [];
     }
     set({ settings, chatPlacement: settings.chat_placement });
-    
+
     // Connect to Discord if enabled
     if (settings.discord_rpc_enabled) {
       try {
@@ -302,16 +325,16 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   updateSettings: async (newSettings) => {
     const oldSettings = get().settings;
-    
+
     // Only save if settings actually changed to prevent unnecessary saves
     const settingsChanged = JSON.stringify(oldSettings) !== JSON.stringify(newSettings);
     if (!settingsChanged) {
       return;
     }
-    
+
     await invoke('save_settings', { settings: newSettings });
     set({ settings: newSettings, chatPlacement: newSettings.chat_placement });
-    
+
     // Handle Discord enable/disable toggle
     if (newSettings.discord_rpc_enabled !== oldSettings.discord_rpc_enabled) {
       if (newSettings.discord_rpc_enabled) {
@@ -339,7 +362,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       console.warn('Could not load followed streams:', e);
       // User is not authenticated, this is expected on first launch
       set({ followedStreams: [] });
-      
+
       // Show toast if user tries to view followed streams but isn't logged in
       const state = get();
       if (!state.isAuthenticated && state.showLiveStreamsOverlay) {
@@ -349,18 +372,18 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   loadRecommendedStreams: async () => {
     try {
-      const result = await invoke('get_recommended_streams_paginated', { 
-        cursor: null, 
-        limit: 20 
+      const result = await invoke('get_recommended_streams_paginated', {
+        cursor: null,
+        limit: 20
       }) as [TwitchStream[], string | null];
-      
+
       const [streams, cursor] = result;
-      
+
       // Filter out streams that are already in followed streams
       const followedIds = new Set(get().followedStreams.map(s => s.user_id));
       const filteredStreams = streams.filter(s => !followedIds.has(s.user_id));
-      
-      set({ 
+
+      set({
         recommendedStreams: filteredStreams,
         recommendedCursor: cursor,
         hasMoreRecommended: cursor !== null
@@ -370,32 +393,32 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({ recommendedStreams: [], recommendedCursor: null, hasMoreRecommended: false });
     }
   },
-  
+
   loadMoreRecommendedStreams: async () => {
     const { recommendedCursor, hasMoreRecommended, isLoadingMore, followedStreams, recommendedStreams } = get();
-    
+
     if (!hasMoreRecommended || isLoadingMore || !recommendedCursor) {
       return;
     }
-    
+
     set({ isLoadingMore: true });
-    
+
     try {
-      const result = await invoke('get_recommended_streams_paginated', { 
-        cursor: recommendedCursor, 
-        limit: 20 
+      const result = await invoke('get_recommended_streams_paginated', {
+        cursor: recommendedCursor,
+        limit: 20
       }) as [TwitchStream[], string | null];
-      
+
       const [newStreams, cursor] = result;
-      
+
       // Filter out streams that are already in followed streams or already loaded
       const followedIds = new Set(followedStreams.map(s => s.user_id));
       const existingIds = new Set(recommendedStreams.map(s => s.user_id));
       const filteredStreams = newStreams.filter(
         s => !followedIds.has(s.user_id) && !existingIds.has(s.user_id)
       );
-      
-      set({ 
+
+      set({
         recommendedStreams: [...recommendedStreams, ...filteredStreams],
         recommendedCursor: cursor,
         hasMoreRecommended: cursor !== null,
@@ -407,10 +430,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
   stopStream: async () => {
+    trackActivity('Stopped stream');
     try {
       await invoke('stop_stream');
       await invoke('stop_chat');
-      
+
       // Stop drops monitoring
       try {
         await invoke('stop_drops_monitoring');
@@ -418,9 +442,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       } catch (e) {
         console.warn('Could not stop drops monitoring:', e);
       }
-      
+
       set({ streamUrl: null, currentStream: null });
-      
+
+      // Update user context for error reporting (stream stopped)
+      saveUserContextToLocalStorage(get().currentUser, null);
+
       // Set idle Discord presence when not watching
       if (get().settings.discord_rpc_enabled) {
         try {
@@ -433,18 +460,18 @@ export const useAppStore = create<AppState>((set, get) => ({
       console.error('Failed to stop stream:', e);
     }
   },
-  
+
   getAvailableQualities: async () => {
     const currentStream = get().currentStream;
     if (!currentStream) {
       return [];
     }
-    
+
     try {
       const qualities = await invoke('get_stream_qualities', {
         url: `https://twitch.tv/${currentStream.user_login}`
       }) as string[];
-      
+
       console.log('[Qualities] Available from Streamlink:', qualities);
       return qualities;
     } catch (e) {
@@ -452,27 +479,28 @@ export const useAppStore = create<AppState>((set, get) => ({
       return [];
     }
   },
-  
+
   changeStreamQuality: async (quality: string) => {
     const currentStream = get().currentStream;
     if (!currentStream) {
       console.warn('No active stream to change quality');
       return;
     }
-    
+
+    trackActivity(`Changed quality to: ${quality}`);
     try {
       console.log(`[Quality] Changing to: ${quality}`);
       set({ isLoading: true });
-      
+
       const url = await invoke('change_stream_quality', {
         url: `https://twitch.tv/${currentStream.user_login}`,
         quality: quality
       }) as string;
-      
+
       // Update settings to persist the quality choice
       const newSettings = { ...get().settings, quality: quality };
       await invoke('save_settings', { settings: newSettings });
-      
+
       set({ streamUrl: url, settings: newSettings, isLoading: false });
       get().addToast(`Quality changed to ${quality}`, 'success');
       console.log('[Quality] Stream URL updated:', url);
@@ -485,9 +513,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   startStream: async (channel, providedStreamInfo?) => {
     set({ isLoading: true });
+    trackActivity(`Started watching: ${channel}`);
     try {
       const url = await invoke('start_stream', { url: `https://twitch.tv/${channel}`, quality: get().settings.quality }) as string;
-      
+
       // Use the provided stream info, or find it from followed streams, or fetch it
       let info: TwitchStream;
       if (providedStreamInfo) {
@@ -518,9 +547,12 @@ export const useAppStore = create<AppState>((set, get) => ({
           }
         }
       }
-      
+
       set({ streamUrl: url, currentStream: info });
-      
+
+      // Save user context for error reporting
+      saveUserContextToLocalStorage(get().currentUser, info);
+
       // Start chat first - only if authenticated
       try {
         await invoke('start_chat', { channel });
@@ -528,15 +560,15 @@ export const useAppStore = create<AppState>((set, get) => ({
         console.warn('Could not start chat:', e);
         // Chat connection failed, but stream can still work
       }
-      
+
       // Start drops and channel points monitoring
       try {
         const channelId = info.user_id || '';
         const channelName = info.user_login || channel;
-        
+
         if (channelId && channelName) {
-          await invoke('start_drops_monitoring', { 
-            channelId, 
+          await invoke('start_drops_monitoring', {
+            channelId,
             channelName
           });
           console.log('🎮 Started drops monitoring for', channelName);
@@ -545,7 +577,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         console.warn('Could not start drops monitoring:', e);
         // Non-critical, stream can still work
       }
-      
+
       // Update Discord with game matching (don't await - let it run in background)
       if (get().settings.discord_rpc_enabled) {
         console.log('[Discord] Updating presence for stream:', {
@@ -554,7 +586,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           game: info.game_name,
           channel: channel
         });
-        
+
         invoke('update_discord_presence', {
           details: `Watching ${info.user_name}`,
           activityState: info.title || 'Live on Twitch',
@@ -577,47 +609,67 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({ isLoading: false });
     }
   },
-  openSettings: () => set({ isSettingsOpen: true }),
-  closeSettings: () => set({ isSettingsOpen: false }),
-  setShowLiveStreamsOverlay: (show: boolean) => set({ showLiveStreamsOverlay: show }),
-  setShowProfileOverlay: (show: boolean) => set({ showProfileOverlay: show }),
-  setShowDropsOverlay: (show: boolean) => set({ showDropsOverlay: show }),
-  setShowBadgesOverlay: (show: boolean) => set({ showBadgesOverlay: show }),
-  
+  openSettings: () => {
+    trackActivity('Opened Settings');
+    set({ isSettingsOpen: true });
+  },
+  closeSettings: () => {
+    trackActivity('Closed Settings');
+    set({ isSettingsOpen: false });
+  },
+  setShowLiveStreamsOverlay: (show: boolean) => {
+    if (show) trackActivity('Opened Live Streams');
+    set({ showLiveStreamsOverlay: show });
+  },
+  setShowProfileOverlay: (show: boolean) => {
+    if (show) trackActivity('Opened Profile');
+    set({ showProfileOverlay: show });
+  },
+  setShowDropsOverlay: (show: boolean) => {
+    if (show) trackActivity('Opened Drops');
+    set({ showDropsOverlay: show });
+  },
+  setShowBadgesOverlay: (show: boolean) => {
+    if (show) trackActivity('Opened Badges');
+    set({ showBadgesOverlay: show });
+  },
+
   toggleTheaterMode: () => {
     const state = get();
     const newTheaterMode = !state.isTheaterMode;
-    
+    trackActivity(newTheaterMode ? 'Enabled Theater Mode' : 'Disabled Theater Mode');
+
     if (newTheaterMode) {
       // Entering theater mode - save current chat placement and hide chat
-      set({ 
-        isTheaterMode: true, 
+      set({
+        isTheaterMode: true,
         originalChatPlacement: state.chatPlacement,
-        chatPlacement: 'hidden' 
+        chatPlacement: 'hidden'
       });
     } else {
       // Exiting theater mode - restore original chat placement
-      set({ 
-        isTheaterMode: false, 
+      set({
+        isTheaterMode: false,
         chatPlacement: state.originalChatPlacement || 'right'
       });
     }
   },
-  
+
   loginToTwitch: async () => {
+    trackActivity('Started Twitch login');
     try {
       set({ isLoading: true });
       console.log('Starting Twitch Device Code login...');
-      
+
       // Use Device Code flow (like Python app)
       const [verificationUri, userCode] = await invoke('twitch_login') as [string, string];
-      
+
       console.log('Device code received:', userCode);
       console.log('Verification URI:', verificationUri);
-      
+
       // Show the user code to the user
       get().addToast(`Enter code ${userCode} at twitch.tv/activate`, 'info');
-      
+
       // Open the verification URL in browser
       try {
         await invoke('open_browser_url', { url: verificationUri });
@@ -626,33 +678,33 @@ export const useAppStore = create<AppState>((set, get) => ({
         console.error('Failed to open browser:', e);
         get().addToast(`Please visit ${verificationUri} and enter code: ${userCode}`, 'warning');
       }
-      
+
       // Listen for login completion event from backend
       const { listen } = await import('@tauri-apps/api/event');
-      
+
       const unlisten = await listen('twitch-login-complete', async () => {
         console.log('Login complete event received');
-        
+
         // After successful login, check auth status FIRST
         await get().checkAuthStatus();
-        
+
         // Then show success message and load streams
         get().addToast('Login successful! You are now authenticated with Twitch.', 'success');
         await get().loadFollowedStreams();
-        
+
         set({ isLoading: false });
-        
+
         // Bring the app window to focus after successful login
         try {
           await invoke('focus_window');
         } catch (e) {
           console.warn('Could not focus window:', e);
         }
-        
+
         // Clean up listener
         unlisten();
       });
-      
+
       // Also listen for login errors
       const unlistenError = await listen('twitch-login-error', (event) => {
         console.error('Login error event received:', event.payload);
@@ -661,7 +713,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         set({ isLoading: false });
         unlistenError();
       });
-      
+
     } catch (e) {
       console.error('Login failed:', e);
       const errorMessage = e instanceof Error ? e.message : String(e);
@@ -669,31 +721,36 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({ isLoading: false });
     }
   },
-  
+
   logoutFromTwitch: async () => {
+    trackActivity('Logged out from Twitch');
     try {
       await invoke('twitch_logout');
       set({ isAuthenticated: false, currentUser: null, followedStreams: [] });
+
+      // Clear user context for error reporting
+      saveUserContextToLocalStorage(null, get().currentStream);
+
       get().addToast('Successfully logged out from Twitch', 'success');
     } catch (e) {
       console.error('Logout failed:', e);
       get().addToast('Failed to logout. Please try again.', 'error');
     }
   },
-  
+
   checkAuthStatus: async () => {
     try {
       // Check if we have stored credentials first (only on initial check, not periodic checks)
       const wasAuthenticated = get().isAuthenticated;
       const hasCredentials = await invoke('has_stored_credentials') as boolean;
-      
+
       // Only show "Restoring your session" once per app session
       if (hasCredentials && !wasAuthenticated && !get().currentUser && !hasShownRestoreSessionToast) {
         hasShownRestoreSessionToast = true;
         // Show toast that we're attempting to login with stored credentials
         get().addToast('Restoring your session...', 'info');
       }
-      
+
       // Try to get user info - if it works, we're authenticated
       const userInfo = await invoke('get_user_info') as UserInfo;
       const user: TwitchUser = {
@@ -704,9 +761,12 @@ export const useAppStore = create<AppState>((set, get) => ({
         display_name: userInfo.display_name,
         profile_image_url: userInfo.profile_image_url,
       };
-      
+
       set({ isAuthenticated: true, currentUser: user });
-      
+
+      // Save user context for error reporting
+      saveUserContextToLocalStorage(user, get().currentStream);
+
       // If we successfully restored session from stored credentials, show success (only once)
       if (hasCredentials && !wasAuthenticated && !hasShownWelcomeBackToast) {
         hasShownWelcomeBackToast = true;
@@ -716,10 +776,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       // Check if user was previously authenticated (session expired)
       const wasAuthenticated = get().isAuthenticated;
       const previousUser = get().currentUser;
-      
+
       // If it fails, we're not authenticated
       set({ isAuthenticated: false, currentUser: null, followedStreams: [] });
-      
+
       // Show session expired toast if user was previously logged in
       if (wasAuthenticated && previousUser) {
         get().addToast(
@@ -733,11 +793,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
     }
   },
-  
+
   toggleFavoriteStreamer: async (userId: string) => {
     const currentSettings = get().settings;
     const favorites = currentSettings.favorite_streamers || [];
-    
+
     let newFavorites: string[];
     if (favorites.includes(userId)) {
       // Remove from favorites
@@ -746,15 +806,15 @@ export const useAppStore = create<AppState>((set, get) => ({
       // Add to favorites
       newFavorites = [...favorites, userId];
     }
-    
+
     const newSettings = {
       ...currentSettings,
       favorite_streamers: newFavorites
     };
-    
+
     await get().updateSettings(newSettings);
   },
-  
+
   isFavoriteStreamer: (userId: string) => {
     const favorites = get().settings.favorite_streamers || [];
     return favorites.includes(userId);

@@ -44,6 +44,15 @@ impl DropsWebSocketService {
                     }
                     Err(e) => {
                         eprintln!("❌ WebSocket error: {}", e);
+                        // Emit error to frontend for Discord reporting
+                        let _ = app_handle.emit(
+                            "drops-error",
+                            json!({
+                                "category": "DropsWebSocket",
+                                "message": format!("WebSocket error: {}", e),
+                                "timestamp": chrono::Utc::now().to_rfc3339()
+                            }),
+                        );
                     }
                 }
 
@@ -165,6 +174,15 @@ impl DropsWebSocketService {
                 if let Some(error) = message["error"].as_str() {
                     if !error.is_empty() {
                         eprintln!("❌ WebSocket RESPONSE error: {}", error);
+                        // Emit error to frontend for Discord reporting
+                        let _ = app_handle.emit(
+                            "drops-error",
+                            json!({
+                                "category": "DropsWebSocket",
+                                "message": format!("PubSub subscription error: {}", error),
+                                "timestamp": Utc::now().to_rfc3339()
+                            }),
+                        );
                     } else {
                         println!("✅ WebSocket subscription successful");
                     }
