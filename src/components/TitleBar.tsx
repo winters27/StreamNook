@@ -1,5 +1,6 @@
 import { Window } from '@tauri-apps/api/window';
-import { Minus, Square, X, Radio, Droplet, Award, User, Settings, Proportions, Palette, Check } from 'lucide-react';
+import { Radio, Droplet, User, Settings, Proportions, Palette, Check } from 'lucide-react';
+import { Minus, X, CornersOut, CornersIn, Medal } from 'phosphor-react';
 import { useState, useEffect, useRef } from 'react';
 import { useAppStore } from '../stores/AppStore';
 import PenroseLogo from './PenroseLogo';
@@ -14,11 +15,32 @@ const TitleBar = () => {
   const [showSplash, setShowSplash] = useState(false);
   const [showThemePicker, setShowThemePicker] = useState(false);
   const [dropsSettings, setDropsSettings] = useState<any>(null);
+  const [isMaximized, setIsMaximized] = useState(false);
   const prevMiningActive = useRef(isMiningActive);
   const themePickerRef = useRef<HTMLDivElement>(null);
 
   const currentThemeId = settings.theme || 'winters-glass';
   const currentTheme = getThemeById(currentThemeId);
+
+  // Track window maximize state
+  useEffect(() => {
+    const checkMaximized = async () => {
+      const window = Window.getCurrent();
+      const maximized = await window.isMaximized();
+      setIsMaximized(maximized);
+    };
+
+    checkMaximized();
+
+    // Listen for window resize events
+    const unlisten = Window.getCurrent().onResized(async () => {
+      await checkMaximized();
+    });
+
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, []);
 
   // Close theme picker on click outside
   useEffect(() => {
@@ -190,7 +212,7 @@ const TitleBar = () => {
             className="p-1.5 text-textSecondary hover:text-textPrimary hover:bg-glass rounded transition-all duration-200"
             title="Global Badges"
           >
-            <Award size={16} />
+            <Medal size={16} />
           </button>
 
           {/* Profile Button */}
@@ -305,7 +327,7 @@ const TitleBar = () => {
                 }`}
               title={isTheaterMode ? 'Exit Compact View' : 'Compact View (1080x608)'}
             >
-              <Proportions size={14} />
+              <Proportions size={16} />
             </button>
           )}
           <button
@@ -313,21 +335,25 @@ const TitleBar = () => {
             className="p-1.5 text-textSecondary hover:text-textPrimary hover:bg-glass rounded transition-all duration-200"
             title="Minimize"
           >
-            <Minus size={14} />
+            <Minus size={16} />
           </button>
           <button
             onClick={handleMaximize}
             className="p-1.5 text-textSecondary hover:text-textPrimary hover:bg-glass rounded transition-all duration-200"
-            title="Maximize"
+            title={isMaximized ? "Restore" : "Maximize"}
           >
-            <Square size={14} />
+            {isMaximized ? (
+              <CornersIn size={16} />
+            ) : (
+              <CornersOut size={16} />
+            )}
           </button>
           <button
             onClick={handleClose}
             className="p-1.5 text-textSecondary hover:text-red-400 hover:bg-glass rounded transition-all duration-200"
             title="Close"
           >
-            <X size={14} />
+            <X size={16} />
           </button>
         </div>
       </div>

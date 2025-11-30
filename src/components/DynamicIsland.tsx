@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Bell, Radio, MessageCircle, X, ChevronRight, User, Volume2, VolumeX } from 'lucide-react';
+import { Bell, Radio, MessageCircle, ChevronRight, User } from 'lucide-react';
+import { X, SpeakerHigh, SpeakerSlash } from 'phosphor-react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../stores/AppStore';
@@ -366,12 +367,12 @@ const DynamicIsland = () => {
                                 animate={{ opacity: 1 }}
                                 exit={{ opacity: 0 }}
                                 transition={{ duration: 0.15 }}
-                                className="flex items-center justify-center h-full px-3"
+                                className="flex items-center h-full px-2"
                             >
                                 {showPreview && latestNotification ? (
                                     // Preview latest notification
                                     <motion.div
-                                        className="flex items-center gap-2 w-full"
+                                        className="flex items-center gap-2 w-full pl-1"
                                         initial={{ opacity: 0 }}
                                         animate={{ opacity: 1 }}
                                         transition={{ duration: 0.2 }}
@@ -394,36 +395,38 @@ const DynamicIsland = () => {
                                     </motion.div>
                                 ) : (
                                     // Default state with sound indicator and notification count
-                                    <div className="flex items-center gap-2">
+                                    <div className="flex items-center w-full">
                                         {/* Sound indicator */}
                                         {soundEnabled ? (
-                                            <Volume2 size={12} className="text-white/60" />
+                                            <SpeakerHigh size={16} className="text-white/60" />
                                         ) : (
-                                            <VolumeX size={12} className="text-white/40" />
+                                            <SpeakerSlash size={16} className="text-white/40" />
                                         )}
 
-                                        {/* Notification count badge with color pulse animation */}
+                                        {/* Notification count badge with color pulse animation - centered */}
                                         {hasUnread && unreadCount > 0 && (
-                                            <motion.div
-                                                initial={{ scale: 0 }}
-                                                animate={{
-                                                    scale: 1,
-                                                    backgroundColor: ['#ef4444', '#f87171', '#ef4444'],
-                                                }}
-                                                transition={{
-                                                    scale: { type: 'spring', stiffness: 500, damping: 25 },
-                                                    backgroundColor: {
-                                                        duration: 1.2,
-                                                        repeat: Infinity,
-                                                        ease: 'easeInOut',
-                                                    },
-                                                }}
-                                                className="flex items-center justify-center min-w-[16px] h-[16px] px-1 rounded-full"
-                                            >
-                                                <span className="text-white text-[10px] font-bold leading-none">
-                                                    {unreadCount > 9 ? '9+' : unreadCount}
-                                                </span>
-                                            </motion.div>
+                                            <div className="flex-1 flex justify-center">
+                                                <motion.div
+                                                    initial={{ scale: 0 }}
+                                                    animate={{
+                                                        scale: 1,
+                                                        backgroundColor: ['#ef4444', '#f87171', '#ef4444'],
+                                                    }}
+                                                    transition={{
+                                                        scale: { type: 'spring', stiffness: 500, damping: 25 },
+                                                        backgroundColor: {
+                                                            duration: 1.2,
+                                                            repeat: Infinity,
+                                                            ease: 'easeInOut',
+                                                        },
+                                                    }}
+                                                    className="flex items-center justify-center min-w-[16px] h-[16px] px-1 rounded-full"
+                                                >
+                                                    <span className="text-white text-[10px] font-bold leading-none">
+                                                        {unreadCount > 9 ? '9+' : unreadCount}
+                                                    </span>
+                                                </motion.div>
+                                            </div>
                                         )}
                                     </div>
                                 )}
@@ -455,9 +458,9 @@ const DynamicIsland = () => {
                                     <div className="flex items-center gap-2">
                                         <span className="text-white font-semibold text-base">Notifications</span>
                                         {soundEnabled ? (
-                                            <Volume2 size={12} className="text-white/40" />
+                                            <SpeakerHigh size={16} className="text-white/40" />
                                         ) : (
-                                            <VolumeX size={12} className="text-white/30" />
+                                            <SpeakerSlash size={16} className="text-white/30" />
                                         )}
                                     </div>
                                     <div className="flex items-center gap-2">
