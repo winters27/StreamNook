@@ -1,3 +1,13 @@
+## [4.0.2] - 2025-11-30
+### ✨ Features
+- Added first-time setup wizard to guide new users through the initial configuration.
+- Improved WebSocket event handling for mining service, enhancing drop progress updates.
+
+### 🐛 Bug Fixes
+- Improved chat scroll and pause behavior, addressing issues with automatic pausing and scrolling to the bottom.
+
+
+
 ## [4.0.1] - 2025-11-29
 ### ✨ Features
 - Redesigned the AboutWidget with tech stack icons and shoutouts to contributors and libraries.
@@ -339,6 +349,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
