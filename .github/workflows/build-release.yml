@@ -317,13 +317,12 @@ jobs:
           $pattern = "(?s)## \[?$version\]?.*?(?=## \[|\z)"
           if ($changelog -match $pattern) {
             $section = $matches[0].Trim()
-            # Escape for GitHub Actions
-            $section = $section -replace '%', '%25'
-            $section = $section -replace "`n", '%0A'
-            $section = $section -replace "`r", '%0D'
-            echo "CHANGELOG=$section" >> $env:GITHUB_OUTPUT
+            # Write to temp file for use in release step
+            $section | Out-File -FilePath ./changelog_section.md -Encoding utf8
+            echo "Found changelog section for v$version"
           } else {
-            echo "CHANGELOG=Release v$version" >> $env:GITHUB_OUTPUT
+            "Release v$version" | Out-File -FilePath ./changelog_section.md -Encoding utf8
+            echo "No changelog section found, using default"
           }
 
       - name: Create GitHub Release
@@ -335,35 +334,32 @@ jobs:
           $streamlinkVersion = "${{ steps.streamlink.outputs.STREAMLINK_VERSION }}"
           $ttvlolVersion = "${{ steps.ttvlol.outputs.TTVLOL_VERSION }}"
           
-          # Create release notes
-          $notes = @"
-          ## StreamNook v$version
+          # Read changelog section from temp file
+          $changelogSection = Get-Content ./changelog_section.md -Raw
           
-          ### Components
-          - **StreamNook**: v$version
-          - **Streamlink**: $streamlinkVersion
-          - **TTV LOL Plugin**: $ttvlolVersion
+          # Build component info section using simple string array
+          $lines = @()
+          $lines += ""
+          $lines += "---"
+          $lines += ""
+          $lines += "### Bundle Components"
+          $lines += "- **StreamNook**: v$version"
+          $lines += "- **Streamlink**: $streamlinkVersion"
+          $lines += "- **TTV LOL Plugin**: $ttvlolVersion"
+          $lines += ""
+          $lines += "### Installation"
+          $lines += "1. Download ``$bundleName``"
+          $lines += "2. Extract the .7z file"
+          $lines += "3. Run ``StreamNook.exe``"
+          $lines += "4. The app will automatically set up Streamlink and TTV LOL on first run"
           
-          ### Download
-          Download ``$bundleName`` and extract to your desired location.
+          $componentInfo = $lines -join "`n"
+          $notes = $changelogSection + $componentInfo
           
-          ### Installation
-          1. Extract the .7z file
-          2. Run ``StreamNook.exe``
-          3. The app will automatically set up Streamlink and the TTV LOL plugin on first run
+          # Write to file for gh release
+          $notes | Out-File -FilePath ./release_notes.md -Encoding utf8
           
-          ---
-          
-          See [CHANGELOG.md](https://github.com/winters27/StreamNook/blob/main/CHANGELOG.md) for full release notes.
-          "@
-          
-          # Create release
-          gh release create "v$version" `
-            --title "StreamNook v$version" `
-            --notes "$notes" `
-            "$bundleName" `
-            "bundle/components.json" `
-            "checksums.txt"
+          gh release create "v$version" --title "StreamNook v$version" --notes-file ./release_notes.md "$bundleName" "bundle/components.json" "checksums.txt"
           
           echo "Release v$version created!"
         env:
