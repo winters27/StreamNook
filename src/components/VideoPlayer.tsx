@@ -244,13 +244,13 @@ const VideoPlayer = () => {
         maxBufferLength: playerSettings.max_buffer_length || 30, // Buffer ahead
         maxMaxBufferLength: playerSettings.max_buffer_length || 120, // Max buffer
         maxBufferSize: 60 * 1000 * 1000, // 60 MB
-        maxBufferHole: 0.5, // Max 0.5s gap before seeking
-        highBufferWatchdogPeriod: 2, // Check buffer health every 2s
-        nudgeOffset: 0.1, // Nudge by 0.1s when recovering
-        nudgeMaxRetry: 3, // Try nudging 3 times
-        maxFragLookUpTolerance: 0.25, // Fragment lookup tolerance
+        maxBufferHole: 2.0, // Increased from 0.5 - allow larger gaps before seeking (helps with buffering issues)
+        highBufferWatchdogPeriod: 3, // Increased from 2 - check buffer health every 3s (less aggressive)
+        nudgeOffset: 0.5, // Increased from 0.1 - larger nudge when recovering (helps unstick playback)
+        nudgeMaxRetry: 5, // Increased from 3 - try more times to recover from stalls
+        maxFragLookUpTolerance: 0.5, // Increased from 0.25 - more tolerant fragment lookup
         liveSyncDurationCount: playerSettings.low_latency_mode ? 2 : 3, // Stay close to live edge
-        liveMaxLatencyDurationCount: playerSettings.low_latency_mode ? 4 : 6, // Max latency before seeking
+        liveMaxLatencyDurationCount: playerSettings.low_latency_mode ? 5 : 8, // Increased - allow more latency before seeking
         liveDurationInfinity: true, // Live stream has infinite duration
         manifestLoadingTimeOut: 10000, // 10s timeout for manifest
         manifestLoadingMaxRetry: 3, // Retry manifest 3 times
@@ -262,6 +262,12 @@ const VideoPlayer = () => {
         fragLoadingMaxRetry: 6, // Retry fragments 6 times
         fragLoadingRetryDelay: 1000, // Wait 1s between retries
         startLevel: playerSettings.start_quality || -1, // Start quality level
+        // Additional buffering improvements
+        abrEwmaDefaultEstimate: 500000, // Initial bandwidth estimate (500kbps)
+        abrEwmaFastLive: 3.0, // Fast ABR for live streams
+        abrEwmaSlowLive: 9.0, // Slow ABR for live streams
+        abrBandWidthFactor: 0.95, // Be slightly conservative with bandwidth (helps prevent stalls)
+        abrBandWidthUpFactor: 0.7, // Be cautious when upgrading quality
       });
 
       hlsRef.current = hls;
@@ -354,14 +360,33 @@ const VideoPlayer = () => {
       hls.on(Hls.Events.ERROR, (_event, data) => {
         console.error('[HLS] Error:', JSON.stringify({ type: data.type, details: data.details, fatal: data.fatal }));
 
-        // Handle non-fatal errors that indicate stream end (bufferStalled, fragParsing)
+        // Handle non-fatal errors with improved recovery
         if (!data.fatal) {
           const now = Date.now();
 
-          // Check for errors that indicate stream might be ending
-          if (data.details === 'bufferStalledError' ||
-            data.details === 'fragParsingError' ||
-            data.details === 'bufferNudgeOnStall') {
+          // Handle buffer stalled errors with active recovery
+          if (data.details === 'bufferStalledError') {
+            console.log('[HLS] Buffer stalled, attempting recovery...');
+
+            // Try to recover by seeking slightly forward if video is paused
+            if (video.paused && !userInitiatedPauseRef.current) {
+              console.log('[HLS] Video is paused due to stall, attempting to resume playback');
+              video.play().catch(e => console.log('[HLS] Resume play failed:', e));
+            }
+
+            // If we have buffered data ahead, try jumping to it
+            const buffered = video.buffered;
+            if (buffered.length > 0) {
+              const currentTime = video.currentTime;
+              const bufferedEnd = buffered.end(buffered.length - 1);
+
+              // If we're significantly behind the buffered end, seek forward
+              if (bufferedEnd - currentTime > 2.0) {
+                const seekTarget = currentTime + 0.5; // Small jump forward
+                console.log(`[HLS] Seeking forward from ${currentTime} to ${seekTarget} to recover from stall`);
+                video.currentTime = seekTarget;
+              }
+            }
 
             // Reset error count if enough time has passed since last error
             if (now - lastErrorTimeRef.current > errorResetTimeMs) {
@@ -402,6 +427,19 @@ const VideoPlayer = () => {
               handleStreamOffline();
               return;
             }
+          }
+
+          // Handle other non-fatal errors
+          if (data.details === 'fragParsingError' || data.details === 'bufferNudgeOnStall') {
+            // Reset error count if enough time has passed since last error
+            if (now - lastErrorTimeRef.current > errorResetTimeMs) {
+              nonFatalErrorCountRef.current = 0;
+            }
+
+            nonFatalErrorCountRef.current++;
+            lastErrorTimeRef.current = now;
+
+            console.log(`[HLS] Non-fatal error (${data.details}) count: ${nonFatalErrorCountRef.current}/${maxNonFatalErrorsBeforeOffline}`);
           }
 
           // For non-fatal errors, return early - HLS.js will try to recover

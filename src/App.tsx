@@ -14,6 +14,7 @@ import BadgesOverlay from './components/BadgesOverlay';
 import BadgeDetailOverlay from './components/BadgeDetailOverlay';
 import ChangelogOverlay from './components/ChangelogOverlay';
 import WhispersWidget from './components/WhispersWidget';
+import SetupWizard from './components/SetupWizard';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
@@ -40,6 +41,7 @@ function App() {
   const [savedWindowSize, setSavedWindowSize] = useState<{ width: number; height: number } | null>(null);
   const [showChangelog, setShowChangelog] = useState(false);
   const [changelogVersion, setChangelogVersion] = useState<string | null>(null);
+  const [showSetupWizard, setShowSetupWizard] = useState(false);
 
   // Refs for aspect ratio lock to avoid stale closures
   const aspectRatioLockEnabledRef = useRef(false);
@@ -130,6 +132,42 @@ function App() {
       applyTheme(theme);
     }
   }, [settings.theme]);
+
+  // Check if we need to show the first-time setup wizard
+  useEffect(() => {
+    const checkForFirstTimeSetup = async () => {
+      // Skip if settings haven't loaded yet
+      if (settings.streamlink_path === undefined) return;
+
+      // Skip if setup is already complete
+      if (settings.setup_complete) {
+        console.log('[App] Setup already complete, skipping wizard');
+        return;
+      }
+
+      try {
+        // Check if streamlink is installed at the configured path
+        const isInstalled = await invoke('verify_streamlink_installation', {
+          path: settings.streamlink_path
+        }) as boolean;
+
+        if (!isInstalled) {
+          console.log('[App] Streamlink not found at', settings.streamlink_path, '- showing setup wizard');
+          setShowSetupWizard(true);
+        } else {
+          // Streamlink is installed, mark setup as complete for existing users
+          console.log('[App] Streamlink found, marking setup as complete for existing user');
+          await updateSettings({ ...settings, setup_complete: true });
+        }
+      } catch (error) {
+        console.error('[App] Failed to check streamlink installation:', error);
+        // On error, still show setup wizard to be safe
+        setShowSetupWizard(true);
+      }
+    };
+
+    checkForFirstTimeSetup();
+  }, [settings.streamlink_path, settings.setup_complete, updateSettings]);
 
   // Check if we need to show the changelog after an update
   useEffect(() => {
@@ -578,6 +616,10 @@ function App() {
       <WhispersWidget
         isOpen={showWhispersOverlay}
         onClose={() => setShowWhispersOverlay(false)}
+      />
+      <SetupWizard
+        isOpen={showSetupWizard}
+        onClose={() => setShowSetupWizard(false)}
       />
       <ToastManager />
     </div>

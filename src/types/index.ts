@@ -118,6 +118,7 @@ export interface Settings {
   auto_switch?: AutoSwitchSettings;
   theme?: string; // Theme ID (e.g., 'winters-glass', 'dracula', 'nord')
   error_reporting_enabled?: boolean; // Opt-in error reporting (default: true)
+  setup_complete?: boolean; // Whether the first-time setup wizard has been completed
 }
 
 export interface ReleaseNotes {
