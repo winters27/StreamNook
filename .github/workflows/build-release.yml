@@ -2,7 +2,7 @@ name: Build & Release Bundle
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
     paths:
       - 'src-tauri/Cargo.toml'  # Triggered by version bump
   workflow_dispatch:
