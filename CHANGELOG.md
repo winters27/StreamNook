@@ -1,3 +1,9 @@
+## [4.0.1] - 2025-11-29
+### ✨ Features
+- Redesigned the AboutWidget with tech stack icons and shoutouts to contributors and libraries.
+- Enhanced the Dynamic Island with an updated notification badge and sound indicators.
+- Implemented maximize/restore functionality in the TitleBar and updated relevant icons.
+
 ## [4.0.0] - 2025-11-29
 ### ✨ Features
 - Added whisper functionality with message sending and receiving.
@@ -333,6 +339,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
