@@ -68,7 +68,7 @@ jobs:
 
       - name: Setup Rust
         if: steps.check_release.outputs.RELEASE_EXISTS == 'false'
-        uses: dtolnay/rust-action@stable
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Rust cache
         if: steps.check_release.outputs.RELEASE_EXISTS == 'false'
