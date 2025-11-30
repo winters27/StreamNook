@@ -1,0 +1,348 @@
+name: Build & Release Bundle
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src-tauri/Cargo.toml'  # Triggered by version bump
+  workflow_dispatch:
+    inputs:
+      skip_build:
+        description: 'Skip build and use exe from previous release (for dependency-only updates)'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get version from Cargo.toml
+        id: version
+        shell: pwsh
+        run: |
+          $cargo = Get-Content src-tauri/Cargo.toml -Raw
+          if ($cargo -match 'version\s*=\s*"([^"]+)"') {
+            $version = $matches[1]
+            echo "VERSION=$version" >> $env:GITHUB_OUTPUT
+            echo "Found version: $version"
+          } else {
+            echo "Could not find version in Cargo.toml"
+            exit 1
+          }
+
+      - name: Check if release already exists
+        id: check_release
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.VERSION }}"
+          $releases = gh release list --limit 100 --json tagName | ConvertFrom-Json
+          $exists = $releases | Where-Object { $_.tagName -eq "v$version" }
+          if ($exists) {
+            echo "RELEASE_EXISTS=true" >> $env:GITHUB_OUTPUT
+            echo "Release v$version already exists, skipping..."
+          } else {
+            echo "RELEASE_EXISTS=false" >> $env:GITHUB_OUTPUT
+            echo "Release v$version does not exist, will create"
+          }
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        if: steps.check_release.outputs.RELEASE_EXISTS == 'false'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Setup Rust
+        if: steps.check_release.outputs.RELEASE_EXISTS == 'false'
+        uses: dtolnay/rust-action@stable
+
+      - name: Rust cache
+        if: steps.check_release.outputs.RELEASE_EXISTS == 'false'
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Install dependencies
+        if: steps.check_release.outputs.RELEASE_EXISTS == 'false'
+        run: npm ci
+
+      - name: Build Tauri app
+        if: steps.check_release.outputs.RELEASE_EXISTS == 'false' && inputs.skip_build != 'true'
+        shell: pwsh
+        run: npm run tauri build
+
+      - name: Download StreamNook.exe from previous release (skip_build mode)
+        if: steps.check_release.outputs.RELEASE_EXISTS == 'false' && inputs.skip_build == 'true'
+        shell: pwsh
+        run: |
+          # Get the latest release
+          $latestRelease = gh release view --json assets,tagName | ConvertFrom-Json
+          echo "Latest release: $($latestRelease.tagName)"
+          
+          # Find the exe or bundle
+          $exeAsset = $latestRelease.assets | Where-Object { $_.name -like "*.exe" -or $_.name -like "*bundle.7z" }
+          if ($exeAsset) {
+            echo "Downloading: $($exeAsset.name)"
+            gh release download $latestRelease.tagName -p $exeAsset.name -D ./previous-release
+          } else {
+            echo "No exe found in previous release"
+            exit 1
+          }
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get latest Streamlink portable version
+        if: steps.check_release.outputs.RELEASE_EXISTS == 'false'
+        id: streamlink
+        shell: pwsh
+        run: |
+          # Get latest release from streamlink windows-builds
+          $release = Invoke-RestMethod -Uri "https://api.github.com/repos/streamlink/windows-builds/releases/latest"
+          $version = $release.tag_name
+          echo "STREAMLINK_VERSION=$version" >> $env:GITHUB_OUTPUT
+          echo "Latest Streamlink version: $version"
+          
+          # Find the portable zip asset
+          $asset = $release.assets | Where-Object { $_.name -like "*portable*.zip" -and $_.name -like "*py312*" } | Select-Object -First 1
+          if (-not $asset) {
+            # Fallback to any portable zip
+            $asset = $release.assets | Where-Object { $_.name -like "*portable*.zip" } | Select-Object -First 1
+          }
+          
+          if ($asset) {
+            echo "STREAMLINK_URL=$($asset.browser_download_url)" >> $env:GITHUB_OUTPUT
+            echo "STREAMLINK_ASSET=$($asset.name)" >> $env:GITHUB_OUTPUT
+            echo "Found asset: $($asset.name)"
+          } else {
+            echo "No portable zip found"
+            exit 1
+          }
+
+      - name: Get latest TTV LOL plugin version
+        if: steps.check_release.outputs.RELEASE_EXISTS == 'false'
+        id: ttvlol
+        shell: pwsh
+        run: |
+          # Get latest release from streamlink-ttvlol
+          $release = Invoke-RestMethod -Uri "https://api.github.com/repos/2bc4/streamlink-ttvlol/releases/latest"
+          $version = $release.tag_name
+          echo "TTVLOL_VERSION=$version" >> $env:GITHUB_OUTPUT
+          echo "Latest TTV LOL version: $version"
+          
+          # Find twitch.py asset
+          $asset = $release.assets | Where-Object { $_.name -eq "twitch.py" }
+          if ($asset) {
+            echo "TTVLOL_URL=$($asset.browser_download_url)" >> $env:GITHUB_OUTPUT
+            echo "Found twitch.py"
+          } else {
+            echo "twitch.py not found in release"
+            exit 1
+          }
+
+      - name: Download Streamlink portable
+        if: steps.check_release.outputs.RELEASE_EXISTS == 'false'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path ./bundle/streamlink
+          $url = "${{ steps.streamlink.outputs.STREAMLINK_URL }}"
+          $outFile = "./streamlink-portable.zip"
+          echo "Downloading: $url"
+          Invoke-WebRequest -Uri $url -OutFile $outFile
+          
+          # Extract
+          Expand-Archive -Path $outFile -DestinationPath ./bundle/streamlink-temp -Force
+          
+          # Move contents (handle nested folder structure)
+          $extracted = Get-ChildItem ./bundle/streamlink-temp -Directory | Select-Object -First 1
+          if ($extracted) {
+            Move-Item "$($extracted.FullName)/*" ./bundle/streamlink/ -Force
+          } else {
+            Move-Item ./bundle/streamlink-temp/* ./bundle/streamlink/ -Force
+          }
+          
+          Remove-Item ./bundle/streamlink-temp -Recurse -Force
+          Remove-Item $outFile -Force
+          
+          # Create plugins directory
+          New-Item -ItemType Directory -Force -Path ./bundle/streamlink/plugins
+          
+          echo "Streamlink extracted to ./bundle/streamlink"
+
+      - name: Download TTV LOL plugin
+        if: steps.check_release.outputs.RELEASE_EXISTS == 'false'
+        shell: pwsh
+        run: |
+          $url = "${{ steps.ttvlol.outputs.TTVLOL_URL }}"
+          echo "Downloading: $url"
+          Invoke-WebRequest -Uri $url -OutFile ./bundle/streamlink/plugins/twitch.py
+          echo "TTV LOL plugin downloaded to ./bundle/streamlink/plugins/twitch.py"
+
+      - name: Copy StreamNook.exe to bundle
+        if: steps.check_release.outputs.RELEASE_EXISTS == 'false'
+        shell: pwsh
+        run: |
+          if ("${{ inputs.skip_build }}" -eq "true") {
+            # Use exe from previous release
+            $exe = Get-ChildItem ./previous-release -Filter "*.exe" | Select-Object -First 1
+            if ($exe) {
+              Copy-Item $exe.FullName ./bundle/StreamNook.exe
+            } else {
+              # Extract from previous bundle
+              $bundle = Get-ChildItem ./previous-release -Filter "*bundle.7z" | Select-Object -First 1
+              if ($bundle) {
+                7z x $bundle.FullName -o"./previous-release/extracted"
+                Copy-Item ./previous-release/extracted/StreamNook.exe ./bundle/
+              }
+            }
+          } else {
+            # Use freshly built exe
+            Copy-Item src-tauri/target/release/StreamNook.exe ./bundle/
+          }
+          echo "StreamNook.exe copied to bundle"
+
+      - name: Copy CHANGELOG.md to bundle
+        if: steps.check_release.outputs.RELEASE_EXISTS == 'false'
+        shell: pwsh
+        run: |
+          Copy-Item CHANGELOG.md ./bundle/
+          echo "CHANGELOG.md copied to bundle"
+
+      - name: Generate components.json
+        if: steps.check_release.outputs.RELEASE_EXISTS == 'false'
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.VERSION }}"
+          $streamlinkVersion = "${{ steps.streamlink.outputs.STREAMLINK_VERSION }}"
+          $ttvlolVersion = "${{ steps.ttvlol.outputs.TTVLOL_VERSION }}"
+          $buildDate = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+          
+          $components = @{
+            schema_version = 1
+            streamnook = @{
+              version = $version
+              build_date = $buildDate
+            }
+            components = @{
+              streamlink = @{
+                version = $streamlinkVersion
+                source_url = "https://github.com/streamlink/windows-builds/releases"
+              }
+              ttvlol = @{
+                version = $ttvlolVersion
+                source_url = "https://github.com/2bc4/streamlink-ttvlol/releases"
+              }
+            }
+          }
+          
+          $json = $components | ConvertTo-Json -Depth 10
+          $json | Out-File -FilePath ./bundle/components.json -Encoding utf8
+          echo "components.json created:"
+          echo $json
+
+      - name: Create 7z bundle
+        if: steps.check_release.outputs.RELEASE_EXISTS == 'false'
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.VERSION }}"
+          $bundleName = "StreamNook-v$version-bundle.7z"
+          
+          # Create 7z archive with maximum compression
+          cd bundle
+          7z a -t7z -mx=9 "../$bundleName" *
+          cd ..
+          
+          echo "BUNDLE_NAME=$bundleName" >> $env:GITHUB_OUTPUT
+          echo "Created: $bundleName"
+          
+          # Show bundle size
+          $size = (Get-Item $bundleName).Length / 1MB
+          echo "Bundle size: $([math]::Round($size, 2)) MB"
+        id: bundle
+
+      - name: Generate checksums
+        if: steps.check_release.outputs.RELEASE_EXISTS == 'false'
+        shell: pwsh
+        run: |
+          $bundleName = "${{ steps.bundle.outputs.BUNDLE_NAME }}"
+          $hash = (Get-FileHash $bundleName -Algorithm SHA256).Hash
+          "$hash  $bundleName" | Out-File -FilePath checksums.txt -Encoding utf8
+          echo "Checksums generated:"
+          Get-Content checksums.txt
+
+      - name: Extract changelog for this version
+        if: steps.check_release.outputs.RELEASE_EXISTS == 'false'
+        id: changelog
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.VERSION }}"
+          $changelog = Get-Content CHANGELOG.md -Raw
+          
+          # Try to extract section for this version
+          $pattern = "(?s)## \[?$version\]?.*?(?=## \[|\z)"
+          if ($changelog -match $pattern) {
+            $section = $matches[0].Trim()
+            # Escape for GitHub Actions
+            $section = $section -replace '%', '%25'
+            $section = $section -replace "`n", '%0A'
+            $section = $section -replace "`r", '%0D'
+            echo "CHANGELOG=$section" >> $env:GITHUB_OUTPUT
+          } else {
+            echo "CHANGELOG=Release v$version" >> $env:GITHUB_OUTPUT
+          }
+
+      - name: Create GitHub Release
+        if: steps.check_release.outputs.RELEASE_EXISTS == 'false'
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.VERSION }}"
+          $bundleName = "${{ steps.bundle.outputs.BUNDLE_NAME }}"
+          $streamlinkVersion = "${{ steps.streamlink.outputs.STREAMLINK_VERSION }}"
+          $ttvlolVersion = "${{ steps.ttvlol.outputs.TTVLOL_VERSION }}"
+          
+          # Create release notes
+          $notes = @"
+          ## StreamNook v$version
+          
+          ### Components
+          - **StreamNook**: v$version
+          - **Streamlink**: $streamlinkVersion
+          - **TTV LOL Plugin**: $ttvlolVersion
+          
+          ### Download
+          Download ``$bundleName`` and extract to your desired location.
+          
+          ### Installation
+          1. Extract the .7z file
+          2. Run ``StreamNook.exe``
+          3. The app will automatically set up Streamlink and the TTV LOL plugin on first run
+          
+          ---
+          
+          See [CHANGELOG.md](https://github.com/winters27/StreamNook/blob/main/CHANGELOG.md) for full release notes.
+          "@
+          
+          # Create release
+          gh release create "v$version" `
+            --title "StreamNook v$version" `
+            --notes "$notes" `
+            "$bundleName" `
+            "bundle/components.json" `
+            "checksums.txt"
+          
+          echo "Release v$version created!"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
