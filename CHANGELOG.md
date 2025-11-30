@@ -1,3 +1,10 @@
+## [4.0.0] - 2025-11-29
+### ✨ Features
+- Added whisper functionality with message sending and receiving.
+- Implemented whisper history retrieval using Twitch's undocumented GraphQL API.
+- Added a whisper history scraper script for exporting data from the Twitch website.
+- Added real-time whisper notifications using EventSub Websockets.
+
 ## [3.4.17] - 2025-11-29
 ### ✨ Features
 - Added joke messages when clicking test notifications. Test notifications now have an `is_test` flag.
@@ -326,6 +333,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
