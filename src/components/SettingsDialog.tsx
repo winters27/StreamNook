@@ -1,6 +1,6 @@
 import { useAppStore } from '../stores/AppStore';
 import { X } from 'lucide-react';
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import PlayerSettings from './settings/PlayerSettings';
 import ChatSettings from './settings/ChatSettings';
 import IntegrationsSettings from './settings/IntegrationsSettings';
@@ -12,115 +12,8 @@ import UpdatesSettings from './settings/UpdatesSettings';
 type Tab = 'Player' | 'Chat' | 'Integrations' | 'Notifications' | 'Updates' | 'Cache' | 'Support';
 
 const SettingsDialog = () => {
-  const { settings, updateSettings, isSettingsOpen, closeSettings } = useAppStore();
+  const { isSettingsOpen, closeSettings } = useAppStore();
   const [activeTab, setActiveTab] = useState<Tab>('Player');
-  const [isStreamlinkInstalled, setIsStreamlinkInstalled] = useState<boolean | null>(null);
-  const [updateAvailable, setUpdateAvailable] = useState<boolean>(false);
-  const [installedVersion, setInstalledVersion] = useState<string | null>(null);
-  const [latestVersion, setLatestVersion] = useState<string | null>(null);
-  const [ttvlolInstalledVersion, setTtvlolInstalledVersion] = useState<string | null>(null);
-  const [ttvlolLatestVersion, setTtvlolLatestVersion] = useState<string | null>(null);
-  const [ttvlolUpdateAvailable, setTtvlolUpdateAvailable] = useState<boolean>(false);
-
-  // Verify streamlink installation and check for updates whenever the path changes
-  useEffect(() => {
-    const verifyAndCheckUpdates = async () => {
-      if (!settings.streamlink_path) {
-        setIsStreamlinkInstalled(false);
-        setUpdateAvailable(false);
-        return;
-      }
-
-      try {
-        const { invoke } = await import('@tauri-apps/api/core');
-
-        // Check if installed
-        const isInstalled = await invoke('verify_streamlink_installation', {
-          path: settings.streamlink_path
-        }) as boolean;
-        setIsStreamlinkInstalled(isInstalled);
-
-        if (isInstalled) {
-          // Get installed version
-          const installed = await invoke('get_installed_streamlink_version', {
-            path: settings.streamlink_path
-          }) as string | null;
-          setInstalledVersion(installed);
-
-          if (installed) {
-            // Get latest version
-            const latest = await invoke('get_latest_streamlink_version') as string;
-            setLatestVersion(latest);
-
-            // Compare versions (simple string comparison works for semantic versioning)
-            const needsUpdate = installed !== latest;
-            setUpdateAvailable(needsUpdate);
-          } else {
-            setLatestVersion(null);
-            setUpdateAvailable(false);
-          }
-        } else {
-          setInstalledVersion(null);
-          setLatestVersion(null);
-          setUpdateAvailable(false);
-        }
-      } catch (error) {
-        console.error('Failed to verify streamlink installation:', error);
-        setIsStreamlinkInstalled(false);
-        setUpdateAvailable(false);
-      }
-    };
-
-    verifyAndCheckUpdates();
-  }, [settings.streamlink_path]);
-
-  // Load TTV LOL plugin version and check for updates when settings dialog opens
-  useEffect(() => {
-    const loadTtvlolVersionAndCheckUpdates = async () => {
-      if (!isSettingsOpen || !settings.ttvlol_plugin?.enabled) {
-        setTtvlolInstalledVersion(null);
-        setTtvlolLatestVersion(null);
-        setTtvlolUpdateAvailable(false);
-        return;
-      }
-
-      try {
-        const { invoke } = await import('@tauri-apps/api/core');
-
-        // Get installed version
-        const installed = await invoke('get_installed_ttvlol_version') as string | null;
-        setTtvlolInstalledVersion(installed);
-
-        // Update settings with the version if not already set
-        if (installed && installed !== settings.ttvlol_plugin.installed_version) {
-          updateSettings({
-            ...settings,
-            ttvlol_plugin: { ...settings.ttvlol_plugin, installed_version: installed }
-          });
-        }
-
-        if (installed) {
-          // Get latest version
-          const latest = await invoke('get_latest_ttvlol_version') as string;
-          setTtvlolLatestVersion(latest);
-
-          // Compare versions
-          const needsUpdate = installed !== latest;
-          setTtvlolUpdateAvailable(needsUpdate);
-        } else {
-          setTtvlolLatestVersion(null);
-          setTtvlolUpdateAvailable(false);
-        }
-      } catch (error) {
-        console.error('Failed to get TTV LOL plugin version:', error);
-        setTtvlolInstalledVersion(null);
-        setTtvlolLatestVersion(null);
-        setTtvlolUpdateAvailable(false);
-      }
-    };
-
-    loadTtvlolVersionAndCheckUpdates();
-  }, [isSettingsOpen, settings.ttvlol_plugin?.enabled]);
 
   if (!isSettingsOpen) return null;
 
@@ -164,14 +57,7 @@ const SettingsDialog = () => {
             {activeTab === 'Chat' && <ChatSettings />}
             {activeTab === 'Integrations' && <IntegrationsSettings />}
             {activeTab === 'Notifications' && <NotificationsSettings />}
-            {activeTab === 'Updates' && (
-              <UpdatesSettings
-                isStreamlinkInstalled={isStreamlinkInstalled}
-                updateAvailable={updateAvailable}
-                installedVersion={installedVersion}
-                latestVersion={latestVersion}
-              />
-            )}
+            {activeTab === 'Updates' && <UpdatesSettings />}
             {activeTab === 'Cache' && <CacheSettings />}
             {activeTab === 'Support' && <SupportSettings />}
           </div>

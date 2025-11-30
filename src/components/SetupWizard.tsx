@@ -7,16 +7,13 @@ import {
     ChevronRight,
     ChevronLeft,
     Sparkles,
-    Download,
     CheckCircle2,
     Loader2,
-    RefreshCw,
-    Monitor,
-    Puzzle,
     User,
     Tv,
     Package,
-    AlertCircle
+    AlertCircle,
+    Settings
 } from 'lucide-react';
 import { open } from '@tauri-apps/plugin-shell';
 import { invoke } from '@tauri-apps/api/core';
@@ -29,22 +26,19 @@ interface SetupWizardProps {
 }
 
 interface StepStatus {
-    streamlinkInstalled: boolean | null;
-    streamlinkPath: string;
-    ttvlolInstalled: boolean | null;
+    componentsInstalled: boolean | null;
+    extractionError: string | null;
     dropsAuthenticated: boolean;
     mainAuthenticated: boolean;
 }
 
 const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
     const [currentStep, setCurrentStep] = useState(0);
-    const [isDownloading, setIsDownloading] = useState(false);
-    const [isInstalling, setIsInstalling] = useState(false);
+    const [isExtracting, setIsExtracting] = useState(false);
     const [isAuthenticating, setIsAuthenticating] = useState(false);
     const [status, setStatus] = useState<StepStatus>({
-        streamlinkInstalled: null,
-        streamlinkPath: 'C:\\Program Files\\Streamlink\\bin\\streamlinkw.exe',
-        ttvlolInstalled: null,
+        componentsInstalled: null,
+        extractionError: null,
         dropsAuthenticated: false,
         mainAuthenticated: false,
     });
@@ -54,106 +48,70 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
 
     const steps = [
         { title: 'Welcome', description: 'Get started with StreamNook', icon: Sparkles },
-        { title: 'Download', description: 'Download the video player', icon: Download },
-        { title: 'Verify', description: 'Check installation', icon: Monitor },
-        { title: 'Ads', description: 'Install TTV LOL plugin', icon: Puzzle },
+        { title: 'Setting Up', description: 'Preparing components', icon: Settings },
         { title: 'Drops', description: 'Sign in for drops/inventory', icon: Package },
         { title: 'Login', description: 'Sign in to Twitch', icon: User },
         { title: 'Ready!', description: 'All set up', icon: Tv }
     ];
 
-    // Check Streamlink installation
-    const checkStreamlinkInstallation = useCallback(async () => {
+    // Check if components are already installed
+    const checkComponentsInstalled = useCallback(async () => {
         try {
-            const isInstalled = await invoke('verify_streamlink_installation', {
-                path: status.streamlinkPath
-            }) as boolean;
-            setStatus(prev => ({ ...prev, streamlinkInstalled: isInstalled }));
-            return isInstalled;
+            const installed = await invoke('check_components_installed') as boolean;
+            setStatus(prev => ({ ...prev, componentsInstalled: installed }));
+            return installed;
         } catch (e) {
-            console.error('Failed to verify Streamlink:', e);
-            setStatus(prev => ({ ...prev, streamlinkInstalled: false }));
-            return false;
-        }
-    }, [status.streamlinkPath]);
-
-    // Check TTV LOL installation
-    const checkTtvlolInstallation = useCallback(async () => {
-        try {
-            const version = await invoke('get_installed_ttvlol_version') as string | null;
-            const isInstalled = version !== null;
-            setStatus(prev => ({ ...prev, ttvlolInstalled: isInstalled }));
-            return isInstalled;
-        } catch (e) {
-            console.error('Failed to verify TTV LOL:', e);
-            setStatus(prev => ({ ...prev, ttvlolInstalled: false }));
+            console.error('Failed to check components:', e);
+            setStatus(prev => ({ ...prev, componentsInstalled: false }));
             return false;
         }
     }, []);
+
+    // Extract bundled components
+    const extractComponents = useCallback(async () => {
+        setIsExtracting(true);
+        setStatus(prev => ({ ...prev, extractionError: null }));
+        try {
+            await invoke('extract_bundled_components');
+            setStatus(prev => ({ ...prev, componentsInstalled: true }));
+
+            // Get the bundled streamlink path and update settings
+            const bundledPath = await invoke('get_bundled_streamlink_path') as string;
+            await updateSettings({
+                ...settings,
+                streamlink_path: bundledPath,
+            });
+
+            addToast('Components installed successfully!', 'success');
+            // Auto-advance to next step
+            setCurrentStep(2);
+        } catch (e) {
+            console.error('Failed to extract components:', e);
+            const errorMsg = String(e);
+            setStatus(prev => ({ ...prev, extractionError: errorMsg }));
+            setError(errorMsg);
+        } finally {
+            setIsExtracting(false);
+        }
+    }, [settings, updateSettings, addToast]);
 
     // Initial check on mount
     useEffect(() => {
         if (isOpen) {
-            checkStreamlinkInstallation();
-            checkTtvlolInstallation();
+            checkComponentsInstalled();
             setStatus(prev => ({ ...prev, mainAuthenticated: isAuthenticated }));
         }
-    }, [isOpen, isAuthenticated, checkStreamlinkInstallation, checkTtvlolInstallation]);
+    }, [isOpen, isAuthenticated, checkComponentsInstalled]);
 
-    // Download Streamlink installer
-    const handleDownloadStreamlink = useCallback(async () => {
-        setIsDownloading(true);
-        setError(null);
-        try {
-            const filePath = await invoke('download_streamlink_installer') as string;
-            const downloadsDir = filePath.substring(0, filePath.lastIndexOf('\\'));
-            addToast('Streamlink installer downloaded!', 'success', {
-                label: 'Open Folder',
-                onClick: async () => {
-                    try {
-                        await invoke('open_browser_url', { url: downloadsDir });
-                    } catch (e) {
-                        console.error('Failed to open downloads folder:', e);
-                    }
-                },
-            });
+    // Auto-extract when reaching the Setting Up step
+    useEffect(() => {
+        if (currentStep === 1 && status.componentsInstalled === false && !isExtracting && !status.extractionError) {
+            extractComponents();
+        } else if (currentStep === 1 && status.componentsInstalled === true) {
+            // Already installed, skip to next step
             setCurrentStep(2);
-        } catch (e) {
-            console.error('Failed to download Streamlink:', e);
-            setError(`Failed to download: ${e}`);
-        } finally {
-            setIsDownloading(false);
         }
-    }, [addToast]);
-
-    // Open Streamlink download page as fallback
-    const handleOpenStreamlinkPage = useCallback(async () => {
-        try {
-            await open('https://github.com/streamlink/windows-builds/releases/latest');
-        } catch (e) {
-            window.open('https://github.com/streamlink/windows-builds/releases/latest', '_blank');
-        }
-    }, []);
-
-    // Install TTV LOL plugin
-    const handleInstallTtvlol = useCallback(async () => {
-        setIsInstalling(true);
-        setError(null);
-        try {
-            const version = await invoke('download_and_install_ttvlol_plugin') as string;
-            addToast(`TTV LOL plugin v${version} installed!`, 'success');
-            setStatus(prev => ({ ...prev, ttvlolInstalled: true }));
-            await updateSettings({
-                ...settings,
-                ttvlol_plugin: { enabled: true, installed_version: version },
-            });
-        } catch (e) {
-            console.error('Failed to install TTV LOL:', e);
-            setError(`Failed to install: ${e}`);
-        } finally {
-            setIsInstalling(false);
-        }
-    }, [addToast, settings, updateSettings]);
+    }, [currentStep, status.componentsInstalled, isExtracting, status.extractionError, extractComponents]);
 
     // Handle drops authentication (Android client)
     const handleDropsLogin = useCallback(async () => {
@@ -199,7 +157,6 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
         try {
             await updateSettings({
                 ...settings,
-                streamlink_path: status.streamlinkPath,
                 setup_complete: true,
             });
             onClose();
@@ -207,7 +164,7 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
             console.error('Failed to save settings:', e);
             addToast('Failed to save settings', 'error');
         }
-    }, [settings, status.streamlinkPath, updateSettings, onClose, addToast]);
+    }, [settings, updateSettings, onClose, addToast]);
 
     const renderStepContent = () => {
         switch (currentStep) {
@@ -224,21 +181,20 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                         </div>
                         <h2 className="text-2xl font-bold text-textPrimary mb-3">Welcome to StreamNook!</h2>
                         <p className="text-textSecondary mb-6 max-w-md">
-                            Let's get you set up. We'll install a couple of things and get you logged in.
-                            This only takes a few minutes!
+                            Let's get you set up. This only takes a moment!
                         </p>
                         <div className="flex flex-col gap-3 w-full max-w-xs">
                             <div className="flex items-center gap-3 text-left p-3 bg-glass rounded-lg">
                                 <div className="w-8 h-8 rounded-full bg-purple-500/20 flex items-center justify-center flex-shrink-0">
-                                    <Download size={16} className="text-purple-400" />
+                                    <Settings size={16} className="text-purple-400" />
                                 </div>
-                                <span className="text-sm text-textSecondary">Install Streamlink for video playback</span>
+                                <span className="text-sm text-textSecondary">Auto-setup video player & ad blocker</span>
                             </div>
                             <div className="flex items-center gap-3 text-left p-3 bg-glass rounded-lg">
                                 <div className="w-8 h-8 rounded-full bg-purple-500/20 flex items-center justify-center flex-shrink-0">
-                                    <Puzzle size={16} className="text-purple-400" />
+                                    <Package size={16} className="text-purple-400" />
                                 </div>
-                                <span className="text-sm text-textSecondary">TTV LOL plugin for ad-free viewing</span>
+                                <span className="text-sm text-textSecondary">Sign in for Twitch Drops</span>
                             </div>
                             <div className="flex items-center gap-3 text-left p-3 bg-glass rounded-lg">
                                 <div className="w-8 h-8 rounded-full bg-purple-500/20 flex items-center justify-center flex-shrink-0">
@@ -250,7 +206,7 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                     </motion.div>
                 );
 
-            case 1: // Download Streamlink
+            case 1: // Setting Up (Auto-extraction)
                 return (
                     <motion.div
                         initial={{ opacity: 0, y: 20 }}
@@ -258,174 +214,72 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                         exit={{ opacity: 0, y: -20 }}
                         className="flex flex-col items-center text-center px-8 py-6"
                     >
-                        <div className="w-16 h-16 rounded-full bg-purple-500/20 flex items-center justify-center mb-6">
-                            <Download size={28} className="text-purple-400" />
-                        </div>
-                        <h2 className="text-xl font-bold text-textPrimary mb-3">Download Streamlink</h2>
-                        <p className="text-textSecondary mb-6 max-w-md">
-                            Streamlink is required to play Twitch streams. Click below to download the installer.
-                        </p>
-                        {error && (
-                            <div className="flex items-center gap-2 text-red-400 text-sm mb-4 p-3 bg-red-500/10 rounded-lg">
-                                <AlertCircle size={16} />
-                                <span>{error}</span>
-                            </div>
-                        )}
-                        <div className="flex flex-col gap-3 w-full max-w-xs">
-                            <button
-                                onClick={handleDownloadStreamlink}
-                                disabled={isDownloading}
-                                className="flex items-center justify-center gap-2 px-6 py-3 bg-purple-500 hover:bg-purple-600 disabled:bg-purple-500/50 text-white rounded-xl font-medium transition-colors"
-                            >
-                                {isDownloading ? (
-                                    <>
-                                        <Loader2 size={18} className="animate-spin" />
-                                        Downloading...
-                                    </>
-                                ) : (
-                                    <>
-                                        <Download size={18} />
-                                        Download Installer
-                                    </>
-                                )}
-                            </button>
-                            <button
-                                onClick={handleOpenStreamlinkPage}
-                                className="flex items-center justify-center gap-2 px-4 py-2 text-textSecondary hover:text-textPrimary transition-colors text-sm"
-                            >
-                                <ExternalLink size={14} />
-                                Or download from GitHub
-                            </button>
-                        </div>
-                        <div className="mt-6 p-4 bg-glass rounded-xl w-full max-w-md">
-                            <p className="text-xs text-textMuted">
-                                💡 After downloading, run the installer with default settings.
-                                Install to the default location (C:\Program Files\Streamlink).
-                            </p>
-                        </div>
-                    </motion.div>
-                );
-
-            case 2: // Verify Streamlink
-                return (
-                    <motion.div
-                        initial={{ opacity: 0, y: 20 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, y: -20 }}
-                        className="flex flex-col items-center text-center px-8 py-6"
-                    >
-                        <div className={`w-16 h-16 rounded-full flex items-center justify-center mb-6 ${status.streamlinkInstalled === true ? 'bg-green-500/20' : status.streamlinkInstalled === false ? 'bg-yellow-500/20' : 'bg-purple-500/20'}`}>
-                            {status.streamlinkInstalled === true ? (
+                        <div className={`w-16 h-16 rounded-full flex items-center justify-center mb-6 ${status.componentsInstalled === true
+                                ? 'bg-green-500/20'
+                                : status.extractionError
+                                    ? 'bg-red-500/20'
+                                    : 'bg-purple-500/20'
+                            }`}>
+                            {status.componentsInstalled === true ? (
                                 <CheckCircle2 size={28} className="text-green-400" />
-                            ) : status.streamlinkInstalled === false ? (
-                                <AlertCircle size={28} className="text-yellow-400" />
+                            ) : status.extractionError ? (
+                                <AlertCircle size={28} className="text-red-400" />
                             ) : (
-                                <Monitor size={28} className="text-purple-400" />
+                                <Loader2 size={28} className="text-purple-400 animate-spin" />
                             )}
                         </div>
-                        <h2 className="text-xl font-bold text-textPrimary mb-3">Verify Installation</h2>
-                        <p className="text-textSecondary mb-4">
-                            {status.streamlinkInstalled === true
-                                ? 'Streamlink is installed and ready!'
-                                : status.streamlinkInstalled === false
-                                    ? 'Streamlink not found. Please install it first.'
-                                    : 'Checking if Streamlink is installed...'}
-                        </p>
-                        {status.streamlinkInstalled === false && (
-                            <div className="w-full max-w-sm mb-4">
-                                <label className="block text-sm font-medium text-textSecondary mb-2 text-left">
-                                    Custom Install Path (optional)
-                                </label>
-                                <input
-                                    type="text"
-                                    value={status.streamlinkPath}
-                                    onChange={(e) => setStatus(prev => ({ ...prev, streamlinkPath: e.target.value }))}
-                                    className="w-full glass-input text-textPrimary text-sm px-3 py-2"
-                                    placeholder="C:\Program Files\Streamlink\bin\streamlinkw.exe"
-                                />
-                            </div>
-                        )}
-                        <button
-                            onClick={checkStreamlinkInstallation}
-                            className={`flex items-center justify-center gap-2 px-6 py-3 rounded-xl font-medium transition-colors ${status.streamlinkInstalled === true ? 'bg-green-500 text-white' : 'bg-purple-500 hover:bg-purple-600 text-white'}`}
-                        >
-                            <RefreshCw size={18} />
-                            {status.streamlinkInstalled === true ? 'Verified!' : 'Check Again'}
-                        </button>
-                        {status.streamlinkInstalled === false && (
-                            <p className="text-xs text-textMuted mt-4">
-                                Make sure you've run the installer and it completed successfully.
-                            </p>
-                        )}
-                    </motion.div>
-                );
-
-            case 3: // TTV LOL Plugin
-                return (
-                    <motion.div
-                        initial={{ opacity: 0, y: 20 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, y: -20 }}
-                        className="flex flex-col items-center text-center px-8 py-6"
-                    >
-                        <div className={`w-16 h-16 rounded-full flex items-center justify-center mb-6 ${status.ttvlolInstalled ? 'bg-green-500/20' : 'bg-purple-500/20'}`}>
-                            {status.ttvlolInstalled ? (
-                                <CheckCircle2 size={28} className="text-green-400" />
-                            ) : (
-                                <Puzzle size={28} className="text-purple-400" />
-                            )}
-                        </div>
-                        <h2 className="text-xl font-bold text-textPrimary mb-3">TTV LOL Ad Blocker</h2>
+                        <h2 className="text-xl font-bold text-textPrimary mb-3">
+                            {status.componentsInstalled === true
+                                ? 'Setup Complete!'
+                                : status.extractionError
+                                    ? 'Setup Failed'
+                                    : 'Setting Up...'}
+                        </h2>
                         <p className="text-textSecondary mb-6 max-w-md">
-                            {status.ttvlolInstalled
-                                ? 'TTV LOL plugin is installed! Enjoy ad-free streams.'
-                                : 'This plugin blocks Twitch ads. Highly recommended!'}
+                            {status.componentsInstalled === true
+                                ? 'Streamlink and TTV LOL ad blocker are ready!'
+                                : status.extractionError
+                                    ? 'There was an error setting up components.'
+                                    : 'Installing Streamlink and TTV LOL ad blocker...'}
                         </p>
-                        {error && (
-                            <div className="flex items-center gap-2 text-red-400 text-sm mb-4 p-3 bg-red-500/10 rounded-lg">
-                                <AlertCircle size={16} />
-                                <span>{error}</span>
+                        {status.extractionError && (
+                            <div className="flex flex-col items-center gap-4">
+                                <div className="flex items-center gap-2 text-red-400 text-sm p-3 bg-red-500/10 rounded-lg max-w-md">
+                                    <AlertCircle size={16} className="flex-shrink-0" />
+                                    <span className="text-left">{status.extractionError}</span>
+                                </div>
+                                <button
+                                    onClick={extractComponents}
+                                    disabled={isExtracting}
+                                    className="flex items-center justify-center gap-2 px-6 py-3 bg-purple-500 hover:bg-purple-600 disabled:bg-purple-500/50 text-white rounded-xl font-medium transition-colors"
+                                >
+                                    {isExtracting ? (
+                                        <>
+                                            <Loader2 size={18} className="animate-spin" />
+                                            Retrying...
+                                        </>
+                                    ) : (
+                                        'Try Again'
+                                    )}
+                                </button>
                             </div>
                         )}
-                        {!status.ttvlolInstalled ? (
-                            <button
-                                onClick={handleInstallTtvlol}
-                                disabled={isInstalling || !status.streamlinkInstalled}
-                                className="flex items-center justify-center gap-2 px-6 py-3 bg-purple-500 hover:bg-purple-600 disabled:bg-purple-500/50 text-white rounded-xl font-medium transition-colors"
-                            >
-                                {isInstalling ? (
-                                    <>
-                                        <Loader2 size={18} className="animate-spin" />
-                                        Installing...
-                                    </>
-                                ) : (
-                                    <>
-                                        <Download size={18} />
-                                        Install Plugin
-                                    </>
-                                )}
-                            </button>
-                        ) : (
-                            <div className="flex items-center gap-2 text-green-400">
-                                <CheckCircle2 size={20} />
-                                <span className="font-medium">Plugin Installed!</span>
+                        {!status.extractionError && !status.componentsInstalled && (
+                            <div className="flex flex-col gap-2 w-full max-w-xs">
+                                <div className="flex items-center gap-3 p-3 bg-glass rounded-lg">
+                                    <Loader2 size={16} className="text-purple-400 animate-spin" />
+                                    <span className="text-sm text-textSecondary">Installing Streamlink...</span>
+                                </div>
+                                <div className="flex items-center gap-3 p-3 bg-glass rounded-lg">
+                                    <Loader2 size={16} className="text-purple-400 animate-spin" />
+                                    <span className="text-sm text-textSecondary">Installing TTV LOL plugin...</span>
+                                </div>
                             </div>
                         )}
-                        {!status.streamlinkInstalled && (
-                            <p className="text-xs text-yellow-400 mt-4">
-                                ⚠️ Please install Streamlink first before installing this plugin.
-                            </p>
-                        )}
-                        <button
-                            onClick={() => setCurrentStep(4)}
-                            className="mt-4 text-sm text-textSecondary hover:text-textPrimary transition-colors"
-                        >
-                            Skip for now →
-                        </button>
                     </motion.div>
                 );
 
-            case 4: // Drops Login (Android client)
+            case 2: // Drops Login (Android client)
                 return (
                     <motion.div
                         initial={{ opacity: 0, y: 20 }}
@@ -489,7 +343,7 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                             )}
                         </div>
                         <button
-                            onClick={() => setCurrentStep(5)}
+                            onClick={() => setCurrentStep(3)}
                             className="mt-4 text-sm text-textSecondary hover:text-textPrimary transition-colors"
                         >
                             Skip for now →
@@ -497,7 +351,7 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                     </motion.div>
                 );
 
-            case 5: // Main App Login
+            case 3: // Main App Login
                 return (
                     <motion.div
                         initial={{ opacity: 0, y: 20 }}
@@ -550,7 +404,7 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                             </div>
                         )}
                         <button
-                            onClick={() => setCurrentStep(6)}
+                            onClick={() => setCurrentStep(4)}
                             className="mt-4 text-sm text-textSecondary hover:text-textPrimary transition-colors"
                         >
                             Skip for now →
@@ -558,7 +412,7 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                     </motion.div>
                 );
 
-            case 6: // Complete
+            case 4: // Complete
                 return (
                     <motion.div
                         initial={{ opacity: 0, y: 20 }}
@@ -574,24 +428,14 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                             StreamNook is ready to use. Enjoy watching your favorite streams!
                         </p>
                         <div className="flex flex-col gap-2 w-full max-w-xs mb-6">
-                            <div className={`flex items-center gap-3 p-3 rounded-lg ${status.streamlinkInstalled ? 'bg-green-500/10' : 'bg-yellow-500/10'}`}>
-                                {status.streamlinkInstalled ? (
+                            <div className={`flex items-center gap-3 p-3 rounded-lg ${status.componentsInstalled ? 'bg-green-500/10' : 'bg-yellow-500/10'}`}>
+                                {status.componentsInstalled ? (
                                     <CheckCircle2 size={18} className="text-green-400" />
                                 ) : (
                                     <AlertCircle size={18} className="text-yellow-400" />
                                 )}
                                 <span className="text-sm text-textSecondary">
-                                    Streamlink {status.streamlinkInstalled ? 'installed' : 'not installed'}
-                                </span>
-                            </div>
-                            <div className={`flex items-center gap-3 p-3 rounded-lg ${status.ttvlolInstalled ? 'bg-green-500/10' : 'bg-gray-500/10'}`}>
-                                {status.ttvlolInstalled ? (
-                                    <CheckCircle2 size={18} className="text-green-400" />
-                                ) : (
-                                    <X size={18} className="text-gray-400" />
-                                )}
-                                <span className="text-sm text-textSecondary">
-                                    TTV LOL {status.ttvlolInstalled ? 'installed' : 'not installed'}
+                                    Streamlink & TTV LOL {status.componentsInstalled ? 'ready' : 'not installed'}
                                 </span>
                             </div>
                             <div className={`flex items-center gap-3 p-3 rounded-lg ${status.mainAuthenticated ? 'bg-green-500/10' : 'bg-gray-500/10'}`}>
@@ -695,13 +539,13 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                 <div className="flex items-center justify-between px-6 py-4 border-t border-borderSubtle">
                     <button
                         onClick={() => setCurrentStep(Math.max(0, currentStep - 1))}
-                        disabled={currentStep === 0 || currentStep === 6}
+                        disabled={currentStep === 0 || currentStep === 1 || currentStep === 4}
                         className="flex items-center gap-2 px-4 py-2 text-textSecondary hover:text-textPrimary disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                     >
                         <ChevronLeft size={16} />
                         Back
                     </button>
-                    {currentStep < steps.length - 1 ? (
+                    {currentStep < steps.length - 1 && currentStep !== 1 ? (
                         <button
                             onClick={() => setCurrentStep(currentStep + 1)}
                             className="flex items-center gap-2 px-5 py-2 bg-purple-500 hover:bg-purple-600 text-white rounded-lg font-medium transition-colors"

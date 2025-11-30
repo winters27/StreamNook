@@ -3,6 +3,7 @@ pub mod badge_metadata;
 pub mod badges;
 pub mod cache;
 pub mod chat;
+pub mod components;
 pub mod cosmetics_cache;
 pub mod discord;
 pub mod drops;
