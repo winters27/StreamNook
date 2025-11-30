@@ -6,8 +6,8 @@ dist/
 src-tauri/target/
 scripts/release_manager.ps1
 
-# Drops folder (local mining tool)
-drops/
+# Drops folder (local mining tool) - only root level, not src/components/drops
+/drops/
 
 # Update artifacts
 update_streamnook.bat
