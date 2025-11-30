@@ -1,3 +1,7 @@
+## [4.1.1] - 2025-11-30
+### 🔧 Maintenance
+- Updated comment regarding clippy warnings suppression.
+
 ## [4.1.0] - 2025-11-30
 ### ✨ Features
 - Implemented bundled distribution of Streamlink and TTV LOL plugin for simplified installation and updates.
@@ -353,6 +357,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 

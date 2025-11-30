@@ -2,7 +2,7 @@
     all(not(debug_assertions), target_os = "windows"),
     windows_subsystem = "windows"
 )]
-// Suppress clippy warnings for this release - these are style issues, not bugs
+// Suppress clippy warnings for this release - these are style issues, not bugs!
 #![allow(dead_code)]
 #![allow(unused_imports)]
 #![allow(unused_variables)]
