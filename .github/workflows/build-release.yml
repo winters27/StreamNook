@@ -2,7 +2,7 @@ name: Build & Release Bundle
 
 on:
   push:
-    branches: [main, dev]
+    branches: [dev]
     paths:
       - 'src-tauri/Cargo.toml'  # Triggered by version bump
   workflow_dispatch:
@@ -17,15 +17,36 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  merge-to-main:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Merge dev to main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout main
+          git merge dev --no-ff -m "Merge dev to main for release"
+          git push origin main
+          
   build:
+    needs: merge-to-main
     runs-on: windows-latest
     permissions:
       contents: write
     
     steps:
-      - name: Checkout code
+      - name: Checkout main branch
         uses: actions/checkout@v4
         with:
+          ref: main
           fetch-depth: 0
 
       - name: Get version from Cargo.toml
@@ -68,7 +89,7 @@ jobs:
 
       - name: Setup Rust
         if: steps.check_release.outputs.RELEASE_EXISTS == 'false'
-        uses: dtolnay/rust-action@stable
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Rust cache
         if: steps.check_release.outputs.RELEASE_EXISTS == 'false'
