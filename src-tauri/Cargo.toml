@@ -1,6 +1,6 @@
 [package]
 name = "StreamNook"
-version = "4.0.2"
+version = "4.1.0"
 description = "The best Twitch suite."
 authors = ["Brandon Winters"]
 license = ""
@@ -53,6 +53,7 @@ once_cell = "1.21.3"
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
+
 
 
 

@@ -1,3 +1,7 @@
+## [4.1.0] - 2025-11-30
+### ✨ Features
+- Implemented bundled distribution of Streamlink and TTV LOL plugin for simplified installation and updates.
+
 ## [4.0.2] - 2025-11-30
 ### ✨ Features
 - Added first-time setup wizard to guide new users through the initial configuration.
@@ -349,6 +353,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
