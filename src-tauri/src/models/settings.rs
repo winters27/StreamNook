@@ -210,6 +210,8 @@ pub struct Settings {
     pub auto_switch: AutoSwitchSettings,
     #[serde(default = "default_theme")]
     pub theme: String,
+    #[serde(default)]
+    pub setup_complete: bool,
 }
 
 fn default_theme() -> String {
@@ -241,6 +243,7 @@ impl Default for Settings {
             last_seen_version: None,
             auto_switch: AutoSwitchSettings::default(),
             theme: default_theme(),
+            setup_complete: false, // New users need to complete setup
         }
     }
 }

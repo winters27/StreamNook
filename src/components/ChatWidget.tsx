@@ -197,6 +197,8 @@ const ChatWidget = () => {
   const [isSharedChat, setIsSharedChat] = useState<boolean>(false);
   const [replyingTo, setReplyingTo] = useState<{ messageId: string; username: string } | null>(null);
   const lastMessageCountRef = useRef<number>(0);
+  const isInitialLoadRef = useRef<boolean>(false);
+  const initialLoadTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     const newMessages = messages.slice(lastProcessedCountRef.current);
@@ -309,16 +311,35 @@ const ChatWidget = () => {
     if (isBulkLoad) {
       // Historical messages were loaded - reset all heights and the entire list
       console.log('[ChatWidget] Bulk load detected, resetting list from index 0');
+      isInitialLoadRef.current = true;
+
+      // Clear any existing timeout
+      if (initialLoadTimeoutRef.current) {
+        clearTimeout(initialLoadTimeoutRef.current);
+      }
+
       rowHeights.current = {};
       messageHeightsById.current.clear();
       listRef.current.resetAfterIndex(0, true);
-      // Scroll to bottom after a short delay to allow heights to be measured
+
+      // After a brief delay to allow rendering, call handleResume to properly scroll and unpause
       setTimeout(() => {
-        if (listRef.current && messages.length > 0) {
-          listRef.current.scrollToItem(messages.length - 1, 'end');
-          maxScrollPositionRef.current = lastScrollPositionRef.current;
+        if (messages.length > 0) {
+          // Use handleResume to properly set everything up
+          lastResumeTimeRef.current = Date.now();
+          setIsPaused(false);
+          setBufferPaused(false);
+          if (listRef.current) {
+            listRef.current.scrollToItem(messages.length - 1, 'end');
+          }
         }
       }, 100);
+
+      // Keep the initial load flag active for a bit longer to prevent auto-pause
+      initialLoadTimeoutRef.current = setTimeout(() => {
+        isInitialLoadRef.current = false;
+        console.log('[ChatWidget] Initial load complete, auto-pause now enabled');
+      }, 3000);
     } else if (!isPaused) {
       // Normal message append
       listRef.current.resetAfterIndex(Math.max(0, lastIndex - 1));
@@ -406,9 +427,21 @@ const ChatWidget = () => {
   const handleScroll = useCallback(({ scrollOffset, scrollUpdateWasRequested }: { scrollOffset: number; scrollUpdateWasRequested: boolean }) => {
     if (Date.now() - lastResumeTimeRef.current < 500) {
       lastScrollPositionRef.current = scrollOffset;
-      maxScrollPositionRef.current = Math.max(maxScrollPositionRef.current, scrollOffset);
+      if (!isPaused) {
+        maxScrollPositionRef.current = Math.max(maxScrollPositionRef.current, scrollOffset);
+      }
       return;
     }
+
+    // Skip auto-pause logic during initial load of historical messages
+    if (isInitialLoadRef.current) {
+      lastScrollPositionRef.current = scrollOffset;
+      if (!isPaused) {
+        maxScrollPositionRef.current = Math.max(maxScrollPositionRef.current, scrollOffset);
+      }
+      return;
+    }
+
     if (!scrollUpdateWasRequested) {
       const scrolledAwayFromMax = maxScrollPositionRef.current - scrollOffset > 50;
       if (scrolledAwayFromMax && scrollOffset < lastScrollPositionRef.current - 10 && scrollOffset > 100) {
@@ -416,10 +449,16 @@ const ChatWidget = () => {
           setIsPaused(true);
           setBufferPaused(true);
         }
+      } else if (isPaused && scrollOffset >= maxScrollPositionRef.current - 10) {
+        // User scrolled back to bottom while paused - auto-resume
+        handleResume();
       }
     }
     lastScrollPositionRef.current = scrollOffset;
-    maxScrollPositionRef.current = Math.max(maxScrollPositionRef.current, scrollOffset);
+    // Only update max scroll position when not paused to prevent interference
+    if (!isPaused) {
+      maxScrollPositionRef.current = Math.max(maxScrollPositionRef.current, scrollOffset);
+    }
   }, [isPaused, setBufferPaused]);
 
   const handleResume = () => {
@@ -672,7 +711,7 @@ const ChatWidget = () => {
             <AutoSizer>
               {({ height, width }) => {
                 containerHeightRef.current = height;
-                const displayMessages = isPaused && frozenMessagesRef.current ? frozenMessagesRef.current : messages;
+                const displayMessages = messages; // Always show all messages, even when paused
                 const totalHeight = Object.values(rowHeights.current).reduce((sum, height) => sum + height, 0);
                 const needsPadding = totalHeight < height;
                 const paddingHeight = needsPadding ? height - totalHeight : 0;

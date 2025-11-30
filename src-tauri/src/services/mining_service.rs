@@ -26,6 +26,7 @@ pub struct MiningService {
     websocket_service: Arc<tokio::sync::Mutex<DropsWebSocketService>>,
     cached_user_id: Arc<RwLock<Option<String>>>, // Cache user ID to avoid repeated validation calls
     cached_spade_url: Arc<RwLock<Option<String>>>, // Cache spade URL to avoid repeated HTML fetches
+    event_listener_id: Arc<RwLock<Option<u32>>>, // Store event listener ID for cleanup
 }
 
 impl MiningService {
@@ -44,7 +45,91 @@ impl MiningService {
             websocket_service: Arc::new(tokio::sync::Mutex::new(DropsWebSocketService::new())),
             cached_user_id: Arc::new(RwLock::new(None)),
             cached_spade_url: Arc::new(RwLock::new(None)),
+            event_listener_id: Arc::new(RwLock::new(None)),
         }
+    }
+
+    /// Set up the WebSocket event listener (only once)
+    async fn setup_websocket_listener(&self, app_handle: &AppHandle) {
+        // Check if listener is already set up
+        let has_listener = {
+            let listener_id = self.event_listener_id.read().await;
+            listener_id.is_some()
+        };
+
+        if has_listener {
+            println!("📡 WebSocket listener already set up, skipping duplicate registration");
+            return;
+        }
+
+        let drops_service = self.drops_service.clone();
+        let mining_status = self.mining_status.clone();
+        let app_handle_clone = app_handle.clone();
+
+        let event_id = app_handle.listen("drops-progress-update", move |event| {
+            let drops_service = drops_service.clone();
+            let mining_status = mining_status.clone();
+            let app_handle = app_handle_clone.clone();
+
+            tokio::spawn(async move {
+                if let Ok(payload) = serde_json::from_str::<serde_json::Value>(&event.payload()) {
+                    let drop_id = payload["drop_id"].as_str().unwrap_or("");
+                    let current_minutes = payload["current_minutes"].as_i64().unwrap_or(0) as i32;
+                    let required_minutes = payload["required_minutes"].as_i64().unwrap_or(0) as i32;
+
+                    println!(
+                        "✅ Updated drop progress from WebSocket: {}/{} minutes for drop {}",
+                        current_minutes, required_minutes, drop_id
+                    );
+
+                    // Update mining status with new progress
+                    if let Ok(mut status) = mining_status.try_write() {
+                        if let Some(ref mut current_drop) = status.current_drop {
+                            if current_drop.drop_id == drop_id {
+                                current_drop.current_minutes = current_minutes;
+                                current_drop.required_minutes = required_minutes;
+                                current_drop.progress_percentage =
+                                    (current_minutes as f32 / required_minutes as f32) * 100.0;
+
+                                // Update estimated completion
+                                if current_minutes > 0 && current_minutes < required_minutes {
+                                    let remaining_minutes = required_minutes - current_minutes;
+                                    current_drop.estimated_completion = Some(
+                                        Utc::now() + Duration::minutes(remaining_minutes as i64),
+                                    );
+                                } else {
+                                    current_drop.estimated_completion = None;
+                                }
+
+                                status.last_update = Utc::now();
+
+                                // Emit updated status to frontend
+                                let current_status = status.clone();
+                                drop(status);
+                                let _ = app_handle.emit("mining-status-update", &current_status);
+                            }
+                        }
+                    }
+
+                    // Also update the drops service progress cache
+                    drops_service
+                        .lock()
+                        .await
+                        .update_drop_progress_from_websocket(
+                            drop_id.to_string(),
+                            current_minutes,
+                            required_minutes,
+                        )
+                        .await;
+                }
+            });
+        });
+
+        // Store the event ID for cleanup
+        let mut listener_id = self.event_listener_id.write().await;
+        *listener_id = Some(event_id);
+
+        println!("✅ WebSocket event listener registered");
     }
 
     pub async fn get_mining_status(&self) -> MiningStatus {
@@ -133,6 +218,9 @@ impl MiningService {
             *is_running = true;
         }
 
+        // Set up WebSocket event listener (only once)
+        self.setup_websocket_listener(&app_handle).await;
+
         // Clone Arc references for the background task
         let client = self.client.clone();
         let drops_service = self.drops_service.clone();
@@ -141,31 +229,6 @@ impl MiningService {
         let is_running = self.is_running.clone();
         let cached_user_id = self.cached_user_id.clone();
         let cached_spade_url = self.cached_spade_url.clone();
-
-        // Set up listener for WebSocket progress updates
-        let drops_service_for_ws = drops_service.clone();
-
-        let _unlisten = app_handle.listen("drops-progress-update", move |event| {
-            let drops_service = drops_service_for_ws.clone();
-
-            tokio::spawn(async move {
-                if let Ok(payload) = serde_json::from_str::<serde_json::Value>(&event.payload()) {
-                    let drop_id = payload["drop_id"].as_str().unwrap_or("");
-                    let current_minutes = payload["current_minutes"].as_i64().unwrap_or(0) as i32;
-                    let required_minutes = payload["required_minutes"].as_i64().unwrap_or(0) as i32;
-
-                    drops_service
-                        .lock()
-                        .await
-                        .update_drop_progress_from_websocket(
-                            drop_id.to_string(),
-                            current_minutes,
-                            required_minutes,
-                        )
-                        .await;
-                }
-            });
-        });
 
         // Spawn the mining loop for a specific campaign with a specific channel
         tokio::spawn(async move {
@@ -565,6 +628,9 @@ impl MiningService {
             *is_running = true;
         }
 
+        // Set up WebSocket event listener (only once)
+        self.setup_websocket_listener(&app_handle).await;
+
         // Clone Arc references for the background task
         let client = self.client.clone();
         let drops_service = self.drops_service.clone();
@@ -573,39 +639,6 @@ impl MiningService {
         let is_running = self.is_running.clone();
         let cached_user_id = self.cached_user_id.clone();
         let cached_spade_url = self.cached_spade_url.clone();
-
-        // Set up listener for WebSocket progress updates ONCE, outside the loop
-        // The WebSocket updates the drops_service cache, and the regular polling will pick it up
-        let drops_service_for_ws = drops_service.clone();
-
-        let _unlisten = app_handle.listen("drops-progress-update", move |event| {
-            let drops_service = drops_service_for_ws.clone();
-
-            tokio::spawn(async move {
-                if let Ok(payload) = serde_json::from_str::<serde_json::Value>(&event.payload()) {
-                    let drop_id = payload["drop_id"].as_str().unwrap_or("");
-                    let current_minutes = payload["current_minutes"].as_i64().unwrap_or(0) as i32;
-                    let required_minutes = payload["required_minutes"].as_i64().unwrap_or(0) as i32;
-
-                    println!(
-                        "📊 WebSocket progress update received: {}/{} minutes for drop {}",
-                        current_minutes, required_minutes, drop_id
-                    );
-
-                    // Update the drops service progress cache
-                    // The regular polling will pick this up and update the UI
-                    drops_service
-                        .lock()
-                        .await
-                        .update_drop_progress_from_websocket(
-                            drop_id.to_string(),
-                            current_minutes,
-                            required_minutes,
-                        )
-                        .await;
-                }
-            });
-        });
 
         // Spawn the mining loop for a specific campaign
         tokio::spawn(async move {
@@ -1062,6 +1095,9 @@ impl MiningService {
             *is_running = true;
         }
 
+        // Set up WebSocket event listener (only once)
+        self.setup_websocket_listener(&app_handle).await;
+
         // Clone Arc references for the background task
         let client = self.client.clone();
         let drops_service = self.drops_service.clone();
@@ -1070,90 +1106,6 @@ impl MiningService {
         let is_running = self.is_running.clone();
         let cached_user_id = self.cached_user_id.clone();
         let cached_spade_url = self.cached_spade_url.clone();
-
-        // Set up listener for WebSocket progress updates (same as manual mining)
-        let mining_status_for_ws = mining_status.clone();
-        let app_handle_for_ws = app_handle.clone();
-        let drops_service_for_ws = drops_service.clone();
-
-        let _unlisten = app_handle.listen("drops-progress-update", move |event| {
-            let mining_status = mining_status_for_ws.clone();
-            let app_handle = app_handle_for_ws.clone();
-            let drops_service = drops_service_for_ws.clone();
-
-            tokio::spawn(async move {
-                if let Ok(payload) = serde_json::from_str::<serde_json::Value>(&event.payload()) {
-                    let drop_id = payload["drop_id"].as_str().unwrap_or("");
-                    let current_minutes = payload["current_minutes"].as_i64().unwrap_or(0) as i32;
-                    let required_minutes = payload["required_minutes"].as_i64().unwrap_or(0) as i32;
-
-                    println!(
-                        "📊 WebSocket progress update received: {}/{} minutes for drop {}",
-                        current_minutes, required_minutes, drop_id
-                    );
-
-                    // Update mining status with new progress
-                    if let Ok(mut status) = mining_status.try_write() {
-                        println!(
-                            "🔍 Current drop in status: {:?}",
-                            status.current_drop.as_ref().map(|d| &d.drop_id)
-                        );
-                        println!("🔍 WebSocket drop ID: {}", drop_id);
-
-                        let should_emit = if let Some(ref mut current_drop) = status.current_drop {
-                            println!("🔍 Comparing: '{}' == '{}'", current_drop.drop_id, drop_id);
-                            if current_drop.drop_id == drop_id {
-                                current_drop.current_minutes = current_minutes;
-                                current_drop.required_minutes = required_minutes;
-                                current_drop.progress_percentage =
-                                    (current_minutes as f32 / required_minutes as f32) * 100.0;
-
-                                // Update estimated completion
-                                if current_minutes > 0 && current_minutes < required_minutes {
-                                    let remaining_minutes = required_minutes - current_minutes;
-                                    current_drop.estimated_completion = Some(
-                                        Utc::now() + Duration::minutes(remaining_minutes as i64),
-                                    );
-                                } else {
-                                    current_drop.estimated_completion = None;
-                                }
-
-                                println!(
-                                    "✅ Updated mining status with WebSocket progress: {}%",
-                                    current_drop.progress_percentage.round()
-                                );
-
-                                true
-                            } else {
-                                false
-                            }
-                        } else {
-                            false
-                        };
-
-                        if should_emit {
-                            status.last_update = Utc::now();
-
-                            // Emit updated status to frontend
-                            let current_status = status.clone();
-                            drop(status);
-                            let _ = app_handle.emit("mining-status-update", &current_status);
-                        }
-                    }
-
-                    // Also update the drops service progress cache
-                    drops_service
-                        .lock()
-                        .await
-                        .update_drop_progress_from_websocket(
-                            drop_id.to_string(),
-                            current_minutes,
-                            required_minutes,
-                        )
-                        .await;
-                }
-            });
-        });
 
         // Spawn the mining loop
         tokio::spawn(async move {
@@ -1450,6 +1402,15 @@ impl MiningService {
 
         // Disconnect WebSocket
         self.websocket_service.lock().await.disconnect().await;
+
+        // Clean up event listener
+        {
+            let mut listener_id = self.event_listener_id.write().await;
+            if let Some(id) = listener_id.take() {
+                app_handle.unlisten(id);
+                println!("🗑️ Cleaned up WebSocket event listener");
+            }
+        }
 
         // Clear cached user ID when stopping
         {
