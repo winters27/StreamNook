@@ -306,3 +306,63 @@ export interface DropsStatistics {
   recent_claims: ClaimedDrop[];
   channel_points_history: ChannelPointsClaim[];
 }
+
+// Dynamic Island Notification Types
+export type NotificationType = 'live' | 'whisper' | 'system';
+
+export interface DynamicIslandNotification {
+  id: string;
+  type: NotificationType;
+  timestamp: number;
+  read: boolean;
+  data: LiveNotificationData | WhisperNotificationData | SystemNotificationData;
+}
+
+export interface LiveNotificationData {
+  streamer_name: string;
+  streamer_login: string;
+  streamer_avatar?: string;
+  game_name?: string;
+  game_image?: string;
+  stream_title?: string;
+  is_live: boolean; // Current status - may change
+}
+
+export interface WhisperNotificationData {
+  from_user_id: string;
+  from_user_login: string;
+  from_user_name: string;
+  message: string;
+  whisper_id: string;
+  profile_image_url?: string;
+}
+
+export interface SystemNotificationData {
+  title: string;
+  message: string;
+  icon?: string;
+}
+
+// Whisper Types
+export interface Whisper {
+  id: string;
+  from_user_id: string;
+  from_user_login: string;
+  from_user_name: string;
+  to_user_id: string;
+  to_user_login: string;
+  to_user_name: string;
+  message: string;
+  timestamp: number;
+  is_sent: boolean; // true if sent by current user
+}
+
+export interface WhisperConversation {
+  user_id: string;
+  user_login: string;
+  user_name: string;
+  profile_image_url?: string;
+  messages: Whisper[];
+  last_message_timestamp: number;
+  unread_count: number;
+}

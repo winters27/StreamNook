@@ -89,6 +89,23 @@ pub struct RewardInfo {
     pub prompt: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WhisperReceivedEvent {
+    pub from_user_id: String,
+    pub from_user_login: String,
+    pub from_user_name: String,
+    pub to_user_id: String,
+    pub to_user_login: String,
+    pub to_user_name: String,
+    pub whisper_id: String,
+    pub whisper: WhisperContent,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WhisperContent {
+    pub text: String,
+}
+
 pub struct EventSubService {
     connected: Arc<RwLock<bool>>,
     session_id: Arc<RwLock<Option<String>>>,
@@ -366,6 +383,30 @@ impl EventSubService {
                     let _ = app_handle.emit("channel-points-redemption", &redemption);
                 }
             }
+            "user.whisper.message" => {
+                // Handle incoming whisper messages
+                if let Ok(whisper_event) = serde_json::from_value::<WhisperReceivedEvent>(notification.event.clone()) {
+                    println!("💬 Whisper received from {} (@{}): {}", 
+                        whisper_event.from_user_name, 
+                        whisper_event.from_user_login,
+                        whisper_event.whisper.text
+                    );
+                    
+                    // Emit to frontend for Dynamic Island notification
+                    let whisper_data = serde_json::json!({
+                        "from_user_id": whisper_event.from_user_id,
+                        "from_user_login": whisper_event.from_user_login,
+                        "from_user_name": whisper_event.from_user_name,
+                        "to_user_id": whisper_event.to_user_id,
+                        "to_user_login": whisper_event.to_user_login,
+                        "to_user_name": whisper_event.to_user_name,
+                        "whisper_id": whisper_event.whisper_id,
+                        "text": whisper_event.whisper.text
+                    });
+                    
+                    let _ = app_handle.emit("whisper-received", &whisper_data);
+                }
+            }
             _ => {
                 println!("📨 Unhandled subscription type: {}", notification.subscription.subscription_type);
             }
@@ -380,6 +421,15 @@ impl EventSubService {
         let client_id = "1qgws7yzcp21g5ledlzffw3lmqdvie";
 
         let client = reqwest::Client::new();
+
+        // Get the current user's ID for user-specific subscriptions (like whispers)
+        let current_user_id = match TwitchService::get_user_info().await {
+            Ok(user) => user.id,
+            Err(e) => {
+                eprintln!("❌ Failed to get current user info: {}", e);
+                String::new()
+            }
+        };
 
         // Subscribe to automatic channel points rewards (v2)
         let subscription_body = serde_json::json!({
@@ -437,6 +487,40 @@ impl EventSubService {
         } else {
             let error_text = response.text().await?;
             eprintln!("❌ Failed to subscribe to custom rewards: {}", error_text);
+        }
+
+        // Subscribe to whisper messages (requires user:read:whispers or user:manage:whispers scope)
+        // This subscription is for the current logged-in user, not the broadcaster
+        if !current_user_id.is_empty() {
+            let whisper_subscription_body = serde_json::json!({
+                "type": "user.whisper.message",
+                "version": "1",
+                "condition": {
+                    "user_id": current_user_id
+                },
+                "transport": {
+                    "method": "websocket",
+                    "session_id": session_id
+                }
+            });
+
+            let response = client
+                .post("https://api.twitch.tv/helix/eventsub/subscriptions")
+                .header("Client-ID", client_id)
+                .header("Authorization", format!("Bearer {}", token))
+                .header("Content-Type", "application/json")
+                .json(&whisper_subscription_body)
+                .send()
+                .await?;
+
+            if response.status().is_success() {
+                println!("✅ Subscribed to whisper messages for user {}", current_user_id);
+            } else {
+                let error_text = response.text().await?;
+                eprintln!("❌ Failed to subscribe to whispers: {}", error_text);
+            }
+        } else {
+            eprintln!("⚠️ Skipping whisper subscription - no user ID available");
         }
 
         Ok(())

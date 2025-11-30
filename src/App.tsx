@@ -13,6 +13,7 @@ import DropsOverlay from './components/DropsOverlay';
 import BadgesOverlay from './components/BadgesOverlay';
 import BadgeDetailOverlay from './components/BadgeDetailOverlay';
 import ChangelogOverlay from './components/ChangelogOverlay';
+import WhispersWidget from './components/WhispersWidget';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
@@ -31,7 +32,7 @@ interface BadgeVersion {
 }
 
 function App() {
-  const { loadSettings, chatPlacement, isLoading, currentStream, streamUrl, checkAuthStatus, showProfileOverlay, setShowProfileOverlay, addToast, setShowDropsOverlay, showBadgesOverlay, setShowBadgesOverlay, settings, updateSettings, isTheaterMode } = useAppStore();
+  const { loadSettings, chatPlacement, isLoading, currentStream, streamUrl, checkAuthStatus, showProfileOverlay, setShowProfileOverlay, addToast, setShowDropsOverlay, showBadgesOverlay, setShowBadgesOverlay, showWhispersOverlay, setShowWhispersOverlay, settings, updateSettings, isTheaterMode } = useAppStore();
   const [chatSize, setChatSize] = useState(384); // Default 384px (w-96)
   const [isResizing, setIsResizing] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -90,6 +91,12 @@ function App() {
         console.error(`[${category}] ${message}`);
       });
 
+      // Listen for start-whisper events from standalone profile windows
+      const unlistenStartWhisper = await listen<{ id: string; login: string; display_name: string; profile_image_url?: string }>('start-whisper', (event) => {
+        console.log('[App] Received start-whisper event:', event.payload);
+        useAppStore.getState().openWhisperWithUser(event.payload);
+      });
+
       // Set up periodic auth check to detect session expiry while watching
       // Check every 5 minutes
       const authCheckInterval = setInterval(async () => {
@@ -106,6 +113,7 @@ function App() {
       return () => {
         unlistenChannelPoints();
         unlistenDropsError();
+        unlistenStartWhisper();
         clearInterval(authCheckInterval);
       };
     };
@@ -567,6 +575,10 @@ function App() {
           onClose={handleChangelogClose}
         />
       )}
+      <WhispersWidget
+        isOpen={showWhispersOverlay}
+        onClose={() => setShowWhispersOverlay(false)}
+      />
       <ToastManager />
     </div>
   );

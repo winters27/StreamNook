@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useAppStore } from '../stores/AppStore';
 import PenroseLogo from './PenroseLogo';
 import AboutWidget from './AboutWidget';
+import DynamicIsland from './DynamicIsland';
 import { invoke } from '@tauri-apps/api/core';
 import { themes, themeCategories, getThemeById, applyTheme, Theme } from '../themes';
 
@@ -103,8 +104,11 @@ const TitleBar = () => {
     <>
       <div
         data-tauri-drag-region
-        className="flex items-center justify-between h-8 px-3 select-none bg-secondary backdrop-blur-md border-b border-borderSubtle z-50"
+        className="relative flex items-center justify-between h-8 px-3 select-none bg-secondary backdrop-blur-md border-b border-borderSubtle z-50"
       >
+        {/* Dynamic Island - Centered in title bar */}
+        <DynamicIsland />
+
         <div className="flex items-center gap-2" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
           {/* Penrose Logo */}
           <PenroseLogo onClick={() => setShowAbout(true)} />

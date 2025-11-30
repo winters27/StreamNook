@@ -20,7 +20,7 @@ const CLIENT_SECRET: &str = "b0lftwt9jvyhlg50cxtrnijd06grn0";
 const KEYRING_SERVICE: &str = "streamnook_twitch_token";
 const KEYRING_USERNAME: &str = "user"; // Standardized username
 const REDIRECT_URI: &str = "http://localhost:3000/callback";
-const SCOPES: &str = "user:read:follows user:read:email chat:read chat:edit channel:read:redemptions channel:manage:redemptions moderator:read:followers openid";
+const SCOPES: &str = "user:read:follows user:read:email chat:read chat:edit channel:read:redemptions channel:manage:redemptions moderator:read:followers openid user:manage:whispers user:read:whispers";
 const TOKEN_FILE_NAME: &str = ".twitch_token";
 
 /// Get the app data directory (works consistently in dev and release)
@@ -1630,6 +1630,37 @@ impl TwitchService {
             .map(|s| s.to_string());
 
         Ok(game_id)
+    }
+
+    /// Send a whisper message to another user
+    /// Requires user:manage:whispers scope
+    pub async fn send_whisper(to_user_id: &str, message: &str) -> Result<()> {
+        let token = Self::get_token().await?;
+        let client = Client::new();
+
+        // Get the current user's ID
+        let user_info = Self::get_user_info().await?;
+
+        let response = client
+            .post(format!(
+                "https://api.twitch.tv/helix/whispers?from_user_id={}&to_user_id={}",
+                user_info.id, to_user_id
+            ))
+            .header(AUTHORIZATION, format!("Bearer {}", token))
+            .header("Client-Id", CLIENT_ID)
+            .header("Content-Type", "application/json")
+            .json(&serde_json::json!({
+                "message": message
+            }))
+            .send()
+            .await?;
+
+        if response.status().is_success() || response.status() == 204 {
+            Ok(())
+        } else {
+            let error_text = response.text().await?;
+            Err(anyhow::anyhow!("Failed to send whisper: {}", error_text))
+        }
     }
 
     /// Get streams by game name (convenience method that resolves game name to ID)

@@ -1,4 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
+import { MessageCircle } from 'lucide-react';
+import { useAppStore } from '../stores/AppStore';
 import { getUserCosmetics, computePaintStyle, getBadgeImageUrl } from '../services/seventvService';
 import { getAllUserBadges, TwitchBadge } from '../services/badgeService';
 import { getAllThirdPartyBadges, ThirdPartyBadge } from '../services/thirdPartyBadges';
@@ -25,6 +27,7 @@ interface UserProfileCardProps {
   position: { x: number; y: number };
   channelId?: string;
   channelName?: string;
+  onStartWhisper?: (user: { id: string; login: string; display_name: string; profile_image_url?: string }) => void;
 }
 
 interface TwitchUserProfile {
@@ -65,7 +68,8 @@ const UserProfileCard = ({
   onClose,
   position,
   channelId: propChannelId,
-  channelName: propChannelName
+  channelName: propChannelName,
+  onStartWhisper
 }: UserProfileCardProps) => {
   const [twitchProfile, setTwitchProfile] = useState<TwitchUserProfile | null>(null);
   const [twitchBadges, setTwitchBadges] = useState<TwitchBadge[]>([]);
@@ -348,6 +352,40 @@ const UserProfileCard = ({
             <a href={`https://www.twitch.tv/${username}`} target="_blank" rel="noopener noreferrer" className="flex-1 glass-button text-white text-xs py-2 px-3 rounded text-center hover:bg-accent/20 transition-colors">
               View Channel
             </a>
+            <button
+              onClick={async () => {
+                const user = {
+                  id: userId,
+                  login: username,
+                  display_name: displayName,
+                  profile_image_url: twitchProfile?.profile_image_url
+                };
+                if (onStartWhisper) {
+                  onStartWhisper(user);
+                } else if (isStandaloneWindow) {
+                  // For standalone profile windows, emit a Tauri event to the main window
+                  try {
+                    const { emit } = await import('@tauri-apps/api/event');
+                    await emit('start-whisper', user);
+                    // Close this profile window
+                    const { getCurrentWindow } = await import('@tauri-apps/api/window');
+                    const currentWindow = getCurrentWindow();
+                    await currentWindow.close();
+                  } catch (err) {
+                    console.error('Failed to emit whisper event:', err);
+                  }
+                } else {
+                  // Fallback: use AppStore directly
+                  useAppStore.getState().openWhisperWithUser(user);
+                }
+                onClose();
+              }}
+              className="glass-button text-white text-xs py-2 px-3 rounded text-center hover:bg-purple-500/20 transition-colors flex items-center justify-center gap-1.5"
+              title="Send Whisper"
+            >
+              <MessageCircle size={14} className="text-purple-400" />
+              Whisper
+            </button>
             <button
               onClick={() => setShowMessages(!showMessages)}
               className={`flex-1 glass-button text-white text-xs py-2 px-3 rounded text-center transition-colors flex items-center justify-center gap-1.5 ${showMessages ? 'bg-accent/20' : 'hover:bg-accent/20'}`}

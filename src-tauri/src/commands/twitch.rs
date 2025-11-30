@@ -2,8 +2,14 @@ use crate::models::settings::AppState;
 use crate::models::stream::TwitchStream;
 use crate::models::user::{ChannelInfo, UserInfo};
 use crate::services::twitch_service::{DeviceCodeInfo, TokenHealthStatus, TwitchService};
+use crate::services::whisper_history_service::{
+    WhisperHistoryService, WhisperMessage, WhisperThread,
+};
+use crate::services::whisper_service::WhisperService;
 use anyhow::Result;
+use std::sync::Arc;
 use tauri::{AppHandle, State};
+use tokio::sync::Mutex as TokioMutex;
 
 // Device Code Flow - the main login command
 #[tauri::command]
@@ -172,6 +178,13 @@ pub async fn get_user_by_id(user_id: String) -> Result<UserInfo, String> {
 }
 
 #[tauri::command]
+pub async fn get_user_by_login(login: String) -> Result<UserInfo, String> {
+    TwitchService::get_user_by_login(&login)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn follow_channel(target_user_id: String) -> Result<(), String> {
     TwitchService::follow_channel(&target_user_id)
         .await
@@ -235,4 +248,103 @@ pub async fn get_streams_by_game_name(
     )
     .await
     .map_err(|e| e.to_string())
+}
+
+/// Send a whisper message to another user
+/// Requires user:manage:whispers scope
+#[tauri::command]
+pub async fn send_whisper(to_user_id: String, message: String) -> Result<(), String> {
+    TwitchService::send_whisper(&to_user_id, &message)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Start listening for whisper messages via EventSub WebSocket
+/// This should be called after the user is authenticated
+#[tauri::command]
+pub async fn start_whisper_listener(
+    app: AppHandle,
+    whisper_service: State<'_, Arc<TokioMutex<WhisperService>>>,
+) -> Result<(), String> {
+    // Get the current user's ID and token
+    let user_info = TwitchService::get_user_info()
+        .await
+        .map_err(|e| format!("Failed to get user info: {}", e))?;
+
+    let token = TwitchService::get_token()
+        .await
+        .map_err(|e| format!("Failed to get token: {}", e))?;
+
+    // Start the whisper listener
+    let service = whisper_service.lock().await;
+    service
+        .start_listening(user_info.id, token, app)
+        .await
+        .map_err(|e| format!("Failed to start whisper listener: {}", e))?;
+
+    Ok(())
+}
+
+/// Get whisper message history for a specific user
+/// Uses undocumented Twitch GraphQL API
+#[tauri::command]
+pub async fn get_whisper_history(
+    other_user_id: String,
+    cursor: Option<String>,
+) -> Result<(Vec<WhisperMessage>, Option<String>), String> {
+    let token = TwitchService::get_token()
+        .await
+        .map_err(|e| format!("Failed to get token: {}", e))?;
+
+    let user_info = TwitchService::get_user_info()
+        .await
+        .map_err(|e| format!("Failed to get user info: {}", e))?;
+
+    WhisperHistoryService::get_whisper_messages(
+        &token,
+        &user_info.id,
+        &other_user_id,
+        cursor.as_deref(),
+    )
+    .await
+}
+
+/// Search for a user to whisper using official Helix API
+#[tauri::command]
+pub async fn search_whisper_user(
+    username: String,
+) -> Result<Option<(String, String, String, Option<String>)>, String> {
+    // Use the official Helix API to find user by login
+    match TwitchService::get_user_by_login(&username).await {
+        Ok(user) => Ok(Some((
+            user.id,
+            user.login,
+            user.display_name,
+            user.profile_image_url,
+        ))),
+        Err(_) => {
+            // User not found
+            Ok(None)
+        }
+    }
+}
+
+/// Import all whisper history for a list of known user IDs
+/// Used to fetch all messages from existing conversations
+#[tauri::command]
+pub async fn import_all_whisper_history(
+    user_ids: Vec<String>,
+) -> Result<std::collections::HashMap<String, Vec<WhisperMessage>>, String> {
+    let token = TwitchService::get_token()
+        .await
+        .map_err(|e| format!("Failed to get token: {}", e))?;
+
+    let user_info = TwitchService::get_user_info()
+        .await
+        .map_err(|e| format!("Failed to get user info: {}", e))?;
+
+    let result =
+        WhisperHistoryService::import_full_history(&token, &user_info.id, user_ids).await?;
+
+    Ok(result.messages_by_user)
 }

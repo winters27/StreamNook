@@ -32,6 +32,8 @@ interface AppState {
   showProfileOverlay: boolean;
   showDropsOverlay: boolean;
   showBadgesOverlay: boolean;
+  showWhispersOverlay: boolean;
+  whisperTargetUser: { id: string; login: string; display_name: string; profile_image_url?: string } | null;
   isAuthenticated: boolean;
   currentUser: TwitchUser | null;
   isMiningActive: boolean;
@@ -57,6 +59,9 @@ interface AppState {
   setShowProfileOverlay: (show: boolean) => void;
   setShowDropsOverlay: (show: boolean) => void;
   setShowBadgesOverlay: (show: boolean) => void;
+  setShowWhispersOverlay: (show: boolean) => void;
+  openWhisperWithUser: (user: { id: string; login: string; display_name: string; profile_image_url?: string }) => void;
+  clearWhisperTargetUser: () => void;
   toggleTheaterMode: () => void;
   loginToTwitch: () => Promise<void>;
   logoutFromTwitch: () => Promise<void>;
@@ -107,6 +112,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   showProfileOverlay: false,
   showDropsOverlay: false,
   showBadgesOverlay: false,
+  showWhispersOverlay: false,
+  whisperTargetUser: null,
   isAuthenticated: false,
   currentUser: null,
   isMiningActive: false,
@@ -650,6 +657,21 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (show) trackActivity('Opened Badges');
     set({ showBadgesOverlay: show });
   },
+  setShowWhispersOverlay: (show: boolean) => {
+    if (show) trackActivity('Opened Whispers');
+    set({ showWhispersOverlay: show });
+    // Clear target user when closing
+    if (!show) set({ whisperTargetUser: null });
+  },
+
+  openWhisperWithUser: (user) => {
+    trackActivity(`Opened Whisper with ${user.display_name}`);
+    set({ whisperTargetUser: user, showWhispersOverlay: true });
+  },
+
+  clearWhisperTargetUser: () => {
+    set({ whisperTargetUser: null });
+  },
 
   toggleTheaterMode: () => {
     const state = get();
@@ -788,6 +810,14 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (hasCredentials && !wasAuthenticated && !hasShownWelcomeBackToast) {
         hasShownWelcomeBackToast = true;
         get().addToast(`Welcome back, ${userInfo.display_name}!`, 'success');
+      }
+
+      // Start whisper listener after successful authentication
+      try {
+        await invoke('start_whisper_listener');
+        console.log('[Auth] Whisper listener started');
+      } catch (whisperError) {
+        console.warn('[Auth] Could not start whisper listener:', whisperError);
       }
     } catch (e) {
       // Check if user was previously authenticated (session expired)

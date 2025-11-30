@@ -36,6 +36,7 @@ use services::cache_service;
 use services::drops_service::DropsService;
 use services::live_notification_service::LiveNotificationService;
 use services::mining_service::MiningService;
+use services::whisper_service::WhisperService;
 use std::sync::{Arc, Mutex};
 use tauri::{Builder, Manager};
 use tokio::sync::Mutex as TokioMutex;
@@ -98,10 +99,14 @@ fn main() {
     // Initialize live notification service
     let live_notification_service = Arc::new(LiveNotificationService::new());
 
+    // Initialize whisper service
+    let whisper_service = Arc::new(TokioMutex::new(WhisperService::new()));
+
     Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
         .manage(live_notification_service.clone())
+        .manage(whisper_service.clone())
         .setup(move |app| {
             let app_handle = app.handle().clone();
             let live_notif_service = live_notification_service.clone();
@@ -227,6 +232,7 @@ fn main() {
         get_streams_by_game,
         search_channels,
         get_user_by_id,
+        get_user_by_login,
         follow_channel,
         unfollow_channel,
         check_following_status,
@@ -234,6 +240,11 @@ fn main() {
         force_refresh_token,
         check_stream_online,
         get_streams_by_game_name,
+        send_whisper,
+        start_whisper_listener,
+        get_whisper_history,
+        search_whisper_user,
+        import_all_whisper_history,
             // Streaming commands
             start_stream,
             stop_stream,

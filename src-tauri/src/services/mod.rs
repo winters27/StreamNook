@@ -15,3 +15,5 @@ pub mod stream_server;
 pub mod streamlink_manager;
 pub mod twitch_service;
 pub mod universal_cache_service;
+pub mod whisper_history_service;
+pub mod whisper_service;
