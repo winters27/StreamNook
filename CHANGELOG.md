@@ -1,3 +1,8 @@
+## [4.1.2] - 2025-11-30
+### ✨ Features
+- Improved bundle update check and component management.
+- Moved 'Updates' tab in settings for better user experience.
+
 ## [4.1.1] - 2025-11-30
 ### 🔧 Maintenance
 - Updated comment regarding clippy warnings suppression.
@@ -357,6 +362,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
