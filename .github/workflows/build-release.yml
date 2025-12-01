@@ -131,7 +131,7 @@ jobs:
           echo "Latest release: $($latestRelease.tagName)"
           
           # Find the exe or bundle
-          $exeAsset = $latestRelease.assets | Where-Object { $_.name -like "*.exe" -or $_.name -like "*bundle.7z" }
+          $exeAsset = $latestRelease.assets | Where-Object { $_.name -like "*.exe" -or $_.name -eq "StreamNook.7z" }
           if ($exeAsset) {
             echo "Downloading: $($exeAsset.name)"
             gh release download $latestRelease.tagName -p $exeAsset.name -D ./previous-release
@@ -242,7 +242,7 @@ jobs:
               Copy-Item $exe.FullName ./bundle/StreamNook.exe
             } else {
               # Extract from previous bundle
-              $bundle = Get-ChildItem ./previous-release -Filter "*bundle.7z" | Select-Object -First 1
+              $bundle = Get-ChildItem ./previous-release -Filter "StreamNook.7z" | Select-Object -First 1
               if ($bundle) {
                 7z x $bundle.FullName -o"./previous-release/extracted"
                 Copy-Item ./previous-release/extracted/StreamNook.exe ./bundle/
@@ -297,8 +297,7 @@ jobs:
         if: steps.check_release.outputs.RELEASE_EXISTS == 'false'
         shell: pwsh
         run: |
-          $version = "${{ steps.version.outputs.VERSION }}"
-          $bundleName = "StreamNook-v$version-bundle.7z"
+          $bundleName = "StreamNook.7z"
           
           # Create 7z archive with maximum compression
           cd bundle

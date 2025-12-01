@@ -158,10 +158,10 @@ jobs:
           echo "Downloading from release: $latestTag"
           
           # Download the bundle
-          gh release download $latestTag -p "*bundle.7z" -D ./previous-release
+          gh release download $latestTag -p "StreamNook.7z" -D ./previous-release
           
           # Extract StreamNook.exe
-          $bundle = Get-ChildItem ./previous-release -Filter "*bundle.7z" | Select-Object -First 1
+          $bundle = Get-ChildItem ./previous-release -Filter "StreamNook.7z" | Select-Object -First 1
           7z x $bundle.FullName -o"./previous-release/extracted" StreamNook.exe
           Copy-Item ./previous-release/extracted/StreamNook.exe ./bundle/
           
@@ -258,8 +258,7 @@ jobs:
         id: bundle
         shell: pwsh
         run: |
-          $newTag = "${{ steps.new_version.outputs.NEW_TAG }}"
-          $bundleName = "StreamNook-$newTag-bundle.7z"
+          $bundleName = "StreamNook.7z"
           
           cd bundle
           7z a -t7z -mx=9 "../$bundleName" *

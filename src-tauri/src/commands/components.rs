@@ -185,7 +185,7 @@ pub async fn check_for_bundle_update() -> Result<BundleUpdateStatus, String> {
     let bundle_asset = assets.iter().find(|a| {
         a["name"]
             .as_str()
-            .map(|n| n.ends_with("-bundle.7z"))
+            .map(|n| n == "StreamNook.7z")
             .unwrap_or(false)
     });
 
