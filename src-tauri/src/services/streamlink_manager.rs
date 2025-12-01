@@ -3,8 +3,6 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tokio::process::Command;
 
-use crate::services::cache_service::get_app_data_dir;
-
 #[derive(Debug, Serialize, Deserialize)]
 pub struct StreamMetadata {
     pub title: Option<String>,
@@ -16,58 +14,39 @@ pub struct StreamMetadata {
 pub struct StreamlinkManager;
 
 impl StreamlinkManager {
-    /// Get the effective streamlink path, prioritizing:
-    /// 1. Bundled streamlink in AppData (if exists)
-    /// 2. User-provided custom path (if valid)
-    /// 3. Fall back to "streamlink" (uses system PATH)
-    pub fn get_effective_path(user_path: &str) -> String {
-        // First, check for bundled streamlink
-        if let Ok(app_dir) = get_app_data_dir() {
-            let bundled_path = app_dir.join("streamlink").join("streamlink.exe");
-            if bundled_path.exists() {
-                println!(
-                    "[StreamlinkManager] Using bundled streamlink: {:?}",
-                    bundled_path
-                );
-                return bundled_path.to_string_lossy().to_string();
-            }
-        }
+    /// Get the directory where the executable is located
+    fn get_exe_directory() -> Option<PathBuf> {
+        std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|p| p.to_path_buf()))
+    }
 
-        // Second, check if user path is valid !check path
-        if !user_path.is_empty() {
-            let user_path_buf = PathBuf::from(user_path);
-            if user_path_buf.exists() {
-                println!(
-                    "[StreamlinkManager] Using user-configured path: {}",
-                    user_path
-                );
-                return user_path.to_string();
-            }
-        }
+    /// Get the bundled streamlink path
+    /// Located at: <exe_directory>/streamlink/bin/streamlinkw.exe
+    pub fn get_bundled_path() -> PathBuf {
+        Self::get_exe_directory()
+            .map(|exe_dir| {
+                exe_dir
+                    .join("streamlink")
+                    .join("bin")
+                    .join("streamlinkw.exe")
+            })
+            .unwrap_or_else(|| PathBuf::from("streamlink"))
+    }
 
-        // Fall back to system PATH
-        println!("[StreamlinkManager] Falling back to system PATH streamlink");
-        "streamlink".to_string()
+    /// Get the effective streamlink path (bundled)
+    pub fn get_effective_path(_user_path: &str) -> String {
+        let bundled_path = Self::get_bundled_path();
+        println!(
+            "[StreamlinkManager] Using bundled streamlink: {:?}",
+            bundled_path
+        );
+        bundled_path.to_string_lossy().to_string()
     }
 
     /// Check if bundled streamlink is available
     pub fn is_bundled_available() -> bool {
-        if let Ok(app_dir) = get_app_data_dir() {
-            let bundled_path = app_dir.join("streamlink").join("streamlink.exe");
-            return bundled_path.exists();
-        }
-        false
-    }
-
-    /// Get the bundled streamlink path (if available)
-    pub fn get_bundled_path() -> Option<PathBuf> {
-        if let Ok(app_dir) = get_app_data_dir() {
-            let bundled_path = app_dir.join("streamlink").join("streamlink.exe");
-            if bundled_path.exists() {
-                return Some(bundled_path);
-            }
-        }
-        None
+        Self::get_bundled_path().exists()
     }
 
     pub async fn get_stream_url_with_settings(

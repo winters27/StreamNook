@@ -87,6 +87,15 @@ export interface LiveNotificationSettings {
   enabled: boolean;
   play_sound: boolean;
   sound_type?: string; // 'boop' | 'tick' | 'gentle' | 'soft' | 'whisper'
+  // Notification type toggles
+  show_live_notifications?: boolean;
+  show_whisper_notifications?: boolean;
+  show_update_notifications?: boolean;
+  show_drops_notifications?: boolean;
+  show_channel_points_notifications?: boolean;
+  // Notification method toggles (Dynamic Island vs Toast)
+  use_dynamic_island?: boolean;
+  use_toast?: boolean;
 }
 
 export type AutoSwitchMode = 'same_category' | 'followed_streams';
@@ -309,14 +318,14 @@ export interface DropsStatistics {
 }
 
 // Dynamic Island Notification Types
-export type NotificationType = 'live' | 'whisper' | 'system';
+export type NotificationType = 'live' | 'whisper' | 'system' | 'update' | 'drops' | 'channel_points';
 
 export interface DynamicIslandNotification {
   id: string;
   type: NotificationType;
   timestamp: number;
   read: boolean;
-  data: LiveNotificationData | WhisperNotificationData | SystemNotificationData;
+  data: LiveNotificationData | WhisperNotificationData | SystemNotificationData | UpdateNotificationData | DropsNotificationData | ChannelPointsNotificationData;
 }
 
 export interface LiveNotificationData {
@@ -342,6 +351,25 @@ export interface SystemNotificationData {
   title: string;
   message: string;
   icon?: string;
+}
+
+export interface UpdateNotificationData {
+  current_version: string;
+  latest_version: string;
+  has_update: boolean;
+}
+
+export interface DropsNotificationData {
+  drop_name: string;
+  game_name: string;
+  benefit_name?: string;
+  benefit_image_url?: string;
+}
+
+export interface ChannelPointsNotificationData {
+  channel_name: string;
+  points_earned: number;
+  total_points?: number;
 }
 
 // Whisper Types

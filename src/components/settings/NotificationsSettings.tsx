@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useAppStore } from '../../stores/AppStore';
 import { invoke } from '@tauri-apps/api/core';
-import { Bell } from 'lucide-react';
+import { Bell, Radio, MessageCircle, Download, Smartphone, MessageSquare, Gift, Coins } from 'lucide-react';
 
 const NotificationsSettings = () => {
   const { settings, updateSettings } = useAppStore();
@@ -10,6 +10,13 @@ const NotificationsSettings = () => {
   const liveNotifications = settings.live_notifications || {
     enabled: true,
     play_sound: true,
+    show_live_notifications: true,
+    show_whisper_notifications: true,
+    show_update_notifications: true,
+    show_drops_notifications: true,
+    show_channel_points_notifications: true,
+    use_dynamic_island: true,
+    use_toast: true,
   };
 
   const updateLiveNotifications = (updates: Partial<typeof liveNotifications>) => {
@@ -33,10 +40,25 @@ const NotificationsSettings = () => {
     }
   };
 
+  // Toggle component for reuse
+  const Toggle = ({ enabled, onChange, disabled = false }: { enabled: boolean; onChange: () => void; disabled?: boolean }) => (
+    <button
+      onClick={onChange}
+      disabled={disabled}
+      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors flex-shrink-0 ${disabled ? 'opacity-50 cursor-not-allowed' : ''
+        } ${enabled && !disabled ? 'bg-accent' : 'bg-gray-600'}`}
+    >
+      <span
+        className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${enabled ? 'translate-x-6' : 'translate-x-1'
+          }`}
+      />
+    </button>
+  );
+
   return (
     <div className="space-y-6">
       <div className="space-y-4">
-        {/* Enable Live Notifications */}
+        {/* Enable Notifications (Master Toggle) */}
         <div>
           <div className="flex items-center justify-between gap-4">
             <div className="flex-1">
@@ -44,44 +66,215 @@ const NotificationsSettings = () => {
                 Enable Notifications
               </label>
               <p className="text-xs text-textSecondary mt-1">
-                Get notified when followed streamers go live
+                Master toggle for all notification types
               </p>
             </div>
-            <button
-              onClick={() => updateLiveNotifications({ enabled: !liveNotifications.enabled })}
-              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors flex-shrink-0 ${liveNotifications.enabled ? 'bg-accent' : 'bg-gray-600'
-                }`}
-            >
-              <span
-                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${liveNotifications.enabled ? 'translate-x-6' : 'translate-x-1'
-                  }`}
-              />
-            </button>
+            <Toggle
+              enabled={liveNotifications.enabled}
+              onChange={() => updateLiveNotifications({ enabled: !liveNotifications.enabled })}
+            />
           </div>
         </div>
 
-        {/* Notification Sound */}
+        {/* Notification Method Section */}
         {liveNotifications.enabled && (
           <>
-            <div className="flex items-center justify-between gap-4">
-              <div className="flex-1">
-                <label className="block text-sm font-medium text-textPrimary">
-                  Notification Sound
-                </label>
-                <p className="text-xs text-textSecondary mt-1">
-                  Play a subtle sound when streamers go live
-                </p>
+            <div className="pt-2 border-t border-borderSubtle">
+              <p className="text-xs font-medium text-textMuted uppercase tracking-wide mb-3">
+                Notification Methods
+              </p>
+              <div className="space-y-3">
+                {/* Dynamic Island Toggle */}
+                <div className="flex items-center justify-between gap-4 p-3 bg-glass/30 rounded-lg">
+                  <div className="flex items-center gap-3 flex-1">
+                    <div className="w-8 h-8 rounded-lg bg-gray-500/20 flex items-center justify-center flex-shrink-0">
+                      <Smartphone size={16} className="text-gray-400" />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-textPrimary">
+                        Dynamic Island
+                      </label>
+                      <p className="text-xs text-textSecondary mt-0.5">
+                        Show notifications in the notification center at the top
+                      </p>
+                    </div>
+                  </div>
+                  <Toggle
+                    enabled={liveNotifications.use_dynamic_island ?? true}
+                    onChange={() => updateLiveNotifications({
+                      use_dynamic_island: !(liveNotifications.use_dynamic_island ?? true)
+                    })}
+                  />
+                </div>
+
+                {/* Toast Toggle */}
+                <div className="flex items-center justify-between gap-4 p-3 bg-glass/30 rounded-lg">
+                  <div className="flex items-center gap-3 flex-1">
+                    <div className="w-8 h-8 rounded-lg bg-blue-500/20 flex items-center justify-center flex-shrink-0">
+                      <MessageSquare size={16} className="text-blue-400" />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-textPrimary">
+                        Toast Notifications
+                      </label>
+                      <p className="text-xs text-textSecondary mt-0.5">
+                        Show popup toasts at the bottom of the screen
+                      </p>
+                    </div>
+                  </div>
+                  <Toggle
+                    enabled={liveNotifications.use_toast ?? true}
+                    onChange={() => updateLiveNotifications({
+                      use_toast: !(liveNotifications.use_toast ?? true)
+                    })}
+                  />
+                </div>
               </div>
-              <button
-                onClick={() => updateLiveNotifications({ play_sound: !liveNotifications.play_sound })}
-                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors flex-shrink-0 ${liveNotifications.play_sound ? 'bg-accent' : 'bg-gray-600'
-                  }`}
-              >
-                <span
-                  className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${liveNotifications.play_sound ? 'translate-x-6' : 'translate-x-1'
-                    }`}
+            </div>
+
+            {/* Notification Types Section */}
+            <div className="pt-2 border-t border-borderSubtle">
+              <p className="text-xs font-medium text-textMuted uppercase tracking-wide mb-3">
+                Notification Types
+              </p>
+              <div className="space-y-3">
+                {/* Live Stream Notifications */}
+                <div className="flex items-center justify-between gap-4 p-3 bg-glass/30 rounded-lg">
+                  <div className="flex items-center gap-3 flex-1">
+                    <div className="w-8 h-8 rounded-lg bg-red-500/20 flex items-center justify-center flex-shrink-0">
+                      <Radio size={16} className="text-red-400" />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-textPrimary">
+                        Live Stream Notifications
+                      </label>
+                      <p className="text-xs text-textSecondary mt-0.5">
+                        Get notified when followed streamers go live
+                      </p>
+                    </div>
+                  </div>
+                  <Toggle
+                    enabled={liveNotifications.show_live_notifications ?? true}
+                    onChange={() => updateLiveNotifications({
+                      show_live_notifications: !(liveNotifications.show_live_notifications ?? true)
+                    })}
+                  />
+                </div>
+
+                {/* Whisper Notifications */}
+                <div className="flex items-center justify-between gap-4 p-3 bg-glass/30 rounded-lg">
+                  <div className="flex items-center gap-3 flex-1">
+                    <div className="w-8 h-8 rounded-lg bg-purple-500/20 flex items-center justify-center flex-shrink-0">
+                      <MessageCircle size={16} className="text-purple-400" />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-textPrimary">
+                        Whisper Notifications
+                      </label>
+                      <p className="text-xs text-textSecondary mt-0.5">
+                        Get notified when you receive whispers
+                      </p>
+                    </div>
+                  </div>
+                  <Toggle
+                    enabled={liveNotifications.show_whisper_notifications ?? true}
+                    onChange={() => updateLiveNotifications({
+                      show_whisper_notifications: !(liveNotifications.show_whisper_notifications ?? true)
+                    })}
+                  />
+                </div>
+
+                {/* Update Notifications */}
+                <div className="flex items-center justify-between gap-4 p-3 bg-glass/30 rounded-lg">
+                  <div className="flex items-center gap-3 flex-1">
+                    <div className="w-8 h-8 rounded-lg bg-yellow-500/20 flex items-center justify-center flex-shrink-0">
+                      <Download size={16} className="text-yellow-400" />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-textPrimary">
+                        Update Notifications
+                      </label>
+                      <p className="text-xs text-textSecondary mt-0.5">
+                        Get notified when a new app update is available
+                      </p>
+                    </div>
+                  </div>
+                  <Toggle
+                    enabled={liveNotifications.show_update_notifications ?? true}
+                    onChange={() => updateLiveNotifications({
+                      show_update_notifications: !(liveNotifications.show_update_notifications ?? true)
+                    })}
+                  />
+                </div>
+
+                {/* Drops Notifications */}
+                <div className="flex items-center justify-between gap-4 p-3 bg-glass/30 rounded-lg">
+                  <div className="flex items-center gap-3 flex-1">
+                    <div className="w-8 h-8 rounded-lg bg-green-500/20 flex items-center justify-center flex-shrink-0">
+                      <Gift size={16} className="text-green-400" />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-textPrimary">
+                        Drops Notifications
+                      </label>
+                      <p className="text-xs text-textSecondary mt-0.5">
+                        Get notified when a drop is claimed
+                      </p>
+                    </div>
+                  </div>
+                  <Toggle
+                    enabled={liveNotifications.show_drops_notifications ?? true}
+                    onChange={() => updateLiveNotifications({
+                      show_drops_notifications: !(liveNotifications.show_drops_notifications ?? true)
+                    })}
+                  />
+                </div>
+
+                {/* Channel Points Notifications */}
+                <div className="flex items-center justify-between gap-4 p-3 bg-glass/30 rounded-lg">
+                  <div className="flex items-center gap-3 flex-1">
+                    <div className="w-8 h-8 rounded-lg bg-orange-500/20 flex items-center justify-center flex-shrink-0">
+                      <Coins size={16} className="text-orange-400" />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-textPrimary">
+                        Channel Points Notifications
+                      </label>
+                      <p className="text-xs text-textSecondary mt-0.5">
+                        Get notified when channel points are claimed
+                      </p>
+                    </div>
+                  </div>
+                  <Toggle
+                    enabled={liveNotifications.show_channel_points_notifications ?? true}
+                    onChange={() => updateLiveNotifications({
+                      show_channel_points_notifications: !(liveNotifications.show_channel_points_notifications ?? true)
+                    })}
+                  />
+                </div>
+              </div>
+            </div>
+          </>
+        )}
+
+        {/* Sound Settings */}
+        {liveNotifications.enabled && (
+          <>
+            <div className="pt-2 border-t border-borderSubtle">
+              <div className="flex items-center justify-between gap-4">
+                <div className="flex-1">
+                  <label className="block text-sm font-medium text-textPrimary">
+                    Notification Sound
+                  </label>
+                  <p className="text-xs text-textSecondary mt-1">
+                    Play a subtle sound for notifications
+                  </p>
+                </div>
+                <Toggle
+                  enabled={liveNotifications.play_sound}
+                  onChange={() => updateLiveNotifications({ play_sound: !liveNotifications.play_sound })}
                 />
-              </button>
+              </div>
             </div>
 
             {/* Sound Type Selector */}
@@ -148,7 +341,7 @@ const NotificationsSettings = () => {
               About Notifications
             </p>
             <p className="text-xs text-textSecondary">
-              Stream Nook checks for live streams every minute. Notifications show the streamer's name, avatar, game details, and stream title. Use the test button above to preview.
+              Choose how you receive notifications: the Dynamic Island (notification center at the top), Toast popups (bottom of screen), or both. Notifications persist between app sessions. Click on notifications to take action - live notifications start the stream, whisper notifications open the conversation, and update notifications take you to the Updates page.
             </p>
           </div>
         </div>

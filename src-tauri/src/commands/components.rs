@@ -1,34 +1,43 @@
 use crate::models::components::{
     BundleUpdateStatus, ComponentChanges, ComponentManifest, VersionChange,
 };
-use crate::services::cache_service::get_app_data_dir;
 use std::path::PathBuf;
 
-/// Get the path to the local components.json
+/// Get the directory where the executable is located (portable mode)
+fn get_exe_directory() -> Result<PathBuf, String> {
+    std::env::current_exe()
+        .map_err(|e| format!("Failed to get current exe path: {}", e))?
+        .parent()
+        .map(|p| p.to_path_buf())
+        .ok_or_else(|| "Failed to get exe directory".to_string())
+}
+
+/// Get the path to the local components.json (next to exe in portable mode)
 fn get_components_json_path() -> Result<PathBuf, String> {
-    let app_dir = get_app_data_dir().map_err(|e| e.to_string())?;
-    Ok(app_dir.join("components.json"))
+    let exe_dir = get_exe_directory()?;
+    Ok(exe_dir.join("components.json"))
 }
 
-/// Get the path to bundled streamlink directory
+/// Get the path to bundled streamlink directory (portable)
 fn get_bundled_streamlink_dir() -> Result<PathBuf, String> {
-    let app_dir = get_app_data_dir().map_err(|e| e.to_string())?;
-    Ok(app_dir.join("streamlink"))
+    let exe_dir = get_exe_directory()?;
+    Ok(exe_dir.join("streamlink"))
 }
 
-/// Get the path to the bundled streamlink executable
+/// Get the path to the bundled streamlink executable (portable)
+/// Located at: <exe_directory>/streamlink/bin/streamlinkw.exe
 #[tauri::command]
 pub fn get_bundled_streamlink_path() -> Result<String, String> {
     let streamlink_dir = get_bundled_streamlink_dir()?;
-    let exe_path = streamlink_dir.join("streamlink.exe");
+    let exe_path = streamlink_dir.join("bin").join("streamlinkw.exe");
     Ok(exe_path.to_string_lossy().to_string())
 }
 
-/// Check if bundled components are installed
+/// Check if bundled components are installed (portable)
 #[tauri::command]
 pub fn check_components_installed() -> Result<bool, String> {
     let streamlink_dir = get_bundled_streamlink_dir()?;
-    let streamlink_exe = streamlink_dir.join("streamlink.exe");
+    let streamlink_exe = streamlink_dir.join("bin").join("streamlinkw.exe");
     let plugin_path = streamlink_dir.join("plugins").join("twitch.py");
     let components_json = get_components_json_path()?;
 
@@ -367,7 +376,7 @@ pub async fn download_and_install_bundle(app_handle: tauri::AppHandle) -> Result
 timeout /t 2 /nobreak >nul
 copy /y "{source}" "{dest}"
 start "" "{dest}"
-del "%~f0"
+(goto) 2>nul & del "%~f0" & exit
 "#,
             source = source_exe.to_string_lossy(),
             dest = current_exe.to_string_lossy()

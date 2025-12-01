@@ -16,6 +16,8 @@ export interface Toast {
   createdAt: number;
 }
 
+export type SettingsTab = 'Player' | 'Chat' | 'Integrations' | 'Notifications' | 'Cache' | 'Support' | 'Updates';
+
 interface AppState {
   settings: Settings;
   followedStreams: TwitchStream[];
@@ -28,6 +30,7 @@ interface AppState {
   chatPlacement: string;
   isLoading: boolean;
   isSettingsOpen: boolean;
+  settingsInitialTab: SettingsTab | null;
   showLiveStreamsOverlay: boolean;
   showProfileOverlay: boolean;
   showDropsOverlay: boolean;
@@ -53,7 +56,7 @@ interface AppState {
   stopStream: () => Promise<void>;
   getAvailableQualities: () => Promise<string[]>;
   changeStreamQuality: (quality: string) => Promise<void>;
-  openSettings: () => void;
+  openSettings: (initialTab?: SettingsTab) => void;
   closeSettings: () => void;
   setShowLiveStreamsOverlay: (show: boolean) => void;
   setShowProfileOverlay: (show: boolean) => void;
@@ -108,6 +111,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   chatPlacement: 'right',
   isLoading: false,
   isSettingsOpen: false,
+  settingsInitialTab: null,
   showLiveStreamsOverlay: false,
   showProfileOverlay: false,
   showDropsOverlay: false,
@@ -633,13 +637,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({ isLoading: false });
     }
   },
-  openSettings: () => {
-    trackActivity('Opened Settings');
-    set({ isSettingsOpen: true });
+  openSettings: (initialTab?: SettingsTab) => {
+    trackActivity('Opened Settings' + (initialTab ? ` (${initialTab})` : ''));
+    set({ isSettingsOpen: true, settingsInitialTab: initialTab || null });
   },
   closeSettings: () => {
     trackActivity('Closed Settings');
-    set({ isSettingsOpen: false });
+    set({ isSettingsOpen: false, settingsInitialTab: null });
   },
   setShowLiveStreamsOverlay: (show: boolean) => {
     if (show) trackActivity('Opened Live Streams');

@@ -310,7 +310,7 @@ const TitleBar = () => {
 
           {/* Settings Button */}
           <button
-            onClick={openSettings}
+            onClick={() => openSettings()}
             className="p-1.5 text-textSecondary hover:text-textPrimary hover:bg-glass rounded transition-all duration-200"
             title="Settings"
           >

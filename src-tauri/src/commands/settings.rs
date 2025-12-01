@@ -189,15 +189,21 @@ pub async fn download_streamlink_installer() -> Result<String, String> {
     Ok(file_path.to_string_lossy().to_string())
 }
 
+/// Get the directory where the executable is located
+fn get_exe_directory() -> Result<std::path::PathBuf, String> {
+    std::env::current_exe()
+        .map_err(|e| format!("Failed to get current exe path: {}", e))?
+        .parent()
+        .map(|p| p.to_path_buf())
+        .ok_or_else(|| "Failed to get exe directory".to_string())
+}
+
 #[tauri::command]
 pub fn get_installed_ttvlol_version() -> Result<Option<String>, String> {
-    // Get the path to the ttvlol plugin
-    let appdata = std::env::var("APPDATA").map_err(|e| format!("Failed to get APPDATA: {}", e))?;
+    // Get the path to the ttvlol plugin (bundled with portable distribution)
+    let exe_dir = get_exe_directory()?;
 
-    let plugin_path = std::path::Path::new(&appdata)
-        .join("streamlink")
-        .join("plugins")
-        .join("twitch.py");
+    let plugin_path = exe_dir.join("streamlink").join("plugins").join("twitch.py");
 
     if !plugin_path.exists() {
         return Ok(None);
@@ -315,12 +321,10 @@ pub async fn download_and_install_ttvlol_plugin() -> Result<String, String> {
         .await
         .map_err(|e| format!("Failed to read plugin bytes: {}", e))?;
 
-    // Get the path to install the plugin
-    let appdata = std::env::var("APPDATA").map_err(|e| format!("Failed to get APPDATA: {}", e))?;
+    // Get the path to install the plugin (bundled with portable distribution)
+    let exe_dir = get_exe_directory()?;
 
-    let plugin_dir = std::path::Path::new(&appdata)
-        .join("streamlink")
-        .join("plugins");
+    let plugin_dir = exe_dir.join("streamlink").join("plugins");
 
     // Create the directory if it doesn't exist
     std::fs::create_dir_all(&plugin_dir)

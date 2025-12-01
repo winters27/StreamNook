@@ -1,6 +1,6 @@
-import { useAppStore } from '../stores/AppStore';
+import { useAppStore, SettingsTab } from '../stores/AppStore';
 import { X } from 'lucide-react';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import PlayerSettings from './settings/PlayerSettings';
 import ChatSettings from './settings/ChatSettings';
 import IntegrationsSettings from './settings/IntegrationsSettings';
@@ -9,11 +9,23 @@ import NotificationsSettings from './settings/NotificationsSettings';
 import SupportSettings from './settings/SupportSettings';
 import UpdatesSettings from './settings/UpdatesSettings';
 
-type Tab = 'Player' | 'Chat' | 'Integrations' | 'Notifications' | 'Cache' | 'Support' | 'Updates';
-
 const SettingsDialog = () => {
-  const { isSettingsOpen, closeSettings } = useAppStore();
-  const [activeTab, setActiveTab] = useState<Tab>('Player');
+  const { isSettingsOpen, settingsInitialTab, closeSettings } = useAppStore();
+  const [activeTab, setActiveTab] = useState<SettingsTab>('Player');
+
+  // Update active tab when initial tab changes
+  useEffect(() => {
+    if (settingsInitialTab) {
+      setActiveTab(settingsInitialTab);
+    }
+  }, [settingsInitialTab]);
+
+  // Reset to default tab when dialog closes
+  useEffect(() => {
+    if (!isSettingsOpen) {
+      setActiveTab('Player');
+    }
+  }, [isSettingsOpen]);
 
   if (!isSettingsOpen) return null;
 
@@ -36,7 +48,7 @@ const SettingsDialog = () => {
           {/* Tabs Navigation */}
           <div className="w-1/4 pr-6 border-r border-borderSubtle">
             <nav className="flex flex-col space-y-2">
-              {(['Player', 'Chat', 'Integrations', 'Notifications', 'Cache', 'Support', 'Updates'] as Tab[]).map((tab) => (
+              {(['Player', 'Chat', 'Integrations', 'Notifications', 'Cache', 'Support', 'Updates'] as SettingsTab[]).map((tab) => (
                 <button
                   key={tab}
                   onClick={() => setActiveTab(tab)}

@@ -120,6 +120,26 @@ pub struct LiveNotificationSettings {
     pub play_sound: bool,
     #[serde(default)]
     pub sound_type: Option<String>,
+    // Notification type toggles
+    #[serde(default = "default_true")]
+    pub show_live_notifications: bool,
+    #[serde(default = "default_true")]
+    pub show_whisper_notifications: bool,
+    #[serde(default = "default_true")]
+    pub show_update_notifications: bool,
+    #[serde(default = "default_true")]
+    pub show_drops_notifications: bool,
+    #[serde(default = "default_true")]
+    pub show_channel_points_notifications: bool,
+    // Notification method toggles (Dynamic Island vs Toast)
+    #[serde(default = "default_true")]
+    pub use_dynamic_island: bool,
+    #[serde(default = "default_true")]
+    pub use_toast: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for LiveNotificationSettings {
@@ -128,6 +148,13 @@ impl Default for LiveNotificationSettings {
             enabled: true,
             play_sound: true,
             sound_type: None,
+            show_live_notifications: true,
+            show_whisper_notifications: true,
+            show_update_notifications: true,
+            show_drops_notifications: true,
+            show_channel_points_notifications: true,
+            use_dynamic_island: true,
+            use_toast: true,
         }
     }
 }
