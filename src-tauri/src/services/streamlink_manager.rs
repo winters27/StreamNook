@@ -33,7 +33,7 @@ impl StreamlinkManager {
             }
         }
 
-        // Second, check if user path is valid
+        // Second, check if user path is valid !check path
         if !user_path.is_empty() {
             let user_path_buf = PathBuf::from(user_path);
             if user_path_buf.exists() {
