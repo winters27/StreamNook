@@ -18,6 +18,7 @@ import {
 import { open } from '@tauri-apps/plugin-shell';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useAppStore } from '../stores/AppStore';
 
 interface SetupWizardProps {
@@ -32,10 +33,19 @@ interface StepStatus {
     mainAuthenticated: boolean;
 }
 
+interface DropsDeviceCodeInfo {
+    user_code: string;
+    verification_uri: string;
+    device_code: string;
+    interval: number;
+    expires_in: number;
+}
+
 const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
     const [currentStep, setCurrentStep] = useState(0);
     const [isExtracting, setIsExtracting] = useState(false);
     const [isAuthenticating, setIsAuthenticating] = useState(false);
+    const [dropsDeviceCode, setDropsDeviceCode] = useState<DropsDeviceCodeInfo | null>(null);
     const [status, setStatus] = useState<StepStatus>({
         componentsInstalled: null,
         extractionError: null,
@@ -113,16 +123,49 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
         }
     }, [currentStep, status.componentsInstalled, isExtracting, status.extractionError, extractComponents]);
 
-    // Handle drops authentication (Android client)
+    // Handle drops authentication (Android client device code flow)
     const handleDropsLogin = useCallback(async () => {
         setIsAuthenticating(true);
         setError(null);
         try {
-            await open('https://id.twitch.tv/oauth2/authorize?client_id=kd1unb4b3q4t58fwlpcbzcbnm76a8fp&redirect_uri=https://passport.twitch.tv/authenticate&response_type=code&scope=user:read:email%20openid%20channel:read:subscriptions%20user:read:follows%20user:read:email%20bits:read%20chat:read%20chat:edit%20user:manage:whispers%20user:read:broadcast%20channel_check_subscription%20channel_subscriptions%20channel:read:redemptions%20channel:manage:redemptions%20user:edit:broadcast%20user:read:blocked_users%20user:manage:blocked_users');
-            addToast('Complete the login in your browser, then come back here.', 'info');
+            // Start the device code flow
+            const deviceInfo = await invoke('start_drops_device_flow') as DropsDeviceCodeInfo;
+            setDropsDeviceCode(deviceInfo);
+
+            // Open the verification page
+            await open(deviceInfo.verification_uri);
+
+            // Poll for token completion
+            try {
+                await invoke('poll_drops_token', {
+                    deviceCode: deviceInfo.device_code,
+                    interval: deviceInfo.interval,
+                    expiresIn: deviceInfo.expires_in,
+                });
+
+                // Success!
+                setStatus(prev => ({ ...prev, dropsAuthenticated: true }));
+                setDropsDeviceCode(null);
+                addToast('Drops login successful!', 'success');
+
+                // Focus the app window so user doesn't have to click back
+                try {
+                    const appWindow = getCurrentWindow();
+                    await appWindow.setFocus();
+                } catch (focusError) {
+                    console.error('Failed to focus window:', focusError);
+                }
+
+                // Auto-advance to next step after a short delay
+                setTimeout(() => setCurrentStep(3), 500);
+            } catch (pollError) {
+                console.error('Failed to complete drops login:', pollError);
+                setError(`Login failed: ${pollError}`);
+                setDropsDeviceCode(null);
+            }
         } catch (e) {
-            console.error('Failed to open Twitch login:', e);
-            setError(`Failed to open login page: ${e}`);
+            console.error('Failed to start drops login:', e);
+            setError(`Failed to start login: ${e}`);
         } finally {
             setIsAuthenticating(false);
         }
@@ -138,6 +181,15 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                 await checkAuthStatus();
                 setStatus(prev => ({ ...prev, mainAuthenticated: true }));
                 setIsAuthenticating(false);
+
+                // Focus the app window so user doesn't have to click back
+                try {
+                    const appWindow = getCurrentWindow();
+                    await appWindow.setFocus();
+                } catch (focusError) {
+                    console.error('Failed to focus window:', focusError);
+                }
+
                 unlisten();
             });
             const unlistenError = await listen('twitch-login-error', (event) => {
@@ -215,10 +267,10 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                         className="flex flex-col items-center text-center px-8 py-6"
                     >
                         <div className={`w-16 h-16 rounded-full flex items-center justify-center mb-6 ${status.componentsInstalled === true
-                                ? 'bg-green-500/20'
-                                : status.extractionError
-                                    ? 'bg-red-500/20'
-                                    : 'bg-purple-500/20'
+                            ? 'bg-green-500/20'
+                            : status.extractionError
+                                ? 'bg-red-500/20'
+                                : 'bg-purple-500/20'
                             }`}>
                             {status.componentsInstalled === true ? (
                                 <CheckCircle2 size={28} className="text-green-400" />
@@ -279,7 +331,7 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                     </motion.div>
                 );
 
-            case 2: // Drops Login (Android client)
+            case 2: // Drops Login (Android client device code flow)
                 return (
                     <motion.div
                         initial={{ opacity: 0, y: 20 }}
@@ -299,8 +351,38 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                             Sign in to access Twitch Drops, inventory, and auto-claim features.
                         </p>
                         <p className="text-textMuted text-xs mb-6 max-w-md">
-                            This opens a browser login. After signing in, return here and click "I've Logged In".
+                            Uses Twitch Device Code login - a code will appear for you to enter on Twitch.
                         </p>
+
+                        {/* Device Code Display */}
+                        {isAuthenticating && dropsDeviceCode && (
+                            <div className="bg-glass border border-purple-500/30 rounded-xl p-6 mb-4 w-full max-w-sm">
+                                <div className="flex items-center justify-center gap-2 text-purple-400 mb-3">
+                                    <Package size={18} />
+                                    <span className="text-sm font-semibold">Enter this code on Twitch</span>
+                                </div>
+                                <div className="text-4xl font-mono font-bold text-purple-400 tracking-widest py-3">
+                                    {dropsDeviceCode.user_code}
+                                </div>
+                                <div className="pt-3 border-t border-borderSubtle mt-3">
+                                    <p className="text-xs text-textMuted mb-2">
+                                        A browser window should have opened automatically.
+                                    </p>
+                                    <button
+                                        onClick={() => open(dropsDeviceCode.verification_uri)}
+                                        className="flex items-center justify-center gap-2 w-full px-3 py-2 bg-glass hover:bg-glass-hover text-textSecondary hover:text-textPrimary rounded-lg transition-colors text-xs"
+                                    >
+                                        <ExternalLink size={14} />
+                                        <span>Open Verification Page</span>
+                                    </button>
+                                </div>
+                                <div className="flex items-center justify-center gap-2 text-xs text-textMuted mt-3">
+                                    <Loader2 size={14} className="animate-spin" />
+                                    <span>Waiting for authorization...</span>
+                                </div>
+                            </div>
+                        )}
+
                         {error && (
                             <div className="flex items-center gap-2 text-red-400 text-sm mb-4 p-3 bg-red-500/10 rounded-lg">
                                 <AlertCircle size={16} />
@@ -310,30 +392,16 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                         <div className="flex flex-col gap-3 w-full max-w-xs">
                             {!status.dropsAuthenticated ? (
                                 <>
-                                    <button
-                                        onClick={handleDropsLogin}
-                                        disabled={isAuthenticating}
-                                        className="flex items-center justify-center gap-2 px-6 py-3 bg-purple-500 hover:bg-purple-600 disabled:bg-purple-500/50 text-white rounded-xl font-medium transition-colors"
-                                    >
-                                        {isAuthenticating ? (
-                                            <>
-                                                <Loader2 size={18} className="animate-spin" />
-                                                Opening Browser...
-                                            </>
-                                        ) : (
-                                            <>
-                                                <ExternalLink size={18} />
-                                                Sign In for Drops
-                                            </>
-                                        )}
-                                    </button>
-                                    <button
-                                        onClick={() => setStatus(prev => ({ ...prev, dropsAuthenticated: true }))}
-                                        className="flex items-center justify-center gap-2 px-4 py-2 bg-glass border border-borderLight hover:border-purple-500 text-textSecondary hover:text-textPrimary rounded-xl transition-all"
-                                    >
-                                        <Check size={16} />
-                                        I've Logged In
-                                    </button>
+                                    {!isAuthenticating && (
+                                        <button
+                                            onClick={handleDropsLogin}
+                                            disabled={isAuthenticating}
+                                            className="flex items-center justify-center gap-2 px-6 py-3 glass-button hover:bg-glass-hover text-textPrimary rounded-xl font-medium transition-colors"
+                                        >
+                                            <Package size={18} />
+                                            Sign In for Drops
+                                        </button>
+                                    )}
                                 </>
                             ) : (
                                 <div className="flex items-center justify-center gap-2 text-green-400">
