@@ -125,12 +125,7 @@ const UpdatesSettings = () => {
         <div className="space-y-6">
             {/* Header */}
             <div className="flex items-center justify-between">
-                <div>
-                    <h3 className="text-lg font-semibold text-textPrimary">Updates</h3>
-                    <p className="text-xs text-textSecondary mt-1">
-                        StreamNook bundles all components for easy updates
-                    </p>
-                </div>
+                <h3 className="text-lg font-semibold text-textPrimary">Updates</h3>
                 <button
                     onClick={checkForUpdates}
                     disabled={isChecking || isUpdating}
@@ -235,8 +230,8 @@ const UpdatesSettings = () => {
                         onClick={handleUpdate}
                         disabled={isUpdating || !updateStatus.update_available}
                         className={`w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl font-medium transition-all ${updateStatus.update_available
-                            ? 'bg-yellow-500 hover:bg-yellow-600 text-white'
-                            : 'bg-gray-600/50 text-textMuted cursor-not-allowed'
+                            ? 'glass-button hover:bg-glass-hover text-textPrimary'
+                            : 'bg-glass/30 text-textMuted cursor-not-allowed'
                             }`}
                     >
                         {isUpdating ? (
