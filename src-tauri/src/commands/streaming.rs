@@ -11,7 +11,7 @@ pub async fn start_stream(
     state: State<'_, AppState>,
 ) -> Result<String, String> {
     // Get settings values and determine which args to use
-    let (streamlink_path, streamlink_args, streamlink_settings) = {
+    let (streamlink_args, streamlink_settings) = {
         let settings = state.settings.lock().unwrap();
         let args = if settings.ttvlol_plugin.enabled {
             // Use the ttvlol plugin args
@@ -20,12 +20,12 @@ pub async fn start_stream(
             // Don't use any special args if plugin is disabled
             String::new()
         };
-        (
-            settings.streamlink_path.clone(),
-            args,
-            settings.streamlink.clone(),
-        )
+        (args, settings.streamlink.clone())
     };
+
+    // Always use the bundled streamlink path (relative to exe location)
+    // This works regardless of which drive the app is installed on
+    let streamlink_path = StreamlinkManager::get_effective_path("");
 
     // Start Streamlink with enhanced settings to get stream URL
     let stream_url = StreamlinkManager::get_stream_url_with_settings(
@@ -58,12 +58,10 @@ pub async fn stop_stream() -> Result<(), String> {
 #[tauri::command]
 pub async fn get_stream_qualities(
     url: String,
-    state: State<'_, AppState>,
+    _state: State<'_, AppState>,
 ) -> Result<Vec<String>, String> {
-    let streamlink_path = {
-        let settings = state.settings.lock().unwrap();
-        settings.streamlink_path.clone()
-    };
+    // Always use the bundled streamlink path (relative to exe location)
+    let streamlink_path = StreamlinkManager::get_effective_path("");
 
     StreamlinkManager::get_qualities(&url, &streamlink_path)
         .await
