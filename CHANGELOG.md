@@ -1,3 +1,7 @@
+## [4.1.7] - 2025-11-30
+### 🔧 Maintenance
+- Use the bundled Streamlink path within the application, ensuring consistent functionality regardless of installation location.
+
 ## [4.1.6] - 2025-11-30
 ### ✨ Features
 - Replaced external 7z dependency with native `sevenz-rust` library for component bundle extraction.
@@ -380,6 +384,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
