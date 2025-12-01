@@ -97,10 +97,25 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           workspaces: './src-tauri -> target'
+          cache-on-failure: true
+          shared-key: 'rust-build'
 
       - name: Install dependencies
         if: steps.check_release.outputs.RELEASE_EXISTS == 'false'
         run: npm ci
+
+      - name: Install Tauri CLI (cached)
+        if: steps.check_release.outputs.RELEASE_EXISTS == 'false'
+        shell: pwsh
+        run: |
+          # Check if tauri-cli is already installed
+          $tauriVersion = npm list @tauri-apps/cli 2>$null
+          if ($tauriVersion) {
+            echo "Tauri CLI already installed"
+          } else {
+            echo "Installing Tauri CLI..."
+            npm install @tauri-apps/cli
+          }
 
       - name: Build Tauri app
         if: steps.check_release.outputs.RELEASE_EXISTS == 'false' && inputs.skip_build != 'true'
@@ -138,11 +153,12 @@ jobs:
           echo "STREAMLINK_VERSION=$version" >> $env:GITHUB_OUTPUT
           echo "Latest Streamlink version: $version"
           
-          # Find the portable zip asset
-          $asset = $release.assets | Where-Object { $_.name -like "*portable*.zip" -and $_.name -like "*py312*" } | Select-Object -First 1
+          # Find the zip asset (the portable distribution)
+          # Try to find x86_64 zip first, then fallback to any zip
+          $asset = $release.assets | Where-Object { $_.name -like "*x86_64.zip" } | Select-Object -First 1
           if (-not $asset) {
-            # Fallback to any portable zip
-            $asset = $release.assets | Where-Object { $_.name -like "*portable*.zip" } | Select-Object -First 1
+            # Fallback to any zip that's not an installer
+            $asset = $release.assets | Where-Object { $_.name -like "*.zip" -and $_.name -notlike "*installer*" } | Select-Object -First 1
           }
           
           if ($asset) {
@@ -150,7 +166,9 @@ jobs:
             echo "STREAMLINK_ASSET=$($asset.name)" >> $env:GITHUB_OUTPUT
             echo "Found asset: $($asset.name)"
           } else {
-            echo "No portable zip found"
+            echo "No streamlink zip found"
+            echo "Available assets:"
+            $release.assets | ForEach-Object { echo "  - $($_.name)" }
             exit 1
           }
 
