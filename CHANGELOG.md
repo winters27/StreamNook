@@ -1,3 +1,8 @@
+## [4.1.5] - 2025-11-30
+### ✨ Features
+- Added support for portable mode, bundling Streamlink within the application directory.
+- Enhanced Dynamic Island with new notification settings and improved functionality, including update notifications, drops, and channel points.
+
 ## [4.1.4] - 2025-11-30
 ### ✨ Features
 - Implemented device code flow for Twitch Drops login during setup.
@@ -370,6 +375,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
