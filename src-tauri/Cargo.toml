@@ -18,7 +18,7 @@ regex = "1.12.2"
 strsim = "0.11.1"
 
 [dependencies]
-tauri = { version = "2.9.3", features = ["protocol-asset", "tray-icon", "image-png"] }
+tauri = { version = "2.9.4", features = ["protocol-asset", "tray-icon", "image-png"] }
 tauri-plugin-shell = { git = "https://github.com/tauri-apps/plugins-workspace", branch = "v2" }
 tauri-plugin-opener = { git = "https://github.com/tauri-apps/plugins-workspace", branch = "v2" }
 serde = { version = "1.0.228", features = ["derive"] }
