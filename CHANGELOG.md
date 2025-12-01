@@ -1,3 +1,7 @@
+## [4.1.3] - 2025-11-30
+### 🐛 Bug Fixes
+- Fixed an issue where Streamlink would not validate the user path correctly.
+
 ## [4.1.2] - 2025-11-30
 ### ✨ Features
 - Improved bundle update check and component management.
@@ -362,6 +366,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
