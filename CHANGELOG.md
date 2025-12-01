@@ -1,3 +1,7 @@
+## [4.1.4] - 2025-11-30
+### ✨ Features
+- Implemented device code flow for Twitch Drops login during setup.
+
 ## [4.1.3] - 2025-11-30
 ### 🐛 Bug Fixes
 - Fixed an issue where Streamlink would not validate the user path correctly.
@@ -366,6 +370,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
