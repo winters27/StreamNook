@@ -1,6 +1,7 @@
 use crate::models::components::{
     BundleUpdateStatus, ComponentChanges, ComponentManifest, VersionChange,
 };
+use sevenz_rust::decompress_file;
 use std::path::PathBuf;
 
 /// Get the directory where the executable is located (portable mode)
@@ -318,27 +319,13 @@ pub async fn download_and_install_bundle(app_handle: tauri::AppHandle) -> Result
 
     let _ = app_handle.emit("bundle-update-progress", "Extracting bundle...");
 
-    // Extract using 7z command
+    // Extract using native sevenz-rust library (no external 7z dependency)
     let extract_dir = temp_dir.join("extracted");
     std::fs::create_dir_all(&extract_dir)
         .map_err(|e| format!("Failed to create extract directory: {}", e))?;
 
-    let output = std::process::Command::new("7z")
-        .args([
-            "x",
-            "-y",
-            &bundle_path.to_string_lossy(),
-            &format!("-o{}", extract_dir.to_string_lossy()),
-        ])
-        .output()
-        .map_err(|e| format!("Failed to run 7z: {}", e))?;
-
-    if !output.status.success() {
-        return Err(format!(
-            "7z extraction failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
+    decompress_file(&bundle_path, &extract_dir)
+        .map_err(|e| format!("Failed to extract 7z bundle: {}", e))?;
 
     let _ = app_handle.emit("bundle-update-progress", "Installing components...");
 
@@ -371,15 +358,39 @@ pub async fn download_and_install_bundle(app_handle: tauri::AppHandle) -> Result
         let current_exe = std::env::current_exe()
             .map_err(|e| format!("Failed to get current exe path: {}", e))?;
 
+        // Create batch script that:
+        // 1. Waits for current app to close
+        // 2. Copies the new exe
+        // 3. Starts the new app minimized initially then normal
+        // 4. Cleans up temp files and deletes itself
         let batch_script = format!(
             r#"@echo off
-timeout /t 2 /nobreak >nul
-copy /y "{source}" "{dest}"
-start "" "{dest}"
-(goto) 2>nul & del "%~f0" & exit
+setlocal
+set "SOURCE={source}"
+set "DEST={dest}"
+set "TEMPDIR={tempdir}"
+
+:: Wait for the app to fully close
+:waitloop
+timeout /t 1 /nobreak >nul 2>&1
+tasklist /FI "IMAGENAME eq StreamNook.exe" 2>nul | find /I "StreamNook.exe" >nul
+if not errorlevel 1 goto waitloop
+
+:: Copy the new executable
+copy /y "%SOURCE%" "%DEST%" >nul 2>&1
+
+:: Start the updated app
+start "" "%DEST%"
+
+:: Clean up temp directory (will fail on current batch file, which is fine)
+rd /s /q "%TEMPDIR%" >nul 2>&1
+
+:: Exit without showing any window artifacts
+exit
 "#,
             source = source_exe.to_string_lossy(),
-            dest = current_exe.to_string_lossy()
+            dest = current_exe.to_string_lossy(),
+            tempdir = temp_dir.to_string_lossy()
         );
 
         let batch_path = temp_dir.join("update.bat");
@@ -388,9 +399,22 @@ start "" "{dest}"
 
         let _ = app_handle.emit("bundle-update-progress", "Restarting...");
 
-        // Run the batch script and exit
-        std::process::Command::new("cmd")
-            .args(["/C", "start", "", &batch_path.to_string_lossy()])
+        // Launch batch script in a hidden window using wscript
+        // Create a VBS wrapper to run the batch silently
+        let vbs_script = format!(
+            r#"Set WshShell = CreateObject("WScript.Shell")
+WshShell.Run """{batch}""", 0, False
+"#,
+            batch = batch_path.to_string_lossy().replace("\\", "\\\\")
+        );
+
+        let vbs_path = temp_dir.join("update_launcher.vbs");
+        std::fs::write(&vbs_path, vbs_script)
+            .map_err(|e| format!("Failed to write VBS launcher: {}", e))?;
+
+        // Run the VBS script which launches the batch silently
+        std::process::Command::new("wscript")
+            .arg(&vbs_path)
             .spawn()
             .map_err(|e| format!("Failed to run update script: {}", e))?;
 
