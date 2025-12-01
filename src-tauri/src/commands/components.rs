@@ -1,4 +1,6 @@
-use crate::models::components::{BundleUpdateStatus, ComponentManifest};
+use crate::models::components::{
+    BundleUpdateStatus, ComponentChanges, ComponentManifest, VersionChange,
+};
 use crate::services::cache_service::get_app_data_dir;
 use std::path::PathBuf;
 
@@ -90,28 +92,46 @@ pub async fn get_remote_component_versions() -> Result<ComponentManifest, String
     Ok(components_json)
 }
 
+/// Try to copy components.json from exe directory to AppData if missing
+fn try_copy_components_from_exe() -> Option<ComponentManifest> {
+    let exe_path = std::env::current_exe().ok()?;
+    let exe_dir = exe_path.parent()?;
+    let source_components = exe_dir.join("components.json");
+
+    if source_components.exists() {
+        // Try to load from exe directory
+        if let Ok(manifest) = ComponentManifest::load_from_file(&source_components) {
+            // Try to copy to AppData for future use
+            if let Ok(dest_path) = get_components_json_path() {
+                if let Some(parent) = dest_path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let _ = std::fs::copy(&source_components, &dest_path);
+            }
+            return Some(manifest);
+        }
+    }
+    None
+}
+
+/// Get the current app version from Cargo.toml
+fn get_current_app_version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
 /// Check for bundle updates
 #[tauri::command]
 pub async fn check_for_bundle_update() -> Result<BundleUpdateStatus, String> {
+    // Try to get local manifest, with fallback to exe directory
     let local = match get_local_component_versions() {
-        Ok(m) => m,
+        Ok(m) => Some(m),
         Err(_) => {
-            // No local manifest, definitely needs install
-            return Ok(BundleUpdateStatus {
-                update_available: true,
-                current_version: "Not installed".to_string(),
-                latest_version: "Unknown".to_string(),
-                download_url: None,
-                bundle_name: None,
-                download_size: None,
-                component_changes: None,
-            });
+            // Try to copy from exe directory
+            try_copy_components_from_exe()
         }
     };
 
-    let remote = get_remote_component_versions().await?;
-
-    // Get bundle download info
+    // Fetch remote version info
     let client = reqwest::Client::builder()
         .user_agent("StreamNook")
         .build()
@@ -128,6 +148,29 @@ pub async fn check_for_bundle_update() -> Result<BundleUpdateStatus, String> {
 
     let assets = release["assets"].as_array().ok_or("No assets")?;
 
+    // Find components.json in the release
+    let components_asset = assets
+        .iter()
+        .find(|a| a["name"].as_str() == Some("components.json"));
+
+    // Get remote manifest
+    let remote = if let Some(asset) = components_asset {
+        let download_url = asset["browser_download_url"]
+            .as_str()
+            .ok_or("No download URL for components.json")?;
+
+        client
+            .get(download_url)
+            .send()
+            .await
+            .map_err(|e| format!("Failed to download components.json: {}", e))?
+            .json::<ComponentManifest>()
+            .await
+            .map_err(|e| format!("Failed to parse components.json: {}", e))?
+    } else {
+        return Err("components.json not found in release".to_string());
+    };
+
     // Find the bundle
     let bundle_asset = assets.iter().find(|a| {
         a["name"]
@@ -136,7 +179,35 @@ pub async fn check_for_bundle_update() -> Result<BundleUpdateStatus, String> {
             .unwrap_or(false)
     });
 
-    let mut status = local.compare(&remote);
+    // Build status based on whether we have local manifest or not
+    let mut status = if let Some(ref local_manifest) = local {
+        local_manifest.compare(&remote)
+    } else {
+        // No local manifest - use app's built-in version
+        let current_version = get_current_app_version();
+        let update_available = current_version != remote.streamnook.version;
+
+        BundleUpdateStatus {
+            update_available,
+            current_version,
+            latest_version: remote.streamnook.version.clone(),
+            download_url: None,
+            bundle_name: None,
+            download_size: None,
+            component_changes: if update_available {
+                Some(ComponentChanges {
+                    streamnook: Some(VersionChange {
+                        from: get_current_app_version(),
+                        to: remote.streamnook.version.clone(),
+                    }),
+                    streamlink: None, // Unknown without local manifest
+                    ttvlol: None,
+                })
+            } else {
+                None
+            },
+        }
+    };
 
     if let Some(asset) = bundle_asset {
         status.download_url = asset["browser_download_url"]
