@@ -1,3 +1,8 @@
+## [4.1.6] - 2025-11-30
+### ✨ Features
+- Replaced external 7z dependency with native `sevenz-rust` library for component bundle extraction.
+- Improved update script to wait for app closure and ensure proper restart.
+
 ## [4.1.5] - 2025-11-30
 ### ✨ Features
 - Added support for portable mode, bundling Streamlink within the application directory.
@@ -375,6 +380,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
