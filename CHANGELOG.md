@@ -1,3 +1,7 @@
+## [4.1.9] - 2025-11-30
+### 🐛 Bug Fixes
+- Improved streamlink path resolution during development, searching in CWD and parent directory.
+
 ## [4.1.8] - 2025-11-30
 ### 🔧 Maintenance
 - Standardized application bundle naming across build workflows and update checks to `StreamNook.7z`.
@@ -389,6 +393,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
