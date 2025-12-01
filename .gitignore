@@ -9,6 +9,9 @@ scripts/release_manager.ps1
 # Drops folder (local mining tool) - only root level, not src/components/drops
 /drops/
 
+# Streamlink portable (for development - bundled in production releases)
+/streamlink/
+
 # Update artifacts
 update_streamnook.bat
 StreamNook_new.exe

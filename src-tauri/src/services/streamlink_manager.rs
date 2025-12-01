@@ -34,13 +34,66 @@ impl StreamlinkManager {
             .unwrap_or_else(|| PathBuf::from("streamlink"))
     }
 
-    /// Get the effective streamlink path (bundled)
+    /// Get the effective streamlink path (bundled only - no fallbacks)
     pub fn get_effective_path(_user_path: &str) -> String {
         let bundled_path = Self::get_bundled_path();
+
+        // Debug: log what paths we're checking
         println!(
-            "[StreamlinkManager] Using bundled streamlink: {:?}",
+            "[StreamlinkManager] Checking bundled path: {:?}",
             bundled_path
         );
+
+        // Check if bundled streamlink exists (production mode - relative to exe)
+        if bundled_path.exists() {
+            println!(
+                "[StreamlinkManager] Using bundled streamlink: {:?}",
+                bundled_path
+            );
+            return bundled_path.to_string_lossy().to_string();
+        }
+
+        // Development mode: check current working directory and its parent (project root)
+        // CWD in tauri dev is src-tauri/, so we also check parent for project root
+        if let Ok(cwd) = std::env::current_dir() {
+            println!("[StreamlinkManager] CWD is: {:?}", cwd);
+
+            // First check CWD itself
+            let cwd_streamlink = cwd.join("streamlink").join("bin").join("streamlinkw.exe");
+            if cwd_streamlink.exists() {
+                println!(
+                    "[StreamlinkManager] Using streamlink from CWD: {:?}",
+                    cwd_streamlink
+                );
+                return cwd_streamlink.to_string_lossy().to_string();
+            }
+
+            // Then check parent directory (project root when CWD is src-tauri)
+            if let Some(parent) = cwd.parent() {
+                let parent_streamlink = parent
+                    .join("streamlink")
+                    .join("bin")
+                    .join("streamlinkw.exe");
+                println!(
+                    "[StreamlinkManager] Checking parent path: {:?}",
+                    parent_streamlink
+                );
+                if parent_streamlink.exists() {
+                    println!(
+                        "[StreamlinkManager] Using streamlink from parent: {:?}",
+                        parent_streamlink
+                    );
+                    return parent_streamlink.to_string_lossy().to_string();
+                }
+            }
+        }
+
+        // No fallbacks - bundled streamlink must exist
+        println!(
+            "[StreamlinkManager] ERROR: Bundled streamlink not found! Expected at: {:?}",
+            bundled_path
+        );
+        // Return the bundled path anyway - let the error propagate when trying to run
         bundled_path.to_string_lossy().to_string()
     }
 
@@ -56,6 +109,16 @@ impl StreamlinkManager {
         args: &str,
         settings: &crate::models::settings::StreamlinkSettings,
     ) -> Result<String> {
+        // Debug logging to understand what's being passed
+        println!("[Streamlink] Path: '{}'", path);
+        println!("[Streamlink] URL: '{}'", url);
+        println!("[Streamlink] Quality: '{}'", quality);
+        println!("[Streamlink] Args: '{}'", args);
+
+        // Verify the path exists
+        let path_exists = std::path::Path::new(path).exists();
+        println!("[Streamlink] Path exists: {}", path_exists);
+
         // Build command with enhanced Streamlink options from settings
         let mut cmd = Command::new(path);
         cmd.arg(url).arg(quality).arg("--stream-url");
