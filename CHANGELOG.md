@@ -1,3 +1,8 @@
+## [4.1.8] - 2025-11-30
+### 🔧 Maintenance
+- Standardized application bundle naming across build workflows and update checks to `StreamNook.7z`.
+- Improved reliability of update checks by ensuring consistent bundle name matching.
+
 ## [4.1.7] - 2025-11-30
 ### 🔧 Maintenance
 - Use the bundled Streamlink path within the application, ensuring consistent functionality regardless of installation location.
@@ -384,6 +389,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
