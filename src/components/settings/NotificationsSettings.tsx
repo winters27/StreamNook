@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useAppStore } from '../../stores/AppStore';
 import { invoke } from '@tauri-apps/api/core';
-import { Bell, Radio, MessageCircle, Download, Smartphone, MessageSquare, Gift, Coins } from 'lucide-react';
+import { Bell, Radio, MessageCircle, Download, Smartphone, MessageSquare, Gift, Coins, Award } from 'lucide-react';
 
 const NotificationsSettings = () => {
   const { settings, updateSettings } = useAppStore();
@@ -15,6 +15,7 @@ const NotificationsSettings = () => {
     show_update_notifications: true,
     show_drops_notifications: true,
     show_channel_points_notifications: true,
+    show_badge_notifications: true,
     use_dynamic_island: true,
     use_toast: true,
   };
@@ -234,7 +235,10 @@ const NotificationsSettings = () => {
                 <div className="flex items-center justify-between gap-4 p-3 bg-glass/30 rounded-lg">
                   <div className="flex items-center gap-3 flex-1">
                     <div className="w-8 h-8 rounded-lg bg-orange-500/20 flex items-center justify-center flex-shrink-0">
-                      <Coins size={16} className="text-orange-400" />
+                      <svg width="16" height="16" viewBox="0 0 24 24" className="text-orange-400" fill="currentColor">
+                        <path d="M12 5v2a5 5 0 0 1 5 5h2a7 7 0 0 0-7-7Z"></path>
+                        <path fillRule="evenodd" d="M1 12C1 5.925 5.925 1 12 1s11 4.925 11 11-4.925 11-11 11S1 18.075 1 12Zm11 9a9 9 0 1 1 0-18 9 9 0 0 1 0 18Z" clipRule="evenodd"></path>
+                      </svg>
                     </div>
                     <div>
                       <label className="block text-sm font-medium text-textPrimary">
@@ -249,6 +253,29 @@ const NotificationsSettings = () => {
                     enabled={liveNotifications.show_channel_points_notifications ?? true}
                     onChange={() => updateLiveNotifications({
                       show_channel_points_notifications: !(liveNotifications.show_channel_points_notifications ?? true)
+                    })}
+                  />
+                </div>
+
+                {/* Badge Notifications */}
+                <div className="flex items-center justify-between gap-4 p-3 bg-glass/30 rounded-lg">
+                  <div className="flex items-center gap-3 flex-1">
+                    <div className="w-8 h-8 rounded-lg bg-cyan-500/20 flex items-center justify-center flex-shrink-0">
+                      <Award size={16} className="text-cyan-400" />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-textPrimary">
+                        Badge Notifications
+                      </label>
+                      <p className="text-xs text-textSecondary mt-0.5">
+                        Get notified when new badges become available
+                      </p>
+                    </div>
+                  </div>
+                  <Toggle
+                    enabled={liveNotifications.show_badge_notifications ?? true}
+                    onChange={() => updateLiveNotifications({
+                      show_badge_notifications: !(liveNotifications.show_badge_notifications ?? true)
                     })}
                   />
                 </div>

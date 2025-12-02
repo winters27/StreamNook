@@ -93,6 +93,7 @@ export interface LiveNotificationSettings {
   show_update_notifications?: boolean;
   show_drops_notifications?: boolean;
   show_channel_points_notifications?: boolean;
+  show_badge_notifications?: boolean;
   // Notification method toggles (Dynamic Island vs Toast)
   use_dynamic_island?: boolean;
   use_toast?: boolean;
@@ -318,14 +319,14 @@ export interface DropsStatistics {
 }
 
 // Dynamic Island Notification Types
-export type NotificationType = 'live' | 'whisper' | 'system' | 'update' | 'drops' | 'channel_points';
+export type NotificationType = 'live' | 'whisper' | 'system' | 'update' | 'drops' | 'channel_points' | 'badge';
 
 export interface DynamicIslandNotification {
   id: string;
   type: NotificationType;
   timestamp: number;
   read: boolean;
-  data: LiveNotificationData | WhisperNotificationData | SystemNotificationData | UpdateNotificationData | DropsNotificationData | ChannelPointsNotificationData;
+  data: LiveNotificationData | WhisperNotificationData | SystemNotificationData | UpdateNotificationData | DropsNotificationData | ChannelPointsNotificationData | BadgeNotificationData;
 }
 
 export interface LiveNotificationData {
@@ -370,6 +371,16 @@ export interface ChannelPointsNotificationData {
   channel_name: string;
   points_earned: number;
   total_points?: number;
+}
+
+export interface BadgeNotificationData {
+  badge_name: string;
+  badge_set_id: string;
+  badge_version: string;
+  badge_image_url: string;
+  badge_description?: string;
+  status: 'new' | 'available' | 'coming_soon';
+  date_info?: string; // e.g., "Dec 1-12" or "Available now"
 }
 
 // Whisper Types

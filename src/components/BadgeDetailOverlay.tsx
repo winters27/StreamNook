@@ -52,22 +52,90 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
     fetchBadgeBaseInfo();
   }, [setId, badge.id]);
 
+  // Parse abbreviated date range format like "Dec 1-12", "Dec 1 - 12", or "Dec 06 – Dec 07"
+  const parseDateRange = (text: string): { start: Date; end: Date } | null => {
+    const months: Record<string, number> = {
+      'Jan': 0, 'Feb': 1, 'Mar': 2, 'Apr': 3,
+      'May': 4, 'Jun': 5, 'Jul': 6, 'Aug': 7,
+      'Sep': 8, 'Oct': 9, 'Nov': 10, 'Dec': 11
+    };
+    const currentYear = new Date().getFullYear();
+
+    // Match "Mon DD – Mon DD" format (e.g., "Dec 06 – Dec 07") - with en-dash or regular dash
+    const fullRangeMatch = text.match(/(\w{3})\s+(\d{1,2})\s*[–-]\s*(\w{3})\s+(\d{1,2})/);
+    if (fullRangeMatch) {
+      const startMonthAbbrev = fullRangeMatch[1];
+      const startDay = parseInt(fullRangeMatch[2], 10);
+      const endMonthAbbrev = fullRangeMatch[3];
+      const endDay = parseInt(fullRangeMatch[4], 10);
+
+      if (months.hasOwnProperty(startMonthAbbrev) && months.hasOwnProperty(endMonthAbbrev)) {
+        const startMonthNum = months[startMonthAbbrev];
+        const endMonthNum = months[endMonthAbbrev];
+        // Start at beginning of the day, end at end of the day
+        const startDate = new Date(currentYear, startMonthNum, startDay, 0, 0, 0);
+        const endDate = new Date(currentYear, endMonthNum, endDay, 23, 59, 59);
+
+        if (!isNaN(startDate.getTime()) && !isNaN(endDate.getTime())) {
+          return { start: startDate, end: endDate };
+        }
+      }
+    }
+
+    // Match "Mon D-D" or "Mon D - D" format (e.g., "Dec 1-12" or "Dec 1 - 12")
+    const shortRangeMatch = text.match(/(\w{3})\s+(\d{1,2})\s*[–-]\s*(\d{1,2})(?!\s*\w)/);
+    if (shortRangeMatch) {
+      const monthAbbrev = shortRangeMatch[1];
+      const startDay = parseInt(shortRangeMatch[2], 10);
+      const endDay = parseInt(shortRangeMatch[3], 10);
+
+      if (months.hasOwnProperty(monthAbbrev)) {
+        const monthNum = months[monthAbbrev];
+        // Start at beginning of the day, end at end of the day
+        const startDate = new Date(currentYear, monthNum, startDay, 0, 0, 0);
+        const endDate = new Date(currentYear, monthNum, endDay, 23, 59, 59);
+
+        if (!isNaN(startDate.getTime()) && !isNaN(endDate.getTime())) {
+          return { start: startDate, end: endDate };
+        }
+      }
+    }
+
+    return null;
+  };
+
   // Check badge availability status
   const getBadgeStatus = (): 'available' | 'coming-soon' | 'expired' | null => {
     const moreInfo = badgeBaseInfo?.more_info;
     if (!moreInfo) return null;
 
-    // Extract ISO timestamps from the more_info text
+    const now = Date.now();
+
+    // First, try to parse abbreviated date range format (e.g., "Dec 1-12")
+    const dateRange = parseDateRange(moreInfo);
+    if (dateRange) {
+      const startTime = dateRange.start.getTime();
+      const endTime = dateRange.end.getTime();
+
+      if (now < startTime) {
+        return 'coming-soon';
+      } else if (now >= startTime && now <= endTime) {
+        return 'available';
+      } else {
+        return 'expired';
+      }
+    }
+
+    // Fallback: Extract ISO timestamps from the more_info text
     const isoRegex = /(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?(?:Z)?)/g;
     const timestamps = moreInfo.match(isoRegex);
-    
+
     if (!timestamps || timestamps.length < 2) return null;
 
     try {
       // Assume first timestamp is start, last is end
       const startTime = new Date(timestamps[0]).getTime();
       const endTime = new Date(timestamps[timestamps.length - 1]).getTime();
-      const now = Date.now();
 
       if (now < startTime) {
         return 'coming-soon';
@@ -85,26 +153,147 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
   const isAvailable = badgeStatus === 'available';
   const isComingSoon = badgeStatus === 'coming-soon';
 
-  // Convert ISO timestamps to local time and return as JSX with highlighted dates
+  // Convert timestamps to local time and return as JSX with highlighted dates
+  // Handles both ISO timestamps and abbreviated date ranges like "Dec 1-12"
   const convertTimestampsToLocalJSX = (text: string): JSX.Element => {
-    // Match ISO 8601 timestamps in the format: 2025-09-12T17:00 or 2025-09-12T17:00:00Z
+    const months: Record<string, number> = {
+      'Jan': 0, 'Feb': 1, 'Mar': 2, 'Apr': 3,
+      'May': 4, 'Jun': 5, 'Jul': 6, 'Aug': 7,
+      'Sep': 8, 'Oct': 9, 'Nov': 10, 'Dec': 11
+    };
+
+    const currentYear = new Date().getFullYear();
+
+    // First check for "Mon DD – Mon DD" format (e.g., "Dec 06 – Dec 07")
+    const fullRangeMatch = text.match(/(\w{3})\s+(\d{1,2})\s*[–-]\s*(\w{3})\s+(\d{1,2})/);
+    if (fullRangeMatch) {
+      const startMonthAbbrev = fullRangeMatch[1];
+      const startDay = parseInt(fullRangeMatch[2], 10);
+      const endMonthAbbrev = fullRangeMatch[3];
+      const endDay = parseInt(fullRangeMatch[4], 10);
+
+      if (months.hasOwnProperty(startMonthAbbrev) && months.hasOwnProperty(endMonthAbbrev)) {
+        const startMonthNum = months[startMonthAbbrev];
+        const endMonthNum = months[endMonthAbbrev];
+        const startDate = new Date(currentYear, startMonthNum, startDay, 0, 0, 0);
+        const endDate = new Date(currentYear, endMonthNum, endDay, 23, 59, 59);
+
+        // Format the dates
+        const formattedStartDate = startDate.toLocaleString(undefined, {
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric'
+        });
+        const formattedEndDate = endDate.toLocaleString(undefined, {
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric'
+        });
+
+        // Determine styling based on badge status
+        let startClassName = 'px-2 py-0.5 rounded font-medium inline-block ';
+        let endClassName = 'px-2 py-0.5 rounded font-medium inline-block ';
+
+        if (isAvailable) {
+          startClassName += 'bg-green-500/20 text-green-400 ring-1 ring-green-500/50 shadow-[0_0_10px_rgba(34,197,94,0.3)]';
+          endClassName += 'bg-green-500/10 text-green-300 ring-1 ring-green-500/30';
+        } else if (isComingSoon) {
+          startClassName += 'bg-blue-500/20 text-blue-400 ring-1 ring-blue-500/50 shadow-[0_0_10px_rgba(59,130,246,0.3)]';
+          endClassName += 'bg-blue-500/10 text-blue-300 ring-1 ring-blue-500/30';
+        } else {
+          startClassName += 'bg-accent/20 text-accent';
+          endClassName += 'bg-accent/20 text-accent';
+        }
+
+        // Replace the abbreviated date with formatted dates
+        const beforeMatch = text.substring(0, fullRangeMatch.index);
+        const afterMatch = text.substring(fullRangeMatch.index! + fullRangeMatch[0].length);
+
+        return (
+          <>
+            {beforeMatch}
+            <span className={startClassName}>{formattedStartDate}</span>
+            {' – '}
+            <span className={endClassName}>{formattedEndDate}</span>
+            {afterMatch}
+          </>
+        );
+      }
+    }
+
+    // Check for "Mon D-D" format (e.g., "Dec 1-12")
+    const shortRangeMatch = text.match(/(\w{3})\s+(\d{1,2})\s*[–-]\s*(\d{1,2})(?!\s*\w)/);
+    if (shortRangeMatch) {
+      const monthAbbrev = shortRangeMatch[1];
+      const startDay = parseInt(shortRangeMatch[2], 10);
+      const endDay = parseInt(shortRangeMatch[3], 10);
+
+      if (months.hasOwnProperty(monthAbbrev)) {
+        const monthNum = months[monthAbbrev];
+        const startDate = new Date(currentYear, monthNum, startDay, 0, 0, 0);
+        const endDate = new Date(currentYear, monthNum, endDay, 23, 59, 59);
+
+        // Format the dates
+        const formattedStartDate = startDate.toLocaleString(undefined, {
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric'
+        });
+        const formattedEndDate = endDate.toLocaleString(undefined, {
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric'
+        });
+
+        // Determine styling based on badge status
+        let startClassName = 'px-2 py-0.5 rounded font-medium inline-block ';
+        let endClassName = 'px-2 py-0.5 rounded font-medium inline-block ';
+
+        if (isAvailable) {
+          startClassName += 'bg-green-500/20 text-green-400 ring-1 ring-green-500/50 shadow-[0_0_10px_rgba(34,197,94,0.3)]';
+          endClassName += 'bg-green-500/10 text-green-300 ring-1 ring-green-500/30';
+        } else if (isComingSoon) {
+          startClassName += 'bg-blue-500/20 text-blue-400 ring-1 ring-blue-500/50 shadow-[0_0_10px_rgba(59,130,246,0.3)]';
+          endClassName += 'bg-blue-500/10 text-blue-300 ring-1 ring-blue-500/30';
+        } else {
+          startClassName += 'bg-accent/20 text-accent';
+          endClassName += 'bg-accent/20 text-accent';
+        }
+
+        // Replace the abbreviated date with formatted dates
+        const beforeMatch = text.substring(0, shortRangeMatch.index);
+        const afterMatch = text.substring(shortRangeMatch.index! + shortRangeMatch[0].length);
+
+        return (
+          <>
+            {beforeMatch}
+            <span className={startClassName}>{formattedStartDate}</span>
+            {' – '}
+            <span className={endClassName}>{formattedEndDate}</span>
+            {afterMatch}
+          </>
+        );
+      }
+    }
+
+    // Fallback: Match ISO 8601 timestamps in the format: 2025-09-12T17:00 or 2025-09-12T17:00:00Z
     const isoRegex = /(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?(?:Z)?)/g;
-    
+
     // Extract all timestamps first to determine start and end
     const timestamps = text.match(isoRegex);
     const now = Date.now();
-    
+
     const parts: (string | JSX.Element)[] = [];
     let lastIndex = 0;
     let match;
     let matchIndex = 0;
-    
+
     while ((match = isoRegex.exec(text)) !== null) {
       // Add text before the match
       if (match.index > lastIndex) {
         parts.push(text.substring(lastIndex, match.index));
       }
-      
+
       // Format and add the highlighted timestamp
       try {
         const date = new Date(match[0]);
@@ -117,14 +306,14 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
           minute: '2-digit',
           hour12: true
         });
-        
+
         // Determine if this is the start date (first timestamp) or end date (last timestamp)
         const isStartDate = timestamps && matchIndex === 0;
         const isEndDate = timestamps && matchIndex === timestamps.length - 1;
-        
+
         // Determine styling based on badge status and which date this is
         let className = 'px-2 py-0.5 rounded font-medium inline-block ';
-        
+
         if (isAvailable) {
           // Badge is available now - highlight the active period
           if (isStartDate) {
@@ -153,7 +342,7 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
           // Badge is expired or no special status - use neutral accent color
           className += 'bg-accent/20 text-accent';
         }
-        
+
         parts.push(
           <span key={match.index} className={className}>
             {formattedDate}
@@ -163,16 +352,16 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
         // If parsing fails, add original text
         parts.push(match[0]);
       }
-      
+
       lastIndex = match.index + match[0].length;
       matchIndex++;
     }
-    
+
     // Add remaining text after last match
     if (lastIndex < text.length) {
       parts.push(text.substring(lastIndex));
     }
-    
+
     return <>{parts}</>;
   };
 
@@ -184,11 +373,11 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm group">
       {/* Hover-sensitive background overlay */}
-      <div 
+      <div
         className="absolute inset-0 group-hover:pointer-events-none"
         onClick={onClose}
       />
-      
+
       <div className="bg-secondary border border-borderSubtle rounded-lg shadow-2xl w-[90vw] h-[85vh] max-w-5xl flex flex-col relative z-10">
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-borderSubtle">
@@ -288,7 +477,7 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
               <h3 className="text-sm font-semibold text-accent uppercase tracking-wide">About This Badge</h3>
               <div className="bg-glass rounded-lg p-4">
                 <p className="text-textSecondary text-sm leading-relaxed">
-                  This is a global Twitch chat badge that appears next to usernames in chat. 
+                  This is a global Twitch chat badge that appears next to usernames in chat.
                   {badge.description && (
                     <span className="block mt-2 text-textPrimary">
                       {badge.description}

@@ -125,6 +125,13 @@ impl BackgroundService {
                             channel_ids.len()
                         );
                         let mut ws = ws_service.lock().await;
+
+                        // Register channel ID to login mappings before connecting
+                        for stream in &streams {
+                            ws.register_channel_mapping(&stream.user_id, &stream.user_login)
+                                .await;
+                        }
+
                         if let Err(e) = ws
                             .connect_to_channels(channel_ids, &user_id, &token, app_handle_ws)
                             .await

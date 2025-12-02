@@ -20,6 +20,8 @@ pub struct ChannelPointsWebSocketService {
     auth_token: Arc<RwLock<String>>,
     user_id: Arc<RwLock<String>>,
     app_handle: Option<AppHandle>,
+    // Mapping of channel_id to channel_login for resolving channel names in events
+    channel_id_to_login: Arc<RwLock<HashMap<String, String>>>,
 }
 
 #[derive(Debug)]
@@ -56,7 +58,24 @@ impl ChannelPointsWebSocketService {
             auth_token: Arc::new(RwLock::new(String::new())),
             user_id: Arc::new(RwLock::new(String::new())),
             app_handle: None,
+            channel_id_to_login: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    /// Register channel ID to login mapping for resolving channel names in events
+    pub async fn register_channel_mapping(&self, channel_id: &str, channel_login: &str) {
+        let mut mapping = self.channel_id_to_login.write().await;
+        mapping.insert(channel_id.to_string(), channel_login.to_lowercase());
+        println!(
+            "📝 Registered channel mapping: {} -> {}",
+            channel_id, channel_login
+        );
+    }
+
+    /// Get channel login from channel ID
+    pub async fn get_channel_login(&self, channel_id: &str) -> Option<String> {
+        let mapping = self.channel_id_to_login.read().await;
+        mapping.get(channel_id).cloned()
     }
 
     /// Connect to multiple channels for real-time channel points monitoring
@@ -122,6 +141,7 @@ impl ChannelPointsWebSocketService {
             let auth_token = auth_token.to_string();
             let app_handle_clone = app_handle.clone();
             let connections = self.connections.clone();
+            let channel_mapping = self.channel_id_to_login.clone();
 
             tokio::spawn(async move {
                 if let Err(e) = Self::handle_connection(
@@ -131,6 +151,7 @@ impl ChannelPointsWebSocketService {
                     connections,
                     app_handle_clone,
                     index,
+                    channel_mapping,
                 )
                 .await
                 {
@@ -178,6 +199,7 @@ impl ChannelPointsWebSocketService {
         connections: Arc<RwLock<Vec<WebSocketConnection>>>,
         app_handle: AppHandle,
         index: usize,
+        channel_id_to_login: Arc<RwLock<HashMap<String, String>>>,
     ) -> Result<()> {
         println!(
             "🔗 Connecting WebSocket #{} with {} topics",
@@ -259,6 +281,7 @@ impl ChannelPointsWebSocketService {
                             &connections,
                             &connection_id,
                             index,
+                            &channel_id_to_login,
                         )
                         .await;
                     }
@@ -301,6 +324,7 @@ impl ChannelPointsWebSocketService {
                 connections,
                 app_handle,
                 index,
+                channel_id_to_login,
             ))
             .await
         } else {
@@ -315,6 +339,7 @@ impl ChannelPointsWebSocketService {
         connections: &Arc<RwLock<Vec<WebSocketConnection>>>,
         connection_id: &str,
         index: usize,
+        channel_id_to_login: &Arc<RwLock<HashMap<String, String>>>,
     ) {
         match msg.msg_type.as_str() {
             "MESSAGE" => {
@@ -331,8 +356,13 @@ impl ChannelPointsWebSocketService {
 
                         match topic_type {
                             "community-points-user-v1" => {
-                                Self::handle_points_event(message_data, app_handle, channel_id)
-                                    .await;
+                                Self::handle_points_event(
+                                    message_data,
+                                    app_handle,
+                                    channel_id,
+                                    channel_id_to_login,
+                                )
+                                .await;
                             }
                             "video-playback-by-id" => {
                                 Self::handle_stream_event(message_data, app_handle, channel_id)
@@ -383,7 +413,8 @@ impl ChannelPointsWebSocketService {
     async fn handle_points_event(
         message_data: Value,
         app_handle: &AppHandle,
-        channel_id: Option<String>,
+        _topic_channel_id: Option<String>,
+        channel_id_to_login: &Arc<RwLock<HashMap<String, String>>>,
     ) {
         if let Some(event_type) = message_data["type"].as_str() {
             match event_type {
@@ -398,15 +429,54 @@ impl ChannelPointsWebSocketService {
                         .as_i64()
                         .unwrap_or(0);
 
+                    // Extract channel_id from point_gain or balance objects (where it actually is)
+                    let channel_id = message_data["data"]["point_gain"]["channel_id"]
+                        .as_str()
+                        .or_else(|| message_data["data"]["balance"]["channel_id"].as_str())
+                        .or_else(|| message_data["data"]["channel_id"].as_str())
+                        .map(|s| s.to_string());
+
+                    // Try to extract channel login from various possible paths
+                    let mut channel_login = message_data["data"]["channel_login"]
+                        .as_str()
+                        .or_else(|| message_data["data"]["channel"]["login"].as_str())
+                        .or_else(|| message_data["data"]["point_gain"]["channel_login"].as_str())
+                        .map(|s| s.to_string());
+
+                    // If we don't have the channel_login but we have channel_id, try to resolve from mapping
+                    if channel_login.is_none() {
+                        if let Some(ref cid) = channel_id {
+                            let mapping = channel_id_to_login.read().await;
+                            channel_login = mapping.get(cid).cloned();
+                        }
+                    }
+
+                    let channel_display_name = message_data["data"]["channel"]["display_name"]
+                        .as_str()
+                        .or_else(|| message_data["data"]["point_gain"]["channel_name"].as_str())
+                        .map(|s| s.to_string());
+
+                    // Unwrap values for cleaner logging
+                    let channel_id_str = channel_id.as_deref().unwrap_or("unknown");
+                    let channel_login_str = channel_login.as_deref().unwrap_or("unknown");
+                    let channel_display_str = channel_display_name.as_deref().unwrap_or("unknown");
+
                     println!(
-                        "💰 Points earned: +{} (reason: {}) - New balance: {}",
-                        points, reason, balance
+                        "💰 Points earned: +{} (reason: {}) - New balance: {} - Channel: {} (ID: {}, Login: {})",
+                        points,
+                        reason,
+                        balance,
+                        channel_display_str,
+                        channel_id_str,
+                        channel_login_str
                     );
 
                     let _ = app_handle.emit(
                         "channel-points-earned",
                         json!({
                             "channel_id": channel_id,
+                            "channel_login": channel_login,
+                            "channel_display_name": channel_display_name,
                             "points": points,
                             "reason": reason,
                             "balance": balance
@@ -415,13 +485,16 @@ impl ChannelPointsWebSocketService {
                 }
                 "claim-available" => {
                     let claim_id = message_data["data"]["claim"]["id"].as_str().unwrap_or("");
+                    let claim_channel_id = message_data["data"]["claim"]["channel_id"]
+                        .as_str()
+                        .map(|s| s.to_string());
 
                     println!("🎁 Bonus claim available! ID: {}", claim_id);
 
                     let _ = app_handle.emit(
                         "channel-points-claim-available",
                         json!({
-                            "channel_id": channel_id,
+                            "channel_id": claim_channel_id,
                             "claim_id": claim_id
                         }),
                     );
@@ -433,13 +506,16 @@ impl ChannelPointsWebSocketService {
                     let balance = message_data["data"]["balance"]["balance"]
                         .as_i64()
                         .unwrap_or(0);
+                    let spent_channel_id = message_data["data"]["channel_id"]
+                        .as_str()
+                        .map(|s| s.to_string());
 
                     println!("💸 Points spent: -{} - New balance: {}", points, balance);
 
                     let _ = app_handle.emit(
                         "channel-points-spent",
                         json!({
-                            "channel_id": channel_id,
+                            "channel_id": spent_channel_id,
                             "points": points,
                             "balance": balance
                         }),

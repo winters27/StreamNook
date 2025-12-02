@@ -60,20 +60,20 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
       // Try to load from cache first
       console.log('[BadgesOverlay] Checking for cached badges...');
       const cachedBadges = await invoke<{ data: BadgeSet[] } | null>('get_cached_global_badges');
-      
+
       // Also check cache age
       const age = await invoke<number | null>('get_badge_cache_age');
       setCacheAge(age);
-      
+
       if (cachedBadges && cachedBadges.data && cachedBadges.data.length > 0) {
         console.log('[BadgesOverlay] Found cached badges, loading immediately');
         setBadges(cachedBadges.data);
-        
+
         // Flatten all badge versions
-        const flattened = cachedBadges.data.flatMap(set => 
+        const flattened = cachedBadges.data.flatMap(set =>
           set.versions.map(version => ({ ...version, set_id: set.set_id } as BadgeWithMetadata))
         );
-        
+
         // Pre-load metadata from cache to enable instant sorting
         const badgesWithPreloadedMetadata = await Promise.all(
           flattened.map(async (badge) => {
@@ -83,7 +83,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
                 cacheType: 'badge',
                 id: cacheKey,
               });
-              
+
               if (cached) {
                 return {
                   ...badge,
@@ -99,25 +99,25 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
             return badge;
           })
         );
-        
+
         setBadgesWithMetadata(badgesWithPreloadedMetadata);
         setLoading(false);
-        
+
         // Fetch any missing metadata in the background
         fetchAllBadgeMetadata(badgesWithPreloadedMetadata);
-        
+
         // Check for badges missing metadata (new badges that need BadgeBase data)
         checkAndFetchMissingMetadata();
-        
+
         return;
       }
 
       // No cache available, fetch from API
       console.log('[BadgesOverlay] No cached badges, fetching from API...');
-      
+
       // Get credentials
       const [clientId, token] = await invoke<[string, string]>('get_twitch_credentials');
-      
+
       // Fetch global badges (this will cache them)
       const response = await invoke<{ data: BadgeSet[] }>('fetch_global_badges', {
         clientId,
@@ -125,14 +125,14 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
       });
 
       setBadges(response.data);
-      
+
       // Flatten all badge versions
-      const flattened = response.data.flatMap(set => 
+      const flattened = response.data.flatMap(set =>
         set.versions.map(version => ({ ...version, set_id: set.set_id } as BadgeWithMetadata))
       );
-      
+
       setBadgesWithMetadata(flattened);
-      
+
       // Fetch metadata for all badges in the background
       fetchAllBadgeMetadata(flattened);
     } catch (err) {
@@ -148,16 +148,16 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
     try {
       console.log('[BadgesOverlay] Checking for badges missing metadata...');
       const missing = await invoke<[string, string][]>('get_badges_missing_metadata');
-      
+
       if (missing.length > 0) {
         console.log(`[BadgesOverlay] Found ${missing.length} badges missing metadata, fetching...`);
         setNewBadgesCount(missing.length);
-        
+
         // Fetch metadata for missing badges in batches
         const batchSize = 5;
         for (let i = 0; i < missing.length; i += batchSize) {
           const batch = missing.slice(i, i + batchSize);
-          
+
           await Promise.allSettled(
             batch.map(([setId, version]) =>
               invoke<BadgeMetadata>('fetch_badge_metadata', {
@@ -166,14 +166,14 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
               })
             )
           );
-          
+
           // Update progress
           setNewBadgesCount(Math.max(0, missing.length - (i + batchSize)));
         }
-        
+
         console.log('[BadgesOverlay] Finished fetching missing badge metadata');
         setNewBadgesCount(0);
-        
+
         // Reload metadata to update display
         if (badgesWithMetadata.length > 0) {
           fetchAllBadgeMetadata(badgesWithMetadata);
@@ -189,42 +189,42 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
     try {
       setRefreshing(true);
       console.log('[BadgesOverlay] Force refreshing badges from Twitch API...');
-      
+
       const response = await invoke<{ data: BadgeSet[] }>('force_refresh_global_badges');
-      
+
       console.log(`[BadgesOverlay] Refreshed ${response.data.length} badge sets from Twitch API`);
-      
+
       // Log all badge set IDs for debugging
       const badgeSetIds = response.data.map(s => s.set_id);
       console.log('[BadgesOverlay] Badge set IDs received:', badgeSetIds);
-      
+
       // Count total versions
       const totalVersions = response.data.reduce((acc, set) => acc + set.versions.length, 0);
       console.log(`[BadgesOverlay] Total badge versions: ${totalVersions}`);
-      
+
       // Log each badge set with its versions
       response.data.forEach(set => {
         console.log(`[BadgesOverlay] Set "${set.set_id}": ${set.versions.length} versions - ${set.versions.map(v => v.title).join(', ')}`);
       });
-      
+
       setBadges(response.data);
       setCacheAge(0);
-      
+
       // Flatten all badge versions
-      const flattened = response.data.flatMap(set => 
+      const flattened = response.data.flatMap(set =>
         set.versions.map(version => ({ ...version, set_id: set.set_id } as BadgeWithMetadata))
       );
-      
+
       console.log(`[BadgesOverlay] Flattened to ${flattened.length} badge items`);
-      
+
       setBadgesWithMetadata(flattened);
-      
+
       // Fetch metadata for all badges
       await fetchAllBadgeMetadata(flattened);
-      
+
       // Check for and fetch any new badges that don't have metadata yet
       await checkAndFetchMissingMetadata();
-      
+
     } catch (err) {
       console.error('Failed to refresh badges:', err);
       setError('Failed to refresh badges. Please try again.');
@@ -235,23 +235,23 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
 
   const fetchAllBadgeMetadata = async (badgeList: BadgeWithMetadata[]) => {
     setLoadingMetadata(true);
-    
+
     // First, check cache for ALL badges at once to minimize API calls
     const metadataCache: Record<string, BadgeMetadata> = {};
     const uncachedBadges: BadgeWithMetadata[] = [];
-    
+
     // Check cache for all badges first
     console.log('[BadgesOverlay] Checking cache for all badges first...');
     for (const badge of badgeList) {
       const cacheKey = `metadata:${badge.set_id}-v${badge.id}`;
-      
+
       try {
         // Try to get from universal cache first
         const cached = await invoke<{ data: any; position?: number } | null>('get_universal_cached_item', {
           cacheType: 'badge',
           id: cacheKey,
         });
-        
+
         if (cached) {
           // Found in cache, use it - include position from top level
           const metadata = cached.data as BadgeMetadata;
@@ -268,7 +268,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
         uncachedBadges.push(badge);
       }
     }
-    
+
     // Update UI with cached data immediately
     if (Object.keys(metadataCache).length > 0) {
       const updatedBadges = badgeList.map(badge => ({
@@ -277,16 +277,16 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
       }));
       setBadgesWithMetadata(updatedBadges);
     }
-    
+
     console.log(`[BadgesOverlay] Found ${Object.keys(metadataCache).length} badges in cache, need to fetch ${uncachedBadges.length} from API`);
-    
+
     // Now fetch only the uncached badges in batches
     if (uncachedBadges.length > 0) {
       const batchSize = 10; // Process 10 badges at a time
-      
+
       for (let i = 0; i < uncachedBadges.length; i += batchSize) {
         const batch = uncachedBadges.slice(i, i + batchSize);
-        
+
         const batchResults = await Promise.allSettled(
           batch.map(badge =>
             invoke<BadgeMetadata>('fetch_badge_metadata', {
@@ -295,7 +295,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
             })
           )
         );
-        
+
         // Process batch results
         batch.forEach((badge, index) => {
           const result = batchResults[index];
@@ -303,7 +303,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
             metadataCache[`${badge.set_id}/${badge.id}`] = result.value;
           }
         });
-        
+
         // Update UI after each batch
         const updatedBadges = badgeList.map(badge => ({
           ...badge,
@@ -312,14 +312,14 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
         setBadgesWithMetadata(updatedBadges);
       }
     }
-    
+
     setLoadingMetadata(false);
   };
 
   // Parse usage stats to get numeric value for sorting
   const parseUsageStats = (stats: string | null | undefined): number => {
     if (!stats) return 0;
-    
+
     // Extract number from strings like "1,234 users seen with this badge" or "None users"
     const match = stats.match(/(\d+(?:,\d+)*)/);
     if (match) {
@@ -328,25 +328,27 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
     return 0;
   };
 
-  // Parse date for sorting - handles format like "12 November 2025"
+  // Parse date for sorting - handles multiple formats
   const parseDate = (dateStr: string | null | undefined): number => {
     if (!dateStr) return 0;
     try {
-      // Handle the "DD Month YYYY" format from BadgeBase
-      // Example: "12 November 2025"
+      // Month name mappings (full and abbreviated)
       const months: Record<string, number> = {
         'January': 0, 'February': 1, 'March': 2, 'April': 3,
         'May': 4, 'June': 5, 'July': 6, 'August': 7,
-        'September': 8, 'October': 9, 'November': 10, 'December': 11
+        'September': 8, 'October': 9, 'November': 10, 'December': 11,
+        'Jan': 0, 'Feb': 1, 'Mar': 2, 'Apr': 3,
+        'Jun': 5, 'Jul': 6, 'Aug': 7,
+        'Sep': 8, 'Oct': 9, 'Nov': 10, 'Dec': 11
       };
-      
-      // Try to match "DD Month YYYY" format
-      const match = dateStr.match(/(\d{1,2})\s+(\w+)\s+(\d{4})/);
-      if (match) {
-        const day = parseInt(match[1], 10);
-        const monthName = match[2];
-        const year = parseInt(match[3], 10);
-        
+
+      // Try to match "DD Month YYYY" format (e.g., "12 November 2025")
+      const fullMatch = dateStr.match(/(\d{1,2})\s+(\w+)\s+(\d{4})/);
+      if (fullMatch) {
+        const day = parseInt(fullMatch[1], 10);
+        const monthName = fullMatch[2];
+        const year = parseInt(fullMatch[3], 10);
+
         if (months.hasOwnProperty(monthName)) {
           const date = new Date(year, months[monthName], day);
           if (!isNaN(date.getTime())) {
@@ -354,7 +356,38 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
           }
         }
       }
-      
+
+      // Try to match abbreviated format "Mon D-D" or "Mon D - D" (e.g., "Dec 1-12" or "Dec 1 - 12")
+      const abbrevMatch = dateStr.match(/(\w{3})\s+(\d{1,2})\s*-\s*(\d{1,2})/);
+      if (abbrevMatch) {
+        const monthAbbrev = abbrevMatch[1];
+        const startDay = parseInt(abbrevMatch[2], 10);
+        // Use current year since it's not provided
+        const currentYear = new Date().getFullYear();
+
+        if (months.hasOwnProperty(monthAbbrev)) {
+          const date = new Date(currentYear, months[monthAbbrev], startDay);
+          if (!isNaN(date.getTime())) {
+            return date.getTime();
+          }
+        }
+      }
+
+      // Try to match "Mon D" format (e.g., "Dec 1")
+      const singleDayMatch = dateStr.match(/(\w{3})\s+(\d{1,2})(?!\s*-)/);
+      if (singleDayMatch) {
+        const monthAbbrev = singleDayMatch[1];
+        const day = parseInt(singleDayMatch[2], 10);
+        const currentYear = new Date().getFullYear();
+
+        if (months.hasOwnProperty(monthAbbrev)) {
+          const date = new Date(currentYear, months[monthAbbrev], day);
+          if (!isNaN(date.getTime())) {
+            return date.getTime();
+          }
+        }
+      }
+
       // Fallback: try parsing the date string directly
       const parsed = new Date(dateStr);
       if (!isNaN(parsed.getTime())) {
@@ -366,22 +399,90 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
     }
   };
 
+  // Parse abbreviated date range format like "Dec 1-12", "Dec 1 - 12", or "Dec 06 – Dec 07"
+  const parseDateRange = (text: string): { start: Date; end: Date } | null => {
+    const months: Record<string, number> = {
+      'Jan': 0, 'Feb': 1, 'Mar': 2, 'Apr': 3,
+      'May': 4, 'Jun': 5, 'Jul': 6, 'Aug': 7,
+      'Sep': 8, 'Oct': 9, 'Nov': 10, 'Dec': 11
+    };
+    const currentYear = new Date().getFullYear();
+
+    // Match "Mon DD – Mon DD" format (e.g., "Dec 06 – Dec 07") - with en-dash or regular dash
+    const fullRangeMatch = text.match(/(\w{3})\s+(\d{1,2})\s*[–-]\s*(\w{3})\s+(\d{1,2})/);
+    if (fullRangeMatch) {
+      const startMonthAbbrev = fullRangeMatch[1];
+      const startDay = parseInt(fullRangeMatch[2], 10);
+      const endMonthAbbrev = fullRangeMatch[3];
+      const endDay = parseInt(fullRangeMatch[4], 10);
+
+      if (months.hasOwnProperty(startMonthAbbrev) && months.hasOwnProperty(endMonthAbbrev)) {
+        const startMonthNum = months[startMonthAbbrev];
+        const endMonthNum = months[endMonthAbbrev];
+        // Start at beginning of the day, end at end of the day
+        const startDate = new Date(currentYear, startMonthNum, startDay, 0, 0, 0);
+        const endDate = new Date(currentYear, endMonthNum, endDay, 23, 59, 59);
+
+        if (!isNaN(startDate.getTime()) && !isNaN(endDate.getTime())) {
+          return { start: startDate, end: endDate };
+        }
+      }
+    }
+
+    // Match "Mon D-D" or "Mon D - D" format (e.g., "Dec 1-12" or "Dec 1 - 12")
+    const shortRangeMatch = text.match(/(\w{3})\s+(\d{1,2})\s*[–-]\s*(\d{1,2})(?!\s*\w)/);
+    if (shortRangeMatch) {
+      const monthAbbrev = shortRangeMatch[1];
+      const startDay = parseInt(shortRangeMatch[2], 10);
+      const endDay = parseInt(shortRangeMatch[3], 10);
+
+      if (months.hasOwnProperty(monthAbbrev)) {
+        const monthNum = months[monthAbbrev];
+        // Start at beginning of the day, end at end of the day
+        const startDate = new Date(currentYear, monthNum, startDay, 0, 0, 0);
+        const endDate = new Date(currentYear, monthNum, endDay, 23, 59, 59);
+
+        if (!isNaN(startDate.getTime()) && !isNaN(endDate.getTime())) {
+          return { start: startDate, end: endDate };
+        }
+      }
+    }
+
+    return null;
+  };
+
   // Check badge availability status
   const getBadgeStatus = (badge: BadgeWithMetadata): 'available' | 'coming-soon' | 'expired' | null => {
     const moreInfo = badge.badgebase_info?.more_info;
     if (!moreInfo) return null;
 
-    // Extract ISO timestamps from the more_info text
+    const now = Date.now();
+
+    // First, try to parse abbreviated date range format (e.g., "Dec 1-12")
+    const dateRange = parseDateRange(moreInfo);
+    if (dateRange) {
+      const startTime = dateRange.start.getTime();
+      const endTime = dateRange.end.getTime();
+
+      if (now < startTime) {
+        return 'coming-soon';
+      } else if (now >= startTime && now <= endTime) {
+        return 'available';
+      } else {
+        return 'expired';
+      }
+    }
+
+    // Fallback: Extract ISO timestamps from the more_info text
     const isoRegex = /(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?(?:Z)?)/g;
     const timestamps = moreInfo.match(isoRegex);
-    
+
     if (!timestamps || timestamps.length < 2) return null;
 
     try {
       // Assume first timestamp is start, last is end
       const startTime = new Date(timestamps[0]).getTime();
       const endTime = new Date(timestamps[timestamps.length - 1]).getTime();
-      const now = Date.now();
 
       if (now < startTime) {
         return 'coming-soon';
@@ -406,37 +507,37 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
   // Sort badges based on selected option - use useMemo to prevent re-sorting on every render
   const sortedBadges = useMemo(() => {
     console.log(`[BadgesOverlay] Sorting ${badgesWithMetadata.length} badges by ${sortBy}`);
-    
+
     // Check if we can use pre-computed positions for date-newest sort
     // Only use positions if at least 90% of badges have them (to handle edge cases)
-    const badgesWithPositions = badgesWithMetadata.filter(b => 
+    const badgesWithPositions = badgesWithMetadata.filter(b =>
       b.badgebase_info && typeof (b.badgebase_info as any).position === 'number'
     ).length;
-    
-    const canUsePositions = sortBy === 'date-newest' && 
-      badgesWithMetadata.length > 0 && 
+
+    const canUsePositions = sortBy === 'date-newest' &&
+      badgesWithMetadata.length > 0 &&
       badgesWithPositions >= badgesWithMetadata.length * 0.9;
-    
+
     if (canUsePositions) {
       console.log(`[BadgesOverlay] Using pre-computed positions for sorting (${badgesWithPositions}/${badgesWithMetadata.length} badges have positions)`);
       return [...badgesWithMetadata].sort((a, b) => {
         const aPos = (a.badgebase_info as any)?.position;
         const bPos = (b.badgebase_info as any)?.position;
-        
+
         // If both have positions, use them
         if (typeof aPos === 'number' && typeof bPos === 'number') {
           return aPos - bPos;
         }
-        
+
         // If only one has a position, sort by date for fair comparison
         const dateCompare = parseDate(b.badgebase_info?.date_added) - parseDate(a.badgebase_info?.date_added);
         if (dateCompare !== 0) return dateCompare;
-        
+
         // Fallback to stable sort
         return `${a.set_id}-${a.id}`.localeCompare(`${b.set_id}-${b.id}`);
       });
     }
-    
+
     // Log sample badge data for debugging
     if (badgesWithMetadata.length > 0) {
       const sample = badgesWithMetadata[0];
@@ -449,7 +550,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
         more_info: sample.badgebase_info?.more_info
       });
     }
-    
+
     return [...badgesWithMetadata].sort((a, b) => {
       switch (sortBy) {
         case 'available': {
@@ -511,11 +612,11 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm group">
       {/* Hover-sensitive background overlay */}
-      <div 
+      <div
         className="absolute inset-0 group-hover:pointer-events-none"
         onClick={onClose}
       />
-      
+
       <div className="bg-secondary border border-borderSubtle rounded-lg shadow-2xl w-[90vw] h-[85vh] max-w-7xl flex flex-col relative z-10">
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-borderSubtle">
@@ -576,68 +677,62 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
                 <div className="flex gap-2">
                   <button
                     onClick={() => setSortBy('date-newest')}
-                    className={`px-3 py-1.5 rounded-lg text-sm transition-colors ${
-                      sortBy === 'date-newest'
-                        ? 'bg-accent text-white'
-                        : 'bg-glass text-textSecondary hover:bg-glass/80'
-                    }`}
+                    className={`px-3 py-1.5 rounded-lg text-sm transition-colors ${sortBy === 'date-newest'
+                      ? 'bg-accent text-white'
+                      : 'bg-glass text-textSecondary hover:bg-glass/80'
+                      }`}
                   >
                     Newest First
                   </button>
                   <button
                     onClick={() => setSortBy('date-oldest')}
-                    className={`px-3 py-1.5 rounded-lg text-sm transition-colors ${
-                      sortBy === 'date-oldest'
-                        ? 'bg-accent text-white'
-                        : 'bg-glass text-textSecondary hover:bg-glass/80'
-                    }`}
+                    className={`px-3 py-1.5 rounded-lg text-sm transition-colors ${sortBy === 'date-oldest'
+                      ? 'bg-accent text-white'
+                      : 'bg-glass text-textSecondary hover:bg-glass/80'
+                      }`}
                   >
                     Oldest First
                   </button>
                   <button
                     onClick={() => setSortBy('usage-high')}
-                    className={`px-3 py-1.5 rounded-lg text-sm transition-colors ${
-                      sortBy === 'usage-high'
-                        ? 'bg-accent text-white'
-                        : 'bg-glass text-textSecondary hover:bg-glass/80'
-                    }`}
+                    className={`px-3 py-1.5 rounded-lg text-sm transition-colors ${sortBy === 'usage-high'
+                      ? 'bg-accent text-white'
+                      : 'bg-glass text-textSecondary hover:bg-glass/80'
+                      }`}
                   >
                     Most Used
                   </button>
                   <button
                     onClick={() => setSortBy('usage-low')}
-                    className={`px-3 py-1.5 rounded-lg text-sm transition-colors ${
-                      sortBy === 'usage-low'
-                        ? 'bg-accent text-white'
-                        : 'bg-glass text-textSecondary hover:bg-glass/80'
-                    }`}
+                    className={`px-3 py-1.5 rounded-lg text-sm transition-colors ${sortBy === 'usage-low'
+                      ? 'bg-accent text-white'
+                      : 'bg-glass text-textSecondary hover:bg-glass/80'
+                      }`}
                   >
                     Least Used
                   </button>
                   <button
                     onClick={() => setSortBy('available')}
-                    className={`px-3 py-1.5 rounded-lg text-sm transition-colors flex items-center gap-2 ${
-                      sortBy === 'available'
-                        ? 'bg-green-600 text-white'
-                        : 'bg-glass text-textSecondary hover:bg-glass/80'
-                    }`}
+                    className={`px-3 py-1.5 rounded-lg text-sm transition-colors flex items-center gap-2 ${sortBy === 'available'
+                      ? 'bg-green-600 text-white'
+                      : 'bg-glass text-textSecondary hover:bg-glass/80'
+                      }`}
                   >
                     <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
                     Available Now
                   </button>
                   <button
                     onClick={() => setSortBy('coming-soon')}
-                    className={`px-3 py-1.5 rounded-lg text-sm transition-colors flex items-center gap-2 ${
-                      sortBy === 'coming-soon'
-                        ? 'bg-blue-600 text-white'
-                        : 'bg-glass text-textSecondary hover:bg-glass/80'
-                    }`}
+                    className={`px-3 py-1.5 rounded-lg text-sm transition-colors flex items-center gap-2 ${sortBy === 'coming-soon'
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-glass text-textSecondary hover:bg-glass/80'
+                      }`}
                   >
                     <span className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></span>
                     Coming Soon
                   </button>
                 </div>
-              {loadingMetadata && (
+                {loadingMetadata && (
                   <div className="ml-auto flex items-center gap-2 text-textSecondary text-sm">
                     <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-accent"></div>
                     <span>Loading badge data...</span>
@@ -678,15 +773,13 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
                     <button
                       key={`${badge.set_id}-${badge.id}-${index}`}
                       onClick={() => onBadgeClick(badge, badge.set_id)}
-                      className={`flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-glass transition-all duration-200 group relative ${
-                        isAvailable ? 'ring-2 ring-green-500/50' : isComingSoon ? 'ring-2 ring-blue-500/50' : ''
-                      }`}
+                      className={`flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-glass transition-all duration-200 group relative ${isAvailable ? 'ring-2 ring-green-500/50' : isComingSoon ? 'ring-2 ring-blue-500/50' : ''
+                        }`}
                       title={badge.title}
                     >
-                      <div className={`w-18 h-18 flex items-center justify-center bg-glass rounded-lg group-hover:scale-110 transition-transform duration-200 ${
-                        isAvailable ? 'shadow-[0_0_20px_rgba(34,197,94,0.4)]' : 
+                      <div className={`w-18 h-18 flex items-center justify-center bg-glass rounded-lg group-hover:scale-110 transition-transform duration-200 ${isAvailable ? 'shadow-[0_0_20px_rgba(34,197,94,0.4)]' :
                         isComingSoon ? 'shadow-[0_0_20px_rgba(59,130,246,0.4)]' : ''
-                      }`}>
+                        }`}>
                         <img
                           src={badge.image_url_4x}
                           alt={badge.title}

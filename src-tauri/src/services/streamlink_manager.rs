@@ -165,9 +165,13 @@ impl StreamlinkManager {
         let output = cmd.output().await.context("Failed to run Streamlink")?;
 
         if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(anyhow::anyhow!(
-                "Streamlink failed: {}",
-                String::from_utf8_lossy(&output.stderr)
+                "Streamlink failed (path: '{}', url: '{}', quality: '{}'): {}",
+                path,
+                url,
+                quality,
+                stderr
             ));
         }
 
