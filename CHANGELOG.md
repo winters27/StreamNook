@@ -1,3 +1,13 @@
+## [4.1.10] - 2025-12-01
+### ✨ Features
+- Improved badge metadata parsing to handle various date formats.
+- Enhanced logging for new badge metadata.
+- Associated channel logins with channel IDs in channel points events for better identification.
+- Improved badge availability date display in the UI, including support for abbreviated date ranges.
+
+### 🐛 Bug Fixes
+- Included the path, URL, and quality in Streamlink error messages for easier debugging.
+
 ## [4.1.9] - 2025-11-30
 ### 🐛 Bug Fixes
 - Improved streamlink path resolution during development, searching in CWD and parent directory.
@@ -393,6 +403,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 

@@ -102,7 +102,7 @@ async function getTwitchToken() {
   }
 
   console.log('[Twitch] Getting app access token...');
-  
+
   const body = new URLSearchParams({
     client_id: TWITCH_CLIENT_ID,
     client_secret: TWITCH_CLIENT_SECRET,
@@ -111,7 +111,7 @@ async function getTwitchToken() {
 
   const response = await httpsPost('https://id.twitch.tv/oauth2/token', body);
   const data = JSON.parse(response.data);
-  
+
   console.log('[Twitch] Got access token');
   return data.access_token;
 }
@@ -137,11 +137,11 @@ async function fetchTwitchBadges(token) {
  */
 async function fetchBadgeMetadata(setId, versionId) {
   const url = `https://badgebase.co/badges/${setId}-v${versionId}/`;
-  
+
   try {
     const response = await httpsGet(url);
     const html = response.data;
-    
+
     return {
       date_added: extractDateAdded(html),
       usage_stats: extractUsageStats(html),
@@ -163,14 +163,14 @@ function extractDateAdded(html) {
     /Date of addition[^<]*([0-9]{1,2}\s+\w+\s+[0-9]{4})/i,
     /<li[^>]*>.*?Date of addition.*?([0-9]{1,2}\s+\w+\s+[0-9]{4})/is,
   ];
-  
+
   for (const pattern of patterns) {
     const match = html.match(pattern);
     if (match && match[1]) {
       return match[1].trim();
     }
   }
-  
+
   return null;
 }
 
@@ -192,13 +192,13 @@ function extractMoreInfo(html) {
   const match = html.match(/More Info From Us[\s\S]*?<div[^>]*class="[^"]*text[^"]*"[^>]*>([\s\S]*?)<\/div>/i);
   if (match) {
     let text = match[1];
-    
+
     // Extract timestamps from timezone-converter spans
     text = text.replace(/<span[^>]*class="[^"]*timezone-converter[^"]*"[^>]*data-original="([^"]*)"[^>]*>[^<]*<\/span>/gi, '$1');
-    
+
     // Remove HTML tags
     text = text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
-    
+
     return text || null;
   }
   return null;
@@ -270,7 +270,7 @@ async function main() {
       badges: { data: badgeSets },
       cached_at: getTimestamp(),
     };
-    
+
     manifest.entries['global_badges'] = {
       id: 'global_badges',
       cache_type: 'badge',
@@ -298,7 +298,7 @@ async function main() {
     for (const badgeSet of badgeSets) {
       for (const version of badgeSet.versions) {
         const metadataKey = `metadata:${badgeSet.set_id}-v${version.id}`;
-        
+
         // Check if we already have this metadata
         const existing = manifest.entries[metadataKey];
         if (existing && existing.metadata && existing.data) {
@@ -312,7 +312,7 @@ async function main() {
         // Fetch metadata from external source
         await sleep(BADGEBASE_DELAY_MS);
         const metadata = await fetchBadgeMetadata(badgeSet.set_id, version.id);
-        
+
         if (metadata) {
           manifest.entries[metadataKey] = {
             id: metadataKey,
@@ -327,10 +327,11 @@ async function main() {
           };
           fetched++;
           newBadges.push(`${badgeSet.set_id}-v${version.id} (${version.title})`);
-          console.log(`[Metadata] ✓ ${badgeSet.set_id}-v${version.id} (${version.title})`);
+          // Only log new badges, not every single one
+          console.log(`[Metadata] ✓ New: ${badgeSet.set_id}-v${version.id} (${version.title})`);
         } else {
           failed++;
-          console.log(`[Metadata] ✗ ${badgeSet.set_id}-v${version.id} (not found)`);
+          // Don't log every failed badge, we'll summarize at the end
         }
       }
     }
@@ -367,12 +368,12 @@ async function main() {
     console.log(`  Metadata skipped (already cached): ${skipped}`);
     console.log(`  Metadata failed: ${failed}`);
     console.log(`  Manifest entries: ${Object.keys(manifest.entries).length}`);
-    
+
     if (newBadges.length > 0) {
       console.log('\nNew badges added:');
       newBadges.forEach(b => console.log(`  - ${b}`));
     }
-    
+
     console.log('\n' + '='.repeat(50));
     console.log(`Completed at: ${new Date().toISOString()}`);
 
@@ -384,10 +385,86 @@ async function main() {
 
 /**
  * Parse date string to timestamp
+ * Handles multiple formats:
+ * - "12 November 2025" (full format)
+ * - "Dec 1-12" or "Dec 1 - 12" (abbreviated month + day range)
+ * - "Dec 06 – Dec 07" (full format with month on both sides)
+ * - ISO format and other parseable formats
  */
 function parseDate(dateStr) {
   if (!dateStr) return 0;
   try {
+    // Month name mappings (full and abbreviated)
+    const months = {
+      'January': 0, 'February': 1, 'March': 2, 'April': 3,
+      'May': 4, 'June': 5, 'July': 6, 'August': 7,
+      'September': 8, 'October': 9, 'November': 10, 'December': 11,
+      'Jan': 0, 'Feb': 1, 'Mar': 2, 'Apr': 3,
+      'Jun': 5, 'Jul': 6, 'Aug': 7,
+      'Sep': 8, 'Oct': 9, 'Nov': 10, 'Dec': 11
+    };
+
+    // Try to match "DD Month YYYY" format (e.g., "12 November 2025")
+    const fullMatch = dateStr.match(/(\d{1,2})\s+(\w+)\s+(\d{4})/);
+    if (fullMatch) {
+      const day = parseInt(fullMatch[1], 10);
+      const monthName = fullMatch[2];
+      const year = parseInt(fullMatch[3], 10);
+
+      if (months.hasOwnProperty(monthName)) {
+        const date = new Date(year, months[monthName], day);
+        if (!isNaN(date.getTime())) {
+          return date.getTime();
+        }
+      }
+    }
+
+    // Try to match "Mon DD – Mon DD" format (e.g., "Dec 06 – Dec 07") - with en-dash or regular dash
+    const fullRangeMatch = dateStr.match(/(\w{3})\s+(\d{1,2})\s*[–-]\s*(\w{3})\s+(\d{1,2})/);
+    if (fullRangeMatch) {
+      const startMonthAbbrev = fullRangeMatch[1];
+      const startDay = parseInt(fullRangeMatch[2], 10);
+      const currentYear = new Date().getFullYear();
+
+      if (months.hasOwnProperty(startMonthAbbrev)) {
+        const date = new Date(currentYear, months[startMonthAbbrev], startDay);
+        if (!isNaN(date.getTime())) {
+          return date.getTime();
+        }
+      }
+    }
+
+    // Try to match abbreviated format "Mon D-D" or "Mon D - D" (e.g., "Dec 1-12" or "Dec 1 - 12")
+    const abbrevMatch = dateStr.match(/(\w{3})\s+(\d{1,2})\s*[–-]\s*(\d{1,2})(?!\s*\w)/);
+    if (abbrevMatch) {
+      const monthAbbrev = abbrevMatch[1];
+      const startDay = parseInt(abbrevMatch[2], 10);
+      const currentYear = new Date().getFullYear();
+
+      if (months.hasOwnProperty(monthAbbrev)) {
+        const date = new Date(currentYear, months[monthAbbrev], startDay);
+        if (!isNaN(date.getTime())) {
+          return date.getTime();
+        }
+      }
+    }
+
+    // Try to match "Mon D" format (e.g., "Dec 1")
+    const singleDayMatch = dateStr.match(/(\w{3})\s+(\d{1,2})(?!\s*[–-])/);
+    if (singleDayMatch) {
+      const monthAbbrev = singleDayMatch[1];
+      const day = parseInt(singleDayMatch[2], 10);
+      const currentYear = new Date().getFullYear();
+
+      if (months.hasOwnProperty(monthAbbrev)) {
+        const date = new Date(currentYear, months[monthAbbrev], day);
+        if (!isNaN(date.getTime())) {
+          return date.getTime();
+        }
+      }
+    }
+
+    // Fallback: try parsing the date string directly
     const parsed = new Date(dateStr);
     return isNaN(parsed.getTime()) ? 0 : parsed.getTime();
   } catch {
