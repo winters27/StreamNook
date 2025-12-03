@@ -1,3 +1,7 @@
+## [4.1.13] - 2025-12-02
+### 🐛 Bug Fixes
+- Prevent duplicate proxy arguments being passed to Streamlink when using the ttvlol plugin, resolving a potential error.
+
 ## [4.1.12] - 2025-12-02
 ### 🐛 Bug Fixes
 - Fixed Streamlink executable path to use `streamlinkw.exe` for better GUI application compatibility (avoids unnecessary terminal window).
@@ -416,6 +420,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
