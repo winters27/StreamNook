@@ -1,3 +1,7 @@
+## [4.2.1] - 2025-12-02
+### ✨ Features
+- Added a GitHub Actions workflow to automatically merge Dependabot pull requests for patch and minor version updates. Major version updates will require manual review.
+
 ## [4.2.0] - 2025-12-02
 ### ✨ Features
 - Added support for desktop notifications.
@@ -430,6 +434,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
