@@ -1,3 +1,8 @@
+## [4.1.14] - 2025-12-02
+### ✨ Features
+- Improved Streamlink integration by checking for the ttvlol plugin's installation before using it.
+- Added drops authentication check to the setup wizard to streamline initial configuration.
+
 ## [4.1.13] - 2025-12-02
 ### 🐛 Bug Fixes
 - Prevent duplicate proxy arguments being passed to Streamlink when using the ttvlol plugin, resolving a potential error.
@@ -420,6 +425,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
