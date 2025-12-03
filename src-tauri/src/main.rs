@@ -105,6 +105,7 @@ fn main() {
     Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(live_notification_service.clone())
         .manage(whisper_service.clone())
         .setup(move |app| {

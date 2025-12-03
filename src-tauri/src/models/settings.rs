@@ -131,11 +131,18 @@ pub struct LiveNotificationSettings {
     pub show_drops_notifications: bool,
     #[serde(default = "default_true")]
     pub show_channel_points_notifications: bool,
+    #[serde(default = "default_true")]
+    pub show_badge_notifications: bool,
     // Notification method toggles (Dynamic Island vs Toast)
     #[serde(default = "default_true")]
     pub use_dynamic_island: bool,
     #[serde(default = "default_true")]
     pub use_toast: bool,
+    // Native OS notifications (Windows/macOS)
+    #[serde(default)]
+    pub use_native_notifications: bool,
+    #[serde(default = "default_true")]
+    pub native_only_when_unfocused: bool,
 }
 
 fn default_true() -> bool {
@@ -153,8 +160,11 @@ impl Default for LiveNotificationSettings {
             show_update_notifications: true,
             show_drops_notifications: true,
             show_channel_points_notifications: true,
+            show_badge_notifications: true,
             use_dynamic_island: true,
             use_toast: true,
+            use_native_notifications: false,
+            native_only_when_unfocused: true,
         }
     }
 }

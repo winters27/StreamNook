@@ -4,7 +4,8 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
+use tauri_plugin_notification::NotificationExt;
 use tokio::sync::RwLock;
 use tokio::time::{Duration, interval};
 
@@ -158,10 +159,67 @@ impl LiveNotificationService {
             is_test: false,
         };
 
-        // Emit event to frontend
+        // Emit event to frontend (for in-app notifications)
         app_handle.emit("streamer-went-live", &notification)?;
 
+        // Check if native notifications are enabled
+        let (use_native, native_only_when_unfocused) = {
+            let settings = app_state.settings.lock().unwrap();
+            (
+                settings.live_notifications.use_native_notifications,
+                settings.live_notifications.native_only_when_unfocused,
+            )
+        };
+
+        if use_native {
+            // Check if we should send native notification
+            let should_send_native = if native_only_when_unfocused {
+                // Check if the main window is focused
+                if let Some(window) = app_handle.get_webview_window("main") {
+                    !window.is_focused().unwrap_or(true) || window.is_minimized().unwrap_or(false)
+                } else {
+                    true // If window doesn't exist, send the notification
+                }
+            } else {
+                true // Always send if not limited to unfocused
+            };
+
+            if should_send_native {
+                Self::send_native_notification(app_handle, &notification);
+            }
+        }
+
         Ok(())
+    }
+
+    fn send_native_notification(app_handle: &AppHandle, notification: &LiveNotification) {
+        let title = format!("{} is now live!", notification.streamer_name);
+        let body = if let Some(ref game) = notification.game_name {
+            if game.is_empty() {
+                notification.stream_title.clone().unwrap_or_default()
+            } else {
+                format!(
+                    "Playing {} - {}",
+                    game,
+                    notification.stream_title.clone().unwrap_or_default()
+                )
+            }
+        } else {
+            notification.stream_title.clone().unwrap_or_default()
+        };
+
+        // Send native notification using Tauri's notification plugin
+        if let Err(e) = app_handle
+            .notification()
+            .builder()
+            .title(&title)
+            .body(&body)
+            .show()
+        {
+            eprintln!("Failed to send native notification: {}", e);
+        } else {
+            println!("[Native Notification] Sent: {}", title);
+        }
     }
 
     async fn get_game_box_art(game_name: &str) -> Result<String> {

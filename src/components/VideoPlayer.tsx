@@ -14,6 +14,10 @@ const VideoPlayer = () => {
   const progressUpdateIntervalRef = useRef<number | null>(null);
   const { streamUrl, settings, getAvailableQualities, changeStreamQuality, handleStreamOffline, isAutoSwitching, currentStream } = useAppStore();
   const playerSettings = settings.video_player;
+  // Store settings in a ref so createPlayer doesn't need to depend on them
+  // This prevents player recreation when volume/muted settings change
+  const playerSettingsRef = useRef(playerSettings);
+  playerSettingsRef.current = playerSettings;
   const isLiveRef = useRef<boolean>(true);
   const userInitiatedPauseRef = useRef<boolean>(false);
   const [availableQualities, setAvailableQualities] = useState<string[]>([]);
@@ -218,6 +222,9 @@ const VideoPlayer = () => {
     if (!videoRef.current || !streamUrl) return;
 
     const video = videoRef.current;
+    // Read settings from ref to avoid dependency on playerSettings
+    // This prevents player recreation when only volume/muted changes
+    const currentSettings = playerSettingsRef.current;
 
     // Destroy existing HLS instance if any
     if (hlsRef.current) {
@@ -239,18 +246,18 @@ const VideoPlayer = () => {
       const hls = new Hls({
         debug: false,
         enableWorker: true,
-        lowLatencyMode: playerSettings.low_latency_mode,
+        lowLatencyMode: currentSettings.low_latency_mode,
         backBufferLength: 30, // Keep 30 seconds of back buffer
-        maxBufferLength: playerSettings.max_buffer_length || 30, // Buffer ahead
-        maxMaxBufferLength: playerSettings.max_buffer_length || 120, // Max buffer
+        maxBufferLength: currentSettings.max_buffer_length || 30, // Buffer ahead
+        maxMaxBufferLength: currentSettings.max_buffer_length || 120, // Max buffer
         maxBufferSize: 60 * 1000 * 1000, // 60 MB
         maxBufferHole: 2.0, // Increased from 0.5 - allow larger gaps before seeking (helps with buffering issues)
         highBufferWatchdogPeriod: 3, // Increased from 2 - check buffer health every 3s (less aggressive)
         nudgeOffset: 0.5, // Increased from 0.1 - larger nudge when recovering (helps unstick playback)
         nudgeMaxRetry: 5, // Increased from 3 - try more times to recover from stalls
         maxFragLookUpTolerance: 0.5, // Increased from 0.25 - more tolerant fragment lookup
-        liveSyncDurationCount: playerSettings.low_latency_mode ? 2 : 3, // Stay close to live edge
-        liveMaxLatencyDurationCount: playerSettings.low_latency_mode ? 5 : 8, // Increased - allow more latency before seeking
+        liveSyncDurationCount: currentSettings.low_latency_mode ? 2 : 3, // Stay close to live edge
+        liveMaxLatencyDurationCount: currentSettings.low_latency_mode ? 5 : 8, // Increased - allow more latency before seeking
         liveDurationInfinity: true, // Live stream has infinite duration
         manifestLoadingTimeOut: 10000, // 10s timeout for manifest
         manifestLoadingMaxRetry: 3, // Retry manifest 3 times
@@ -261,7 +268,7 @@ const VideoPlayer = () => {
         fragLoadingTimeOut: 20000, // 20s timeout for fragments
         fragLoadingMaxRetry: 6, // Retry fragments 6 times
         fragLoadingRetryDelay: 1000, // Wait 1s between retries
-        startLevel: playerSettings.start_quality || -1, // Start quality level
+        startLevel: currentSettings.start_quality || -1, // Start quality level
         // Additional buffering improvements
         abrEwmaDefaultEstimate: 500000, // Initial bandwidth estimate (500kbps)
         abrEwmaFastLive: 3.0, // Fast ABR for live streams
@@ -300,9 +307,9 @@ const VideoPlayer = () => {
               selected: 1,
               options: [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2],
             },
-            autoplay: playerSettings.autoplay,
-            muted: playerSettings.muted,
-            volume: playerSettings.volume,
+            autoplay: currentSettings.autoplay,
+            muted: currentSettings.muted,
+            volume: currentSettings.volume,
             invertTime: false,
             keyboard: { focused: true, global: true },
             tooltips: { controls: true, seek: true },
@@ -345,7 +352,7 @@ const VideoPlayer = () => {
         }
 
         // Start playback
-        if (playerSettings.autoplay) {
+        if (currentSettings.autoplay) {
           video.play().catch(e => {
             console.log('[HLS] Autoplay failed:', e);
             // Try muted autoplay as fallback
@@ -600,9 +607,9 @@ const VideoPlayer = () => {
           selected: 1,
           options: [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2],
         },
-        autoplay: playerSettings.autoplay,
-        muted: playerSettings.muted,
-        volume: playerSettings.volume,
+        autoplay: currentSettings.autoplay,
+        muted: currentSettings.muted,
+        volume: currentSettings.volume,
         invertTime: false,
         keyboard: { focused: true, global: true },
         tooltips: { controls: true, seek: true },
@@ -617,7 +624,9 @@ const VideoPlayer = () => {
     } else {
       console.error('[HLS] HLS is not supported in this browser');
     }
-  }, [streamUrl, playerSettings, syncVolumeToPlayer]);
+    // Only depend on streamUrl - settings are read from ref inside the callback
+    // This prevents player recreation when volume/muted settings change
+  }, [streamUrl, syncVolumeToPlayer, handleStreamOffline, isAutoSwitching]);
 
   useEffect(() => {
     if (!videoRef.current || !streamUrl) return;

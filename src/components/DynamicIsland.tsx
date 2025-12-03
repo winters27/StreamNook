@@ -3,7 +3,10 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Bell, Radio, MessageCircle, ChevronRight, User, Download, Gift, Award } from 'lucide-react';
 import { X, SpeakerHigh, SpeakerSlash } from 'phosphor-react';
 import { listen } from '@tauri-apps/api/event';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke, convertFileSrc } from '@tauri-apps/api/core';
+import { getCurrentWindow } from '@tauri-apps/api/window';
+import { resolveResource } from '@tauri-apps/api/path';
+import { sendNotification, isPermissionGranted, requestPermission } from '@tauri-apps/plugin-notification';
 import { useAppStore } from '../stores/AppStore';
 import { badgePollingService, type BadgeNotification } from '../services/badgePollingService';
 import type {
@@ -152,6 +155,8 @@ const DynamicIsland = () => {
     const showBadgeNotifications = settings.live_notifications?.show_badge_notifications ?? true;
     const useDynamicIsland = settings.live_notifications?.use_dynamic_island ?? true;
     const useToast = settings.live_notifications?.use_toast ?? true;
+    const useNativeNotifications = settings.live_notifications?.use_native_notifications ?? false;
+    const nativeOnlyWhenUnfocused = settings.live_notifications?.native_only_when_unfocused ?? true;
 
     // Save notifications to cache whenever they change
     useEffect(() => {
@@ -231,6 +236,39 @@ const DynamicIsland = () => {
         }
     }, []);
 
+    // Send native Windows desktop notification
+    const sendNativeNotification = useCallback(async (title: string, body: string) => {
+        if (!useNativeNotifications) return;
+
+        try {
+            // Check if we should send based on window focus
+            if (nativeOnlyWhenUnfocused) {
+                const appWindow = getCurrentWindow();
+                const isFocused = await appWindow.isFocused();
+                const isMinimized = await appWindow.isMinimized();
+
+                // Only send if window is not focused or is minimized
+                if (isFocused && !isMinimized) {
+                    return;
+                }
+            }
+
+            // Check and request notification permission if needed
+            let permissionGranted = await isPermissionGranted();
+            if (!permissionGranted) {
+                const permission = await requestPermission();
+                permissionGranted = permission === 'granted';
+            }
+
+            if (permissionGranted) {
+                await sendNotification({ title, body });
+                console.log('[Native Notification] Sent:', title);
+            }
+        } catch (error) {
+            console.warn('Failed to send native notification:', error);
+        }
+    }, [useNativeNotifications, nativeOnlyWhenUnfocused]);
+
     // Add notification
     const addNotification = useCallback((notification: DynamicIslandNotification) => {
         setNotifications(prev => {
@@ -297,12 +335,18 @@ const DynamicIsland = () => {
                     if (soundEnabled) {
                         playNotificationSound();
                     }
+
+                    // Send native notification for updates
+                    sendNativeNotification(
+                        'Update Available',
+                        `StreamNook v${status.latest_version} is ready to download`
+                    );
                 }
             }
         } catch (error) {
             console.warn('Could not check for updates:', error);
         }
-    }, [notificationsEnabled, showUpdateNotifications, notifications, addNotification, soundEnabled, playNotificationSound, useDynamicIsland, useToast, addToast, openSettings]);
+    }, [notificationsEnabled, showUpdateNotifications, notifications, addNotification, soundEnabled, playNotificationSound, useDynamicIsland, useToast, addToast, openSettings, sendNativeNotification]);
 
     // Check for updates on mount and periodically (every 30 minutes)
     useEffect(() => {
@@ -371,12 +415,18 @@ const DynamicIsland = () => {
                     }
                 );
             }
+
+            // Send native notification (note: backend also sends one, but this ensures frontend settings are respected)
+            sendNativeNotification(
+                `${data.streamer_name} is now live!`,
+                data.game_name ? `Playing ${data.game_name}` : data.stream_title || 'Streaming now'
+            );
         });
 
         return () => {
             unlisten.then((fn) => fn());
         };
-    }, [addNotification, notificationsEnabled, showLiveNotifications, useDynamicIsland, useToast, addToast, startStream, soundEnabled, playNotificationSound]);
+    }, [addNotification, notificationsEnabled, showLiveNotifications, useDynamicIsland, useToast, addToast, startStream, soundEnabled, playNotificationSound, sendNativeNotification]);
 
     // Listen for whisper notifications
     useEffect(() => {
@@ -420,6 +470,7 @@ const DynamicIsland = () => {
             }
 
             // Show toast if enabled
+            // Show toast if enabled
             if (useToast) {
                 addToast(
                     `Whisper from ${data.from_user_name}: ${data.text.substring(0, 50)}${data.text.length > 50 ? '...' : ''}`,
@@ -435,13 +486,19 @@ const DynamicIsland = () => {
                     }
                 );
             }
+
+            // Send native notification for whispers
+            sendNativeNotification(
+                `Whisper from ${data.from_user_name}`,
+                data.text.length > 100 ? `${data.text.substring(0, 100)}...` : data.text
+            );
             // Note: Whisper conversation storage is handled by WhispersWidget
         });
 
         return () => {
             unlisten.then((fn) => fn());
         };
-    }, [addNotification, playNotificationSound, notificationsEnabled, showWhisperNotifications, soundEnabled, useDynamicIsland, useToast, addToast, openWhisperWithUser]);
+    }, [addNotification, playNotificationSound, notificationsEnabled, showWhisperNotifications, soundEnabled, useDynamicIsland, useToast, addToast, openWhisperWithUser, sendNativeNotification]);
 
     // Listen for drop claimed notifications
     useEffect(() => {
@@ -483,12 +540,18 @@ const DynamicIsland = () => {
                     }
                 );
             }
+
+            // Send native notification for drops
+            sendNativeNotification(
+                'Drop Claimed',
+                `${data.drop_name} - ${data.game_name}`
+            );
         });
 
         return () => {
             unlisten.then((fn) => fn());
         };
-    }, [addNotification, notificationsEnabled, showDropsNotifications, useDynamicIsland, useToast, addToast, soundEnabled, playNotificationSound, setShowDropsOverlay]);
+    }, [addNotification, notificationsEnabled, showDropsNotifications, useDynamicIsland, useToast, addToast, soundEnabled, playNotificationSound, setShowDropsOverlay, sendNativeNotification]);
 
     // Listen for channel points earned notifications with clustering
     // Ref to track clustered channel points
@@ -622,13 +685,24 @@ const DynamicIsland = () => {
             addToast(toastContent, 'success');
         }
 
+        // Send native notification for channel points
+        const channelInfo = uniqueChannels.length === 1 && uniqueChannels[0]
+            ? uniqueChannels[0]
+            : uniqueChannels.length > 1
+                ? `${uniqueChannels.length} channels`
+                : formatReasonCode(cluster.events[0]?.reason || 'watch');
+        sendNativeNotification(
+            `+${totalPoints.toLocaleString()} Channel Points`,
+            channelInfo
+        );
+
         // Reset the cluster
         channelPointsClusterRef.current = {
             totalPoints: 0,
             events: [],
             lastUpdate: 0,
         };
-    }, [useDynamicIsland, useToast, addNotification, addToast, soundEnabled, playNotificationSound]);
+    }, [useDynamicIsland, useToast, addNotification, addToast, soundEnabled, playNotificationSound, sendNativeNotification]);
 
     useEffect(() => {
         const unlisten = listen<ChannelPointsEarnedEvent>('channel-points-earned', (event) => {
@@ -734,6 +808,14 @@ const DynamicIsland = () => {
                     );
                 }
 
+                // Send native notification for badges
+                const nativeStatusText = badge.status === 'new' ? 'New badge available' :
+                    badge.status === 'available' ? 'Badge available now' : 'Badge coming soon';
+                sendNativeNotification(
+                    badge.badge_name,
+                    `${nativeStatusText}${badge.date_info ? ` - ${badge.date_info}` : ''}`
+                );
+
                 if (soundEnabled) {
                     playNotificationSound();
                 }
@@ -744,7 +826,7 @@ const DynamicIsland = () => {
             unsubscribe();
             badgePollingService.stop();
         };
-    }, [notificationsEnabled, showBadgeNotifications, useDynamicIsland, useToast, addNotification, addToast, soundEnabled, playNotificationSound, setShowBadgesOverlay]);
+    }, [notificationsEnabled, showBadgeNotifications, useDynamicIsland, useToast, addNotification, addToast, soundEnabled, playNotificationSound, setShowBadgesOverlay, sendNativeNotification]);
 
     // Click outside to close
     useEffect(() => {

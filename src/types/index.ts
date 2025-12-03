@@ -97,6 +97,9 @@ export interface LiveNotificationSettings {
   // Notification method toggles (Dynamic Island vs Toast)
   use_dynamic_island?: boolean;
   use_toast?: boolean;
+  // Native OS notifications (Windows/macOS)
+  use_native_notifications?: boolean;
+  native_only_when_unfocused?: boolean;
 }
 
 export type AutoSwitchMode = 'same_category' | 'followed_streams';
