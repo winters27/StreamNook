@@ -354,13 +354,12 @@ impl StreamlinkManager {
             cmd.arg("--http-no-ssl-verify");
         }
 
-        // Add proxy settings if enabled (should be passed as custom args)
-        if settings.use_proxy && !settings.proxy_playlist.is_empty() {
-            cmd.args(settings.proxy_playlist.split_whitespace());
-        }
-
-        // Add user-defined args (like ttvlol)
+        // Add user-defined args (like ttvlol proxy args)
+        // NOTE: We DON'T add settings.proxy_playlist separately because
+        // the ttvlol args are already in `args` when ttvlol_plugin is enabled.
+        // Adding both would cause duplicate arguments error.
         if !args.is_empty() {
+            println!("[Streamlink] Adding custom args: {}", args);
             cmd.args(args.split_whitespace());
         }
 
