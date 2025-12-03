@@ -11,6 +11,23 @@ pub struct StreamMetadata {
     pub viewers: Option<i32>,
 }
 
+/// Detailed diagnostic information about streamlink installation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamlinkDiagnostics {
+    pub exe_directory: Option<String>,
+    pub cwd: Option<String>,
+    pub bundled_path_checked: String,
+    pub bundled_path_exists: bool,
+    pub cwd_path_checked: Option<String>,
+    pub cwd_path_exists: bool,
+    pub parent_path_checked: Option<String>,
+    pub parent_path_exists: bool,
+    pub effective_path: String,
+    pub streamlink_found: bool,
+    pub streamlink_version: Option<String>,
+    pub error_details: Option<String>,
+}
+
 pub struct StreamlinkManager;
 
 impl StreamlinkManager {
@@ -22,16 +39,112 @@ impl StreamlinkManager {
     }
 
     /// Get the bundled streamlink path
-    /// Located at: <exe_directory>/streamlink/bin/streamlinkw.exe
+    /// Located at: <exe_directory>/streamlink/bin/streamlink.exe
+    /// NOTE: We use streamlink.exe (not streamlinkw.exe) because:
+    /// - streamlinkw.exe is meant for GUI applications to avoid showing terminal windows
+    /// - streamlink.exe is for CLI/script execution and properly handles output streams
+    /// - Since we're executing from command line context, streamlink.exe is correct
     pub fn get_bundled_path() -> PathBuf {
         Self::get_exe_directory()
             .map(|exe_dir| {
                 exe_dir
                     .join("streamlink")
                     .join("bin")
-                    .join("streamlinkw.exe")
+                    .join("streamlink.exe")
             })
             .unwrap_or_else(|| PathBuf::from("streamlink"))
+    }
+
+    /// Get comprehensive diagnostics about streamlink installation
+    /// This helps debug issues where streamlink cannot be found
+    pub fn get_diagnostics() -> StreamlinkDiagnostics {
+        let exe_directory = Self::get_exe_directory().map(|p| p.to_string_lossy().to_string());
+        let cwd = std::env::current_dir()
+            .ok()
+            .map(|p| p.to_string_lossy().to_string());
+
+        let bundled_path = Self::get_bundled_path();
+        let bundled_path_checked = bundled_path.to_string_lossy().to_string();
+        let bundled_path_exists = bundled_path.exists();
+
+        let mut cwd_path_checked = None;
+        let mut cwd_path_exists = false;
+        let mut parent_path_checked = None;
+        let mut parent_path_exists = false;
+
+        // Check CWD paths (for development)
+        if let Ok(current_dir) = std::env::current_dir() {
+            let cwd_streamlink = current_dir
+                .join("streamlink")
+                .join("bin")
+                .join("streamlink.exe");
+            cwd_path_checked = Some(cwd_streamlink.to_string_lossy().to_string());
+            cwd_path_exists = cwd_streamlink.exists();
+
+            if let Some(parent) = current_dir.parent() {
+                let parent_streamlink =
+                    parent.join("streamlink").join("bin").join("streamlink.exe");
+                parent_path_checked = Some(parent_streamlink.to_string_lossy().to_string());
+                parent_path_exists = parent_streamlink.exists();
+            }
+        }
+
+        let effective_path = Self::get_effective_path("");
+        let streamlink_found = std::path::Path::new(&effective_path).exists();
+
+        StreamlinkDiagnostics {
+            exe_directory,
+            cwd,
+            bundled_path_checked,
+            bundled_path_exists,
+            cwd_path_checked,
+            cwd_path_exists,
+            parent_path_checked,
+            parent_path_exists,
+            effective_path,
+            streamlink_found,
+            streamlink_version: None, // Will be populated by async version check
+            error_details: if !streamlink_found {
+                Some(format!(
+                    "Streamlink not found at expected location. Exe dir: {:?}, CWD: {:?}",
+                    Self::get_exe_directory(),
+                    std::env::current_dir().ok()
+                ))
+            } else {
+                None
+            },
+        }
+    }
+
+    /// Get comprehensive diagnostics including version check (async)
+    pub async fn get_diagnostics_with_version() -> StreamlinkDiagnostics {
+        let mut diagnostics = Self::get_diagnostics();
+
+        if diagnostics.streamlink_found {
+            // Try to get version
+            match Command::new(&diagnostics.effective_path)
+                .arg("--version")
+                .output()
+                .await
+            {
+                Ok(output) => {
+                    if output.status.success() {
+                        diagnostics.streamlink_version =
+                            Some(String::from_utf8_lossy(&output.stdout).trim().to_string());
+                    } else {
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        diagnostics.error_details =
+                            Some(format!("Streamlink found but --version failed: {}", stderr));
+                    }
+                }
+                Err(e) => {
+                    diagnostics.error_details =
+                        Some(format!("Failed to execute streamlink --version: {}", e));
+                }
+            }
+        }
+
+        diagnostics
     }
 
     /// Get the effective streamlink path (bundled only - no fallbacks)
@@ -59,7 +172,7 @@ impl StreamlinkManager {
             println!("[StreamlinkManager] CWD is: {:?}", cwd);
 
             // First check CWD itself
-            let cwd_streamlink = cwd.join("streamlink").join("bin").join("streamlinkw.exe");
+            let cwd_streamlink = cwd.join("streamlink").join("bin").join("streamlink.exe");
             if cwd_streamlink.exists() {
                 println!(
                     "[StreamlinkManager] Using streamlink from CWD: {:?}",
@@ -70,10 +183,8 @@ impl StreamlinkManager {
 
             // Then check parent directory (project root when CWD is src-tauri)
             if let Some(parent) = cwd.parent() {
-                let parent_streamlink = parent
-                    .join("streamlink")
-                    .join("bin")
-                    .join("streamlinkw.exe");
+                let parent_streamlink =
+                    parent.join("streamlink").join("bin").join("streamlink.exe");
                 println!(
                     "[StreamlinkManager] Checking parent path: {:?}",
                     parent_streamlink
@@ -93,6 +204,52 @@ impl StreamlinkManager {
             "[StreamlinkManager] ERROR: Bundled streamlink not found! Expected at: {:?}",
             bundled_path
         );
+
+        // Log additional debug info for troubleshooting
+        println!("[StreamlinkManager] === DIAGNOSTIC INFO ===");
+        if let Ok(exe) = std::env::current_exe() {
+            println!("[StreamlinkManager] Current exe: {:?}", exe);
+            if let Some(parent) = exe.parent() {
+                println!("[StreamlinkManager] Exe parent dir: {:?}", parent);
+
+                // List contents of parent directory
+                if let Ok(entries) = std::fs::read_dir(parent) {
+                    println!("[StreamlinkManager] Contents of exe directory:");
+                    for entry in entries.flatten() {
+                        println!("[StreamlinkManager]   - {:?}", entry.file_name());
+                    }
+                }
+
+                // Check if streamlink folder exists
+                let streamlink_dir = parent.join("streamlink");
+                if streamlink_dir.exists() {
+                    println!("[StreamlinkManager] streamlink/ folder EXISTS");
+                    if let Ok(entries) = std::fs::read_dir(&streamlink_dir) {
+                        println!("[StreamlinkManager] Contents of streamlink/:");
+                        for entry in entries.flatten() {
+                            println!("[StreamlinkManager]   - {:?}", entry.file_name());
+                        }
+                    }
+
+                    let bin_dir = streamlink_dir.join("bin");
+                    if bin_dir.exists() {
+                        println!("[StreamlinkManager] streamlink/bin/ folder EXISTS");
+                        if let Ok(entries) = std::fs::read_dir(&bin_dir) {
+                            println!("[StreamlinkManager] Contents of streamlink/bin/:");
+                            for entry in entries.flatten() {
+                                println!("[StreamlinkManager]   - {:?}", entry.file_name());
+                            }
+                        }
+                    } else {
+                        println!("[StreamlinkManager] streamlink/bin/ folder DOES NOT EXIST");
+                    }
+                } else {
+                    println!("[StreamlinkManager] streamlink/ folder DOES NOT EXIST");
+                }
+            }
+        }
+        println!("[StreamlinkManager] === END DIAGNOSTIC INFO ===");
+
         // Return the bundled path anyway - let the error propagate when trying to run
         bundled_path.to_string_lossy().to_string()
     }
@@ -115,9 +272,51 @@ impl StreamlinkManager {
         println!("[Streamlink] Quality: '{}'", quality);
         println!("[Streamlink] Args: '{}'", args);
 
-        // Verify the path exists
+        // Verify the path exists and log detailed info if not
         let path_exists = std::path::Path::new(path).exists();
         println!("[Streamlink] Path exists: {}", path_exists);
+
+        if !path_exists {
+            // Log detailed diagnostic info when path doesn't exist
+            let diagnostics = Self::get_diagnostics();
+            println!("[Streamlink] === STREAMLINK NOT FOUND DIAGNOSTICS ===");
+            println!(
+                "[Streamlink] Exe directory: {:?}",
+                diagnostics.exe_directory
+            );
+            println!("[Streamlink] CWD: {:?}", diagnostics.cwd);
+            println!(
+                "[Streamlink] Bundled path checked: {}",
+                diagnostics.bundled_path_checked
+            );
+            println!(
+                "[Streamlink] Bundled path exists: {}",
+                diagnostics.bundled_path_exists
+            );
+            println!(
+                "[Streamlink] CWD path checked: {:?}",
+                diagnostics.cwd_path_checked
+            );
+            println!(
+                "[Streamlink] CWD path exists: {}",
+                diagnostics.cwd_path_exists
+            );
+            println!(
+                "[Streamlink] Parent path checked: {:?}",
+                diagnostics.parent_path_checked
+            );
+            println!(
+                "[Streamlink] Parent path exists: {}",
+                diagnostics.parent_path_exists
+            );
+            println!("[Streamlink] === END DIAGNOSTICS ===");
+
+            return Err(anyhow::anyhow!(
+                "Streamlink executable not found at: '{}'. Expected location: streamlink/bin/streamlink.exe relative to the app. Exe dir: {:?}",
+                path,
+                diagnostics.exe_directory
+            ));
+        }
 
         // Build command with enhanced Streamlink options from settings
         let mut cmd = Command::new(path);

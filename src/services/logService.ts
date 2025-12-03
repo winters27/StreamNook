@@ -67,6 +67,15 @@ const IGNORED_ERROR_PATTERNS = [
 ];
 // NOTE: BTTV, FFZ, 7TV 404 errors ARE sent to Discord for monitoring
 
+// Streamlink-related error patterns for enhanced reporting
+const STREAMLINK_ERROR_PATTERNS = [
+    /streamlink/i,
+    /stream.*not.*found/i,
+    /failed.*start.*stream/i,
+    /no.*streams.*found/i,
+    /executable.*not.*found/i,
+];
+
 // Check if an error should be ignored
 const shouldIgnoreError = (entry: LogEntry): boolean => {
     const fullMessage = `${entry.category} ${entry.message}`;
@@ -515,6 +524,165 @@ export const saveBugReportToFile = async (): Promise<boolean> => {
     }
 };
 
+// Streamlink diagnostics interface
+interface StreamlinkDiagnostics {
+    exe_directory: string | null;
+    cwd: string | null;
+    bundled_path_checked: string;
+    bundled_path_exists: boolean;
+    cwd_path_checked: string | null;
+    cwd_path_exists: boolean;
+    parent_path_checked: string | null;
+    parent_path_exists: boolean;
+    effective_path: string;
+    streamlink_found: boolean;
+    streamlink_version: string | null;
+    error_details: string | null;
+}
+
+// Check if error is streamlink-related
+export const isStreamlinkError = (errorMessage: string): boolean => {
+    return STREAMLINK_ERROR_PATTERNS.some(pattern => pattern.test(errorMessage));
+};
+
+// Send streamlink diagnostics to Discord webhook
+// Call this when a streamlink-related error occurs
+export const sendStreamlinkDiagnostics = async (errorMessage: string): Promise<void> => {
+    if (!DISCORD_ERROR_WEBHOOK || !isErrorReportingEnabled()) {
+        return;
+    }
+
+    try {
+        const { getVersion } = await import('@tauri-apps/api/app');
+        const { invoke } = await import('@tauri-apps/api/core');
+
+        let appVersion = 'Unknown';
+        let osInfo = 'Unknown';
+        let diagnostics: StreamlinkDiagnostics | null = null;
+
+        try {
+            appVersion = await getVersion();
+        } catch { /* ignore */ }
+
+        try {
+            osInfo = await invoke('get_system_info') as string;
+        } catch {
+            osInfo = 'Unknown';
+        }
+
+        // Get streamlink diagnostics from backend
+        try {
+            diagnostics = await invoke('get_streamlink_diagnostics') as StreamlinkDiagnostics;
+        } catch (e) {
+            originalConsole.warn('[LogService] Failed to get streamlink diagnostics:', e);
+        }
+
+        // Get user context
+        const { twitchUser, currentActivity } = getUserContext();
+
+        // Build fields for Discord embed
+        const fields = [
+            {
+                name: 'Twitch User',
+                value: twitchUser ? `\`@${twitchUser}\`` : '`Not logged in`',
+                inline: true,
+            },
+            {
+                name: 'App Version',
+                value: `\`${appVersion}\``,
+                inline: true,
+            },
+            {
+                name: 'Platform',
+                value: `\`${osInfo}\``,
+                inline: true,
+            },
+            {
+                name: '❌ Error',
+                value: '```\n' + errorMessage.slice(0, 500) + '\n```',
+                inline: false,
+            },
+        ];
+
+        // Add streamlink diagnostics if available
+        if (diagnostics) {
+            const diagInfo = [
+                `Exe Directory: ${diagnostics.exe_directory || 'N/A'}`,
+                `CWD: ${diagnostics.cwd || 'N/A'}`,
+                `Bundled Path: ${diagnostics.bundled_path_checked}`,
+                `Bundled Exists: ${diagnostics.bundled_path_exists ? '✅' : '❌'}`,
+                `Effective Path: ${diagnostics.effective_path}`,
+                `Streamlink Found: ${diagnostics.streamlink_found ? '✅' : '❌'}`,
+                `Version: ${diagnostics.streamlink_version || 'N/A'}`,
+            ];
+
+            fields.push({
+                name: '🔍 Streamlink Diagnostics',
+                value: '```\n' + diagInfo.join('\n') + '\n```',
+                inline: false,
+            });
+
+            // Add additional path checks if they differ
+            if (diagnostics.cwd_path_checked && diagnostics.cwd_path_checked !== diagnostics.bundled_path_checked) {
+                fields.push({
+                    name: '📂 Additional Path Checks',
+                    value: '```\n' +
+                        `CWD Path: ${diagnostics.cwd_path_checked}\n` +
+                        `CWD Exists: ${diagnostics.cwd_path_exists ? '✅' : '❌'}\n` +
+                        (diagnostics.parent_path_checked ?
+                            `Parent Path: ${diagnostics.parent_path_checked}\n` +
+                            `Parent Exists: ${diagnostics.parent_path_exists ? '✅' : '❌'}`
+                            : '') +
+                        '\n```',
+                    inline: false,
+                });
+            }
+
+            // Add error details if available
+            if (diagnostics.error_details) {
+                fields.push({
+                    name: '⚠️ Diagnostic Error Details',
+                    value: '```\n' + diagnostics.error_details.slice(0, 300) + '\n```',
+                    inline: false,
+                });
+            }
+        }
+
+        // Add current activity if available
+        if (currentActivity) {
+            fields.push({
+                name: 'Attempted Action',
+                value: `\`${currentActivity}\``,
+                inline: false,
+            });
+        }
+
+        const embed = {
+            title: '🎬 Streamlink Error Report',
+            color: 0xFFA500, // Orange to distinguish from regular errors
+            fields,
+            timestamp: new Date().toISOString(),
+            footer: {
+                text: 'StreamNook Streamlink Diagnostics • Please check file structure',
+            },
+        };
+
+        await fetch(DISCORD_ERROR_WEBHOOK, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                embeds: [embed],
+            }),
+        });
+
+        originalConsole.log('[LogService] Streamlink diagnostics sent to Discord');
+    } catch (err) {
+        originalConsole.warn('[LogService] Failed to send streamlink diagnostics:', err);
+    }
+};
+
 export default {
     initLogCapture,
     trackActivity,
@@ -527,4 +695,6 @@ export default {
     generateBugReport,
     copyBugReportToClipboard,
     saveBugReportToFile,
+    isStreamlinkError,
+    sendStreamlinkDiagnostics,
 };
