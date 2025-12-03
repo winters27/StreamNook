@@ -1,3 +1,7 @@
+## [4.1.12] - 2025-12-02
+### 🐛 Bug Fixes
+- Fixed Streamlink executable path to use `streamlinkw.exe` for better GUI application compatibility (avoids unnecessary terminal window).
+
 ## [4.1.11] - 2025-12-02
 ### ✨ Features
 - Added streamlink diagnostics to help debug stream starting issues.
@@ -412,6 +416,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
