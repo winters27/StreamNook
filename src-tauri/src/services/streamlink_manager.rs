@@ -39,18 +39,17 @@ impl StreamlinkManager {
     }
 
     /// Get the bundled streamlink path
-    /// Located at: <exe_directory>/streamlink/bin/streamlink.exe
-    /// NOTE: We use streamlink.exe (not streamlinkw.exe) because:
-    /// - streamlinkw.exe is meant for GUI applications to avoid showing terminal windows
-    /// - streamlink.exe is for CLI/script execution and properly handles output streams
-    /// - Since we're executing from command line context, streamlink.exe is correct
+    /// Located at: <exe_directory>/streamlink/bin/streamlinkw.exe
+    /// NOTE: We use streamlinkw.exe (not streamlink.exe) because:
+    /// - streamlinkw.exe is designed for GUI applications (doesn't force terminal window)
+    /// - StreamNook is a GUI application
     pub fn get_bundled_path() -> PathBuf {
         Self::get_exe_directory()
             .map(|exe_dir| {
                 exe_dir
                     .join("streamlink")
                     .join("bin")
-                    .join("streamlink.exe")
+                    .join("streamlinkw.exe")
             })
             .unwrap_or_else(|| PathBuf::from("streamlink"))
     }
@@ -77,13 +76,15 @@ impl StreamlinkManager {
             let cwd_streamlink = current_dir
                 .join("streamlink")
                 .join("bin")
-                .join("streamlink.exe");
+                .join("streamlinkw.exe");
             cwd_path_checked = Some(cwd_streamlink.to_string_lossy().to_string());
             cwd_path_exists = cwd_streamlink.exists();
 
             if let Some(parent) = current_dir.parent() {
-                let parent_streamlink =
-                    parent.join("streamlink").join("bin").join("streamlink.exe");
+                let parent_streamlink = parent
+                    .join("streamlink")
+                    .join("bin")
+                    .join("streamlinkw.exe");
                 parent_path_checked = Some(parent_streamlink.to_string_lossy().to_string());
                 parent_path_exists = parent_streamlink.exists();
             }
@@ -172,7 +173,7 @@ impl StreamlinkManager {
             println!("[StreamlinkManager] CWD is: {:?}", cwd);
 
             // First check CWD itself
-            let cwd_streamlink = cwd.join("streamlink").join("bin").join("streamlink.exe");
+            let cwd_streamlink = cwd.join("streamlink").join("bin").join("streamlinkw.exe");
             if cwd_streamlink.exists() {
                 println!(
                     "[StreamlinkManager] Using streamlink from CWD: {:?}",
@@ -183,8 +184,10 @@ impl StreamlinkManager {
 
             // Then check parent directory (project root when CWD is src-tauri)
             if let Some(parent) = cwd.parent() {
-                let parent_streamlink =
-                    parent.join("streamlink").join("bin").join("streamlink.exe");
+                let parent_streamlink = parent
+                    .join("streamlink")
+                    .join("bin")
+                    .join("streamlinkw.exe");
                 println!(
                     "[StreamlinkManager] Checking parent path: {:?}",
                     parent_streamlink
@@ -312,7 +315,7 @@ impl StreamlinkManager {
             println!("[Streamlink] === END DIAGNOSTICS ===");
 
             return Err(anyhow::anyhow!(
-                "Streamlink executable not found at: '{}'. Expected location: streamlink/bin/streamlink.exe relative to the app. Exe dir: {:?}",
+                "Streamlink executable not found at: '{}'. Expected location: streamlink/bin/streamlinkw.exe relative to the app. Exe dir: {:?}",
                 path,
                 diagnostics.exe_directory
             ));
