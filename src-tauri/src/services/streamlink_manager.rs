@@ -262,6 +262,48 @@ impl StreamlinkManager {
         Self::get_bundled_path().exists()
     }
 
+    /// Get the plugins directory for bundled streamlink
+    /// Located at: <exe_directory>/streamlink/plugins/
+    pub fn get_plugins_directory() -> Option<String> {
+        // First try exe directory (production)
+        if let Some(exe_dir) = Self::get_exe_directory() {
+            let plugins_path = exe_dir.join("streamlink").join("plugins");
+            if plugins_path.exists() {
+                println!(
+                    "[StreamlinkManager] Found plugins directory at: {:?}",
+                    plugins_path
+                );
+                return Some(plugins_path.to_string_lossy().to_string());
+            }
+        }
+
+        // Development mode: check CWD and parent
+        if let Ok(cwd) = std::env::current_dir() {
+            let cwd_plugins = cwd.join("streamlink").join("plugins");
+            if cwd_plugins.exists() {
+                println!(
+                    "[StreamlinkManager] Found plugins directory at CWD: {:?}",
+                    cwd_plugins
+                );
+                return Some(cwd_plugins.to_string_lossy().to_string());
+            }
+
+            if let Some(parent) = cwd.parent() {
+                let parent_plugins = parent.join("streamlink").join("plugins");
+                if parent_plugins.exists() {
+                    println!(
+                        "[StreamlinkManager] Found plugins directory at parent: {:?}",
+                        parent_plugins
+                    );
+                    return Some(parent_plugins.to_string_lossy().to_string());
+                }
+            }
+        }
+
+        println!("[StreamlinkManager] No plugins directory found");
+        None
+    }
+
     pub async fn get_stream_url_with_settings(
         url: &str,
         quality: &str,
@@ -323,6 +365,17 @@ impl StreamlinkManager {
 
         // Build command with enhanced Streamlink options from settings
         let mut cmd = Command::new(path);
+
+        // For portable streamlink, explicitly specify where to find plugins
+        // This is CRITICAL for ttvlol plugin to be loaded
+        let plugins_dir = Self::get_plugins_directory();
+        if let Some(ref plugin_path) = plugins_dir {
+            if std::path::Path::new(plugin_path).exists() {
+                println!("[Streamlink] Adding --plugin-dirs: {}", plugin_path);
+                cmd.arg("--plugin-dirs").arg(plugin_path);
+            }
+        }
+
         cmd.arg(url).arg(quality).arg("--stream-url");
 
         // Apply low latency mode if enabled

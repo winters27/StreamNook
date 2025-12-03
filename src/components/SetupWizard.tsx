@@ -18,7 +18,6 @@ import {
 import { open } from '@tauri-apps/plugin-shell';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useAppStore } from '../stores/AppStore';
 
 interface SetupWizardProps {
@@ -77,6 +76,20 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
         }
     }, []);
 
+    // Check if drops authentication is already set up (separate from main auth)
+    const checkDropsAuthStatus = useCallback(async () => {
+        try {
+            const isDropsAuth = await invoke('is_drops_authenticated') as boolean;
+            console.log('[SetupWizard] Drops auth status:', isDropsAuth);
+            setStatus(prev => ({ ...prev, dropsAuthenticated: isDropsAuth }));
+            return isDropsAuth;
+        } catch (e) {
+            console.error('Failed to check drops auth status:', e);
+            setStatus(prev => ({ ...prev, dropsAuthenticated: false }));
+            return false;
+        }
+    }, []);
+
     // Extract bundled components
     const extractComponents = useCallback(async () => {
         setIsExtracting(true);
@@ -109,9 +122,12 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
     useEffect(() => {
         if (isOpen) {
             checkComponentsInstalled();
+            // Check drops auth status separately (uses different auth system)
+            checkDropsAuthStatus();
+            // Set main auth status from store
             setStatus(prev => ({ ...prev, mainAuthenticated: isAuthenticated }));
         }
-    }, [isOpen, isAuthenticated, checkComponentsInstalled]);
+    }, [isOpen, isAuthenticated, checkComponentsInstalled, checkDropsAuthStatus]);
 
     // Auto-extract when reaching the Setting Up step
     useEffect(() => {
@@ -150,8 +166,7 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
 
                 // Focus the app window so user doesn't have to click back
                 try {
-                    const appWindow = getCurrentWindow();
-                    await appWindow.setFocus();
+                    await invoke('focus_window');
                 } catch (focusError) {
                     console.error('Failed to focus window:', focusError);
                 }
@@ -184,11 +199,13 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
 
                 // Focus the app window so user doesn't have to click back
                 try {
-                    const appWindow = getCurrentWindow();
-                    await appWindow.setFocus();
+                    await invoke('focus_window');
                 } catch (focusError) {
                     console.error('Failed to focus window:', focusError);
                 }
+
+                // Auto-advance to next step after a short delay
+                setTimeout(() => setCurrentStep(4), 500);
 
                 unlisten();
             });
@@ -504,6 +521,16 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                                 )}
                                 <span className="text-sm text-textSecondary">
                                     Streamlink & TTV LOL {status.componentsInstalled ? 'ready' : 'not installed'}
+                                </span>
+                            </div>
+                            <div className={`flex items-center gap-3 p-3 rounded-lg ${status.dropsAuthenticated ? 'bg-green-500/10' : 'bg-gray-500/10'}`}>
+                                {status.dropsAuthenticated ? (
+                                    <CheckCircle2 size={18} className="text-green-400" />
+                                ) : (
+                                    <X size={18} className="text-gray-400" />
+                                )}
+                                <span className="text-sm text-textSecondary">
+                                    Drops {status.dropsAuthenticated ? 'signed in' : 'not signed in'}
                                 </span>
                             </div>
                             <div className={`flex items-center gap-3 p-3 rounded-lg ${status.mainAuthenticated ? 'bg-green-500/10' : 'bg-gray-500/10'}`}>

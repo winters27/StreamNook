@@ -4,20 +4,72 @@ use crate::services::streamlink_manager::{StreamlinkDiagnostics, StreamlinkManag
 use anyhow::Result;
 use tauri::State;
 
+/// Check if the ttvlol plugin (twitch.py) actually exists
+fn is_ttvlol_plugin_installed() -> bool {
+    // Get exe directory
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            let plugin_path = exe_dir.join("streamlink").join("plugins").join("twitch.py");
+            let exists = plugin_path.exists();
+            println!(
+                "[Streaming] ttvlol plugin path: {:?}, exists: {}",
+                plugin_path, exists
+            );
+            return exists;
+        }
+    }
+
+    // Also check development paths
+    if let Ok(cwd) = std::env::current_dir() {
+        let cwd_plugin = cwd.join("streamlink").join("plugins").join("twitch.py");
+        if cwd_plugin.exists() {
+            println!("[Streaming] Found ttvlol plugin at CWD: {:?}", cwd_plugin);
+            return true;
+        }
+
+        if let Some(parent) = cwd.parent() {
+            let parent_plugin = parent.join("streamlink").join("plugins").join("twitch.py");
+            if parent_plugin.exists() {
+                println!(
+                    "[Streaming] Found ttvlol plugin at parent: {:?}",
+                    parent_plugin
+                );
+                return true;
+            }
+        }
+    }
+
+    println!("[Streaming] ttvlol plugin NOT found");
+    false
+}
+
 #[tauri::command]
 pub async fn start_stream(
     url: String,
     quality: String,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
+    // Check if ttvlol plugin actually exists (not just enabled in settings)
+    let ttvlol_installed = is_ttvlol_plugin_installed();
+
     // Get settings values and determine which args to use
     let (streamlink_args, streamlink_settings) = {
         let settings = state.settings.lock().unwrap();
-        let args = if settings.ttvlol_plugin.enabled {
+        // Only use ttvlol args if BOTH enabled in settings AND the plugin file exists
+        let args = if settings.ttvlol_plugin.enabled && ttvlol_installed {
             // Use the ttvlol plugin args
+            println!(
+                "[Streaming] Using ttvlol plugin args: {}",
+                settings.streamlink_args
+            );
             settings.streamlink_args.clone()
         } else {
-            // Don't use any special args if plugin is disabled
+            // Don't use any special args if plugin is disabled or not installed
+            if settings.ttvlol_plugin.enabled && !ttvlol_installed {
+                println!(
+                    "[Streaming] WARNING: ttvlol enabled but plugin not installed, skipping ttvlol args"
+                );
+            }
             String::new()
         };
         (args, settings.streamlink.clone())
