@@ -1,3 +1,12 @@
+## [4.1.11] - 2025-12-02
+### ✨ Features
+- Added streamlink diagnostics to help debug stream starting issues.
+- Added the ability to show points balance in the dynamic island.
+- Enhanced streamlink error reporting to Discord for better troubleshooting.
+
+### 🐛 Bug Fixes
+- Fixed: Streamlink now uses `streamlink.exe` instead of `streamlinkw.exe` for better CLI compatibility.
+
 ## [4.1.10] - 2025-12-01
 ### ✨ Features
 - Improved badge metadata parsing to handle various date formats.
@@ -403,6 +412,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 

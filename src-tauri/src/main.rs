@@ -250,6 +250,8 @@ fn main() {
             stop_stream,
             get_stream_qualities,
             change_stream_quality,
+            get_streamlink_diagnostics,
+            is_streamlink_available,
             // Chat commands
             start_chat,
             stop_chat,

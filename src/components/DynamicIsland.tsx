@@ -599,11 +599,20 @@ const DynamicIsland = () => {
                         </div>
                         <div className="text-xs text-textSecondary">
                             {uniqueChannels.length === 1 && uniqueChannels[0] ? (
-                                `${uniqueChannels[0]} • ${formatReasonCode(cluster.events[0]?.reason || 'watch')}`
+                                // Single channel - show channel name, reason, and new balance
+                                cluster.lastBalance
+                                    ? `${uniqueChannels[0]} • ${formatReasonCode(cluster.events[0]?.reason || 'watch')} • ${cluster.lastBalance.toLocaleString()} points`
+                                    : `${uniqueChannels[0]} • ${formatReasonCode(cluster.events[0]?.reason || 'watch')}`
                             ) : uniqueChannels.length > 1 ? (
-                                `From ${uniqueChannels.length} channels`
+                                // Multiple channels - show channel count and balance if available
+                                cluster.lastBalance
+                                    ? `From ${uniqueChannels.length} channels • ${cluster.lastBalance.toLocaleString()} points`
+                                    : `From ${uniqueChannels.length} channels`
                             ) : (
-                                reasonSummary
+                                // No channel info - show reason and balance if available
+                                cluster.lastBalance
+                                    ? `${formatReasonCode(cluster.events[0]?.reason || 'watch')} • ${cluster.lastBalance.toLocaleString()} points`
+                                    : formatReasonCode(cluster.events[0]?.reason || 'watch')
                             )}
                         </div>
                     </div>

@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
 import type { Settings, TwitchUser, TwitchStream, UserInfo } from '../types';
-import { trackActivity } from '../services/logService';
+import { trackActivity, isStreamlinkError, sendStreamlinkDiagnostics } from '../services/logService';
 
 export interface Toast {
   id: number;
@@ -631,8 +631,19 @@ export const useAppStore = create<AppState>((set, get) => ({
         });
       }
     } catch (e) {
-      console.error('Failed to start stream:', e);
-      // Show toast error
+      const errorMessage = e instanceof Error ? e.message : String(e);
+      console.error('Failed to start stream:', errorMessage);
+
+      // Check if this is a streamlink-related error and send diagnostics
+      if (isStreamlinkError(errorMessage)) {
+        console.log('[Stream] Streamlink error detected, sending diagnostics to Discord...');
+        sendStreamlinkDiagnostics(errorMessage).catch(err => {
+          console.warn('[Stream] Failed to send streamlink diagnostics:', err);
+        });
+      }
+
+      // Show toast error to user
+      get().addToast(`Failed to start stream: ${errorMessage}`, 'error');
     } finally {
       set({ isLoading: false });
     }

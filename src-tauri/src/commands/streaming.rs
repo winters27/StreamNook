@@ -1,7 +1,7 @@
 use crate::models::settings::AppState;
-use crate::services::{stream_server::StreamServer, streamlink_manager::StreamlinkManager};
+use crate::services::stream_server::StreamServer;
+use crate::services::streamlink_manager::{StreamlinkDiagnostics, StreamlinkManager};
 use anyhow::Result;
-use chrono::Utc;
 use tauri::State;
 
 #[tauri::command]
@@ -77,4 +77,18 @@ pub async fn change_stream_quality(
     // Don't stop the server - just update the stream URL
     // The server will keep running on the same port
     start_stream(url, quality, state).await
+}
+
+/// Get comprehensive streamlink diagnostics for debugging
+/// This helps identify why streamlink might not be found on some systems
+#[tauri::command]
+pub async fn get_streamlink_diagnostics() -> Result<StreamlinkDiagnostics, String> {
+    Ok(StreamlinkManager::get_diagnostics_with_version().await)
+}
+
+/// Quick check if streamlink is available
+/// Returns true if streamlink.exe is found at the expected location
+#[tauri::command]
+pub fn is_streamlink_available() -> bool {
+    StreamlinkManager::is_bundled_available()
 }

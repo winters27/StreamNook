@@ -26,19 +26,24 @@ fn get_bundled_streamlink_dir() -> Result<PathBuf, String> {
 }
 
 /// Get the path to the bundled streamlink executable (portable)
-/// Located at: <exe_directory>/streamlink/bin/streamlinkw.exe
+/// Located at: <exe_directory>/streamlink/bin/streamlink.exe
+/// NOTE: We use streamlink.exe (not streamlinkw.exe) because:
+/// - streamlinkw.exe is meant for GUI applications to avoid showing terminal windows
+/// - streamlink.exe is for CLI/script execution and properly handles output streams
+/// - Since we're executing from command line context, streamlink.exe is correct
 #[tauri::command]
 pub fn get_bundled_streamlink_path() -> Result<String, String> {
     let streamlink_dir = get_bundled_streamlink_dir()?;
-    let exe_path = streamlink_dir.join("bin").join("streamlinkw.exe");
+    let exe_path = streamlink_dir.join("bin").join("streamlink.exe");
     Ok(exe_path.to_string_lossy().to_string())
 }
 
 /// Check if bundled components are installed (portable)
+/// Uses streamlink.exe (not streamlinkw.exe) for CLI compatibility
 #[tauri::command]
 pub fn check_components_installed() -> Result<bool, String> {
     let streamlink_dir = get_bundled_streamlink_dir()?;
-    let streamlink_exe = streamlink_dir.join("bin").join("streamlinkw.exe");
+    let streamlink_exe = streamlink_dir.join("bin").join("streamlink.exe");
     let plugin_path = streamlink_dir.join("plugins").join("twitch.py");
     let components_json = get_components_json_path()?;
 
