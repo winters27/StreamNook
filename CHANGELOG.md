@@ -1,3 +1,8 @@
+## [4.2.0] - 2025-12-02
+### ✨ Features
+- Added support for desktop notifications.
+- Added window focus and minimize checks to capabilities.
+
 ## [4.1.14] - 2025-12-02
 ### ✨ Features
 - Improved Streamlink integration by checking for the ttvlol plugin's installation before using it.
@@ -425,6 +430,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
