@@ -1,3 +1,10 @@
+## [4.5.0] - 2025-12-04
+### ✨ Features
+- Implemented a new home screen with sections for followed and recommended streams.
+- Added the ability to browse Twitch categories and view streams within those categories.
+- Implemented a search functionality for finding Twitch channels.
+- Added a picture-in-picture mode for watching streams while browsing the home screen.
+
 ## [4.4.0] - 2025-12-04
 ### ✨ Features
 - Implemented a new home screen with stream browsing functionality, including followed streams, recommended streams, game categories, and search.
@@ -488,6 +495,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
