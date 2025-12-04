@@ -1,3 +1,15 @@
+## [4.3.1] - 2025-12-04
+### ✨ Features
+- Added React error boundaries for improved app stability.
+- Improved badge date parsing to handle more formats.
+
+### 🐛 Bug Fixes
+- Prevented badge polling errors when Tauri invoke is not available.
+
+### 🔧 Maintenance
+- Added backdrop blur to sidebar.
+- Added logging improvements for React error boundary errors.
+
 ## [4.3.0] - 2025-12-04
 ### ✨ Features
 - Added new sidebar for stream navigation and discovery.
@@ -442,6 +454,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
