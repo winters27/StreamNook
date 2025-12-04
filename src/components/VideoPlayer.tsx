@@ -3,8 +3,9 @@ import Hls from 'hls.js';
 import Plyr from 'plyr';
 import 'plyr/dist/plyr.css';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
+import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../stores/AppStore';
-import { getBadgeInfo } from '../services/twitchBadges';
+import { getBadgeInfo, fetchChannelBadges } from '../services/twitchBadges';
 
 const VideoPlayer = () => {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -728,11 +729,14 @@ const VideoPlayer = () => {
 
   // Fetch subscriber badge when channel changes
   // Uses retry logic since badges may be loaded asynchronously by ChatWidget
+  // Falls back to direct API fetch if cache doesn't have the badge (fixes release build timing issue)
   useEffect(() => {
     if (!currentStream?.user_id) {
       setSubscriberBadgeUrl(null);
       return;
     }
+
+    let isCancelled = false;
 
     const tryGetBadge = () => {
       const badge = getBadgeInfo('subscriber/0', currentStream.user_id);
@@ -743,23 +747,52 @@ const VideoPlayer = () => {
       return false;
     };
 
-    // Try immediately
+    // Direct fetch fallback - fetches channel badges directly from Twitch API
+    // This handles the case where ChatWidget hasn't loaded badges yet (common in release builds)
+    const fetchBadgeDirectly = async () => {
+      if (isCancelled) return;
+
+      console.log('[VideoPlayer] Fetching subscriber badge directly from API...');
+      try {
+        const [clientId, token] = await invoke<[string, string]>('get_twitch_credentials');
+
+        // Fetch channel badges directly - this also populates the cache for ChatWidget
+        await fetchChannelBadges(currentStream.user_id, clientId, token);
+
+        // Now try to get the badge from the populated cache
+        if (!isCancelled && tryGetBadge()) {
+          console.log('[VideoPlayer] Found subscriber badge after direct fetch');
+        } else if (!isCancelled) {
+          console.log('[VideoPlayer] Channel may not have a subscriber badge');
+        }
+      } catch (err) {
+        console.error('[VideoPlayer] Failed to fetch subscriber badge directly:', err);
+      }
+    };
+
+    // Try immediately from cache
     if (tryGetBadge()) {
       return;
     }
 
     // Set up retries since badges are loaded asynchronously by ChatWidget
-    const retryIntervals = [500, 1000, 2000, 5000]; // Retry at these intervals
+    const retryIntervals = [500, 1000, 2000, 3000]; // Retry at these intervals
     let retryIndex = 0;
     let timeoutId: NodeJS.Timeout;
 
     const retry = () => {
+      if (isCancelled) return;
+
       if (retryIndex >= retryIntervals.length) {
-        console.log('[VideoPlayer] Could not find subscriber badge after retries');
+        // All retries exhausted - fetch directly from API as fallback
+        console.log('[VideoPlayer] Cache retries exhausted, fetching badge directly...');
+        fetchBadgeDirectly();
         return;
       }
 
       timeoutId = setTimeout(() => {
+        if (isCancelled) return;
+
         if (tryGetBadge()) {
           console.log('[VideoPlayer] Found subscriber badge on retry', retryIndex + 1);
         } else {
@@ -772,6 +805,7 @@ const VideoPlayer = () => {
     retry();
 
     return () => {
+      isCancelled = true;
       if (timeoutId) {
         clearTimeout(timeoutId);
       }

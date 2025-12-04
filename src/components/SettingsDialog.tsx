@@ -1,6 +1,7 @@
 import { useAppStore, SettingsTab } from '../stores/AppStore';
 import { X } from 'lucide-react';
 import { useState, useEffect } from 'react';
+import InterfaceSettings from './settings/InterfaceSettings';
 import PlayerSettings from './settings/PlayerSettings';
 import ChatSettings from './settings/ChatSettings';
 import IntegrationsSettings from './settings/IntegrationsSettings';
@@ -48,7 +49,7 @@ const SettingsDialog = () => {
           {/* Tabs Navigation */}
           <div className="w-1/4 pr-6 border-r border-borderSubtle">
             <nav className="flex flex-col space-y-2">
-              {(['Player', 'Chat', 'Integrations', 'Notifications', 'Cache', 'Support', 'Updates'] as SettingsTab[]).map((tab) => (
+              {(['Interface', 'Player', 'Chat', 'Integrations', 'Notifications', 'Cache', 'Support', 'Updates'] as SettingsTab[]).map((tab) => (
                 <button
                   key={tab}
                   onClick={() => setActiveTab(tab)}
@@ -65,6 +66,7 @@ const SettingsDialog = () => {
 
           {/* Settings Form */}
           <div className="flex-1 pl-6 overflow-y-auto scrollbar-thin">
+            {activeTab === 'Interface' && <InterfaceSettings />}
             {activeTab === 'Player' && <PlayerSettings />}
             {activeTab === 'Chat' && <ChatSettings />}
             {activeTab === 'Integrations' && <IntegrationsSettings />}

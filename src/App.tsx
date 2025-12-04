@@ -15,6 +15,7 @@ import BadgeDetailOverlay from './components/BadgeDetailOverlay';
 import ChangelogOverlay from './components/ChangelogOverlay';
 import WhispersWidget from './components/WhispersWidget';
 import SetupWizard from './components/SetupWizard';
+import Sidebar from './components/Sidebar';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
@@ -539,49 +540,57 @@ function App() {
   return (
     <div className="flex flex-col h-screen bg-background backdrop-blur-md">
       <TitleBar />
-      {!streamUrl && !isLoading ? (
-        // Show live overlay when no stream is playing
-        <LiveOverlay />
-      ) : isLoading && !streamUrl ? (
-        // Show loading widget when starting a stream from no stream state
-        <div className="flex-1 relative overflow-hidden bg-black">
-          <LoadingWidget useFunnyMessages={true} />
-        </div>
-      ) : (
-        // Show video player and chat when stream is playing
-        <div
-          ref={containerRef}
-          className={`flex flex-1 overflow-hidden ${chatPlacement === 'bottom' ? 'flex-col' : 'flex-row'}`}
-        >
-          <div className="flex-1 relative overflow-hidden">
-            <VideoPlayer key={streamUrl} />
-            {isLoading && <LoadingWidget useFunnyMessages={true} />}
-          </div>
-          {chatPlacement !== 'hidden' && (
-            <>
-              {/* Resizable Separator */}
-              <div
-                onMouseDown={handleMouseDown}
-                className={`
-                  ${chatPlacement === 'right' ? 'w-1 cursor-ew-resize hover:w-1.5' : 'h-1 cursor-ns-resize hover:h-1.5'}
-                  bg-borderLight hover:bg-accent transition-all flex-shrink-0 z-10
-                  ${isResizing ? (chatPlacement === 'right' ? 'w-1.5 bg-accent' : 'h-1.5 bg-accent') : ''}
-                `}
-                title={chatPlacement === 'right' ? 'Drag to resize chat width' : 'Drag to resize chat height'}
-              />
-              {/* Chat Widget */}
-              <div
-                className="flex-shrink-0 overflow-hidden"
-                style={{
-                  [chatPlacement === 'right' ? 'width' : 'height']: `${chatSize}px`
-                }}
-              >
-                <ChatWidget />
+      <div className="flex flex-1 overflow-hidden">
+        {/* Sidebar - only visible when stream is playing */}
+        <Sidebar />
+
+        {/* Main content area */}
+        <div className="flex-1 flex flex-col overflow-hidden">
+          {!streamUrl && !isLoading ? (
+            // Show live overlay when no stream is playing
+            <LiveOverlay />
+          ) : isLoading && !streamUrl ? (
+            // Show loading widget when starting a stream from no stream state
+            <div className="flex-1 relative overflow-hidden bg-black">
+              <LoadingWidget useFunnyMessages={true} />
+            </div>
+          ) : (
+            // Show video player and chat when stream is playing
+            <div
+              ref={containerRef}
+              className={`flex flex-1 overflow-hidden ${chatPlacement === 'bottom' ? 'flex-col' : 'flex-row'}`}
+            >
+              <div className="flex-1 relative overflow-hidden">
+                <VideoPlayer key={streamUrl} />
+                {isLoading && <LoadingWidget useFunnyMessages={true} />}
               </div>
-            </>
+              {chatPlacement !== 'hidden' && (
+                <>
+                  {/* Resizable Separator */}
+                  <div
+                    onMouseDown={handleMouseDown}
+                    className={`
+                      ${chatPlacement === 'right' ? 'w-1 cursor-ew-resize hover:w-1.5' : 'h-1 cursor-ns-resize hover:h-1.5'}
+                      bg-borderLight hover:bg-accent transition-all flex-shrink-0 z-10
+                      ${isResizing ? (chatPlacement === 'right' ? 'w-1.5 bg-accent' : 'h-1.5 bg-accent') : ''}
+                    `}
+                    title={chatPlacement === 'right' ? 'Drag to resize chat width' : 'Drag to resize chat height'}
+                  />
+                  {/* Chat Widget */}
+                  <div
+                    className="flex-shrink-0 overflow-hidden"
+                    style={{
+                      [chatPlacement === 'right' ? 'width' : 'height']: `${chatSize}px`
+                    }}
+                  >
+                    <ChatWidget />
+                  </div>
+                </>
+              )}
+            </div>
           )}
         </div>
-      )}
+      </div>
       <SettingsDialog />
       <LiveStreamsOverlay />
       <DropsOverlay />
