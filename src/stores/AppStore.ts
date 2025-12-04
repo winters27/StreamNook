@@ -16,7 +16,7 @@ export interface Toast {
   createdAt: number;
 }
 
-export type SettingsTab = 'Player' | 'Chat' | 'Integrations' | 'Notifications' | 'Cache' | 'Support' | 'Updates';
+export type SettingsTab = 'Interface' | 'Player' | 'Chat' | 'Integrations' | 'Notifications' | 'Cache' | 'Support' | 'Updates';
 
 interface AppState {
   settings: Settings;

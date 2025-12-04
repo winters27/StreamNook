@@ -6,32 +6,27 @@ use tauri::State;
 
 /// Check if the ttvlol plugin (twitch.py) actually exists
 fn is_ttvlol_plugin_installed() -> bool {
-    // Get exe directory
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(exe_dir) = exe.parent() {
-            let plugin_path = exe_dir.join("streamlink").join("plugins").join("twitch.py");
-            let exists = plugin_path.exists();
-            println!(
-                "[Streaming] ttvlol plugin path: {:?}, exists: {}",
-                plugin_path, exists
-            );
-            return exists;
-        }
-    }
-
-    // Also check development paths
+    // First, check development paths (more likely to be used during dev)
     if let Ok(cwd) = std::env::current_dir() {
+        println!("[Streaming] CWD is: {:?}", cwd);
+
+        // Check CWD (project root)
         let cwd_plugin = cwd.join("streamlink").join("plugins").join("twitch.py");
         if cwd_plugin.exists() {
-            println!("[Streaming] Found ttvlol plugin at CWD: {:?}", cwd_plugin);
+            println!(
+                "[Streaming] ✅ Found ttvlol plugin at CWD: {:?}",
+                cwd_plugin
+            );
             return true;
         }
 
+        // Check parent of CWD (for when CWD is src-tauri during dev)
         if let Some(parent) = cwd.parent() {
             let parent_plugin = parent.join("streamlink").join("plugins").join("twitch.py");
+            println!("[Streaming] Checking parent path: {:?}", parent_plugin);
             if parent_plugin.exists() {
                 println!(
-                    "[Streaming] Found ttvlol plugin at parent: {:?}",
+                    "[Streaming] ✅ Found ttvlol plugin at parent: {:?}",
                     parent_plugin
                 );
                 return true;
@@ -39,7 +34,22 @@ fn is_ttvlol_plugin_installed() -> bool {
         }
     }
 
-    println!("[Streaming] ttvlol plugin NOT found");
+    // For release builds, check relative to exe directory
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            let plugin_path = exe_dir.join("streamlink").join("plugins").join("twitch.py");
+            println!("[Streaming] Checking exe-relative path: {:?}", plugin_path);
+            if plugin_path.exists() {
+                println!(
+                    "[Streaming] ✅ Found ttvlol plugin at exe dir: {:?}",
+                    plugin_path
+                );
+                return true;
+            }
+        }
+    }
+
+    println!("[Streaming] ❌ ttvlol plugin NOT found in any location");
     false
 }
 
@@ -49,17 +59,25 @@ pub async fn start_stream(
     quality: String,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
+    println!("[Streaming] start_stream called for URL: {}", url);
+
     // Check if ttvlol plugin actually exists (not just enabled in settings)
     let ttvlol_installed = is_ttvlol_plugin_installed();
+    println!("[Streaming] ttvlol plugin installed: {}", ttvlol_installed);
 
     // Get settings values and determine which args to use
     let (streamlink_args, streamlink_settings) = {
         let settings = state.settings.lock().unwrap();
+        println!(
+            "[Streaming] Settings: ttvlol_enabled={}, streamlink_args='{}'",
+            settings.ttvlol_plugin.enabled, settings.streamlink_args
+        );
+
         // Only use ttvlol args if BOTH enabled in settings AND the plugin file exists
         let args = if settings.ttvlol_plugin.enabled && ttvlol_installed {
             // Use the ttvlol plugin args
             println!(
-                "[Streaming] Using ttvlol plugin args: {}",
+                "[Streaming] ✅ Using ttvlol plugin args: {}",
                 settings.streamlink_args
             );
             settings.streamlink_args.clone()
@@ -67,13 +85,17 @@ pub async fn start_stream(
             // Don't use any special args if plugin is disabled or not installed
             if settings.ttvlol_plugin.enabled && !ttvlol_installed {
                 println!(
-                    "[Streaming] WARNING: ttvlol enabled but plugin not installed, skipping ttvlol args"
+                    "[Streaming] ⚠️ WARNING: ttvlol enabled but plugin not installed, skipping ttvlol args"
                 );
+            } else if !settings.ttvlol_plugin.enabled {
+                println!("[Streaming] ℹ️ ttvlol plugin is disabled in settings");
             }
             String::new()
         };
         (args, settings.streamlink.clone())
     };
+
+    println!("[Streaming] Final args to be used: '{}'", streamlink_args);
 
     // Always use the bundled streamlink path (relative to exe location)
     // This works regardless of which drive the app is installed on
