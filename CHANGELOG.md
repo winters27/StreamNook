@@ -1,3 +1,11 @@
+## [4.3.0] - 2025-12-04
+### ✨ Features
+- Added new sidebar for stream navigation and discovery.
+- Added interface settings tab with options for sidebar behavior.
+
+### 🐛 Bug Fixes
+- Improved reliability of ttvlol plugin detection for streaming.
+
 ## [4.2.1] - 2025-12-02
 ### ✨ Features
 - Added a GitHub Actions workflow to automatically merge Dependabot pull requests for patch and minor version updates. Major version updates will require manual review.
@@ -434,6 +442,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
