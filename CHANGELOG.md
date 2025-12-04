@@ -1,3 +1,10 @@
+## [4.6.0] - 2025-12-04
+### ✨ Features
+- Added a new home screen with support for browsing categories, searching channels, and picture-in-picture (PIP) mode.
+- PIP mode allows you to continue watching the stream in a small window while browsing other content on the home screen.
+### 🔧 Maintenance
+- Removed the LiveOverlay and LiveStreamsOverlay components.
+
 ## [4.5.0] - 2025-12-04
 ### ✨ Features
 - Implemented a new home screen with sections for followed and recommended streams.
@@ -495,6 +502,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
