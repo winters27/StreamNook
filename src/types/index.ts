@@ -100,6 +100,8 @@ export interface LiveNotificationSettings {
   // Native OS notifications (Windows/macOS)
   use_native_notifications?: boolean;
   native_only_when_unfocused?: boolean;
+  // Quick update: clicking update toast immediately starts update
+  quick_update_on_toast?: boolean;
 }
 
 export type AutoSwitchMode = 'same_category' | 'followed_streams';
@@ -132,6 +134,7 @@ export interface Settings {
   theme?: string; // Theme ID (e.g., 'winters-glass', 'dracula', 'nord')
   error_reporting_enabled?: boolean; // Opt-in error reporting (default: true)
   setup_complete?: boolean; // Whether the first-time setup wizard has been completed
+  auto_update_on_start?: boolean; // Automatically update when app starts if update available
 }
 
 export interface ReleaseNotes {

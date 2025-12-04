@@ -155,8 +155,10 @@ const DynamicIsland = () => {
     const showBadgeNotifications = settings.live_notifications?.show_badge_notifications ?? true;
     const useDynamicIsland = settings.live_notifications?.use_dynamic_island ?? true;
     const useToast = settings.live_notifications?.use_toast ?? true;
+    const quickUpdateOnToast = settings.live_notifications?.quick_update_on_toast ?? false;
     const useNativeNotifications = settings.live_notifications?.use_native_notifications ?? false;
     const nativeOnlyWhenUnfocused = settings.live_notifications?.native_only_when_unfocused ?? true;
+    const autoUpdateOnStart = settings.auto_update_on_start ?? false;
 
     // Save notifications to cache whenever they change
     useEffect(() => {
@@ -322,14 +324,35 @@ const DynamicIsland = () => {
 
                     // Show toast if enabled
                     if (useToast) {
-                        addToast(
-                            `Update available: v${status.latest_version}`,
-                            'info',
-                            {
-                                label: 'View',
-                                onClick: () => openSettings('Updates'),
-                            }
-                        );
+                        // If quick update is enabled, clicking the toast starts the update immediately
+                        if (quickUpdateOnToast) {
+                            addToast(
+                                `Update available: v${status.latest_version} - Click to update now`,
+                                'info',
+                                {
+                                    label: 'Update',
+                                    onClick: async () => {
+                                        try {
+                                            addToast('Starting update...', 'info');
+                                            await invoke('download_and_install_bundle');
+                                            addToast('Update installed successfully!', 'success');
+                                        } catch (e) {
+                                            console.error('Failed to update:', e);
+                                            addToast('Update failed: ' + String(e), 'error');
+                                        }
+                                    },
+                                }
+                            );
+                        } else {
+                            addToast(
+                                `Update available: v${status.latest_version}`,
+                                'info',
+                                {
+                                    label: 'View',
+                                    onClick: () => openSettings('Updates'),
+                                }
+                            );
+                        }
                     }
 
                     if (soundEnabled) {
@@ -346,16 +369,46 @@ const DynamicIsland = () => {
         } catch (error) {
             console.warn('Could not check for updates:', error);
         }
-    }, [notificationsEnabled, showUpdateNotifications, notifications, addNotification, soundEnabled, playNotificationSound, useDynamicIsland, useToast, addToast, openSettings, sendNativeNotification]);
+    }, [notificationsEnabled, showUpdateNotifications, notifications, addNotification, soundEnabled, playNotificationSound, useDynamicIsland, useToast, quickUpdateOnToast, addToast, openSettings, sendNativeNotification]);
+
+    // Auto-update on start functionality
+    const autoUpdateOnStartRef = useRef(false);
+    useEffect(() => {
+        autoUpdateOnStartRef.current = autoUpdateOnStart;
+    }, [autoUpdateOnStart]);
 
     // Check for updates on mount and periodically (every 30 minutes)
     useEffect(() => {
-        // Initial check after 10 seconds (let app settle)
-        const initialTimeout = setTimeout(() => {
-            checkForUpdates();
-        }, 10000);
+        // Initial check after 5 seconds (let app settle, but check earlier for auto-update)
+        const initialTimeout = setTimeout(async () => {
+            // Check for updates
+            try {
+                const status = await invoke('check_for_bundle_update') as BundleUpdateStatus;
 
-        // Periodic check every 30 minutes
+                // If auto-update is enabled and an update is available, start it immediately
+                if (autoUpdateOnStartRef.current && status.update_available) {
+                    console.log('[Auto-Update] Update available, starting automatic update...');
+                    addToast(`Auto-updating to v${status.latest_version}...`, 'info');
+
+                    try {
+                        await invoke('download_and_install_bundle');
+                        addToast('Update installed successfully!', 'success');
+                    } catch (e) {
+                        console.error('[Auto-Update] Failed:', e);
+                        addToast('Auto-update failed: ' + String(e), 'error');
+                        // Still notify about the available update
+                        checkForUpdates();
+                    }
+                } else {
+                    // Normal update check (show notifications)
+                    checkForUpdates();
+                }
+            } catch (error) {
+                console.warn('Could not check for updates:', error);
+            }
+        }, 5000);
+
+        // Periodic check every 30 minutes (no auto-update for periodic checks)
         updateCheckIntervalRef.current = setInterval(() => {
             checkForUpdates();
         }, 30 * 60 * 1000);
@@ -366,7 +419,7 @@ const DynamicIsland = () => {
                 clearInterval(updateCheckIntervalRef.current);
             }
         };
-    }, [checkForUpdates]);
+    }, [checkForUpdates, addToast]);
 
     // Listen for live notifications
     useEffect(() => {

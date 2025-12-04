@@ -143,6 +143,9 @@ pub struct LiveNotificationSettings {
     pub use_native_notifications: bool,
     #[serde(default = "default_true")]
     pub native_only_when_unfocused: bool,
+    // Quick update: clicking update toast immediately starts update
+    #[serde(default)]
+    pub quick_update_on_toast: bool,
 }
 
 fn default_true() -> bool {
@@ -165,6 +168,7 @@ impl Default for LiveNotificationSettings {
             use_toast: true,
             use_native_notifications: false,
             native_only_when_unfocused: true,
+            quick_update_on_toast: false,
         }
     }
 }

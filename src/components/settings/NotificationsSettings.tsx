@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useAppStore } from '../../stores/AppStore';
 import { invoke } from '@tauri-apps/api/core';
-import { Bell, Radio, MessageCircle, Download, Smartphone, MessageSquare, Gift, Award, Monitor } from 'lucide-react';
+import { Bell, Radio, MessageCircle, Download, Smartphone, MessageSquare, Gift, Award, Monitor, Zap } from 'lucide-react';
 
 const NotificationsSettings = () => {
   const { settings, updateSettings } = useAppStore();
@@ -250,6 +250,31 @@ const NotificationsSettings = () => {
                     })}
                   />
                 </div>
+
+                {/* Quick Update Toggle (shown when update notifications and toast are enabled) */}
+                {(liveNotifications.show_update_notifications ?? true) && (liveNotifications.use_toast ?? true) && (
+                  <div className="flex items-center justify-between gap-4 p-3 bg-glass/30 rounded-lg ml-4 border-l-2 border-yellow-500/30">
+                    <div className="flex items-center gap-3 flex-1">
+                      <div className="w-8 h-8 rounded-lg bg-yellow-500/10 flex items-center justify-center flex-shrink-0">
+                        <Zap size={16} className="text-yellow-400" />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-textPrimary">
+                          Quick Update on Toast Click
+                        </label>
+                        <p className="text-xs text-textSecondary mt-0.5">
+                          Clicking the update toast immediately starts the update
+                        </p>
+                      </div>
+                    </div>
+                    <Toggle
+                      enabled={liveNotifications.quick_update_on_toast ?? false}
+                      onChange={() => updateLiveNotifications({
+                        quick_update_on_toast: !(liveNotifications.quick_update_on_toast ?? false)
+                      })}
+                    />
+                  </div>
+                )}
 
                 {/* Drops Notifications */}
                 <div className="flex items-center justify-between gap-4 p-3 bg-glass/30 rounded-lg">

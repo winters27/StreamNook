@@ -1,8 +1,9 @@
 import { AnimatePresence, motion } from 'framer-motion';
-import { CheckCircle, XCircle, AlertCircle, Info, X } from 'lucide-react';
+import { CheckCircle, XCircle, AlertCircle, Info, X, Download, Loader2 } from 'lucide-react';
 import { useAppStore, Toast } from '../stores/AppStore';
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { listen } from '@tauri-apps/api/event';
+import { invoke } from '@tauri-apps/api/core';
 import { parseEmojis } from '../services/emojiService';
 
 interface LiveNotification {
