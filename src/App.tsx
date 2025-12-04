@@ -3,11 +3,10 @@ import { useAppStore } from './stores/AppStore';
 import TitleBar from './components/TitleBar';
 import VideoPlayer from './components/VideoPlayer';
 import ChatWidget from './components/ChatWidget';
-import LiveOverlay from './components/LiveOverlay';
+import Home from './components/Home';
 import SettingsDialog from './components/SettingsDialog';
 import LoadingWidget from './components/LoadingWidget';
 import ToastManager from './components/ToastManager';
-import LiveStreamsOverlay from './components/LiveStreamsOverlay';
 import ProfileOverlay from './components/ProfileOverlay';
 import DropsOverlay from './components/DropsOverlay';
 import BadgesOverlay from './components/BadgesOverlay';
@@ -35,7 +34,7 @@ interface BadgeVersion {
 }
 
 function App() {
-  const { loadSettings, chatPlacement, isLoading, currentStream, streamUrl, checkAuthStatus, showProfileOverlay, setShowProfileOverlay, addToast, setShowDropsOverlay, showBadgesOverlay, setShowBadgesOverlay, showWhispersOverlay, setShowWhispersOverlay, settings, updateSettings, isTheaterMode } = useAppStore();
+  const { loadSettings, chatPlacement, isLoading, currentStream, streamUrl, checkAuthStatus, showProfileOverlay, setShowProfileOverlay, addToast, setShowDropsOverlay, showBadgesOverlay, setShowBadgesOverlay, showWhispersOverlay, setShowWhispersOverlay, settings, updateSettings, isTheaterMode, isHomeActive, toggleHome, stopStream } = useAppStore();
   const [chatSize, setChatSize] = useState(384); // Default 384px (w-96)
   const [isResizing, setIsResizing] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -554,27 +553,72 @@ function App() {
         {/* Sidebar - only visible when stream is playing */}
         <Sidebar />
 
-        {/* Main content area */}
-        <div className="flex-1 flex flex-col overflow-hidden">
-          {!streamUrl && !isLoading ? (
-            // Show live overlay when no stream is playing
-            <LiveOverlay />
-          ) : isLoading && !streamUrl ? (
-            // Show loading widget when starting a stream from no stream state
-            <div className="flex-1 relative overflow-hidden bg-black">
+        {/* Main content area with Home/PIP support */}
+        <div className="flex-1 relative overflow-hidden">
+          {/* Home View - shown when isHomeActive or no stream */}
+          {(isHomeActive || (!streamUrl && !isLoading)) && (
+            <div className="absolute inset-0 z-10 bg-background">
+              <Home />
+            </div>
+          )}
+
+          {/* Loading state when starting stream */}
+          {isLoading && !streamUrl && (
+            <div className="absolute inset-0 z-20 bg-black">
               <LoadingWidget useFunnyMessages={true} />
             </div>
-          ) : (
-            // Show video player and chat when stream is playing
+          )}
+
+          {/* Stream/Chat View - either full screen or mini-player */}
+          {streamUrl && (
             <div
               ref={containerRef}
-              className={`flex flex-1 overflow-hidden ${chatPlacement === 'bottom' ? 'flex-col' : 'flex-row'}`}
+              className={
+                isHomeActive
+                  ? "absolute bottom-4 right-4 z-50 shadow-2xl rounded-lg overflow-hidden border border-borderSubtle transition-all duration-300 ease-in-out group"
+                  : `flex flex-1 h-full ${chatPlacement === 'bottom' ? 'flex-col' : 'flex-row'}`
+              }
+              style={isHomeActive ? { width: 'min(320px, 25vw)', minWidth: '200px' } : undefined}
             >
-              <div className="flex-1 relative overflow-hidden">
-                <VideoPlayer key={streamUrl} />
+              <div
+                className={isHomeActive ? "w-full relative" : "flex-1 relative overflow-hidden"}
+                style={isHomeActive ? { paddingBottom: '56.25%' } : undefined}
+              >
+                <div className={isHomeActive ? "absolute inset-0 pip-mode" : "w-full h-full"}>
+                  <VideoPlayer key={streamUrl} />
+                </div>
                 {isLoading && <LoadingWidget useFunnyMessages={true} />}
+                {/* Clickable overlay for PIP - captures clicks before Plyr */}
+                {isHomeActive && (
+                  <div
+                    className="absolute inset-0 z-20 cursor-pointer bg-black/0 group-hover:bg-black/30 transition-all flex items-center justify-center"
+                    onClick={(e) => { e.stopPropagation(); e.preventDefault(); toggleHome(); }}
+                    title="Click to return to stream"
+                  >
+                    <span className="text-white opacity-0 group-hover:opacity-100 transition-opacity text-sm font-medium">
+                      Click to expand
+                    </span>
+                  </div>
+                )}
               </div>
-              {chatPlacement !== 'hidden' && (
+              {/* Close button for PIP - stops the stream */}
+              {isHomeActive && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    stopStream();
+                  }}
+                  className="absolute top-2 right-2 z-30 p-1 rounded-full bg-black/50 hover:bg-black/70 text-white/70 hover:text-white transition-all opacity-0 group-hover:opacity-100"
+                  title="Close stream"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                  </svg>
+                </button>
+              )}
+              {/* Chat - hidden in mini-player mode */}
+              {!isHomeActive && chatPlacement !== 'hidden' && (
                 <>
                   {/* Resizable Separator */}
                   <div
@@ -602,7 +646,6 @@ function App() {
         </div>
       </div>
       <SettingsDialog />
-      <LiveStreamsOverlay />
       <DropsOverlay />
       <ProfileOverlay
         isOpen={showProfileOverlay}

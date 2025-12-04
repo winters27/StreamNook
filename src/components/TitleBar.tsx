@@ -1,5 +1,5 @@
 import { Window } from '@tauri-apps/api/window';
-import { Radio, Droplet, User, Settings, Proportions, Palette, Check } from 'lucide-react';
+import { Home, Droplet, User, Settings, Proportions, Palette, Check } from 'lucide-react';
 import { Minus, X, CornersOut, CornersIn, Medal } from 'phosphor-react';
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { useAppStore } from '../stores/AppStore';
@@ -12,7 +12,7 @@ import { themes, themeCategories, getThemeById, applyTheme, Theme } from '../the
 
 const TitleBar = () => {
   const store = useAppStore();
-  const { openSettings, setShowLiveStreamsOverlay, setShowProfileOverlay, setShowDropsOverlay, setShowBadgesOverlay, showProfileOverlay, isAuthenticated, currentUser, isMiningActive, isTheaterMode, toggleTheaterMode, streamUrl, settings, updateSettings } = store;
+  const { openSettings, setShowProfileOverlay, setShowDropsOverlay, setShowBadgesOverlay, showProfileOverlay, isAuthenticated, currentUser, isMiningActive, isTheaterMode, toggleTheaterMode, streamUrl, settings, updateSettings, isHomeActive, toggleHome } = store;
   const [showAbout, setShowAbout] = useState(false);
   const [showSplash, setShowSplash] = useState(false);
   const [showThemePicker, setShowThemePicker] = useState(false);
@@ -151,14 +151,16 @@ const TitleBar = () => {
           {/* Penrose Logo */}
           <PenroseLogo onClick={() => setShowAbout(true)} />
 
-          {/* Live Streams Button */}
-          <button
-            onClick={() => setShowLiveStreamsOverlay(true)}
-            className="p-1.5 text-textSecondary hover:text-textPrimary hover:bg-glass rounded transition-all duration-200"
-            title="Live Streams"
-          >
-            <Radio size={16} />
-          </button>
+          {/* Home Button - only show when stream is playing */}
+          {streamUrl && (
+            <button
+              onClick={toggleHome}
+              className={`p-1.5 hover:bg-glass rounded transition-all duration-200 ${isHomeActive ? 'text-accent bg-glass' : 'text-textSecondary hover:text-textPrimary'}`}
+              title={isHomeActive ? "Return to Stream" : "Home"}
+            >
+              <Home size={16} />
+            </button>
+          )}
 
           {/* Drops Button */}
           <div className="relative">

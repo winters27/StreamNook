@@ -37,6 +37,7 @@ interface AppState {
   showBadgesOverlay: boolean;
   showWhispersOverlay: boolean;
   whisperTargetUser: { id: string; login: string; display_name: string; profile_image_url?: string } | null;
+  isHomeActive: boolean;
   isAuthenticated: boolean;
   currentUser: TwitchUser | null;
   isMiningActive: boolean;
@@ -71,6 +72,7 @@ interface AppState {
   checkAuthStatus: () => Promise<void>;
   toggleFavoriteStreamer: (userId: string) => Promise<void>;
   isFavoriteStreamer: (userId: string) => boolean;
+  toggleHome: () => void;
 }
 
 // Flags to ensure we only show session toasts once per app session
@@ -118,6 +120,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   showBadgesOverlay: false,
   showWhispersOverlay: false,
   whisperTargetUser: null,
+  isHomeActive: true,
   isAuthenticated: false,
   currentUser: null,
   isMiningActive: false,
@@ -880,5 +883,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   isFavoriteStreamer: (userId: string) => {
     const favorites = get().settings.favorite_streamers || [];
     return favorites.includes(userId);
+  },
+
+  toggleHome: () => {
+    const state = get();
+    const newHomeActive = !state.isHomeActive;
+    trackActivity(newHomeActive ? 'Opened Home' : 'Closed Home');
+    set({ isHomeActive: newHomeActive });
   },
 }));
