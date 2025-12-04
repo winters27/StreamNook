@@ -221,6 +221,13 @@ class BadgePollingService {
         console.log('[BadgePolling] Polling for badge updates...');
 
         try {
+            // Safety check - ensure invoke is available (Tauri context)
+            if (typeof invoke === 'undefined') {
+                console.warn('[BadgePolling] Tauri invoke not available yet, skipping poll');
+                this.isPolling = false;
+                return;
+            }
+
             // Get cached badges first
             const cachedBadges = await invoke<{ data: BadgeSet[] } | null>('get_cached_global_badges');
 
@@ -329,7 +336,9 @@ class BadgePollingService {
             this.lastPollTimestamp = Date.now();
             console.log('[BadgePolling] Poll complete');
         } catch (error) {
-            console.error('[BadgePolling] Error during poll:', error);
+            // Use console.warn for expected errors to avoid Discord webhook spam
+            const errorMsg = error instanceof Error ? error.message : String(error);
+            console.warn('[BadgePolling] Error during poll:', errorMsg);
         } finally {
             this.isPolling = false;
         }

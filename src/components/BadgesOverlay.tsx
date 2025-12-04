@@ -400,13 +400,64 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
   };
 
   // Parse abbreviated date range format like "Dec 1-12", "Dec 1 - 12", or "Dec 06 – Dec 07"
+  // Also handles natural language formats like "December 4, 2025 at 9:00 AM"
   const parseDateRange = (text: string): { start: Date; end: Date } | null => {
     const months: Record<string, number> = {
       'Jan': 0, 'Feb': 1, 'Mar': 2, 'Apr': 3,
       'May': 4, 'Jun': 5, 'Jul': 6, 'Aug': 7,
       'Sep': 8, 'Oct': 9, 'Nov': 10, 'Dec': 11
     };
+    const fullMonths: Record<string, number> = {
+      'January': 0, 'February': 1, 'March': 2, 'April': 3,
+      'May': 4, 'June': 5, 'July': 6, 'August': 7,
+      'September': 8, 'October': 9, 'November': 10, 'December': 11
+    };
     const currentYear = new Date().getFullYear();
+
+    // Try to parse natural language format: "Event start: Month Day, Year at HH:MM AM/PM"
+    // Example: "Event start: December 4, 2025 at 9:00 AM"
+    const eventStartMatch = text.match(/Event start:\s*(\w+)\s+(\d{1,2}),?\s+(\d{4})\s+at\s+(\d{1,2}):(\d{2})\s*(AM|PM)/i);
+    if (eventStartMatch) {
+      const monthName = eventStartMatch[1];
+      const day = parseInt(eventStartMatch[2], 10);
+      const year = parseInt(eventStartMatch[3], 10);
+      let hours = parseInt(eventStartMatch[4], 10);
+      const minutes = parseInt(eventStartMatch[5], 10);
+      const meridiem = eventStartMatch[6].toUpperCase();
+
+      // Convert to 24-hour format
+      if (meridiem === 'PM' && hours !== 12) {
+        hours += 12;
+      } else if (meridiem === 'AM' && hours === 12) {
+        hours = 0;
+      }
+
+      if (fullMonths.hasOwnProperty(monthName)) {
+        const monthNum = fullMonths[monthName];
+        const startDate = new Date(year, monthNum, day, hours, minutes, 0);
+
+        // For events with a start time but no explicit end, assume the event lasts for the rest of that day
+        // or we can look for duration in the text
+        let endDate = new Date(year, monthNum, day, 23, 59, 59);
+
+        // Try to find duration hint (e.g., "60 minutes", "2 hours")
+        const durationMatch = text.match(/(\d+)\s+(minute|hour)s?/i);
+        if (durationMatch) {
+          const duration = parseInt(durationMatch[1], 10);
+          const unit = durationMatch[2].toLowerCase();
+          endDate = new Date(startDate);
+          if (unit === 'minute') {
+            endDate.setMinutes(endDate.getMinutes() + duration);
+          } else if (unit === 'hour') {
+            endDate.setHours(endDate.getHours() + duration);
+          }
+        }
+
+        if (!isNaN(startDate.getTime()) && !isNaN(endDate.getTime())) {
+          return { start: startDate, end: endDate };
+        }
+      }
+    }
 
     // Match "Mon DD – Mon DD" format (e.g., "Dec 06 – Dec 07") - with en-dash or regular dash
     const fullRangeMatch = text.match(/(\w{3})\s+(\d{1,2})\s*[–-]\s*(\w{3})\s+(\d{1,2})/);
@@ -477,19 +528,51 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
     const isoRegex = /(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?(?:Z)?)/g;
     const timestamps = moreInfo.match(isoRegex);
 
-    if (!timestamps || timestamps.length < 2) return null;
+    if (!timestamps || timestamps.length === 0) return null;
 
     try {
-      // Assume first timestamp is start, last is end
-      const startTime = new Date(timestamps[0]).getTime();
-      const endTime = new Date(timestamps[timestamps.length - 1]).getTime();
+      if (timestamps.length === 1) {
+        // Single timestamp - assume it's the start time
+        const startTime = new Date(timestamps[0]).getTime();
+        let endTime: number;
 
-      if (now < startTime) {
-        return 'coming-soon';
-      } else if (now >= startTime && now <= endTime) {
-        return 'available';
+        // Try to find duration hint (e.g., "60 minutes", "2 hours")
+        const durationMatch = moreInfo.match(/(\d+)\s+(minute|hour)s?/i);
+        if (durationMatch) {
+          const duration = parseInt(durationMatch[1], 10);
+          const unit = durationMatch[2].toLowerCase();
+          const startDate = new Date(timestamps[0]);
+          if (unit === 'minute') {
+            startDate.setMinutes(startDate.getMinutes() + duration);
+          } else if (unit === 'hour') {
+            startDate.setHours(startDate.getHours() + duration);
+          }
+          endTime = startDate.getTime();
+        } else {
+          // No duration found, assume event lasts until end of that day
+          const startDate = new Date(timestamps[0]);
+          endTime = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate(), 23, 59, 59).getTime();
+        }
+
+        if (now < startTime) {
+          return 'coming-soon';
+        } else if (now >= startTime && now <= endTime) {
+          return 'available';
+        } else {
+          return 'expired';
+        }
       } else {
-        return 'expired';
+        // Multiple timestamps - assume first is start, last is end
+        const startTime = new Date(timestamps[0]).getTime();
+        const endTime = new Date(timestamps[timestamps.length - 1]).getTime();
+
+        if (now < startTime) {
+          return 'coming-soon';
+        } else if (now >= startTime && now <= endTime) {
+          return 'available';
+        } else {
+          return 'expired';
+        }
       }
     } catch {
       return null;

@@ -64,6 +64,10 @@ const IGNORED_ERROR_PATTERNS = [
     /Tracking Prevention blocked/i,         // Browser tracking prevention
     /cdn\.jsdelivr\.net/i,                  // CDN resource errors
     /emoji-datasource/i,                    // Emoji loading issues
+    /Error caught and handled by boundary/i, // React error boundary handled errors
+    /BadgePolling.*invoke/i,                // Badge polling invoke errors (handled with safety check)
+    /The above error occurred in the <TitleBar> component/i, // TitleBar error boundary messages
+    /The above error occurred in the <DynamicIsland> component/i, // DynamicIsland error boundary messages
 ];
 // NOTE: BTTV, FFZ, 7TV 404 errors ARE sent to Discord for monitoring
 

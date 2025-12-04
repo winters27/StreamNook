@@ -130,19 +130,51 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
     const isoRegex = /(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?(?:Z)?)/g;
     const timestamps = moreInfo.match(isoRegex);
 
-    if (!timestamps || timestamps.length < 2) return null;
+    if (!timestamps || timestamps.length === 0) return null;
 
     try {
-      // Assume first timestamp is start, last is end
-      const startTime = new Date(timestamps[0]).getTime();
-      const endTime = new Date(timestamps[timestamps.length - 1]).getTime();
+      if (timestamps.length === 1) {
+        // Single timestamp - assume it's the start time
+        const startTime = new Date(timestamps[0]).getTime();
+        let endTime: number;
 
-      if (now < startTime) {
-        return 'coming-soon';
-      } else if (now >= startTime && now <= endTime) {
-        return 'available';
+        // Try to find duration hint (e.g., "60 minutes", "2 hours")
+        const durationMatch = moreInfo.match(/(\d+)\s+(minute|hour)s?/i);
+        if (durationMatch) {
+          const duration = parseInt(durationMatch[1], 10);
+          const unit = durationMatch[2].toLowerCase();
+          const startDate = new Date(timestamps[0]);
+          if (unit === 'minute') {
+            startDate.setMinutes(startDate.getMinutes() + duration);
+          } else if (unit === 'hour') {
+            startDate.setHours(startDate.getHours() + duration);
+          }
+          endTime = startDate.getTime();
+        } else {
+          // No duration found, assume event lasts until end of that day
+          const startDate = new Date(timestamps[0]);
+          endTime = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate(), 23, 59, 59).getTime();
+        }
+
+        if (now < startTime) {
+          return 'coming-soon';
+        } else if (now >= startTime && now <= endTime) {
+          return 'available';
+        } else {
+          return 'expired';
+        }
       } else {
-        return 'expired';
+        // Multiple timestamps - assume first is start, last is end
+        const startTime = new Date(timestamps[0]).getTime();
+        const endTime = new Date(timestamps[timestamps.length - 1]).getTime();
+
+        if (now < startTime) {
+          return 'coming-soon';
+        } else if (now >= startTime && now <= endTime) {
+          return 'available';
+        } else {
+          return 'expired';
+        }
       }
     } catch {
       return null;
@@ -283,10 +315,88 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
     const timestamps = text.match(isoRegex);
     const now = Date.now();
 
+    // Special handling for single timestamp
+    if (timestamps && timestamps.length === 1) {
+      const match = isoRegex.exec(text);
+      if (match) {
+        try {
+          const startDate = new Date(match[0]);
+
+          // Calculate end time based on duration
+          let endDate: Date;
+          const durationMatch = text.match(/(\d+)\s+(minute|hour)s?/i);
+          if (durationMatch) {
+            const duration = parseInt(durationMatch[1], 10);
+            const unit = durationMatch[2].toLowerCase();
+            endDate = new Date(startDate);
+            if (unit === 'minute') {
+              endDate.setMinutes(endDate.getMinutes() + duration);
+            } else if (unit === 'hour') {
+              endDate.setHours(endDate.getHours() + duration);
+            }
+          } else {
+            // No duration found, assume event lasts until end of that day
+            endDate = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate(), 23, 59, 59);
+          }
+
+          const formattedStartDate = startDate.toLocaleString(undefined, {
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric',
+            hour: 'numeric',
+            minute: '2-digit',
+            hour12: true
+          });
+
+          const formattedEndDate = endDate.toLocaleString(undefined, {
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric',
+            hour: 'numeric',
+            minute: '2-digit',
+            hour12: true
+          });
+
+          // Determine styling based on badge status
+          let startClassName = 'px-2 py-0.5 rounded font-medium inline-block ';
+          let endClassName = 'px-2 py-0.5 rounded font-medium inline-block ';
+
+          if (isAvailable) {
+            startClassName += 'bg-green-500/20 text-green-400 ring-1 ring-green-500/50 shadow-[0_0_10px_rgba(34,197,94,0.3)]';
+            endClassName += 'bg-green-500/10 text-green-300 ring-1 ring-green-500/30';
+          } else if (isComingSoon) {
+            startClassName += 'bg-blue-500/20 text-blue-400 ring-1 ring-blue-500/50 shadow-[0_0_10px_rgba(59,130,246,0.3)]';
+            endClassName += 'bg-blue-500/10 text-blue-300 ring-1 ring-blue-500/30';
+          } else {
+            startClassName += 'bg-accent/20 text-accent';
+            endClassName += 'bg-accent/20 text-accent';
+          }
+
+          const beforeMatch = text.substring(0, match.index);
+          const afterMatch = text.substring(match.index + match[0].length);
+
+          return (
+            <>
+              {beforeMatch}
+              <span className={startClassName}>{formattedStartDate}</span>
+              {' – '}
+              <span className={endClassName}>{formattedEndDate}</span>
+              {afterMatch}
+            </>
+          );
+        } catch (e) {
+          // If parsing fails, fall through to normal text handling
+        }
+      }
+    }
+
+    // Multiple timestamps handling
     const parts: (string | JSX.Element)[] = [];
     let lastIndex = 0;
     let match;
     let matchIndex = 0;
+
+    isoRegex.lastIndex = 0; // Reset regex after previous exec
 
     while ((match = isoRegex.exec(text)) !== null) {
       // Add text before the match
@@ -316,10 +426,10 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
 
         if (isAvailable) {
           // Badge is available now - highlight the active period
-          if (isStartDate) {
+          if (isStartDate && timestamps.length > 1) {
             // Start date - when it became available (green with glow)
             className += 'bg-green-500/20 text-green-400 ring-1 ring-green-500/50 shadow-[0_0_10px_rgba(34,197,94,0.3)]';
-          } else if (isEndDate) {
+          } else if (isEndDate && timestamps.length > 1) {
             // End date - when it expires (softer green)
             className += 'bg-green-500/10 text-green-300 ring-1 ring-green-500/30';
           } else {
@@ -328,10 +438,10 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
           }
         } else if (isComingSoon) {
           // Badge is coming soon - highlight the start date
-          if (isStartDate) {
+          if (isStartDate && timestamps.length > 1) {
             // Start date - when it will become available (blue with glow)
             className += 'bg-blue-500/20 text-blue-400 ring-1 ring-blue-500/50 shadow-[0_0_10px_rgba(59,130,246,0.3)]';
-          } else if (isEndDate) {
+          } else if (isEndDate && timestamps.length > 1) {
             // End date - when it will expire (softer blue)
             className += 'bg-blue-500/10 text-blue-300 ring-1 ring-blue-500/30';
           } else {

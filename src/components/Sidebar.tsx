@@ -339,9 +339,10 @@ const Sidebar = () => {
             <div
                 ref={sidebarRef}
                 className={`
-                    h-full bg-tertiary border-r border-borderSubtle flex flex-col flex-shrink-0 
-                    transition-[width,min-width,opacity,transform] duration-300 ease-[cubic-bezier(0.4,0,0.2,1)]
+                    h-full border-r border-borderSubtle flex flex-col flex-shrink-0 
+                    transition-[width,min-width,opacity,transform,background-color,backdrop-filter] duration-300 ease-[cubic-bezier(0.4,0,0.2,1)]
                     ${sidebarMode === 'hidden' ? 'fixed left-0 top-0 z-30 mt-8' : 'relative'}
+                    ${showExpanded ? 'backdrop-blur-xl' : 'bg-tertiary'}
                 `}
                 style={{
                     width: width,
@@ -349,6 +350,7 @@ const Sidebar = () => {
                     opacity: visible ? 1 : 0,
                     pointerEvents: visible ? 'auto' : 'none',
                     transform: visible ? 'translateX(0)' : 'translateX(-10px)',
+                    backgroundColor: showExpanded ? 'rgba(26, 26, 27, 0.75)' : undefined,
                 }}
                 onMouseEnter={() => setIsHovered(true)}
                 onMouseLeave={() => {
