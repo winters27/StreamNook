@@ -1,3 +1,10 @@
+## [4.3.4] - 2025-12-04
+### ✨ Features
+- Improved build process by using authenticated requests to the GitHub API to avoid rate limits during release.
+
+### 🔧 Maintenance
+- Removed the 'all' target from the Tauri build configuration, leaving the targets array empty.
+
 ## [4.3.3] - 2025-12-04
 ### Changes
 
@@ -474,6 +481,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
