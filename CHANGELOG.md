@@ -1,3 +1,10 @@
+## [4.4.0] - 2025-12-04
+### ✨ Features
+- Implemented a new home screen with stream browsing functionality, including followed streams, recommended streams, game categories, and search.
+- The current stream can now be displayed in a mini-player on the home screen.
+- Added a "Return to Stream" button to easily switch back to the full stream view.
+- Improved Dynamic Island notifications for live streams.
+
 ## [4.3.4] - 2025-12-04
 ### ✨ Features
 - Improved build process by using authenticated requests to the GitHub API to avoid rate limits during release.
@@ -481,6 +488,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
