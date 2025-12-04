@@ -16,6 +16,7 @@ import ChangelogOverlay from './components/ChangelogOverlay';
 import WhispersWidget from './components/WhispersWidget';
 import SetupWizard from './components/SetupWizard';
 import Sidebar from './components/Sidebar';
+import ErrorBoundary from './components/ErrorBoundary';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
@@ -539,7 +540,16 @@ function App() {
 
   return (
     <div className="flex flex-col h-screen bg-background backdrop-blur-md">
-      <TitleBar />
+      <ErrorBoundary
+        componentName="TitleBar"
+        fallback={
+          <div className="h-8 bg-secondary backdrop-blur-md border-b border-borderSubtle flex items-center justify-center">
+            <span className="text-textSecondary text-xs">Title bar error - restart app</span>
+          </div>
+        }
+      >
+        <TitleBar />
+      </ErrorBoundary>
       <div className="flex flex-1 overflow-hidden">
         {/* Sidebar - only visible when stream is playing */}
         <Sidebar />

@@ -1,16 +1,18 @@
 import { Window } from '@tauri-apps/api/window';
 import { Radio, Droplet, User, Settings, Proportions, Palette, Check } from 'lucide-react';
 import { Minus, X, CornersOut, CornersIn, Medal } from 'phosphor-react';
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { useAppStore } from '../stores/AppStore';
 import PenroseLogo from './PenroseLogo';
 import AboutWidget from './AboutWidget';
 import DynamicIsland from './DynamicIsland';
+import ErrorBoundary from './ErrorBoundary';
 import { invoke } from '@tauri-apps/api/core';
 import { themes, themeCategories, getThemeById, applyTheme, Theme } from '../themes';
 
 const TitleBar = () => {
-  const { openSettings, setShowLiveStreamsOverlay, setShowProfileOverlay, setShowDropsOverlay, setShowBadgesOverlay, showProfileOverlay, isAuthenticated, currentUser, isMiningActive, isTheaterMode, toggleTheaterMode, streamUrl, settings, updateSettings } = useAppStore();
+  const store = useAppStore();
+  const { openSettings, setShowLiveStreamsOverlay, setShowProfileOverlay, setShowDropsOverlay, setShowBadgesOverlay, showProfileOverlay, isAuthenticated, currentUser, isMiningActive, isTheaterMode, toggleTheaterMode, streamUrl, settings, updateSettings } = store;
   const [showAbout, setShowAbout] = useState(false);
   const [showSplash, setShowSplash] = useState(false);
   const [showThemePicker, setShowThemePicker] = useState(false);
@@ -19,8 +21,16 @@ const TitleBar = () => {
   const prevMiningActive = useRef(isMiningActive);
   const themePickerRef = useRef<HTMLDivElement>(null);
 
-  const currentThemeId = settings.theme || 'winters-glass';
-  const currentTheme = getThemeById(currentThemeId);
+  // Safely get current theme with fallback
+  const currentThemeId = settings?.theme || 'winters-glass';
+  const currentTheme = useMemo(() => {
+    try {
+      return getThemeById(currentThemeId) || getThemeById('winters-glass') || themes[0];
+    } catch (error) {
+      console.error('[TitleBar] Error getting theme:', error);
+      return themes[0]; // Return first theme as ultimate fallback
+    }
+  }, [currentThemeId]);
 
   // Track window maximize state
   useEffect(() => {
@@ -73,6 +83,7 @@ const TitleBar = () => {
   }, [showThemePicker]);
 
   const handleThemeChange = (themeId: string) => {
+    if (!settings) return;
     const theme = getThemeById(themeId);
     if (theme) {
       applyTheme(theme);
@@ -129,7 +140,12 @@ const TitleBar = () => {
         className="relative flex items-center justify-between h-8 px-3 select-none bg-secondary backdrop-blur-md border-b border-borderSubtle z-50"
       >
         {/* Dynamic Island - Centered in title bar */}
-        <DynamicIsland />
+        <ErrorBoundary
+          componentName="DynamicIsland"
+          fallback={<div className="w-20 h-6" />}
+        >
+          <DynamicIsland />
+        </ErrorBoundary>
 
         <div className="flex items-center gap-2" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
           {/* Penrose Logo */}
@@ -252,7 +268,7 @@ const TitleBar = () => {
                 className="absolute top-full left-0 mt-1 w-72 max-h-96 overflow-y-auto glass-panel rounded-lg shadow-xl border border-borderLight scrollbar-thin"
                 style={{
                   zIndex: 9999,
-                  backgroundColor: currentTheme?.palette.background
+                  backgroundColor: currentTheme.palette.background
                 }}
               >
                 <div className="p-2">
