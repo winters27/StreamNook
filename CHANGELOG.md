@@ -1,3 +1,14 @@
+## [4.3.3] - 2025-12-04
+### Changes
+
+- chore(release): bump version to 4.3.2
+- chore(deps): update dependencies
+- Merge branch 'dev'
+- chore(deps)(deps): bump the rust-dependencies group across 1 directory with 3 updates (#20)
+- chore(deps)(deps): bump cookie_store from 0.21.1 to 0.22.0 in /src-tauri (#10)
+- chore(deps)(deps): bump warp from 0.3.7 to 0.4.2 in /src-tauri (#8)
+
+
 ## [4.3.2] - 2025-12-04
 ### 🐛 Bug Fixes
 - Fixed an issue where the drops websocket would remain connected after deactivating manual mining.
@@ -463,6 +474,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
