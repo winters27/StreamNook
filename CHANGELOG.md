@@ -1,3 +1,12 @@
+## [4.3.2] - 2025-12-04
+### 🐛 Bug Fixes
+- Fixed an issue where the drops websocket would remain connected after deactivating manual mining.
+
+### 🔧 Maintenance
+- Updated dependencies.
+- Standardized imports across services for better consistency.
+- Fixed lifetime issues with warp 0.4.
+
 ## [4.3.1] - 2025-12-04
 ### ✨ Features
 - Added React error boundaries for improved app stability.
@@ -454,6 +463,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
