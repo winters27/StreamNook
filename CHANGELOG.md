@@ -1,3 +1,11 @@
+## [4.6.1] - 2025-12-04
+### ✨ Features
+- Added option to automatically download and install updates on startup.  This can be enabled in Settings > Updates.
+- Added "Quick Update on Toast Click" option in Notification Settings. When enabled, clicking the update toast will immediately start the update process.
+
+### 🐛 Bug Fixes
+- Fixed missing icons within toasts.
+
 ## [4.6.0] - 2025-12-04
 ### ✨ Features
 - Added a new home screen with support for browsing categories, searching channels, and picture-in-picture (PIP) mode.
@@ -502,6 +510,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
