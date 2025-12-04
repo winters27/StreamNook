@@ -1,5 +1,5 @@
 use crate::services::twitch_service::TwitchService;
-use crate::services::universal_cache_service::{CacheType, cache_item, get_cached_item};
+use crate::services::universal_cache_service::{cache_item, get_cached_item, CacheType};
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 

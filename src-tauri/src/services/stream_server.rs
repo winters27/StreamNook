@@ -28,18 +28,22 @@ impl StreamServer {
 
         // Start new server
         let port = rand::rng().random_range(10000..20000);
-        let addr = SocketAddr::from(([127, 0, 0, 1], port));
 
         *PROXY_URL.lock().await = Some(stream_url);
 
         // Store the port
         *CURRENT_PORT.lock().await = Some(port);
 
+        let addr = SocketAddr::from(([127, 0, 0, 1], port));
         let proxy_url_clone = PROXY_URL.clone();
+
+        // Define filter outside spawn to avoid lifetime issues in warp 0.4
+        let proxy = warp::path("stream.m3u8")
+            .and(warp::any().map(move || proxy_url_clone.clone()))
+            .and_then(Self::proxy_handler_with_url)
+            .boxed();
+
         let handle = tokio::spawn(async move {
-            let proxy = warp::path("stream.m3u8")
-                .and(warp::any().map(move || proxy_url_clone.clone()))
-                .and_then(Self::proxy_handler_with_url);
             warp::serve(proxy).run(addr).await;
         });
 

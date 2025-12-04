@@ -5,7 +5,7 @@ description = "The best Twitch suite."
 authors = ["Brandon Winters"]
 license = ""
 repository = "github.com/winters27/streamnook"
-edition = "2024"
+edition = "2021"
 
 [[bin]]
 name = "StreamNook"
@@ -32,7 +32,7 @@ oauth2 = "5.0.0"
 discord-rich-presence = "1.0.0"
 anyhow = "1.0.100"
 confy = "2.0.0"
-warp = "0.4"
+warp = { version = "0.4.2", features = ["server", "websocket"] }
 futures = "0.3"
 futures-util = { version = "0.3.31", features = ["sink"] }
 rand = "0.9.2"
@@ -55,7 +55,3 @@ sevenz-rust = "0.6"
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
-
-
-
-

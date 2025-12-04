@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::{AppHandle, Listener, Manager};
 use tokio::sync::{Mutex, RwLock};
-use tokio::time::{Duration, interval};
+use tokio::time::{interval, Duration};
 
 use crate::models::drops::{ChannelPointsClaim, ChannelPointsClaimType};
 use crate::models::settings::Settings;

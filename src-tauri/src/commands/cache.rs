@@ -1,7 +1,7 @@
 use crate::services::cache_service::{
-    CacheStats, add_favorite_emote, clear_all_cache, get_cache_stats, load_badge_cache,
-    load_emote_cache, load_emote_from_cache, load_favorite_emotes, remove_favorite_emote,
-    save_badge_cache, save_emote_cache, save_emote_to_cache, save_favorite_emotes,
+    add_favorite_emote, clear_all_cache, get_cache_stats, load_badge_cache, load_emote_cache,
+    load_emote_from_cache, load_favorite_emotes, remove_favorite_emote, save_badge_cache,
+    save_emote_cache, save_emote_to_cache, save_favorite_emotes, CacheStats,
 };
 use tauri::command;
 

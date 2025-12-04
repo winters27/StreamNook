@@ -1,6 +1,6 @@
 use anyhow::Result;
 use std::net::SocketAddr;
-use tokio::sync::mpsc::{Receiver, Sender, channel};
+use tokio::sync::mpsc::{channel, Receiver, Sender};
 use warp::Filter;
 
 pub struct OAuthCallbackData {
@@ -15,14 +15,16 @@ pub async fn start_oauth_server() -> Result<(u16, Receiver<OAuthCallbackData>)> 
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
 
     let tx_clone = tx.clone();
-    tokio::spawn(async move {
-        let callback = warp::path("callback")
-            .and(warp::query::<std::collections::HashMap<String, String>>())
-            .and(warp::any().map(move || tx_clone.clone()))
-            .and_then(handle_callback);
 
-        warp::serve(callback).run(addr).await;
-    });
+    // Define filter outside spawn to avoid lifetime issues in warp 0.4
+    let callback = warp::path("callback")
+        .and(warp::query::<std::collections::HashMap<String, String>>())
+        .and(warp::any().map(move || tx_clone.clone()))
+        .and_then(handle_callback)
+        .boxed();
+
+    let server = warp::serve(callback).run(addr);
+    tokio::spawn(server);
 
     Ok((port, rx))
 }

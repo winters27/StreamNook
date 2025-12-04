@@ -4,7 +4,7 @@ use crate::services::drops_auth_service::DropsAuthService;
 use crate::services::drops_service::DropsService;
 use crate::services::drops_websocket_service::DropsWebSocketService;
 use anyhow::Result;
-use base64::{Engine as _, engine::general_purpose};
+use base64::{engine::general_purpose, Engine as _};
 use chrono::{Duration, Utc};
 use regex::Regex;
 use reqwest::Client;
@@ -1072,13 +1072,6 @@ impl MiningService {
             status.current_channel = None;
             status.current_campaign = None;
             status.current_drop = None;
-
-            // Disconnect the WebSocket for manual mining
-            let ds_clone = drops_service.clone();
-            if let Ok(service) = ds_clone.try_lock() {
-                // This is a bit of a hack to get access to the websocket service.
-                // In a real-world scenario, you might pass the websocket service directly.
-            }
         });
 
         Ok(())

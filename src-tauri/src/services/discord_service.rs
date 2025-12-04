@@ -1,6 +1,6 @@
 use crate::models::settings::AppState;
 use anyhow::Result;
-use discord_rich_presence::{DiscordIpc, DiscordIpcClient, activity::*};
+use discord_rich_presence::{activity::*, DiscordIpc, DiscordIpcClient};
 use lazy_static::lazy_static;
 use rand::prelude::IndexedRandom;
 use serde::{Deserialize, Serialize};

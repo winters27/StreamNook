@@ -1,6 +1,6 @@
 use crate::models::drops::{ChannelPointsBalance, ChannelPointsClaim, ChannelPointsClaimType};
 use anyhow::Result;
-use base64::{Engine as _, engine::general_purpose};
+use base64::{engine::general_purpose, Engine as _};
 use chrono::{DateTime, Utc};
 use regex::Regex;
 use reqwest::Client;
