@@ -7,6 +7,7 @@ import { useTwitchChat } from '../hooks/useTwitchChat';
 import { useAppStore } from '../stores/AppStore';
 import ChatMessage from './ChatMessage';
 import UserProfileCard from './UserProfileCard';
+import ErrorBoundary from './ErrorBoundary';
 import { fetchAllEmotes, Emote, EmoteSet } from '../services/emoteService';
 import { initializeBadges, getBadgeInfo } from '../services/twitchBadges';
 import { parseMessage } from '../services/twitchChat';
@@ -203,20 +204,24 @@ const ChatWidget = () => {
   useEffect(() => {
     const newMessages = messages.slice(lastProcessedCountRef.current);
     newMessages.forEach((message, idx) => {
-      const channelIdMatch = message.match(/room-id=([^;]+)/);
-      const channelId = channelIdMatch ? channelIdMatch[1] : undefined;
-      const parsed = parseMessage(message, channelId);
-      const msgId = parsed.tags.get('id');
-      if (msgId) {
-        const actualIndex = lastProcessedCountRef.current + idx;
-        messageIdToIndexRef.current.set(msgId, actualIndex);
-      }
-      const userId = parsed.tags.get('user-id');
-      if (userId) {
-        const history = userMessageHistory.current.get(userId) || [];
-        history.push(parsed);
-        if (history.length > 50) history.shift();
-        userMessageHistory.current.set(userId, history);
+      try {
+        const channelIdMatch = message.match(/room-id=([^;]+)/);
+        const channelId = channelIdMatch ? channelIdMatch[1] : undefined;
+        const parsed = parseMessage(message, channelId);
+        const msgId = parsed.tags.get('id');
+        if (msgId) {
+          const actualIndex = lastProcessedCountRef.current + idx;
+          messageIdToIndexRef.current.set(msgId, actualIndex);
+        }
+        const userId = parsed.tags.get('user-id');
+        if (userId) {
+          const history = userMessageHistory.current.get(userId) || [];
+          history.push(parsed);
+          if (history.length > 50) history.shift();
+          userMessageHistory.current.set(userId, history);
+        }
+      } catch (err) {
+        console.error('[ChatWidget] Failed to parse message:', err, message);
       }
     });
     lastProcessedCountRef.current = messages.length;
@@ -709,39 +714,43 @@ const ChatWidget = () => {
             </div>
           ) : (
             <AutoSizer>
-              {({ height, width }) => {
-                containerHeightRef.current = height;
-                const displayMessages = messages; // Always show all messages, even when paused
-                const totalHeight = Object.values(rowHeights.current).reduce((sum, height) => sum + height, 0);
-                const needsPadding = totalHeight < height;
-                const paddingHeight = needsPadding ? height - totalHeight : 0;
-                return (
-                  <List ref={listRef} height={height} itemCount={displayMessages.length + (needsPadding ? 1 : 0)}
-                    itemSize={(index) => {
-                      if (needsPadding && index === 0) return paddingHeight;
-                      const messageIndex = needsPadding ? index - 1 : index;
-                      return getItemSize(messageIndex);
-                    }}
-                    width={width} className="scrollbar-thin" onScroll={handleScroll} estimatedItemSize={60}
-                    initialScrollOffset={displayMessages.length > 0 ? 999999 : 0}>
-                    {({ index, style }) => {
-                      if (needsPadding && index === 0) return <div style={style} />;
-                      const messageIndex = needsPadding ? index - 1 : index;
-                      const currentMessage = displayMessages[messageIndex];
-                      const currentMsgId = getMessageId(currentMessage);
-                      return (
-                        <div style={style}>
-                          <ChatMessageRow message={currentMessage} messageIndex={messageIndex} messageId={currentMsgId}
-                            emoteSet={emotes} onUsernameClick={handleUsernameClick} onReplyClick={handleReplyClick}
-                            isHighlighted={highlightedMessageId !== null && currentMessage.includes(`id=${highlightedMessageId}`)}
-                            onEmoteRightClick={handleEmoteRightClick} onUsernameRightClick={handleUsernameRightClick}
-                            onBadgeClick={handleBadgeClick} setItemSize={setItemSize} />
-                        </div>
-                      );
-                    }}
-                  </List>
-                );
-              }}
+              {({ height, width }) => (
+                <ErrorBoundary componentName="ChatWidgetList" reportToLogService={true}>
+                  {(() => {
+                    containerHeightRef.current = height;
+                    const displayMessages = messages; // Always show all messages, even when paused
+                    const totalHeight = Object.values(rowHeights.current).reduce((sum, height) => sum + height, 0);
+                    const needsPadding = totalHeight < height;
+                    const paddingHeight = needsPadding ? height - totalHeight : 0;
+                    return (
+                      <List ref={listRef} height={height} itemCount={displayMessages.length + (needsPadding ? 1 : 0)}
+                        itemSize={(index) => {
+                          if (needsPadding && index === 0) return paddingHeight;
+                          const messageIndex = needsPadding ? index - 1 : index;
+                          return getItemSize(messageIndex);
+                        }}
+                        width={width} className="scrollbar-thin" onScroll={handleScroll} estimatedItemSize={60}
+                        initialScrollOffset={displayMessages.length > 0 ? 999999 : 0}>
+                        {({ index, style }) => {
+                          if (needsPadding && index === 0) return <div style={style} />;
+                          const messageIndex = needsPadding ? index - 1 : index;
+                          const currentMessage = displayMessages[messageIndex];
+                          const currentMsgId = getMessageId(currentMessage);
+                          return (
+                            <div style={style}>
+                              <ChatMessageRow message={currentMessage} messageIndex={messageIndex} messageId={currentMsgId}
+                                emoteSet={emotes} onUsernameClick={handleUsernameClick} onReplyClick={handleReplyClick}
+                                isHighlighted={highlightedMessageId !== null && currentMessage.includes(`id=${highlightedMessageId}`)}
+                                onEmoteRightClick={handleEmoteRightClick} onUsernameRightClick={handleUsernameRightClick}
+                                onBadgeClick={handleBadgeClick} setItemSize={setItemSize} />
+                            </div>
+                          );
+                        }}
+                      </List>
+                    );
+                  })()}
+                </ErrorBoundary>
+              )}
             </AutoSizer>
           )}
         </div>

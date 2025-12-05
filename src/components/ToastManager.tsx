@@ -159,8 +159,10 @@ const ToastManager = () => {
   }, []);
 
   // Listen for live stream notifications from backend
+  // This creates the decorated toast with avatar, game image, title
+  // Only shows if use_toast setting is enabled (checked by DynamicIsland which emits custom event)
   useEffect(() => {
-    const unlisten = listen<LiveNotification>('streamer-went-live', (event) => {
+    const unlisten = listen<LiveNotification>('show-live-toast', (event) => {
       const notification = event.payload;
 
       // Play sound if enabled
@@ -169,7 +171,6 @@ const ToastManager = () => {
       }
 
       // Create a rich notification message with all available data
-      // The backend already respects the notification settings
       const toastContent = (
         <div className="flex flex-col gap-2 w-full max-w-full">
           <div className="flex items-start gap-3 w-full max-w-full">

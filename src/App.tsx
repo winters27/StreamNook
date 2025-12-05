@@ -227,8 +227,10 @@ function App() {
 
         if (isTheaterMode) {
           // Entering theater mode - save current size and resize to 16:9
-          const currentSize = await window.innerSize();
-          setSavedWindowSize({ width: currentSize.width, height: currentSize.height });
+          if (!savedWindowSize) {
+            const currentSize = await window.innerSize();
+            setSavedWindowSize({ width: currentSize.width, height: currentSize.height });
+          }
 
           // Title bar height is approximately 32px
           const titleBarHeight = 32;
@@ -250,7 +252,8 @@ function App() {
     };
 
     handleTheaterMode();
-  }, [isTheaterMode, streamUrl, savedWindowSize]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isTheaterMode, streamUrl]); // Remove savedWindowSize from deps to avoid infinite loop
 
   // Keep refs in sync with current values for use in resize listener
   useEffect(() => {
@@ -272,6 +275,70 @@ function App() {
   useEffect(() => {
     streamUrlRef.current = streamUrl;
   }, [streamUrl]);
+
+  // Auto-trigger native PIP when navigating to Home while stream is playing
+  useEffect(() => {
+    const triggerPip = async () => {
+      // Only trigger when going TO home (isHomeActive becomes true) and stream is playing
+      if (isHomeActive && streamUrl) {
+        // Find the video element inside the video player container
+        const videoElement = document.querySelector('.video-player-container video') as HTMLVideoElement;
+
+        if (videoElement && document.pictureInPictureEnabled && !document.pictureInPictureElement) {
+          try {
+            console.log('[PIP] Entering Picture-in-Picture mode');
+            await videoElement.requestPictureInPicture();
+          } catch (error) {
+            console.warn('[PIP] Failed to enter Picture-in-Picture:', error);
+            // PIP might fail due to browser restrictions, user gesture requirements, etc.
+            // The stream will still play in the background, just not visible
+          }
+        }
+      }
+    };
+
+    triggerPip();
+  }, [isHomeActive, streamUrl]);
+
+  // Exit PIP when returning from Home to stream view
+  useEffect(() => {
+    const exitPip = async () => {
+      // Only exit when leaving home (isHomeActive becomes false) and we're in PIP
+      if (!isHomeActive && document.pictureInPictureElement) {
+        try {
+          console.log('[PIP] Exiting Picture-in-Picture mode');
+          await document.exitPictureInPicture();
+        } catch (error) {
+          console.warn('[PIP] Failed to exit Picture-in-Picture:', error);
+        }
+      }
+    };
+
+    exitPip();
+  }, [isHomeActive]);
+
+  // Listen for PIP exit (e.g., user clicks "back to tab" in PIP window) to return to stream view
+  useEffect(() => {
+    const handleLeavePip = () => {
+      // If we're in Home view and PIP was exited (by user clicking back to tab), return to stream
+      if (isHomeActive && streamUrl) {
+        console.log('[PIP] User exited PIP via back to tab, returning to stream view');
+        toggleHome();
+      }
+    };
+
+    // Listen for the leavepictureinpicture event on all video elements
+    const videoElement = document.querySelector('.video-player-container video') as HTMLVideoElement;
+    if (videoElement) {
+      videoElement.addEventListener('leavepictureinpicture', handleLeavePip);
+    }
+
+    return () => {
+      if (videoElement) {
+        videoElement.removeEventListener('leavepictureinpicture', handleLeavePip);
+      }
+    };
+  }, [isHomeActive, streamUrl, toggleHome]);
 
   // Handle aspect ratio locking when setting changes or chat is resized
   useEffect(() => {
@@ -569,56 +636,20 @@ function App() {
             </div>
           )}
 
-          {/* Stream/Chat View - either full screen or mini-player */}
+          {/* Stream/Chat View - hidden when Home is active but kept mounted to preserve session */}
           {streamUrl && (
             <div
               ref={containerRef}
-              className={
-                isHomeActive
-                  ? "absolute bottom-4 right-4 z-50 shadow-2xl rounded-lg overflow-hidden border border-borderSubtle transition-all duration-300 ease-in-out group"
-                  : `flex flex-1 h-full ${chatPlacement === 'bottom' ? 'flex-col' : 'flex-row'}`
-              }
-              style={isHomeActive ? { width: 'min(320px, 25vw)', minWidth: '200px' } : undefined}
+              className={`flex flex-1 h-full ${chatPlacement === 'bottom' ? 'flex-col' : 'flex-row'} ${isHomeActive ? 'invisible absolute inset-0 -z-10' : ''}`}
             >
-              <div
-                className={isHomeActive ? "w-full relative" : "flex-1 relative overflow-hidden"}
-                style={isHomeActive ? { paddingBottom: '56.25%' } : undefined}
-              >
-                <div className={isHomeActive ? "absolute inset-0 pip-mode" : "w-full h-full"}>
+              <div className="flex-1 relative overflow-hidden">
+                <div className="w-full h-full">
                   <VideoPlayer key={streamUrl} />
                 </div>
                 {isLoading && <LoadingWidget useFunnyMessages={true} />}
-                {/* Clickable overlay for PIP - captures clicks before Plyr */}
-                {isHomeActive && (
-                  <div
-                    className="absolute inset-0 z-20 cursor-pointer bg-black/0 group-hover:bg-black/30 transition-all flex items-center justify-center"
-                    onClick={(e) => { e.stopPropagation(); e.preventDefault(); toggleHome(); }}
-                    title="Click to return to stream"
-                  >
-                    <span className="text-white opacity-0 group-hover:opacity-100 transition-opacity text-sm font-medium">
-                      Click to expand
-                    </span>
-                  </div>
-                )}
               </div>
-              {/* Close button for PIP - stops the stream */}
-              {isHomeActive && (
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    stopStream();
-                  }}
-                  className="absolute top-2 right-2 z-30 p-1 rounded-full bg-black/50 hover:bg-black/70 text-white/70 hover:text-white transition-all opacity-0 group-hover:opacity-100"
-                  title="Close stream"
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <line x1="18" y1="6" x2="6" y2="18"></line>
-                    <line x1="6" y1="6" x2="18" y2="18"></line>
-                  </svg>
-                </button>
-              )}
-              {/* Chat - hidden in mini-player mode */}
-              {!isHomeActive && chatPlacement !== 'hidden' && (
+              {/* Chat - hidden when Home is active but kept mounted */}
+              {chatPlacement !== 'hidden' && (
                 <>
                   {/* Resizable Separator */}
                   <div

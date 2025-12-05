@@ -1190,24 +1190,3 @@ body {
 .dynamic-island .scrollbar-thin::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.3);
 }
-
-/* ============================================
-   PIP Mode - Hide elements for mini-player
-   ============================================ */
-.pip-mode .video-player-container {
-  min-height: unset !important;
-}
-
-/* Hide subscribe button in PIP mode */
-.pip-mode .video-player-container > div:last-child {
-  display: none !important;
-}
-
-/* Hide Plyr controls in PIP mode - video only */
-.pip-mode .plyr__controls {
-  display: none !important;
-}
-
-.pip-mode .plyr__control--overlaid {
-  display: none !important;
-}

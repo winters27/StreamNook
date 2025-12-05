@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Bell, Radio, MessageCircle, ChevronRight, User, Download, Gift, Award } from 'lucide-react';
 import { X, SpeakerHigh, SpeakerSlash } from 'phosphor-react';
-import { listen } from '@tauri-apps/api/event';
+import { listen, emit } from '@tauri-apps/api/event';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { resolveResource } from '@tauri-apps/api/path';
@@ -429,10 +429,16 @@ const DynamicIsland = () => {
 
             const data = event.payload;
 
-            // Don't add to dynamic island if it's a test notification
-            if (data.is_test) return;
+            // Test notifications should only show the toast, not add to dynamic island
+            if (data.is_test) {
+                // Show decorated toast for test notification
+                if (useToast) {
+                    emit('show-live-toast', data);
+                }
+                return;
+            }
 
-            // Add to Dynamic Island if enabled
+            // Add to Dynamic Island if enabled (real notifications only)
             if (useDynamicIsland) {
                 const notification: DynamicIslandNotification = {
                     id: `live-${Date.now()}-${data.streamer_login}`,
@@ -457,16 +463,9 @@ const DynamicIsland = () => {
                 }
             }
 
-            // Show toast if enabled
+            // Show decorated toast if enabled - emit event for ToastManager to handle
             if (useToast) {
-                addToast(
-                    `${data.streamer_name} is now live${data.game_name ? ` playing ${data.game_name}` : ''}`,
-                    'live',
-                    {
-                        label: 'Watch',
-                        onClick: () => startStream(data.streamer_login),
-                    }
-                );
+                emit('show-live-toast', data);
             }
 
             // Send native notification (note: backend also sends one, but this ensures frontend settings are respected)

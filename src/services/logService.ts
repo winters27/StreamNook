@@ -196,14 +196,13 @@ const sendToDiscordWebhook = async (errors: LogEntry[]): Promise<void> => {
     }
 
     try {
-        const { getVersion } = await import('@tauri-apps/api/app');
         const { invoke } = await import('@tauri-apps/api/core');
 
         let appVersion = 'Unknown';
         let osInfo = 'Unknown';
 
         try {
-            appVersion = await getVersion();
+            appVersion = await invoke('get_app_version') as string;
         } catch { /* ignore */ }
 
         try {
@@ -212,17 +211,40 @@ const sendToDiscordWebhook = async (errors: LogEntry[]): Promise<void> => {
             osInfo = 'Unknown';
         }
 
+        // Gather additional system info
+        const userAgent = navigator.userAgent;
+        const screenRes = `${window.screen.width}x${window.screen.height}`;
+        const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
         // Get user context for the error report
         const { twitchUser, currentActivity } = getUserContext();
 
-        // Format errors for Discord embed (using code block for easy copying)
-        const errorMessages = errors.slice(-10).map(e => {
-            const data = e.data ? ` | ${JSON.stringify(e.data).slice(0, 80)}` : '';
-            return `[${e.category}] ${e.message.slice(0, 150)}${data}`;
+        // Extract stack traces if available
+        let stackTrace = '';
+        const errorDetails = errors.map(e => {
+            let details = `[${e.category}] ${e.message}`;
+
+            // Check for error objects in data to extract stack traces
+            if (Array.isArray(e.data)) {
+                e.data.forEach(arg => {
+                    if (arg instanceof Error && arg.stack) {
+                        stackTrace = arg.stack; // Capture the last stack trace found
+                    } else if (typeof arg === 'object' && arg !== null && 'stack' in arg) {
+                        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                        stackTrace = (arg as any).stack;
+                    }
+                });
+
+                if (e.data.length > 0) {
+                    details += ` | ${JSON.stringify(e.data, null, 2).slice(0, 200)}`;
+                }
+            }
+
+            return details;
         }).join('\n');
 
-        // Create a copyable code block version
-        const codeBlockErrors = '```\n' + errorMessages.slice(0, 900) + '\n```';
+        // Create a copyable code block version for errors
+        const codeBlockErrors = '```\n' + errorDetails.slice(0, 1500) + '\n```';
 
         // Build fields array dynamically
         const fields = [
@@ -241,6 +263,11 @@ const sendToDiscordWebhook = async (errors: LogEntry[]): Promise<void> => {
                 value: `\`${osInfo}\``,
                 inline: true,
             },
+            {
+                name: 'System Details',
+                value: `Res: \`${screenRes}\`\nZone: \`${timeZone}\``,
+                inline: true,
+            },
         ];
 
         // Add current activity if available
@@ -252,13 +279,38 @@ const sendToDiscordWebhook = async (errors: LogEntry[]): Promise<void> => {
             });
         }
 
-        // Add recent activity history
-        const recentActivity = getRecentActivity();
-        if (recentActivity.length > 0) {
-            const activityLog = recentActivity.slice(-10).join('\n');
+        // Add stack trace if found
+        if (stackTrace) {
             fields.push({
-                name: `📋 Recent Actions (${recentActivity.length})`,
-                value: '```\n' + activityLog.slice(0, 800) + '\n```',
+                name: '🔥 Stack Trace',
+                value: '```typescript\n' + stackTrace.slice(0, 1000) + '\n```',
+                inline: false,
+            });
+        }
+
+        // Add breadcrumbs (recent logs before the error)
+        // Get last 15 logs that aren't the errors we're currently reporting
+        const recentLogs = logs
+            .filter(l => !errors.includes(l))
+            .slice(-15)
+            .map(l => `[${l.timestamp.split('T')[1].split('.')[0]}] [${l.level.toUpperCase()}] ${l.message.slice(0, 80)}`)
+            .join('\n');
+
+        if (recentLogs.length > 0) {
+            fields.push({
+                name: '🍞 Breadcrumbs (Last 15 Logs)',
+                value: '```\n' + recentLogs + '\n```',
+                inline: false,
+            });
+        }
+
+        // Add User Actions History
+        const recentActions = getRecentActivity();
+        if (recentActions.length > 0) {
+            const activityLog = recentActions.slice(-10).join('\n');
+            fields.push({
+                name: '👥 User Actions',
+                value: '```\n' + activityLog + '\n```',
                 inline: false,
             });
         }
@@ -270,7 +322,7 @@ const sendToDiscordWebhook = async (errors: LogEntry[]): Promise<void> => {
                 inline: true,
             },
             {
-                name: 'Errors (click to copy)',
+                name: 'Errors',
                 value: codeBlockErrors || '```No details```',
                 inline: false,
             }
@@ -282,7 +334,7 @@ const sendToDiscordWebhook = async (errors: LogEntry[]): Promise<void> => {
             fields,
             timestamp: new Date().toISOString(),
             footer: {
-                text: 'StreamNook Auto Error Report • Triple-click code block to select all',
+                text: `StreamNook v${appVersion} • Auto Error Report`,
             },
         };
 
@@ -422,14 +474,13 @@ export const formatLogsForExport = (logsToExport?: LogEntry[]): string => {
 // Generate a full bug report
 export const generateBugReport = async (): Promise<string> => {
     const { invoke } = await import('@tauri-apps/api/core');
-    const { getVersion } = await import('@tauri-apps/api/app');
 
     let appVersion = 'Unknown';
     let osInfo = 'Unknown';
     let streamlinkVersion = 'Unknown';
 
     try {
-        appVersion = await getVersion();
+        appVersion = await invoke('get_app_version') as string;
     } catch {
         // Ignore
     }
@@ -557,7 +608,6 @@ export const sendStreamlinkDiagnostics = async (errorMessage: string): Promise<v
     }
 
     try {
-        const { getVersion } = await import('@tauri-apps/api/app');
         const { invoke } = await import('@tauri-apps/api/core');
 
         let appVersion = 'Unknown';
@@ -565,7 +615,7 @@ export const sendStreamlinkDiagnostics = async (errorMessage: string): Promise<v
         let diagnostics: StreamlinkDiagnostics | null = null;
 
         try {
-            appVersion = await getVersion();
+            appVersion = await invoke('get_app_version') as string;
         } catch { /* ignore */ }
 
         try {

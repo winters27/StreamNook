@@ -4,6 +4,7 @@ interface Props {
     children: ReactNode;
     fallback?: ReactNode;
     componentName?: string;
+    reportToLogService?: boolean;
 }
 
 interface State {
@@ -23,9 +24,16 @@ class ErrorBoundary extends Component<Props, State> {
 
     componentDidCatch(error: Error, errorInfo: ErrorInfo) {
         const componentName = this.props.componentName || 'Component';
-        // Use console.warn instead of console.error to avoid Discord webhook spam for handled errors
-        console.warn(`[${componentName}] Error caught and handled by boundary:`, error.message || error.toString());
-        console.warn(`[${componentName}] Component stack:`, errorInfo.componentStack);
+
+        if (this.props.reportToLogService) {
+            // Log as error so it gets picked up by logService and sent to Discord
+            console.error(`[${componentName}] Critical error caught by boundary:`, error);
+            console.error(`[${componentName}] Component stack:`, errorInfo.componentStack);
+        } else {
+            // Use console.warn instead of console.error to avoid Discord webhook spam for handled errors
+            console.warn(`[${componentName}] Error caught and handled by boundary:`, error.message || error.toString());
+            console.warn(`[${componentName}] Component stack:`, errorInfo.componentStack);
+        }
     }
 
     render() {
