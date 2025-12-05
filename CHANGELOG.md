@@ -1,3 +1,14 @@
+## [4.7.0] - 2025-12-04
+### ✨ Features
+- Added file caching functionality for emotes and badges, improving performance and offline support.
+- Chat messages now queue emotes for caching, enhancing loading times.
+- Chat messages now use local URLs for badges, decreasing dependency on external requests.
+
+### 🐛 Bug Fixes
+- Fixed drops authentication issues, handling failures more gracefully and preventing campaign restarts.
+
+
+
 ## [4.6.3] - 2025-12-04
 ### ✨ Features
 - Improved Updates Settings with component-specific changelogs.
@@ -531,6 +542,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
