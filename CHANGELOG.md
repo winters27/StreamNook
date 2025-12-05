@@ -1,3 +1,12 @@
+## [4.6.3] - 2025-12-04
+### ✨ Features
+- Improved Updates Settings with component-specific changelogs.
+
+### 🐛 Bug Fixes
+- Fixed Streamlink update issues by forcing process termination.
+- Removed redundant condition for showing session restore toast.
+
+
 ## [4.6.2] - 2025-12-04
 ### ✨ Features
 - Added Picture-in-Picture (PIP) mode that auto-triggers when navigating to the home screen while a stream is playing.
@@ -522,6 +531,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
