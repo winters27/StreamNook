@@ -1,3 +1,15 @@
+## [4.7.1] - 2025-12-04
+### ✨ Features
+- Release notes are now displayed when updating.
+- Improved emote caching and logging for better performance and debugging.
+- Enhanced the 'Live' indicator in the video player with a pulsing effect.
+
+### 🐛 Bug Fixes
+- Improved Streamlink process killing and directory removal during updates to avoid errors.
+
+### 🔧 Maintenance
+- Clarified app data directory names for development and production environments.
+
 ## [4.7.0] - 2025-12-04
 ### ✨ Features
 - Added file caching functionality for emotes and badges, improving performance and offline support.
@@ -542,6 +554,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
