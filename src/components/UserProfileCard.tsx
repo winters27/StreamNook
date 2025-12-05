@@ -199,14 +199,20 @@ const UserProfileCard = ({
   const allBadges = useMemo(() => {
     const badges: Array<{ id: string; src: string; srcSet?: string; title: string; type: string }> = [];
     twitchBadges.forEach(b => {
-      badges.push({ id: `t-${b.id}`, src: b.image1x, srcSet: `${b.image1x} 1x, ${b.image2x} 2x, ${b.image4x} 4x`, title: b.title, type: 'twitch' });
+      badges.push({
+        id: `t-${b.id}`,
+        src: b.localUrl || b.image1x,
+        srcSet: b.localUrl ? undefined : `${b.image1x} 1x, ${b.image2x} 2x, ${b.image4x} 4x`,
+        title: b.title,
+        type: 'twitch'
+      });
     });
     seventvBadges.forEach(b => {
       const url = getBadgeImageUrl(b as any);
       if (url) badges.push({ id: `7-${b.id}`, src: url, title: b.tooltip || b.name, type: '7tv' });
     });
     thirdPartyBadges.forEach(b => {
-      badges.push({ id: `3-${b.id}`, src: b.imageUrl, title: `${b.title} (${b.provider})`, type: b.provider });
+      badges.push({ id: `3-${b.id}`, src: b.localUrl || b.imageUrl, title: `${b.title} (${b.provider})`, type: b.provider });
     });
     return badges;
   }, [twitchBadges, seventvBadges, thirdPartyBadges]);

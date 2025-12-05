@@ -3,6 +3,7 @@ use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
+use std::io::Cursor;
 use std::path::PathBuf;
 use std::sync::Mutex as StdMutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -627,4 +628,121 @@ pub fn clear_universal_cache() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Cache a file from a URL
+pub async fn cache_file(
+    cache_type: CacheType,
+    id: String,
+    url: String,
+    expiry_days: u32,
+) -> Result<String> {
+    let cache_dir = get_universal_cache_dir()?;
+    let type_str = match cache_type {
+        CacheType::Badge => "badges",
+        CacheType::Emote => "emotes",
+        CacheType::ThirdPartyBadge => "third-party-badges",
+        CacheType::Cosmetic => "cosmetics",
+    };
+
+    let type_dir = cache_dir.join(type_str);
+    if !type_dir.exists() {
+        fs::create_dir_all(&type_dir).context("Failed to create cache type directory")?;
+    }
+
+    // Determine extension from URL
+    let url_path = PathBuf::from(&url);
+    let extension = url_path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("bin");
+
+    // Use a prefix for the file ID in the manifest to avoid collision with metadata
+    // But for the filename, we can just use the ID
+    let file_name = format!("{}.{}", id, extension);
+    let file_path = type_dir.join(&file_name);
+
+    // Download file
+    let client = reqwest::Client::builder()
+        .user_agent("StreamNook/1.0")
+        .build()?;
+
+    let response = client.get(&url).send().await?;
+
+    if !response.status().is_success() {
+        return Err(anyhow::anyhow!(
+            "Failed to download file: {}",
+            response.status()
+        ));
+    }
+
+    let bytes = response.bytes().await?;
+
+    let mut file = fs::File::create(&file_path)?;
+    std::io::copy(&mut Cursor::new(bytes), &mut file)?;
+
+    let path_str = file_path.to_string_lossy().to_string();
+
+    // Update manifest
+    // We use "file:" prefix for the ID in the manifest
+    let manifest_id = format!("file:{}", id);
+
+    let entry = UniversalCacheEntry {
+        id: manifest_id,
+        cache_type,
+        data: serde_json::json!({
+            "local_path": path_str,
+            "url": url,
+            "file_name": file_name
+        }),
+        metadata: CacheMetadata {
+            timestamp: get_current_timestamp(),
+            expiry_days,
+            source: "universal_file".to_string(),
+            version: CACHE_VERSION,
+        },
+        position: None,
+    };
+
+    save_cached_item(entry).await?;
+
+    Ok(path_str)
+}
+
+/// Get cached file path if exists and valid
+pub async fn get_cached_file_path(cache_type: CacheType, id: &str) -> Result<Option<String>> {
+    let manifest_id = format!("file:{}", id);
+
+    // Use existing get_cached_item which handles expiry
+    let entry = get_cached_item(cache_type.clone(), &manifest_id).await?;
+
+    if let Some(entry) = entry {
+        if let Some(path) = entry.data.get("local_path").and_then(|p| p.as_str()) {
+            let path_buf = PathBuf::from(path);
+            if path_buf.exists() {
+                return Ok(Some(path.to_string()));
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+/// Get all cached files for a specific type
+pub async fn get_cached_files_list(cache_type: CacheType) -> Result<HashMap<String, String>> {
+    let manifest = load_manifest()?;
+    let mut files = HashMap::new();
+
+    for (key, entry) in manifest.entries {
+        // Check if it's a file entry (id starts with "file:") and matches type
+        if entry.cache_type == cache_type && key.starts_with("file:") {
+            if let Some(path) = entry.data.get("local_path").and_then(|p| p.as_str()) {
+                // Strip "file:" prefix from key to get original ID
+                let id = key.trim_start_matches("file:").to_string();
+                files.insert(id, path.to_string());
+            }
+        }
+    }
+
+    Ok(files)
 }

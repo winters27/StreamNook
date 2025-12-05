@@ -329,7 +329,7 @@ const sendToDiscordWebhook = async (errors: LogEntry[]): Promise<void> => {
         );
 
         const embed = {
-            title: '🚨 StreamNook Error Report',
+            title: ':alert: StreamNook Error Report',
             color: 0xFF0000, // Red
             fields,
             timestamp: new Date().toISOString(),

@@ -1,7 +1,7 @@
 import React, { useMemo, useState, useEffect, memo } from 'react';
 import { parseMessage } from '../services/twitchChat';
 import { parseEmotesWithThirdParty, EmoteSegment } from '../services/emoteParser';
-import { EmoteSet } from '../services/emoteService';
+import { EmoteSet, queueEmoteForCaching } from '../services/emoteService';
 import { getUserCosmetics, computePaintStyle, getBadgeImageUrl } from '../services/seventvService';
 import { SevenTVBadge, SevenTVPaint } from '../types';
 import { useAppStore } from '../stores/AppStore';
@@ -136,6 +136,12 @@ const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageI
       if (segment.type === 'emote') {
         const emoteUrl = segment.emoteUrl ||
           (segment.emoteId ? `https://static-cdn.jtvnw.net/emoticons/v2/${segment.emoteId}/default/dark/1.0` : '');
+
+        // Reactive caching: If we're using a remote URL, queue it for caching
+        // We check if it's NOT a local URL (doesn't start with asset:// or http://asset.localhost)
+        if (emoteUrl && !emoteUrl.startsWith('asset://') && !emoteUrl.includes('asset.localhost') && segment.emoteId) {
+          queueEmoteForCaching(segment.emoteId, emoteUrl);
+        }
 
         return (
           <img
@@ -365,8 +371,8 @@ const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageI
           {parsed.badges.map((badge, idx) => (
             <img
               key={`bits-badge-${badge.key}-${idx}`}
-              src={badge.info.image_url_1x}
-              srcSet={`${badge.info.image_url_1x} 1x, ${badge.info.image_url_2x} 2x, ${badge.info.image_url_4x} 4x`}
+              src={badge.info.localUrl || badge.info.image_url_1x}
+              srcSet={badge.info.localUrl ? undefined : `${badge.info.image_url_1x} 1x, ${badge.info.image_url_2x} 2x, ${badge.info.image_url_4x} 4x`}
               alt={badge.info.title}
               title={badge.info.title}
               className="w-4 h-4 inline-block cursor-pointer hover:scale-110 transition-transform"
@@ -479,8 +485,8 @@ const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageI
           {parsed.badges.map((badge, idx) => (
             <img
               key={`donation-badge-${badge.key}-${idx}`}
-              src={badge.info.image_url_1x}
-              srcSet={`${badge.info.image_url_1x} 1x, ${badge.info.image_url_2x} 2x, ${badge.info.image_url_4x} 4x`}
+              src={badge.info.localUrl || badge.info.image_url_1x}
+              srcSet={badge.info.localUrl ? undefined : `${badge.info.image_url_1x} 1x, ${badge.info.image_url_2x} 2x, ${badge.info.image_url_4x} 4x`}
               alt={badge.info.title}
               title={badge.info.title}
               className="w-4 h-4 inline-block cursor-pointer hover:scale-110 transition-transform"
@@ -616,8 +622,8 @@ const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageI
           {parsed.badges.map((badge, idx) => (
             <img
               key={`sub-badge-${badge.key}-${idx}`}
-              src={badge.info.image_url_1x}
-              srcSet={`${badge.info.image_url_1x} 1x, ${badge.info.image_url_2x} 2x, ${badge.info.image_url_4x} 4x`}
+              src={badge.info.localUrl || badge.info.image_url_1x}
+              srcSet={badge.info.localUrl ? undefined : `${badge.info.image_url_1x} 1x, ${badge.info.image_url_2x} 2x, ${badge.info.image_url_4x} 4x`}
               alt={badge.info.title}
               title={badge.info.title}
               className="w-4 h-4 inline-block cursor-pointer hover:scale-110 transition-transform"
@@ -983,8 +989,8 @@ const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageI
               {parsed.badges.map((badge, idx) => (
                 <img
                   key={`${badge.key}-${idx}`}
-                  src={badge.info.image_url_1x}
-                  srcSet={`${badge.info.image_url_1x} 1x, ${badge.info.image_url_2x} 2x, ${badge.info.image_url_4x} 4x`}
+                  src={badge.info.localUrl || badge.info.image_url_1x}
+                  srcSet={badge.info.localUrl ? undefined : `${badge.info.image_url_1x} 1x, ${badge.info.image_url_2x} 2x, ${badge.info.image_url_4x} 4x`}
                   alt={badge.info.title}
                   title={badge.info.title}
                   className="w-4 h-4 cursor-pointer hover:scale-110 transition-transform"

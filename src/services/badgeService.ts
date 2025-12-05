@@ -1,3 +1,6 @@
+import { invoke } from '@tauri-apps/api/core';
+import { convertFileSrc } from '@tauri-apps/api/core';
+
 // Comprehensive badge service using IVR API and Twitch GQL
 export interface TwitchBadge {
   id: string;
@@ -8,6 +11,7 @@ export interface TwitchBadge {
   image1x: string;
   image2x: string;
   image4x: string;
+  localUrl?: string;
 }
 
 export interface UserBadgesResponse {
@@ -27,6 +31,35 @@ export async function getGlobalBadges(): Promise<any[]> {
   } catch (error) {
     console.error('[Badges] Failed to fetch global badges:', error);
     return [];
+  }
+}
+
+// Helper to cache badges in background
+async function cacheBadges(badges: TwitchBadge[]) {
+  // Process in chunks to avoid overwhelming the network/backend
+  const CHUNK_SIZE = 10;
+  for (let i = 0; i < badges.length; i += CHUNK_SIZE) {
+    const chunk = badges.slice(i, i + CHUNK_SIZE);
+    await Promise.allSettled(chunk.map(async (badge) => {
+      try {
+        // Only cache if not already cached
+        if (badge.localUrl) return;
+
+        // Cache the 4x image (highest quality)
+        if (badge.image4x) {
+          await invoke('download_and_cache_file', {
+            cacheType: 'badge',
+            id: badge.id,
+            url: badge.image4x,
+            expiryDays: 0 // Never expire badges
+          });
+        }
+      } catch (e) {
+        console.warn(`Failed to cache badge ${badge.title}:`, e);
+      }
+    }));
+    // Small delay between chunks
+    await new Promise(resolve => setTimeout(resolve, 100));
   }
 }
 
@@ -68,7 +101,7 @@ export async function getUserBadgesFromGQL(
     // First, try to get the user's ID from IVR API
     const userData = await getUserData(userName);
     const targetUserID = userData?.[0]?.id;
-    
+
     const response = await fetch('https://gql.twitch.tv/gql', {
       method: 'POST',
       headers: {
@@ -108,9 +141,9 @@ export async function getUserBadgesFromGQL(
 
     const data = await response.json();
     const badgesData = data[0]?.data;
-    
+
     console.log('[Badges] GQL response data:', badgesData);
-    
+
     const displayBadges = badgesData?.targetUser?.displayBadges || [];
     const earnedBadges = badgesData?.channelViewer?.earnedBadges || [];
 
@@ -149,15 +182,15 @@ function parseBadgeData(badge: any, globalBadges: any[], channelBadges: any[]): 
   try {
     const setID = badge.setID;
     const version = badge.version || '1';
-    
+
     // Try to find badge info from global badges
     let badgeInfo = globalBadges.find((b) => b.setID === setID);
-    
+
     // If not found, try channel badges
     if (!badgeInfo) {
       badgeInfo = channelBadges.find((b) => b.setID === setID);
     }
-    
+
     if (!badgeInfo) {
       console.warn(`[Badges] Badge info not found for setID: ${setID}, trying direct image URLs`);
       // If we can't find badge info, but we have direct image URLs from GQL, use those
@@ -175,10 +208,10 @@ function parseBadgeData(badge: any, globalBadges: any[], channelBadges: any[]): 
       }
       return null;
     }
-    
+
     // Find the specific version
     const versionInfo = badgeInfo.versions?.find((v: any) => v.id === version) || badgeInfo.versions?.[0];
-    
+
     if (!versionInfo) {
       // If we can't find version info, but we have direct image URLs from GQL, use those
       if (badge.image1x || badge.image2x || badge.image4x) {
@@ -195,7 +228,7 @@ function parseBadgeData(badge: any, globalBadges: any[], channelBadges: any[]): 
       }
       return null;
     }
-    
+
     return {
       id: `${setID}_${version}`,
       setID: setID,
@@ -221,13 +254,21 @@ export async function getAllUserBadges(
 ): Promise<UserBadgesResponse> {
   try {
     console.log('[Badges] Fetching all badges for:', { userId, username, channelId, channelName });
-    
+
     // Fetch all badge data in parallel
     const [globalBadges, channelBadges, gqlBadges] = await Promise.all([
       getGlobalBadges(),
       getChannelBadges(channelName),
       getUserBadgesFromGQL(channelId, channelName, username)
     ]);
+
+    // Fetch cached files map
+    let cachedFiles: Record<string, string> = {};
+    try {
+      cachedFiles = await invoke('get_cached_files', { cacheType: 'badge' });
+    } catch (e) {
+      console.warn('Failed to get cached badge files:', e);
+    }
 
     console.log('[Badges] Raw GQL badges:', gqlBadges);
     console.log('[Badges] Global badges count:', globalBadges.length);
@@ -236,15 +277,39 @@ export async function getAllUserBadges(
     // Parse displayed badges
     const displayBadges: TwitchBadge[] = gqlBadges.displayBadges
       .map((badge) => parseBadgeData(badge, globalBadges, channelBadges))
-      .filter((badge): badge is TwitchBadge => badge !== null);
+      .filter((badge): badge is TwitchBadge => badge !== null)
+      .map(badge => {
+        const localPath = cachedFiles[badge.id];
+        return {
+          ...badge,
+          localUrl: localPath ? convertFileSrc(localPath) : undefined
+        };
+      });
 
     // Parse earned badges and filter by category
     const earnedBadges: TwitchBadge[] = gqlBadges.earnedBadges
       .map((badge) => parseBadgeData(badge, globalBadges, channelBadges))
-      .filter((badge): badge is TwitchBadge => badge !== null);
+      .filter((badge): badge is TwitchBadge => badge !== null)
+      .map(badge => {
+        const localPath = cachedFiles[badge.id];
+        return {
+          ...badge,
+          localUrl: localPath ? convertFileSrc(localPath) : undefined
+        };
+      });
 
     console.log('[Badges] Parsed display badges:', displayBadges);
     console.log('[Badges] Parsed earned badges:', earnedBadges);
+
+    return {
+      displayBadges,
+      earnedBadges,
+      ivrBadges: [...globalBadges, ...channelBadges]
+    };
+
+    // Trigger background caching
+    const allBadges = [...displayBadges, ...earnedBadges];
+    cacheBadges(allBadges).catch(e => console.error('Background badge caching failed:', e));
 
     return {
       displayBadges,

@@ -314,6 +314,9 @@ fn main() {
             get_universal_cache_statistics,
             assign_badge_positions,
             export_manifest,
+            download_and_cache_file,
+            get_cached_file,
+            get_cached_files,
             // Cosmetics Cache commands
             cache_user_cosmetics,
             get_cached_user_cosmetics,

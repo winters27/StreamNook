@@ -1,4 +1,4 @@
-import { Emote, EmoteSet } from './emoteService';
+import { Emote, EmoteSet, getCachedEmoteUrl } from './emoteService';
 import { parseEmojis } from './emojiService';
 
 export interface EmoteSegment {
@@ -78,11 +78,20 @@ export function parseEmotesWithThirdParty(
 
   // Build a map of all third-party emotes by name
   const thirdPartyEmotes = new Map<string, Emote>();
+  // Build a map of Twitch emotes by ID for cache lookup
+  const twitchEmotesMap = new Map<string, Emote>();
 
   if (emoteSet) {
     [...emoteSet.bttv, ...emoteSet['7tv'], ...emoteSet.ffz].forEach(emote => {
       thirdPartyEmotes.set(emote.name, emote);
     });
+
+    // Index Twitch emotes
+    if (emoteSet.twitch) {
+      emoteSet.twitch.forEach(emote => {
+        twitchEmotesMap.set(emote.id, emote);
+      });
+    }
   }
 
   // Process each text segment to find third-party emotes
@@ -90,7 +99,29 @@ export function parseEmotesWithThirdParty(
 
   for (const segment of segments) {
     if (segment.type === 'emote') {
-      // Keep Twitch emotes as-is
+      // Check if we have a cached version of this Twitch emote
+      if (segment.emoteId) {
+        // First check the provided emoteSet map if available
+        if (twitchEmotesMap.has(segment.emoteId)) {
+          const cachedEmote = twitchEmotesMap.get(segment.emoteId);
+          if (cachedEmote?.localUrl) {
+            segment.emoteUrl = cachedEmote.localUrl;
+          }
+        }
+
+        // If not found in map (or map not provided), check the global reactive cache registry
+        // This handles emotes that were cached reactively after being seen in chat
+        // If not found in map (or map not provided), check the global reactive cache registry
+        // This handles emotes that were cached reactively after being seen in chat
+        if (!segment.emoteUrl || !segment.emoteUrl.startsWith('asset://')) {
+          const localUrl = getCachedEmoteUrl(segment.emoteId);
+          if (localUrl) {
+            segment.emoteUrl = localUrl;
+          }
+        }
+      }
+
+      // Keep Twitch emotes as-is (with potentially updated URL)
       finalSegments.push(segment);
     } else {
       // Split text by spaces and check each word
@@ -105,7 +136,7 @@ export function parseEmotesWithThirdParty(
           finalSegments.push({
             type: 'emote',
             content: word,
-            emoteUrl: emote.url,
+            emoteUrl: emote.localUrl || emote.url,
           });
         } else {
           // Regular text - parse for emojis

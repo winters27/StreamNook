@@ -108,25 +108,25 @@ export default function DropsWidget() {
   const [statistics, setStatistics] = useState<DropsStatistics | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  
+
   // Authentication state
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isAuthenticating, setIsAuthenticating] = useState(false);
   const [deviceCodeInfo, setDeviceCodeInfo] = useState<DropsDeviceCodeInfo | null>(null);
-  
+
   // Mining state
   const [miningStatus, setMiningStatus] = useState<MiningStatus | null>(null);
   const [isStartingMining, setIsStartingMining] = useState(false);
-  
+
   // UI state
   const [activeTab, setActiveTab] = useState<Tab>('campaigns');
   const [searchTerm, setSearchTerm] = useState('');
   const [lastProgressUpdate, setLastProgressUpdate] = useState<number>(0);
   const [updatedDropIds, setUpdatedDropIds] = useState<Set<string>>(new Set());
-  
+
   // Track which drop is currently being displayed for each campaign
   const [displayedDropId, setDisplayedDropId] = useState<string | null>(null);
-  
+
   // Settings state
   const [dropsSettings, setDropsSettings] = useState<any>(null);
   const [showInventory, setShowInventory] = useState(false);
@@ -135,7 +135,7 @@ export default function DropsWidget() {
 
   // Channel picker modal state
   const [channelPickerOpen, setChannelPickerOpen] = useState(false);
-  const [selectedCampaign, setSelectedCampaign] = useState<{id: string; name: string; gameName: string} | null>(null);
+  const [selectedCampaign, setSelectedCampaign] = useState<{ id: string; name: string; gameName: string } | null>(null);
 
   useEffect(() => {
     prevProgressRef.current = progress;
@@ -168,6 +168,8 @@ export default function DropsWidget() {
       return authenticated;
     } catch (err) {
       console.error('Failed to check drops authentication:', err);
+      // If check fails, assume not authenticated
+      setIsAuthenticated(false);
       return false;
     }
   };
@@ -176,12 +178,12 @@ export default function DropsWidget() {
     try {
       setIsAuthenticating(true);
       setError(null);
-      
+
       const deviceInfo = await invoke<DropsDeviceCodeInfo>('start_drops_device_flow');
       setDeviceCodeInfo(deviceInfo);
-      
+
       await open(deviceInfo.verification_uri);
-      
+
       pollForToken(deviceInfo);
     } catch (err) {
       console.error('Failed to start drops login:', err);
@@ -197,15 +199,15 @@ export default function DropsWidget() {
         interval: deviceInfo.interval,
         expiresIn: deviceInfo.expires_in,
       });
-      
+
       console.log('[DROPS AUTH] Token obtained successfully!');
-      
+
       setIsAuthenticated(true);
       setIsAuthenticating(false);
       setDeviceCodeInfo(null);
-      
+
       await new Promise(resolve => setTimeout(resolve, 1000));
-      
+
       await loadDropsData();
     } catch (err) {
       console.error('Failed to complete drops login:', err);
@@ -283,13 +285,23 @@ export default function DropsWidget() {
       if (statsData !== null) {
         setStatistics(statsData);
       }
-      
+
       if (campaignsData === null && campaigns.length > 0) {
         console.warn('Failed to refresh campaigns, keeping existing data');
       }
     } catch (err) {
       console.error('Failed to load drops data:', err);
-      setError(err instanceof Error ? err.message : String(err));
+      const errorMessage = err instanceof Error ? err.message : String(err);
+
+      // Handle authentication errors gracefully
+      if (errorMessage.includes('Not authenticated') || errorMessage.includes('No drops auth token')) {
+        setIsAuthenticated(false);
+        // Don't show error for expected auth states, just redirect to login UI via state
+        addToast('Drops session expired. Please log in again.', 'warning');
+        return;
+      }
+
+      setError(errorMessage);
     } finally {
       setIsLoading(false);
     }
@@ -317,12 +329,12 @@ export default function DropsWidget() {
         setIsLoading(false);
       }
     };
-    
+
     init();
-    
+
     let unlisten: (() => void) | undefined;
     let unlistenProgress: (() => void) | undefined;
-    
+
     let unlistenNoChannels: (() => void) | undefined;
     let unlistenChannelSwitched: (() => void) | undefined;
 
@@ -362,7 +374,7 @@ export default function DropsWidget() {
         timestamp: string;
       }>('drops-progress-update', (event) => {
         console.log('📊 Direct WebSocket progress update received in DropsWidget:', event.payload);
-        
+
         // Update the progress array with new values
         setProgress((prevProgress) => {
           const updated = prevProgress.map(p => {
@@ -376,7 +388,7 @@ export default function DropsWidget() {
             }
             return p;
           });
-          
+
           // If drop not found, check if we need to create it
           const exists = prevProgress.some(p => p.drop_id === event.payload.drop_id);
           if (!exists) {
@@ -393,17 +405,17 @@ export default function DropsWidget() {
               },
             ];
           }
-          
+
           return updated;
         });
-        
+
         // Mark this drop as recently updated for visual feedback
         setUpdatedDropIds(prev => new Set(prev).add(event.payload.drop_id));
         setLastProgressUpdate(Date.now());
       });
     };
     setupMiningListener();
-    
+
     const interval = setInterval(async () => {
       const authenticated = await checkAuthentication();
       if (authenticated) {
@@ -417,7 +429,7 @@ export default function DropsWidget() {
         }
       }
     }, 60000);
-    
+
     const handleVisibilityChange = async () => {
       if (!document.hidden) {
         try {
@@ -429,9 +441,9 @@ export default function DropsWidget() {
         }
       }
     };
-    
+
     document.addEventListener('visibilitychange', handleVisibilityChange);
-    
+
     return () => {
       clearInterval(interval);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
@@ -467,12 +479,12 @@ export default function DropsWidget() {
   const handleStartMining = async (campaignId: string) => {
     try {
       setIsStartingMining(true);
-      
+
       // When starting manual mining, disable auto mining first
       if (dropsSettings?.auto_mining_enabled) {
         await updateDropsSettings({ auto_mining_enabled: false });
       }
-      
+
       await invoke('start_campaign_mining', { campaignId });
     } catch (err) {
       console.error('Failed to start mining:', err);
@@ -493,12 +505,31 @@ export default function DropsWidget() {
 
   const updateDropsSettings = async (newSettings: Partial<any>) => {
     try {
+      // Create complete settings object with defaults to prevent "missing field" errors
+      const current = dropsSettings || {};
       const updatedSettings = {
-        ...dropsSettings,
+        auto_claim_drops: current.auto_claim_drops ?? true,
+        auto_claim_channel_points: current.auto_claim_channel_points ?? true,
+        notify_on_drop_available: current.notify_on_drop_available ?? true,
+        notify_on_drop_claimed: current.notify_on_drop_claimed ?? true,
+        notify_on_points_claimed: current.notify_on_points_claimed ?? false,
+        check_interval_seconds: current.check_interval_seconds ?? 60,
+        auto_mining_enabled: current.auto_mining_enabled ?? false,
+        priority_games: current.priority_games ?? [],
+        excluded_games: current.excluded_games ?? [],
+        priority_mode: current.priority_mode ?? 'PriorityOnly',
+        watch_interval_seconds: current.watch_interval_seconds ?? 20,
         ...newSettings,
       };
+
       await invoke('update_drops_settings', { settings: updatedSettings });
       setDropsSettings(updatedSettings);
+
+      // Sync with global store if needed
+      useAppStore.getState().updateSettings({
+        ...useAppStore.getState().settings,
+        drops: updatedSettings
+      });
     } catch (err) {
       console.error('Failed to update drops settings:', err);
       setError(err instanceof Error ? err.message : String(err));
@@ -552,7 +583,7 @@ export default function DropsWidget() {
               Authenticate with Twitch to enable drops mining and channel point collection.
             </p>
           </div>
-          
+
           {/* Device Code Display */}
           {isAuthenticating && deviceCodeInfo && (
             <div className="bg-backgroundSecondary border border-accent rounded-lg p-6 space-y-4">
@@ -581,14 +612,14 @@ export default function DropsWidget() {
               </div>
             </div>
           )}
-          
+
           {/* Error Display */}
           {error && (
             <div className="bg-red-500/10 border border-red-500/50 rounded-lg p-4">
               <div className="text-red-400 text-sm">{error}</div>
             </div>
           )}
-          
+
           {/* Login Button */}
           {!isAuthenticating && (
             <button
@@ -599,7 +630,7 @@ export default function DropsWidget() {
               <span>Connect Twitch Account</span>
             </button>
           )}
-          
+
           {/* Info Footer */}
           <div className="pt-4 border-t border-borderLight">
             <p className="text-xs text-textSecondary">
@@ -669,15 +700,15 @@ export default function DropsWidget() {
 
     try {
       setIsStartingMining(true);
-      
+
       // When starting manual mining, disable auto mining first
       if (dropsSettings?.auto_mining_enabled) {
         await updateDropsSettings({ auto_mining_enabled: false });
       }
-      
+
       if (channelId) {
         // Start mining on the selected channel
-        await invoke('start_campaign_mining_with_channel', { 
+        await invoke('start_campaign_mining_with_channel', {
           campaignId: selectedCampaign.id,
           channelId,
         });
@@ -697,7 +728,7 @@ export default function DropsWidget() {
   return (
     <>
       {showInventory && <InventoryOverlay onClose={() => setShowInventory(false)} />}
-      
+
       {/* Channel Picker Modal */}
       {selectedCampaign && (
         <ChannelPickerModal
@@ -712,662 +743,657 @@ export default function DropsWidget() {
           onStartMining={handleMiningFromModal}
         />
       )}
-      
-      <div className="flex flex-col h-full bg-background">
-      {/* Tab Navigation */}
-      <div className="flex items-center gap-2 px-4 py-3 bg-backgroundSecondary border-b border-borderLight">
-        <button
-          onClick={() => setActiveTab('campaigns')}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-all ${
-            activeTab === 'campaigns'
-              ? 'bg-glass text-textPrimary border-2 border-accent shadow-lg shadow-accent/20'
-              : 'text-textSecondary hover:text-textPrimary hover:bg-glass border-2 border-transparent'
-          }`}
-        >
-          <TrendingUp size={18} />
-          <span>Campaigns</span>
-        </button>
-        <button
-          onClick={() => setActiveTab('stats')}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-all ${
-            activeTab === 'stats'
-              ? 'bg-glass text-textPrimary border-2 border-accent shadow-lg shadow-accent/20'
-              : 'text-textSecondary hover:text-textPrimary hover:bg-glass border-2 border-transparent'
-          }`}
-        >
-          <BarChart3 size={18} />
-          <span>Stats</span>
-        </button>
-        <button
-          onClick={() => setShowInventory(true)}
-          className="flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-all text-textSecondary hover:text-textPrimary hover:bg-glass border-2 border-transparent"
-        >
-          <Package size={18} />
-          <span>Inventory</span>
-        </button>
-        <button
-          onClick={() => setActiveTab('settings')}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-all ${
-            activeTab === 'settings'
-              ? 'bg-glass text-textPrimary border-2 border-accent shadow-lg shadow-accent/20'
-              : 'text-textSecondary hover:text-textPrimary hover:bg-glass border-2 border-transparent'
-          }`}
-        >
-          <SettingsIcon size={18} />
-          <span>Settings</span>
-        </button>
-        
-        {/* Toggles */}
-        <div className="ml-auto flex items-center gap-3">
-          {/* Auto-claim Channel Points Toggle */}
-          <label className="flex items-center gap-1.5 cursor-pointer group">
-            <span className="text-xs font-medium text-textSecondary group-hover:text-textPrimary transition-colors whitespace-nowrap">
-              Channel Points
-            </span>
-            <div className="relative">
-              <input
-                type="checkbox"
-                checked={dropsSettings?.auto_claim_channel_points ?? false}
-                onChange={async (e) => {
-                  await updateDropsSettings({ auto_claim_channel_points: e.target.checked });
-                }}
-                className="sr-only peer"
-              />
-              <div className="relative w-10 h-5 bg-glass border-2 border-borderLight peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-accent/50 rounded-full peer peer-checked:after:translate-x-[1.125rem] rtl:peer-checked:after:-translate-x-[1.125rem] peer-checked:after:border-white after:content-[''] after:absolute after:top-0 after:start-0 after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-accent peer-checked:border-accent"></div>
-            </div>
-          </label>
 
-          {/* Drops Mining Toggle */}
-          <label className="flex items-center gap-1.5 cursor-pointer group">
-            <span className="text-xs font-medium text-textSecondary group-hover:text-textPrimary transition-colors whitespace-nowrap">
-              Drops Mining
-            </span>
-            <div className="relative">
-              <input
-                type="checkbox"
-                checked={dropsSettings?.auto_mining_enabled ?? false}
-                onChange={async (e) => {
-                  const isEnabled = e.target.checked;
-                  
-                  if (isEnabled) {
-                    // When enabling auto mining, stop any manual mining first
-                    if (miningStatus?.is_mining) {
+      <div className="flex flex-col h-full bg-background">
+        {/* Tab Navigation */}
+        <div className="flex items-center gap-2 px-4 py-3 bg-backgroundSecondary border-b border-borderLight">
+          <button
+            onClick={() => setActiveTab('campaigns')}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-all ${activeTab === 'campaigns'
+              ? 'bg-glass text-textPrimary border-2 border-accent shadow-lg shadow-accent/20'
+              : 'text-textSecondary hover:text-textPrimary hover:bg-glass border-2 border-transparent'
+              }`}
+          >
+            <TrendingUp size={18} />
+            <span>Campaigns</span>
+          </button>
+          <button
+            onClick={() => setActiveTab('stats')}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-all ${activeTab === 'stats'
+              ? 'bg-glass text-textPrimary border-2 border-accent shadow-lg shadow-accent/20'
+              : 'text-textSecondary hover:text-textPrimary hover:bg-glass border-2 border-transparent'
+              }`}
+          >
+            <BarChart3 size={18} />
+            <span>Stats</span>
+          </button>
+          <button
+            onClick={() => setShowInventory(true)}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-all text-textSecondary hover:text-textPrimary hover:bg-glass border-2 border-transparent"
+          >
+            <Package size={18} />
+            <span>Inventory</span>
+          </button>
+          <button
+            onClick={() => setActiveTab('settings')}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-all ${activeTab === 'settings'
+              ? 'bg-glass text-textPrimary border-2 border-accent shadow-lg shadow-accent/20'
+              : 'text-textSecondary hover:text-textPrimary hover:bg-glass border-2 border-transparent'
+              }`}
+          >
+            <SettingsIcon size={18} />
+            <span>Settings</span>
+          </button>
+
+          {/* Toggles */}
+          <div className="ml-auto flex items-center gap-3">
+            {/* Auto-claim Channel Points Toggle */}
+            <label className="flex items-center gap-1.5 cursor-pointer group">
+              <span className="text-xs font-medium text-textSecondary group-hover:text-textPrimary transition-colors whitespace-nowrap">
+                Channel Points
+              </span>
+              <div className="relative">
+                <input
+                  type="checkbox"
+                  checked={dropsSettings?.auto_claim_channel_points ?? false}
+                  onChange={async (e) => {
+                    await updateDropsSettings({ auto_claim_channel_points: e.target.checked });
+                  }}
+                  className="sr-only peer"
+                />
+                <div className="relative w-10 h-5 bg-glass border-2 border-borderLight peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-accent/50 rounded-full peer peer-checked:after:translate-x-[1.125rem] rtl:peer-checked:after:-translate-x-[1.125rem] peer-checked:after:border-white after:content-[''] after:absolute after:top-0 after:start-0 after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-accent peer-checked:border-accent"></div>
+              </div>
+            </label>
+
+            {/* Drops Mining Toggle */}
+            <label className="flex items-center gap-1.5 cursor-pointer group">
+              <span className="text-xs font-medium text-textSecondary group-hover:text-textPrimary transition-colors whitespace-nowrap">
+                Drops Mining
+              </span>
+              <div className="relative">
+                <input
+                  type="checkbox"
+                  checked={dropsSettings?.auto_mining_enabled ?? false}
+                  onChange={async (e) => {
+                    const isEnabled = e.target.checked;
+
+                    if (isEnabled) {
+                      // When enabling auto mining, stop any manual mining first
+                      if (miningStatus?.is_mining) {
+                        await handleStopMining();
+                      }
+
+                      try {
+                        // Update settings first
+                        await updateDropsSettings({ auto_mining_enabled: true });
+                        // Then start mining
+                        await invoke('start_auto_mining');
+                      } catch (err) {
+                        console.error('Failed to start auto mining:', err);
+                        setError(err instanceof Error ? err.message : String(err));
+                        // Revert the setting if starting failed
+                        await updateDropsSettings({ auto_mining_enabled: false });
+                      }
+                    } else {
+                      // When disabling auto mining, update settings FIRST to prevent auto-restart
+                      await updateDropsSettings({ auto_mining_enabled: false });
+                      // Then stop the mining
                       await handleStopMining();
                     }
-                    
-                    try {
-                      // Update settings first
-                      await updateDropsSettings({ auto_mining_enabled: true });
-                      // Then start mining
-                      await invoke('start_auto_mining');
-                    } catch (err) {
-                      console.error('Failed to start auto mining:', err);
-                      setError(err instanceof Error ? err.message : String(err));
-                      // Revert the setting if starting failed
-                      await updateDropsSettings({ auto_mining_enabled: false });
-                    }
-                  } else {
-                    // When disabling auto mining, update settings FIRST to prevent auto-restart
-                    await updateDropsSettings({ auto_mining_enabled: false });
-                    // Then stop the mining
-                    await handleStopMining();
-                  }
-                }}
-                className="sr-only peer"
-              />
-              <div className="relative w-10 h-5 bg-glass border-2 border-borderLight peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-accent/50 rounded-full peer peer-checked:after:translate-x-[1.125rem] rtl:peer-checked:after:-translate-x-[1.125rem] peer-checked:after:border-white after:content-[''] after:absolute after:top-0 after:start-0 after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-accent peer-checked:border-accent"></div>
-            </div>
-          </label>
-          
-          <button
-            onClick={handleDropsLogout}
-            className="px-3 py-2 text-textSecondary hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-all text-sm"
-            title="Logout from drops authentication"
-          >
-            Logout
-          </button>
-        </div>
-      </div>
+                  }}
+                  className="sr-only peer"
+                />
+                <div className="relative w-10 h-5 bg-glass border-2 border-borderLight peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-accent/50 rounded-full peer peer-checked:after:translate-x-[1.125rem] rtl:peer-checked:after:-translate-x-[1.125rem] peer-checked:after:border-white after:content-[''] after:absolute after:top-0 after:start-0 after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-accent peer-checked:border-accent"></div>
+              </div>
+            </label>
 
-      {/* Tab Content - Campaigns */}
-      {activeTab === 'campaigns' && (
-        <>
-          <div className="p-4 border-b border-borderLight">
-            <div className="relative">
-              <input
-                type="text"
-                placeholder="Search campaigns by name or game..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full glass-input px-4 py-2 text-sm text-textPrimary"
-              />
-            </div>
+            <button
+              onClick={handleDropsLogout}
+              className="px-3 py-2 text-textSecondary hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-all text-sm"
+              title="Logout from drops authentication"
+            >
+              Logout
+            </button>
           </div>
+        </div>
 
-          <div className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar">
-            {filteredCampaigns
-              .sort((a, b) => {
-                if (miningStatus?.is_mining && miningStatus.current_campaign === a.name) return -1;
-                if (miningStatus?.is_mining && miningStatus.current_campaign === b.name) return 1;
-                return 0;
-              })
-              .map(campaign => {
-                const isActiveMining = miningStatus?.is_mining && miningStatus.current_campaign === campaign.name;
-                
-                return (
-                  <div
-                    key={campaign.id}
-                    className={`bg-backgroundSecondary rounded-lg overflow-hidden border transition-colors relative ${
-                      isActiveMining 
-                        ? 'border-green-500 shadow-lg shadow-green-500/20' 
+        {/* Tab Content - Campaigns */}
+        {activeTab === 'campaigns' && (
+          <>
+            <div className="p-4 border-b border-borderLight">
+              <div className="relative">
+                <input
+                  type="text"
+                  placeholder="Search campaigns by name or game..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="w-full glass-input px-4 py-2 text-sm text-textPrimary"
+                />
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar">
+              {filteredCampaigns
+                .sort((a, b) => {
+                  if (miningStatus?.is_mining && miningStatus.current_campaign === a.name) return -1;
+                  if (miningStatus?.is_mining && miningStatus.current_campaign === b.name) return 1;
+                  return 0;
+                })
+                .map(campaign => {
+                  const isActiveMining = miningStatus?.is_mining && miningStatus.current_campaign === campaign.name;
+
+                  return (
+                    <div
+                      key={campaign.id}
+                      className={`bg-backgroundSecondary rounded-lg overflow-hidden border transition-colors relative ${isActiveMining
+                        ? 'border-green-500 shadow-lg shadow-green-500/20'
                         : 'border-borderLight hover:border-accent'
-                    }`}
-                  >
-                    {isActiveMining && (
-                      <div className="absolute inset-0 opacity-10 pointer-events-none overflow-hidden">
-                        <div 
-                          className="absolute inset-0 animate-shimmer"
-                          style={{
-                            background: 'linear-gradient(90deg, transparent 0%, transparent 25%, rgba(34, 197, 94, 0.3) 40%, rgba(34, 197, 94, 0.8) 50%, rgba(34, 197, 94, 0.3) 60%, transparent 75%, transparent 100%)',
-                            backgroundSize: '200% 100%',
-                          }}
+                        }`}
+                    >
+                      {isActiveMining && (
+                        <div className="absolute inset-0 opacity-10 pointer-events-none overflow-hidden">
+                          <div
+                            className="absolute inset-0 animate-shimmer"
+                            style={{
+                              background: 'linear-gradient(90deg, transparent 0%, transparent 25%, rgba(34, 197, 94, 0.3) 40%, rgba(34, 197, 94, 0.8) 50%, rgba(34, 197, 94, 0.3) 60%, transparent 75%, transparent 100%)',
+                              backgroundSize: '200% 100%',
+                            }}
+                          />
+                        </div>
+                      )}
+                      <div className="flex gap-3 p-3">
+                        <img
+                          src={campaign.image_url}
+                          alt={`${campaign.name} campaign image`}
+                          className="w-12 h-16 rounded object-cover"
                         />
-                      </div>
-                    )}
-                    <div className="flex gap-3 p-3">
-                      <img
-                        src={campaign.image_url}
-                        alt={`${campaign.name} campaign image`}
-                        className="w-12 h-16 rounded object-cover"
-                      />
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="flex-1 min-w-0">
-                            <h3 className="font-semibold text-textPrimary truncate">{campaign.name}</h3>
-                            <p className="text-sm text-accent">{campaign.game_name}</p>
-                            <p className="text-xs text-textSecondary mt-1 line-clamp-2">
-                              {campaign.description}
-                            </p>
-                            {campaign.details_url && (
-                              <button
-                                onClick={async () => {
-                                  try {
-                                    await invoke('open_drop_details', { url: campaign.details_url });
-                                  } catch (err) {
-                                    console.error('Failed to open drop details:', err);
-                                  }
-                                }}
-                                className="mt-2 inline-flex items-center gap-1 text-xs text-accent hover:text-accentHover transition-colors"
-                              >
-                                <ExternalLink size={12} />
-                                <span>About this drop</span>
-                              </button>
-                            )}
-                          </div>
-                          <div className="flex-shrink-0">
-                            {isActiveMining ? (
-                              <button
-                                onClick={handleStopMining}
-                                className="p-2 bg-glass hover:bg-glassHover border border-borderLight hover:border-red-400/50 text-textPrimary hover:text-red-400 rounded transition-all hover:shadow-lg hover:shadow-red-400/20"
-                                title="Pause mining"
-                              >
-                                <Pause size={16} />
-                              </button>
-                            ) : (
-                              <button
-                                onClick={() => {
-                                  setSelectedCampaign({
-                                    id: campaign.id,
-                                    name: campaign.name,
-                                    gameName: campaign.game_name,
-                                  });
-                                  setChannelPickerOpen(true);
-                                }}
-                                disabled={isStartingMining || (miningStatus?.is_mining || false)}
-                                className="p-2 bg-glass hover:bg-glassHover border border-borderLight hover:border-accent/50 text-textPrimary hover:text-accent rounded transition-all disabled:opacity-50 disabled:cursor-not-allowed hover:shadow-lg hover:shadow-accent/20"
-                                title="Start mining"
-                              >
-                                <Play size={16} />
-                              </button>
-                            )}
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="flex-1 min-w-0">
+                              <h3 className="font-semibold text-textPrimary truncate">{campaign.name}</h3>
+                              <p className="text-sm text-accent">{campaign.game_name}</p>
+                              <p className="text-xs text-textSecondary mt-1 line-clamp-2">
+                                {campaign.description}
+                              </p>
+                              {campaign.details_url && (
+                                <button
+                                  onClick={async () => {
+                                    try {
+                                      await invoke('open_drop_details', { url: campaign.details_url });
+                                    } catch (err) {
+                                      console.error('Failed to open drop details:', err);
+                                    }
+                                  }}
+                                  className="mt-2 inline-flex items-center gap-1 text-xs text-accent hover:text-accentHover transition-colors"
+                                >
+                                  <ExternalLink size={12} />
+                                  <span>About this drop</span>
+                                </button>
+                              )}
+                            </div>
+                            <div className="flex-shrink-0">
+                              {isActiveMining ? (
+                                <button
+                                  onClick={handleStopMining}
+                                  className="p-2 bg-glass hover:bg-glassHover border border-borderLight hover:border-red-400/50 text-textPrimary hover:text-red-400 rounded transition-all hover:shadow-lg hover:shadow-red-400/20"
+                                  title="Pause mining"
+                                >
+                                  <Pause size={16} />
+                                </button>
+                              ) : (
+                                <button
+                                  onClick={() => {
+                                    setSelectedCampaign({
+                                      id: campaign.id,
+                                      name: campaign.name,
+                                      gameName: campaign.game_name,
+                                    });
+                                    setChannelPickerOpen(true);
+                                  }}
+                                  disabled={isStartingMining || (miningStatus?.is_mining || false)}
+                                  className="p-2 bg-glass hover:bg-glassHover border border-borderLight hover:border-accent/50 text-textPrimary hover:text-accent rounded transition-all disabled:opacity-50 disabled:cursor-not-allowed hover:shadow-lg hover:shadow-accent/20"
+                                  title="Start mining"
+                                >
+                                  <Play size={16} />
+                                </button>
+                              )}
+                            </div>
                           </div>
                         </div>
                       </div>
-                    </div>
 
-                    {isActiveMining && (
-                      <div className="px-3 pb-3">
-                        <div className="bg-green-500/10 border border-green-500/30 rounded-lg p-3 space-y-2">
-                          <div className="flex items-center justify-between">
-                            <span className="text-green-400 font-medium text-xs flex items-center gap-1.5">
-                              <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
-                              {miningStatus.current_channel?.display_name || miningStatus.current_channel?.name ? 
-                                `Mining: ${miningStatus.current_channel.display_name || miningStatus.current_channel.name}` : 
-                                'Mining Active'}
-                            </span>
+                      {isActiveMining && (
+                        <div className="px-3 pb-3">
+                          <div className="bg-green-500/10 border border-green-500/30 rounded-lg p-3 space-y-2">
+                            <div className="flex items-center justify-between">
+                              <span className="text-green-400 font-medium text-xs flex items-center gap-1.5">
+                                <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+                                {miningStatus.current_channel?.display_name || miningStatus.current_channel?.name ?
+                                  `Mining: ${miningStatus.current_channel.display_name || miningStatus.current_channel.name}` :
+                                  'Mining Active'}
+                              </span>
+                              {(() => {
+                                // Show completed/in-progress
+                                const completedDrops = campaign.time_based_drops.filter(drop => {
+                                  const dropProg = getDropProgress(drop.id);
+                                  return dropProg && dropProg.is_claimed;
+                                }).length;
+                                const inProgressDrops = campaign.time_based_drops.filter(drop => {
+                                  const dropProg = getDropProgress(drop.id);
+                                  return dropProg && !dropProg.is_claimed && dropProg.current_minutes_watched > 0;
+                                }).length;
+
+                                return (
+                                  <span className="text-xs bg-green-500/20 text-green-400 px-2 py-0.5 rounded font-medium">
+                                    {completedDrops}/{inProgressDrops}
+                                  </span>
+                                );
+                              })()}
+                            </div>
                             {(() => {
-                              // Show completed/in-progress
-                              const completedDrops = campaign.time_based_drops.filter(drop => {
-                                const dropProg = getDropProgress(drop.id);
-                                return dropProg && dropProg.is_claimed;
-                              }).length;
-                              const inProgressDrops = campaign.time_based_drops.filter(drop => {
-                                const dropProg = getDropProgress(drop.id);
-                                return dropProg && !dropProg.is_claimed && dropProg.current_minutes_watched > 0;
-                              }).length;
-                              
+                              // Get all drops with progress
+                              const dropsWithProgress = campaign.time_based_drops
+                                .map(drop => {
+                                  const dropProg = getDropProgress(drop.id);
+                                  if (dropProg && !dropProg.is_claimed) {
+                                    const progressPercent = (dropProg.current_minutes_watched / dropProg.required_minutes_watched) * 100;
+                                    return {
+                                      drop,
+                                      progress: dropProg,
+                                      progressPercent,
+                                    };
+                                  }
+                                  return null;
+                                })
+                                .filter(Boolean) as Array<{
+                                  drop: TimeBasedDrop;
+                                  progress: DropProgress;
+                                  progressPercent: number;
+                                }>;
+
+                              // Sort by highest percentage first
+                              dropsWithProgress.sort((a, b) => b.progressPercent - a.progressPercent);
+
+                              // Determine which drop to display
+                              let dropToDisplay = dropsWithProgress[0];
+
+                              if (displayedDropId) {
+                                // Check if currently displayed drop still has progress
+                                const currentlyDisplayed = dropsWithProgress.find(d => d.drop.id === displayedDropId);
+                                if (currentlyDisplayed) {
+                                  // Stick with it unless it's completed
+                                  dropToDisplay = currentlyDisplayed;
+                                }
+                              }
+
+                              // Update the displayed drop ID if we're showing something new
+                              if (dropToDisplay && dropToDisplay.drop.id !== displayedDropId) {
+                                setDisplayedDropId(dropToDisplay.drop.id);
+                              }
+
+                              // Show the selected drop
+                              if (dropToDisplay) {
+                                const { drop: activeDropWithProgress, progress: dropProg, progressPercent } = dropToDisplay;
+
+                                return (
+                                  <>
+                                    <div className="flex items-center justify-between mb-1">
+                                      <span className="text-xs text-textSecondary">{activeDropWithProgress.name}</span>
+                                      <span className={`text-xs ${updatedDropIds.has(activeDropWithProgress.id) ? 'text-green-400 font-semibold' : 'text-textSecondary'} transition-colors duration-300`}>
+                                        {progressPercent.toFixed(0)}%
+                                      </span>
+                                    </div>
+                                    <div className="relative">
+                                      <div className="w-full bg-background rounded-full h-1.5">
+                                        <div
+                                          className={`bg-green-500 h-full rounded-full transition-all duration-300 ${updatedDropIds.has(activeDropWithProgress.id) ? 'animate-pulse' : ''}`}
+                                          style={{ width: `${progressPercent}%` }}
+                                        />
+                                      </div>
+                                      {updatedDropIds.has(activeDropWithProgress.id) && (
+                                        <div className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 bg-green-500 rounded-full animate-ping"></div>
+                                      )}
+                                    </div>
+                                    <div className="text-xs text-textSecondary">
+                                      {dropProg.current_minutes_watched}/{dropProg.required_minutes_watched} min
+                                      {dropsWithProgress.length > 1 && (
+                                        <span className="ml-2 text-green-400">
+                                          (+{dropsWithProgress.length - 1} more)
+                                        </span>
+                                      )}
+                                    </div>
+                                  </>
+                                );
+                              }
+
+                              // Fallback: Check ALL progress entries for any with minutes > 0 (WebSocket-created entries)
+                              const allProgressWithMinutes = progress
+                                .filter(p => p.current_minutes_watched > 0 && !p.is_claimed)
+                                .map(p => ({
+                                  progress: p,
+                                  remainingMinutes: p.required_minutes_watched - p.current_minutes_watched,
+                                }))
+                                .sort((a, b) => a.remainingMinutes - b.remainingMinutes);
+
+                              if (allProgressWithMinutes.length > 0) {
+                                const { progress: anyProgressEntry } = allProgressWithMinutes[0];
+                                const dropDetails = campaign.time_based_drops.find(d => d.id === anyProgressEntry.drop_id);
+                                const progressPercent = (anyProgressEntry.current_minutes_watched / anyProgressEntry.required_minutes_watched) * 100;
+
+                                return (
+                                  <>
+                                    <div className="flex items-center justify-between mb-1">
+                                      <span className="text-xs text-textSecondary">
+                                        {dropDetails?.name || 'Drop in progress'}
+                                      </span>
+                                      <span className={`text-xs ${updatedDropIds.has(anyProgressEntry.drop_id) ? 'text-green-400 font-semibold' : 'text-textSecondary'} transition-colors duration-300`}>
+                                        {progressPercent.toFixed(0)}%
+                                      </span>
+                                    </div>
+                                    <div className="relative">
+                                      <div className="w-full bg-background rounded-full h-1.5">
+                                        <div
+                                          className={`bg-green-500 h-full rounded-full transition-all duration-300 ${updatedDropIds.has(anyProgressEntry.drop_id) ? 'animate-pulse' : ''}`}
+                                          style={{ width: `${progressPercent}%` }}
+                                        />
+                                      </div>
+                                      {updatedDropIds.has(anyProgressEntry.drop_id) && (
+                                        <div className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 bg-green-500 rounded-full animate-ping"></div>
+                                      )}
+                                    </div>
+                                    <div className="text-xs text-textSecondary">
+                                      {anyProgressEntry.current_minutes_watched}/{anyProgressEntry.required_minutes_watched} min
+                                      {allProgressWithMinutes.length > 1 && (
+                                        <span className="ml-2 text-green-400">
+                                          (+{allProgressWithMinutes.length - 1} more)
+                                        </span>
+                                      )}
+                                    </div>
+                                  </>
+                                );
+                              }
+
+                              // No progress yet - show initializing message
                               return (
-                                <span className="text-xs bg-green-500/20 text-green-400 px-2 py-0.5 rounded font-medium">
-                                  {completedDrops}/{inProgressDrops}
-                                </span>
+                                <div className="text-xs text-textSecondary text-center py-1">
+                                  Initializing... progress will appear shortly
+                                </div>
                               );
                             })()}
                           </div>
-                          {(() => {
-                            // Get all drops with progress
-                            const dropsWithProgress = campaign.time_based_drops
-                              .map(drop => {
-                                const dropProg = getDropProgress(drop.id);
-                                if (dropProg && !dropProg.is_claimed) {
-                                  const progressPercent = (dropProg.current_minutes_watched / dropProg.required_minutes_watched) * 100;
-                                  return {
-                                    drop,
-                                    progress: dropProg,
-                                    progressPercent,
-                                  };
-                                }
-                                return null;
-                              })
-                              .filter(Boolean) as Array<{
-                                drop: TimeBasedDrop;
-                                progress: DropProgress;
-                                progressPercent: number;
-                              }>;
-                            
-                            // Sort by highest percentage first
-                            dropsWithProgress.sort((a, b) => b.progressPercent - a.progressPercent);
-                            
-                            // Determine which drop to display
-                            let dropToDisplay = dropsWithProgress[0];
-                            
-                            if (displayedDropId) {
-                              // Check if currently displayed drop still has progress
-                              const currentlyDisplayed = dropsWithProgress.find(d => d.drop.id === displayedDropId);
-                              if (currentlyDisplayed) {
-                                // Stick with it unless it's completed
-                                dropToDisplay = currentlyDisplayed;
-                              }
-                            }
-                            
-                            // Update the displayed drop ID if we're showing something new
-                            if (dropToDisplay && dropToDisplay.drop.id !== displayedDropId) {
-                              setDisplayedDropId(dropToDisplay.drop.id);
-                            }
-                            
-                            // Show the selected drop
-                            if (dropToDisplay) {
-                              const { drop: activeDropWithProgress, progress: dropProg, progressPercent } = dropToDisplay;
-                              
-                              return (
-                                <>
-                                  <div className="flex items-center justify-between mb-1">
-                                    <span className="text-xs text-textSecondary">{activeDropWithProgress.name}</span>
-                                    <span className={`text-xs ${updatedDropIds.has(activeDropWithProgress.id) ? 'text-green-400 font-semibold' : 'text-textSecondary'} transition-colors duration-300`}>
-                                      {progressPercent.toFixed(0)}%
-                                    </span>
-                                  </div>
-                                  <div className="relative">
-                                    <div className="w-full bg-background rounded-full h-1.5">
-                                      <div
-                                        className={`bg-green-500 h-full rounded-full transition-all duration-300 ${updatedDropIds.has(activeDropWithProgress.id) ? 'animate-pulse' : ''}`}
-                                        style={{ width: `${progressPercent}%` }}
-                                      />
-                                    </div>
-                                    {updatedDropIds.has(activeDropWithProgress.id) && (
-                                      <div className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 bg-green-500 rounded-full animate-ping"></div>
-                                    )}
-                                  </div>
-                                  <div className="text-xs text-textSecondary">
-                                    {dropProg.current_minutes_watched}/{dropProg.required_minutes_watched} min
-                                    {dropsWithProgress.length > 1 && (
-                                      <span className="ml-2 text-green-400">
-                                        (+{dropsWithProgress.length - 1} more)
-                                      </span>
-                                    )}
-                                  </div>
-                                </>
-                              );
-                            }
-                            
-                            // Fallback: Check ALL progress entries for any with minutes > 0 (WebSocket-created entries)
-                            const allProgressWithMinutes = progress
-                              .filter(p => p.current_minutes_watched > 0 && !p.is_claimed)
-                              .map(p => ({
-                                progress: p,
-                                remainingMinutes: p.required_minutes_watched - p.current_minutes_watched,
-                              }))
-                              .sort((a, b) => a.remainingMinutes - b.remainingMinutes);
-                            
-                            if (allProgressWithMinutes.length > 0) {
-                              const { progress: anyProgressEntry } = allProgressWithMinutes[0];
-                              const dropDetails = campaign.time_based_drops.find(d => d.id === anyProgressEntry.drop_id);
-                              const progressPercent = (anyProgressEntry.current_minutes_watched / anyProgressEntry.required_minutes_watched) * 100;
-                              
-                              return (
-                                <>
-                                  <div className="flex items-center justify-between mb-1">
-                                    <span className="text-xs text-textSecondary">
-                                      {dropDetails?.name || 'Drop in progress'}
-                                    </span>
-                                    <span className={`text-xs ${updatedDropIds.has(anyProgressEntry.drop_id) ? 'text-green-400 font-semibold' : 'text-textSecondary'} transition-colors duration-300`}>
-                                      {progressPercent.toFixed(0)}%
-                                    </span>
-                                  </div>
-                                  <div className="relative">
-                                    <div className="w-full bg-background rounded-full h-1.5">
-                                      <div
-                                        className={`bg-green-500 h-full rounded-full transition-all duration-300 ${updatedDropIds.has(anyProgressEntry.drop_id) ? 'animate-pulse' : ''}`}
-                                        style={{ width: `${progressPercent}%` }}
-                                      />
-                                    </div>
-                                    {updatedDropIds.has(anyProgressEntry.drop_id) && (
-                                      <div className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 bg-green-500 rounded-full animate-ping"></div>
-                                    )}
-                                  </div>
-                                  <div className="text-xs text-textSecondary">
-                                    {anyProgressEntry.current_minutes_watched}/{anyProgressEntry.required_minutes_watched} min
-                                    {allProgressWithMinutes.length > 1 && (
-                                      <span className="ml-2 text-green-400">
-                                        (+{allProgressWithMinutes.length - 1} more)
-                                      </span>
-                                    )}
-                                  </div>
-                                </>
-                              );
-                            }
-                            
-                            // No progress yet - show initializing message
-                            return (
-                              <div className="text-xs text-textSecondary text-center py-1">
-                                Initializing... progress will appear shortly
-                              </div>
-                            );
-                          })()}
                         </div>
-                      </div>
-                    )}
+                      )}
 
-                    <div className="space-y-2 p-3 pt-0">
-                      {campaign.time_based_drops.map(drop => {
-                        const dropProgress = getDropProgress(drop.id);
-                        const progressPercent = dropProgress
-                          ? (dropProgress.current_minutes_watched / dropProgress.required_minutes_watched) * 100
-                          : 0;
-                        const isClaimed = dropProgress?.is_claimed || false;
-                        const isComplete = progressPercent >= 100 && !isClaimed;
+                      <div className="space-y-2 p-3 pt-0">
+                        {campaign.time_based_drops.map(drop => {
+                          const dropProgress = getDropProgress(drop.id);
+                          const progressPercent = dropProgress
+                            ? (dropProgress.current_minutes_watched / dropProgress.required_minutes_watched) * 100
+                            : 0;
+                          const isClaimed = dropProgress?.is_claimed || false;
+                          const isComplete = progressPercent >= 100 && !isClaimed;
 
-                        return (
-                          <div
-                            key={drop.id}
-                            className="bg-background rounded p-2 border border-borderLight flex items-center gap-3"
-                          >
-                            {drop.benefit_edges[0] && (
-                              <img
-                                src={drop.benefit_edges[0].image_url}
-                                alt={drop.benefit_edges[0].name}
-                                className="w-10 h-12 rounded object-cover"
-                              />
-                            )}
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center justify-between mb-1">
-                                <h4 className="font-medium text-textPrimary text-xs truncate">
-                                  {drop.name}
-                                </h4>
-                                {isClaimed && (
-                                  <span className="text-xs bg-green-500/20 text-green-400 px-2 py-0.5 rounded">
-                                    ✓ Claimed
-                                  </span>
-                                )}
-                                {isComplete && (
-                                  <button
-                                    onClick={() => handleClaimDrop(drop.id)}
-                                    className="text-xs bg-accent hover:bg-accentHover text-white px-2 py-0.5 rounded transition-colors"
-                                  >
-                                    Claim
-                                  </button>
-                                )}
-                              </div>
-                              
-                              <div className="relative">
-                                <div className="w-full bg-backgroundSecondary rounded-full h-1.5 mb-1">
-                                  <div
-                                    className={`h-full rounded-full transition-all duration-300 ${
-                                      updatedDropIds.has(drop.id) ? 'animate-pulse' : ''
-                                    } ${isClaimed ? 'bg-green-500' : 'bg-accent'}`}
-                                    style={{ width: `${Math.min(100, progressPercent)}%` }}
-                                  />
+                          return (
+                            <div
+                              key={drop.id}
+                              className="bg-background rounded p-2 border border-borderLight flex items-center gap-3"
+                            >
+                              {drop.benefit_edges[0] && (
+                                <img
+                                  src={drop.benefit_edges[0].image_url}
+                                  alt={drop.benefit_edges[0].name}
+                                  className="w-10 h-12 rounded object-cover"
+                                />
+                              )}
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center justify-between mb-1">
+                                  <h4 className="font-medium text-textPrimary text-xs truncate">
+                                    {drop.name}
+                                  </h4>
+                                  {isClaimed && (
+                                    <span className="text-xs bg-green-500/20 text-green-400 px-2 py-0.5 rounded">
+                                      ✓ Claimed
+                                    </span>
+                                  )}
+                                  {isComplete && (
+                                    <button
+                                      onClick={() => handleClaimDrop(drop.id)}
+                                      className="text-xs bg-accent hover:bg-accentHover text-white px-2 py-0.5 rounded transition-colors"
+                                    >
+                                      Claim
+                                    </button>
+                                  )}
                                 </div>
-                                {updatedDropIds.has(drop.id) && (
-                                  <div className="absolute top-0 -right-0.5 w-1.5 h-1.5 bg-green-500 rounded-full animate-ping"></div>
-                                )}
-                              </div>
-                              <div className="flex justify-between text-xs text-textSecondary">
-                                <span>{dropProgress?.current_minutes_watched || 0}/{drop.required_minutes_watched} min</span>
-                                <span className={updatedDropIds.has(drop.id) ? 'text-green-400 font-semibold' : ''}>
-                                  {Math.min(100, Math.round(progressPercent))}%
-                                </span>
+
+                                <div className="relative">
+                                  <div className="w-full bg-backgroundSecondary rounded-full h-1.5 mb-1">
+                                    <div
+                                      className={`h-full rounded-full transition-all duration-300 ${updatedDropIds.has(drop.id) ? 'animate-pulse' : ''
+                                        } ${isClaimed ? 'bg-green-500' : 'bg-accent'}`}
+                                      style={{ width: `${Math.min(100, progressPercent)}%` }}
+                                    />
+                                  </div>
+                                  {updatedDropIds.has(drop.id) && (
+                                    <div className="absolute top-0 -right-0.5 w-1.5 h-1.5 bg-green-500 rounded-full animate-ping"></div>
+                                  )}
+                                </div>
+                                <div className="flex justify-between text-xs text-textSecondary">
+                                  <span>{dropProgress?.current_minutes_watched || 0}/{drop.required_minutes_watched} min</span>
+                                  <span className={updatedDropIds.has(drop.id) ? 'text-green-400 font-semibold' : ''}>
+                                    {Math.min(100, Math.round(progressPercent))}%
+                                  </span>
+                                </div>
                               </div>
                             </div>
-                          </div>
-                        );
-                      })}
+                          );
+                        })}
+                      </div>
                     </div>
-                  </div>
-                );
-              })}
-          </div>
-        </>
-      )}
-
-      {/* Tab Content - Stats */}
-      {activeTab === 'stats' && statistics && (
-        <div className="flex-1 overflow-y-auto p-6 custom-scrollbar">
-          <div className="max-w-2xl mx-auto space-y-6">
-            <h3 className="text-xl font-bold text-textPrimary mb-4">Statistics Overview</h3>
-            
-            <div className="grid grid-cols-2 gap-4">
-              <div className="bg-backgroundSecondary rounded-lg p-6 border border-borderLight text-center">
-                <div className="text-4xl font-bold text-accent mb-2">{statistics.total_drops_claimed}</div>
-                <div className="text-sm text-textSecondary">Total Drops Claimed</div>
-              </div>
-              
-              <div className="bg-backgroundSecondary rounded-lg p-6 border border-borderLight text-center">
-                <div className="text-4xl font-bold text-accent mb-2">{statistics.total_channel_points_earned.toLocaleString()}</div>
-                <div className="text-sm text-textSecondary">Channel Points Earned</div>
-              </div>
-              
-              <div className="bg-backgroundSecondary rounded-lg p-6 border border-borderLight text-center">
-                <div className="text-4xl font-bold text-accent mb-2">{statistics.active_campaigns}</div>
-                <div className="text-sm text-textSecondary">Active Campaigns</div>
-              </div>
-              
-              <div className="bg-backgroundSecondary rounded-lg p-6 border border-borderLight text-center">
-                <div className="text-4xl font-bold text-accent mb-2">{statistics.drops_in_progress}</div>
-                <div className="text-sm text-textSecondary">Drops In Progress</div>
-              </div>
+                  );
+                })}
             </div>
+          </>
+        )}
 
-            {miningStatus?.is_mining && (
-              <div className="bg-green-500/10 border border-green-500/30 rounded-lg p-6">
-                <h4 className="text-lg font-semibold text-green-400 mb-4 flex items-center gap-2">
-                  <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse"></div>
-                  Currently Mining
-                </h4>
-                <div className="space-y-3 text-sm">
-                  <div className="flex justify-between">
-                    <span className="text-textSecondary">Channel:</span>
-                    <span className="text-textPrimary font-medium">
-                      {miningStatus.current_channel?.display_name || miningStatus.current_channel?.name}
-                    </span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-textSecondary">Campaign:</span>
-                    <span className="text-textPrimary font-medium">{miningStatus.current_campaign}</span>
-                  </div>
-                  {miningStatus.current_drop && (
-                    <div className="flex justify-between">
-                      <span className="text-textSecondary">Current Drop:</span>
-                      <span className="text-textPrimary font-medium">{miningStatus.current_drop.drop_name}</span>
-                    </div>
-                  )}
+        {/* Tab Content - Stats */}
+        {activeTab === 'stats' && statistics && (
+          <div className="flex-1 overflow-y-auto p-6 custom-scrollbar">
+            <div className="max-w-2xl mx-auto space-y-6">
+              <h3 className="text-xl font-bold text-textPrimary mb-4">Statistics Overview</h3>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="bg-backgroundSecondary rounded-lg p-6 border border-borderLight text-center">
+                  <div className="text-4xl font-bold text-accent mb-2">{statistics.total_drops_claimed}</div>
+                  <div className="text-sm text-textSecondary">Total Drops Claimed</div>
+                </div>
+
+                <div className="bg-backgroundSecondary rounded-lg p-6 border border-borderLight text-center">
+                  <div className="text-4xl font-bold text-accent mb-2">{statistics.total_channel_points_earned.toLocaleString()}</div>
+                  <div className="text-sm text-textSecondary">Channel Points Earned</div>
+                </div>
+
+                <div className="bg-backgroundSecondary rounded-lg p-6 border border-borderLight text-center">
+                  <div className="text-4xl font-bold text-accent mb-2">{statistics.active_campaigns}</div>
+                  <div className="text-sm text-textSecondary">Active Campaigns</div>
+                </div>
+
+                <div className="bg-backgroundSecondary rounded-lg p-6 border border-borderLight text-center">
+                  <div className="text-4xl font-bold text-accent mb-2">{statistics.drops_in_progress}</div>
+                  <div className="text-sm text-textSecondary">Drops In Progress</div>
                 </div>
               </div>
-            )}
 
-            {/* Channel Points Leaderboard */}
-            <div className="bg-backgroundSecondary rounded-lg p-6 border border-borderLight">
-              <ChannelPointsLeaderboard 
-                onStreamClick={(_channelName) => {
-                  // Close the drops overlay and start the stream
-                  useAppStore.getState().setShowDropsOverlay(false);
-                }}
-              />
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Tab Content - Settings */}
-      {activeTab === 'settings' && dropsSettings && (
-        <div className="flex-1 overflow-y-auto p-6 custom-scrollbar">
-          <div className="max-w-2xl mx-auto space-y-6">
-            <h3 className="text-xl font-bold text-textPrimary mb-4">Mining Settings</h3>
-
-            {/* Priority Mode */}
-            <div className="bg-backgroundSecondary rounded-lg p-6 border border-borderLight">
-              <h4 className="text-base font-semibold text-textPrimary mb-3">Priority Mode</h4>
-              <select
-                value={dropsSettings.priority_mode ?? 'PriorityOnly'}
-                onChange={(e) => updateDropsSettings({ priority_mode: e.target.value })}
-                className="w-full px-4 py-2 bg-background border border-border rounded-lg text-textPrimary"
-              >
-                <option value="PriorityOnly">Priority Games Only</option>
-                <option value="EndingSoonest">Campaigns Ending Soonest</option>
-                <option value="LowAvailFirst">Low Availability First</option>
-              </select>
-              <p className="text-sm text-textSecondary mt-2">
-                How to select which campaigns to mine
-              </p>
-            </div>
-
-            {/* Priority Games */}
-            <div className="bg-backgroundSecondary rounded-lg p-6 border border-borderLight">
-              <h4 className="text-base font-semibold text-textPrimary mb-3">Priority Games</h4>
-              <p className="text-sm text-textSecondary mb-4">
-                Games will be mined in the order listed below
-              </p>
-              
-              <div className="space-y-2 mb-4">
-                {(dropsSettings.priority_games || []).map((game: string, index: number) => (
-                  <div key={index} className="flex items-center gap-3 bg-background p-3 rounded-lg">
-                    <span className="text-textSecondary font-mono text-sm w-8">{index + 1}.</span>
-                    <span className="text-textPrimary flex-1">{game}</span>
-                    <button
-                      onClick={() => removePriorityGame(index)}
-                      className="text-red-400 hover:text-red-300 text-sm px-3 py-1 hover:bg-red-500/10 rounded transition-colors"
-                    >
-                      Remove
-                    </button>
+              {miningStatus?.is_mining && (
+                <div className="bg-green-500/10 border border-green-500/30 rounded-lg p-6">
+                  <h4 className="text-lg font-semibold text-green-400 mb-4 flex items-center gap-2">
+                    <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse"></div>
+                    Currently Mining
+                  </h4>
+                  <div className="space-y-3 text-sm">
+                    <div className="flex justify-between">
+                      <span className="text-textSecondary">Channel:</span>
+                      <span className="text-textPrimary font-medium">
+                        {miningStatus.current_channel?.display_name || miningStatus.current_channel?.name}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-textSecondary">Campaign:</span>
+                      <span className="text-textPrimary font-medium">{miningStatus.current_campaign}</span>
+                    </div>
+                    {miningStatus.current_drop && (
+                      <div className="flex justify-between">
+                        <span className="text-textSecondary">Current Drop:</span>
+                        <span className="text-textPrimary font-medium">{miningStatus.current_drop.drop_name}</span>
+                      </div>
+                    )}
                   </div>
-                ))}
-                {(dropsSettings.priority_games || []).length === 0 && (
-                  <p className="text-sm text-textSecondary italic p-3 text-center bg-background rounded-lg">
-                    No priority games set
-                  </p>
-                )}
-              </div>
+                </div>
+              )}
 
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  placeholder="Enter game name..."
-                  id="priority-input"
-                  className="flex-1 px-4 py-2 bg-background border border-border rounded-lg text-textPrimary"
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      addPriorityGame(e.currentTarget.value.trim());
-                      e.currentTarget.value = '';
-                    }
+              {/* Channel Points Leaderboard */}
+              <div className="bg-backgroundSecondary rounded-lg p-6 border border-borderLight">
+                <ChannelPointsLeaderboard
+                  onStreamClick={(_channelName) => {
+                    // Close the drops overlay and start the stream
+                    useAppStore.getState().setShowDropsOverlay(false);
                   }}
                 />
-                <button
-                  onClick={() => {
-                    const input = document.getElementById('priority-input') as HTMLInputElement;
-                    addPriorityGame(input.value.trim());
-                    input.value = '';
-                  }}
-                  className="px-4 py-2 bg-accent hover:bg-accentHover text-white rounded-lg transition-colors"
-                >
-                  Add
-                </button>
               </div>
             </div>
-
-            {/* Excluded Games */}
-            <div className="bg-backgroundSecondary rounded-lg p-6 border border-borderLight">
-              <h4 className="text-base font-semibold text-textPrimary mb-3">Excluded Games</h4>
-              <p className="text-sm text-textSecondary mb-4">
-                Games to never mine, even if they have active campaigns
-              </p>
-              
-              <div className="space-y-2 mb-4">
-                {(dropsSettings.excluded_games || []).map((game: string, index: number) => (
-                  <div key={index} className="flex items-center gap-3 bg-background p-3 rounded-lg">
-                    <span className="text-textPrimary flex-1">{game}</span>
-                    <button
-                      onClick={() => removeExcludedGame(index)}
-                      className="text-red-400 hover:text-red-300 text-sm px-3 py-1 hover:bg-red-500/10 rounded transition-colors"
-                    >
-                      Remove
-                    </button>
-                  </div>
-                ))}
-                {(dropsSettings.excluded_games || []).length === 0 && (
-                  <p className="text-sm text-textSecondary italic p-3 text-center bg-background rounded-lg">
-                    No excluded games
-                  </p>
-                )}
-              </div>
-
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  placeholder="Enter game name to exclude..."
-                  id="excluded-input"
-                  className="flex-1 px-4 py-2 bg-background border border-border rounded-lg text-textPrimary"
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      addExcludedGame(e.currentTarget.value.trim());
-                      e.currentTarget.value = '';
-                    }
-                  }}
-                />
-                <button
-                  onClick={() => {
-                    const input = document.getElementById('excluded-input') as HTMLInputElement;
-                    addExcludedGame(input.value.trim());
-                    input.value = '';
-                  }}
-                  className="px-4 py-2 bg-accent hover:bg-accentHover text-white rounded-lg transition-colors"
-                >
-                  Add
-                </button>
-              </div>
-            </div>
-
           </div>
-        </div>
-      )}
+        )}
+
+        {/* Tab Content - Settings */}
+        {activeTab === 'settings' && dropsSettings && (
+          <div className="flex-1 overflow-y-auto p-6 custom-scrollbar">
+            <div className="max-w-2xl mx-auto space-y-6">
+              <h3 className="text-xl font-bold text-textPrimary mb-4">Mining Settings</h3>
+
+              {/* Priority Mode */}
+              <div className="bg-backgroundSecondary rounded-lg p-6 border border-borderLight">
+                <h4 className="text-base font-semibold text-textPrimary mb-3">Priority Mode</h4>
+                <select
+                  value={dropsSettings.priority_mode ?? 'PriorityOnly'}
+                  onChange={(e) => updateDropsSettings({ priority_mode: e.target.value })}
+                  className="w-full px-4 py-2 bg-background border border-border rounded-lg text-textPrimary"
+                >
+                  <option value="PriorityOnly">Priority Games Only</option>
+                  <option value="EndingSoonest">Campaigns Ending Soonest</option>
+                  <option value="LowAvailFirst">Low Availability First</option>
+                </select>
+                <p className="text-sm text-textSecondary mt-2">
+                  How to select which campaigns to mine
+                </p>
+              </div>
+
+              {/* Priority Games */}
+              <div className="bg-backgroundSecondary rounded-lg p-6 border border-borderLight">
+                <h4 className="text-base font-semibold text-textPrimary mb-3">Priority Games</h4>
+                <p className="text-sm text-textSecondary mb-4">
+                  Games will be mined in the order listed below
+                </p>
+
+                <div className="space-y-2 mb-4">
+                  {(dropsSettings.priority_games || []).map((game: string, index: number) => (
+                    <div key={index} className="flex items-center gap-3 bg-background p-3 rounded-lg">
+                      <span className="text-textSecondary font-mono text-sm w-8">{index + 1}.</span>
+                      <span className="text-textPrimary flex-1">{game}</span>
+                      <button
+                        onClick={() => removePriorityGame(index)}
+                        className="text-red-400 hover:text-red-300 text-sm px-3 py-1 hover:bg-red-500/10 rounded transition-colors"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  ))}
+                  {(dropsSettings.priority_games || []).length === 0 && (
+                    <p className="text-sm text-textSecondary italic p-3 text-center bg-background rounded-lg">
+                      No priority games set
+                    </p>
+                  )}
+                </div>
+
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    placeholder="Enter game name..."
+                    id="priority-input"
+                    className="flex-1 px-4 py-2 bg-background border border-border rounded-lg text-textPrimary"
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        addPriorityGame(e.currentTarget.value.trim());
+                        e.currentTarget.value = '';
+                      }
+                    }}
+                  />
+                  <button
+                    onClick={() => {
+                      const input = document.getElementById('priority-input') as HTMLInputElement;
+                      addPriorityGame(input.value.trim());
+                      input.value = '';
+                    }}
+                    className="px-4 py-2 bg-accent hover:bg-accentHover text-white rounded-lg transition-colors"
+                  >
+                    Add
+                  </button>
+                </div>
+              </div>
+
+              {/* Excluded Games */}
+              <div className="bg-backgroundSecondary rounded-lg p-6 border border-borderLight">
+                <h4 className="text-base font-semibold text-textPrimary mb-3">Excluded Games</h4>
+                <p className="text-sm text-textSecondary mb-4">
+                  Games to never mine, even if they have active campaigns
+                </p>
+
+                <div className="space-y-2 mb-4">
+                  {(dropsSettings.excluded_games || []).map((game: string, index: number) => (
+                    <div key={index} className="flex items-center gap-3 bg-background p-3 rounded-lg">
+                      <span className="text-textPrimary flex-1">{game}</span>
+                      <button
+                        onClick={() => removeExcludedGame(index)}
+                        className="text-red-400 hover:text-red-300 text-sm px-3 py-1 hover:bg-red-500/10 rounded transition-colors"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  ))}
+                  {(dropsSettings.excluded_games || []).length === 0 && (
+                    <p className="text-sm text-textSecondary italic p-3 text-center bg-background rounded-lg">
+                      No excluded games
+                    </p>
+                  )}
+                </div>
+
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    placeholder="Enter game name to exclude..."
+                    id="excluded-input"
+                    className="flex-1 px-4 py-2 bg-background border border-border rounded-lg text-textPrimary"
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        addExcludedGame(e.currentTarget.value.trim());
+                        e.currentTarget.value = '';
+                      }
+                    }}
+                  />
+                  <button
+                    onClick={() => {
+                      const input = document.getElementById('excluded-input') as HTMLInputElement;
+                      addExcludedGame(input.value.trim());
+                      input.value = '';
+                    }}
+                    className="px-4 py-2 bg-accent hover:bg-accentHover text-white rounded-lg transition-colors"
+                  >
+                    Add
+                  </button>
+                </div>
+              </div>
+
+            </div>
+          </div>
+        )}
       </div>
     </>
   );

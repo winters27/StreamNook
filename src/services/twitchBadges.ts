@@ -1,4 +1,6 @@
 // Service for fetching and caching Twitch badges using Helix API
+import { invoke } from '@tauri-apps/api/core';
+
 interface BadgeVersion {
   id: string;
   image_url_1x: string;
@@ -8,6 +10,7 @@ interface BadgeVersion {
   description: string;
   click_action: string | null;
   click_url: string | null;
+  localUrl?: string;
 }
 
 interface BadgeSet {
@@ -24,6 +27,8 @@ const globalBadgesCache: Map<string, BadgeVersion> = new Map();
 const channelBadgesCache: Map<string, Map<string, BadgeVersion>> = new Map();
 let globalBadgesFetched = false;
 
+
+
 /**
  * Fetch global Twitch badges (moderator, staff, partner, etc.)
  * Using Tauri backend command with Helix API
@@ -38,13 +43,13 @@ export async function fetchGlobalBadges(clientId: string, token: string): Promis
   try {
     const { invoke } = await import('@tauri-apps/api/core');
     const settings = await invoke('load_settings') as any;
-    
+
     if (settings.cache?.enabled) {
       const cachedData = await invoke('load_badges_from_cache', {
         cacheType: 'global',
         channelId: null
       }) as string | null;
-      
+
       if (cachedData) {
         console.log('[TwitchBadges] Loaded global badges from disk cache');
         const badgeData = JSON.parse(cachedData) as Array<[string, BadgeVersion]>;
@@ -67,26 +72,66 @@ export async function fetchGlobalBadges(clientId: string, token: string): Promis
       clientId,
       token,
     });
-    
+
     console.log('[TwitchBadges] Received global badges response:', response);
-    
+
     // Parse badge sets from Helix API response
     if (response.data) {
+      // Get cached files first
+      let cachedFiles: Record<string, string> = {};
+      try {
+        cachedFiles = await invoke('get_cached_files', { cacheType: 'badge' });
+      } catch (e) {
+        console.warn('[TwitchBadges] Failed to get cached badge files:', e);
+      }
+
+      const { convertFileSrc } = await import('@tauri-apps/api/core');
+      const allVersions: BadgeVersion[] = [];
+
       response.data.forEach((badgeSet) => {
         badgeSet.versions.forEach((version) => {
           const key = `${badgeSet.set_id}/${version.id}`;
+
+          // Check for local file
+          // We use a specific ID format for caching: twitch-{set_id}-{version_id}
+          // But wait, the previous implementation used just ID. 
+          // Let's stick to a consistent ID. In badgeService it was just badge.id.
+          // Here badges are identified by set_id/version_id.
+          // Let's use `twitch-${badgeSet.set_id}-${version.id}` as the cache ID to be safe and specific.
+          const cacheId = `twitch-${badgeSet.set_id}-${version.id}`;
+          const localPath = cachedFiles[cacheId];
+
+          if (localPath) {
+            version.localUrl = convertFileSrc(localPath);
+          }
+
           globalBadgesCache.set(key, version);
+          allVersions.push(version);
         });
       });
+
+      // Trigger background caching
+      // We need to pass the cacheId to the caching function, but BadgeVersion doesn't have it.
+      // Let's modify cacheBadgeImages to take the computed ID or add it to the object temporarily?
+      // Or better, just map it here.
+      const badgesToCache = allVersions.map(v => ({
+        ...v,
+        // We need to store the cache ID logic somewhere common or pass it
+        // For now let's just pass the ID we want to use for caching
+        customCacheId: `twitch-${v.id}` // Wait, v.id is just "1", "2" etc. We need set_id.
+      }));
+
+      // Actually, let's redefine cacheBadgeImages to take items with id and url
+      cacheBadgeImagesWithIds(response.data);
     }
 
     globalBadgesFetched = true;
     console.log(`[TwitchBadges] Loaded ${globalBadgesCache.size} global badge versions`);
-    
+
     // Save to disk cache if enabled
     try {
       const settings = await invoke('load_settings') as any;
-      
+
       if (settings.cache?.enabled) {
         const expiryDays = settings.cache?.expiry_days || 7;
         const badgeData = Array.from(globalBadgesCache.entries());
@@ -125,13 +170,13 @@ export async function fetchChannelBadges(
   try {
     const { invoke } = await import('@tauri-apps/api/core');
     const settings = await invoke('load_settings') as any;
-    
+
     if (settings.cache?.enabled) {
       const cachedData = await invoke('load_badges_from_cache', {
         cacheType: 'channel',
         channelId
       }) as string | null;
-      
+
       if (cachedData) {
         console.log(`[TwitchBadges] Loaded channel badges from disk cache for ${channelId}`);
         const badgeData = JSON.parse(cachedData) as Array<[string, BadgeVersion]>;
@@ -156,28 +201,49 @@ export async function fetchChannelBadges(
       clientId,
       token,
     });
-    
+
     console.log(`[TwitchBadges] Received channel badges response for ${channelId}:`, response);
-    
+
     const channelCache = new Map<string, BadgeVersion>();
-    
+
     // Parse badge sets from Helix API response
     if (response.data) {
+      // Get cached files first
+      let cachedFiles: Record<string, string> = {};
+      try {
+        cachedFiles = await invoke('get_cached_files', { cacheType: 'badge' });
+      } catch (e) {
+        console.warn('[TwitchBadges] Failed to get cached badge files:', e);
+      }
+
+      const { convertFileSrc } = await import('@tauri-apps/api/core');
+
       response.data.forEach((badgeSet) => {
         badgeSet.versions.forEach((version) => {
           const key = `${badgeSet.set_id}/${version.id}`;
+
+          const cacheId = `twitch-${badgeSet.set_id}-${version.id}`;
+          const localPath = cachedFiles[cacheId];
+
+          if (localPath) {
+            version.localUrl = convertFileSrc(localPath);
+          }
+
           channelCache.set(key, version);
         });
       });
+
+      // Trigger background caching
+      cacheBadgeImagesWithIds(response.data);
     }
 
     channelBadgesCache.set(channelId, channelCache);
     console.log(`[TwitchBadges] Loaded ${channelCache.size} channel badge versions for ${channelId}`);
-    
+
     // Save to disk cache if enabled
     try {
       const settings = await invoke('load_settings') as any;
-      
+
       if (settings.cache?.enabled) {
         const expiryDays = settings.cache?.expiry_days || 7;
         const badgeData = Array.from(channelCache.entries());
@@ -225,13 +291,13 @@ export function parseBadges(badgeString: string, channelId?: string): Array<{ ke
   if (!badgeString) return [];
 
   const badges: Array<{ key: string; info: BadgeVersion }> = [];
-  
+
   badgeString.split(',').forEach(badge => {
     const [name, version] = badge.split('/');
     if (name && version) {
       const key = `${name}/${version}`;
       const info = getBadgeInfo(key, channelId);
-      
+
       if (info) {
         badges.push({ key, info });
       } else {
@@ -267,4 +333,55 @@ export function clearBadgeCache(): void {
   globalBadgesCache.clear();
   channelBadgesCache.clear();
   globalBadgesFetched = false;
+}
+
+// Helper to cache badge images with proper IDs
+async function cacheBadgeImagesWithIds(badgeSets: BadgeSet[]) {
+  const { invoke } = await import('@tauri-apps/api/core');
+
+  // Load settings to check if caching is enabled and get expiry
+  let expiryDays = 0; // Default to never expire for badges if settings fail
+  try {
+    const settings = await invoke('load_settings') as any;
+    if (settings.cache?.enabled === false) {
+      return; // Caching disabled
+    }
+    // Use configured expiry or default to 0 (permanent) for badges if not specified
+    expiryDays = settings.cache?.expiry_days ?? 0;
+  } catch (e) {
+    console.warn('[TwitchBadges] Failed to load settings for cache config:', e);
+  }
+
+  const itemsToCache: Array<{ id: string; url: string; localUrl?: string }> = [];
+
+  badgeSets.forEach(set => {
+    set.versions.forEach(version => {
+      itemsToCache.push({
+        id: `twitch-${set.set_id}-${version.id}`,
+        url: version.image_url_4x,
+        localUrl: version.localUrl
+      });
+    });
+  });
+
+  // Process in chunks
+  const CHUNK_SIZE = 10;
+  for (let i = 0; i < itemsToCache.length; i += CHUNK_SIZE) {
+    const chunk = itemsToCache.slice(i, i + CHUNK_SIZE);
+    await Promise.allSettled(chunk.map(async (item) => {
+      try {
+        if (item.localUrl) return;
+
+        await invoke('download_and_cache_file', {
+          cacheType: 'badge',
+          id: item.id,
+          url: item.url,
+          expiryDays
+        });
+      } catch (e) {
+        console.warn(`Failed to cache badge ${item.id}:`, e);
+      }
+    }));
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
 }

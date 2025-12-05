@@ -1,4 +1,6 @@
 // Service for fetching 7TV badges and paints using the v4 GraphQL API
+import { invoke } from '@tauri-apps/api/core';
+import { convertFileSrc } from '@tauri-apps/api/core';
 import { SevenTVBadge, SevenTVPaint } from '../types';
 
 // v4 GraphQL API Types
@@ -39,6 +41,7 @@ interface PaintLayer {
       width: number;
       height: number;
       frameCount: number;
+      localUrl?: string;
     }>;
   };
   opacity: number;
@@ -73,6 +76,7 @@ interface BadgeV4 {
   name: string;
   description?: string;
   selected?: boolean;
+  localUrl?: string;
 }
 
 interface UserCosmeticsResponse {
@@ -256,31 +260,106 @@ const requestGql = async ({ query }: { query: string }): Promise<any> => {
   return undefined;
 };
 
+// Helper to cache 7TV cosmetics in background
+async function cache7TVCosmetics(paints: PaintV4[], badges: BadgeV4[]) {
+  // Load settings to check if caching is enabled and get expiry
+  let expiryDays = 7; // Default to 7 days for cosmetics
+  try {
+    const settings = await invoke('load_settings') as any;
+    if (settings.cache?.enabled === false) {
+      return; // Caching disabled
+    }
+    expiryDays = settings.cache?.expiry_days ?? 7;
+  } catch (e) {
+    console.warn('[7TVService] Failed to load settings for cache config:', e);
+  }
+
+  const cacheItems: Array<{ id: string; url: string }> = [];
+
+  // Collect badge images
+  for (const badge of badges) {
+    if (!badge.localUrl) {
+      cacheItems.push({
+        id: badge.id,
+        url: `https://cdn.7tv.app/badge/${badge.id}/3x`
+      });
+    }
+  }
+
+  // Collect paint layer images
+  for (const paint of paints) {
+    for (const layer of paint.data.layers) {
+      if (layer.ty.__typename === 'PaintLayerTypeImage' && layer.ty.images) {
+        const isAnimated = layer.ty.images.some((img) => img.frameCount > 1);
+        const img = layer.ty.images.find((i) => i.scale === 1 && (isAnimated ? i.frameCount > 1 : true));
+
+        // Check if we already have a local URL for this layer (we check the first image's localUrl as a proxy)
+        const hasLocal = layer.ty.images.some(i => !!i.localUrl);
+
+        if (img && !hasLocal) {
+          cacheItems.push({
+            id: layer.id, // Use layer ID for caching paint images
+            url: img.url
+          });
+        }
+      }
+    }
+  }
+
+  // Process in chunks
+  const CHUNK_SIZE = 10;
+  for (let i = 0; i < cacheItems.length; i += CHUNK_SIZE) {
+    const chunk = cacheItems.slice(i, i + CHUNK_SIZE);
+    await Promise.allSettled(chunk.map(async (item) => {
+      try {
+        await invoke('download_and_cache_file', {
+          cacheType: 'cosmetic',
+          id: item.id,
+          url: item.url,
+          expiryDays
+        });
+      } catch (e) {
+        console.warn(`Failed to cache cosmetic ${item.id}:`, e);
+      }
+    }));
+    // Small delay between chunks
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+}
+
 // Fetch user cosmetics from 7TV v4 API
 export async function getUserCosmetics(twitchId: string): Promise<UserCosmeticsResponse | null> {
   // Check cache
   const cached = userCache.get(twitchId);
   const now = Date.now();
-  
+
   if (cached && (now - cached.timestamp) < CACHE_DURATION) {
     return cached.data;
   }
-  
+
+  // Fetch cached files map
+  let cachedFiles: Record<string, string> = {};
+  try {
+    cachedFiles = await invoke('get_cached_files', { cacheType: 'cosmetic' });
+  } catch (e) {
+    console.warn('Failed to get cached cosmetic files:', e);
+  }
+
   // Check if there's already a pending request for this user
   const pending = pendingRequests.get(twitchId);
   if (pending) {
     return pending;
   }
-  
+
   // Create new request
   const request = (async () => {
     try {
       const userData = await requestGql({ query: fullUserQuery(twitchId) });
-      
+
       if (!userData?.data?.users?.userByConnection) {
-        userCache.set(twitchId, { 
-          data: { paints: [], badges: [] }, 
-          timestamp: now 
+        userCache.set(twitchId, {
+          data: { paints: [], badges: [] },
+          timestamp: now
         });
         return { paints: [], badges: [] };
       }
@@ -297,6 +376,22 @@ export async function getUserCosmetics(twitchId: string): Promise<UserCosmeticsR
           if (paintData.id === activePaintId) {
             paintData.selected = true;
           }
+
+          // Attach local URLs to image layers
+          if (paintData.data?.layers) {
+            for (const layer of paintData.data.layers) {
+              if (layer.ty.__typename === 'PaintLayerTypeImage' && layer.ty.images) {
+                const localPath = cachedFiles[layer.id];
+                if (localPath) {
+                  const localUrl = convertFileSrc(localPath);
+                  layer.ty.images.forEach((img: any) => {
+                    img.localUrl = localUrl;
+                  });
+                }
+              }
+            }
+          }
+
           paints.push(paintData);
         }
       }
@@ -310,6 +405,13 @@ export async function getUserCosmetics(twitchId: string): Promise<UserCosmeticsR
         if (badgeData.id === activeBadgeId) {
           badgeData.selected = true;
         }
+
+        // Attach local URL
+        const localPath = cachedFiles[badgeData.id];
+        if (localPath) {
+          badgeData.localUrl = convertFileSrc(localPath);
+        }
+
         badges.push(badgeData);
       }
 
@@ -317,6 +419,9 @@ export async function getUserCosmetics(twitchId: string): Promise<UserCosmeticsR
         paints: paints.filter((p) => p !== null),
         badges: badges.filter((b) => b !== null)
       };
+
+      // Trigger background caching
+      cache7TVCosmetics(result.paints, result.badges).catch(e => console.error('Background cosmetic caching failed:', e));
 
       userCache.set(twitchId, { data: result, timestamp: now });
       return result;
@@ -329,7 +434,7 @@ export async function getUserCosmetics(twitchId: string): Promise<UserCosmeticsR
       pendingRequests.delete(twitchId);
     }
   })();
-  
+
   pendingRequests.set(twitchId, request);
   return request;
 }
@@ -348,7 +453,7 @@ const computeLinearGradientLayer = (layer: PaintLayer['ty'], opacity: number) =>
   const prefix = layer.repeating ? 'repeating-' : '';
   const stops = layer.stops.map((stop) => `${stop.color.hex} ${stop.at * 100}%`).join(', ');
   const gradient = `${prefix}linear-gradient(${layer.angle || 0}deg, ${stops})`;
-  
+
   return {
     opacity,
     image: gradient
@@ -364,7 +469,7 @@ const computeRadialGradientLayer = (layer: PaintLayer['ty'], opacity: number) =>
   const shape = layer.shape === 'CIRCLE' ? 'circle' : 'ellipse';
   const stops = layer.stops.map((stop) => `${stop.color.hex} ${stop.at * 100}%`).join(', ');
   const gradient = `${prefix}radial-gradient(${shape}, ${stops})`;
-  
+
   return {
     opacity,
     image: gradient
@@ -383,9 +488,12 @@ const computeImageLayer = (layer: PaintLayer['ty'], opacity: number) => {
     return undefined;
   }
 
+  // Use local URL if available
+  const url = img.localUrl || img.url;
+
   return {
     opacity,
-    image: `url("${img.url}")`
+    image: `url("${url}")`
   };
 };
 
@@ -431,12 +539,12 @@ export const computePaintStyle = (paint: PaintV4, userColor?: string): React.CSS
 
   const backgroundImages = layers.flatMap((l) => (l.image ? [l.image] : []));
   const backgroundColors = layers.flatMap((l) => (l.color ? [l.color] : []));
-  
+
   // Combine colors and images, with user color as fallback
   const background = [...backgroundColors, ...backgroundImages, userColor || 'var(--user-color)'].join(', ');
-  
+
   const filter = computeDropShadows(paint.data.shadows);
-  
+
   const opacities = layers.map((l) => l.opacity).filter((o) => o < 1);
   const minOpacity = opacities.length > 0 ? Math.min(...opacities) : 1;
 
@@ -465,6 +573,9 @@ export const computePaintStyle = (paint: PaintV4, userColor?: string): React.CSS
 
 // Get badge image URL (7TV v4 badges need to be fetched from CDN)
 export const getBadgeImageUrl = (badge: BadgeV4): string => {
+  if (badge.localUrl) {
+    return badge.localUrl;
+  }
   // For v4 API, badges are served from the CDN
   return `https://cdn.7tv.app/badge/${badge.id}/3x`;
 };
@@ -472,6 +583,7 @@ export const getBadgeImageUrl = (badge: BadgeV4): string => {
 // Get badge image URL for any provider
 export const getBadgeImageUrlForProvider = (badge: any, provider: '7tv' | 'ffz'): string => {
   if (provider === '7tv') {
+    if (badge.localUrl) return badge.localUrl;
     return `https://cdn.7tv.app/badge/${badge.id}/3x`;
   } else if (provider === 'ffz') {
     return badge.urls?.['4'] || badge.urls?.['2'] || badge.urls?.['1'] || badge.image;

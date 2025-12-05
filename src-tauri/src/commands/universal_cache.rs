@@ -1,8 +1,10 @@
 use crate::services::universal_cache_service::{
-    assign_badge_metadata_positions, cache_item, cleanup_expired_entries, clear_universal_cache,
-    export_manifest_for_github, get_cached_item, get_universal_cache_stats, sync_universal_cache,
-    CacheType, UniversalCacheEntry, UniversalCacheStats,
+    assign_badge_metadata_positions, cache_file, cache_item, cleanup_expired_entries,
+    clear_universal_cache, export_manifest_for_github, get_cached_file_path, get_cached_files_list,
+    get_cached_item, get_universal_cache_stats, sync_universal_cache, CacheType,
+    UniversalCacheEntry, UniversalCacheStats,
 };
+use std::collections::HashMap;
 use std::path::PathBuf;
 use tauri::command;
 
@@ -89,4 +91,54 @@ pub async fn assign_badge_positions() -> Result<usize, String> {
 pub async fn export_manifest(output_path: String) -> Result<(), String> {
     let path = PathBuf::from(output_path);
     export_manifest_for_github(path).map_err(|e| e.to_string())
+}
+
+#[command]
+pub async fn download_and_cache_file(
+    cache_type: String,
+    id: String,
+    url: String,
+    expiry_days: u32,
+) -> Result<String, String> {
+    let cache_type_enum = match cache_type.as_str() {
+        "badge" => CacheType::Badge,
+        "emote" => CacheType::Emote,
+        "third-party-badge" => CacheType::ThirdPartyBadge,
+        "cosmetic" => CacheType::Cosmetic,
+        _ => return Err(format!("Invalid cache type: {}", cache_type)),
+    };
+
+    cache_file(cache_type_enum, id, url, expiry_days)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[command]
+pub async fn get_cached_file(cache_type: String, id: String) -> Result<Option<String>, String> {
+    let cache_type_enum = match cache_type.as_str() {
+        "badge" => CacheType::Badge,
+        "emote" => CacheType::Emote,
+        "third-party-badge" => CacheType::ThirdPartyBadge,
+        "cosmetic" => CacheType::Cosmetic,
+        _ => return Err(format!("Invalid cache type: {}", cache_type)),
+    };
+
+    get_cached_file_path(cache_type_enum, &id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[command]
+pub async fn get_cached_files(cache_type: String) -> Result<HashMap<String, String>, String> {
+    let cache_type_enum = match cache_type.as_str() {
+        "badge" => CacheType::Badge,
+        "emote" => CacheType::Emote,
+        "third-party-badge" => CacheType::ThirdPartyBadge,
+        "cosmetic" => CacheType::Cosmetic,
+        _ => return Err(format!("Invalid cache type: {}", cache_type)),
+    };
+
+    get_cached_files_list(cache_type_enum)
+        .await
+        .map_err(|e| e.to_string())
 }
