@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { useAppStore } from '../../stores/AppStore';
-import { Check, Loader2, Download, RefreshCw, Package, ArrowRight, AlertCircle, ChevronDown, ChevronUp, FileText, Zap, Settings } from 'lucide-react';
+import { Check, Loader2, Download, RefreshCw, Package, ArrowRight, AlertCircle, ChevronDown, ChevronRight, FileText, Zap, Settings, Github } from 'lucide-react';
 
 interface VersionChange {
     from: string;
@@ -26,6 +26,167 @@ interface BundleUpdateStatus {
     release_notes: string | null;
 }
 
+// Helper to format markdown text roughly
+const FormatMarkdown = ({ content }: { content: string }) => {
+    if (!content) return null;
+
+    return (
+        <div className="space-y-1 text-xs text-textSecondary">
+            {content.split('\n').map((line, i) => {
+                const cleanLine = line.trim();
+                if (!cleanLine) return <div key={i} className="h-2" />;
+
+                if (cleanLine.startsWith('# '))
+                    return <h3 key={i} className="text-sm font-bold text-textPrimary mt-4 mb-2">{cleanLine.replace('# ', '')}</h3>;
+                if (cleanLine.startsWith('## '))
+                    return <h4 key={i} className="text-xs font-bold text-textPrimary mt-3 mb-1">{cleanLine.replace('## ', '')}</h4>;
+                if (cleanLine.startsWith('### '))
+                    return <h5 key={i} className="text-xs font-semibold text-textPrimary mt-2">{cleanLine.replace('### ', '')}</h5>;
+                if (cleanLine.startsWith('- ') || cleanLine.startsWith('* '))
+                    return <li key={i} className="ml-4 list-disc">{cleanLine.replace(/^[-*]\s/, '')}</li>;
+
+                return <p key={i}>{line}</p>;
+            })}
+        </div>
+    );
+};
+
+// Component for individual change row with expandable changelog
+const ComponentChangeRow = ({
+    name,
+    change,
+    icon,
+    type,
+    existingNotes
+}: {
+    name: string;
+    change: VersionChange | null;
+    icon: React.ReactNode;
+    type: 'streamnook' | 'streamlink' | 'ttvlol';
+    existingNotes?: string | null;
+}) => {
+    const [isExpanded, setIsExpanded] = useState(false);
+    const [notes, setNotes] = useState<string | null>(existingNotes || null);
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+
+    const fetchChangelog = async () => {
+        if (notes || loading) return;
+
+        setLoading(true);
+        setError(null);
+
+        try {
+            if (type === 'streamlink') {
+                const response = await fetch('https://raw.githubusercontent.com/streamlink/streamlink/master/CHANGELOG.md');
+                if (!response.ok) throw new Error('Failed to fetch changelog');
+                const text = await response.text();
+                // Try to extract the top most entry (Assuming latest)
+                // Looks for "## [version]" ... until next "## ["
+                const match = text.match(/## \[.*?\][\s\S]*?(?=## \[|$)/);
+                if (match) {
+                    setNotes(match[0]);
+                } else {
+                    setNotes(text.substring(0, 1000) + '...');
+                }
+            } else if (type === 'ttvlol') {
+                // Fetch release tags to find the matching one or latest
+                // The user mentioned checking a specific tag but general link is releases/latest
+                const response = await fetch('https://api.github.com/repos/2bc4/streamlink-ttvlol/releases/latest');
+                if (!response.ok) throw new Error('Failed to fetch release notes');
+                const data = await response.json();
+                setNotes(data.body || 'No release notes found.');
+            }
+        } catch (e) {
+            console.error(`Failed to fetch ${name} changelog:`, e);
+            setError('Could not load changelog.');
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const handleToggle = () => {
+        const nextState = !isExpanded;
+        setIsExpanded(nextState);
+
+        if (nextState && !notes && (type === 'streamlink' || type === 'ttvlol')) {
+            fetchChangelog();
+        }
+    };
+
+    if (!change) return null;
+
+    return (
+        <div className="bg-glass rounded-lg overflow-hidden border border-white/5">
+            <button
+                onClick={handleToggle}
+                className="w-full flex items-center justify-between p-3 hover:bg-white/5 transition-colors"
+            >
+                <div className="flex items-center gap-3">
+                    <div className="w-8 h-8 rounded-lg bg-purple-500/20 flex items-center justify-center">
+                        {icon}
+                    </div>
+                    <div className="text-left">
+                        <span className="text-sm font-medium text-textPrimary block">{name}</span>
+                        <div className="flex items-center gap-2 text-xs">
+                            <span className="text-textSecondary">{change.from}</span>
+                            <ArrowRight size={12} className="text-textMuted" />
+                            <span className="text-green-400 font-medium">{change.to}</span>
+                        </div>
+                    </div>
+                </div>
+                {isExpanded ? (
+                    <ChevronDown size={16} className="text-textSecondary" />
+                ) : (
+                    <ChevronRight size={16} className="text-textSecondary" />
+                )}
+            </button>
+
+            {isExpanded && (
+                <div className="p-4 bg-black/20 border-t border-white/5 animate-in slide-in-from-top-2 duration-200">
+                    {loading ? (
+                        <div className="flex items-center justify-center py-4 text-textSecondary">
+                            <Loader2 size={16} className="animate-spin mr-2" />
+                            <span className="text-xs">Fetching changelog...</span>
+                        </div>
+                    ) : error ? (
+                        <div className="text-xs text-red-400 py-2">{error}</div>
+                    ) : notes ? (
+                        <div className="max-h-60 overflow-y-auto scrollbar-thin pr-2">
+                            <FormatMarkdown content={notes} />
+                            {(type === 'streamlink' || type === 'ttvlol') && (
+                                <div className="mt-4 pt-4 border-t border-white/5 xl:flex justify-end">
+                                    <a
+                                        href={type === 'streamlink'
+                                            ? 'https://github.com/streamlink/streamlink/blob/master/CHANGELOG.md'
+                                            : 'https://github.com/2bc4/streamlink-ttvlol/releases/latest'}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        className="inline-flex items-center gap-1 text-xs text-accent hover:underline"
+                                        onClick={(e) => {
+                                            e.preventDefault();
+                                            invoke('open_browser_url', {
+                                                url: type === 'streamlink'
+                                                    ? 'https://github.com/streamlink/streamlink/blob/master/CHANGELOG.md'
+                                                    : 'https://github.com/2bc4/streamlink-ttvlol/releases/latest'
+                                            });
+                                        }}
+                                    >
+                                        <Github size={12} />
+                                        View full changelog on GitHub
+                                    </a>
+                                </div>
+                            )}
+                        </div>
+                    ) : (
+                        <p className="text-xs text-textMuted italic">No details available.</p>
+                    )}
+                </div>
+            )}
+        </div>
+    );
+};
+
 const UpdatesSettings = () => {
     const { addToast, settings, updateSettings, openSettings } = useAppStore();
     const [isChecking, setIsChecking] = useState(true);
@@ -33,7 +194,6 @@ const UpdatesSettings = () => {
     const [updateProgress, setUpdateProgress] = useState<string | null>(null);
     const [updateStatus, setUpdateStatus] = useState<BundleUpdateStatus | null>(null);
     const [error, setError] = useState<string | null>(null);
-    const [showReleaseNotes, setShowReleaseNotes] = useState(false);
 
     const autoUpdateOnStart = settings.auto_update_on_start ?? false;
 
@@ -103,68 +263,6 @@ const UpdatesSettings = () => {
             setUpdateProgress(null);
         }
     }, [updateStatus, addToast, checkForUpdates]);
-
-    // Render component change row
-    const renderComponentChange = (name: string, change: VersionChange | null | undefined, icon: React.ReactNode) => {
-        if (!change) return null;
-
-        return (
-            <div className="flex items-center justify-between p-3 bg-glass rounded-lg">
-                <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 rounded-lg bg-purple-500/20 flex items-center justify-center">
-                        {icon}
-                    </div>
-                    <span className="text-sm font-medium text-textPrimary">{name}</span>
-                </div>
-                <div className="flex items-center gap-2 text-sm">
-                    <span className="text-textSecondary">{change.from}</span>
-                    <ArrowRight size={14} className="text-textMuted" />
-                    <span className="text-green-400 font-medium">{change.to}</span>
-                </div>
-            </div>
-        );
-    };
-
-    // Parse release notes for display
-    const formatReleaseNotes = (notes: string) => {
-        // Split by lines and format
-        const lines = notes.split('\n');
-        return lines.map((line, index) => {
-            // Headers
-            if (line.startsWith('## ')) {
-                return (
-                    <h3 key={index} className="text-sm font-semibold text-textPrimary mt-4 mb-2 first:mt-0">
-                        {line.replace('## ', '')}
-                    </h3>
-                );
-            }
-            if (line.startsWith('### ')) {
-                return (
-                    <h4 key={index} className="text-xs font-semibold text-textSecondary mt-3 mb-1.5">
-                        {line.replace('### ', '')}
-                    </h4>
-                );
-            }
-            // List items
-            if (line.startsWith('- ') || line.startsWith('* ')) {
-                return (
-                    <li key={index} className="text-xs text-textSecondary ml-4 list-disc">
-                        {line.replace(/^[-*]\s/, '')}
-                    </li>
-                );
-            }
-            // Empty lines
-            if (line.trim() === '') {
-                return <div key={index} className="h-2" />;
-            }
-            // Regular text
-            return (
-                <p key={index} className="text-xs text-textSecondary">
-                    {line}
-                </p>
-            );
-        });
-    };
 
     return (
         <div className="space-y-6">
@@ -265,68 +363,34 @@ const UpdatesSettings = () => {
                     </div>
 
                     {/* What's in this update section - only show when update is available */}
-                    {updateStatus.update_available && (updateStatus.release_notes || updateStatus.component_changes) && (
+                    {updateStatus.update_available && updateStatus.component_changes && (
                         <div className="space-y-3">
-                            {/* Collapsible release notes header */}
-                            <button
-                                onClick={() => setShowReleaseNotes(!showReleaseNotes)}
-                                className="w-full flex items-center justify-between p-3 bg-glass/50 hover:bg-glass rounded-xl transition-colors"
-                            >
-                                <div className="flex items-center gap-2">
-                                    <FileText size={16} className="text-accent" />
-                                    <span className="text-sm font-medium text-textPrimary">What's in this update</span>
-                                </div>
-                                {showReleaseNotes ? (
-                                    <ChevronUp size={16} className="text-textSecondary" />
-                                ) : (
-                                    <ChevronDown size={16} className="text-textSecondary" />
-                                )}
-                            </button>
+                            <div className="flex items-center gap-2 px-1">
+                                <FileText size={16} className="text-accent" />
+                                <span className="text-sm font-medium text-textPrimary">What's in this update</span>
+                            </div>
 
-                            {/* Expanded content */}
-                            {showReleaseNotes && (
-                                <div className="space-y-4 animate-in fade-in slide-in-from-top-2 duration-200">
-                                    {/* Component changes */}
-                                    {updateStatus.component_changes && (
-                                        <div className="space-y-2">
-                                            <p className="text-xs text-textSecondary font-medium uppercase tracking-wide px-1">
-                                                Components Updating
-                                            </p>
-                                            <div className="space-y-2">
-                                                {renderComponentChange(
-                                                    'StreamNook',
-                                                    updateStatus.component_changes.streamnook,
-                                                    <Package size={16} className="text-purple-400" />
-                                                )}
-                                                {renderComponentChange(
-                                                    'Streamlink',
-                                                    updateStatus.component_changes.streamlink,
-                                                    <Package size={16} className="text-purple-400" />
-                                                )}
-                                                {renderComponentChange(
-                                                    'TTV LOL',
-                                                    updateStatus.component_changes.ttvlol,
-                                                    <Package size={16} className="text-purple-400" />
-                                                )}
-                                            </div>
-                                        </div>
-                                    )}
-
-                                    {/* Release notes */}
-                                    {updateStatus.release_notes && (
-                                        <div className="space-y-2">
-                                            <p className="text-xs text-textSecondary font-medium uppercase tracking-wide px-1">
-                                                Release Notes
-                                            </p>
-                                            <div className="p-4 bg-glass/30 rounded-xl max-h-64 overflow-y-auto scrollbar-thin">
-                                                <ul className="space-y-1">
-                                                    {formatReleaseNotes(updateStatus.release_notes)}
-                                                </ul>
-                                            </div>
-                                        </div>
-                                    )}
-                                </div>
-                            )}
+                            <div className="space-y-2">
+                                <ComponentChangeRow
+                                    name="StreamNook"
+                                    change={updateStatus.component_changes.streamnook}
+                                    icon={<Package size={16} className="text-purple-400" />}
+                                    type="streamnook"
+                                    existingNotes={updateStatus.release_notes}
+                                />
+                                <ComponentChangeRow
+                                    name="Streamlink"
+                                    change={updateStatus.component_changes.streamlink}
+                                    icon={<Package size={16} className="text-orange-400" />}
+                                    type="streamlink"
+                                />
+                                <ComponentChangeRow
+                                    name="TTV LOL PRO"
+                                    change={updateStatus.component_changes.ttvlol}
+                                    icon={<Package size={16} className="text-blue-400" />}
+                                    type="ttvlol"
+                                />
+                            </div>
                         </div>
                     )}
 

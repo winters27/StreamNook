@@ -342,6 +342,17 @@ pub async fn download_and_install_bundle(app_handle: tauri::AppHandle) -> Result
     if source_streamlink.exists() {
         // Remove old streamlink
         if dest_streamlink.exists() {
+            // Force kill any running streamlink processes to release file locks
+            #[cfg(target_os = "windows")]
+            {
+                let _ = std::process::Command::new("taskkill")
+                    .args(["/F", "/IM", "streamlinkw.exe", "/T"])
+                    .output();
+
+                // Give it a moment to release locks
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+
             std::fs::remove_dir_all(&dest_streamlink)
                 .map_err(|e| format!("Failed to remove old streamlink: {}", e))?;
         }

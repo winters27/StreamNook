@@ -76,7 +76,6 @@ interface AppState {
 }
 
 // Flags to ensure we only show session toasts once per app session
-let hasShownRestoreSessionToast = false;
 let hasShownWelcomeBackToast = false;
 
 // Helper to save user context to localStorage for error reporting
@@ -801,12 +800,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       const wasAuthenticated = get().isAuthenticated;
       const hasCredentials = await invoke('has_stored_credentials') as boolean;
 
-      // Only show "Restoring your session" once per app session
-      if (hasCredentials && !wasAuthenticated && !get().currentUser && !hasShownRestoreSessionToast) {
-        hasShownRestoreSessionToast = true;
-        // Show toast that we're attempting to login with stored credentials
-        get().addToast('Restoring your session...', 'info');
-      }
+
 
       // Try to get user info - if it works, we're authenticated
       const userInfo = await invoke('get_user_info') as UserInfo;
