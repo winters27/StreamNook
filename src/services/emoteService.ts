@@ -1,6 +1,7 @@
 // Emote service to fetch emotes from multiple providers
 import { invoke } from '@tauri-apps/api/core';
 import { convertFileSrc } from '@tauri-apps/api/core';
+
 export interface Emote {
   id: string;
   name: string;
@@ -17,9 +18,8 @@ export interface EmoteSet {
   ffz: Emote[];
 }
 
-// Cache for emotes
-let emoteCache: EmoteSet | null = null;
-let cacheTimestamp: number = 0;
+// Cache for emotes (keyed by channel ID or 'global')
+const emoteCache: Map<string, { set: EmoteSet, timestamp: number }> = new Map();
 const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
 
 // Module-level registry of cached emote files (id -> localPath)
@@ -93,6 +93,52 @@ async function cacheEmotes(emotes: Emote[]) {
   }
 }
 
+// Helper to preload images into browser cache (memory)
+function preloadEmoteImages(emotes: Emote[]) {
+  if (emotes.length === 0) return;
+
+  // Use a low priority mechanism to avoid contending with critical resources
+  const CHUNK_SIZE = 20;
+  let index = 0;
+
+  function processChunk() {
+    const chunk = emotes.slice(index, index + CHUNK_SIZE);
+    if (chunk.length === 0) return;
+
+    chunk.forEach(emote => {
+      // Prefer local URL if available, otherwise remote
+      const url = emote.localUrl || emote.url;
+      if (url) {
+        const img = new Image();
+        img.src = url;
+      }
+    });
+
+    index += CHUNK_SIZE;
+    if (index < emotes.length) {
+      // Schedule next chunk
+      // @ts-ignore - requestIdleCallback might not be in TS definition depending on lib
+      if (typeof window.requestIdleCallback === 'function') {
+        // @ts-ignore
+        window.requestIdleCallback(() => processChunk(), { timeout: 1000 });
+      } else {
+        setTimeout(processChunk, 50);
+      }
+    } else {
+      console.log(`[EmoteService] Finished preloading ${emotes.length} emotes`);
+    }
+  }
+
+  // Start processing
+  // @ts-ignore
+  if (typeof window.requestIdleCallback === 'function') {
+    // @ts-ignore
+    window.requestIdleCallback(() => processChunk(), { timeout: 1000 });
+  } else {
+    setTimeout(processChunk, 50);
+  }
+}
+
 // Queue an emote to be cached (reactive caching)
 export function queueEmoteForCaching(id: string, url: string) {
   // If already cached or pending, skip
@@ -151,26 +197,43 @@ export function getCachedEmoteUrl(id: string): string | undefined {
   return path ? convertFileSrc(path) : undefined;
 }
 
+let initializationPromise: Promise<void> | null = null;
+
+// Helper to ensure emote file cache is populated
+async function ensureEmoteFileCache() {
+  if (cachedEmoteFiles.size > 0) return;
+
+  if (initializationPromise) {
+    return initializationPromise;
+  }
+
+  initializationPromise = (async () => {
+    try {
+      console.log('[EmoteService] Initializing emote file cache...');
+      const files = await invoke('get_cached_files', { cacheType: 'emote' }) as Record<string, string>;
+      Object.entries(files).forEach(([id, path]) => cachedEmoteFiles.set(id, path));
+      console.log(`[EmoteService] Emote file cache initialized with ${cachedEmoteFiles.size} entries`);
+    } catch (e) {
+      console.warn('[EmoteService] Failed to init emote file cache:', e);
+    } finally {
+      initializationPromise = null;
+    }
+  })();
+
+  return initializationPromise;
+}
+
 export async function fetchBTTVEmotes(_channelName?: string, channelId?: string): Promise<Emote[]> {
   try {
+    await ensureEmoteFileCache();
     const emotes: Emote[] = [];
-
-    // Fetch cached files map
-    let cachedFiles: Record<string, string> = {};
-    try {
-      console.log('[EmoteService] Requesting cached files list for BTTV...');
-      cachedFiles = await invoke('get_cached_files', { cacheType: 'emote' });
-      console.log(`[EmoteService] Received ${Object.keys(cachedFiles).length} cached files for BTTV`);
-    } catch (e) {
-      console.warn('Failed to get cached files:', e);
-    }
 
     // Fetch global BTTV emotes
     const globalResponse = await fetch('https://api.betterttv.net/3/cached/emotes/global');
     if (globalResponse.ok) {
       const globalData = await globalResponse.json();
       emotes.push(...globalData.map((emote: any) => {
-        const localPath = cachedFiles[emote.id];
+        const localPath = cachedEmoteFiles.get(emote.id);
         if (localPath) console.debug(`[BTTV] Cache hit for ${emote.code}: ${localPath}`);
         return {
           id: emote.id,
@@ -192,7 +255,7 @@ export async function fetchBTTVEmotes(_channelName?: string, channelId?: string)
           const userData = await userResponse.json();
           if (userData.channelEmotes) {
             emotes.push(...userData.channelEmotes.map((emote: any) => {
-              const localPath = cachedFiles[emote.id];
+              const localPath = cachedEmoteFiles.get(emote.id);
               return {
                 id: emote.id,
                 name: emote.code,
@@ -205,7 +268,7 @@ export async function fetchBTTVEmotes(_channelName?: string, channelId?: string)
           }
           if (userData.sharedEmotes) {
             emotes.push(...userData.sharedEmotes.map((emote: any) => {
-              const localPath = cachedFiles[emote.id];
+              const localPath = cachedEmoteFiles.get(emote.id);
               return {
                 id: emote.id,
                 name: emote.code,
@@ -234,47 +297,38 @@ export async function fetchBTTVEmotes(_channelName?: string, channelId?: string)
 
 export async function fetch7TVEmotes(_channelName?: string, channelId?: string): Promise<Emote[]> {
   try {
+    await ensureEmoteFileCache();
     const emotes: Emote[] = [];
-
-    // Fetch cached files map
-    let cachedFiles: Record<string, string> = {};
-    try {
-      console.log('[EmoteService] Requesting cached files list for 7TV...');
-      cachedFiles = await invoke('get_cached_files', { cacheType: 'emote' });
-      console.log(`[EmoteService] Received ${Object.keys(cachedFiles).length} cached files for 7TV`);
-    } catch (e) {
-      console.warn('Failed to get cached files:', e);
-    }
 
     // Fetch trending 7TV emotes using GraphQL API
     try {
       const gqlQuery = `
-        query EmoteSearch(
-          $query: String,
-          $tags: [String!],
-          $sortBy: SortBy!,
-          $filters: Filters,
-          $page: Int,
-          $perPage: Int!
-        ) {
-          emotes {
-            search(
-              query: $query
-              tags: { tags: $tags, match: ANY }
-              sort: { sortBy: $sortBy, order: DESCENDING }
-              filters: $filters
-              page: $page
-              perPage: $perPage
-            ) {
-              items {
-                id
-                name
-                flags
-              }
+      query EmoteSearch(
+        $query: String,
+        $tags: [String!],
+        $sortBy: SortBy!,
+        $filters: Filters,
+        $page: Int,
+        $perPage: Int!
+      ) {
+        emotes {
+          search(
+            query: $query
+            tags: { tags: $tags, match: ANY }
+            sort: { sortBy: $sortBy, order: DESCENDING }
+            filters: $filters
+            page: $page
+            perPage: $perPage
+          ) {
+            items {
+              id
+              name
+              flags
             }
           }
         }
-      `;
+      }
+    `;
 
       const variables = {
         filters: { animated: true },
@@ -302,7 +356,7 @@ export async function fetch7TVEmotes(_channelName?: string, channelId?: string):
         const gqlData = await gqlResponse.json();
         const items = gqlData?.data?.emotes?.search?.items || [];
         emotes.push(...items.map((emote: any) => {
-          const localPath = cachedFiles[emote.id];
+          const localPath = cachedEmoteFiles.get(emote.id);
           if (localPath) console.debug(`[7TV] Cache hit for ${emote.name}: ${localPath}`);
           return {
             id: emote.id,
@@ -325,7 +379,7 @@ export async function fetch7TVEmotes(_channelName?: string, channelId?: string):
         const globalData = await globalResponse.json();
         if (globalData.emotes) {
           emotes.push(...globalData.emotes.map((emote: any) => {
-            const localPath = cachedFiles[emote.id];
+            const localPath = cachedEmoteFiles.get(emote.id);
             if (localPath) console.debug(`[7TV] Cache hit for ${emote.name}: ${localPath}`);
             return {
               id: emote.id,
@@ -369,7 +423,7 @@ export async function fetch7TVEmotes(_channelName?: string, channelId?: string):
               // The emote data structure has the actual emote info
               const emoteData = activeEmote.data || activeEmote;
               const emoteId = emoteData.id || activeEmote.id;
-              const localPath = cachedFiles[emoteId];
+              const localPath = cachedEmoteFiles.get(emoteId);
               if (localPath) console.debug(`[7TV] Cache hit for ${activeEmote.name}: ${localPath}`);
 
               return {
@@ -414,17 +468,8 @@ export async function fetch7TVEmotes(_channelName?: string, channelId?: string):
 
 export async function fetchFFZEmotes(channelName?: string): Promise<Emote[]> {
   try {
+    await ensureEmoteFileCache();
     const emotes: Emote[] = [];
-
-    // Fetch cached files map
-    let cachedFiles: Record<string, string> = {};
-    try {
-      console.log('[EmoteService] Requesting cached files list for FFZ...');
-      cachedFiles = await invoke('get_cached_files', { cacheType: 'emote' });
-      console.log(`[EmoteService] Received ${Object.keys(cachedFiles).length} cached files for FFZ`);
-    } catch (e) {
-      console.warn('Failed to get cached files:', e);
-    }
 
     // Fetch global FFZ emotes
     const globalResponse = await fetch('https://api.frankerfacez.com/v1/set/global');
@@ -434,7 +479,7 @@ export async function fetchFFZEmotes(channelName?: string): Promise<Emote[]> {
         Object.values(globalData.sets).forEach((set: any) => {
           if (set.emoticons) {
             emotes.push(...set.emoticons.map((emote: any) => {
-              const localPath = cachedFiles[emote.id.toString()];
+              const localPath = cachedEmoteFiles.get(emote.id.toString());
               if (localPath) console.debug(`[FFZ] Cache hit for ${emote.name}: ${localPath}`);
               return {
                 id: emote.id.toString(),
@@ -459,7 +504,7 @@ export async function fetchFFZEmotes(channelName?: string): Promise<Emote[]> {
             Object.values(roomData.sets).forEach((set: any) => {
               if (set.emoticons) {
                 emotes.push(...set.emoticons.map((emote: any) => {
-                  const localPath = cachedFiles[emote.id.toString()];
+                  const localPath = cachedEmoteFiles.get(emote.id.toString());
                   return {
                     id: emote.id.toString(),
                     name: emote.name,
@@ -488,13 +533,20 @@ export async function fetchFFZEmotes(channelName?: string): Promise<Emote[]> {
 }
 
 export async function fetchAllEmotes(channelName?: string, channelId?: string): Promise<EmoteSet> {
-  // Check memory cache first
+  const cacheKey = channelId || 'global';
   const now = Date.now();
-  if (emoteCache && (now - cacheTimestamp) < CACHE_DURATION) {
-    return emoteCache;
+
+  // Check memory cache for this specific channel
+  const cached = emoteCache.get(cacheKey);
+  if (cached && (now - cached.timestamp) < CACHE_DURATION) {
+    console.log(`[EmoteService] Returning cached emotes for ${cacheKey}`);
+    return cached.set;
   }
 
   console.log('[EmoteService] Fetching emotes for channel:', channelName, 'ID:', channelId);
+
+  // Ensure cache is ready before parallel fetch
+  await ensureEmoteFileCache();
 
   // Fetch all emotes in parallel
   const [bttvEmotes, sevenTVEmotes, ffzEmotes] = await Promise.all([
@@ -503,33 +555,9 @@ export async function fetchAllEmotes(channelName?: string, channelId?: string): 
     fetchFFZEmotes(channelName)
   ]);
 
-  // Fetch cached files for global emotes
-  let cachedFiles: Record<string, string> = {};
-  try {
-    console.log('[EmoteService] Requesting cached files list for Global/All...');
-    cachedFiles = await invoke('get_cached_files', { cacheType: 'emote' });
-    console.log(`[EmoteService] Received ${Object.keys(cachedFiles).length} cached files for Global/All`);
-
-    if (Object.keys(cachedFiles).length === 0) {
-      console.log('[EmoteService] WARNING: Cache is empty! This explains why images are re-downloading. Check backend paths.');
-    }
-
-    const firstKey = Object.keys(cachedFiles)[0];
-    if (firstKey) {
-      console.log(`[EmoteService] Sample path conversion: ${cachedFiles[firstKey]} -> ${convertFileSrc(cachedFiles[firstKey])}`);
-    }
-
-    // Populate module-level registry
-    Object.entries(cachedFiles).forEach(([id, path]) => {
-      cachedEmoteFiles.set(id, path);
-    });
-  } catch (e) {
-    console.warn('Failed to get cached files:', e);
-  }
-
   // Process global Twitch emotes with cache
   const twitchEmotes = GLOBAL_TWITCH_EMOTES.map(emote => {
-    const localPath = cachedFiles[emote.id];
+    const localPath = cachedEmoteFiles.get(emote.id);
     return {
       ...emote,
       localUrl: localPath ? convertFileSrc(localPath) : undefined
@@ -556,7 +584,6 @@ export async function fetchAllEmotes(channelName?: string, channelId?: string): 
       const expiryDays = settings.cache?.expiry_days || 7;
 
       // Load cached emotes and filter out ones we already have
-      const cachedEmotes: Emote[] = [];
       const fetchedEmoteIds = new Set(allEmotes.map(e => e.id));
 
       // Check cache for each emote we fetched and save new ones
@@ -589,9 +616,8 @@ export async function fetchAllEmotes(channelName?: string, channelId?: string): 
     ffz: ffzEmotes
   };
 
-  // Update memory cache
-  emoteCache = emoteSet;
-  cacheTimestamp = now;
+  // Update memory cache for this channel
+  emoteCache.set(cacheKey, { set: emoteSet, timestamp: now });
 
   console.log('[EmoteService] Fetched emotes:', {
     twitch: emoteSet.twitch.length,
@@ -600,10 +626,14 @@ export async function fetchAllEmotes(channelName?: string, channelId?: string): 
     ffz: emoteSet.ffz.length
   });
 
+  // Trigger browser-level preloading
+  console.log(`[EmoteService] Preloading ${allEmotes.length} emotes into browser memory...`);
+  preloadEmoteImages(allEmotes);
+
   return emoteSet;
 }
 
 export function clearEmoteCache() {
-  emoteCache = null;
-  cacheTimestamp = 0;
+  emoteCache.clear();
+  cachedEmoteFiles.clear(); // Clear file cache too
 }

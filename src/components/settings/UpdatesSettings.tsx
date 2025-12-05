@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { useAppStore } from '../../stores/AppStore';
-import { Check, Loader2, Download, RefreshCw, Package, ArrowRight, AlertCircle, ChevronDown, ChevronRight, FileText, Zap, Settings, Github } from 'lucide-react';
+import { Check, Loader2, Download, RefreshCw, Package, ArrowRight, AlertCircle, ChevronDown, ChevronRight, FileText, Zap, Settings, Github, Sparkles, Bug, Wrench } from 'lucide-react';
 
 interface VersionChange {
     from: string;
@@ -30,11 +30,76 @@ interface BundleUpdateStatus {
 const FormatMarkdown = ({ content }: { content: string }) => {
     if (!content) return null;
 
+    // Filter content to stop at "Bundle Components", "Installation", or separator
+    const lines = content.split('\n');
+    const filteredLines: string[] = [];
+
+    for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed === '---' || trimmed === 'Bundle Components' || trimmed === 'Installation') {
+            break;
+        }
+        filteredLines.push(line);
+    }
+
     return (
         <div className="space-y-1 text-xs text-textSecondary">
-            {content.split('\n').map((line, i) => {
+            {filteredLines.map((line, i) => {
                 const cleanLine = line.trim();
                 if (!cleanLine) return <div key={i} className="h-2" />;
+
+                // Format version/date line: [4.7.1] - 2025-12-04
+                const versionMatch = cleanLine.match(/^(?:##\s*)?\[.*?\]\s*-\s*(\d{4}-\d{2}-\d{2})/);
+                if (versionMatch) {
+                    try {
+                        const date = new Date(versionMatch[1]);
+                        // Add timezone offset to prevent off-by-one error due to UTC conversion
+                        const userTimezoneOffset = date.getTimezoneOffset() * 60000;
+                        const adjustedDate = new Date(date.getTime() + userTimezoneOffset);
+
+                        const formattedDate = adjustedDate.toLocaleDateString('en-US', {
+                            year: 'numeric',
+                            month: 'long',
+                            day: 'numeric'
+                        });
+
+                        return (
+                            <div key={i} className="mb-6 mt-2">
+                                <span className="inline-block text-xs font-medium text-textSecondary bg-white/5 px-2.5 py-1 rounded-md border border-white/5">
+                                    {formattedDate}
+                                </span>
+                            </div>
+                        );
+                    } catch (e) {
+                        // If date parsing fails, just ignore this line or show as is
+                    }
+                }
+
+                // Replace emoji headers with Lucide icons
+                if (cleanLine.includes('✨ Features')) {
+                    return (
+                        <div key={i} className="flex items-center gap-2 mt-4 mb-2">
+                            <Sparkles size={14} className="text-yellow-400" />
+                            <span className="text-sm font-semibold text-textPrimary">Features</span>
+                        </div>
+                    );
+                }
+                if (cleanLine.includes('🐛 Bug Fixes')) {
+                    return (
+                        <div key={i} className="flex items-center gap-2 mt-4 mb-2">
+                            <Bug size={14} className="text-red-400" />
+                            <span className="text-sm font-semibold text-textPrimary">Bug Fixes</span>
+                        </div>
+                    );
+                }
+                if (cleanLine.includes('🔧 Maintenance')) {
+                    return (
+                        <div key={i} className="flex items-center gap-2 mt-4 mb-2">
+                            <Wrench size={14} className="text-blue-400" />
+                            <span className="text-sm font-semibold text-textPrimary">Maintenance</span>
+                        </div>
+                    );
+                }
 
                 if (cleanLine.startsWith('# '))
                     return <h3 key={i} className="text-sm font-bold text-textPrimary mt-4 mb-2">{cleanLine.replace('# ', '')}</h3>;
@@ -43,7 +108,7 @@ const FormatMarkdown = ({ content }: { content: string }) => {
                 if (cleanLine.startsWith('### '))
                     return <h5 key={i} className="text-xs font-semibold text-textPrimary mt-2">{cleanLine.replace('### ', '')}</h5>;
                 if (cleanLine.startsWith('- ') || cleanLine.startsWith('* '))
-                    return <li key={i} className="ml-4 list-disc">{cleanLine.replace(/^[-*]\s/, '')}</li>;
+                    return <li key={i} className="ml-4 list-disc marker:text-textMuted">{cleanLine.replace(/^[-*]\s/, '')}</li>;
 
                 return <p key={i}>{line}</p>;
             })}

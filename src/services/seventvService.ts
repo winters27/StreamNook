@@ -88,8 +88,12 @@ interface UserCosmeticsResponse {
 const userCache = new Map<string, { data: UserCosmeticsResponse; timestamp: number }>();
 const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
 
+// Cache for cosmetic file paths (id -> localPath) to avoid repeated IPC calls
+let cachedCosmeticFiles: Record<string, string> | null = null;
+
 // Track pending requests to prevent duplicate fetches
 const pendingRequests = new Map<string, Promise<UserCosmeticsResponse | null>>();
+let filesInitializationPromise: Promise<void> | null = null;
 
 // GraphQL query fragments
 const fullPaintQueryFields = /* GraphQL */ `
@@ -312,12 +316,17 @@ async function cache7TVCosmetics(paints: PaintV4[], badges: BadgeV4[]) {
     const chunk = cacheItems.slice(i, i + CHUNK_SIZE);
     await Promise.allSettled(chunk.map(async (item) => {
       try {
-        await invoke('download_and_cache_file', {
+        const localPath = await invoke('download_and_cache_file', {
           cacheType: 'cosmetic',
           id: item.id,
           url: item.url,
           expiryDays
-        });
+        }) as string;
+
+        // Update local cache map if successful
+        if (localPath && cachedCosmeticFiles) {
+          cachedCosmeticFiles[item.id] = localPath;
+        }
       } catch (e) {
         console.warn(`Failed to cache cosmetic ${item.id}:`, e);
       }
@@ -337,13 +346,26 @@ export async function getUserCosmetics(twitchId: string): Promise<UserCosmeticsR
     return cached.data;
   }
 
-  // Fetch cached files map
-  let cachedFiles: Record<string, string> = {};
-  try {
-    cachedFiles = await invoke('get_cached_files', { cacheType: 'cosmetic' });
-  } catch (e) {
-    console.warn('Failed to get cached cosmetic files:', e);
+  // Initialize cached files map if needed
+  if (cachedCosmeticFiles === null) {
+    if (filesInitializationPromise) {
+      await filesInitializationPromise;
+    } else {
+      filesInitializationPromise = (async () => {
+        try {
+          cachedCosmeticFiles = await invoke('get_cached_files', { cacheType: 'cosmetic' });
+        } catch (e) {
+          console.warn('Failed to get cached cosmetic files:', e);
+          cachedCosmeticFiles = {};
+        } finally {
+          filesInitializationPromise = null;
+        }
+      })();
+      await filesInitializationPromise;
+    }
   }
+
+  const cachedFiles = cachedCosmeticFiles || {};
 
   // Check if there's already a pending request for this user
   const pending = pendingRequests.get(twitchId);
@@ -593,4 +615,5 @@ export const getBadgeImageUrlForProvider = (badge: any, provider: '7tv' | 'ffz')
 
 export function clearUserCache() {
   userCache.clear();
+  cachedCosmeticFiles = null; // Also clear the file cache so it re-fetches
 }

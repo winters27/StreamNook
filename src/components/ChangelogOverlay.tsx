@@ -1,4 +1,4 @@
-import { X, Sparkles, Calendar, ExternalLink, Plus, Wrench, Zap, Trash2, Shield, FileText } from 'lucide-react';
+import { X, Sparkles, ExternalLink, Bug, Wrench } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import type { ReleaseNotes } from '../types';
@@ -7,6 +7,98 @@ interface ChangelogOverlayProps {
   version: string;
   onClose: () => void;
 }
+
+// Helper to format markdown text roughly (Matched with UpdatesSettings)
+const FormatMarkdown = ({ content }: { content: string }) => {
+  if (!content) return null;
+
+  // Filter content to stop at "Bundle Components", "Installation", or separator
+  const lines = content.split('\n');
+  const filteredLines: string[] = [];
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed === '---' || trimmed === 'Bundle Components' || trimmed === 'Installation') {
+      break;
+    }
+    filteredLines.push(line);
+  }
+
+  return (
+    <div className="space-y-1 text-xs text-textSecondary">
+      {filteredLines.map((line, i) => {
+        const cleanLine = line.trim();
+        if (!cleanLine) return <div key={i} className="h-2" />;
+
+        // Format version/date line: [4.7.1] - 2025-12-04
+        // Note: In ChangelogOverlay, this might not be present in the body if it comes from GitHub release body directly,
+        // but we include the logic just in case it is pasted there.
+        const versionMatch = cleanLine.match(/^(?:##\s*)?\[.*?\]\s*-\s*(\d{4}-\d{2}-\d{2})/);
+        if (versionMatch) {
+          try {
+            const date = new Date(versionMatch[1]);
+            // Add timezone offset to prevent off-by-one error due to UTC conversion
+            const userTimezoneOffset = date.getTimezoneOffset() * 60000;
+            const adjustedDate = new Date(date.getTime() + userTimezoneOffset);
+
+            const formattedDate = adjustedDate.toLocaleDateString('en-US', {
+              year: 'numeric',
+              month: 'long',
+              day: 'numeric'
+            });
+
+            return (
+              <div key={i} className="mb-6 mt-2">
+                <span className="inline-block text-xs font-medium text-textSecondary bg-white/5 px-2.5 py-1 rounded-md border border-white/5">
+                  {formattedDate}
+                </span>
+              </div>
+            );
+          } catch (e) {
+            // If date parsing fails, just ignore this line or show as is
+          }
+        }
+
+        // Replace emoji headers with Lucide icons
+        if (cleanLine.includes('✨ Features')) {
+          return (
+            <div key={i} className="flex items-center gap-2 mt-4 mb-2">
+              <Sparkles size={14} className="text-yellow-400" />
+              <span className="text-sm font-semibold text-textPrimary">Features</span>
+            </div>
+          );
+        }
+        if (cleanLine.includes('🐛 Bug Fixes')) {
+          return (
+            <div key={i} className="flex items-center gap-2 mt-4 mb-2">
+              <Bug size={14} className="text-red-400" />
+              <span className="text-sm font-semibold text-textPrimary">Bug Fixes</span>
+            </div>
+          );
+        }
+        if (cleanLine.includes('🔧 Maintenance')) {
+          return (
+            <div key={i} className="flex items-center gap-2 mt-4 mb-2">
+              <Wrench size={14} className="text-blue-400" />
+              <span className="text-sm font-semibold text-textPrimary">Maintenance</span>
+            </div>
+          );
+        }
+
+        if (cleanLine.startsWith('# '))
+          return <h3 key={i} className="text-sm font-bold text-textPrimary mt-4 mb-2">{cleanLine.replace('# ', '')}</h3>;
+        if (cleanLine.startsWith('## '))
+          return <h4 key={i} className="text-xs font-bold text-textPrimary mt-3 mb-1">{cleanLine.replace('## ', '')}</h4>;
+        if (cleanLine.startsWith('### '))
+          return <h5 key={i} className="text-xs font-semibold text-textPrimary mt-2">{cleanLine.replace('### ', '')}</h5>;
+        if (cleanLine.startsWith('- ') || cleanLine.startsWith('* '))
+          return <li key={i} className="ml-4 list-disc marker:text-textMuted">{cleanLine.replace(/^[-*]\s/, '')}</li>;
+
+        return <p key={i}>{line}</p>;
+      })}
+    </div>
+  );
+};
 
 const ChangelogOverlay = ({ version, onClose }: ChangelogOverlayProps) => {
   const [releaseNotes, setReleaseNotes] = useState<ReleaseNotes | null>(null);
@@ -31,55 +123,6 @@ const ChangelogOverlay = ({ version, onClose }: ChangelogOverlayProps) => {
     fetchReleaseNotes();
   }, [version]);
 
-  // Parse markdown-style content into formatted sections
-  const parseBody = (body: string) => {
-    const lines = body.split('\n');
-    const sections: { title: string; items: string[] }[] = [];
-    let currentSection: { title: string; items: string[] } | null = null;
-
-    for (const line of lines) {
-      const trimmedLine = line.trim();
-      
-      // Skip empty lines
-      if (!trimmedLine) continue;
-      
-      // Check for section headers (### Added, ### Fixed, etc.)
-      if (trimmedLine.startsWith('###') || trimmedLine.startsWith('##')) {
-        if (currentSection && currentSection.items.length > 0) {
-          sections.push(currentSection);
-        }
-        const title = trimmedLine.replace(/^#+\s*/, '');
-        currentSection = { title, items: [] };
-      }
-      // Check for list items
-      else if (trimmedLine.startsWith('-') || trimmedLine.startsWith('*')) {
-        const item = trimmedLine.replace(/^[-*]\s*/, '');
-        if (currentSection) {
-          currentSection.items.push(item);
-        } else {
-          // Create a default section if none exists
-          currentSection = { title: 'Changes', items: [item] };
-        }
-      }
-      // Regular text that's not a list item
-      else if (currentSection) {
-        // Append to the last item if it exists, otherwise add as new item
-        if (currentSection.items.length > 0) {
-          currentSection.items[currentSection.items.length - 1] += ' ' + trimmedLine;
-        } else {
-          currentSection.items.push(trimmedLine);
-        }
-      }
-    }
-
-    // Don't forget the last section
-    if (currentSection && currentSection.items.length > 0) {
-      sections.push(currentSection);
-    }
-
-    return sections;
-  };
-
   const formatDate = (dateStr: string) => {
     if (!dateStr) return '';
     try {
@@ -92,26 +135,6 @@ const ChangelogOverlay = ({ version, onClose }: ChangelogOverlayProps) => {
     } catch {
       return dateStr;
     }
-  };
-
-  const getSectionIcon = (title: string) => {
-    const lowerTitle = title.toLowerCase();
-    if (lowerTitle.includes('added') || lowerTitle.includes('new')) {
-      return <Plus size={16} className="text-green-400" />;
-    }
-    if (lowerTitle.includes('fixed') || lowerTitle.includes('bug')) {
-      return <Wrench size={16} className="text-blue-400" />;
-    }
-    if (lowerTitle.includes('changed') || lowerTitle.includes('improved')) {
-      return <Zap size={16} className="text-yellow-400" />;
-    }
-    if (lowerTitle.includes('removed') || lowerTitle.includes('deprecated')) {
-      return <Trash2 size={16} className="text-red-400" />;
-    }
-    if (lowerTitle.includes('security')) {
-      return <Shield size={16} className="text-purple-400" />;
-    }
-    return <FileText size={16} className="text-textSecondary" />;
   };
 
   return (
@@ -128,13 +151,14 @@ const ChangelogOverlay = ({ version, onClose }: ChangelogOverlayProps) => {
             </div>
             <div>
               <h2 className="text-lg font-bold text-textPrimary">
-                {isLoading ? 'Loading...' : releaseNotes?.name || `Version ${version}`}
+                What's New
               </h2>
               {releaseNotes?.published_at && (
-                <p className="text-xs text-textSecondary flex items-center gap-1">
-                  <Calendar size={12} />
-                  {formatDate(releaseNotes.published_at)}
-                </p>
+                <div className="mt-1">
+                  <span className="inline-block text-xs font-medium text-textSecondary bg-white/5 px-2.5 py-1 rounded-md border border-white/5">
+                    {formatDate(releaseNotes.published_at)}
+                  </span>
+                </div>
               )}
             </div>
           </div>
@@ -151,7 +175,7 @@ const ChangelogOverlay = ({ version, onClose }: ChangelogOverlayProps) => {
         <div className="h-px bg-borderSubtle mb-4" />
 
         {/* Content */}
-        <div className="flex-1 overflow-y-auto custom-scrollbar pr-2 space-y-4">
+        <div className="flex-1 overflow-y-auto custom-scrollbar pr-2">
           {isLoading ? (
             <div className="flex items-center justify-center py-8">
               <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-accent"></div>
@@ -164,24 +188,7 @@ const ChangelogOverlay = ({ version, onClose }: ChangelogOverlayProps) => {
               </p>
             </div>
           ) : releaseNotes?.body ? (
-            parseBody(releaseNotes.body).map((section, index) => (
-              <div key={index} className="space-y-2">
-                <h3 className="text-sm font-semibold text-textPrimary flex items-center gap-2">
-                  {getSectionIcon(section.title)}
-                  {section.title}
-                </h3>
-                <ul className="space-y-1.5 pl-6">
-                  {section.items.map((item, itemIndex) => (
-                    <li
-                      key={itemIndex}
-                      className="text-sm text-textSecondary leading-relaxed list-disc marker:text-textSecondary/50"
-                    >
-                      {item}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ))
+            <FormatMarkdown content={releaseNotes.body} />
           ) : (
             <div className="text-center py-8">
               <p className="text-textSecondary">No release notes available</p>

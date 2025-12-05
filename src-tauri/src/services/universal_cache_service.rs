@@ -735,10 +735,10 @@ pub async fn get_cached_file_path(cache_type: CacheType, id: &str) -> Result<Opt
 
 /// Get all cached files for a specific type
 pub async fn get_cached_files_list(cache_type: CacheType) -> Result<HashMap<String, String>> {
-    println!(
-        "[UniversalCache] Getting cached files list for {:?}",
-        cache_type
-    );
+    // println!(
+    //     "[UniversalCache] Getting cached files list for {:?}",
+    //     cache_type
+    // );
     let manifest = load_manifest()?;
     let mut files = HashMap::new();
 
@@ -753,10 +753,10 @@ pub async fn get_cached_files_list(cache_type: CacheType) -> Result<HashMap<Stri
         }
     }
 
-    println!(
-        "[UniversalCache] Found {} cached files for {:?}",
-        files.len(),
-        cache_type
-    );
+    // println!(
+    //     "[UniversalCache] Found {} cached files for {:?}",
+    //     files.len(),
+    //     cache_type
+    // );
     Ok(files)
 }
