@@ -158,7 +158,9 @@ export async function fetchBTTVEmotes(_channelName?: string, channelId?: string)
     // Fetch cached files map
     let cachedFiles: Record<string, string> = {};
     try {
+      console.log('[EmoteService] Requesting cached files list for BTTV...');
       cachedFiles = await invoke('get_cached_files', { cacheType: 'emote' });
+      console.log(`[EmoteService] Received ${Object.keys(cachedFiles).length} cached files for BTTV`);
     } catch (e) {
       console.warn('Failed to get cached files:', e);
     }
@@ -169,6 +171,7 @@ export async function fetchBTTVEmotes(_channelName?: string, channelId?: string)
       const globalData = await globalResponse.json();
       emotes.push(...globalData.map((emote: any) => {
         const localPath = cachedFiles[emote.id];
+        if (localPath) console.debug(`[BTTV] Cache hit for ${emote.code}: ${localPath}`);
         return {
           id: emote.id,
           name: emote.code,
@@ -236,7 +239,9 @@ export async function fetch7TVEmotes(_channelName?: string, channelId?: string):
     // Fetch cached files map
     let cachedFiles: Record<string, string> = {};
     try {
+      console.log('[EmoteService] Requesting cached files list for 7TV...');
       cachedFiles = await invoke('get_cached_files', { cacheType: 'emote' });
+      console.log(`[EmoteService] Received ${Object.keys(cachedFiles).length} cached files for 7TV`);
     } catch (e) {
       console.warn('Failed to get cached files:', e);
     }
@@ -298,6 +303,7 @@ export async function fetch7TVEmotes(_channelName?: string, channelId?: string):
         const items = gqlData?.data?.emotes?.search?.items || [];
         emotes.push(...items.map((emote: any) => {
           const localPath = cachedFiles[emote.id];
+          if (localPath) console.debug(`[7TV] Cache hit for ${emote.name}: ${localPath}`);
           return {
             id: emote.id,
             name: emote.name,
@@ -320,6 +326,7 @@ export async function fetch7TVEmotes(_channelName?: string, channelId?: string):
         if (globalData.emotes) {
           emotes.push(...globalData.emotes.map((emote: any) => {
             const localPath = cachedFiles[emote.id];
+            if (localPath) console.debug(`[7TV] Cache hit for ${emote.name}: ${localPath}`);
             return {
               id: emote.id,
               name: emote.name,
@@ -363,6 +370,7 @@ export async function fetch7TVEmotes(_channelName?: string, channelId?: string):
               const emoteData = activeEmote.data || activeEmote;
               const emoteId = emoteData.id || activeEmote.id;
               const localPath = cachedFiles[emoteId];
+              if (localPath) console.debug(`[7TV] Cache hit for ${activeEmote.name}: ${localPath}`);
 
               return {
                 id: emoteId,
@@ -411,7 +419,9 @@ export async function fetchFFZEmotes(channelName?: string): Promise<Emote[]> {
     // Fetch cached files map
     let cachedFiles: Record<string, string> = {};
     try {
+      console.log('[EmoteService] Requesting cached files list for FFZ...');
       cachedFiles = await invoke('get_cached_files', { cacheType: 'emote' });
+      console.log(`[EmoteService] Received ${Object.keys(cachedFiles).length} cached files for FFZ`);
     } catch (e) {
       console.warn('Failed to get cached files:', e);
     }
@@ -425,6 +435,7 @@ export async function fetchFFZEmotes(channelName?: string): Promise<Emote[]> {
           if (set.emoticons) {
             emotes.push(...set.emoticons.map((emote: any) => {
               const localPath = cachedFiles[emote.id.toString()];
+              if (localPath) console.debug(`[FFZ] Cache hit for ${emote.name}: ${localPath}`);
               return {
                 id: emote.id.toString(),
                 name: emote.name,
@@ -495,7 +506,18 @@ export async function fetchAllEmotes(channelName?: string, channelId?: string): 
   // Fetch cached files for global emotes
   let cachedFiles: Record<string, string> = {};
   try {
+    console.log('[EmoteService] Requesting cached files list for Global/All...');
     cachedFiles = await invoke('get_cached_files', { cacheType: 'emote' });
+    console.log(`[EmoteService] Received ${Object.keys(cachedFiles).length} cached files for Global/All`);
+
+    if (Object.keys(cachedFiles).length === 0) {
+      console.log('[EmoteService] WARNING: Cache is empty! This explains why images are re-downloading. Check backend paths.');
+    }
+
+    const firstKey = Object.keys(cachedFiles)[0];
+    if (firstKey) {
+      console.log(`[EmoteService] Sample path conversion: ${cachedFiles[firstKey]} -> ${convertFileSrc(cachedFiles[firstKey])}`);
+    }
 
     // Populate module-level registry
     Object.entries(cachedFiles).forEach(([id, path]) => {

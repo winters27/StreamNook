@@ -220,6 +220,7 @@ pub async fn check_for_bundle_update() -> Result<BundleUpdateStatus, String> {
             } else {
                 None
             },
+            release_notes: None,
         }
     };
 
@@ -235,6 +236,9 @@ pub async fn check_for_bundle_update() -> Result<BundleUpdateStatus, String> {
             status.download_size = Some(format!("{:.1} MB", mb));
         }
     }
+
+    // Extract release notes
+    status.release_notes = release["body"].as_str().map(|s| s.to_string());
 
     Ok(status)
 }
@@ -348,13 +352,35 @@ pub async fn download_and_install_bundle(app_handle: tauri::AppHandle) -> Result
                 let _ = std::process::Command::new("taskkill")
                     .args(["/F", "/IM", "streamlinkw.exe", "/T"])
                     .output();
-
-                // Give it a moment to release locks
-                std::thread::sleep(std::time::Duration::from_millis(500));
             }
 
-            std::fs::remove_dir_all(&dest_streamlink)
-                .map_err(|e| format!("Failed to remove old streamlink: {}", e))?;
+            // Retry removal loop to handle race conditions with file locks
+            let mut attempts = 0;
+            loop {
+                attempts += 1;
+                match std::fs::remove_dir_all(&dest_streamlink) {
+                    Ok(_) => break,
+                    Err(e) => {
+                        if attempts >= 5 {
+                            return Err(format!(
+                                "Failed to remove old streamlink after {} attempts. Please ensure Streamlink is not running. Error: {}",
+                                attempts, e
+                            ));
+                        }
+
+                        // Wait before retrying
+                        std::thread::sleep(std::time::Duration::from_millis(1000));
+
+                        // Try killing again on retry to ensure it's dead
+                        #[cfg(target_os = "windows")]
+                        {
+                            let _ = std::process::Command::new("taskkill")
+                                .args(["/F", "/IM", "streamlinkw.exe", "/T"])
+                                .output();
+                        }
+                    }
+                }
+            }
         }
         copy_dir_all(&source_streamlink, &dest_streamlink)
             .map_err(|e| format!("Failed to copy streamlink: {}", e))?;

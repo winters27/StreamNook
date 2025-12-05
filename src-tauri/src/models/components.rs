@@ -42,6 +42,7 @@ pub struct BundleUpdateStatus {
     pub bundle_name: Option<String>,
     pub download_size: Option<String>,
     pub component_changes: Option<ComponentChanges>,
+    pub release_notes: Option<String>,
 }
 
 /// Details about which components changed
@@ -143,6 +144,7 @@ impl ComponentManifest {
             bundle_name: None,
             download_size: None,
             component_changes,
+            release_notes: None,
         }
     }
 }

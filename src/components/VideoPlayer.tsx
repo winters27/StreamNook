@@ -202,14 +202,17 @@ const VideoPlayer = () => {
 
         if (timeFromLive < 5) {
           currentTimeDisplay.textContent = 'LIVE';
+          currentTimeDisplay.classList.add('plyr__time--live');
         } else {
           const behindSeconds = Math.floor(timeFromLive);
           const mins = Math.floor(behindSeconds / 60);
           const secs = behindSeconds % 60;
           currentTimeDisplay.textContent = `-${mins}:${secs.toString().padStart(2, '0')}`;
+          currentTimeDisplay.classList.remove('plyr__time--live');
         }
       } else {
         currentTimeDisplay.textContent = 'LIVE';
+        currentTimeDisplay.classList.add('plyr__time--live');
       }
     }
 

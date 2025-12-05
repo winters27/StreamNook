@@ -414,7 +414,11 @@ const addLog = (level: LogLevel, args: unknown[]): void => {
 // Only captures errors and warnings - info/debug logs are passed through but not stored
 export const initLogCapture = (): void => {
     console.log = (...args: unknown[]) => {
-        // Don't store info logs, just pass through
+        // Store specific info logs that are useful for debugging
+        const firstArg = String(args[0] || '');
+        if (firstArg.startsWith('[EmoteService]') || firstArg.startsWith('[UniversalCache]')) {
+            addLog('info', args);
+        }
         originalConsole.log(...args);
     };
 
