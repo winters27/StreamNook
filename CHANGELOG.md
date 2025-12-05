@@ -1,3 +1,8 @@
+## [4.7.2] - 2025-12-04
+### ✨ Features
+- Improved Changelog and Updates UI with formatted markdown support.
+- Improved emote caching and preloading for faster loading.
+
 ## [4.7.1] - 2025-12-04
 ### ✨ Features
 - Release notes are now displayed when updating.
@@ -554,6 +559,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
