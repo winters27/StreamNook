@@ -1,3 +1,15 @@
+## [4.6.2] - 2025-12-04
+### ✨ Features
+- Added Picture-in-Picture (PIP) mode that auto-triggers when navigating to the home screen while a stream is playing.
+- Improved error reporting, including stack traces and recent logs, to assist with debugging.
+
+### 🐛 Bug Fixes
+- Added error boundary around chat rendering to prevent the entire app from crashing due to chat parsing errors.
+
+### 🔧 Maintenance
+- Centralized handling of live stream notifications for better consistency and control.
+- Removed unused CSS rules.
+
 ## [4.6.1] - 2025-12-04
 ### ✨ Features
 - Added option to automatically download and install updates on startup.  This can be enabled in Settings > Updates.
@@ -510,6 +522,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
