@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef } from 'react';
 import { useAppStore } from './stores/AppStore';
+import { trackPresence, isSupabaseConfigured, incrementStat } from './services/supabaseService';
 import TitleBar from './components/TitleBar';
 import VideoPlayer from './components/VideoPlayer';
 import ChatWidget from './components/ChatWidget';
@@ -66,6 +67,31 @@ function App() {
     };
   }, []);
 
+  // Track presence in Supabase
+  useEffect(() => {
+    let cleanupPresence: (() => void) | null = null;
+
+    const initPresence = async () => {
+      if (isSupabaseConfigured()) {
+        const { currentUser, isAuthenticated } = useAppStore.getState();
+        if (isAuthenticated && currentUser) {
+          cleanupPresence = await trackPresence(currentUser.user_id, currentUser.display_name);
+        } else {
+          // Track anonymous presence
+          cleanupPresence = await trackPresence();
+        }
+      }
+    };
+
+    initPresence();
+
+    return () => {
+      if (cleanupPresence) {
+        cleanupPresence();
+      }
+    };
+  }, []);
+
   useEffect(() => {
     const initializeApp = async () => {
       await loadSettings();
@@ -88,6 +114,14 @@ function App() {
       const unlistenChannelPoints = await listen('channel-points-claimed', (event: any) => {
         const claim = event.payload;
         addToast(`Claimed ${claim.points_earned} channel points!`, 'success');
+
+        // Track channel points in Supabase
+        if (isSupabaseConfigured()) {
+          const { currentUser, isAuthenticated } = useAppStore.getState();
+          if (isAuthenticated && currentUser?.user_id) {
+            incrementStat(currentUser.user_id, 'channel_points_farmed', claim.points_earned);
+          }
+        }
       });
 
       // Listen for drops farming errors and report them to Discord via logService
@@ -277,6 +311,31 @@ function App() {
 
   useEffect(() => {
     streamUrlRef.current = streamUrl;
+  }, [streamUrl]);
+
+  // Track watch time and streams watched in Supabase
+  useEffect(() => {
+    if (!streamUrl || !isSupabaseConfigured()) return;
+
+    const { currentUser, isAuthenticated } = useAppStore.getState();
+    if (!isAuthenticated || !currentUser?.user_id) return;
+
+    // Increment streams_watched when starting a new stream
+    console.log('[Stats] Stream started, incrementing streams_watched');
+    incrementStat(currentUser.user_id, 'streams_watched', 1);
+
+    // Track watch time every minute
+    const watchTimeInterval = setInterval(() => {
+      const { isAuthenticated: stillAuth, currentUser: user } = useAppStore.getState();
+      if (stillAuth && user?.user_id) {
+        // Increment by 1/60 of an hour (1 minute)
+        incrementStat(user.user_id, 'hours_watched', 1 / 60);
+      }
+    }, 60000); // Every minute
+
+    return () => {
+      clearInterval(watchTimeInterval);
+    };
   }, [streamUrl]);
 
   // Auto-trigger native PIP when navigating to Home while stream is playing
