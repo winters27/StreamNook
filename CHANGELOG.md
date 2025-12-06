@@ -1,3 +1,13 @@
+## [4.7.4] - 2025-12-05
+### ✨ Features
+- Added analytics dashboard for admins (requires configuration of Supabase environment variables during build)
+- Implemented basic Supabase analytics to track usage.
+- Tracked number of messages sent in the chat.
+
+### 🔧 Maintenance
+- Updated build process to include Supabase environment variables.
+- Added Supabase JavaScript library as a dependency.
+
 ## [4.7.3] - 2025-12-05
 ### ✨ Features
 - Added dynamic layout configuration for chat messages, allowing for responsive text sizing.
@@ -567,6 +577,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
