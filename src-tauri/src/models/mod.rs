@@ -1,3 +1,4 @@
+pub mod chat_layout;
 pub mod components;
 pub mod drops;
 pub mod settings;

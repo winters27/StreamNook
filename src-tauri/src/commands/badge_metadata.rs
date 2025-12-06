@@ -1,4 +1,5 @@
 use crate::services::universal_cache_service::{cache_item, get_cached_item, CacheType};
+use regex::Regex;
 use scraper::{Html, Selector};
 use serde::{Deserialize, Serialize};
 
@@ -213,7 +214,8 @@ fn extract_text_with_timestamps(element: &scraper::ElementRef, result: &mut Stri
     for child in element.children() {
         match child.value() {
             Node::Text(text) => {
-                result.push_str(text);
+                // Decode HTML entities in text
+                result.push_str(&decode_html_entities(text));
             }
             Node::Element(_) => {
                 if let Some(child_element) = scraper::ElementRef::wrap(child) {
@@ -225,7 +227,7 @@ fn extract_text_with_timestamps(element: &scraper::ElementRef, result: &mut Stri
                                 if let Some(original_time) =
                                     child_element.value().attr("data-original")
                                 {
-                                    result.push_str(original_time);
+                                    result.push_str(&decode_html_entities(original_time));
                                     continue;
                                 }
                             }
@@ -238,4 +240,90 @@ fn extract_text_with_timestamps(element: &scraper::ElementRef, result: &mut Stri
             _ => {}
         }
     }
+}
+
+/// Decode HTML entities like &#8211; → – and &amp; → &
+fn decode_html_entities(text: &str) -> String {
+    let mut result = text.to_string();
+
+    // Decode numeric HTML entities (&#NNNN;)
+    // Match decimal entities like &#8211;
+    if let Ok(decimal_re) = Regex::new(r"&#(\d+);") {
+        let temp = result.clone();
+        let mut last_end = 0;
+        let mut new_result = String::new();
+
+        for caps in decimal_re.captures_iter(&temp) {
+            if let (Some(full_match), Some(num_str)) = (caps.get(0), caps.get(1)) {
+                // Add text before this match
+                new_result.push_str(&temp[last_end..full_match.start()]);
+
+                // Try to decode the entity
+                if let Ok(code_point) = num_str.as_str().parse::<u32>() {
+                    if let Some(c) = char::from_u32(code_point) {
+                        new_result.push(c);
+                    } else {
+                        new_result.push_str(full_match.as_str());
+                    }
+                } else {
+                    new_result.push_str(full_match.as_str());
+                }
+
+                last_end = full_match.end();
+            }
+        }
+        new_result.push_str(&temp[last_end..]);
+        result = new_result;
+    }
+
+    // Match hex entities like &#x2013;
+    if let Ok(hex_re) = Regex::new(r"&#x([0-9a-fA-F]+);") {
+        let temp = result.clone();
+        let mut last_end = 0;
+        let mut new_result = String::new();
+
+        for caps in hex_re.captures_iter(&temp) {
+            if let (Some(full_match), Some(hex_str)) = (caps.get(0), caps.get(1)) {
+                // Add text before this match
+                new_result.push_str(&temp[last_end..full_match.start()]);
+
+                // Try to decode the entity
+                if let Ok(code_point) = u32::from_str_radix(hex_str.as_str(), 16) {
+                    if let Some(c) = char::from_u32(code_point) {
+                        new_result.push(c);
+                    } else {
+                        new_result.push_str(full_match.as_str());
+                    }
+                } else {
+                    new_result.push_str(full_match.as_str());
+                }
+
+                last_end = full_match.end();
+            }
+        }
+        new_result.push_str(&temp[last_end..]);
+        result = new_result;
+    }
+
+    // Decode common named HTML entities
+    result = result
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&nbsp;", " ")
+        .replace("&ndash;", "\u{2013}") // en-dash
+        .replace("&mdash;", "\u{2014}") // em-dash
+        .replace("&lsquo;", "\u{2018}") // left single quote
+        .replace("&rsquo;", "\u{2019}") // right single quote
+        .replace("&ldquo;", "\u{201C}") // left double quote
+        .replace("&rdquo;", "\u{201D}") // right double quote
+        .replace("&bull;", "\u{2022}") // bullet
+        .replace("&hellip;", "\u{2026}") // ellipsis
+        .replace("&copy;", "\u{00A9}") // copyright
+        .replace("&reg;", "\u{00AE}") // registered
+        .replace("&trade;", "\u{2122}"); // trademark
+
+    result
 }

@@ -1,8 +1,9 @@
 use crate::services::universal_cache_service::{
     assign_badge_metadata_positions, cache_file, cache_item, cleanup_expired_entries,
-    clear_universal_cache, export_manifest_for_github, get_cached_file_path, get_cached_files_list,
-    get_cached_item, get_universal_cache_stats, sync_universal_cache, CacheType,
-    UniversalCacheEntry, UniversalCacheStats,
+    clear_universal_cache, export_manifest_for_github, get_all_cached_items_by_type,
+    get_cached_file_path, get_cached_files_list, get_cached_item, get_cached_items_batch,
+    get_universal_cache_stats, sync_universal_cache, CacheType, UniversalCacheEntry,
+    UniversalCacheStats,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -141,4 +142,37 @@ pub async fn get_cached_files(cache_type: String) -> Result<HashMap<String, Stri
     get_cached_files_list(cache_type_enum)
         .await
         .map_err(|e| e.to_string())
+}
+
+/// Get ALL cached items of a specific type - efficient batch lookup (single disk read)
+#[command]
+pub fn get_all_universal_cached_items(
+    cache_type: String,
+) -> Result<HashMap<String, UniversalCacheEntry>, String> {
+    let cache_type_enum = match cache_type.as_str() {
+        "badge" => CacheType::Badge,
+        "emote" => CacheType::Emote,
+        "third-party-badge" => CacheType::ThirdPartyBadge,
+        "cosmetic" => CacheType::Cosmetic,
+        _ => return Err(format!("Invalid cache type: {}", cache_type)),
+    };
+
+    get_all_cached_items_by_type(cache_type_enum).map_err(|e| e.to_string())
+}
+
+/// Get multiple cached items by their IDs - efficient batch lookup (single disk read)
+#[command]
+pub fn get_universal_cached_items_batch(
+    cache_type: String,
+    ids: Vec<String>,
+) -> Result<HashMap<String, UniversalCacheEntry>, String> {
+    let cache_type_enum = match cache_type.as_str() {
+        "badge" => CacheType::Badge,
+        "emote" => CacheType::Emote,
+        "third-party-badge" => CacheType::ThirdPartyBadge,
+        "cosmetic" => CacheType::Cosmetic,
+        _ => return Err(format!("Invalid cache type: {}", cache_type)),
+    };
+
+    get_cached_items_batch(cache_type_enum, &ids).map_err(|e| e.to_string())
 }

@@ -264,76 +264,77 @@ const requestGql = async ({ query }: { query: string }): Promise<any> => {
   return undefined;
 };
 
-// Helper to cache 7TV cosmetics in background
-async function cache7TVCosmetics(paints: PaintV4[], badges: BadgeV4[]) {
-  // Load settings to check if caching is enabled and get expiry
-  let expiryDays = 7; // Default to 7 days for cosmetics
+// Track pending cosmetic downloads to prevent duplicates
+const pendingCosmeticDownloads = new Map<string, Promise<string | null>>();
+
+// Settings cache for cosmetics
+let cosmeticCacheSettings: { enabled: boolean; expiryDays: number } | null = null;
+
+async function getCosmeticCacheSettings(): Promise<{ enabled: boolean; expiryDays: number }> {
+  if (cosmeticCacheSettings) return cosmeticCacheSettings;
   try {
     const settings = await invoke('load_settings') as any;
-    if (settings.cache?.enabled === false) {
-      return; // Caching disabled
-    }
-    expiryDays = settings.cache?.expiry_days ?? 7;
+    cosmeticCacheSettings = {
+      enabled: settings.cache?.enabled !== false,
+      expiryDays: settings.cache?.expiry_days ?? 7
+    };
+    return cosmeticCacheSettings;
   } catch (e) {
-    console.warn('[7TVService] Failed to load settings for cache config:', e);
+    console.warn('[7TVService] Failed to load settings:', e);
+    return { enabled: true, expiryDays: 7 };
+  }
+}
+
+// Lazy download a single cosmetic on-demand
+async function downloadCosmeticIfNeeded(id: string, url: string): Promise<string | null> {
+  // Already cached?
+  if (cachedCosmeticFiles && cachedCosmeticFiles[id]) {
+    return cachedCosmeticFiles[id];
   }
 
-  const cacheItems: Array<{ id: string; url: string }> = [];
-
-  // Collect badge images
-  for (const badge of badges) {
-    if (!badge.localUrl) {
-      cacheItems.push({
-        id: badge.id,
-        url: `https://cdn.7tv.app/badge/${badge.id}/3x`
-      });
-    }
+  // Already downloading?
+  if (pendingCosmeticDownloads.has(id)) {
+    return pendingCosmeticDownloads.get(id)!;
   }
 
-  // Collect paint layer images
-  for (const paint of paints) {
-    for (const layer of paint.data.layers) {
-      if (layer.ty.__typename === 'PaintLayerTypeImage' && layer.ty.images) {
-        const isAnimated = layer.ty.images.some((img) => img.frameCount > 1);
-        const img = layer.ty.images.find((i) => i.scale === 1 && (isAnimated ? i.frameCount > 1 : true));
+  const settings = await getCosmeticCacheSettings();
+  if (!settings.enabled) return null;
 
-        // Check if we already have a local URL for this layer (we check the first image's localUrl as a proxy)
-        const hasLocal = layer.ty.images.some(i => !!i.localUrl);
+  // Start download
+  const downloadPromise = (async () => {
+    try {
+      const localPath = await invoke('download_and_cache_file', {
+        cacheType: 'cosmetic',
+        id,
+        url,
+        expiryDays: settings.expiryDays
+      }) as string;
 
-        if (img && !hasLocal) {
-          cacheItems.push({
-            id: layer.id, // Use layer ID for caching paint images
-            url: img.url
-          });
-        }
+      if (localPath && cachedCosmeticFiles) {
+        cachedCosmeticFiles[id] = localPath;
+        return localPath;
       }
+      return null;
+    } catch (e) {
+      console.debug(`[7TVService] Failed to cache cosmetic ${id}:`, e);
+      return null;
+    } finally {
+      pendingCosmeticDownloads.delete(id);
     }
-  }
+  })();
 
-  // Process in chunks
-  const CHUNK_SIZE = 10;
-  for (let i = 0; i < cacheItems.length; i += CHUNK_SIZE) {
-    const chunk = cacheItems.slice(i, i + CHUNK_SIZE);
-    await Promise.allSettled(chunk.map(async (item) => {
-      try {
-        const localPath = await invoke('download_and_cache_file', {
-          cacheType: 'cosmetic',
-          id: item.id,
-          url: item.url,
-          expiryDays
-        }) as string;
+  pendingCosmeticDownloads.set(id, downloadPromise);
+  return downloadPromise;
+}
 
-        // Update local cache map if successful
-        if (localPath && cachedCosmeticFiles) {
-          cachedCosmeticFiles[item.id] = localPath;
-        }
-      } catch (e) {
-        console.warn(`Failed to cache cosmetic ${item.id}:`, e);
-      }
-    }));
-    // Small delay between chunks
-    await new Promise(resolve => setTimeout(resolve, 100));
+// Queue a cosmetic for lazy caching - called when actually displayed
+export function queueCosmeticForCaching(id: string, url: string) {
+  if ((cachedCosmeticFiles && cachedCosmeticFiles[id]) || pendingCosmeticDownloads.has(id)) {
+    return;
   }
+  downloadCosmeticIfNeeded(id, url).catch(() => {
+    // Silent fail
+  });
 }
 
 // Fetch user cosmetics from 7TV v4 API
@@ -442,8 +443,7 @@ export async function getUserCosmetics(twitchId: string): Promise<UserCosmeticsR
         badges: badges.filter((b) => b !== null)
       };
 
-      // Trigger background caching
-      cache7TVCosmetics(result.paints, result.badges).catch(e => console.error('Background cosmetic caching failed:', e));
+      // NO aggressive caching here - cosmetics will be cached lazily when displayed
 
       userCache.set(twitchId, { data: result, timestamp: now });
       return result;
@@ -578,8 +578,6 @@ export const computePaintStyle = (paint: PaintV4, userColor?: string): React.CSS
     backgroundPosition: 'center',
     backgroundRepeat: 'no-repeat',
     color: 'transparent',
-    display: 'inline-block', // Required for background-clip to work
-    verticalAlign: 'baseline', // Prevent vertical shifting
   };
 
   if (filter) {

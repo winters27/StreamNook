@@ -28,7 +28,7 @@
 
 use commands::{
     app::*, badge_metadata::*, badges::*, cache::*, chat::*, components::*, cosmetics_cache::*,
-    discord::*, drops::*, settings::*, streaming::*, twitch::*, universal_cache::*,
+    discord::*, drops::*, layout::*, settings::*, streaming::*, twitch::*, universal_cache::*,
 };
 use models::settings::{AppState, Settings};
 use services::background_service::BackgroundService;
@@ -102,12 +102,16 @@ fn main() {
     // Initialize whisper service
     let whisper_service = Arc::new(TokioMutex::new(WhisperService::new()));
 
+    // Initialize layout service
+    let layout_service = Arc::new(services::layout_service::LayoutService::new());
+
     Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .manage(live_notification_service.clone())
         .manage(whisper_service.clone())
+        .manage(layout_service.clone())
         .setup(move |app| {
             let app_handle = app.handle().clone();
             let live_notif_service = live_notification_service.clone();
@@ -124,6 +128,7 @@ fn main() {
                 drops_service,
                 mining_service,
                 background_service: background_service.clone(),
+                layout_service: layout_service.clone(),
             };
 
             // Clone the app_state before managing it
@@ -317,6 +322,8 @@ fn main() {
             download_and_cache_file,
             get_cached_file,
             get_cached_files,
+            get_all_universal_cached_items,
+            get_universal_cached_items_batch,
             // Cosmetics Cache commands
             cache_user_cosmetics,
             get_cached_user_cosmetics,
@@ -362,7 +369,10 @@ fn main() {
             get_remote_component_versions,
             check_for_bundle_update,
             extract_bundled_components,
-            download_and_install_bundle
+            extract_bundled_components,
+            download_and_install_bundle,
+            // Layout commands
+            update_layout_config,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

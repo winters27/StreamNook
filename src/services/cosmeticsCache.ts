@@ -1,176 +1,122 @@
-// Service for caching and retrieving 7TV cosmetics and third-party badges using universal cache
-import { invoke } from '@tauri-apps/api/core';
+// Service for caching cosmetics - user lookups in memory, image files on disk
+// User -> cosmetics mappings come from APIs fresh each time
+// Image files are cached to disk by their respective services (seventvService, thirdPartyBadges)
 
 interface CachedCosmetics {
   paints: any[];
   badges: any[];
 }
 
-interface CachedThirdPartyBadges {
-  badges: any[];
-}
+// In-memory cache for 7TV cosmetics (session only) - for SYNCHRONOUS access
+// This mirrors the cache in seventvService but provides instant synchronous reads
+const inMemoryCosmeticsCache = new Map<string, CachedCosmetics>();
+
+// In-memory cache for third-party badges (session only)
+const inMemoryThirdPartyBadgesCache = new Map<string, any[]>();
+
+// Track pending requests to prevent duplicate fetches
+const pendingCosmeticsRequests = new Map<string, Promise<CachedCosmetics>>();
+const pendingThirdPartyBadgesRequests = new Map<string, Promise<any[]>>();
 
 /**
- * Cache user cosmetics (7TV badges and paints)
+ * Get cosmetics from synchronous in-memory cache (instant, no async)
+ * Returns null if not in memory cache - use this for initial state
  */
-export async function cacheUserCosmetics(userId: string, cosmetics: CachedCosmetics): Promise<void> {
-  try {
-    await invoke('cache_user_cosmetics', {
-      userId,
-      cosmeticsData: cosmetics,
-    });
-    console.log(`[CosmeticsCache] Cached cosmetics for user ${userId}`);
-  } catch (error) {
-    console.error('[CosmeticsCache] Failed to cache user cosmetics:', error);
-    throw error;
-  }
+export function getCosmeticsFromMemoryCache(userId: string): CachedCosmetics | null {
+  return inMemoryCosmeticsCache.get(userId) || null;
 }
 
 /**
- * Get cached user cosmetics (7TV badges and paints)
+ * Get third-party badges from synchronous in-memory cache (instant, no async)
+ * Returns null if not in memory cache - use this for initial state
  */
-export async function getCachedUserCosmetics(userId: string): Promise<CachedCosmetics | null> {
-  try {
-    const cached = await invoke<CachedCosmetics | null>('get_cached_user_cosmetics', { userId });
-    if (cached) {
-      console.log(`[CosmeticsCache] Retrieved cached cosmetics for user ${userId}`);
-    }
-    return cached;
-  } catch (error) {
-    console.error('[CosmeticsCache] Failed to get cached user cosmetics:', error);
-    return null;
-  }
+export function getThirdPartyBadgesFromMemoryCache(userId: string): any[] | null {
+  return inMemoryThirdPartyBadgesCache.get(userId) || null;
 }
 
 /**
- * Cache third-party badges for a user
- */
-export async function cacheThirdPartyBadges(userId: string, badges: any[]): Promise<void> {
-  try {
-    await invoke('cache_third_party_badges', {
-      userId,
-      badgesData: { badges },
-    });
-    console.log(`[CosmeticsCache] Cached third-party badges for user ${userId}`);
-  } catch (error) {
-    console.error('[CosmeticsCache] Failed to cache third-party badges:', error);
-    throw error;
-  }
-}
-
-/**
- * Get cached third-party badges for a user
- */
-export async function getCachedThirdPartyBadges(userId: string): Promise<any[] | null> {
-  try {
-    const cached = await invoke<CachedThirdPartyBadges | null>('get_cached_third_party_badges', { userId });
-    if (cached) {
-      console.log(`[CosmeticsCache] Retrieved cached third-party badges for user ${userId}`);
-      return cached.badges;
-    }
-    return null;
-  } catch (error) {
-    console.error('[CosmeticsCache] Failed to get cached third-party badges:', error);
-    return null;
-  }
-}
-
-/**
- * Pre-fetch and cache cosmetics for a user (fetches from APIs and stores in cache)
- */
-export async function prefetchAndCacheUserCosmetics(userId: string): Promise<void> {
-  try {
-    console.log(`[CosmeticsCache] Pre-fetching cosmetics for user ${userId}...`);
-    
-    // Fetch from 7TV service
-    const { getUserCosmetics } = await import('./seventvService');
-    const cosmetics = await getUserCosmetics(userId);
-    
-    if (cosmetics && (cosmetics.paints.length > 0 || cosmetics.badges.length > 0)) {
-      await cacheUserCosmetics(userId, cosmetics);
-    }
-  } catch (error) {
-    console.error('[CosmeticsCache] Failed to pre-fetch user cosmetics:', error);
-  }
-}
-
-/**
- * Pre-fetch and cache third-party badges for a user
- */
-export async function prefetchAndCacheThirdPartyBadges(userId: string): Promise<void> {
-  try {
-    console.log(`[CosmeticsCache] Pre-fetching third-party badges for user ${userId}...`);
-    
-    // Fetch from third-party services
-    const { getAllThirdPartyBadges } = await import('./thirdPartyBadges');
-    const badges = await getAllThirdPartyBadges(userId);
-    
-    if (badges.length > 0) {
-      await cacheThirdPartyBadges(userId, badges);
-    }
-  } catch (error) {
-    console.error('[CosmeticsCache] Failed to pre-fetch third-party badges:', error);
-  }
-}
-
-/**
- * Pre-fetch all cosmetics and badges for a user (convenience method)
- */
-export async function prefetchAllUserData(userId: string): Promise<void> {
-  await Promise.all([
-    prefetchAndCacheUserCosmetics(userId),
-    prefetchAndCacheThirdPartyBadges(userId),
-  ]);
-  console.log(`[CosmeticsCache] Pre-fetch complete for user ${userId}`);
-}
-
-/**
- * Get cosmetics with fallback - tries cache first, then fetches from API
+ * Get cosmetics for a user - memory cache -> API fetch with deduplication
+ * Image caching is handled by the seventvService internally
  */
 export async function getCosmeticsWithFallback(userId: string): Promise<CachedCosmetics> {
-  // Try cache first
-  const cached = await getCachedUserCosmetics(userId);
-  if (cached) {
-    return cached;
+  // 1. Try in-memory cache first (instant, synchronous)
+  const memoryCached = inMemoryCosmeticsCache.get(userId);
+  if (memoryCached) {
+    return memoryCached;
   }
-  
-  // Fallback to API
-  console.log(`[CosmeticsCache] Cache miss, fetching from API for user ${userId}`);
-  const { getUserCosmetics } = await import('./seventvService');
-  const cosmetics = await getUserCosmetics(userId);
-  
-  if (cosmetics) {
-    // Cache for next time
-    await cacheUserCosmetics(userId, cosmetics).catch(err => 
-      console.error('[CosmeticsCache] Failed to cache after fetch:', err)
-    );
-    return cosmetics;
+
+  // 2. Check if there's already a pending request for this user (dedupe)
+  const pendingRequest = pendingCosmeticsRequests.get(userId);
+  if (pendingRequest) {
+    return pendingRequest;
   }
-  
-  return { paints: [], badges: [] };
+
+  // 3. Create a new request and track it
+  const request = (async (): Promise<CachedCosmetics> => {
+    try {
+      // Fetch from API (fresh data) - seventvService handles its own 5-minute memory caching
+      const { getUserCosmetics } = await import('./seventvService');
+      const cosmetics = await getUserCosmetics(userId);
+
+      const result = cosmetics || { paints: [], badges: [] };
+
+      // Store in memory cache for this session (synchronous access)
+      inMemoryCosmeticsCache.set(userId, result);
+
+      return result;
+    } finally {
+      pendingCosmeticsRequests.delete(userId);
+    }
+  })();
+
+  pendingCosmeticsRequests.set(userId, request);
+  return request;
 }
 
 /**
- * Get third-party badges with fallback - tries cache first, then fetches from API
+ * Get third-party badges for a user - memory cache -> API fetch
+ * Badge images are cached to disk separately by thirdPartyBadges service
  */
 export async function getThirdPartyBadgesWithFallback(userId: string): Promise<any[]> {
-  // Try cache first
-  const cached = await getCachedThirdPartyBadges(userId);
-  if (cached) {
-    return cached;
+  // 1. Try in-memory cache first (instant, synchronous)
+  const memoryCached = inMemoryThirdPartyBadgesCache.get(userId);
+  if (memoryCached) {
+    return memoryCached;
   }
-  
-  // Fallback to API
-  console.log(`[CosmeticsCache] Cache miss, fetching third-party badges from API for user ${userId}`);
-  const { getAllThirdPartyBadges } = await import('./thirdPartyBadges');
-  const badges = await getAllThirdPartyBadges(userId);
-  
-  if (badges.length > 0) {
-    // Cache for next time
-    await cacheThirdPartyBadges(userId, badges).catch(err =>
-      console.error('[CosmeticsCache] Failed to cache third-party badges after fetch:', err)
-    );
+
+  // 2. Check if there's already a pending request for this user (dedupe)
+  const pendingRequest = pendingThirdPartyBadgesRequests.get(userId);
+  if (pendingRequest) {
+    return pendingRequest;
   }
-  
-  return badges;
+
+  // 3. Create a new request and track it
+  const request = (async (): Promise<any[]> => {
+    try {
+      // Fetch from API (fresh data) - thirdPartyBadges service handles image caching
+      const { getAllThirdPartyBadges } = await import('./thirdPartyBadges');
+      const badges = await getAllThirdPartyBadges(userId);
+
+      // Store in memory cache for this session
+      inMemoryThirdPartyBadgesCache.set(userId, badges);
+
+      return badges;
+    } finally {
+      pendingThirdPartyBadgesRequests.delete(userId);
+    }
+  })();
+
+  pendingThirdPartyBadgesRequests.set(userId, request);
+  return request;
+}
+
+/**
+ * Clear in-memory caches (useful for testing or channel switch)
+ */
+export function clearCosmeticsMemoryCache(): void {
+  inMemoryCosmeticsCache.clear();
+  pendingCosmeticsRequests.clear();
+  inMemoryThirdPartyBadgesCache.clear();
+  pendingThirdPartyBadgesRequests.clear();
+  console.log('[CosmeticsCache] Memory caches cleared');
 }

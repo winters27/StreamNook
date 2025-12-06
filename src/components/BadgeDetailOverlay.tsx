@@ -52,14 +52,122 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
     fetchBadgeBaseInfo();
   }, [setId, badge.id]);
 
-  // Parse abbreviated date range format like "Dec 1-12", "Dec 1 - 12", or "Dec 06 – Dec 07"
-  const parseDateRange = (text: string): { start: Date; end: Date } | null => {
+  // Decode HTML entities like &#8211; → – in text
+  const decodeHtmlEntities = (text: string): string => {
+    let result = text;
+
+    // Decode numeric HTML entities (&#NNNN;)
+    result = result.replace(/&#(\d+);/g, (_match, dec) => {
+      const code = parseInt(dec, 10);
+      return String.fromCharCode(code);
+    });
+
+    // Decode hex HTML entities (&#xHHHH;)
+    result = result.replace(/&#x([0-9a-fA-F]+);/g, (_match, hex) => {
+      const code = parseInt(hex, 16);
+      return String.fromCharCode(code);
+    });
+
+    // Decode common named entities
+    const entities: Record<string, string> = {
+      '&amp;': '&',
+      '&lt;': '<',
+      '&gt;': '>',
+      '&quot;': '"',
+      '&apos;': "'",
+      '&nbsp;': ' ',
+      '&ndash;': '–',
+      '&mdash;': '—',
+    };
+
+    for (const [entity, char] of Object.entries(entities)) {
+      result = result.split(entity).join(char);
+    }
+
+    return result;
+  };
+
+  // Parse various date range formats
+  const parseDateRange = (inputText: string): { start: Date; end: Date } | null => {
+    // First decode HTML entities
+    const text = decodeHtmlEntities(inputText);
+
     const months: Record<string, number> = {
       'Jan': 0, 'Feb': 1, 'Mar': 2, 'Apr': 3,
       'May': 4, 'Jun': 5, 'Jul': 6, 'Aug': 7,
       'Sep': 8, 'Oct': 9, 'Nov': 10, 'Dec': 11
     };
+    const fullMonths: Record<string, number> = {
+      'January': 0, 'February': 1, 'March': 2, 'April': 3,
+      'May': 4, 'June': 5, 'July': 6, 'August': 7,
+      'September': 8, 'October': 9, 'November': 10, 'December': 11
+    };
     const currentYear = new Date().getFullYear();
+
+    // Try to parse "Event duration: December 6, 2025 – December 7, 2025" format
+    const fullDateRangeMatch = text.match(/Event duration:\s*(\w+)\s+(\d{1,2}),?\s+(\d{4})\s*[–-]\s*(\w+)\s+(\d{1,2}),?\s+(\d{4})/i);
+    if (fullDateRangeMatch) {
+      const startMonthName = fullDateRangeMatch[1];
+      const startDay = parseInt(fullDateRangeMatch[2], 10);
+      const startYear = parseInt(fullDateRangeMatch[3], 10);
+      const endMonthName = fullDateRangeMatch[4];
+      const endDay = parseInt(fullDateRangeMatch[5], 10);
+      const endYear = parseInt(fullDateRangeMatch[6], 10);
+
+      if (fullMonths.hasOwnProperty(startMonthName) && fullMonths.hasOwnProperty(endMonthName)) {
+        const startDate = new Date(startYear, fullMonths[startMonthName], startDay, 0, 0, 0);
+        const endDate = new Date(endYear, fullMonths[endMonthName], endDay, 23, 59, 59);
+
+        if (!isNaN(startDate.getTime()) && !isNaN(endDate.getTime())) {
+          return { start: startDate, end: endDate };
+        }
+      }
+    }
+
+    // Try to parse "Event duration: Dec 19 – Jan 01" format (abbreviated, cross-month/year)
+    const eventDurationMatch = text.match(/Event duration:\s*(\w{3})\s+(\d{1,2})\s*[–-]\s*(\w{3})\s+(\d{1,2})/i);
+    if (eventDurationMatch) {
+      const startMonthAbbrev = eventDurationMatch[1];
+      const startDay = parseInt(eventDurationMatch[2], 10);
+      const endMonthAbbrev = eventDurationMatch[3];
+      const endDay = parseInt(eventDurationMatch[4], 10);
+
+      if (months.hasOwnProperty(startMonthAbbrev) && months.hasOwnProperty(endMonthAbbrev)) {
+        const startMonthNum = months[startMonthAbbrev];
+        const endMonthNum = months[endMonthAbbrev];
+
+        let startYear = currentYear;
+        let endYear = currentYear;
+        if (startMonthNum > endMonthNum) {
+          endYear = currentYear + 1;
+        }
+
+        const startDate = new Date(startYear, startMonthNum, startDay, 0, 0, 0);
+        const endDate = new Date(endYear, endMonthNum, endDay, 23, 59, 59);
+
+        if (!isNaN(startDate.getTime()) && !isNaN(endDate.getTime())) {
+          return { start: startDate, end: endDate };
+        }
+      }
+    }
+
+    // Try to parse "Event duration: Dec 19-25" format (same month)
+    const eventDurationSameMonthMatch = text.match(/Event duration:\s*(\w{3})\s+(\d{1,2})\s*[–-]\s*(\d{1,2})/i);
+    if (eventDurationSameMonthMatch) {
+      const monthAbbrev = eventDurationSameMonthMatch[1];
+      const startDay = parseInt(eventDurationSameMonthMatch[2], 10);
+      const endDay = parseInt(eventDurationSameMonthMatch[3], 10);
+
+      if (months.hasOwnProperty(monthAbbrev)) {
+        const monthNum = months[monthAbbrev];
+        const startDate = new Date(currentYear, monthNum, startDay, 0, 0, 0);
+        const endDate = new Date(currentYear, monthNum, endDay, 23, 59, 59);
+
+        if (!isNaN(startDate.getTime()) && !isNaN(endDate.getTime())) {
+          return { start: startDate, end: endDate };
+        }
+      }
+    }
 
     // Match "Mon DD – Mon DD" format (e.g., "Dec 06 – Dec 07") - with en-dash or regular dash
     const fullRangeMatch = text.match(/(\w{3})\s+(\d{1,2})\s*[–-]\s*(\w{3})\s+(\d{1,2})/);
@@ -187,16 +295,80 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
 
   // Convert timestamps to local time and return as JSX with highlighted dates
   // Handles both ISO timestamps and abbreviated date ranges like "Dec 1-12"
-  const convertTimestampsToLocalJSX = (text: string): JSX.Element => {
+  const convertTimestampsToLocalJSX = (inputText: string): JSX.Element => {
+    // First decode HTML entities
+    const text = decodeHtmlEntities(inputText);
     const months: Record<string, number> = {
       'Jan': 0, 'Feb': 1, 'Mar': 2, 'Apr': 3,
       'May': 4, 'Jun': 5, 'Jul': 6, 'Aug': 7,
       'Sep': 8, 'Oct': 9, 'Nov': 10, 'Dec': 11
     };
+    const fullMonths: Record<string, number> = {
+      'January': 0, 'February': 1, 'March': 2, 'April': 3,
+      'May': 4, 'June': 5, 'July': 6, 'August': 7,
+      'September': 8, 'October': 9, 'November': 10, 'December': 11
+    };
 
     const currentYear = new Date().getFullYear();
 
-    // First check for "Mon DD – Mon DD" format (e.g., "Dec 06 – Dec 07")
+    // Check for "Month D, YYYY – Month D, YYYY" format (e.g., "December 6, 2025 – December 7, 2025")
+    const fullDateRangeMatch = text.match(/(\w+)\s+(\d{1,2}),?\s+(\d{4})\s*[–-]\s*(\w+)\s+(\d{1,2}),?\s+(\d{4})/);
+    if (fullDateRangeMatch) {
+      const startMonthName = fullDateRangeMatch[1];
+      const startDay = parseInt(fullDateRangeMatch[2], 10);
+      const startYear = parseInt(fullDateRangeMatch[3], 10);
+      const endMonthName = fullDateRangeMatch[4];
+      const endDay = parseInt(fullDateRangeMatch[5], 10);
+      const endYear = parseInt(fullDateRangeMatch[6], 10);
+
+      if (fullMonths.hasOwnProperty(startMonthName) && fullMonths.hasOwnProperty(endMonthName)) {
+        const startDate = new Date(startYear, fullMonths[startMonthName], startDay, 0, 0, 0);
+        const endDate = new Date(endYear, fullMonths[endMonthName], endDay, 23, 59, 59);
+
+        // Format the dates
+        const formattedStartDate = startDate.toLocaleString(undefined, {
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric'
+        });
+        const formattedEndDate = endDate.toLocaleString(undefined, {
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric'
+        });
+
+        // Determine styling based on badge status
+        let startClassName = 'px-2 py-0.5 rounded font-medium inline-block ';
+        let endClassName = 'px-2 py-0.5 rounded font-medium inline-block ';
+
+        if (isAvailable) {
+          startClassName += 'bg-green-500/20 text-green-400 ring-1 ring-green-500/50 shadow-[0_0_10px_rgba(34,197,94,0.3)]';
+          endClassName += 'bg-green-500/10 text-green-300 ring-1 ring-green-500/30';
+        } else if (isComingSoon) {
+          startClassName += 'bg-blue-500/20 text-blue-400 ring-1 ring-blue-500/50 shadow-[0_0_10px_rgba(59,130,246,0.3)]';
+          endClassName += 'bg-blue-500/10 text-blue-300 ring-1 ring-blue-500/30';
+        } else {
+          startClassName += 'bg-accent/20 text-accent';
+          endClassName += 'bg-accent/20 text-accent';
+        }
+
+        // Replace the date range with formatted dates
+        const beforeMatch = text.substring(0, fullDateRangeMatch.index);
+        const afterMatch = text.substring(fullDateRangeMatch.index! + fullDateRangeMatch[0].length);
+
+        return (
+          <>
+            {beforeMatch}
+            <span className={startClassName}>{formattedStartDate}</span>
+            {' – '}
+            <span className={endClassName}>{formattedEndDate}</span>
+            {afterMatch}
+          </>
+        );
+      }
+    }
+
+    // Check for "Mon DD – Mon DD" format (e.g., "Dec 06 – Dec 07")
     const fullRangeMatch = text.match(/(\w{3})\s+(\d{1,2})\s*[–-]\s*(\w{3})\s+(\d{1,2})/);
     if (fullRangeMatch) {
       const startMonthAbbrev = fullRangeMatch[1];

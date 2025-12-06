@@ -1,8 +1,11 @@
+use crate::models::chat_layout::{Badge, ChatMessage, EmotePos, LayoutResult};
 use crate::models::settings::AppState;
+use crate::services::layout_service::LayoutService;
 use crate::services::twitch_service::TwitchService;
 use anyhow::Result;
 use futures_util::{SinkExt, StreamExt};
 use rand::Rng;
+use serde_json::json;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -61,7 +64,8 @@ fn get_user_badges_cache() -> &'static Mutex<Option<String>> {
 }
 
 impl IrcService {
-    pub async fn start(channel: &str, _state: &AppState) -> Result<u16> {
+    pub async fn start(channel: &str, state: &AppState) -> Result<u16> {
+        let layout_service = state.layout_service.clone();
         // Stop any existing chat connection first
         Self::stop().await?;
 
@@ -123,8 +127,14 @@ impl IrcService {
         let initial_channel = channel.to_string();
 
         let irc_handle = tokio::spawn(async move {
-            if let Err(e) =
-                Self::run_irc_connection(&username, &token, &initial_channel, tx_for_irc).await
+            if let Err(e) = Self::run_irc_connection(
+                &username,
+                &token,
+                &initial_channel,
+                tx_for_irc,
+                layout_service,
+            )
+            .await
             {
                 eprintln!("[IRC Chat] Connection error: {}", e);
             }
@@ -142,6 +152,7 @@ impl IrcService {
         token: &str,
         initial_channel: &str,
         tx: Arc<broadcast::Sender<String>>,
+        layout_service: Arc<LayoutService>,
     ) -> Result<()> {
         loop {
             println!("[IRC Chat] Connecting to Twitch IRC...");
@@ -273,7 +284,9 @@ impl IrcService {
                         true
                     }
                     Ok(_) => {
-                        if let Err(e) = Self::handle_irc_message(&line, &tx, &writer).await {
+                        if let Err(e) =
+                            Self::handle_irc_message(&line, &tx, &writer, &layout_service).await
+                        {
                             eprintln!("[IRC Chat] Error handling message: {}", e);
                         }
                         false
@@ -299,6 +312,7 @@ impl IrcService {
         line: &str,
         tx: &Arc<broadcast::Sender<String>>,
         writer: &Arc<Mutex<tokio::io::WriteHalf<TcpStream>>>,
+        layout_service: &LayoutService,
     ) -> Result<()> {
         let trimmed = line.trim();
 
@@ -319,14 +333,49 @@ impl IrcService {
         if trimmed.contains("PRIVMSG") {
             // Regular chat message - forward as-is with shared chat detection
             let enhanced_message = Self::enhance_message_with_shared_chat(trimmed).await;
-            if tx.send(enhanced_message.clone()).is_err() {
-                // println!("[IRC Chat] No active receivers, queueing message");
-                let mut queue = get_message_queue().lock().await;
-                queue.push_back(enhanced_message);
 
-                // Keep queue size manageable
-                if queue.len() > 500 {
-                    queue.pop_front();
+            // Parse and layout
+            if let Some(mut chat_msg) = Self::parse_privmsg(&enhanced_message) {
+                let (width, font_size) = layout_service.get_current_config();
+
+                // Check if this is a reply message
+                let has_reply = chat_msg.tags.contains_key("reply-parent-msg-id");
+
+                // Check if this is a first message
+                let is_first_message = chat_msg.tags.get("first-msg").is_some_and(|v| v == "1");
+
+                let layout = layout_service.layout_message(
+                    &chat_msg.content,
+                    width,
+                    font_size,
+                    has_reply,
+                    is_first_message,
+                );
+                chat_msg.layout = layout;
+
+                if let Ok(json_msg) = serde_json::to_string(&chat_msg) {
+                    if tx.send(json_msg).is_err() {
+                        // println!("[IRC Chat] No active receivers, queueing message");
+                        let mut queue = get_message_queue().lock().await;
+                        // Store serialized JSON in queue
+                        queue.push_back(
+                            serde_json::to_string(&chat_msg).unwrap_or(enhanced_message),
+                        );
+
+                        // Keep queue size manageable
+                        if queue.len() > 500 {
+                            queue.pop_front();
+                        }
+                    }
+                }
+            } else {
+                // Fallback to sending raw string if parsing fails
+                if tx.send(enhanced_message.clone()).is_err() {
+                    let mut queue = get_message_queue().lock().await;
+                    queue.push_back(enhanced_message);
+                    if queue.len() > 500 {
+                        queue.pop_front();
+                    }
                 }
             }
         } else if trimmed.contains("USERNOTICE") {
@@ -611,6 +660,157 @@ impl IrcService {
         println!("[IRC Chat] Left channel: #{}", channel);
 
         Ok(())
+    }
+
+    fn parse_privmsg(raw: &str) -> Option<ChatMessage> {
+        let tags = if raw.starts_with('@') {
+            let tag_end = raw.find(' ')?;
+            &raw[1..tag_end]
+        } else {
+            ""
+        };
+
+        let mut tag_map = HashMap::new();
+        for tag in tags.split(';') {
+            let mut parts = tag.splitn(2, '=');
+            if let (Some(key), Some(val)) = (parts.next(), parts.next()) {
+                tag_map.insert(key, val);
+            }
+        }
+
+        // Parsing similar to frontend logic
+        let username = tag_map
+            .get("display-name")
+            .map(|s| s.to_string())
+            .or_else(|| {
+                // extract from :user!user@...
+                if let Some(idx) = raw.find(" PRIVMSG") {
+                    let prefix = &raw[..idx];
+                    if let Some(excl) = prefix.find('!') {
+                        // find start of prefix (after tags space)
+                        let start = raw.find(' ').map(|i| i + 1).unwrap_or(0);
+                        if start < excl {
+                            Some(prefix[start + 1..excl].to_string())
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| "unknown".to_string());
+
+        // Content
+        let content = if let Some(idx) = raw.find("PRIVMSG") {
+            let rest = &raw[idx..];
+            if let Some(colon) = rest.find(" :") {
+                rest[colon + 2..].trim_end().to_string()
+            } else {
+                "".to_string()
+            }
+        } else {
+            "".to_string()
+        };
+
+        let id = tag_map
+            .get("id")
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+        let tags_owned: HashMap<String, String> = tag_map
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+
+        let display_name = tag_map
+            .get("display-name")
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| username.clone());
+
+        let color = tag_map.get("color").map(|s| s.to_string());
+
+        let user_id = tag_map
+            .get("user-id")
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+
+        let timestamp = tag_map
+            .get("tmi-sent-ts")
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis()
+                    .to_string()
+            });
+
+        let badges_str = tag_map.get("badges").unwrap_or(&"");
+        let badges: Vec<Badge> = badges_str
+            .split(',')
+            .filter(|s| !s.is_empty())
+            .map(|b_str| {
+                let mut p = b_str.split('/');
+                Badge {
+                    name: p.next().unwrap_or("").to_string(),
+                    version: p.next().unwrap_or("").to_string(),
+                }
+            })
+            .collect();
+
+        // Use EmotePos struct
+        // emotes format: 25:0-4,12-16/1902:6-10 ...
+        let emotes_str = tag_map.get("emotes").unwrap_or(&"");
+        let mut emotes = Vec::new();
+        if !emotes_str.is_empty() {
+            for emote_group in emotes_str.split('/') {
+                let mut parts = emote_group.split(':');
+                if let (Some(id), Some(ranges)) = (parts.next(), parts.next()) {
+                    for range in ranges.split(',') {
+                        let mut bounds = range.split('-');
+                        if let (Some(start_s), Some(end_s)) = (bounds.next(), bounds.next()) {
+                            if let (Ok(start), Ok(end)) =
+                                (start_s.parse::<usize>(), end_s.parse::<usize>())
+                            {
+                                // url: https://static-cdn.jtvnw.net/emoticons/v2/{id}/default/dark/1.0
+                                let url = format!(
+                                    "https://static-cdn.jtvnw.net/emoticons/v2/{}/default/dark/1.0",
+                                    id
+                                );
+                                emotes.push(EmotePos {
+                                    id: id.to_string(),
+                                    start,
+                                    end,
+                                    url,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Some(ChatMessage {
+            id,
+            username,
+            display_name,
+            color,
+            user_id,
+            timestamp,
+            content,
+            badges,
+            emotes,
+            layout: LayoutResult {
+                height: 0.0,
+                width: 0.0,
+                has_reply: false,
+                is_first_message: false,
+            },
+            tags: tags_owned,
+        })
     }
 
     pub async fn stop() -> Result<()> {

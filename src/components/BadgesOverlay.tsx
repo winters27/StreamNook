@@ -74,16 +74,18 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
           set.versions.map(version => ({ ...version, set_id: set.set_id } as BadgeWithMetadata))
         );
 
-        // Pre-load metadata from cache to enable instant sorting
-        const badgesWithPreloadedMetadata = await Promise.all(
-          flattened.map(async (badge) => {
-            const cacheKey = `metadata:${badge.set_id}-v${badge.id}`;
-            try {
-              const cached = await invoke<{ data: any; position?: number } | null>('get_universal_cached_item', {
-                cacheType: 'badge',
-                id: cacheKey,
-              });
+        // Pre-load ALL badge metadata from cache in ONE call (fast batch lookup)
+        let badgesWithPreloadedMetadata: BadgeWithMetadata[] = flattened;
+        try {
+          const allBadgeCache = await invoke<Record<string, { data: any; position?: number }>>('get_all_universal_cached_items', {
+            cacheType: 'badge',
+          });
 
+          if (allBadgeCache && Object.keys(allBadgeCache).length > 0) {
+            console.log(`[BadgesOverlay] Loaded ${Object.keys(allBadgeCache).length} cached badge entries in single call`);
+            badgesWithPreloadedMetadata = flattened.map(badge => {
+              const cacheKey = `metadata:${badge.set_id}-v${badge.id}`;
+              const cached = allBadgeCache[cacheKey];
               if (cached) {
                 return {
                   ...badge,
@@ -93,12 +95,12 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
                   }
                 };
               }
-            } catch (err) {
-              // Silently fail for individual badges
-            }
-            return badge;
-          })
-        );
+              return badge;
+            });
+          }
+        } catch (err) {
+          console.error('[BadgesOverlay] Failed to batch load cache:', err);
+        }
 
         setBadgesWithMetadata(badgesWithPreloadedMetadata);
         setLoading(false);
@@ -236,37 +238,35 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
   const fetchAllBadgeMetadata = async (badgeList: BadgeWithMetadata[]) => {
     setLoadingMetadata(true);
 
-    // First, check cache for ALL badges at once to minimize API calls
+    // First, load ALL badge cache in ONE call (fast batch lookup)
     const metadataCache: Record<string, BadgeMetadata> = {};
     const uncachedBadges: BadgeWithMetadata[] = [];
 
-    // Check cache for all badges first
-    console.log('[BadgesOverlay] Checking cache for all badges first...');
-    for (const badge of badgeList) {
-      const cacheKey = `metadata:${badge.set_id}-v${badge.id}`;
+    console.log('[BadgesOverlay] Batch loading all badge cache...');
+    try {
+      const allBadgeCache = await invoke<Record<string, { data: any; position?: number }>>('get_all_universal_cached_items', {
+        cacheType: 'badge',
+      });
 
-      try {
-        // Try to get from universal cache first
-        const cached = await invoke<{ data: any; position?: number } | null>('get_universal_cached_item', {
-          cacheType: 'badge',
-          id: cacheKey,
-        });
+      // Map badges to their cache entries
+      for (const badge of badgeList) {
+        const cacheKey = `metadata:${badge.set_id}-v${badge.id}`;
+        const cached = allBadgeCache[cacheKey];
 
         if (cached) {
-          // Found in cache, use it - include position from top level
           const metadata = cached.data as BadgeMetadata;
-          // Add position from the cache entry itself
           (metadata as any).position = cached.position;
           metadataCache[`${badge.set_id}/${badge.id}`] = metadata;
-          console.log(`[BadgesOverlay] Found ${cacheKey} in cache with position ${cached.position}`);
         } else {
-          // Not in cache, add to list to fetch
           uncachedBadges.push(badge);
         }
-      } catch (err) {
-        // Cache check failed, add to list to fetch
-        uncachedBadges.push(badge);
       }
+
+      console.log(`[BadgesOverlay] Found ${Object.keys(metadataCache).length} badges in cache (batch), need to fetch ${uncachedBadges.length} from API`);
+    } catch (err) {
+      console.error('[BadgesOverlay] Failed to batch load cache, falling back to uncached:', err);
+      // If batch load fails, treat all as uncached
+      uncachedBadges.push(...badgeList);
     }
 
     // Update UI with cached data immediately
@@ -277,8 +277,6 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
       }));
       setBadgesWithMetadata(updatedBadges);
     }
-
-    console.log(`[BadgesOverlay] Found ${Object.keys(metadataCache).length} badges in cache, need to fetch ${uncachedBadges.length} from API`);
 
     // Now fetch only the uncached badges in batches
     if (uncachedBadges.length > 0) {
@@ -399,9 +397,47 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
     }
   };
 
+  // Decode HTML entities like &#8211; → – in text
+  const decodeHtmlEntities = (text: string): string => {
+    let result = text;
+
+    // Decode numeric HTML entities (&#NNNN;)
+    result = result.replace(/&#(\d+);/g, (_match, dec) => {
+      const code = parseInt(dec, 10);
+      return String.fromCharCode(code);
+    });
+
+    // Decode hex HTML entities (&#xHHHH;)
+    result = result.replace(/&#x([0-9a-fA-F]+);/g, (_match, hex) => {
+      const code = parseInt(hex, 16);
+      return String.fromCharCode(code);
+    });
+
+    // Decode common named entities
+    const entities: Record<string, string> = {
+      '&amp;': '&',
+      '&lt;': '<',
+      '&gt;': '>',
+      '&quot;': '"',
+      '&apos;': "'",
+      '&nbsp;': ' ',
+      '&ndash;': '–',
+      '&mdash;': '—',
+    };
+
+    for (const [entity, char] of Object.entries(entities)) {
+      result = result.split(entity).join(char);
+    }
+
+    return result;
+  };
+
   // Parse abbreviated date range format like "Dec 1-12", "Dec 1 - 12", or "Dec 06 – Dec 07"
   // Also handles natural language formats like "December 4, 2025 at 9:00 AM"
-  const parseDateRange = (text: string): { start: Date; end: Date } | null => {
+  // NOTE: Handles both regular dashes (-), en-dashes (–), and em-dashes (—)
+  const parseDateRange = (inputText: string): { start: Date; end: Date } | null => {
+    // First decode any HTML entities in the text
+    const text = decodeHtmlEntities(inputText);
     const months: Record<string, number> = {
       'Jan': 0, 'Feb': 1, 'Mar': 2, 'Apr': 3,
       'May': 4, 'Jun': 5, 'Jul': 6, 'Aug': 7,
@@ -413,6 +449,133 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
       'September': 8, 'October': 9, 'November': 10, 'December': 11
     };
     const currentYear = new Date().getFullYear();
+
+    // Regex pattern for dashes (regular dash, en-dash, em-dash)
+    const dashPattern = '[-–—]';
+
+    // Try to parse "Event duration: Dec 19 – Jan 01" format
+    const eventDurationMatch = text.match(/Event duration:\s*(\w{3})\s+(\d{1,2})\s*[-–—]\s*(\w{3})\s+(\d{1,2})/i);
+    if (eventDurationMatch) {
+      const startMonthAbbrev = eventDurationMatch[1];
+      const startDay = parseInt(eventDurationMatch[2], 10);
+      const endMonthAbbrev = eventDurationMatch[3];
+      const endDay = parseInt(eventDurationMatch[4], 10);
+
+      if (months.hasOwnProperty(startMonthAbbrev) && months.hasOwnProperty(endMonthAbbrev)) {
+        const startMonthNum = months[startMonthAbbrev];
+        const endMonthNum = months[endMonthAbbrev];
+
+        // Determine year - if end month is before start month, it crosses into next year
+        let startYear = currentYear;
+        let endYear = currentYear;
+
+        // If event starts in Dec and ends in Jan, the end is in next year
+        if (startMonthNum > endMonthNum) {
+          endYear = currentYear + 1;
+        }
+
+        const startDate = new Date(startYear, startMonthNum, startDay, 0, 0, 0);
+        const endDate = new Date(endYear, endMonthNum, endDay, 23, 59, 59);
+
+        if (!isNaN(startDate.getTime()) && !isNaN(endDate.getTime())) {
+          return { start: startDate, end: endDate };
+        }
+      }
+    }
+
+    // Try to parse "Event duration: Dec 19-25" format (same month)
+    const eventDurationSameMonthMatch = text.match(/Event duration:\s*(\w{3})\s+(\d{1,2})\s*[-–—]\s*(\d{1,2})/i);
+    if (eventDurationSameMonthMatch) {
+      const monthAbbrev = eventDurationSameMonthMatch[1];
+      const startDay = parseInt(eventDurationSameMonthMatch[2], 10);
+      const endDay = parseInt(eventDurationSameMonthMatch[3], 10);
+
+      if (months.hasOwnProperty(monthAbbrev)) {
+        const monthNum = months[monthAbbrev];
+        const startDate = new Date(currentYear, monthNum, startDay, 0, 0, 0);
+        const endDate = new Date(currentYear, monthNum, endDay, 23, 59, 59);
+
+        if (!isNaN(startDate.getTime()) && !isNaN(endDate.getTime())) {
+          return { start: startDate, end: endDate };
+        }
+      }
+    }
+
+    // Try to parse ISO format: "Event start: 2025-12-04T15:00:00Z"
+    const isoEventStartMatch = text.match(/Event start:\s*(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?Z?)/i);
+    if (isoEventStartMatch) {
+      try {
+        const startDate = new Date(isoEventStartMatch[1]);
+        if (!isNaN(startDate.getTime())) {
+          // Look for an end time in ISO format
+          const isoEndMatch = text.match(/Event end:\s*(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?Z?)/i);
+          let endDate: Date;
+
+          if (isoEndMatch) {
+            endDate = new Date(isoEndMatch[1]);
+          } else {
+            // No explicit end, assume event lasts until end of that day
+            endDate = new Date(startDate);
+            endDate.setHours(23, 59, 59, 999);
+          }
+
+          if (!isNaN(endDate.getTime())) {
+            return { start: startDate, end: endDate };
+          }
+        }
+      } catch {
+        // Fall through to other parsers
+      }
+    }
+
+    // Try to parse ISO date range: "2025-12-04T15:00:00Z – 2025-12-04T23:59:00Z"
+    const isoRangeMatch = text.match(/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?Z?)\s*[-–—]\s*(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?Z?)/);
+    if (isoRangeMatch) {
+      try {
+        const startDate = new Date(isoRangeMatch[1]);
+        const endDate = new Date(isoRangeMatch[2]);
+        if (!isNaN(startDate.getTime()) && !isNaN(endDate.getTime())) {
+          return { start: startDate, end: endDate };
+        }
+      } catch {
+        // Fall through to other parsers
+      }
+    }
+
+    // Try to parse natural language format: "Month Day, Year at HH:MM AM/PM – Month Day, Year at HH:MM AM/PM"
+    // Example: "December 4, 2025 at 7:00 AM – December 4, 2025 at 11:59 PM"
+    const fullDateRangeMatch = text.match(
+      new RegExp(`(\\w+)\\s+(\\d{1,2}),?\\s+(\\d{4})\\s+at\\s+(\\d{1,2}):(\\d{2})\\s*(AM|PM)\\s*${dashPattern}\\s*(\\w+)\\s+(\\d{1,2}),?\\s+(\\d{4})\\s+at\\s+(\\d{1,2}):(\\d{2})\\s*(AM|PM)`, 'i')
+    );
+    if (fullDateRangeMatch) {
+      const parseDateTime = (monthName: string, day: string, year: string, hours: string, minutes: string, meridiem: string): Date | null => {
+        let h = parseInt(hours, 10);
+        const m = parseInt(minutes, 10);
+        const y = parseInt(year, 10);
+        const d = parseInt(day, 10);
+
+        if (meridiem.toUpperCase() === 'PM' && h !== 12) h += 12;
+        else if (meridiem.toUpperCase() === 'AM' && h === 12) h = 0;
+
+        if (fullMonths.hasOwnProperty(monthName)) {
+          return new Date(y, fullMonths[monthName], d, h, m, 0);
+        }
+        return null;
+      };
+
+      const startDate = parseDateTime(
+        fullDateRangeMatch[1], fullDateRangeMatch[2], fullDateRangeMatch[3],
+        fullDateRangeMatch[4], fullDateRangeMatch[5], fullDateRangeMatch[6]
+      );
+      const endDate = parseDateTime(
+        fullDateRangeMatch[7], fullDateRangeMatch[8], fullDateRangeMatch[9],
+        fullDateRangeMatch[10], fullDateRangeMatch[11], fullDateRangeMatch[12]
+      );
+
+      if (startDate && endDate && !isNaN(startDate.getTime()) && !isNaN(endDate.getTime())) {
+        return { start: startDate, end: endDate };
+      }
+    }
 
     // Try to parse natural language format: "Event start: Month Day, Year at HH:MM AM/PM"
     // Example: "Event start: December 4, 2025 at 9:00 AM"
@@ -509,7 +672,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
 
     const now = Date.now();
 
-    // First, try to parse abbreviated date range format (e.g., "Dec 1-12")
+    // Try to parse date range from more_info (supports multiple formats)
     const dateRange = parseDateRange(moreInfo);
     if (dateRange) {
       const startTime = dateRange.start.getTime();

@@ -271,7 +271,7 @@ export async function fetchIVRModVip(username: string, channel: string): Promise
 /**
  * Fetches recent chat messages from recent-messages API (robotty.de)
  * @param channel - The channel to fetch messages for
- * @returns Array of raw IRC message strings
+ * @returns Array of raw IRC message strings (limited to 50 most recent)
  */
 export async function fetchRecentMessages(channel: string): Promise<string[]> {
     const cacheKey = channel.toLowerCase();
@@ -285,8 +285,9 @@ export async function fetchRecentMessages(channel: string): Promise<string[]> {
     try {
         console.log('[RecentMessages] Fetching recent messages for:', channel);
         // Use the robotty.de recent-messages API which returns raw IRC messages
+        // Limit to 50 messages to match Twitch-style chat behavior
         const response = await fetch(
-            `https://recent-messages.robotty.de/api/v2/recent-messages/${encodeURIComponent(channel)}?hide_moderation_messages=true&hide_moderated_messages=true`
+            `https://recent-messages.robotty.de/api/v2/recent-messages/${encodeURIComponent(channel)}?limit=50&hide_moderation_messages=true&hide_moderated_messages=true`
         );
 
         if (!response.ok) {

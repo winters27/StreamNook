@@ -27,6 +27,9 @@ const globalBadgesCache: Map<string, BadgeVersion> = new Map();
 const channelBadgesCache: Map<string, Map<string, BadgeVersion>> = new Map();
 let globalBadgesFetched = false;
 
+// Track which badges we've already warned about to avoid spam
+const warnedBadges = new Set<string>();
+
 
 
 /**
@@ -35,7 +38,6 @@ let globalBadgesFetched = false;
  */
 export async function fetchGlobalBadges(clientId: string, token: string): Promise<void> {
   if (globalBadgesFetched) {
-    console.log('[TwitchBadges] Global badges already fetched, skipping');
     return;
   }
 
@@ -51,7 +53,6 @@ export async function fetchGlobalBadges(clientId: string, token: string): Promis
       }) as string | null;
 
       if (cachedData) {
-        console.log('[TwitchBadges] Loaded global badges from disk cache');
         const badgeData = JSON.parse(cachedData) as Array<[string, BadgeVersion]>;
         badgeData.forEach(([key, version]) => {
           globalBadgesCache.set(key, version);
@@ -73,8 +74,6 @@ export async function fetchGlobalBadges(clientId: string, token: string): Promis
       token,
     });
 
-    console.log('[TwitchBadges] Received global badges response:', response);
-
     // Parse badge sets from Helix API response
     if (response.data) {
       // Get cached files first
@@ -86,19 +85,14 @@ export async function fetchGlobalBadges(clientId: string, token: string): Promis
       }
 
       const { convertFileSrc } = await import('@tauri-apps/api/core');
-      const allVersions: BadgeVersion[] = [];
+      const itemsToCache: Array<{ id: string; url: string; localUrl?: string }> = [];
 
       response.data.forEach((badgeSet) => {
         badgeSet.versions.forEach((version) => {
           const key = `${badgeSet.set_id}/${version.id}`;
 
-          // Check for local file
-          // We use a specific ID format for caching: twitch-{set_id}-{version_id}
-          // But wait, the previous implementation used just ID. 
-          // Let's stick to a consistent ID. In badgeService it was just badge.id.
-          // Here badges are identified by set_id/version_id.
-          // Let's use `twitch-${badgeSet.set_id}-${version.id}` as the cache ID to be safe and specific.
-          const cacheId = `twitch-${badgeSet.set_id}-${version.id}`;
+          // Use twitch-global- prefix to prevent collision with channel-specific badges
+          const cacheId = `twitch-global-${badgeSet.set_id}-${version.id}`;
           const localPath = cachedFiles[cacheId];
 
           if (localPath) {
@@ -106,23 +100,16 @@ export async function fetchGlobalBadges(clientId: string, token: string): Promis
           }
 
           globalBadgesCache.set(key, version);
-          allVersions.push(version);
+          itemsToCache.push({
+            id: cacheId,
+            url: version.image_url_4x,
+            localUrl: version.localUrl
+          });
         });
       });
 
-      // Trigger background caching
-      // We need to pass the cacheId to the caching function, but BadgeVersion doesn't have it.
-      // Let's modify cacheBadgeImages to take the computed ID or add it to the object temporarily?
-      // Or better, just map it here.
-      const badgesToCache = allVersions.map(v => ({
-        ...v,
-        // We need to store the cache ID logic somewhere common or pass it
-        // For now let's just pass the ID we want to use for caching
-        customCacheId: `twitch-${v.id}` // Wait, v.id is just "1", "2" etc. We need set_id.
-      }));
-
-      // Actually, let's redefine cacheBadgeImages to take items with id and url
-      cacheBadgeImagesWithIds(response.data);
+      // Trigger background caching with properly prefixed IDs
+      cacheBadgeImages(itemsToCache);
     }
 
     globalBadgesFetched = true;
@@ -141,7 +128,6 @@ export async function fetchGlobalBadges(clientId: string, token: string): Promis
           data: JSON.stringify(badgeData),
           expiryDays
         });
-        console.log('[TwitchBadges] Saved global badges to disk cache');
       }
     } catch (e) {
       console.warn('[TwitchBadges] Failed to save global badges to cache:', e);
@@ -162,7 +148,6 @@ export async function fetchChannelBadges(
   token: string
 ): Promise<void> {
   if (channelBadgesCache.has(channelId)) {
-    console.log(`[TwitchBadges] Channel badges for ${channelId} already fetched, skipping`);
     return;
   }
 
@@ -178,7 +163,6 @@ export async function fetchChannelBadges(
       }) as string | null;
 
       if (cachedData) {
-        console.log(`[TwitchBadges] Loaded channel badges from disk cache for ${channelId}`);
         const badgeData = JSON.parse(cachedData) as Array<[string, BadgeVersion]>;
         const channelCache = new Map<string, BadgeVersion>();
         badgeData.forEach(([key, version]) => {
@@ -202,8 +186,6 @@ export async function fetchChannelBadges(
       token,
     });
 
-    console.log(`[TwitchBadges] Received channel badges response for ${channelId}:`, response);
-
     const channelCache = new Map<string, BadgeVersion>();
 
     // Parse badge sets from Helix API response
@@ -217,12 +199,14 @@ export async function fetchChannelBadges(
       }
 
       const { convertFileSrc } = await import('@tauri-apps/api/core');
+      const itemsToCache: Array<{ id: string; url: string; localUrl?: string }> = [];
 
       response.data.forEach((badgeSet) => {
         badgeSet.versions.forEach((version) => {
           const key = `${badgeSet.set_id}/${version.id}`;
 
-          const cacheId = `twitch-${badgeSet.set_id}-${version.id}`;
+          // Use twitch-${channelId}- prefix to prevent collision between channels
+          const cacheId = `twitch-${channelId}-${badgeSet.set_id}-${version.id}`;
           const localPath = cachedFiles[cacheId];
 
           if (localPath) {
@@ -230,15 +214,35 @@ export async function fetchChannelBadges(
           }
 
           channelCache.set(key, version);
+          itemsToCache.push({
+            id: cacheId,
+            url: version.image_url_4x,
+            localUrl: version.localUrl
+          });
         });
       });
 
-      // Trigger background caching
-      cacheBadgeImagesWithIds(response.data);
+      // Trigger background caching with channel-prefixed IDs
+      cacheBadgeImages(itemsToCache);
     }
 
     channelBadgesCache.set(channelId, channelCache);
+
+    // Log subscriber badges specifically for debugging
+    const subscriberKeys = Array.from(channelCache.keys()).filter(k => k.startsWith('subscriber'));
     console.log(`[TwitchBadges] Loaded ${channelCache.size} channel badge versions for ${channelId}`);
+    console.log(`[TwitchBadges] Channel ${channelId} subscriber badge versions:`, subscriberKeys);
+
+    // Log sample subscriber badge details
+    if (subscriberKeys.length > 0) {
+      const sampleKey = subscriberKeys[0];
+      const sampleBadge = channelCache.get(sampleKey);
+      console.log(`[TwitchBadges] Sample subscriber badge (${sampleKey}):`, {
+        title: sampleBadge?.title,
+        image_url_1x: sampleBadge?.image_url_1x,
+        image_url_4x: sampleBadge?.image_url_4x
+      });
+    }
 
     // Save to disk cache if enabled
     try {
@@ -253,7 +257,6 @@ export async function fetchChannelBadges(
           data: JSON.stringify(badgeData),
           expiryDays
         });
-        console.log(`[TwitchBadges] Saved channel badges to disk cache for ${channelId}`);
       }
     } catch (e) {
       console.warn(`[TwitchBadges] Failed to save channel badges to cache for ${channelId}:`, e);
@@ -301,10 +304,15 @@ export function parseBadges(badgeString: string, channelId?: string): Array<{ ke
       if (info) {
         badges.push({ key, info });
       } else {
-        console.warn(`[TwitchBadges] Badge not found: ${key} (channel: ${channelId || 'none'})`);
+        // Only warn once per unique badge key to avoid spam
+        const warnKey = `${channelId || 'global'}-${key}`;
+        if (!warnedBadges.has(warnKey)) {
+          warnedBadges.add(warnKey);
+          const channelCache = channelId ? channelBadgesCache.get(channelId) : null;
+          console.warn(`[TwitchBadges] Badge NOT FOUND: "${key}" (channel: ${channelId || 'none'})`);
+          console.log(`[TwitchBadges] Channel cache has subscriber keys:`, channelCache ? Array.from(channelCache.keys()).filter(k => k.startsWith('subscriber')).slice(0, 15) : 'no cache');
+        }
       }
-      // If badge info not found, skip it rather than showing broken images
-      // The badge data should be fetched before parsing messages
     }
   });
 
@@ -333,10 +341,14 @@ export function clearBadgeCache(): void {
   globalBadgesCache.clear();
   channelBadgesCache.clear();
   globalBadgesFetched = false;
+  warnedBadges.clear();
 }
 
-// Helper to cache badge images with proper IDs
-async function cacheBadgeImagesWithIds(badgeSets: BadgeSet[]) {
+/**
+ * Helper to cache badge images with proper IDs
+ * @param items - Array of items to cache with id and url
+ */
+async function cacheBadgeImages(items: Array<{ id: string; url: string; localUrl?: string }>) {
   const { invoke } = await import('@tauri-apps/api/core');
 
   // Load settings to check if caching is enabled and get expiry
@@ -352,22 +364,10 @@ async function cacheBadgeImagesWithIds(badgeSets: BadgeSet[]) {
     console.warn('[TwitchBadges] Failed to load settings for cache config:', e);
   }
 
-  const itemsToCache: Array<{ id: string; url: string; localUrl?: string }> = [];
-
-  badgeSets.forEach(set => {
-    set.versions.forEach(version => {
-      itemsToCache.push({
-        id: `twitch-${set.set_id}-${version.id}`,
-        url: version.image_url_4x,
-        localUrl: version.localUrl
-      });
-    });
-  });
-
   // Process in chunks
   const CHUNK_SIZE = 10;
-  for (let i = 0; i < itemsToCache.length; i += CHUNK_SIZE) {
-    const chunk = itemsToCache.slice(i, i + CHUNK_SIZE);
+  for (let i = 0; i < items.length; i += CHUNK_SIZE) {
+    const chunk = items.slice(i, i + CHUNK_SIZE);
     await Promise.allSettled(chunk.map(async (item) => {
       try {
         if (item.localUrl) return;
@@ -379,7 +379,7 @@ async function cacheBadgeImagesWithIds(badgeSets: BadgeSet[]) {
           expiryDays
         });
       } catch (e) {
-        console.warn(`Failed to cache badge ${item.id}:`, e);
+        // Silently ignore cache errors
       }
     }));
     await new Promise(resolve => setTimeout(resolve, 100));

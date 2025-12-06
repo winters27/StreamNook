@@ -1,5 +1,6 @@
 use crate::services::background_service::BackgroundService;
 use crate::services::drops_service::DropsService;
+use crate::services::layout_service::LayoutService;
 use crate::services::mining_service::MiningService;
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
@@ -295,4 +296,5 @@ pub struct AppState {
     pub drops_service: Arc<TokioMutex<DropsService>>,
     pub mining_service: Arc<TokioMutex<MiningService>>,
     pub background_service: Arc<TokioMutex<BackgroundService>>,
+    pub layout_service: Arc<LayoutService>,
 }
