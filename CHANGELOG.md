@@ -1,3 +1,7 @@
+## [4.7.5] - 2025-12-05
+### 🐛 Bug Fixes
+- Fixed an issue where chat replies and optimistic message updates would fail when using JSON message format in addition to IRC string format.
+
 ## [4.7.4] - 2025-12-05
 ### ✨ Features
 - Added analytics dashboard for admins (requires configuration of Supabase environment variables during build)
@@ -577,6 +581,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 

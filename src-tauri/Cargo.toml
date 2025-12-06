@@ -1,6 +1,6 @@
 [package]
 name = "StreamNook"
-version = "4.7.4"
+version = "4.7.5"
 description = "Stream Nook"
 authors = ["Brandon Winters"]
 license = ""
@@ -58,5 +58,6 @@ scopeguard = "1.2"
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
+
 
 
