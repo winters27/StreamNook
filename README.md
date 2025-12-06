@@ -44,55 +44,6 @@ Built from the ground up with Rust and React, StreamNook delivers a buttery-smoo
 
 ---
 
-## Key Features
-
-### Native Video Playback
-- Built-in player powered by Video.js and Streamlink
-- Adaptive quality selection (because your internet isn't always cooperating)
-- Picture-in-picture support for true multitasking
-- Low-latency streaming that keeps you in sync with chat
-
-### First-Class Chat Experience
-- Full Twitch chat integration with native IRC support
-- 7TV, BetterTTV, and FrankerFaceZ emote support (all the emotes, all the time)
-- Badge rendering for subs, mods, and VIPs
-- Third-party badge integration (show off those achievements)
-- Smooth scrolling and message rendering that doesn't stutter
-
-### Automated Farming & Rewards
-- **Auto Channel Points Mining** - Automatically collect channel points from your favorite streamers
-- **Auto Drops Farming** - Never miss a Twitch Drop again with automated campaign tracking
-- **Channel Points Leaderboard** - Track your channel points across all streamers you watch
-- **Twitch Inventory Viewer** - View and manage all your earned drops and rewards in one place
-- Set it and forget it - StreamNook handles the grinding while you sleep
-
-### Live Notifications
-- Get notified when your favorite streamers go live
-- Customizable notification settings
-- Stream preview thumbnails
-- Quick-launch to any live channel
-
-### Rich Integrations
-- Discord Rich Presence (flex what you're watching)
-- Profile cards with detailed streamer stats
-- Subscribe overlay for easy sub management
-- Badge collection and display system
-- 7TV cosmetics support
-
-### Power User Features
-- Universal caching system for blazing-fast load times
-- Granular settings for every aspect of the app
-- Custom quality presets
-
-### Lightweight Architecture
-- Built with Rust for maximum performance
-- React frontend for smooth, responsive UI
-- Native desktop integration via Tauri
-- Minimal memory footprint (~500MB vs. browser's 1.5GB+)
-- No Electron bloat in sight
-
----
-
 ## Screenshots
 
 <div align="center">
@@ -122,21 +73,85 @@ Built from the ground up with Rust and React, StreamNook delivers a buttery-smoo
 
 ---
 
-## Installation
+## Key Features
 
-### Prerequisites
+### Native Video Playback
+- Built-in player powered by Plyr, HLS.js, and Streamlink
+- Adaptive quality selection (because your internet isn't always cooperating)
+- Picture-in-picture support for true multitasking
+- Low-latency streaming that keeps you in sync with chat
+- Theater mode with automatic 16:9 aspect ratio
 
-**Streamlink** - Required for stream playback
-- Download from [streamlink.github.io](https://streamlink.github.io/)
+### First-Class Chat Experience
+- Full Twitch chat integration with native IRC support
+- 7TV, BetterTTV, and FrankerFaceZ emote support (all the emotes, all the time)
+- Badge rendering for subs, mods, and VIPs
+- Third-party badge integration (show off those achievements)
+- Smooth scrolling and message rendering that doesn't stutter
+- Native emoji support with emoji picker
+- Bits cheers display with animated icons
 
-### Quick Start
+### Home Screen & Discovery
+- Browse followed and recommended streams
+- Explore Twitch categories and games
+- Search for channels
+- Picture-in-picture mode while browsing
 
-1. Download the latest release from the [Releases page](https://github.com/winters27/StreamNook/releases/latest)
-2. Extract and run the application
-3. Sign in with your Twitch account
-4. Start watching streams
+### Automated Farming & Rewards
+- **Auto Channel Points Mining** - Automatically collect channel points from your favorite streamers
+- **Auto Drops Farming** - Never miss a Twitch Drop again with automated campaign tracking
+- **Channel Points Leaderboard** - Track your channel points across all streamers you watch
+- **Twitch Inventory Viewer** - View and manage all your earned drops and rewards in one place
+- **Manual Channel Selection** - Choose specific channels for drops mining
+- Set it and forget it - StreamNook handles the grinding while you sleep
 
-That's it. No configuration files to edit, no command-line wizardry required.
+### Live Notifications
+- Desktop notifications when your favorite streamers go live
+- Customizable notification settings with sound options
+- Stream preview thumbnails
+- Quick-launch to any live channel
+
+### Dynamic Island Notification Center
+- macOS-inspired notification center built into the app
+- Real-time updates for drops progress, channel points earned, and live streams
+- Update notifications when new versions are available
+- Compact, non-intrusive design that stays out of your way
+- Customizable notification types
+
+### Whisper Messaging System
+- Full whisper functionality with message sending and receiving
+- Complete whisper history retrieval using Twitch's GraphQL API
+- Real-time whisper notifications via EventSub WebSocket
+- Dedicated whisper chat windows for each conversation
+- Import tool for exporting and viewing your whisper history
+
+### Rich Integrations
+- Discord Rich Presence (flex what you're watching)
+- Profile cards with detailed streamer stats
+- Subscribe overlay for easy sub management
+- Badge collection and display system with detailed badge info
+- 7TV cosmetics support
+
+### Theming & Customization
+- Multiple built-in themes (Night Owl, Synthwave '84, Material Theme, and more)
+- Dynamic theme switching
+- Customizable interface settings
+
+### Power User Features
+- Universal caching system for blazing-fast load times
+- Granular settings for every aspect of the app
+- Custom quality presets
+- Advanced Streamlink settings (low-latency, HLS live edge, proxy)
+- Auto-switch to another stream when current goes offline
+- Automatic updates with optional auto-install
+
+### Lightweight Architecture
+- Built with Rust for maximum performance
+- React frontend for smooth, responsive UI
+- Native desktop integration via Tauri
+- Minimal memory footprint (~500MB vs. browser's 1.5GB+)
+- Bundled Streamlink - no external dependencies required
+- No Electron bloat in sight
 
 ---
 
@@ -149,7 +164,7 @@ StreamNook is built on a modern, performance-first stack:
 - **TypeScript** - Type safety and developer experience
 - **Vite** - Lightning-fast build tooling
 - **Tailwind CSS** - Utility-first styling
-- **Video.js** - Professional-grade video playback
+- **Plyr + HLS.js** - Professional-grade video playback
 - **Zustand** - Lightweight state management
 
 ### Backend
@@ -162,10 +177,23 @@ StreamNook is built on a modern, performance-first stack:
 ### Services & APIs
 - **Twitch API** - Stream data, user info, and Drops
 - **Twitch IRC** - Real-time chat integration
-- **Twitch EventSub** - Live notifications via WebSocket
-- **Streamlink** - Stream URL resolution and quality selection
+- **Twitch EventSub** - Live notifications and whispers via WebSocket
+- **Streamlink** - Stream URL resolution and quality selection (bundled)
 - **7TV API** - Extended emote support
 - **Discord RPC** - Rich presence integration
+
+---
+
+## Installation
+
+### Quick Start
+
+1. Download the latest release from the [Releases page](https://github.com/winters27/StreamNook/releases/latest)
+2. Extract and run the application
+3. Follow the setup wizard to sign in with your Twitch account
+4. Start watching streams
+
+That's it. StreamNook comes with everything bundled—no external dependencies or configuration required.
 
 ---
 
@@ -176,20 +204,29 @@ We're constantly improving StreamNook. Here's what's on the horizon:
 ### In Progress
 - Multi-stream viewing (watch multiple streams simultaneously)
 - VOD playback with chat replay
-- Suite of shortcuts
-- Moderation tools
 
 ### Planned
 - Clip creation and management
-- Custom themes and UI customization
-- Predictions and polls integration (already auto-farm with channel points mining though)
+- Predictions and polls integration
 - Stream analytics and statistics
+- Moderation tools
 
 ### Recently Completed
-- Drops automation and tracking
-- Channel points automation
-- Inventory management system
-- Channel points leaderboard
+- ✅ Home screen with stream browsing and discovery
+- ✅ Picture-in-picture mode
+- ✅ Sidebar navigation
+- ✅ Whisper functionality with history
+- ✅ Theming system with multiple themes
+- ✅ Bundled Streamlink distribution (no manual install)
+- ✅ Auto-update with optional auto-install
+- ✅ Desktop notifications with sounds
+- ✅ Dynamic Island notifications
+- ✅ First-time setup wizard
+- ✅ Drops automation and tracking
+- ✅ Channel points automation
+- ✅ Inventory management system
+- ✅ Channel points leaderboard
+- ✅ Auto-switch when stream goes offline
 
 ---
 
@@ -205,7 +242,8 @@ StreamNook stands on the shoulders of giants:
 
 - **[Streamlink](https://github.com/streamlink/streamlink)** - The backbone of our streaming infrastructure
 - **[Tauri](https://tauri.app/)** - Making native desktop apps not suck
-- **[Video.js](https://videojs.com/)** - Professional video playback
+- **[Plyr](https://plyr.io/)** - Beautiful video player
+- **[HLS.js](https://github.com/video-dev/hls.js)** - HLS streaming support
 - **[7TV](https://7tv.app/)** - Extended emote support
 - **[Twitch](https://dev.twitch.tv/)** - For having a (mostly) decent API
 
@@ -244,4 +282,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
   </div>
 </div>
 
-<!-- Build: 2025.11.28 -->
+<!-- Build: 2025.12.05 -->

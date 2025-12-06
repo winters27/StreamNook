@@ -188,7 +188,7 @@ impl Default for DropsSettings {
     fn default() -> Self {
         Self {
             auto_claim_drops: true,
-            auto_claim_channel_points: true,
+            auto_claim_channel_points: false,
             notify_on_drop_available: true,
             notify_on_drop_claimed: true,
             notify_on_points_claimed: false,
