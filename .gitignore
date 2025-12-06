@@ -24,6 +24,11 @@ StreamNook.exe
 # Documentation
 RELEASE.md
 
+# Environment variables
+.env
+.env.local
+.env.*.local
+
 # System
 .DS_Store
 Thumbs.db

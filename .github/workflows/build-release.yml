@@ -121,6 +121,10 @@ jobs:
         if: steps.check_release.outputs.RELEASE_EXISTS == 'false' && inputs.skip_build != 'true'
         shell: pwsh
         run: npm run tauri build
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+          VITE_ADMIN_USER_ID: ${{ secrets.VITE_ADMIN_USER_ID }}
 
       - name: Download StreamNook.exe from previous release (skip_build mode)
         if: steps.check_release.outputs.RELEASE_EXISTS == 'false' && inputs.skip_build == 'true'

@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
 import type { Settings, TwitchUser, TwitchStream, UserInfo } from '../types';
 import { trackActivity, isStreamlinkError, sendStreamlinkDiagnostics } from '../services/logService';
+import { upsertUser } from '../services/supabaseService';
 
 export interface Toast {
   id: number;
@@ -16,7 +17,7 @@ export interface Toast {
   createdAt: number;
 }
 
-export type SettingsTab = 'Interface' | 'Player' | 'Chat' | 'Integrations' | 'Notifications' | 'Cache' | 'Support' | 'Updates';
+export type SettingsTab = 'Interface' | 'Player' | 'Chat' | 'Integrations' | 'Notifications' | 'Cache' | 'Support' | 'Updates' | 'Analytics';
 
 interface AppState {
   settings: Settings;
@@ -36,6 +37,7 @@ interface AppState {
   showDropsOverlay: boolean;
   showBadgesOverlay: boolean;
   showWhispersOverlay: boolean;
+  showDashboardOverlay: boolean;
   whisperTargetUser: { id: string; login: string; display_name: string; profile_image_url?: string } | null;
   isHomeActive: boolean;
   isAuthenticated: boolean;
@@ -64,6 +66,7 @@ interface AppState {
   setShowDropsOverlay: (show: boolean) => void;
   setShowBadgesOverlay: (show: boolean) => void;
   setShowWhispersOverlay: (show: boolean) => void;
+  setShowDashboardOverlay: (show: boolean) => void;
   openWhisperWithUser: (user: { id: string; login: string; display_name: string; profile_image_url?: string }) => void;
   clearWhisperTargetUser: () => void;
   toggleTheaterMode: () => void;
@@ -118,6 +121,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   showDropsOverlay: false,
   showBadgesOverlay: false,
   showWhispersOverlay: false,
+  showDashboardOverlay: false,
   whisperTargetUser: null,
   isHomeActive: true,
   isAuthenticated: false,
@@ -680,6 +684,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     // Clear target user when closing
     if (!show) set({ whisperTargetUser: null });
   },
+  setShowDashboardOverlay: (show: boolean) => {
+    if (show) trackActivity('Opened Dashboard');
+    set({ showDashboardOverlay: show });
+  },
 
   openWhisperWithUser: (user) => {
     trackActivity(`Opened Whisper with ${user.display_name}`);
@@ -817,6 +825,13 @@ export const useAppStore = create<AppState>((set, get) => ({
 
       // Save user context for error reporting
       saveUserContextToLocalStorage(user, get().currentStream);
+
+      // Track user in Supabase for analytics (only on initial login, not periodic checks)
+      if (!wasAuthenticated) {
+        upsertUser(user).catch((e) => {
+          console.warn('[Auth] Failed to upsert user to Supabase:', e);
+        });
+      }
 
       // If we successfully restored session from stored credentials, show success (only once)
       if (hasCredentials && !wasAuthenticated && !hasShownWelcomeBackToast) {

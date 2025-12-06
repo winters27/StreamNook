@@ -5,6 +5,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { useTwitchChat } from '../hooks/useTwitchChat';
 import { useAppStore } from '../stores/AppStore';
+import { incrementStat } from '../services/supabaseService';
 import ChatMessage from './ChatMessage';
 import UserProfileCard from './UserProfileCard';
 import ErrorBoundary from './ErrorBoundary';
@@ -773,6 +774,11 @@ const ChatWidget = () => {
           color: undefined,
           badges: badgeString
         }, replyParentMsgId);
+
+        // Track message sent stat for analytics
+        incrementStat(currentUser.user_id, 'messages_sent', 1).catch(err => {
+          console.warn('[ChatWidget] Failed to track message sent stat:', err);
+        });
       } catch (err) {
         console.error('Failed to send message:', err);
         setMessageInput(messageToSend);
