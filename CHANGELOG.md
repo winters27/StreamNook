@@ -1,3 +1,10 @@
+## [4.7.6] - 2025-12-05
+### ✨ Features
+- Updated README with screenshots and comprehensive feature list.
+
+### 🐛 Bug Fixes
+- Disabled "Auto Claim Channel Points" by default.
+
 ## [4.7.5] - 2025-12-05
 ### 🐛 Bug Fixes
 - Fixed an issue where chat replies and optimistic message updates would fail when using JSON message format in addition to IRC string format.
@@ -581,6 +588,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
