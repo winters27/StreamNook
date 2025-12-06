@@ -11,8 +11,43 @@ export interface ThirdPartyBadge {
   localUrl?: string;
 }
 
-// Helper to cache third-party badges in background
-async function cacheThirdPartyBadges(badges: ThirdPartyBadge[]) {
+// ============================================================================
+// GLOBAL BADGE DATABASE CACHES
+// These APIs return ALL badge assignments for ALL users in a single response.
+// We fetch them ONCE and cache globally, then look up individual users from the cache.
+// ============================================================================
+
+interface FFZBadgeData {
+  badges: any[];
+  users: Record<string, number[]>;
+  timestamp: number;
+}
+
+interface ChatterinoBadgeData {
+  badges: any[];
+  timestamp: number;
+}
+
+interface HomiesBadgeData {
+  badges: any[];
+  timestamp: number;
+}
+
+// Global caches for badge databases
+let ffzBadgeCache: FFZBadgeData | null = null;
+let chatterinoBadgeCache: ChatterinoBadgeData | null = null;
+let homiesBadgeCache: HomiesBadgeData | null = null;
+
+// Cache duration: 10 minutes for memory cache (in milliseconds)
+const BADGE_CACHE_DURATION = 10 * 60 * 1000;
+
+// Fetch locks to prevent concurrent requests
+let ffzFetchPromise: Promise<FFZBadgeData | null> | null = null;
+let chatterinoFetchPromise: Promise<ChatterinoBadgeData | null> | null = null;
+let homiesFetchPromise: Promise<HomiesBadgeData | null> | null = null;
+
+// Helper to cache third-party badge IMAGES in background (lazy caching)
+async function cacheThirdPartyBadgeImages(badges: ThirdPartyBadge[]) {
   // Load settings to check if caching is enabled and get expiry
   let expiryDays = 0; // Default to never expire for badges if settings fail
   try {
@@ -49,78 +84,174 @@ async function cacheThirdPartyBadges(badges: ThirdPartyBadge[]) {
   }
 }
 
-// FrankerFaceZ Badges
-export async function getFFZBadges(userId: string): Promise<ThirdPartyBadge[]> {
+// ============================================================================
+// FFZ BADGE FETCHING
+// ============================================================================
+
+async function fetchFFZBadgeDatabase(): Promise<FFZBadgeData | null> {
   try {
     const response = await fetch('https://api.frankerfacez.com/v1/badges/ids');
-    if (!response.ok) return [];
-
-    const data = await response.json();
-    const badges: ThirdPartyBadge[] = [];
-
-    // Check if user has any FFZ badges
-    if (data.users && data.users[userId]) {
-      const userBadgeIds = data.users[userId];
-
-      for (const badgeId of userBadgeIds) {
-        const badgeInfo = data.badges?.find((b: any) => b.id === badgeId);
-        if (badgeInfo) {
-          // Get the highest resolution image
-          const imageUrl = badgeInfo.urls?.['4'] || badgeInfo.urls?.['2'] || badgeInfo.urls?.['1'];
-
-          if (imageUrl) {
-            badges.push({
-              id: `ffz-${badgeId}`,
-              provider: 'ffz',
-              title: badgeInfo.title || badgeInfo.name || `FFZ Badge ${badgeId}`,
-              imageUrl: imageUrl,
-              link: `https://www.frankerfacez.com/badges`
-            });
-          }
-        }
-      }
+    if (!response.ok) {
+      console.warn('[FFZ Badges] Failed to fetch badge database:', response.status);
+      return null;
     }
 
-    return badges;
+    const data = await response.json();
+    return {
+      badges: data.badges || [],
+      users: data.users || {},
+      timestamp: Date.now()
+    };
   } catch (error) {
-    console.error('[FFZ Badges] Failed to fetch:', error);
-    return [];
+    console.error('[FFZ Badges] Failed to fetch badge database:', error);
+    return null;
   }
 }
 
-// Chatterino Badges
-export async function getChatterinoBadges(userId: string): Promise<ThirdPartyBadge[]> {
-  try {
-    const response = await fetch('https://api.chatterino.com/badges');
-    if (!response.ok) return [];
+async function getFFZBadgeDatabase(): Promise<FFZBadgeData | null> {
+  const now = Date.now();
 
-    const data = await response.json();
-    const badges: ThirdPartyBadge[] = [];
+  // Return memory cached data if valid
+  if (ffzBadgeCache && (now - ffzBadgeCache.timestamp) < BADGE_CACHE_DURATION) {
+    return ffzBadgeCache;
+  }
 
-    // Check if user has any Chatterino badges
-    if (data.badges) {
-      for (const badge of data.badges) {
-        if (badge.users && badge.users.includes(userId)) {
+  // If a fetch is already in progress, wait for it
+  if (ffzFetchPromise) {
+    return ffzFetchPromise;
+  }
+
+  // Start a new fetch from API
+  ffzFetchPromise = fetchFFZBadgeDatabase().then(data => {
+    if (data) {
+      ffzBadgeCache = data;
+      console.log('[FFZ Badges] Badge database cached with', Object.keys(data.users).length, 'user entries');
+    }
+    ffzFetchPromise = null;
+    return data;
+  }).catch(err => {
+    console.error('[FFZ Badges] Failed to fetch:', err);
+    ffzFetchPromise = null;
+    return ffzBadgeCache; // Return stale cache if available
+  });
+
+  return ffzFetchPromise;
+}
+
+// FrankerFaceZ Badges - lookup from cached global database
+export async function getFFZBadges(userId: string): Promise<ThirdPartyBadge[]> {
+  const badgeDb = await getFFZBadgeDatabase();
+  if (!badgeDb) return [];
+
+  const badges: ThirdPartyBadge[] = [];
+
+  // Check if user has any FFZ badges
+  if (badgeDb.users && badgeDb.users[userId]) {
+    const userBadgeIds = badgeDb.users[userId];
+
+    for (const badgeId of userBadgeIds) {
+      const badgeInfo = badgeDb.badges?.find((b: any) => b.id === badgeId);
+      if (badgeInfo) {
+        // Get the highest resolution image
+        const imageUrl = badgeInfo.urls?.['4'] || badgeInfo.urls?.['2'] || badgeInfo.urls?.['1'];
+
+        if (imageUrl) {
           badges.push({
-            id: `chatterino-${badge.tooltip}`,
-            provider: 'chatterino',
-            title: badge.tooltip || 'Chatterino Badge',
-            imageUrl: badge.image3 || badge.image2 || badge.image1,
-            link: 'https://chatterino.com/'
+            id: `ffz-${badgeId}`,
+            provider: 'ffz',
+            title: badgeInfo.title || badgeInfo.name || `FFZ Badge ${badgeId}`,
+            imageUrl: imageUrl,
+            link: `https://www.frankerfacez.com/badges`
           });
         }
       }
     }
+  }
 
-    return badges;
+  return badges;
+}
+
+// ============================================================================
+// CHATTERINO BADGE FETCHING
+// ============================================================================
+
+async function fetchChatterinoBadgeDatabase(): Promise<ChatterinoBadgeData | null> {
+  try {
+    const response = await fetch('https://api.chatterino.com/badges');
+    if (!response.ok) {
+      console.warn('[Chatterino Badges] Failed to fetch badge database:', response.status);
+      return null;
+    }
+
+    const data = await response.json();
+    return {
+      badges: data.badges || [],
+      timestamp: Date.now()
+    };
   } catch (error) {
-    console.error('[Chatterino Badges] Failed to fetch:', error);
-    return [];
+    console.error('[Chatterino Badges] Failed to fetch badge database:', error);
+    return null;
   }
 }
 
-// Homies Badges (Chatterino Homies)
-export async function getHomiesBadges(userId: string): Promise<ThirdPartyBadge[]> {
+async function getChatterinoBadgeDatabase(): Promise<ChatterinoBadgeData | null> {
+  const now = Date.now();
+
+  // Return memory cached data if valid
+  if (chatterinoBadgeCache && (now - chatterinoBadgeCache.timestamp) < BADGE_CACHE_DURATION) {
+    return chatterinoBadgeCache;
+  }
+
+  // If a fetch is already in progress, wait for it
+  if (chatterinoFetchPromise) {
+    return chatterinoFetchPromise;
+  }
+
+  // Start a new fetch from API
+  chatterinoFetchPromise = fetchChatterinoBadgeDatabase().then(data => {
+    if (data) {
+      chatterinoBadgeCache = data;
+      console.log('[Chatterino Badges] Badge database cached with', data.badges.length, 'badge types');
+    }
+    chatterinoFetchPromise = null;
+    return data;
+  }).catch(err => {
+    console.error('[Chatterino Badges] Failed to fetch:', err);
+    chatterinoFetchPromise = null;
+    return chatterinoBadgeCache; // Return stale cache if available
+  });
+
+  return chatterinoFetchPromise;
+}
+
+// Chatterino Badges - lookup from cached global database
+export async function getChatterinoBadges(userId: string): Promise<ThirdPartyBadge[]> {
+  const badgeDb = await getChatterinoBadgeDatabase();
+  if (!badgeDb) return [];
+
+  const badges: ThirdPartyBadge[] = [];
+
+  // Check if user has any Chatterino badges
+  for (const badge of badgeDb.badges) {
+    if (badge.users && badge.users.includes(userId)) {
+      badges.push({
+        id: `chatterino-${badge.tooltip}`,
+        provider: 'chatterino',
+        title: badge.tooltip || 'Chatterino Badge',
+        imageUrl: badge.image3 || badge.image2 || badge.image1,
+        link: 'https://chatterino.com/'
+      });
+    }
+  }
+
+  return badges;
+}
+
+// ============================================================================
+// HOMIES BADGE FETCHING
+// ============================================================================
+
+async function fetchHomiesBadgeDatabase(): Promise<HomiesBadgeData | null> {
   try {
     // Fetch both badge sources
     const [badges1Response, badges2Response] = await Promise.all([
@@ -153,27 +284,72 @@ export async function getHomiesBadges(userId: string): Promise<ThirdPartyBadge[]
       });
     }
 
-    const userBadges: ThirdPartyBadge[] = [];
-
-    // Find badges for this user
-    for (const badge of allBadges) {
-      if (badge.users && badge.users.includes(userId)) {
-        userBadges.push({
-          id: `homies-${badge.tooltip}`,
-          provider: 'homies',
-          title: badge.tooltip || 'Homies Badge',
-          imageUrl: badge.image3 || badge.image2 || badge.image1,
-          link: 'https://chatterinohomies.com/'
-        });
-      }
-    }
-
-    return userBadges;
+    return {
+      badges: allBadges,
+      timestamp: Date.now()
+    };
   } catch (error) {
-    console.error('[Homies Badges] Failed to fetch:', error);
-    return [];
+    console.error('[Homies Badges] Failed to fetch badge database:', error);
+    return null;
   }
 }
+
+async function getHomiesBadgeDatabase(): Promise<HomiesBadgeData | null> {
+  const now = Date.now();
+
+  // Return memory cached data if valid
+  if (homiesBadgeCache && (now - homiesBadgeCache.timestamp) < BADGE_CACHE_DURATION) {
+    return homiesBadgeCache;
+  }
+
+  // If a fetch is already in progress, wait for it
+  if (homiesFetchPromise) {
+    return homiesFetchPromise;
+  }
+
+  // Start a new fetch from API
+  homiesFetchPromise = fetchHomiesBadgeDatabase().then(data => {
+    if (data) {
+      homiesBadgeCache = data;
+      console.log('[Homies Badges] Badge database cached with', data.badges.length, 'badge types');
+    }
+    homiesFetchPromise = null;
+    return data;
+  }).catch(err => {
+    console.error('[Homies Badges] Failed to fetch:', err);
+    homiesFetchPromise = null;
+    return homiesBadgeCache; // Return stale cache if available
+  });
+
+  return homiesFetchPromise;
+}
+
+// Homies Badges - lookup from cached global database
+export async function getHomiesBadges(userId: string): Promise<ThirdPartyBadge[]> {
+  const badgeDb = await getHomiesBadgeDatabase();
+  if (!badgeDb) return [];
+
+  const userBadges: ThirdPartyBadge[] = [];
+
+  // Find badges for this user
+  for (const badge of badgeDb.badges) {
+    if (badge.users && badge.users.includes(userId)) {
+      userBadges.push({
+        id: `homies-${badge.tooltip}`,
+        provider: 'homies',
+        title: badge.tooltip || 'Homies Badge',
+        imageUrl: badge.image3 || badge.image2 || badge.image1,
+        link: 'https://chatterinohomies.com/'
+      });
+    }
+  }
+
+  return userBadges;
+}
+
+// ============================================================================
+// PUBLIC API
+// ============================================================================
 
 // Get all third-party badges for a user
 export async function getAllThirdPartyBadges(userId: string): Promise<ThirdPartyBadge[]> {
@@ -203,12 +379,36 @@ export async function getAllThirdPartyBadges(userId: string): Promise<ThirdParty
       };
     });
 
-    // Trigger background caching
-    cacheThirdPartyBadges(badgesWithCache).catch(e => console.error('Background third-party badge caching failed:', e));
+    // Trigger background caching for badges without local URLs
+    const badgesToCache = badgesWithCache.filter(b => !b.localUrl);
+    if (badgesToCache.length > 0) {
+      cacheThirdPartyBadgeImages(badgesToCache).catch(e =>
+        console.error('Background third-party badge caching failed:', e)
+      );
+    }
 
     return badgesWithCache;
   } catch (error) {
     console.error('[Third Party Badges] Failed to fetch all badges:', error);
     return [];
   }
+}
+
+// Pre-warm the global badge caches (call on app startup or channel join)
+export async function preloadThirdPartyBadgeDatabases(): Promise<void> {
+  console.log('[ThirdPartyBadges] Pre-warming global badge databases...');
+  await Promise.all([
+    getFFZBadgeDatabase(),
+    getChatterinoBadgeDatabase(),
+    getHomiesBadgeDatabase()
+  ]);
+  console.log('[ThirdPartyBadges] Badge databases ready');
+}
+
+// Clear all caches (useful for testing or manual refresh)
+export function clearThirdPartyBadgeCaches(): void {
+  ffzBadgeCache = null;
+  chatterinoBadgeCache = null;
+  homiesBadgeCache = null;
+  console.log('[ThirdPartyBadges] All caches cleared');
 }

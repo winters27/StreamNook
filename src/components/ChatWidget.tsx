@@ -8,7 +8,8 @@ import { useAppStore } from '../stores/AppStore';
 import ChatMessage from './ChatMessage';
 import UserProfileCard from './UserProfileCard';
 import ErrorBoundary from './ErrorBoundary';
-import { fetchAllEmotes, Emote, EmoteSet } from '../services/emoteService';
+import { fetchAllEmotes, Emote, EmoteSet, preloadChannelEmotes, queueEmoteForCaching } from '../services/emoteService';
+import { preloadThirdPartyBadgeDatabases } from '../services/thirdPartyBadges';
 import { initializeBadges, getBadgeInfo } from '../services/twitchBadges';
 import { parseMessage } from '../services/twitchChat';
 import { fetchStreamViewerCount } from '../services/twitchService';
@@ -23,6 +24,8 @@ import {
 import { getAppleEmojiUrl } from '../services/emojiService';
 import { fetchRecentMessagesAsIRC } from '../services/ivrService';
 
+import { BackendChatMessage } from '../services/twitchChat';
+
 interface ParsedMessage {
   username: string;
   content: string;
@@ -33,7 +36,7 @@ interface ParsedMessage {
 }
 
 interface ChatMessageRowProps {
-  message: string;
+  message: string | BackendChatMessage;
   messageIndex: number;
   messageId: string | null;
   emoteSet: EmoteSet | null;
@@ -50,7 +53,7 @@ interface ChatMessageRowProps {
   onEmoteRightClick: (emoteName: string) => void;
   onUsernameRightClick: (messageId: string, username: string) => void;
   onBadgeClick: (badgeKey: string, badgeInfo: any) => void;
-  setItemSize: (index: number, size: number, messageId?: string | null) => void;
+  setItemSize: (index: number, size: number, messageId?: string | null, hasReply?: boolean) => void;
 }
 
 const ChatMessageRow = memo(({
@@ -71,50 +74,80 @@ const ChatMessageRow = memo(({
   const lastHeightRef = useRef<number>(0);
   const heightStableRef = useRef<boolean>(false);
   const measureTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const measureCountRef = useRef<number>(0);
+
+  // Check if this message has a reply (which adds significant height)
+  const hasReply = useMemo(() => {
+    if (typeof message !== 'string') {
+      return !!(message.tags?.['reply-parent-msg-id']);
+    }
+    return message.includes('reply-parent-msg-id=');
+  }, [message]);
 
   useLayoutEffect(() => {
     const element = rowRef.current;
     if (!element) return;
 
-    const measureHeight = (isInitial: boolean = false) => {
+    // For backend messages, we use the pre-calculated height as initial value
+    // but still allow ResizeObserver to correct it if needed
+    const isBackendMessage = typeof message !== 'string';
+
+    // Initialize lastHeightRef with backend height if available
+    if (isBackendMessage && lastHeightRef.current === 0) {
+      lastHeightRef.current = (message as any).layout?.height || 0;
+    }
+
+    // Reset measure count on mount
+    measureCountRef.current = 0;
+
+    const measureHeight = (force: boolean = false) => {
       if (element) {
         const height = element.getBoundingClientRect().height;
-        if (Math.abs(height - lastHeightRef.current) > 2) {
+        measureCountRef.current++;
+        // Always correct if off by more than 0.5px to prevent any overlap (more aggressive)
+        // For messages with replies, be even more aggressive
+        const threshold = hasReply ? 0.5 : 1;
+        if (force || Math.abs(height - lastHeightRef.current) > threshold) {
           lastHeightRef.current = height;
-          heightStableRef.current = false;
-          setItemSize(messageIndex, height, messageId);
-          if (measureTimeoutRef.current) {
-            clearTimeout(measureTimeoutRef.current);
-          }
-          measureTimeoutRef.current = setTimeout(() => {
-            heightStableRef.current = true;
-          }, 500);
-        } else if (isInitial) {
-          lastHeightRef.current = height;
-          setItemSize(messageIndex, height, messageId);
+          setItemSize(messageIndex, height, messageId, hasReply);
         }
       }
     };
 
+    // Measure immediately
     measureHeight(true);
 
+    // Measure again after images/emotes load (they affect height)
+    const rafId1 = requestAnimationFrame(() => {
+      measureHeight();
+    });
+
+    // For messages with replies, do more aggressive re-measurement
+    const measureIntervals = hasReply
+      ? [10, 30, 50, 100, 150, 200, 300, 500, 800] // More frequent measurements for reply messages
+      : [50, 150, 300, 500, 1000]; // Standard measurements
+
+    const timeoutIds = measureIntervals.map((delay) =>
+      setTimeout(() => {
+        measureHeight();
+        if (delay === measureIntervals[measureIntervals.length - 1]) {
+          heightStableRef.current = true;
+        }
+      }, delay)
+    );
+
     observerRef.current = new ResizeObserver((entries) => {
-      if (heightStableRef.current) return;
       for (const entry of entries) {
         const height = entry.contentRect.height;
         const computedStyle = getComputedStyle(entry.target);
         const paddingTop = parseFloat(computedStyle.paddingTop) || 0;
         const paddingBottom = parseFloat(computedStyle.paddingBottom) || 0;
         const totalHeight = height + paddingTop + paddingBottom;
-        if (Math.abs(totalHeight - lastHeightRef.current) > 3) {
+        // Always update if different by more than threshold
+        const threshold = hasReply ? 0.5 : 1;
+        if (Math.abs(totalHeight - lastHeightRef.current) > threshold) {
           lastHeightRef.current = totalHeight;
-          setItemSize(messageIndex, totalHeight, messageId);
-          if (measureTimeoutRef.current) {
-            clearTimeout(measureTimeoutRef.current);
-          }
-          measureTimeoutRef.current = setTimeout(() => {
-            heightStableRef.current = true;
-          }, 500);
+          setItemSize(messageIndex, totalHeight, messageId, hasReply);
         }
       }
     });
@@ -126,11 +159,13 @@ const ChatMessageRow = memo(({
         observerRef.current.disconnect();
         observerRef.current = null;
       }
+      cancelAnimationFrame(rafId1);
+      timeoutIds.forEach(clearTimeout);
       if (measureTimeoutRef.current) {
         clearTimeout(measureTimeoutRef.current);
       }
     };
-  }, [messageIndex, messageId, setItemSize]);
+  }, [messageIndex, messageId, setItemSize, message, hasReply]);
 
   return (
     <div ref={rowRef}>
@@ -151,10 +186,27 @@ const ChatMessageRow = memo(({
 
 ChatMessageRow.displayName = 'ChatMessageRow';
 
+const LayoutUpdater = memo(({ width, fontSize }: { width: number, fontSize: number }) => {
+  useEffect(() => {
+    // Debounce updates to avoid spamming the backend during resize
+    const timeout = setTimeout(() => {
+      // Account for message padding (px-3 = 12px * 2 = 24px horizontal padding)
+      // We pass the actual content width to the backend for accurate text wrapping
+      const contentWidth = Math.max(width - 24, 100);
+      invoke('update_layout_config', { width: contentWidth, fontSize: fontSize as number })
+        .catch(err => console.error('[LayoutUpdater] Failed to update config:', err));
+    }, 200);
+    return () => clearTimeout(timeout);
+  }, [width, fontSize]);
+  return null;
+});
+LayoutUpdater.displayName = 'LayoutUpdater';
+
 const ChatWidget = () => {
   const { messages, connectChat, sendMessage, isConnected, error, setPaused: setBufferPaused } = useTwitchChat();
   const { currentStream, currentUser } = useAppStore();
   const listRef = useRef<List>(null);
+  const outerRef = useRef<HTMLDivElement>(null);
   const messageHeightsById = useRef<Map<string, number>>(new Map());
   const rowHeights = useRef<{ [key: number]: number }>({});
   const messageRefs = useRef<{ [key: number]: HTMLDivElement | null }>({});
@@ -172,10 +224,9 @@ const ChatWidget = () => {
   const [isPaused, setIsPaused] = useState(false);
   const [pausedMessageCount, setPausedMessageCount] = useState(0);
   const isHoveringChatRef = useRef<boolean>(false);
-  const frozenMessagesRef = useRef<string[] | null>(null);
+  const frozenMessagesRef = useRef<(string | BackendChatMessage)[] | null>(null);
   const frozenRowHeightsRef = useRef<{ [key: number]: number } | null>(null);
   const lastScrollPositionRef = useRef<number>(0);
-  const maxScrollPositionRef = useRef<number>(0);
   const lastResumeTimeRef = useRef<number>(0);
   const [viewerCount, setViewerCount] = useState<number | null>(null);
   const streamUptimeRef = useRef<string>('');
@@ -201,19 +252,41 @@ const ChatWidget = () => {
   const isInitialLoadRef = useRef<boolean>(false);
   const initialLoadTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
+  // Refs for batching list resets to prevent UI freezing during resizing
+  const resetRafIdRef = useRef<number | null>(null);
+  const minResetIndexRef = useRef<number>(Infinity);
+
+  // Track if we should auto-scroll to bottom (when user is at bottom)
+  const shouldAutoScrollRef = useRef<boolean>(true);
+  const pendingScrollRef = useRef<boolean>(false);
+
+
+
   useEffect(() => {
     const newMessages = messages.slice(lastProcessedCountRef.current);
     newMessages.forEach((message, idx) => {
       try {
-        const channelIdMatch = message.match(/room-id=([^;]+)/);
-        const channelId = channelIdMatch ? channelIdMatch[1] : undefined;
-        const parsed = parseMessage(message, channelId);
-        const msgId = parsed.tags.get('id');
+        let parsed: ParsedMessage;
+        let msgId: string | undefined;
+        let userId: string | undefined;
+
+        if (typeof message === 'string') {
+          const channelIdMatch = message.match(/room-id=([^;]+)/);
+          const channelId = channelIdMatch ? channelIdMatch[1] : undefined;
+          parsed = parseMessage(message, channelId);
+          msgId = parsed.tags.get('id');
+          userId = parsed.tags.get('user-id');
+        } else {
+          // Backend message object
+          parsed = parseMessage(message);
+          msgId = message.id;
+          userId = message.tags['user-id'] || message.user_id;
+        }
+
         if (msgId) {
           const actualIndex = lastProcessedCountRef.current + idx;
           messageIdToIndexRef.current.set(msgId, actualIndex);
         }
-        const userId = parsed.tags.get('user-id');
         if (userId) {
           const history = userMessageHistory.current.get(userId) || [];
           history.push(parsed);
@@ -302,6 +375,18 @@ const ChatWidget = () => {
     };
   }, [currentStream?.user_login, currentStream?.user_id]);
 
+  // Force re-measurement of all visible items after programmatic scrolls
+  const triggerRemeasurement = useCallback(() => {
+    if (!listRef.current) return;
+    // Reset the list to force react-window to re-query sizes
+    listRef.current.resetAfterIndex(0, false);
+    // Schedule multiple resets to catch any async rendering
+    // We execute these more thoroughly to ensure the layout is correct on initial load
+    [50, 150, 300, 500, 800, 1200].forEach(delay => {
+      setTimeout(() => listRef.current?.resetAfterIndex(0, false), delay);
+    });
+  }, []);
+
   // Handle historical messages being loaded (bulk load) vs new messages being appended
   useEffect(() => {
     if (!listRef.current || messages.length === 0) return;
@@ -327,15 +412,16 @@ const ChatWidget = () => {
       messageHeightsById.current.clear();
       listRef.current.resetAfterIndex(0, true);
 
-      // After a brief delay to allow rendering, call handleResume to properly scroll and unpause
+      // After a brief delay to allow rendering, scroll and trigger re-measurement
       setTimeout(() => {
         if (messages.length > 0) {
-          // Use handleResume to properly set everything up
           lastResumeTimeRef.current = Date.now();
           setIsPaused(false);
           setBufferPaused(false);
           if (listRef.current) {
             listRef.current.scrollToItem(messages.length - 1, 'end');
+            // Trigger multiple re-measurements to fix any overlap on initial load
+            triggerRemeasurement();
           }
         }
       }, 100);
@@ -344,18 +430,17 @@ const ChatWidget = () => {
       initialLoadTimeoutRef.current = setTimeout(() => {
         isInitialLoadRef.current = false;
         console.log('[ChatWidget] Initial load complete, auto-pause now enabled');
+        // One final re-measurement sweep after initial load completes
+        triggerRemeasurement();
       }, 3000);
     } else if (!isPaused) {
       // Normal message append
       listRef.current.resetAfterIndex(Math.max(0, lastIndex - 1));
       listRef.current.scrollToItem(lastIndex, 'end');
-      setTimeout(() => {
-        maxScrollPositionRef.current = lastScrollPositionRef.current;
-      }, 50);
     }
 
     lastMessageCountRef.current = messages.length;
-  }, [messages, isPaused]);
+  }, [messages, isPaused, triggerRemeasurement]);
 
   useEffect(() => {
     if (isPaused && pausedMessageCount === 0) {
@@ -369,7 +454,10 @@ const ChatWidget = () => {
     }
   }, [isPaused, messages.length]);
 
-  const getMessageId = useCallback((message: string): string | null => {
+  const getMessageId = useCallback((message: string | BackendChatMessage): string | null => {
+    if (typeof message !== 'string') {
+      return message.id;
+    }
     const idMatch = message.match(/(?:^|;)id=([^;]+)/);
     return idMatch ? idMatch[1] : null;
   }, []);
@@ -401,14 +489,32 @@ const ChatWidget = () => {
       if (frozenRowHeightsRef.current[index]) return frozenRowHeightsRef.current[index];
       const frozenMessages = frozenMessagesRef.current;
       if (frozenMessages && frozenMessages[index]) {
-        const msgId = getMessageId(frozenMessages[index]);
+        // If frozen message is backend object, use its layout height fallback
+        const msg = frozenMessages[index];
+        if (typeof msg !== 'string') {
+          return msg.layout.height;
+        }
+
+        const msgId = getMessageId(msg);
         if (msgId && messageHeightsById.current.has(msgId)) return messageHeightsById.current.get(msgId)!;
       }
       return 60;
     }
+
+    // Check cache first
     if (rowHeights.current[index]) return rowHeights.current[index];
+
     const message = messages[index];
     if (message) {
+      // If backend message, use pre-calculated height
+      if (typeof message !== 'string') {
+        const height = message.layout.height;
+        // Cache it immediately so we don't check type every time?
+        // Actually react-window caches it usually, but we have our own cache.
+        rowHeights.current[index] = height;
+        return height;
+      }
+
       const msgId = getMessageId(message);
       if (msgId && messageHeightsById.current.has(msgId)) {
         const height = messageHeightsById.current.get(msgId)!;
@@ -419,58 +525,114 @@ const ChatWidget = () => {
     return 60;
   }, [messages, getMessageId, isPaused]);
 
-  const setItemSize = useCallback((index: number, size: number, messageId?: string | null) => {
+  const setItemSize = useCallback((index: number, size: number, messageId?: string | null, hasReply?: boolean) => {
     const currentSize = rowHeights.current[index] || 0;
     const sizeDiff = Math.abs(currentSize - size);
-    if (sizeDiff > 1) {
+    // For messages with replies, use a smaller threshold to catch more updates
+    const threshold = hasReply ? 0.5 : 1;
+    if (sizeDiff > threshold) {
       rowHeights.current[index] = size;
       if (messageId) messageHeightsById.current.set(messageId, size);
-      if (listRef.current) listRef.current.resetAfterIndex(index, false);
+      if (listRef.current) {
+
+        // Track the minimum index that needs resetting
+        minResetIndexRef.current = Math.min(minResetIndexRef.current, index);
+
+        // Batch updates using requestAnimationFrame to avoid layout thrashing and freezing
+        if (resetRafIdRef.current === null) {
+          resetRafIdRef.current = requestAnimationFrame(() => {
+            if (listRef.current && minResetIndexRef.current !== Infinity) {
+              listRef.current.resetAfterIndex(minResetIndexRef.current, false);
+
+              // If we should auto-scroll (at bottom, not paused), scroll to bottom after reset
+              // This fixes the glitch where messages appear under the input bar
+              if (shouldAutoScrollRef.current && !isPaused && messages.length > 0) {
+                // Check if this is a recent message (within last 3 messages)
+                const isRecentMessage = index >= messages.length - 3;
+                if (isRecentMessage) {
+                  // Schedule scroll to bottom after the reset takes effect
+                  if (!pendingScrollRef.current) {
+                    pendingScrollRef.current = true;
+                    requestAnimationFrame(() => {
+                      if (listRef.current && shouldAutoScrollRef.current && !isPaused) {
+                        listRef.current.scrollToItem(messages.length - 1, 'end');
+                      }
+                      pendingScrollRef.current = false;
+                    });
+                  }
+                }
+              }
+            }
+            minResetIndexRef.current = Infinity;
+            resetRafIdRef.current = null;
+          });
+        }
+
+        // For reply messages with significant height changes, be more aggressive
+        // Reset from the current index to ensure all subsequent messages recalculate
+        if (hasReply && sizeDiff > 5) {
+          // Force a full reset from this index to ensure proper positioning
+          listRef.current.resetAfterIndex(index, true);
+          // Schedule additional resets to catch any delayed rendering
+          setTimeout(() => listRef.current?.resetAfterIndex(index, false), 10);
+          setTimeout(() => listRef.current?.resetAfterIndex(index, false), 50);
+        }
+      }
     }
-  }, []);
+  }, [isPaused, messages.length]);
 
   const handleScroll = useCallback(({ scrollOffset, scrollUpdateWasRequested }: { scrollOffset: number; scrollUpdateWasRequested: boolean }) => {
+    // Skip during grace period after resume to prevent false pauses
     if (Date.now() - lastResumeTimeRef.current < 500) {
       lastScrollPositionRef.current = scrollOffset;
-      if (!isPaused) {
-        maxScrollPositionRef.current = Math.max(maxScrollPositionRef.current, scrollOffset);
-      }
       return;
     }
 
     // Skip auto-pause logic during initial load of historical messages
     if (isInitialLoadRef.current) {
       lastScrollPositionRef.current = scrollOffset;
-      if (!isPaused) {
-        maxScrollPositionRef.current = Math.max(maxScrollPositionRef.current, scrollOffset);
-      }
       return;
     }
 
-    if (!scrollUpdateWasRequested) {
-      const scrolledAwayFromMax = maxScrollPositionRef.current - scrollOffset > 50;
-      if (scrolledAwayFromMax && scrollOffset < lastScrollPositionRef.current - 10 && scrollOffset > 100) {
-        if (!isPaused) {
-          setIsPaused(true);
-          setBufferPaused(true);
+    // Calculate distance to bottom using outerRef for accurate measurement
+    // This is more reliable than tracking maxScrollPosition which breaks when content resizes
+    if (outerRef.current) {
+      const { scrollHeight, clientHeight } = outerRef.current;
+      const distanceToBottom = scrollHeight - clientHeight - scrollOffset;
+
+      // Track if we should auto-scroll (within 50px of bottom = "at bottom")
+      // This is used by setItemSize to know when to re-scroll after height updates
+      shouldAutoScrollRef.current = distanceToBottom < 50;
+
+      if (!scrollUpdateWasRequested) {
+        // User is scrolling up (away from bottom) - pause chat
+        // Only pause if they've scrolled more than 100px from the bottom
+        if (distanceToBottom > 100 && scrollOffset < lastScrollPositionRef.current - 10) {
+          if (!isPaused) {
+            shouldAutoScrollRef.current = false;
+            setIsPaused(true);
+            setBufferPaused(true);
+          }
         }
-      } else if (isPaused && scrollOffset >= maxScrollPositionRef.current - 10) {
         // User scrolled back to bottom while paused - auto-resume
-        handleResume();
+        else if (isPaused && distanceToBottom < 30) {
+          handleResume();
+        }
       }
     }
+
     lastScrollPositionRef.current = scrollOffset;
-    // Only update max scroll position when not paused to prevent interference
-    if (!isPaused) {
-      maxScrollPositionRef.current = Math.max(maxScrollPositionRef.current, scrollOffset);
-    }
   }, [isPaused, setBufferPaused]);
 
   const handleResume = () => {
     lastResumeTimeRef.current = Date.now();
+    shouldAutoScrollRef.current = true; // Re-enable auto-scroll when resuming
     setIsPaused(false);
     setBufferPaused(false);
-    if (listRef.current && messages.length > 0) listRef.current.scrollToItem(messages.length - 1, 'end');
+    if (listRef.current && messages.length > 0) {
+      listRef.current.scrollToItem(messages.length - 1, 'end');
+      triggerRemeasurement();
+    }
   };
 
   const handleBadgeClick = useCallback(async (badgeKey: string, badgeInfo: any) => {
@@ -489,16 +651,24 @@ const ChatWidget = () => {
       const needsPadding = totalHeight < containerHeight;
       const actualIndex = needsPadding ? parentIndex + 1 : parentIndex;
       listRef.current.scrollToItem(actualIndex, 'center');
+      // Trigger re-measurement after scrolling to fix any overlap
+      triggerRemeasurement();
       setHighlightedMessageId(parentMsgId);
       setTimeout(() => setHighlightedMessageId(null), 2000);
     } else {
       useAppStore.getState().addToast('Parent message not found in current chat history', 'info');
     }
-  }, [messages, getMessageId, setBufferPaused]);
+  }, [messages, getMessageId, setBufferPaused, triggerRemeasurement]);
 
   const loadEmotes = async (channelName: string, channelId?: string) => {
     setIsLoadingEmotes(true);
     try {
+      // Pre-warm third-party badge databases in parallel (FFZ, Chatterino, Homies)
+      // This ensures badge lookups are instant for chat messages
+      preloadThirdPartyBadgeDatabases().catch(err =>
+        console.warn('[ChatWidget] Failed to preload third-party badge databases:', err)
+      );
+
       try {
         const [clientId, token] = await invoke<[string, string]>('get_twitch_credentials');
         await initializeBadges(clientId, token, channelId);
@@ -507,6 +677,25 @@ const ChatWidget = () => {
       }
       const emoteSet = await fetchAllEmotes(channelName, channelId);
       setEmotes(emoteSet);
+
+      // Preload channel-specific emotes with high priority for fast emote picker
+      if (emoteSet) {
+        // Prioritize channel emotes (7TV and BTTV channel emotes are most used)
+        const channelEmotes = [
+          ...emoteSet['7tv'],
+          ...emoteSet.bttv,
+          ...emoteSet.ffz
+        ];
+
+        // MODIFICATION: Removed aggressive preloading.
+        // Previously we preloaded ALL channel emotes here, which caused UI freezes
+        // on channels with many emotes (e.g. 500+ 7TV emotes).
+        // Now we rely on the browser's natural loading or the Emote Picker's own virtualization.
+
+        // If we really need preloading, we should only do the top 20-30 most used, not all.
+        // For now, disabling is the safest fix for the freeze.
+      }
+
       const favorites = await loadFavoriteEmotes();
       if (emoteSet) {
         const allEmotes = [...emoteSet.twitch, ...emoteSet.bttv, ...emoteSet['7tv'], ...emoteSet.ffz];
@@ -525,15 +714,22 @@ const ChatWidget = () => {
       const sourceRoomIds = new Set<string>();
       let hasSharedMessages = false;
       messages.forEach(message => {
-        const sourceRoomIdMatch = message.match(/source-room-id=([^;]+)/);
-        const roomIdMatch = message.match(/room-id=([^;]+)/);
-        if (sourceRoomIdMatch && roomIdMatch) {
-          const sourceRoomId = sourceRoomIdMatch[1];
-          const roomId = roomIdMatch[1];
-          if (sourceRoomId !== roomId) {
-            sourceRoomIds.add(sourceRoomId);
-            hasSharedMessages = true;
-          }
+        let sourceRoomId: string | null = null;
+        let roomId: string | null = null;
+
+        if (typeof message === 'string') {
+          const sourceRoomIdMatch = message.match(/source-room-id=([^;]+)/);
+          const roomIdMatch = message.match(/room-id=([^;]+)/);
+          if (sourceRoomIdMatch) sourceRoomId = sourceRoomIdMatch[1];
+          if (roomIdMatch) roomId = roomIdMatch[1];
+        } else {
+          sourceRoomId = message.tags['source-room-id'] || null;
+          roomId = message.tags['room-id'] || null;
+        }
+
+        if (sourceRoomId && roomId && sourceRoomId !== roomId) {
+          sourceRoomIds.add(sourceRoomId);
+          hasSharedMessages = true;
         }
       });
       setIsSharedChat(hasSharedMessages);
@@ -705,66 +901,7 @@ const ChatWidget = () => {
   return (
     <>
       <div className="h-full bg-secondary backdrop-blur-md overflow-hidden flex flex-col relative">
-        <div className="absolute inset-0 overflow-hidden" style={{ paddingBottom: '55px' }}
-          onMouseEnter={() => { isHoveringChatRef.current = true; }}
-          onMouseLeave={() => { isHoveringChatRef.current = false; }}>
-          {messages.length === 0 ? (
-            <div className="h-full flex items-center justify-center">
-              <p className="text-textSecondary text-sm">Waiting for messages...</p>
-            </div>
-          ) : (
-            <AutoSizer>
-              {({ height, width }) => (
-                <ErrorBoundary componentName="ChatWidgetList" reportToLogService={true}>
-                  {(() => {
-                    containerHeightRef.current = height;
-                    const displayMessages = messages; // Always show all messages, even when paused
-                    const totalHeight = Object.values(rowHeights.current).reduce((sum, height) => sum + height, 0);
-                    const needsPadding = totalHeight < height;
-                    const paddingHeight = needsPadding ? height - totalHeight : 0;
-                    return (
-                      <List ref={listRef} height={height} itemCount={displayMessages.length + (needsPadding ? 1 : 0)}
-                        itemSize={(index) => {
-                          if (needsPadding && index === 0) return paddingHeight;
-                          const messageIndex = needsPadding ? index - 1 : index;
-                          return getItemSize(messageIndex);
-                        }}
-                        width={width} className="scrollbar-thin" onScroll={handleScroll} estimatedItemSize={60}
-                        initialScrollOffset={displayMessages.length > 0 ? 999999 : 0}>
-                        {({ index, style }) => {
-                          if (needsPadding && index === 0) return <div style={style} />;
-                          const messageIndex = needsPadding ? index - 1 : index;
-                          const currentMessage = displayMessages[messageIndex];
-                          const currentMsgId = getMessageId(currentMessage);
-                          return (
-                            <div style={style}>
-                              <ChatMessageRow message={currentMessage} messageIndex={messageIndex} messageId={currentMsgId}
-                                emoteSet={emotes} onUsernameClick={handleUsernameClick} onReplyClick={handleReplyClick}
-                                isHighlighted={highlightedMessageId !== null && currentMessage.includes(`id=${highlightedMessageId}`)}
-                                onEmoteRightClick={handleEmoteRightClick} onUsernameRightClick={handleUsernameRightClick}
-                                onBadgeClick={handleBadgeClick} setItemSize={setItemSize} />
-                            </div>
-                          );
-                        }}
-                      </List>
-                    );
-                  })()}
-                </ErrorBoundary>
-              )}
-            </AutoSizer>
-          )}
-        </div>
-
-        {isPaused && (
-          <div className="absolute bottom-[65px] left-1/2 transform -translate-x-1/2 z-50 pointer-events-auto">
-            <button onClick={handleResume} className="flex items-center gap-2 px-4 py-2 glass-button text-white text-sm font-medium rounded-full shadow-lg bg-black/95">
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
-              <span>Chat Paused ({messages.length - pausedMessageCount} new)</span>
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
-            </button>
-          </div>
-        )}
-
+        {/* Chat header - absolute positioned at top */}
         <div className={`absolute top-0 left-0 right-0 px-3 py-2 border-b backdrop-blur-ultra z-10 pointer-events-none shadow-lg ${isSharedChat ? 'iridescent-border' : 'border-borderSubtle'}`} style={{ backgroundColor: 'rgba(12, 12, 13, 0.9)' }}>
           <div className="flex items-center gap-2">
             <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-red-400'}`}></div>
@@ -788,7 +925,73 @@ const ChatWidget = () => {
           </div>
         </div>
 
-        <div className="absolute bottom-0 left-0 right-0 border-t border-borderSubtle backdrop-blur-ultra z-10" style={{ backgroundColor: 'rgba(12, 12, 13, 0.9)' }}>
+        {/* Chat messages area - flex-1 to take remaining space */}
+        <div className="flex-1 overflow-hidden"
+          onMouseEnter={() => { isHoveringChatRef.current = true; }}
+          onMouseLeave={() => { isHoveringChatRef.current = false; }}>
+          {messages.length === 0 ? (
+            <div className="h-full flex items-center justify-center">
+              <p className="text-textSecondary text-sm">Waiting for messages...</p>
+            </div>
+          ) : (
+            <AutoSizer>
+              {({ height, width }) => (
+                <>
+                  <LayoutUpdater width={width} fontSize={settings.chat_design?.font_size || 13} />
+                  <ErrorBoundary componentName="ChatWidgetList" reportToLogService={true}>
+                    {(() => {
+                      containerHeightRef.current = height;
+                      const displayMessages = messages; // Always show all messages, even when paused
+                      const totalHeight = Object.values(rowHeights.current).reduce((sum, height) => sum + height, 0);
+                      const needsPadding = totalHeight < height;
+                      const paddingHeight = needsPadding ? height - totalHeight : 0;
+                      return (
+                        <List ref={listRef} outerRef={outerRef} height={height} itemCount={displayMessages.length + (needsPadding ? 1 : 0)}
+                          itemSize={(index) => {
+                            if (needsPadding && index === 0) return paddingHeight;
+                            const messageIndex = needsPadding ? index - 1 : index;
+                            return getItemSize(messageIndex);
+                          }}
+                          width={width} className="scrollbar-thin" onScroll={handleScroll} estimatedItemSize={60}
+                          initialScrollOffset={displayMessages.length > 0 ? 999999 : 0}>
+                          {({ index, style }) => {
+                            if (needsPadding && index === 0) return <div style={style} />;
+                            const messageIndex = needsPadding ? index - 1 : index;
+                            const currentMessage = displayMessages[messageIndex];
+                            const currentMsgId = getMessageId(currentMessage);
+                            return (
+                              <div style={style}>
+                                <ChatMessageRow message={currentMessage} messageIndex={messageIndex} messageId={currentMsgId}
+                                  emoteSet={emotes} onUsernameClick={handleUsernameClick} onReplyClick={handleReplyClick}
+                                  isHighlighted={highlightedMessageId !== null && currentMsgId === highlightedMessageId}
+                                  onEmoteRightClick={handleEmoteRightClick} onUsernameRightClick={handleUsernameRightClick}
+                                  onBadgeClick={handleBadgeClick} setItemSize={setItemSize} />
+                              </div>
+                            );
+                          }}
+                        </List>
+                      );
+                    })()}
+                  </ErrorBoundary>
+                </>
+              )}
+            </AutoSizer>
+          )}
+        </div>
+
+        {/* Chat Paused indicator - positioned above input */}
+        {isPaused && (
+          <div className="absolute bottom-[60px] left-1/2 transform -translate-x-1/2 z-50 pointer-events-auto">
+            <button onClick={handleResume} className="flex items-center gap-2 px-4 py-2 glass-button text-white text-sm font-medium rounded-full shadow-lg bg-black/95">
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+              <span>Chat Paused ({messages.length - pausedMessageCount} new)</span>
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+            </button>
+          </div>
+        )}
+
+        {/* Input container - static flex item at bottom */}
+        <div className="flex-shrink-0 border-t border-borderSubtle backdrop-blur-ultra" style={{ backgroundColor: 'rgba(12, 12, 13, 0.9)' }}>
           <div className="p-2">
             <div className="relative">
               {showEmotePicker && (
@@ -854,7 +1057,19 @@ const ChatWidget = () => {
                           return (
                             <div key={`${emote.provider}-${emote.id}`} className="relative group">
                               <button onClick={() => insertEmote(emote.name)} className="flex flex-col items-center gap-1 p-1.5 hover:bg-glass rounded transition-colors w-full" title={emote.name}>
-                                <img src={emote.url} alt={emote.name} className="w-8 h-8 object-contain" onError={(e) => { e.currentTarget.style.display = 'none'; }} />
+                                <img
+                                  src={emote.localUrl || emote.url}
+                                  alt={emote.name}
+                                  className="w-8 h-8 object-contain"
+                                  onLoad={() => {
+                                    // Lazily cache this emote when it's displayed
+                                    // Now safe to call due to download queue in service
+                                    if (!emote.localUrl) {
+                                      queueEmoteForCaching(emote.id, emote.url);
+                                    }
+                                  }}
+                                  onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                                />
                                 <span className="text-xs text-textSecondary truncate w-full text-center">{emote.name}</span>
                               </button>
                               <button onClick={async (e) => {
@@ -912,11 +1127,13 @@ const ChatWidget = () => {
           </div>
         </div>
       </div>
-      {selectedUser && (
-        <UserProfileCard userId={selectedUser.userId} username={selectedUser.username} displayName={selectedUser.displayName}
-          color={selectedUser.color} badges={selectedUser.badges} messageHistory={userMessageHistory.current.get(selectedUser.userId) || []}
-          onClose={() => setSelectedUser(null)} position={selectedUser.position} />
-      )}
+      {
+        selectedUser && (
+          <UserProfileCard userId={selectedUser.userId} username={selectedUser.username} displayName={selectedUser.displayName}
+            color={selectedUser.color} badges={selectedUser.badges} messageHistory={userMessageHistory.current.get(selectedUser.userId) || []}
+            onClose={() => setSelectedUser(null)} position={selectedUser.position} />
+        )
+      }
     </>
   );
 };

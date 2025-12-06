@@ -77,13 +77,23 @@ export function parseEmotesWithThirdParty(
   let segments = parseEmotes(text, emotesTag);
 
   // Build a map of all third-party emotes by name
+  // Priority order: BTTV < FFZ < 7TV (7TV is added last so it takes precedence)
   const thirdPartyEmotes = new Map<string, Emote>();
+  // Build a separate map for 7TV emotes only for quick lookup
+  const seventvEmotes = new Map<string, Emote>();
   // Build a map of Twitch emotes by ID for cache lookup
   const twitchEmotesMap = new Map<string, Emote>();
 
   if (emoteSet) {
-    [...emoteSet.bttv, ...emoteSet['7tv'], ...emoteSet.ffz].forEach(emote => {
+    // Add emotes in priority order: BTTV first, then FFZ, then 7TV last
+    // This way 7TV emotes override any others with the same name
+    [...emoteSet.bttv, ...emoteSet.ffz, ...emoteSet['7tv']].forEach(emote => {
       thirdPartyEmotes.set(emote.name, emote);
+    });
+
+    // Build separate 7TV lookup for Twitch emote override checking
+    emoteSet['7tv'].forEach(emote => {
+      seventvEmotes.set(emote.name, emote);
     });
 
     // Index Twitch emotes
@@ -99,30 +109,40 @@ export function parseEmotesWithThirdParty(
 
   for (const segment of segments) {
     if (segment.type === 'emote') {
-      // Check if we have a cached version of this Twitch emote
-      if (segment.emoteId) {
-        // First check the provided emoteSet map if available
-        if (twitchEmotesMap.has(segment.emoteId)) {
-          const cachedEmote = twitchEmotesMap.get(segment.emoteId);
-          if (cachedEmote?.localUrl) {
-            segment.emoteUrl = cachedEmote.localUrl;
+      // Check if a 7TV emote exists with the same name - 7TV takes priority over Twitch
+      const seventvEmote = seventvEmotes.get(segment.content);
+      if (seventvEmote) {
+        // Use 7TV version instead of Twitch emote
+        finalSegments.push({
+          type: 'emote',
+          content: segment.content,
+          emoteUrl: seventvEmote.localUrl || seventvEmote.url,
+        });
+      } else {
+        // No 7TV override - use Twitch emote
+        // Check if we have a cached version of this Twitch emote
+        if (segment.emoteId) {
+          // First check the provided emoteSet map if available
+          if (twitchEmotesMap.has(segment.emoteId)) {
+            const cachedEmote = twitchEmotesMap.get(segment.emoteId);
+            if (cachedEmote?.localUrl) {
+              segment.emoteUrl = cachedEmote.localUrl;
+            }
+          }
+
+          // If not found in map (or map not provided), check the global reactive cache registry
+          // This handles emotes that were cached reactively after being seen in chat
+          if (!segment.emoteUrl || !segment.emoteUrl.startsWith('asset://')) {
+            const localUrl = getCachedEmoteUrl(segment.emoteId);
+            if (localUrl) {
+              segment.emoteUrl = localUrl;
+            }
           }
         }
 
-        // If not found in map (or map not provided), check the global reactive cache registry
-        // This handles emotes that were cached reactively after being seen in chat
-        // If not found in map (or map not provided), check the global reactive cache registry
-        // This handles emotes that were cached reactively after being seen in chat
-        if (!segment.emoteUrl || !segment.emoteUrl.startsWith('asset://')) {
-          const localUrl = getCachedEmoteUrl(segment.emoteId);
-          if (localUrl) {
-            segment.emoteUrl = localUrl;
-          }
-        }
+        // Keep Twitch emotes as-is (with potentially updated URL)
+        finalSegments.push(segment);
       }
-
-      // Keep Twitch emotes as-is (with potentially updated URL)
-      finalSegments.push(segment);
     } else {
       // Split text by spaces and check each word
       const words = segment.content.split(' ');

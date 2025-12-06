@@ -2,7 +2,9 @@ import React, { useMemo, useState, useEffect, memo } from 'react';
 import { parseMessage } from '../services/twitchChat';
 import { parseEmotesWithThirdParty, EmoteSegment } from '../services/emoteParser';
 import { EmoteSet, queueEmoteForCaching } from '../services/emoteService';
-import { getUserCosmetics, computePaintStyle, getBadgeImageUrl } from '../services/seventvService';
+import { computePaintStyle, getBadgeImageUrl, queueCosmeticForCaching } from '../services/seventvService';
+import { getCosmeticsWithFallback, getThirdPartyBadgesWithFallback, getCosmeticsFromMemoryCache, getThirdPartyBadgesFromMemoryCache } from '../services/cosmeticsCache';
+import { ThirdPartyBadge } from '../services/thirdPartyBadges';
 import { SevenTVBadge, SevenTVPaint } from '../types';
 import { useAppStore } from '../stores/AppStore';
 
@@ -10,8 +12,10 @@ import { useAppStore } from '../stores/AppStore';
 const channelNameCache = new Map<string, string>();
 const channelProfileImageCache = new Map<string, string>();
 
+import { BackendChatMessage } from '../services/twitchChat';
+
 interface ChatMessageProps {
-  message: string; // Raw IRC message
+  message: string | BackendChatMessage; // Raw IRC message or Backend Message Object
   emoteSet?: EmoteSet | null;
   messageIndex?: number; // For alternating backgrounds
   onUsernameClick?: (
@@ -33,7 +37,14 @@ interface ChatMessageProps {
 // Only re-render if the message content or highlight state actually changes
 const chatMessageAreEqual = (prevProps: ChatMessageProps, nextProps: ChatMessageProps): boolean => {
   // Only re-render if these props actually changed
-  if (prevProps.message !== nextProps.message) return false;
+  if (prevProps.message !== nextProps.message) {
+    // If objects, compare IDs
+    if (typeof prevProps.message !== 'string' && typeof nextProps.message !== 'string') {
+      if (prevProps.message.id !== nextProps.message.id) return false;
+    } else {
+      return false;
+    }
+  }
   if (prevProps.messageIndex !== nextProps.messageIndex) return false;
   if (prevProps.isHighlighted !== nextProps.isHighlighted) return false;
   // EmoteSet reference may change but content is the same - do deep comparison by checking if it's null/undefined
@@ -52,11 +63,22 @@ const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageI
   const parsed = useMemo(() => {
     // Extract channel ID from the message tags if available
     // For shared chat messages, use source-room-id instead of room-id for badge lookup
-    const sourceRoomIdMatch = message.match(/source-room-id=([^;]+)/);
-    const roomIdMatch = message.match(/room-id=([^;]+)/);
+    let sourceRoomId: string | undefined;
+    let roomId: string | undefined;
+
+    if (typeof message === 'string') {
+      const sourceRoomIdMatch = message.match(/source-room-id=([^;]+)/);
+      const roomIdMatch = message.match(/room-id=([^;]+)/);
+      sourceRoomId = sourceRoomIdMatch ? sourceRoomIdMatch[1] : undefined;
+      roomId = roomIdMatch ? roomIdMatch[1] : undefined;
+    } else {
+      // Backend message object - extract room-id from tags
+      sourceRoomId = message.tags?.['source-room-id'];
+      roomId = message.tags?.['room-id'];
+    }
 
     // Prefer source-room-id for shared chat messages, fall back to room-id
-    const channelId = sourceRoomIdMatch ? sourceRoomIdMatch[1] : (roomIdMatch ? roomIdMatch[1] : undefined);
+    const channelId = sourceRoomId || roomId;
 
     return parseMessage(message, channelId);
   }, [message]);
@@ -67,14 +89,27 @@ const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageI
     [parsed, emoteSet]
   );
 
-  const [seventvBadge, setSeventvBadge] = useState<any>(null);
-  const [seventvPaint, setSeventvPaint] = useState<any>(null);
+  // Extract userId once to prevent re-renders
+  const userId = useMemo(() => parsed.tags.get('user-id'), [message]);
+
+  // Initialize state from synchronous memory cache (avoids null -> data flash)
+  const [seventvBadge, setSeventvBadge] = useState<any>(() => {
+    if (!userId) return null;
+    const cached = getCosmeticsFromMemoryCache(userId);
+    return cached?.badges.find((b: any) => b.selected) || null;
+  });
+  const [seventvPaint, setSeventvPaint] = useState<any>(() => {
+    if (!userId) return null;
+    const cached = getCosmeticsFromMemoryCache(userId);
+    return cached?.paints.find((p: any) => p.selected) || null;
+  });
+  const [thirdPartyBadges, setThirdPartyBadges] = useState<ThirdPartyBadge[]>(() => {
+    if (!userId) return [];
+    return getThirdPartyBadgesFromMemoryCache(userId) || [];
+  });
   const [broadcasterType, setBroadcasterType] = useState<string | null>(null);
   const [isMentioned, setIsMentioned] = useState(false);
   const [isReplyToMe, setIsReplyToMe] = useState(false);
-
-  // Extract userId once to prevent re-renders
-  const userId = useMemo(() => parsed.tags.get('user-id'), [message]);
 
   // Check if this message mentions the current user or is a reply to them
   useEffect(() => {
@@ -91,7 +126,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageI
     setIsReplyToMe(isReply);
   }, [parsed.content, parsed.replyInfo, currentUser]);
 
-  // Fetch 7TV user cosmetics using v4 API
+  // Fetch 7TV user cosmetics and third-party badges (only if not already loaded from cache)
   useEffect(() => {
     if (!userId) {
       return;
@@ -99,26 +134,66 @@ const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageI
 
     let cancelled = false;
 
-    getUserCosmetics(userId).then((cosmetics) => {
-      if (cancelled || !cosmetics) return;
+    // Only fetch 7TV cosmetics if we don't already have data from initial cache
+    // This prevents redundant API calls when cache already populated the state
+    const cachedCosmetics = getCosmeticsFromMemoryCache(userId);
+    if (!cachedCosmetics) {
+      getCosmeticsWithFallback(userId).then((cosmetics) => {
+        if (cancelled || !cosmetics) return;
 
-      // Find selected paint
-      const selectedPaint = cosmetics.paints.find((p) => p.selected);
-      if (selectedPaint) {
-        setSeventvPaint(selectedPaint);
-      }
+        // Find selected paint (the 'selected' property is added by seventvService)
+        const selectedPaint = cosmetics.paints.find((p: any) => p.selected);
+        if (selectedPaint) {
+          setSeventvPaint(selectedPaint);
+        }
 
-      // Find selected badge
-      const selectedBadge = cosmetics.badges.find((b) => b.selected);
-      if (selectedBadge) {
-        setSeventvBadge(selectedBadge);
-      }
-    });
+        // Find selected badge (the 'selected' property is added by seventvService)
+        const selectedBadge = cosmetics.badges.find((b: any) => b.selected);
+        if (selectedBadge) {
+          setSeventvBadge(selectedBadge);
+        }
+      });
+    }
+
+    // Only fetch third-party badges if we don't already have data from initial cache
+    const cachedThirdParty = getThirdPartyBadgesFromMemoryCache(userId);
+    if (!cachedThirdParty) {
+      getThirdPartyBadgesWithFallback(userId).then((badges) => {
+        if (cancelled) return;
+        setThirdPartyBadges(badges);
+      });
+    }
 
     return () => {
       cancelled = true;
     };
   }, [userId]);
+
+  // Reactive caching for 7TV cosmetics
+  useEffect(() => {
+    // Cache 7TV Badge
+    if (seventvBadge && !seventvBadge.localUrl) {
+      const badgeUrl = getBadgeImageUrl(seventvBadge);
+      if (badgeUrl && !badgeUrl.startsWith('asset') && !badgeUrl.includes('localhost')) {
+        queueCosmeticForCaching(seventvBadge.id, badgeUrl);
+      }
+    }
+
+    // Cache 7TV Paint Image Layers
+    if (seventvPaint?.data?.layers) {
+      seventvPaint.data.layers.forEach((layer: any) => {
+        if (layer.ty.__typename === 'PaintLayerTypeImage' && layer.ty.images) {
+          // Find the best image (scale 1 if available)
+          const img = layer.ty.images.find((i: any) => i.scale === 1 && (layer.ty.images.some((x: any) => x.frameCount > 1) ? i.frameCount > 1 : true)) || layer.ty.images[0];
+
+          if (img && !img.localUrl) {
+            // Paints are cached by their layer ID
+            queueCosmeticForCaching(layer.id, img.url);
+          }
+        }
+      });
+    }
+  }, [seventvBadge, seventvPaint]);
 
   // Create username style with paint
   const usernameStyle = useMemo(() => {
@@ -242,6 +317,11 @@ const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageI
   // Check if this is a charity donation message
   const isDonation = msgId === 'charitydonation' || sourceMsgId === 'charitydonation';
 
+  // Check if this is a viewer milestone (watch streak) message
+  const isViewerMilestone = msgId === 'viewermilestone' || sourceMsgId === 'viewermilestone';
+  const milestoneCategory = parsed.tags.get('msg-param-category');
+  const isWatchStreak = isViewerMilestone && milestoneCategory === 'watch-streak';
+
   // Check if this is a bits cheer message
   const bitsAmount = parsed.tags.get('bits');
   const isBitsCheer = bitsAmount && parseInt(bitsAmount, 10) > 0;
@@ -364,7 +444,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageI
 
     // Helper function to render badges
     const renderBadges = () => {
-      if (parsed.badges.length === 0 && !seventvBadge) return null;
+      if (parsed.badges.length === 0 && !seventvBadge && thirdPartyBadges.length === 0) return null;
 
       return (
         <span className="inline-flex items-center gap-1 mr-1">
@@ -394,6 +474,18 @@ const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageI
               }}
             />
           )}
+          {thirdPartyBadges.map((badge, idx) => (
+            <img
+              key={`bits-tp-badge-${badge.id}-${idx}`}
+              src={badge.localUrl || badge.imageUrl}
+              alt={badge.title}
+              title={`${badge.title} (${badge.provider.toUpperCase()})`}
+              className="w-4 h-4 inline-block"
+              onError={(e) => {
+                e.currentTarget.style.display = 'none';
+              }}
+            />
+          ))}
         </span>
       );
     };
@@ -478,7 +570,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageI
 
     // Helper function to render badges
     const renderBadges = () => {
-      if (parsed.badges.length === 0 && !seventvBadge) return null;
+      if (parsed.badges.length === 0 && !seventvBadge && thirdPartyBadges.length === 0) return null;
 
       return (
         <span className="inline-flex items-center gap-1 mr-1">
@@ -508,6 +600,18 @@ const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageI
               }}
             />
           )}
+          {thirdPartyBadges.map((badge, idx) => (
+            <img
+              key={`donation-tp-badge-${badge.id}-${idx}`}
+              src={badge.localUrl || badge.imageUrl}
+              alt={badge.title}
+              title={`${badge.title} (${badge.provider.toUpperCase()})`}
+              className="w-4 h-4 inline-block"
+              onError={(e) => {
+                e.currentTarget.style.display = 'none';
+              }}
+            />
+          ))}
         </span>
       );
     };
@@ -570,6 +674,128 @@ const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageI
     );
   }
 
+  // Handle watch streak milestone messages
+  if (isWatchStreak) {
+    // Generate a unique key based on message ID to prevent animation restarts
+    const messageId = parsed.tags.get('id') || `watchstreak-${parsed.username}-${Date.now()}`;
+
+    // Get watch streak details
+    const streakValue = parsed.tags.get('msg-param-value'); // Number of consecutive streams
+    const channelPointsReward = parsed.tags.get('msg-param-copoReward'); // Channel points earned
+    const displayName = parsed.tags.get('display-name') || parsed.username;
+
+    // Helper function to render username as clickable
+    const renderClickableUsername = (username: string, displayNameProp?: string) => {
+      const userIdForClick = userId;
+      return (
+        <span
+          className="font-bold cursor-pointer hover:underline"
+          style={usernameStyle}
+          onClick={(e) => {
+            if (userIdForClick && onUsernameClick) {
+              onUsernameClick(
+                userIdForClick,
+                username,
+                displayNameProp || username,
+                parsed.color,
+                parsed.badges,
+                e
+              );
+            }
+          }}
+          title="Click to view profile"
+        >
+          {displayNameProp || username}
+        </span>
+      );
+    };
+
+    // Helper function to render badges
+    const renderBadges = () => {
+      if (parsed.badges.length === 0 && !seventvBadge && thirdPartyBadges.length === 0) return null;
+
+      return (
+        <span className="inline-flex items-center gap-1 mr-1">
+          {parsed.badges.map((badge, idx) => (
+            <img
+              key={`watchstreak-badge-${badge.key}-${idx}`}
+              src={badge.info.localUrl || badge.info.image_url_1x}
+              srcSet={badge.info.localUrl ? undefined : `${badge.info.image_url_1x} 1x, ${badge.info.image_url_2x} 2x, ${badge.info.image_url_4x} 4x`}
+              alt={badge.info.title}
+              title={badge.info.title}
+              className="w-4 h-4 inline-block cursor-pointer hover:scale-110 transition-transform"
+              onClick={() => onBadgeClick?.(badge.key, badge.info)}
+              onError={(e) => {
+                console.warn('[Badge] Failed to load badge:', badge.key, badge.info.image_url_1x);
+                e.currentTarget.style.display = 'none';
+              }}
+            />
+          ))}
+          {seventvBadge && (
+            <img
+              src={getBadgeImageUrl(seventvBadge)}
+              alt={seventvBadge.description || seventvBadge.name}
+              title={seventvBadge.description || seventvBadge.name}
+              className="w-4 h-4 inline-block"
+              onError={(e) => {
+                e.currentTarget.style.display = 'none';
+              }}
+            />
+          )}
+          {thirdPartyBadges.map((badge, idx) => (
+            <img
+              key={`watchstreak-tp-badge-${badge.id}-${idx}`}
+              src={badge.localUrl || badge.imageUrl}
+              alt={badge.title}
+              title={`${badge.title} (${badge.provider.toUpperCase()})`}
+              className="w-4 h-4 inline-block"
+              onError={(e) => {
+                e.currentTarget.style.display = 'none';
+              }}
+            />
+          ))}
+        </span>
+      );
+    };
+
+    return (
+      <div key={messageId} className="px-3 py-2 border-b border-borderSubtle watchstreak-gradient">
+        <div className="flex items-start gap-2.5">
+          <div className="flex-shrink-0 mt-0.5">
+            {/* Fire/Watch Streak icon from Twitch */}
+            <svg className="w-5 h-5 text-orange-400" viewBox="0 0 20 20" fill="currentColor">
+              <path fillRule="evenodd" d="M11 4.5 9 2 4.8 6.9A7.48 7.48 0 0 0 3 11.77C3 15.2 5.8 18 9.23 18h1.65A6.12 6.12 0 0 0 17 11.88c0-1.86-.65-3.66-1.84-5.1L12 3l-1 1.5ZM6.32 8.2 9 5l2 2.5L12 6l1.62 2.07A5.96 5.96 0 0 1 15 11.88c0 2.08-1.55 3.8-3.56 4.08.36-.47.56-1.05.56-1.66 0-.52-.18-1.02-.5-1.43L10 11l-1.5 1.87c-.32.4-.5.91-.5 1.43 0 .6.2 1.18.54 1.64A4.23 4.23 0 0 1 5 11.77c0-1.31.47-2.58 1.32-3.57Z" clipRule="evenodd" />
+            </svg>
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-white font-semibold text-sm leading-relaxed flex items-center flex-wrap gap-1">
+              {renderBadges()}
+              {renderClickableUsername(parsed.username, displayName)}
+              {channelPointsReward && (
+                <>
+                  {/* Channel Points icon */}
+                  <svg className="w-4 h-4 text-orange-400 inline-block ml-1" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M12 5v2a5 5 0 0 1 5 5h2a7 7 0 0 0-7-7Z"></path>
+                    <path fillRule="evenodd" d="M1 12C1 5.925 5.925 1 12 1s11 4.925 11 11-4.925 11-11 11S1 18.075 1 12Zm11 9a9 9 0 1 1 0-18 9 9 0 0 1 0 18Z" clipRule="evenodd"></path>
+                  </svg>
+                  <span className="text-orange-400 font-bold">+{parseInt(channelPointsReward, 10).toLocaleString()}</span>
+                </>
+              )}
+            </p>
+            <p className="text-textSecondary text-sm mt-0.5 leading-relaxed">
+              Watched {streakValue} consecutive streams and sparked a watch streak!
+            </p>
+            {parsed.content && (
+              <p className="text-textPrimary text-sm mt-1 leading-relaxed">
+                {renderContent(contentWithEmotes)}
+              </p>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (isSubscription) {
     // Generate a unique key based on message ID to prevent animation restarts
     const messageId = parsed.tags.get('id') || `sub-${parsed.username}-${Date.now()}`;
@@ -615,7 +841,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageI
 
     // Helper function to render badges
     const renderBadges = () => {
-      if (parsed.badges.length === 0 && !seventvBadge) return null;
+      if (parsed.badges.length === 0 && !seventvBadge && thirdPartyBadges.length === 0) return null;
 
       return (
         <span className="inline-flex items-center gap-1 mr-1">
@@ -645,6 +871,18 @@ const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageI
               }}
             />
           )}
+          {thirdPartyBadges.map((badge, idx) => (
+            <img
+              key={`sub-tp-badge-${badge.id}-${idx}`}
+              src={badge.localUrl || badge.imageUrl}
+              alt={badge.title}
+              title={`${badge.title} (${badge.provider.toUpperCase()})`}
+              className="w-4 h-4 inline-block"
+              onError={(e) => {
+                e.currentTarget.style.display = 'none';
+              }}
+            />
+          ))}
         </span>
       );
     };
@@ -667,8 +905,8 @@ const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageI
 
         let cancelled = false;
 
-        // Fetch 7TV cosmetics
-        getUserCosmetics(userIdProp).then((cosmetics) => {
+        // Fetch 7TV cosmetics (with cache fallback)
+        getCosmeticsWithFallback(userIdProp).then((cosmetics) => {
           if (cancelled || !cosmetics) return;
           setUserCosmetics(cosmetics);
         });
@@ -869,11 +1107,17 @@ const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageI
 
         <div className="flex items-start gap-2.5">
           <div className="flex-shrink-0 mt-0.5">
-            {/* Gift box icon */}
-            <svg className="w-5 h-5 text-purple-400" fill="currentColor" viewBox="0 0 20 20">
-              <path d="M4 3a2 2 0 100 4h12a2 2 0 100-4H4z" />
-              <path fillRule="evenodd" d="M3 8h14v7a2 2 0 01-2 2H5a2 2 0 01-2-2V8zm5 3a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1z" clipRule="evenodd" />
-            </svg>
+            {/* Prime logo for Prime subs, Gift box for other subs */}
+            {msgParamSubPlan === 'Prime' ? (
+              <svg className="w-5 h-5 text-blue-400" fill="currentColor" viewBox="0 0 20 20">
+                <path fillRule="evenodd" clipRule="evenodd" d="M18 5v8a2 2 0 0 1-2 2H4a2.002 2.002 0 0 1-2-2V5l4 3 4-4 4 4 4-3z" />
+              </svg>
+            ) : (
+              <svg className="w-5 h-5 text-purple-400" fill="currentColor" viewBox="0 0 20 20">
+                <path d="M4 3a2 2 0 100 4h12a2 2 0 100-4H4z" />
+                <path fillRule="evenodd" d="M3 8h14v7a2 2 0 01-2 2H5a2 2 0 01-2-2V8zm5 3a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1z" clipRule="evenodd" />
+              </svg>
+            )}
           </div>
           <div className="flex-1 min-w-0">
             <p className="text-white font-semibold text-sm leading-relaxed">
@@ -961,7 +1205,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageI
         {/* Badges and Message content in a single flex container */}
         <div className="flex flex-wrap items-start gap-2 flex-1 min-w-0">
           {/* Badges */}
-          {(isFromSharedChat && channelProfileImage) || parsed.badges.length > 0 || seventvBadge ? (
+          {(isFromSharedChat && channelProfileImage) || parsed.badges.length > 0 || seventvBadge || thirdPartyBadges.length > 0 ? (
             <div className="flex items-center gap-1 flex-shrink-0 mt-0.5">
               {/* Shared chat channel profile image badge */}
               {isFromSharedChat && channelProfileImage && (
@@ -1013,6 +1257,19 @@ const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageI
                   }}
                 />
               )}
+              {/* Third-party badges (FFZ, Chatterino, Homies) */}
+              {thirdPartyBadges.map((badge, idx) => (
+                <img
+                  key={`tp-badge-${badge.id}-${idx}`}
+                  src={badge.localUrl || badge.imageUrl}
+                  alt={badge.title}
+                  title={`${badge.title} (${badge.provider.toUpperCase()})`}
+                  className="w-4 h-4"
+                  onError={(e) => {
+                    e.currentTarget.style.display = 'none';
+                  }}
+                />
+              ))}
             </div>
           ) : null}
 
@@ -1026,9 +1283,10 @@ const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageI
           >
             {isAction ? (
               // ACTION messages: entire content in username color
-              <span style={usernameStyle} className="break-words italic">
+              <span style={{ ...usernameStyle, fontWeight: 400 }} className="break-words italic">
                 <span
-                  className="font-bold cursor-pointer hover:underline inline-flex items-center gap-1"
+                  style={{ fontWeight: 600 }}
+                  className="cursor-pointer hover:underline inline-flex items-center gap-1"
                   onClick={(e) => {
                     const userId = parsed.tags.get('user-id');
                     const displayName = parsed.tags.get('display-name') || parsed.username;
@@ -1070,8 +1328,8 @@ const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageI
               // Regular messages: username in color, content in default color
               <>
                 <span
-                  style={usernameStyle}
-                  className="font-bold cursor-pointer hover:underline inline-flex items-center gap-1"
+                  style={{ ...usernameStyle, fontWeight: 600 }}
+                  className="cursor-pointer hover:underline inline-flex items-center gap-1"
                   onClick={(e) => {
                     const userId = parsed.tags.get('user-id');
                     const displayName = parsed.tags.get('display-name') || parsed.username;
@@ -1107,7 +1365,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageI
                     </svg>
                   )}
                 </span>
-                <span className="text-textPrimary break-words">
+                <span style={{ fontWeight: 400 }} className="text-textPrimary break-words">
                   {' '}{renderContent(contentWithEmotes)}
                 </span>
               </>

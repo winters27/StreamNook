@@ -1,5 +1,83 @@
 /* Import Satoshi font */
-@import url('https://api.fontshare.com/v2/css?f[]=satoshi@400,500,700&display=swap');
+@font-face {
+  font-family: 'Satoshi';
+  src: url('../assets/fonts/Satoshi-Regular.otf') format('opentype');
+  font-weight: 300;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Satoshi';
+  src: url('../assets/fonts/Satoshi-Italic.otf') format('opentype');
+  font-weight: 300;
+  font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Satoshi';
+  src: url('../assets/fonts/Satoshi-Regular.otf') format('opentype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Satoshi';
+  src: url('../assets/fonts/Satoshi-Italic.otf') format('opentype');
+  font-weight: 400;
+  font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Satoshi';
+  src: url('../assets/fonts/Satoshi-Regular.otf') format('opentype');
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Satoshi';
+  src: url('../assets/fonts/Satoshi-Italic.otf') format('opentype');
+  font-weight: 500;
+  font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Satoshi';
+  src: url('../assets/fonts/Satoshi-Regular.otf') format('opentype');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Satoshi';
+  src: url('../assets/fonts/Satoshi-Italic.otf') format('opentype');
+  font-weight: 700;
+  font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Satoshi';
+  src: url('../assets/fonts/Satoshi-Regular.otf') format('opentype');
+  font-weight: 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Satoshi';
+  src: url('../assets/fonts/Satoshi-Italic.otf') format('opentype');
+  font-weight: 900;
+  font-style: italic;
+  font-display: swap;
+}
 
 @tailwind base;
 @tailwind components;
@@ -378,6 +456,48 @@ body {
     color-mix(in srgb, var(--color-highlight-blue) 18%, transparent) 60%,
     color-mix(in srgb, var(--color-highlight-purple) 22%, transparent) 80%,
     color-mix(in srgb, var(--color-highlight-pink) 25%, transparent) 100%
+  );
+  background-size: 200% 100%;
+}
+
+/* Watch streak gradient animation - orange/fire theme matching the fire icon */
+@keyframes watchstreak-glow {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+.watchstreak-gradient {
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--color-highlight-orange) 18%, transparent) 0%,
+    color-mix(in srgb, var(--color-highlight-yellow) 15%, transparent) 20%,
+    color-mix(in srgb, var(--color-highlight-red) 12%, transparent) 40%,
+    color-mix(in srgb, var(--color-highlight-orange) 12%, transparent) 60%,
+    color-mix(in srgb, var(--color-highlight-yellow) 15%, transparent) 80%,
+    color-mix(in srgb, var(--color-highlight-orange) 18%, transparent) 100%
+  );
+  background-size: 200% 100%;
+  animation: watchstreak-glow 3s ease-in-out infinite;
+  animation-fill-mode: both;
+  will-change: background-position;
+}
+
+.watchstreak-gradient:hover {
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--color-highlight-orange) 25%, transparent) 0%,
+    color-mix(in srgb, var(--color-highlight-yellow) 22%, transparent) 20%,
+    color-mix(in srgb, var(--color-highlight-red) 18%, transparent) 40%,
+    color-mix(in srgb, var(--color-highlight-orange) 18%, transparent) 60%,
+    color-mix(in srgb, var(--color-highlight-yellow) 22%, transparent) 80%,
+    color-mix(in srgb, var(--color-highlight-orange) 25%, transparent) 100%
   );
   background-size: 200% 100%;
 }

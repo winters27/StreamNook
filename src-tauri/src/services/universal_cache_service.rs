@@ -5,13 +5,21 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::Cursor;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex as StdMutex;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::sync::Mutex as TokioMutex;
 
 use crate::services::cache_service::get_cache_dir;
 
-// Global mutex to prevent concurrent manifest writes
+// Global mutex to prevent concurrent manifest writes (for sync operations)
 static MANIFEST_LOCK: Lazy<StdMutex<()>> = Lazy::new(|| StdMutex::new(()));
+
+// Async mutex for async operations
+static ASYNC_MANIFEST_LOCK: Lazy<TokioMutex<()>> = Lazy::new(|| TokioMutex::new(()));
+
+// Flag to prevent concurrent downloads
+static DOWNLOAD_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
 /// Universal cache entry for badges, emotes, and other assets
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -193,7 +201,23 @@ pub async fn fetch_universal_cache_data(
 }
 
 /// Download and merge the universal manifest from GitHub
-async fn download_universal_manifest() -> Result<()> {
+/// Returns true if download was performed, false if skipped (already in progress)
+async fn download_universal_manifest() -> Result<bool> {
+    // Check if download is already in progress using compare_exchange
+    // This atomically checks if false and sets to true
+    if DOWNLOAD_IN_PROGRESS
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        // Another download is already in progress, skip
+        return Ok(false);
+    }
+
+    // Ensure we reset the flag when done (even on error)
+    let _guard = scopeguard::guard((), |_| {
+        DOWNLOAD_IN_PROGRESS.store(false, Ordering::SeqCst);
+    });
+
     println!("[UniversalCache] Downloading universal manifest from GitHub...");
 
     let url = format!("{}/manifest.json", UNIVERSAL_CACHE_URL);
@@ -211,8 +235,9 @@ async fn download_universal_manifest() -> Result<()> {
                 remote_manifest.entries.len()
             );
 
-            // Merge with local manifest
-            let _lock = MANIFEST_LOCK.lock().unwrap();
+            // Acquire async lock for all manifest operations
+            let _async_lock = ASYNC_MANIFEST_LOCK.lock().await;
+
             let mut local_manifest = load_manifest()?;
 
             // Only add entries that don't exist locally or are from "badgebase" source
@@ -221,6 +246,9 @@ async fn download_universal_manifest() -> Result<()> {
                     local_manifest.entries.insert(key, entry);
                 }
             }
+
+            // Update last_sync time
+            local_manifest.last_sync = Some(get_current_timestamp());
 
             save_manifest(&local_manifest)?;
             println!("[UniversalCache] Merged universal manifest into local cache");
@@ -234,42 +262,47 @@ async fn download_universal_manifest() -> Result<()> {
 
             if needs_positions {
                 println!("[UniversalCache] Assigning positions to badge metadata...");
-                drop(_lock); // Release lock before calling assign function
-                let _ = assign_badge_metadata_positions().await;
+                // Note: assign_badge_metadata_positions will acquire its own lock
+                drop(_async_lock);
+                let _ = assign_badge_metadata_positions_internal().await;
             }
 
-            Ok(())
+            Ok(true)
         }
         Ok(response) => {
             println!(
                 "[UniversalCache] GitHub returned status: {}",
                 response.status()
             );
-            Ok(())
+            Ok(true)
         }
         Err(e) => {
             println!(
                 "[UniversalCache] Failed to download universal manifest: {}",
                 e
             );
-            Ok(()) // Don't fail if GitHub is unavailable
+            Ok(true) // Don't fail if GitHub is unavailable
         }
     }
 }
 
 /// Get an item from cache (checks local first, downloads manifest if needed)
+/// NOTE: This function is optimized for fast reads - it doesn't acquire locks for cache hits
 pub async fn get_cached_item(
     cache_type: CacheType,
     id: &str,
 ) -> Result<Option<UniversalCacheEntry>> {
-    // Load manifest
+    // Load manifest WITHOUT lock for fast cache reads
+    // This is safe because:
+    // 1. load_manifest handles corrupted files gracefully
+    // 2. We only read, never write here
+    // 3. Worst case: we get slightly stale data or miss a just-added entry
     let manifest = load_manifest()?;
 
     // Check if we have it locally
     if let Some(entry) = manifest.entries.get(id) {
         // Verify it's the right type and not expired
         if entry.cache_type == cache_type && !is_cache_expired(&entry.metadata) {
-            println!("[UniversalCache] Found {} in local cache", id);
             return Ok(Some(entry.clone()));
         } else if is_cache_expired(&entry.metadata) {
             println!("[UniversalCache] Local cache entry for {} is expired", id);
@@ -284,22 +317,19 @@ pub async fn get_cached_item(
     };
 
     if should_download {
-        println!("[UniversalCache] Downloading universal manifest...");
-        download_universal_manifest().await?;
+        // download_universal_manifest will handle concurrency protection and updating last_sync
+        let downloaded = download_universal_manifest().await?;
 
-        // Reload manifest after download
-        let manifest = load_manifest()?;
+        if downloaded {
+            // Reload manifest after download (no lock needed for reads)
+            let manifest = load_manifest()?;
 
-        // Update last_sync time
-        let mut updated_manifest = manifest.clone();
-        updated_manifest.last_sync = Some(get_current_timestamp());
-        save_manifest(&updated_manifest)?;
-
-        // Try to find the item again
-        if let Some(entry) = manifest.entries.get(id) {
-            if entry.cache_type == cache_type && !is_cache_expired(&entry.metadata) {
-                println!("[UniversalCache] Found {} in downloaded manifest", id);
-                return Ok(Some(entry.clone()));
+            // Try to find the item again
+            if let Some(entry) = manifest.entries.get(id) {
+                if entry.cache_type == cache_type && !is_cache_expired(&entry.metadata) {
+                    println!("[UniversalCache] Found {} in downloaded manifest", id);
+                    return Ok(Some(entry.clone()));
+                }
             }
         }
     }
@@ -408,8 +438,14 @@ fn parse_date_to_timestamp(date_str: &str) -> i64 {
     }
 }
 
-/// Assign positions to badge metadata entries based on date and usage
-pub async fn assign_badge_metadata_positions() -> Result<usize> {
+/// Internal function to assign positions (called from download_universal_manifest with lock already held)
+async fn assign_badge_metadata_positions_internal() -> Result<usize> {
+    let _lock = ASYNC_MANIFEST_LOCK.lock().await;
+    assign_badge_metadata_positions_impl()
+}
+
+/// Implementation of position assignment (assumes lock is held or not needed)
+fn assign_badge_metadata_positions_impl() -> Result<usize> {
     let mut manifest = load_manifest()?;
 
     // Collect all badge entries from badge metadata source
@@ -484,6 +520,12 @@ pub async fn assign_badge_metadata_positions() -> Result<usize> {
     );
 
     Ok(count)
+}
+
+/// Assign positions to badge metadata entries based on date and usage (public API)
+pub async fn assign_badge_metadata_positions() -> Result<usize> {
+    let _lock = ASYNC_MANIFEST_LOCK.lock().await;
+    assign_badge_metadata_positions_impl()
 }
 
 /// Export manifest to a specific path for GitHub upload
@@ -731,6 +773,41 @@ pub async fn get_cached_file_path(cache_type: CacheType, id: &str) -> Result<Opt
     }
 
     Ok(None)
+}
+
+/// Get ALL cached items of a specific type - efficient batch lookup (single disk read)
+pub fn get_all_cached_items_by_type(
+    cache_type: CacheType,
+) -> Result<HashMap<String, UniversalCacheEntry>> {
+    let manifest = load_manifest()?;
+    let mut items = HashMap::new();
+
+    for (key, entry) in manifest.entries {
+        if entry.cache_type == cache_type && !is_cache_expired(&entry.metadata) {
+            items.insert(key, entry);
+        }
+    }
+
+    Ok(items)
+}
+
+/// Get multiple cached items by their IDs - efficient batch lookup (single disk read)
+pub fn get_cached_items_batch(
+    cache_type: CacheType,
+    ids: &[String],
+) -> Result<HashMap<String, UniversalCacheEntry>> {
+    let manifest = load_manifest()?;
+    let mut items = HashMap::new();
+
+    for id in ids {
+        if let Some(entry) = manifest.entries.get(id) {
+            if entry.cache_type == cache_type && !is_cache_expired(&entry.metadata) {
+                items.insert(id.clone(), entry.clone());
+            }
+        }
+    }
+
+    Ok(items)
 }
 
 /// Get all cached files for a specific type

@@ -75,8 +75,11 @@ function App() {
       const { currentUser, isAuthenticated } = useAppStore.getState();
       if (isAuthenticated && currentUser?.user_id) {
         console.log('[App] Pre-fetching cosmetics for current user...');
-        const { prefetchAllUserData } = await import('./services/cosmeticsCache');
-        prefetchAllUserData(currentUser.user_id).catch(err =>
+        const { getCosmeticsWithFallback, getThirdPartyBadgesWithFallback } = await import('./services/cosmeticsCache');
+        Promise.all([
+          getCosmeticsWithFallback(currentUser.user_id),
+          getThirdPartyBadgesWithFallback(currentUser.user_id)
+        ]).catch((err: Error) =>
           console.error('[App] Failed to pre-fetch user cosmetics:', err)
         );
       }

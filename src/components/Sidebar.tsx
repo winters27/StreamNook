@@ -7,8 +7,37 @@ import { getSidebarSettings, type SidebarMode } from './settings/InterfaceSettin
 
 // Width constants
 const COMPACT_WIDTH = 56;
-const EXPANDED_WIDTH = 280;
-const HIDDEN_TRIGGER_ZONE = 8; // pixels from left edge to trigger sidebar
+const DEFAULT_EXPANDED_WIDTH = 280;
+const MIN_EXPANDED_WIDTH = 200;
+const MAX_EXPANDED_WIDTH = 450;
+const HIDDEN_TRIGGER_ZONE = 16; // pixels from left edge to trigger sidebar
+const SIDEBAR_CLOSE_DELAY = 150; // milliseconds delay before closing in hidden mode
+const SIDEBAR_WIDTH_STORAGE_KEY = 'sidebar-expanded-width';
+
+// Get persisted sidebar width from localStorage
+const getPersistedWidth = (): number => {
+    try {
+        const saved = localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY);
+        if (saved) {
+            const width = parseInt(saved, 10);
+            if (width >= MIN_EXPANDED_WIDTH && width <= MAX_EXPANDED_WIDTH) {
+                return width;
+            }
+        }
+    } catch (e) {
+        console.error('[Sidebar] Failed to read persisted width:', e);
+    }
+    return DEFAULT_EXPANDED_WIDTH;
+};
+
+// Save sidebar width to localStorage
+const persistWidth = (width: number): void => {
+    try {
+        localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, width.toString());
+    } catch (e) {
+        console.error('[Sidebar] Failed to persist width:', e);
+    }
+};
 
 const Sidebar = () => {
     const {
@@ -41,9 +70,14 @@ const Sidebar = () => {
     const [isEdgeHovered, setIsEdgeHovered] = useState(false);
     const [isManuallyExpanded, setIsManuallyExpanded] = useState(false);
 
+    // Resizable width state
+    const [expandedWidth, setExpandedWidth] = useState<number>(getPersistedWidth);
+    const [isResizing, setIsResizing] = useState(false);
+
     const sidebarRef = useRef<HTMLDivElement>(null);
     const scrollContainerRef = useRef<HTMLDivElement>(null);
     const edgeTriggerRef = useRef<HTMLDivElement>(null);
+    const closeTimeoutRef = useRef<NodeJS.Timeout | null>(null);
     const [animatingHearts, setAnimatingHearts] = useState<Set<string>>(new Set());
 
     // Cache for profile images fetched from Twitch Helix API
@@ -60,6 +94,72 @@ const Sidebar = () => {
         window.addEventListener('sidebar-settings-changed', handleSettingsChange as EventListener);
         return () => window.removeEventListener('sidebar-settings-changed', handleSettingsChange as EventListener);
     }, []);
+
+    // Cleanup close timeout on unmount
+    useEffect(() => {
+        return () => {
+            if (closeTimeoutRef.current) {
+                clearTimeout(closeTimeoutRef.current);
+            }
+        };
+    }, []);
+
+    // Close sidebar when mouse leaves the document/window entirely (for hidden mode)
+    useEffect(() => {
+        if (sidebarMode !== 'hidden') return;
+
+        const handleDocumentMouseLeave = (e: MouseEvent) => {
+            // Don't close while resizing
+            if (isResizing) return;
+            // Check if mouse is actually leaving the document (not just moving to another element)
+            if (e.relatedTarget === null) {
+                setIsHovered(false);
+                setIsEdgeHovered(false);
+            }
+        };
+
+        const handleWindowBlur = () => {
+            // Don't close while resizing
+            if (isResizing) return;
+            // Close sidebar when app loses focus
+            setIsHovered(false);
+            setIsEdgeHovered(false);
+        };
+
+        // Track mouse position to detect if cursor is outside the viewport
+        const handleMouseMove = (e: MouseEvent) => {
+            // Don't close while resizing
+            if (isResizing) return;
+            // If mouse moves and we're in hidden mode with sidebar visible,
+            // check if mouse is still within sidebar bounds
+            if ((isHovered || isEdgeHovered) && sidebarRef.current) {
+                const rect = sidebarRef.current.getBoundingClientRect();
+                const isInsideSidebar =
+                    e.clientX >= 0 &&
+                    e.clientX <= rect.right &&
+                    e.clientY >= rect.top &&
+                    e.clientY <= rect.bottom;
+
+                // Also check edge trigger zone
+                const isInEdgeZone = e.clientX >= 0 && e.clientX <= HIDDEN_TRIGGER_ZONE;
+
+                if (!isInsideSidebar && !isInEdgeZone) {
+                    setIsHovered(false);
+                    setIsEdgeHovered(false);
+                }
+            }
+        };
+
+        document.addEventListener('mouseleave', handleDocumentMouseLeave);
+        window.addEventListener('blur', handleWindowBlur);
+        document.addEventListener('mousemove', handleMouseMove);
+
+        return () => {
+            document.removeEventListener('mouseleave', handleDocumentMouseLeave);
+            window.removeEventListener('blur', handleWindowBlur);
+            document.removeEventListener('mousemove', handleMouseMove);
+        };
+    }, [sidebarMode, isHovered, isEdgeHovered, isResizing]);
 
     // Load streams on mount and when auth changes
     useEffect(() => {
@@ -142,35 +242,72 @@ const Sidebar = () => {
         fetchProfileImages();
     }, [followedStreams, recommendedStreams]);
 
+    // Handle resize drag
+    useEffect(() => {
+        if (!isResizing) return;
+
+        const handleMouseMove = (e: MouseEvent) => {
+            const newWidth = Math.min(MAX_EXPANDED_WIDTH, Math.max(MIN_EXPANDED_WIDTH, e.clientX));
+            setExpandedWidth(newWidth);
+        };
+
+        const handleMouseUp = () => {
+            setIsResizing(false);
+            // Persist the width when done resizing
+            persistWidth(expandedWidth);
+        };
+
+        document.addEventListener('mousemove', handleMouseMove);
+        document.addEventListener('mouseup', handleMouseUp);
+
+        // Prevent text selection while resizing
+        document.body.style.userSelect = 'none';
+        document.body.style.cursor = 'ew-resize';
+
+        return () => {
+            document.removeEventListener('mousemove', handleMouseMove);
+            document.removeEventListener('mouseup', handleMouseUp);
+            document.body.style.userSelect = '';
+            document.body.style.cursor = '';
+        };
+    }, [isResizing, expandedWidth]);
+
     // Calculate visibility and width based on mode
     const calculateSidebarState = useCallback(() => {
         switch (sidebarMode) {
             case 'expanded':
                 // Always fully expanded
-                return { visible: true, width: EXPANDED_WIDTH, showExpanded: true };
+                return { visible: true, width: expandedWidth, showExpanded: true };
 
             case 'compact':
                 // Show compact, expand on hover if enabled, or if manually expanded
                 const shouldExpand = isManuallyExpanded || (expandOnHover && isHovered);
                 return {
                     visible: true,
-                    width: shouldExpand ? EXPANDED_WIDTH : COMPACT_WIDTH,
+                    width: shouldExpand ? expandedWidth : COMPACT_WIDTH,
                     showExpanded: shouldExpand
                 };
 
             case 'hidden':
                 // Hidden until edge hover, then fully expanded
-                const isVisible = isEdgeHovered || isHovered;
+                // Keep visible while resizing to allow drag to complete
+                const isVisible = isEdgeHovered || isHovered || isResizing;
                 return {
                     visible: isVisible,
-                    width: isVisible ? EXPANDED_WIDTH : 0,
+                    width: isVisible ? expandedWidth : 0,
                     showExpanded: isVisible
                 };
 
             default:
                 return { visible: true, width: COMPACT_WIDTH, showExpanded: false };
         }
-    }, [sidebarMode, expandOnHover, isHovered, isEdgeHovered, isManuallyExpanded]);
+    }, [sidebarMode, expandOnHover, isHovered, isEdgeHovered, isManuallyExpanded, expandedWidth, isResizing]);
+
+    // Start resize handler
+    const handleResizeStart = useCallback((e: React.MouseEvent) => {
+        e.preventDefault();
+        setIsResizing(true);
+    }, []);
 
     const { visible, width, showExpanded } = calculateSidebarState();
 
@@ -352,12 +489,44 @@ const Sidebar = () => {
                     transform: visible ? 'translateX(0)' : 'translateX(-10px)',
                     backgroundColor: showExpanded ? 'rgba(26, 26, 27, 0.75)' : undefined,
                 }}
-                onMouseEnter={() => setIsHovered(true)}
+                onMouseEnter={() => {
+                    // Cancel any pending close timeout
+                    if (closeTimeoutRef.current) {
+                        clearTimeout(closeTimeoutRef.current);
+                        closeTimeoutRef.current = null;
+                    }
+                    setIsHovered(true);
+                }}
                 onMouseLeave={() => {
-                    setIsHovered(false);
-                    setIsEdgeHovered(false);
+                    // Don't close while resizing
+                    if (isResizing) return;
+
+                    // Add a delay before closing in hidden mode
+                    if (sidebarMode === 'hidden') {
+                        closeTimeoutRef.current = setTimeout(() => {
+                            setIsHovered(false);
+                            setIsEdgeHovered(false);
+                            closeTimeoutRef.current = null;
+                        }, SIDEBAR_CLOSE_DELAY);
+                    } else {
+                        setIsHovered(false);
+                        setIsEdgeHovered(false);
+                    }
                 }}
             >
+                {/* Resize handle - only show when expanded */}
+                {showExpanded && (
+                    <div
+                        className={`
+                            absolute right-0 top-0 w-1 h-full cursor-ew-resize z-10
+                            hover:bg-accent/50 active:bg-accent transition-colors
+                            ${isResizing ? 'bg-accent' : 'bg-transparent'}
+                        `}
+                        onMouseDown={handleResizeStart}
+                        title="Drag to resize sidebar"
+                    />
+                )}
+
                 {/* Header */}
                 <div className={`
                     flex items-center p-2 border-b border-borderSubtle

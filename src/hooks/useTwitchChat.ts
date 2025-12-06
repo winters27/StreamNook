@@ -3,8 +3,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../stores/AppStore';
 import { fetchRecentMessagesAsIRC } from '../services/ivrService';
 
-// Hardcoded message limit for optimal performance and stability
-const CHAT_HISTORY_MAX = 200;
+// Hardcoded message limit for optimal performance and stability (Twitch-style: 50 visible messages)
+const CHAT_HISTORY_MAX = 50;
 // Buffer size to allow when chat is paused (scrolled up)
 const CHAT_BUFFER_SIZE = 150;
 // Total max including buffer
@@ -255,7 +255,86 @@ export const useTwitchChat = () => {
           return;
         }
 
-        console.log('[Chat] Received message:', message);
+        // Check if message is JSON (new format with layout)
+        if (message.startsWith('{')) {
+          try {
+            const parsed = JSON.parse(message);
+
+            // It's a structured ChatMessage
+            const messageId = parsed.id;
+
+            if (messageId) {
+              if (seenMessageIdsRef.current.has(messageId)) {
+                // If we have an optimistic message with this ID (unlikely for uuid, but possible if we sync IDs), replace it?
+                // Actually backend generates UUIDs.
+                // We might want to match optimistic messages by content if possible?
+                // The current logic matches by "id=local-..." vs regex content.
+                // Let's keep simple duplicate check first.
+                console.log('[Chat] Duplicate JSON message', messageId);
+                return;
+              }
+
+              // Check if we can replace an optimistic message
+              if (parsed.user_id === currentUserIdRef.current) {
+                // Update cached badges for future optimistic messages
+                if (parsed.badges) {
+                  userBadgesFromIrcRef.current = parsed.badges;
+                }
+
+                setMessages(prevMessages => {
+                  // Calculate limit
+                  const limit = isPausedForBufferRef.current ? CHAT_MAX_WITH_BUFFER : CHAT_HISTORY_MAX;
+
+                  // Find optimistic message to replace
+                  const optimisticIndex = prevMessages.findIndex(msg => {
+                    if (typeof msg !== 'string') return false;
+                    if (!msg.includes('id=local-')) return false;
+
+                    // Extract content from optimistic string
+                    const localContentMatch = msg.match(/PRIVMSG #\w+ :(.+)$/);
+                    const localContent = localContentMatch ? localContentMatch[1] : null;
+
+                    return localContent === parsed.content;
+                  });
+
+                  let updated;
+                  if (optimisticIndex !== -1) {
+                    console.log('[Chat] Replacing optimistic string with backend object at index', optimisticIndex);
+                    updated = [...prevMessages];
+                    updated[optimisticIndex] = parsed;
+                  } else {
+                    updated = [...prevMessages, parsed];
+                  }
+
+                  seenMessageIdsRef.current.add(messageId);
+
+                  if (updated.length > limit) {
+                    return updated.slice(updated.length - limit);
+                  }
+                  return updated;
+                });
+                return;
+              }
+
+              seenMessageIdsRef.current.add(messageId);
+
+              setMessages(prev => {
+                const updated = [...prev, parsed];
+                const limit = isPausedForBufferRef.current ? CHAT_MAX_WITH_BUFFER : CHAT_HISTORY_MAX;
+                if (updated.length > limit) {
+                  return updated.slice(updated.length - limit);
+                }
+                return updated;
+              });
+              return;
+            }
+          } catch (e) {
+            console.error('[Chat] Failed to parse JSON message:', e);
+          }
+        }
+
+        // Legacy/System message handling (strings)
+        console.log('[Chat] Received string message:', message);
 
         // Extract message ID and user ID from IRC tags
         // IMPORTANT: Match the actual message ID, not reply-parent-msg-id
@@ -285,8 +364,10 @@ export const useTwitchChat = () => {
             if (serverContent) {
               // Find the optimistic message to replace
               const optimisticIndex = prevMessages.findIndex(msg => {
-                // Check if it's a local/optimistic message
-                if (!msg.includes('id=local-')) return false;
+                // Check if it's a local/optimistic message (string or object?)
+                // Optimistic are currently strings.
+                if (typeof msg === 'string' && !msg.includes('id=local-')) return false;
+                if (typeof msg !== 'string') return false; // Optimistic are strings for now
 
                 // Check if content matches
                 const localContentMatch = msg.match(/PRIVMSG #\w+ :(.+)$/);

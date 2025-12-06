@@ -68,6 +68,8 @@ const IGNORED_ERROR_PATTERNS = [
     /BadgePolling.*invoke/i,                // Badge polling invoke errors (handled with safety check)
     /The above error occurred in the <TitleBar> component/i, // TitleBar error boundary messages
     /The above error occurred in the <DynamicIsland> component/i, // DynamicIsland error boundary messages
+    /bufferStalledError.*fatal.*false/i,    // HLS non-fatal buffer stalled errors (normal during playback)
+    /Badge NOT FOUND/i,                     // Missing badge lookup warnings (non-critical)
 ];
 // NOTE: BTTV, FFZ, 7TV 404 errors ARE sent to Discord for monitoring
 
@@ -83,7 +85,10 @@ const STREAMLINK_ERROR_PATTERNS = [
 // Check if an error should be ignored
 const shouldIgnoreError = (entry: LogEntry): boolean => {
     const fullMessage = `${entry.category} ${entry.message}`;
-    return IGNORED_ERROR_PATTERNS.some(pattern => pattern.test(fullMessage));
+    // Also check data field as some errors have details in args
+    const dataStr = entry.data ? JSON.stringify(entry.data) : '';
+    const combinedMessage = `${fullMessage} ${dataStr}`;
+    return IGNORED_ERROR_PATTERNS.some(pattern => pattern.test(combinedMessage));
 };
 
 // In-memory log storage

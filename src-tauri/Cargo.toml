@@ -1,7 +1,7 @@
 [package]
 name = "StreamNook"
-version = "4.7.2"
-description = "The best Twitch suite."
+version = "4.7.3"
+description = "Stream Nook"
 authors = ["Brandon Winters"]
 license = ""
 repository = "github.com/winters27/streamnook"
@@ -51,19 +51,11 @@ chrono = { version = "0.4.42", features = ["serde"] }
 scraper = "0.24.0"
 once_cell = "1.21.3"
 sevenz-rust = "0.6"
+cosmic-text = "0.11.2"
+scopeguard = "1.2"
+
 
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
-
-
-
-
-
-
-
-
-
-
-
 

@@ -57,10 +57,9 @@ pub async fn get_cached_third_party_badges(
 }
 
 #[command]
-pub async fn prefetch_user_cosmetics(user_id: String) -> Result<(), String> {
+pub async fn prefetch_user_cosmetics(_user_id: String) -> Result<(), String> {
     // This command will be called from the frontend to pre-fetch cosmetics
     // The actual fetching will be done by the frontend services, and then cached
     // This is just a marker/trigger command
-    println!("[CosmeticsCache] Pre-fetch requested for user: {}", user_id);
     Ok(())
 }

@@ -7,6 +7,7 @@ pub mod components;
 pub mod cosmetics_cache;
 pub mod discord;
 pub mod drops;
+pub mod layout;
 pub mod settings;
 pub mod streaming;
 pub mod twitch;
