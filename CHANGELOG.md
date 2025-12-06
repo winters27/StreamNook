@@ -1,3 +1,11 @@
+## [4.7.3] - 2025-12-05
+### ✨ Features
+- Added dynamic layout configuration for chat messages, allowing for responsive text sizing.
+- Implemented batch retrieval for cached items, improving performance when loading multiple resources.
+
+### 🐛 Bug Fixes
+- Fixed HTML entity decoding in badge metadata extraction, ensuring proper display of special characters.
+
 ## [4.7.2] - 2025-12-04
 ### ✨ Features
 - Improved Changelog and Updates UI with formatted markdown support.
@@ -559,6 +567,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
