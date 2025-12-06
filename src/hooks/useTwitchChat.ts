@@ -573,18 +573,40 @@ export const useTwitchChat = () => {
     let replyTags = '';
     if (replyParentMsgId) {
       setMessages(currentMessages => {
-        const parentMessage = currentMessages.find(msg => msg.includes(`id=${replyParentMsgId}`));
+        // Handle both string (IRC format) and object (JSON format) messages
+        const parentMessage = currentMessages.find(msg => {
+          if (typeof msg === 'string') {
+            return msg.includes(`id=${replyParentMsgId}`);
+          } else if (msg && typeof msg === 'object') {
+            return msg.id === replyParentMsgId;
+          }
+          return false;
+        });
 
         if (parentMessage) {
-          const parentDisplayNameMatch = parentMessage.match(/display-name=([^;]+)/);
-          const parentUsernameMatch = parentMessage.match(/:(\w+)!\w+@\w+\.tmi\.twitch\.tv PRIVMSG/);
-          const parentUserIdMatch = parentMessage.match(/user-id=([^;]+)/);
-          const parentMsgBodyMatch = parentMessage.match(/PRIVMSG #\w+ :(.+)$/);
+          let parentDisplayName = '';
+          let parentUsername = '';
+          let parentUserId = '';
+          let parentMsgBody = '';
 
-          const parentDisplayName = parentDisplayNameMatch ? parentDisplayNameMatch[1] : '';
-          const parentUsername = parentUsernameMatch ? parentUsernameMatch[1] : '';
-          const parentUserId = parentUserIdMatch ? parentUserIdMatch[1] : '';
-          const parentMsgBody = parentMsgBodyMatch ? parentMsgBodyMatch[1] : '';
+          if (typeof parentMessage === 'string') {
+            // IRC string format
+            const parentDisplayNameMatch = parentMessage.match(/display-name=([^;]+)/);
+            const parentUsernameMatch = parentMessage.match(/:(\w+)!\w+@\w+\.tmi\.twitch\.tv PRIVMSG/);
+            const parentUserIdMatch = parentMessage.match(/user-id=([^;]+)/);
+            const parentMsgBodyMatch = parentMessage.match(/PRIVMSG #\w+ :(.+)$/);
+
+            parentDisplayName = parentDisplayNameMatch ? parentDisplayNameMatch[1] : '';
+            parentUsername = parentUsernameMatch ? parentUsernameMatch[1] : '';
+            parentUserId = parentUserIdMatch ? parentUserIdMatch[1] : '';
+            parentMsgBody = parentMsgBodyMatch ? parentMsgBodyMatch[1] : '';
+          } else if (parentMessage && typeof parentMessage === 'object') {
+            // JSON object format
+            parentDisplayName = parentMessage.display_name || '';
+            parentUsername = parentMessage.username || '';
+            parentUserId = parentMessage.user_id || '';
+            parentMsgBody = parentMessage.content || '';
+          }
 
           const escapedParentMsgBody = parentMsgBody.replace(/\\/g, '\\\\').replace(/;/g, '\\:').replace(/ /g, '\\s').replace(/\r/g, '\\r').replace(/\n/g, '\\n');
 
@@ -613,7 +635,13 @@ export const useTwitchChat = () => {
       console.error('[Chat] Failed to send message:', err);
 
       // Remove the optimistic message on error
-      setMessages(prev => prev.filter(msg => !msg.includes(`id=${tempId}`)));
+      setMessages(prev => prev.filter(msg => {
+        if (typeof msg === 'string') {
+          return !msg.includes(`id=${tempId}`);
+        }
+        // For objects, check the id property
+        return msg?.id !== tempId;
+      }));
       seenMessageIdsRef.current.delete(tempId);
 
       throw err;
