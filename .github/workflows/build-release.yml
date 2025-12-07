@@ -104,6 +104,20 @@ jobs:
         if: steps.check_release.outputs.RELEASE_EXISTS == 'false'
         run: npm ci
 
+      - name: Build Analytics Dashboard
+        if: steps.check_release.outputs.RELEASE_EXISTS == 'false' && inputs.skip_build != 'true'
+        shell: pwsh
+        run: |
+          echo "Building analytics dashboard..."
+          cd analytics-dashboard
+          npm ci
+          npm run build
+          cd ..
+          echo "Analytics dashboard built to analytics-dashboard/dist"
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+
       - name: Install Tauri CLI (cached)
         if: steps.check_release.outputs.RELEASE_EXISTS == 'false'
         shell: pwsh

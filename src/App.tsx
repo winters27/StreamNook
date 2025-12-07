@@ -75,11 +75,18 @@ function App() {
     const initPresence = async () => {
       if (isSupabaseConfigured()) {
         const { currentUser, isAuthenticated } = useAppStore.getState();
+        let appVersion;
+        try {
+          appVersion = await invoke<string>('get_current_app_version');
+        } catch (e) {
+          console.warn('[App] Failed to get app version for presence:', e);
+        }
+
         if (isAuthenticated && currentUser) {
-          cleanupPresence = await trackPresence(currentUser.user_id, currentUser.display_name);
+          cleanupPresence = await trackPresence(currentUser.user_id, currentUser.display_name, appVersion);
         } else {
           // Track anonymous presence
-          cleanupPresence = await trackPresence();
+          cleanupPresence = await trackPresence(undefined, undefined, appVersion);
         }
       }
     };

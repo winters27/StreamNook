@@ -1,6 +1,7 @@
 use std::env;
 use tauri::command;
 use tauri::window::Window;
+use tauri::Manager;
 
 #[command]
 pub fn get_app_version() -> String {
@@ -85,4 +86,134 @@ pub fn get_system_info() -> String {
     let family = env::consts::FAMILY;
 
     format!("{} {} ({})", os, arch, family)
+}
+
+#[command]
+pub async fn is_dev_environment() -> Result<bool, String> {
+    let current_dir = std::env::current_dir().map_err(|e| e.to_string())?;
+
+    // Logic to find project root from potential src-tauri subdir
+    let project_root = if current_dir.ends_with("src-tauri") {
+        current_dir
+            .parent()
+            .ok_or("Failed to get parent dir of src-tauri")?
+            .to_path_buf()
+    } else {
+        current_dir
+    };
+
+    let path = project_root.join("analytics-dashboard");
+    Ok(path.exists())
+}
+
+#[command]
+pub async fn start_analytics_dashboard(app_handle: tauri::AppHandle) -> Result<bool, String> {
+    use std::net::TcpStream;
+    use std::process::{Command, Stdio};
+
+    // 1. Check if already running on port 5173
+    if TcpStream::connect("127.0.0.1:5173").is_ok() {
+        return Ok(true);
+    }
+
+    // 2. Check if we're in development mode (analytics-dashboard source exists)
+    let current_dir = std::env::current_dir().map_err(|e| e.to_string())?;
+    let project_root = if current_dir.ends_with("src-tauri") {
+        current_dir
+            .parent()
+            .ok_or("Failed to get parent dir of src-tauri")?
+            .to_path_buf()
+    } else {
+        current_dir.clone()
+    };
+
+    let dev_path = project_root.join("analytics-dashboard");
+
+    // Development mode: Use npm run dev
+    if dev_path.exists() && dev_path.join("package.json").exists() {
+        #[cfg(target_os = "windows")]
+        {
+            Command::new("cmd")
+                .args(["/C", "npm", "run", "dev"])
+                .current_dir(&dev_path)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .map_err(|e| format!("Failed to start dashboard: {}", e))?;
+        }
+
+        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+        return Ok(false);
+    }
+
+    // Production mode: Serve from bundled dist folder
+    let resource_path = app_handle
+        .path()
+        .resource_dir()
+        .map_err(|e| format!("Failed to get resource dir: {}", e))?;
+
+    let dist_path = resource_path.join("analytics-dashboard");
+
+    if !dist_path.exists() {
+        return Err(format!(
+            "Analytics dashboard not found. Expected at {:?}",
+            dist_path
+        ));
+    }
+
+    // Use a simple static file server for production
+    // We'll use Python's http.server if available, or serve via npx serve
+    #[cfg(target_os = "windows")]
+    {
+        // Try npx serve first (more reliable for SPA)
+        let npx_result = Command::new("cmd")
+            .args([
+                "/C",
+                "npx",
+                "serve",
+                "-s",
+                "-p",
+                "5173",
+                dist_path.to_str().unwrap_or("."),
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+
+        match npx_result {
+            Ok(_) => {
+                tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+                return Ok(false);
+            }
+            Err(_) => {
+                // Fallback: Try Python http.server
+                let python_result = Command::new("cmd")
+                    .args(["/C", "python", "-m", "http.server", "5173"])
+                    .current_dir(&dist_path)
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn();
+
+                match python_result {
+                    Ok(_) => {
+                        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+                        return Ok(false);
+                    }
+                    Err(e) => {
+                        return Err(format!(
+                            "Failed to start static file server. Please ensure 'npx' or 'python' is available. Error: {}",
+                            e
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        return Err(
+            "Analytics dashboard is only supported on Windows in production mode".to_string(),
+        );
+    }
 }

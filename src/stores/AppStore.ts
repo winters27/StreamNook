@@ -848,9 +848,17 @@ export const useAppStore = create<AppState>((set, get) => ({
 
       // Track user in Supabase for analytics (only on initial login, not periodic checks)
       if (!wasAuthenticated) {
-        upsertUser(user).catch((e) => {
-          console.warn('[Auth] Failed to upsert user to Supabase:', e);
-        });
+        try {
+          const appVersion = await invoke<string>('get_current_app_version');
+          upsertUser(user, appVersion).catch((e) => {
+            console.warn('[Auth] Failed to upsert user to Supabase:', e);
+          });
+        } catch (vErr) {
+          console.warn('[Auth] Failed to get app version for stats:', vErr);
+          upsertUser(user).catch((e) => {
+            console.warn('[Auth] Failed to upsert user to Supabase:', e);
+          });
+        }
       }
 
       // If we successfully restored session from stored credentials, show success (only once)

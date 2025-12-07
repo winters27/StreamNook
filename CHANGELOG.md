@@ -1,3 +1,7 @@
+## [4.7.8] - 2025-12-06
+### ✨ Features
+- Added an analytics dashboard to visualize usage data, providing insights into how StreamNook is used and helping guide future development. This dashboard is built with React/TypeScript and uses Supabase for data storage and access.  It is bundled during the release process.
+
 ## [4.7.7] - 2025-12-06
 ### ✨ Features
 - Added Tauri Dialog plugin for native dialogs.
@@ -595,6 +599,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 

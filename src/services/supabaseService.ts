@@ -28,6 +28,7 @@ interface PresenceState {
     online_at: string;
     user_id?: string;
     display_name?: string;
+    app_version?: string;
 }
 
 /**
@@ -44,11 +45,13 @@ export const isSupabaseConfigured = (): boolean => !!isConfigured;
  * Track user presence in the app
  * @param userId - Optional Twitch user ID for logged-in users
  * @param displayName - Optional display name for logged-in users
+ * @param appVersion - Optional app version
  * @returns Unsubscribe function to clean up presence on unmount
  */
 export const trackPresence = async (
     userId?: string,
-    displayName?: string
+    displayName?: string,
+    appVersion?: string
 ): Promise<(() => void) | null> => {
     if (!supabase) {
         console.log('[Supabase] Skipping presence tracking - not configured');
@@ -79,6 +82,7 @@ export const trackPresence = async (
             online_at: new Date().toISOString(),
             ...(userId && { user_id: userId }),
             ...(displayName && { display_name: displayName }),
+            ...(appVersion && { app_version: appVersion }),
         };
 
         // Subscribe and track presence
@@ -119,8 +123,9 @@ export const trackPresence = async (
  * Update presence state when user logs in
  * @param userId - Twitch user ID
  * @param displayName - Display name
+ * @param appVersion - App version
  */
-export const updatePresence = async (userId: string, displayName: string): Promise<void> => {
+export const updatePresence = async (userId: string, displayName: string, appVersion?: string): Promise<void> => {
     if (!supabase || !presenceChannel) {
         console.log('[Supabase] Skipping presence update - not configured or not tracking');
         return;
@@ -131,6 +136,7 @@ export const updatePresence = async (userId: string, displayName: string): Promi
             online_at: new Date().toISOString(),
             user_id: userId,
             display_name: displayName,
+            ...(appVersion && { app_version: appVersion }),
         };
 
         await presenceChannel.track(presenceState);
@@ -143,23 +149,30 @@ export const updatePresence = async (userId: string, displayName: string): Promi
 /**
  * Upsert user data to the users table on login
  * @param user - TwitchUser object
+ * @param appVersion - Optional app version
  */
-export const upsertUser = async (user: TwitchUser): Promise<void> => {
+export const upsertUser = async (user: TwitchUser, appVersion?: string): Promise<void> => {
     if (!supabase) {
         console.log('[Supabase] Skipping user upsert - not configured');
         return;
     }
 
     try {
+        const payload: any = {
+            id: user.user_id,
+            username: user.login || user.username,
+            display_name: user.display_name || user.username,
+            avatar_url: user.profile_image_url || null,
+            last_seen: new Date().toISOString(),
+        };
+
+        if (appVersion) {
+            payload.app_version = appVersion;
+        }
+
         const { error } = await supabase
             .from('users')
-            .upsert({
-                id: user.user_id,
-                username: user.login || user.username,
-                display_name: user.display_name || user.username,
-                avatar_url: user.profile_image_url || null,
-                last_seen: new Date().toISOString(),
-            }, {
+            .upsert(payload, {
                 onConflict: 'id',
             });
 
@@ -171,7 +184,7 @@ export const upsertUser = async (user: TwitchUser): Promise<void> => {
         console.log('[Supabase] User upserted:', user.display_name || user.username);
 
         // Also update presence with user info
-        await updatePresence(user.user_id, user.display_name || user.username);
+        await updatePresence(user.user_id, user.display_name || user.username, appVersion);
     } catch (error) {
         console.error('[Supabase] Failed to upsert user:', error);
     }
@@ -227,6 +240,7 @@ export interface SupabaseUser {
     avatar_url: string | null;
     last_seen: string;
     created_at: string;
+    app_version?: string;
 }
 
 // Type for user stats
