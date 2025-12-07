@@ -278,6 +278,8 @@ jobs:
         run: |
           Copy-Item CHANGELOG.md ./bundle/
           echo "CHANGELOG.md copied to bundle"
+          # Note: Analytics dashboard is now embedded directly in the exe via rust-embed
+          # No separate resources folder needed
 
       - name: Generate components.json
         if: steps.check_release.outputs.RELEASE_EXISTS == 'false'

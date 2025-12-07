@@ -54,10 +54,10 @@ once_cell = "1.21.3"
 sevenz-rust = "0.6"
 cosmic-text = "0.11.2"
 scopeguard = "1.2"
+rust-embed = "8.7"
+mime_guess = "2.0"
 
 
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
-
-

@@ -8,6 +8,7 @@ pub mod discord_service;
 pub mod drops_auth_service;
 pub mod drops_service;
 pub mod drops_websocket_service;
+pub mod embedded_dashboard;
 pub mod irc_service;
 pub mod layout_service;
 pub mod live_notification_service;
