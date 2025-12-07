@@ -2,6 +2,7 @@
  * Emoji Service - Converts Unicode emojis to iOS-style emoji images
  * Uses CDN-hosted Apple emoji images for cross-platform consistency
  */
+import { SHORTCODE_TO_UNICODE } from './emojiMap';
 
 // Regular expression to match emoji characters
 // This regex covers most common emojis including:
@@ -52,6 +53,27 @@ export function containsEmoji(text: string): boolean {
 }
 
 /**
+ * Replaces emoji shortcodes in text with their unicode equivalents
+ */
+function replaceShortcodes(text: string): string {
+    if (!text) return text;
+
+    // Split by spaces to handle words
+    return text.split(/(\s+)/).map(part => {
+        // Remove potential punctuation for matching
+        const cleanPart = part.trim();
+        if (SHORTCODE_TO_UNICODE[cleanPart]) {
+            return SHORTCODE_TO_UNICODE[cleanPart];
+        }
+        // Try with colons if not present
+        if (!cleanPart.startsWith(':') && SHORTCODE_TO_UNICODE[`:${cleanPart}:`]) {
+            return SHORTCODE_TO_UNICODE[`:${cleanPart}:`];
+        }
+        return part;
+    }).join('');
+}
+
+/**
  * Parses text and returns segments with emojis separated
  * Returns an array of objects with type 'text' or 'emoji'
  */
@@ -66,6 +88,9 @@ export function parseEmojis(text: string): EmojiSegment[] {
         return [];
     }
 
+    // First replace any shortcodes with actual unicode emojis
+    const processedText = replaceShortcodes(text);
+
     // Reset regex lastIndex
     EMOJI_REGEX.lastIndex = 0;
 
@@ -73,12 +98,12 @@ export function parseEmojis(text: string): EmojiSegment[] {
     let lastIndex = 0;
     let match: RegExpExecArray | null;
 
-    while ((match = EMOJI_REGEX.exec(text)) !== null) {
+    while ((match = EMOJI_REGEX.exec(processedText)) !== null) {
         // Add text before the emoji
         if (match.index > lastIndex) {
             segments.push({
                 type: 'text',
-                content: text.substring(lastIndex, match.index),
+                content: processedText.substring(lastIndex, match.index),
             });
         }
 
@@ -94,14 +119,14 @@ export function parseEmojis(text: string): EmojiSegment[] {
     }
 
     // Add remaining text after the last emoji
-    if (lastIndex < text.length) {
+    if (lastIndex < processedText.length) {
         segments.push({
             type: 'text',
-            content: text.substring(lastIndex),
+            content: processedText.substring(lastIndex),
         });
     }
 
-    return segments.length > 0 ? segments : [{ type: 'text', content: text }];
+    return segments.length > 0 ? segments : [{ type: 'text', content: processedText }];
 }
 
 /**

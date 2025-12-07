@@ -71,6 +71,8 @@ pub struct StreamlinkSettings {
     pub skip_ssl_verify: bool,  // Skip SSL verification
     pub use_proxy: bool,        // Use proxy servers
     pub proxy_playlist: String, // Proxy playlist URLs
+    #[serde(default)]
+    pub custom_streamlink_path: Option<String>, // Custom folder path for portable/installed Streamlink
 }
 
 impl Default for StreamlinkSettings {
@@ -84,6 +86,7 @@ impl Default for StreamlinkSettings {
             skip_ssl_verify: false,
             use_proxy: true,
             proxy_playlist: "--twitch-proxy-playlist=https://lb-na.cdn-perfprod.com,https://eu.luminous.dev --twitch-proxy-playlist-fallback".to_string(),
+            custom_streamlink_path: None,
         }
     }
 }

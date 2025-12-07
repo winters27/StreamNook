@@ -15,6 +15,7 @@ import BadgeDetailOverlay from './components/BadgeDetailOverlay';
 import ChangelogOverlay from './components/ChangelogOverlay';
 import WhispersWidget from './components/WhispersWidget';
 import SetupWizard from './components/SetupWizard';
+import StreamlinkMissingDialog from './components/StreamlinkMissingDialog';
 import Sidebar from './components/Sidebar';
 import ErrorBoundary from './components/ErrorBoundary';
 import { listen } from '@tauri-apps/api/event';
@@ -776,6 +777,7 @@ function App() {
         isOpen={showSetupWizard}
         onClose={() => setShowSetupWizard(false)}
       />
+      <StreamlinkMissingDialog />
       <ToastManager />
     </div>
   );

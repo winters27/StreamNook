@@ -1,3 +1,10 @@
+## [4.7.7] - 2025-12-06
+### ✨ Features
+- Added Tauri Dialog plugin for native dialogs.
+
+### 🔧 Maintenance
+- Updated ACL manifests.
+
 ## [4.7.6] - 2025-12-05
 ### ✨ Features
 - Updated README with screenshots and comprehensive feature list.
@@ -588,6 +595,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 

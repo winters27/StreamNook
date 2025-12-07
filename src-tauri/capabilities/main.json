@@ -32,6 +32,7 @@
     "notification:allow-request-permission",
     "notification:allow-notify",
     "notification:allow-show",
+    "dialog:default",
     {
       "identifier": "http:default",
       "scope": [
