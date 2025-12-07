@@ -1,3 +1,4 @@
+use crate::services::embedded_dashboard;
 use std::env;
 use tauri::command;
 use tauri::window::Window;
@@ -89,7 +90,14 @@ pub fn get_system_info() -> String {
 }
 
 #[command]
-pub async fn is_dev_environment() -> Result<bool, String> {
+pub async fn is_dev_environment(_app_handle: tauri::AppHandle) -> Result<bool, String> {
+    // First check if we have an embedded dashboard (production mode)
+    // If embedded dashboard exists, we're NOT in dev mode
+    if embedded_dashboard::has_embedded_dashboard() {
+        return Ok(false);
+    }
+
+    // Check for development environment - must have source AND node_modules
     let current_dir = std::env::current_dir().map_err(|e| e.to_string())?;
 
     // Logic to find project root from potential src-tauri subdir
@@ -102,12 +110,21 @@ pub async fn is_dev_environment() -> Result<bool, String> {
         current_dir
     };
 
-    let path = project_root.join("analytics-dashboard");
-    Ok(path.exists())
+    let dashboard_path = project_root.join("analytics-dashboard");
+
+    // Only consider it dev mode if we have:
+    // 1. The analytics-dashboard source folder
+    // 2. A package.json (indicating it's a proper project)
+    // 3. node_modules (indicating dependencies are installed)
+    let is_dev = dashboard_path.exists()
+        && dashboard_path.join("package.json").exists()
+        && dashboard_path.join("node_modules").exists();
+
+    Ok(is_dev)
 }
 
 #[command]
-pub async fn start_analytics_dashboard(app_handle: tauri::AppHandle) -> Result<bool, String> {
+pub async fn start_analytics_dashboard(_app_handle: tauri::AppHandle) -> Result<bool, String> {
     use std::net::TcpStream;
     use std::process::{Command, Stdio};
 
@@ -116,7 +133,13 @@ pub async fn start_analytics_dashboard(app_handle: tauri::AppHandle) -> Result<b
         return Ok(true);
     }
 
-    // 2. Check if we're in development mode (analytics-dashboard source exists)
+    // 2. First, check for embedded dashboard (compiled into exe)
+    if embedded_dashboard::has_embedded_dashboard() {
+        embedded_dashboard::start_embedded_dashboard().await?;
+        return Ok(false);
+    }
+
+    // 3. Fall back to development mode (source code with node_modules)
     let current_dir = std::env::current_dir().map_err(|e| e.to_string())?;
     let project_root = if current_dir.ends_with("src-tauri") {
         current_dir
@@ -129,8 +152,11 @@ pub async fn start_analytics_dashboard(app_handle: tauri::AppHandle) -> Result<b
 
     let dev_path = project_root.join("analytics-dashboard");
 
-    // Development mode: Use npm run dev
-    if dev_path.exists() && dev_path.join("package.json").exists() {
+    // Development mode: Use npm run dev (requires source + node_modules)
+    if dev_path.exists()
+        && dev_path.join("package.json").exists()
+        && dev_path.join("node_modules").exists()
+    {
         #[cfg(target_os = "windows")]
         {
             Command::new("cmd")
@@ -139,81 +165,16 @@ pub async fn start_analytics_dashboard(app_handle: tauri::AppHandle) -> Result<b
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .spawn()
-                .map_err(|e| format!("Failed to start dashboard: {}", e))?;
+                .map_err(|e| format!("Failed to start dashboard in dev mode: {}", e))?;
         }
 
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
         return Ok(false);
     }
 
-    // Production mode: Serve from bundled dist folder
-    let resource_path = app_handle
-        .path()
-        .resource_dir()
-        .map_err(|e| format!("Failed to get resource dir: {}", e))?;
-
-    let dist_path = resource_path.join("analytics-dashboard");
-
-    if !dist_path.exists() {
-        return Err(format!(
-            "Analytics dashboard not found. Expected at {:?}",
-            dist_path
-        ));
-    }
-
-    // Use a simple static file server for production
-    // We'll use Python's http.server if available, or serve via npx serve
-    #[cfg(target_os = "windows")]
-    {
-        // Try npx serve first (more reliable for SPA)
-        let npx_result = Command::new("cmd")
-            .args([
-                "/C",
-                "npx",
-                "serve",
-                "-s",
-                "-p",
-                "5173",
-                dist_path.to_str().unwrap_or("."),
-            ])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn();
-
-        match npx_result {
-            Ok(_) => {
-                tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-                return Ok(false);
-            }
-            Err(_) => {
-                // Fallback: Try Python http.server
-                let python_result = Command::new("cmd")
-                    .args(["/C", "python", "-m", "http.server", "5173"])
-                    .current_dir(&dist_path)
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .spawn();
-
-                match python_result {
-                    Ok(_) => {
-                        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-                        return Ok(false);
-                    }
-                    Err(e) => {
-                        return Err(format!(
-                            "Failed to start static file server. Please ensure 'npx' or 'python' is available. Error: {}",
-                            e
-                        ));
-                    }
-                }
-            }
-        }
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        return Err(
-            "Analytics dashboard is only supported on Windows in production mode".to_string(),
-        );
-    }
+    // No dashboard available
+    Err(
+        "Analytics dashboard not available. In development, run 'npm install' in analytics-dashboard folder."
+            .to_string(),
+    )
 }
