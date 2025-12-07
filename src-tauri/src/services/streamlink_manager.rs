@@ -90,7 +90,7 @@ impl StreamlinkManager {
             }
         }
 
-        let effective_path = Self::get_effective_path("");
+        let effective_path = Self::get_effective_path(None);
         let streamlink_found = std::path::Path::new(&effective_path).exists();
 
         StreamlinkDiagnostics {
@@ -148,8 +148,29 @@ impl StreamlinkManager {
         diagnostics
     }
 
-    /// Get the effective streamlink path (bundled only - no fallbacks)
-    pub fn get_effective_path(_user_path: &str) -> String {
+    /// Get the effective streamlink path
+    /// Priority: Custom folder (if set and valid) -> Bundled -> Development paths
+    pub fn get_effective_path(custom_folder: Option<&str>) -> String {
+        // Step 1: Check custom folder if provided
+        if let Some(folder) = custom_folder {
+            if !folder.is_empty() {
+                let custom_path = PathBuf::from(folder);
+                let custom_exe = custom_path.join("bin").join("streamlinkw.exe");
+
+                println!("[StreamlinkManager] Checking custom path: {:?}", custom_exe);
+
+                if custom_exe.exists() {
+                    println!(
+                        "[StreamlinkManager] Using custom streamlink: {:?}",
+                        custom_exe
+                    );
+                    return custom_exe.to_string_lossy().to_string();
+                } else {
+                    println!("[StreamlinkManager] Custom path not found, falling back to bundled");
+                }
+            }
+        }
+
         let bundled_path = Self::get_bundled_path();
 
         // Debug: log what paths we're checking
@@ -262,15 +283,54 @@ impl StreamlinkManager {
         Self::get_bundled_path().exists()
     }
 
-    /// Get the plugins directory for bundled streamlink
-    /// Located at: <exe_directory>/streamlink/plugins/
-    pub fn get_plugins_directory() -> Option<String> {
-        // First try exe directory (production)
+    /// Get the plugins directory with 3-step resolution:
+    /// 1. Check <custom_folder>/plugins (for Portable Streamlink)
+    /// 2. Check %APPDATA%/streamlink/plugins (for Standard Installed Streamlink)
+    /// 3. Fallback to Bundled location (<exe_directory>/streamlink/plugins/)
+    pub fn get_plugins_directory(custom_folder: Option<&str>) -> Option<String> {
+        // Step 1: Check custom folder plugins (for Portable versions)
+        if let Some(folder) = custom_folder {
+            if !folder.is_empty() {
+                let custom_plugins = PathBuf::from(folder).join("plugins");
+                if custom_plugins.exists() {
+                    println!(
+                        "[StreamlinkManager] Found plugins in custom folder: {:?}",
+                        custom_plugins
+                    );
+                    return Some(custom_plugins.to_string_lossy().to_string());
+                } else {
+                    println!(
+                        "[StreamlinkManager] No plugins in custom folder {:?}, checking AppData...",
+                        custom_plugins
+                    );
+                }
+            }
+        }
+
+        // Step 2: Check User AppData for installed Streamlink plugins
+        // This is where the standard installer puts plugins: %APPDATA%/streamlink/plugins
+        if let Some(config_dir) = dirs::config_dir() {
+            let appdata_plugins = config_dir.join("streamlink").join("plugins");
+            if appdata_plugins.exists() {
+                println!(
+                    "[StreamlinkManager] Found plugins in AppData: {:?}",
+                    appdata_plugins
+                );
+                return Some(appdata_plugins.to_string_lossy().to_string());
+            } else {
+                println!(
+                    "[StreamlinkManager] No plugins in AppData {:?}, checking bundled...",
+                    appdata_plugins
+                );
+            }
+        }
+
+        // Step 3: Fallback to bundled location (production)
         if let Some(exe_dir) = Self::get_exe_directory() {
             let plugins_path = exe_dir.join("streamlink").join("plugins");
             if plugins_path.exists() {
                 println!(
-                    "[StreamlinkManager] Found plugins directory at: {:?}",
+                    "[StreamlinkManager] Found plugins directory at bundled: {:?}",
                     plugins_path
                 );
                 return Some(plugins_path.to_string_lossy().to_string());
@@ -368,7 +428,7 @@ impl StreamlinkManager {
 
         // For portable streamlink, explicitly specify where to find plugins
         // This is CRITICAL for ttvlol plugin to be loaded
-        let plugins_dir = Self::get_plugins_directory();
+        let plugins_dir = Self::get_plugins_directory(settings.custom_streamlink_path.as_deref());
         if let Some(ref plugin_path) = plugins_dir {
             if std::path::Path::new(plugin_path).exists() {
                 println!("[Streamlink] Adding --plugin-dirs: {}", plugin_path);

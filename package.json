@@ -16,6 +16,7 @@
   "dependencies": {
     "@supabase/supabase-js": "^2.86.2",
     "@tauri-apps/api": "^2.9.0",
+    "@tauri-apps/plugin-dialog": "^2.2.0",
     "@tauri-apps/plugin-notification": "^2.3.3",
     "@tauri-apps/plugin-shell": "^2.3.3",
     "autoprefixer": "^10.4.22",
@@ -45,6 +46,3 @@
     "vite": "^5.4.21"
   }
 }
-
-
-

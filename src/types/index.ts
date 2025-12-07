@@ -27,6 +27,7 @@ export interface StreamlinkSettings {
   skip_ssl_verify: boolean;        // Skip SSL verification
   use_proxy: boolean;              // Use proxy servers
   proxy_playlist: string;          // Proxy playlist URLs
+  custom_streamlink_path?: string; // Custom folder path for portable/installed Streamlink
 }
 
 export interface DropsSettings {

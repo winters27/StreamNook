@@ -1,15 +1,65 @@
 import { useState, useEffect } from 'react';
-import { AlertTriangle, AlertCircle, RefreshCw, Trash2, Shield } from 'lucide-react';
+import { AlertTriangle, AlertCircle, RefreshCw, Trash2, Shield, MessageCircle, ExternalLink } from 'lucide-react';
 import { useAppStore } from '../../stores/AppStore';
 import { getLogs, clearLogs, type LogEntry } from '../../services/logService';
+
+// Lanyard API types
+interface LanyardData {
+    discord_user: {
+        id: string;
+        username: string;
+        avatar: string;
+        discriminator: string;
+        global_name: string | null;
+    };
+    discord_status: 'online' | 'idle' | 'dnd' | 'offline';
+    activities: Array<{
+        name: string;
+        type: number;
+        state?: string;
+        details?: string;
+    }>;
+}
+
+interface LanyardResponse {
+    success: boolean;
+    data: LanyardData;
+}
+
+// Developer Discord User ID
+const DEVELOPER_DISCORD_ID = '681989594341834765';
 
 const SupportSettings = () => {
     const { settings, updateSettings, addToast } = useAppStore();
     const [logs, setLogs] = useState<LogEntry[]>([]);
     const [filter, setFilter] = useState<'all' | 'errors' | 'warnings'>('all');
+    const [lanyardData, setLanyardData] = useState<LanyardData | null>(null);
+    const [lanyardLoading, setLanyardLoading] = useState(true);
 
     // Default to enabled if not set
     const errorReportingEnabled = settings.error_reporting_enabled !== false;
+
+    // Fetch Lanyard presence data
+    useEffect(() => {
+        const fetchLanyardData = async () => {
+            try {
+                const response = await fetch(`https://api.lanyard.rest/v1/users/${DEVELOPER_DISCORD_ID}`);
+                const data: LanyardResponse = await response.json();
+                if (data.success) {
+                    setLanyardData(data.data);
+                }
+            } catch (error) {
+                console.error('Failed to fetch Lanyard data:', error);
+            } finally {
+                setLanyardLoading(false);
+            }
+        };
+
+        fetchLanyardData();
+        // Refresh presence every 30 seconds
+        const interval = setInterval(fetchLanyardData, 30000);
+        return () => clearInterval(interval);
+    }, []);
 
     // Refresh logs periodically
     useEffect(() => {
@@ -71,6 +121,49 @@ const SupportSettings = () => {
                 return 'text-yellow-400';
             default:
                 return 'text-textSecondary';
+        }
+    };
+
+    const getStatusColor = (status: string) => {
+        switch (status) {
+            case 'online':
+                return 'bg-green-500';
+            case 'idle':
+                return 'bg-yellow-500';
+            case 'dnd':
+                return 'bg-red-500';
+            default:
+                return 'bg-gray-500';
+        }
+    };
+
+    const getStatusLabel = (status: string) => {
+        switch (status) {
+            case 'online':
+                return 'Online';
+            case 'idle':
+                return 'Idle';
+            case 'dnd':
+                return 'Do Not Disturb';
+            default:
+                return 'Offline';
+        }
+    };
+
+    const getAvatarUrl = (userId: string, avatarHash: string) => {
+        // Animated avatars have a hash starting with "a_"
+        const extension = avatarHash.startsWith('a_') ? 'gif' : 'png';
+        return `https://cdn.discordapp.com/avatars/${userId}/${avatarHash}.${extension}?size=64`;
+    };
+
+    const handleMessageOnDiscord = async () => {
+        try {
+            const { open } = await import('@tauri-apps/plugin-shell');
+            await open(`https://discord.com/users/${DEVELOPER_DISCORD_ID}`);
+        } catch (err) {
+            console.error('Failed to open Discord URL:', err);
+            // Fallback to window.open
+            window.open(`https://discord.com/users/${DEVELOPER_DISCORD_ID}`, '_blank');
         }
     };
 
@@ -193,6 +286,92 @@ const SupportSettings = () => {
                             ))}
                         </div>
                     )}
+                </div>
+            </div>
+
+            {/* Contact Developer Section */}
+            <div>
+                <h3 className="text-sm font-semibold text-textPrimary mb-3 flex items-center gap-2">
+                    <MessageCircle className="w-4 h-4" />
+                    Contact Developer
+                </h3>
+
+                <div className="glass-panel p-4 rounded-lg">
+                    {lanyardLoading ? (
+                        <div className="flex items-center justify-center py-4">
+                            <RefreshCw className="w-5 h-5 animate-spin text-textSecondary" />
+                        </div>
+                    ) : lanyardData ? (
+                        <div className="flex items-center gap-4">
+                            {/* Avatar with status indicator */}
+                            <div className="relative flex-shrink-0">
+                                <img
+                                    src={getAvatarUrl(lanyardData.discord_user.id, lanyardData.discord_user.avatar)}
+                                    alt={lanyardData.discord_user.username}
+                                    className="w-12 h-12 rounded-full"
+                                />
+                                <div
+                                    className={`absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full border-[1.5px] border-background ${getStatusColor(lanyardData.discord_status)}`}
+                                    title={getStatusLabel(lanyardData.discord_status)}
+                                    style={lanyardData.discord_status === 'online' ? {
+                                        animation: 'pulse-glow 2s ease-in-out infinite'
+                                    } : undefined}
+                                />
+                            </div>
+
+                            {/* User info */}
+                            <div className="flex-1 min-w-0">
+                                <p className="text-sm font-medium text-textPrimary truncate">
+                                    {lanyardData.discord_user.global_name || lanyardData.discord_user.username}
+                                </p>
+                                <p className="text-xs text-textSecondary">
+                                    @{lanyardData.discord_user.username}
+                                </p>
+                                {lanyardData.activities && lanyardData.activities.length > 0 && (
+                                    <p className="text-xs text-textMuted mt-0.5 truncate">
+                                        {lanyardData.activities[0].type === 0 && `Playing ${lanyardData.activities[0].name}`}
+                                        {lanyardData.activities[0].type === 2 && `Listening to ${lanyardData.activities[0].state || lanyardData.activities[0].name}`}
+                                        {lanyardData.activities[0].type === 3 && `Watching ${lanyardData.activities[0].name}`}
+                                        {lanyardData.activities[0].type === 4 && lanyardData.activities[0].state}
+                                        {lanyardData.activities[0].type === 5 && `Competing in ${lanyardData.activities[0].name}`}
+                                    </p>
+                                )}
+                            </div>
+
+                            {/* Message button */}
+                            <button
+                                onClick={handleMessageOnDiscord}
+                                className="glass-button px-4 py-2 rounded-lg flex items-center gap-2 text-sm font-medium hover:bg-accent/20 transition-colors"
+                            >
+                                <ExternalLink className="w-4 h-4" />
+                                Message on Discord
+                            </button>
+                        </div>
+                    ) : (
+                        <div className="flex items-center justify-between">
+                            <div>
+                                <p className="text-sm text-textPrimary font-medium">
+                                    Contact the Developer
+                                </p>
+                                <p className="text-xs text-textSecondary mt-1">
+                                    Have questions or feedback? Reach out on Discord.
+                                </p>
+                            </div>
+                            <button
+                                onClick={handleMessageOnDiscord}
+                                className="glass-button px-4 py-2 rounded-lg flex items-center gap-2 text-sm font-medium hover:bg-accent/20 transition-colors"
+                            >
+                                <ExternalLink className="w-4 h-4" />
+                                Message on Discord
+                            </button>
+                        </div>
+                    )}
+
+                    <div className="mt-3 pt-3 border-t border-borderSubtle">
+                        <p className="text-xs text-textSecondary opacity-70">
+                            StreamNook is built by a solo developer. I made this project for myself and thought others might enjoy it too. A dedicated Discord server is coming soon! In the meantime, feel free to reach out with bug reports, feature requests, or just to say hi.
+                        </p>
+                    </div>
                 </div>
             </div>
         </div>

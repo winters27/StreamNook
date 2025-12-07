@@ -1,3 +1,5 @@
+import { open } from '@tauri-apps/plugin-dialog';
+import { FolderOpen, X } from 'lucide-react';
 import { useAppStore } from '../../stores/AppStore';
 
 const PlayerSettings = () => {
@@ -13,9 +15,36 @@ const PlayerSettings = () => {
     skip_ssl_verify: false,
     use_proxy: true,
     proxy_playlist: '--twitch-proxy-playlist=https://lb-na.cdn-perfprod.com,https://eu.luminous.dev --twitch-proxy-playlist-fallback',
+    custom_streamlink_path: undefined,
   };
 
   const streamlink = settings.streamlink || streamlinkDefaults;
+
+  const handleSelectStreamlinkFolder = async () => {
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        title: 'Select Streamlink Folder',
+      });
+
+      if (selected && typeof selected === 'string') {
+        updateSettings({
+          ...settings,
+          streamlink: { ...streamlink, custom_streamlink_path: selected },
+        });
+      }
+    } catch (error) {
+      console.error('Failed to open folder picker:', error);
+    }
+  };
+
+  const handleClearStreamlinkPath = () => {
+    updateSettings({
+      ...settings,
+      streamlink: { ...streamlink, custom_streamlink_path: undefined },
+    });
+  };
 
   return (
     <div className="space-y-6">
@@ -88,8 +117,8 @@ const PlayerSettings = () => {
                   })
                 }
                 className={`flex-1 px-4 py-2 text-sm font-medium rounded transition-all ${(settings.auto_switch?.mode ?? 'same_category') === 'same_category'
-                    ? 'glass-button text-white'
-                    : 'bg-glass text-textSecondary hover:bg-glass-hover'
+                  ? 'glass-button text-white'
+                  : 'bg-glass text-textSecondary hover:bg-glass-hover'
                   }`}
               >
                 Same Category
@@ -106,8 +135,8 @@ const PlayerSettings = () => {
                   })
                 }
                 className={`flex-1 px-4 py-2 text-sm font-medium rounded transition-all ${settings.auto_switch?.mode === 'followed_streams'
-                    ? 'glass-button text-white'
-                    : 'bg-glass text-textSecondary hover:bg-glass-hover'
+                  ? 'glass-button text-white'
+                  : 'bg-glass text-textSecondary hover:bg-glass-hover'
                   }`}
               >
                 Followed Streams
@@ -149,6 +178,66 @@ const PlayerSettings = () => {
                   }`}
               />
             </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Custom Streamlink Location */}
+      <div className="space-y-4">
+        <h3 className="text-lg font-semibold text-textPrimary border-b border-borderColor pb-2">
+          Custom Streamlink Location
+        </h3>
+        <p className="text-xs text-textSecondary">
+          If the bundled Streamlink is missing or you prefer to use your own installation,
+          select your Streamlink folder here. We'll automatically find plugins in this folder
+          or in your AppData (for installed versions).
+        </p>
+
+        <div>
+          <label className="block text-sm font-medium text-textPrimary mb-2">
+            Streamlink Folder Path
+          </label>
+          <div className="flex gap-2">
+            <div className="flex-1 relative">
+              <input
+                type="text"
+                value={streamlink.custom_streamlink_path || ''}
+                readOnly
+                placeholder="Using bundled Streamlink (default)"
+                className="w-full glass-input text-textPrimary text-sm px-3 py-2 pr-10"
+              />
+              {streamlink.custom_streamlink_path && (
+                <button
+                  onClick={handleClearStreamlinkPath}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-textSecondary hover:text-red-400 transition-colors"
+                  title="Clear custom path"
+                >
+                  <X size={16} />
+                </button>
+              )}
+            </div>
+            <button
+              onClick={handleSelectStreamlinkFolder}
+              className="px-4 py-2 glass-button text-white text-sm font-medium rounded flex items-center gap-2"
+            >
+              <FolderOpen size={16} />
+              Browse
+            </button>
+          </div>
+          <p className="text-xs text-textSecondary mt-2">
+            {streamlink.custom_streamlink_path
+              ? `Looking for executable at: ${streamlink.custom_streamlink_path}/bin/streamlinkw.exe`
+              : 'Leave empty to use the bundled Streamlink that comes with StreamNook.'}
+          </p>
+          <div className="mt-2 p-3 bg-glass rounded-lg">
+            <p className="text-xs text-textSecondary">
+              <strong className="text-textPrimary">Plugin Search Order:</strong>
+            </p>
+            <ol className="text-xs text-textSecondary mt-1 list-decimal list-inside space-y-1">
+              <li>Custom folder plugins (for Portable versions): <code className="text-accent">&lt;custom_path&gt;/plugins</code></li>
+              <li>AppData plugins (for Installed versions): <code className="text-accent">%APPDATA%/streamlink/plugins</code></li>
+              <li>Bundled plugins: <code className="text-accent">&lt;app_dir&gt;/streamlink/plugins</code></li>
+            </ol>
           </div>
         </div>
       </div>

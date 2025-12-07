@@ -1303,6 +1303,18 @@ body {
   animation: live-glow 2s ease-in-out infinite;
 }
 
+/* Discord online status pulse glow - subtle scale and shadow only, no opacity */
+@keyframes pulse-glow {
+  0%, 100% {
+    transform: scale(1);
+    box-shadow: 0 0 3px 1px rgba(34, 197, 94, 0.4);
+  }
+  50% {
+    transform: scale(1.05);
+    box-shadow: 0 0 5px 2px rgba(34, 197, 94, 0.6);
+  }
+}
+
 /* Whisper notification highlight */
 @keyframes whisper-highlight {
   0% {

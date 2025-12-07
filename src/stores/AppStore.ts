@@ -38,6 +38,9 @@ interface AppState {
   showBadgesOverlay: boolean;
   showWhispersOverlay: boolean;
   showDashboardOverlay: boolean;
+  showStreamlinkMissing: boolean;
+  pendingStreamChannel: string | null;
+  pendingStreamInfo: TwitchStream | null;
   whisperTargetUser: { id: string; login: string; display_name: string; profile_image_url?: string } | null;
   isHomeActive: boolean;
   isAuthenticated: boolean;
@@ -122,6 +125,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   showBadgesOverlay: false,
   showWhispersOverlay: false,
   showDashboardOverlay: false,
+  showStreamlinkMissing: false,
+  pendingStreamChannel: null,
+  pendingStreamInfo: null,
   whisperTargetUser: null,
   isHomeActive: true,
   isAuthenticated: false,
@@ -549,6 +555,20 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ isLoading: true });
     trackActivity(`Started watching: ${channel}`);
     try {
+      // Check if streamlink is available before trying to start the stream
+      const isAvailable = await invoke('is_streamlink_available') as boolean;
+      if (!isAvailable) {
+        console.log('[Stream] Streamlink not found, showing missing dialog');
+        // Save the pending stream so we can resume after user selects a path
+        set({
+          isLoading: false,
+          showStreamlinkMissing: true,
+          pendingStreamChannel: channel,
+          pendingStreamInfo: providedStreamInfo || null
+        });
+        return;
+      }
+
       const url = await invoke('start_stream', { url: `https://twitch.tv/${channel}`, quality: get().settings.quality }) as string;
 
       // Use the provided stream info, or find it from followed streams, or fetch it
