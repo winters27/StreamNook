@@ -1,3 +1,8 @@
+## [4.7.9] - 2025-12-06
+### ✨ Features
+- Added support for animated 7TV emotes in chat, bringing more expressive communication to your viewing experience.
+- Integrated the analytics dashboard directly into the StreamNook application. This eliminates the need for a separate resource folder and simplifies deployment.
+
 ## [4.7.8] - 2025-12-06
 ### ✨ Features
 - Added an analytics dashboard to visualize usage data, providing insights into how StreamNook is used and helping guide future development. This dashboard is built with React/TypeScript and uses Supabase for data storage and access.  It is bundled during the release process.
@@ -599,6 +604,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
