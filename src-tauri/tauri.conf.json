@@ -13,7 +13,10 @@
     "targets": "all",
     "icon": [
       "icons/icon.ico"
-    ]
+    ],
+    "resources": {
+      "../analytics-dashboard/dist": "analytics-dashboard"
+    }
   },
   "app": {
     "security": {

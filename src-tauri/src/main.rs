@@ -222,6 +222,8 @@ fn main() {
             get_window_size,
             calculate_aspect_ratio_size,
             get_system_info,
+            start_analytics_dashboard,
+            is_dev_environment,
             // Twitch commands
             twitch_login,
             twitch_start_device_login,

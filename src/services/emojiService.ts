@@ -54,23 +54,25 @@ export function containsEmoji(text: string): boolean {
 
 /**
  * Replaces emoji shortcodes in text with their unicode equivalents
+ * Only matches shortcodes wrapped in colons like :smiley: or :heart:
  */
 function replaceShortcodes(text: string): string {
     if (!text) return text;
 
-    // Split by spaces to handle words
-    return text.split(/(\s+)/).map(part => {
-        // Remove potential punctuation for matching
-        const cleanPart = part.trim();
-        if (SHORTCODE_TO_UNICODE[cleanPart]) {
-            return SHORTCODE_TO_UNICODE[cleanPart];
+    // Only match shortcodes that are wrapped in colons like :smiley:
+    // This regex matches :word_with_underscores: or :word-with-dashes: or :word123:
+    return text.replace(/:([a-zA-Z0-9_-]+):/g, (match, shortcode) => {
+        // First try the full match with colons
+        if (SHORTCODE_TO_UNICODE[match]) {
+            return SHORTCODE_TO_UNICODE[match];
         }
-        // Try with colons if not present
-        if (!cleanPart.startsWith(':') && SHORTCODE_TO_UNICODE[`:${cleanPart}:`]) {
-            return SHORTCODE_TO_UNICODE[`:${cleanPart}:`];
+        // Then try just the shortcode without colons
+        if (SHORTCODE_TO_UNICODE[shortcode]) {
+            return SHORTCODE_TO_UNICODE[shortcode];
         }
-        return part;
-    }).join('');
+        // Return original if no match
+        return match;
+    });
 }
 
 /**

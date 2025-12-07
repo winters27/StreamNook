@@ -9,8 +9,9 @@ import {
 } from '../services/supabaseService';
 import { useAppStore } from '../stores/AppStore';
 
-// Admin user ID - only this user can view the dashboard
-const ADMIN_USER_ID = import.meta.env.VITE_ADMIN_USER_ID || '';
+// Admin user ID - Only this Twitch channel ID can access the analytics dashboard
+// Set via VITE_ADMIN_USER_ID environment variable (baked in at build time from GitHub secrets)
+const ADMIN_USER_ID = import.meta.env.VITE_ADMIN_USER_ID;
 
 // Export helper to check if current user is admin (useful for conditionally showing UI elements)
 export function useIsAdmin(): boolean {
