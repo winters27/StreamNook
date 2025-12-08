@@ -14,7 +14,7 @@
     "update-deps:auto": "powershell -ExecutionPolicy Bypass -File ./scripts/update-dependencies.ps1 -Auto"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.86.2",
+    "@supabase/supabase-js": "^2.87.0",
     "@tauri-apps/api": "^2.9.0",
     "@tauri-apps/plugin-dialog": "^2.2.0",
     "@tauri-apps/plugin-notification": "^2.3.3",
