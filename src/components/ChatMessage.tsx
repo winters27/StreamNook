@@ -28,6 +28,7 @@ interface ChatMessageProps {
   ) => void;
   onReplyClick?: (parentMsgId: string) => void;
   isHighlighted?: boolean;
+  isDeleted?: boolean; // Message was deleted by mod action (CLEARMSG/CLEARCHAT)
   onEmoteRightClick?: (emoteName: string) => void;
   onUsernameRightClick?: (messageId: string, username: string) => void;
   onBadgeClick?: (badgeKey: string, badgeInfo: any) => void;
@@ -47,6 +48,7 @@ const chatMessageAreEqual = (prevProps: ChatMessageProps, nextProps: ChatMessage
   }
   if (prevProps.messageIndex !== nextProps.messageIndex) return false;
   if (prevProps.isHighlighted !== nextProps.isHighlighted) return false;
+  if (prevProps.isDeleted !== nextProps.isDeleted) return false;
   // EmoteSet reference may change but content is the same - do deep comparison by checking if it's null/undefined
   if ((prevProps.emoteSet === null) !== (nextProps.emoteSet === null)) return false;
 
@@ -57,7 +59,7 @@ const chatMessageAreEqual = (prevProps: ChatMessageProps, nextProps: ChatMessage
 
 // Memoized ChatMessage component to prevent unnecessary re-renders
 // This is critical for preventing animation restarts when new messages arrive
-const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageIndex = 0, onUsernameClick, onReplyClick, isHighlighted = false, onEmoteRightClick, onUsernameRightClick, onBadgeClick }: ChatMessageProps) {
+const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageIndex = 0, onUsernameClick, onReplyClick, isHighlighted = false, isDeleted = false, onEmoteRightClick, onUsernameRightClick, onBadgeClick }: ChatMessageProps) {
   const { settings, currentUser } = useAppStore();
   const chatDesign = settings.chat_design;
   const parsed = useMemo(() => {
@@ -1195,7 +1197,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageI
     <div
       className={`px-3 hover:bg-glass transition-colors ${borderClass} ${animationClass
         } ${isFirstMessage ? 'bg-gradient-to-r from-purple-500/20 via-purple-400/10 to-transparent' : ''} ${isFromSharedChat ? 'border-l-2 border-l-accent/50 bg-accent/5' : ''
-        } ${backgroundClass}`}
+        } ${backgroundClass} ${isDeleted ? 'opacity-50' : ''}`}
       style={{
         ...messageStyle,
         borderLeftColor: (isMentioned || isReplyToMe) && borderLeftColor ? borderLeftColor : undefined,
@@ -1396,6 +1398,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageI
                 </span>
                 <span style={{ fontWeight: 400 }} className="text-textPrimary break-words">
                   {' '}{renderContent(contentWithEmotes)}
+                  {isDeleted && <span className="ml-1.5 text-xs text-red-400/70 font-medium">[deleted]</span>}
                 </span>
               </>
             )}

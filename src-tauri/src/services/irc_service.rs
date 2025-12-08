@@ -413,6 +413,43 @@ impl IrcService {
                 let badges_message = format!("USER_BADGES:{}", badges);
                 let _ = tx.send(badges_message);
             }
+        } else if trimmed.contains("CLEARMSG") {
+            // Single message deleted by mod
+            // Format: @login=<user>;room-id=<room>;target-msg-id=<msg-id>;tmi-sent-ts=<ts> :tmi.twitch.tv CLEARMSG #<channel> :<message>
+            println!("[IRC Chat] Message deleted: {}", trimmed);
+
+            if let Some(target_msg_id) = Self::extract_tag_value(trimmed, "target-msg-id") {
+                // Send deletion event to frontend
+                let delete_event = json!({
+                    "type": "CLEARMSG",
+                    "target_msg_id": target_msg_id,
+                    "login": Self::extract_tag_value(trimmed, "login").unwrap_or_default()
+                });
+                let _ = tx.send(delete_event.to_string());
+            }
+        } else if trimmed.contains("CLEARCHAT") {
+            // User timed out/banned (clear all their messages) or chat cleared
+            // Format: @ban-duration=<sec>;room-id=<room>;target-user-id=<id>;tmi-sent-ts=<ts> :tmi.twitch.tv CLEARCHAT #<channel> :<user>
+            // Or for full chat clear: :tmi.twitch.tv CLEARCHAT #<channel>
+            println!("[IRC Chat] Chat clear/timeout: {}", trimmed);
+
+            let target_user_id = Self::extract_tag_value(trimmed, "target-user-id");
+            let ban_duration = Self::extract_tag_value(trimmed, "ban-duration");
+
+            // Extract target username from the message content (after the colon at the end)
+            let target_user = if let Some(idx) = trimmed.rfind(" :") {
+                Some(trimmed[idx + 2..].trim().to_string())
+            } else {
+                None
+            };
+
+            let clear_event = json!({
+                "type": "CLEARCHAT",
+                "target_user_id": target_user_id,
+                "target_user": target_user,
+                "ban_duration": ban_duration.map(|d| d.parse::<u64>().unwrap_or(0))
+            });
+            let _ = tx.send(clear_event.to_string());
         } else if trimmed.contains("NOTICE") {
             // System notices
             println!("[IRC Chat] Notice: {}", trimmed);

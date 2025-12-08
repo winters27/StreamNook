@@ -44,7 +44,7 @@ const SettingsDialog = () => {
 
   return (
     <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50">
-      <div className={`glass-panel backdrop-blur-lg p-6 rounded-lg w-full mx-4 shadow-2xl flex flex-col transition-all duration-300 ${isWideTab ? 'max-w-4xl max-h-[95vh]' : 'max-w-2xl max-h-[90vh]'}`}>
+      <div className={`glass-panel backdrop-blur-lg p-6 rounded-lg mx-4 shadow-2xl flex flex-col transition-all duration-300 ${isWideTab ? 'w-[95vw] md:w-[90vw] lg:w-[85vw] max-w-7xl h-[90vh]' : 'w-[90vw] md:w-[80vw] lg:w-[70vw] xl:w-[60vw] max-w-6xl max-h-[90vh]'}`}>
         {/* Header */}
         <div className="flex items-center justify-between mb-6 pb-4 border-b border-borderSubtle">
           <h2 className="text-xl font-bold text-textPrimary">Settings</h2>

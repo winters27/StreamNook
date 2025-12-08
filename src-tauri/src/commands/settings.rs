@@ -1,7 +1,6 @@
 use crate::models::settings::{AppState, Settings};
 use crate::services::cache_service;
 use crate::services::live_notification_service::LiveNotification;
-use rand::seq::SliceRandom;
 use regex::Regex;
 use std::fs;
 use tauri::{AppHandle, Emitter, State};
@@ -344,16 +343,15 @@ pub async fn send_test_notification(
     app_handle: AppHandle,
     _state: State<'_, AppState>,
 ) -> Result<(), String> {
-    // Mock data for the test notification - always show full details
+    // Mock data for the test notification
     let mock_streamer_name = "xQc";
     let mock_streamer_login = "xqc";
     let mock_game_name = "Grand Theft Auto V";
-    let mock_avatar_url = "https://static-cdn.jtvnw.net/jtv_user_pictures/xqc-profile_image-9298dca608632101-70x70.jpeg";
+    let mock_avatar_url = "https://static-cdn.jtvnw.net/jtv_user_pictures/xqc-profile_image-9298dca608632101-300x300.jpeg";
     let mock_game_image_url = "https://static-cdn.jtvnw.net/ttv-boxart/32982_IGDB-285x380.jpg";
 
-    // Fun randomized messages with personality - High on Life vibes!
-    let messages = vec![
-        // Self-aware notification existential crisis
+    // Fun randomized messages with personality
+    let messages: &[&str] = &[
         "Why do you keep clicking me? 😭",
         "I'm not real you know... 👻",
         "Still here. Still watching. 👀",
@@ -397,7 +395,6 @@ pub async fn send_test_notification(
         "Hello? Anyone there? 👋",
         "I need a vacation 🏖️",
         "StreamNook > Everything ✨",
-        // High on Life style - talking notification POV
         "Oh great, you summoned me 🙄",
         "I was napping in RAM! 😴",
         "Wow, real original 👏",
@@ -440,11 +437,13 @@ pub async fn send_test_notification(
         "Called up from the bench! 🌟",
     ];
 
-    // Pick a random message using SliceRandom trait
-    use rand::Rng;
-    let mut rng = rand::thread_rng();
-    let random_index = rng.gen_range(0..messages.len());
-    let random_message = messages[random_index];
+    // Pick a random message
+    let random_message = {
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+        let random_index = rng.gen_range(0..messages.len());
+        messages[random_index].to_string()
+    };
 
     let notification = LiveNotification {
         streamer_name: mock_streamer_name.to_string(),
@@ -452,15 +451,17 @@ pub async fn send_test_notification(
         streamer_avatar: Some(mock_avatar_url.to_string()),
         game_name: Some(mock_game_name.to_string()),
         game_image: Some(mock_game_image_url.to_string()),
-        stream_title: Some(random_message.to_string()),
+        stream_title: Some(random_message),
         stream_url: format!("https://twitch.tv/{}", mock_streamer_login),
         is_test: true,
     };
 
-    // Emit the notification event to the frontend
+    // Emit the notification event to the frontend (for in-app notification)
     app_handle
         .emit("streamer-went-live", &notification)
         .map_err(|e| format!("Failed to emit test notification: {}", e))?;
+
+    println!("[Test Notification] Sent in-app notification");
 
     Ok(())
 }
@@ -678,8 +679,6 @@ pub async fn download_and_install_app_update(
         .map_err(|e| format!("Failed to write new executable: {}", e))?;
 
     // Create a batch script to replace the exe and restart
-    // Using (goto) 2>nul & del trick to properly self-delete without leaving a window open
-    // Wait 3 seconds to ensure app is fully closed, retry delete if needed
     let batch_script = format!(
         r#"@echo off
 timeout /t 3 /nobreak > nul
@@ -707,8 +706,7 @@ start "" "{}"
     std::fs::write(&batch_path, batch_script)
         .map_err(|e| format!("Failed to write update script: {}", e))?;
 
-    // Launch the batch script hidden - /b flag runs without creating a new window
-    // Using cmd /c with a hidden window to execute the batch file
+    // Launch the batch script hidden
     std::process::Command::new("cmd")
         .args(&["/C", "start", "/min", "/b", batch_path.to_str().unwrap()])
         .spawn()

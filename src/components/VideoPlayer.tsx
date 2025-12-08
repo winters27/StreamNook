@@ -21,6 +21,7 @@ const VideoPlayer = () => {
   playerSettingsRef.current = playerSettings;
   const isLiveRef = useRef<boolean>(true);
   const userInitiatedPauseRef = useRef<boolean>(false);
+  const hasJumpedToLiveRef = useRef<boolean>(false);
   const [availableQualities, setAvailableQualities] = useState<string[]>([]);
   const [isHovering, setIsHovering] = useState(false);
   const [subscriberBadgeUrl, setSubscriberBadgeUrl] = useState<string | null>(null);
@@ -247,6 +248,8 @@ const VideoPlayer = () => {
       console.log('[HLS] HLS.js is supported, creating player...');
 
       // Create HLS.js instance with optimized settings
+      // Note: liveSyncDurationCount and liveMaxLatencyDurationCount are kept at default/conservative
+      // values for stability. The "jump to live" feature just does a one-time seek on load.
       const hls = new Hls({
         debug: false,
         enableWorker: true,
@@ -582,6 +585,48 @@ const VideoPlayer = () => {
           console.log('[Video] First successful playback recorded');
         }
 
+        // Jump to live on first play if enabled (fixes 15s delay)
+        // This is a one-time seek on load - doesn't affect ongoing buffer behavior
+        // Usage of 'playing' event ensures stream is actually running before we seek
+        if (currentSettings.jump_to_live && !hasJumpedToLiveRef.current && isLiveRef.current) {
+          console.log('[HLS] Jump to live on load enabled, will seek to live edge...');
+          hasJumpedToLiveRef.current = true;
+
+          // Wait for buffer to build up before seeking - this is crucial!
+          // If we seek before there's buffered data ahead, playback might stall
+          setTimeout(() => {
+            // Check buffer state
+            if (video.buffered.length === 0) {
+              console.log('[HLS] Jump to live: no buffer yet, skipping seek');
+              return;
+            }
+
+            const bufferedEnd = video.buffered.end(video.buffered.length - 1);
+            const bufferedStart = video.buffered.start(video.buffered.length - 1);
+            const bufferedDuration = bufferedEnd - bufferedStart;
+            const currentPos = video.currentTime;
+            const timeBehindLive = bufferedEnd - currentPos;
+
+            console.log(`[HLS] Jump to live: buffer=${bufferedDuration.toFixed(2)}s, current=${currentPos.toFixed(2)}s, bufferedEnd=${bufferedEnd.toFixed(2)}s, behind=${timeBehindLive.toFixed(2)}s`);
+
+            // Only seek if we're significantly behind (more than 5 seconds from live)
+            // and we have a reasonable buffer built up (at least 3 seconds)
+            if (timeBehindLive > 5 && bufferedDuration >= 3) {
+              // Seek to 2 seconds before buffered end to ensure smooth playback
+              // This mimics what happens when you manually click "jump to live"
+              const seekTarget = bufferedEnd - 2;
+              console.log(`[HLS] Jump to live: seeking from ${currentPos.toFixed(2)}s to ${seekTarget.toFixed(2)}s`);
+              video.currentTime = seekTarget;
+            } else if (timeBehindLive <= 5) {
+              console.log('[HLS] Jump to live: already close to live edge, no seek needed');
+            } else {
+              console.log(`[HLS] Jump to live: buffer too small (${bufferedDuration.toFixed(2)}s), waiting...`);
+              // Try again after more buffer builds up
+              hasJumpedToLiveRef.current = false;
+            }
+          }, 1000); // Wait 1 second for buffer to build
+        }
+
         // Reset error counts on successful playback - stream is working
         fatalErrorCountRef.current = 0;
         manifestErrorCountRef.current = 0;
@@ -707,6 +752,7 @@ const VideoPlayer = () => {
       // Reset state
       isLiveRef.current = true;
       userInitiatedPauseRef.current = false;
+      hasJumpedToLiveRef.current = false;
 
       // Reset error tracking for next stream
       fatalErrorCountRef.current = 0;

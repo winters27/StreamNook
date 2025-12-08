@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import type { Settings, TwitchUser, TwitchStream, UserInfo, TwitchCategory } from '../types';
 import { trackActivity, isStreamlinkError, sendStreamlinkDiagnostics } from '../services/logService';
 import { upsertUser } from '../services/supabaseService';
+import { eventSubService } from '../services/eventSub';
 
 export interface Toast {
   id: number;
@@ -550,6 +551,14 @@ export const useAppStore = create<AppState>((set, get) => ({
         console.warn('Could not stop drops monitoring:', e);
       }
 
+      // Disconnect EventSub raid subscription
+      try {
+        eventSubService.disconnect();
+        console.log('🛑 Disconnected EventSub raid subscription');
+      } catch (e) {
+        console.warn('Could not disconnect EventSub:', e);
+      }
+
       set({ streamUrl: null, currentStream: null });
 
       // Update user context for error reporting (stream stopped)
@@ -722,6 +731,62 @@ export const useAppStore = create<AppState>((set, get) => ({
           // Discord errors are non-critical - log as warning, don't show to user
           console.warn('[Discord] Could not update presence (Discord may not be running):', e);
         });
+      }
+
+      // Connect to EventSub for real-time events (only if authenticated)
+      const channelId = info.user_id;
+      const autoRedirectOnRaid = get().settings.auto_switch?.auto_redirect_on_raid ?? true;
+
+      if (channelId && get().isAuthenticated) {
+        try {
+          // Disconnect any existing connection first
+          eventSubService.disconnect();
+
+          // Connect with callbacks for all events
+          await eventSubService.connect(channelId, {
+            // Raid callback - redirect to raided channel
+            onRaid: autoRedirectOnRaid ? async (targetLogin: string, viewerCount: number) => {
+              console.log(`[EventSub] Raid detected! Redirecting to ${targetLogin} (${viewerCount} viewers)`);
+
+              // Show notification toast
+              get().addToast(`🎉 Raid starting! Joining ${targetLogin}...`, 'info');
+
+              // Small delay to let user see the notification
+              await new Promise(resolve => setTimeout(resolve, 1500));
+
+              // Start the new stream (this will also set up new EventSub subscription)
+              await get().startStream(targetLogin);
+            } : undefined,
+
+            // Stream offline callback - trigger auto-switch
+            onStreamOffline: () => {
+              console.log('[EventSub] Stream went offline via EventSub notification');
+              // Use the existing handleStreamOffline which has all the auto-switch logic
+              get().handleStreamOffline();
+            },
+
+            // Channel update callback - update current stream info in real-time
+            onChannelUpdate: (title: string, categoryName: string, categoryId: string) => {
+              const currentStream = get().currentStream;
+              if (currentStream) {
+                console.log(`[EventSub] Channel updated: "${title}" - ${categoryName}`);
+                set({
+                  currentStream: {
+                    ...currentStream,
+                    title,
+                    game_name: categoryName,
+                    game_id: categoryId,
+                  }
+                });
+              }
+            },
+          });
+
+          console.log(`🔔 Connected to EventSub (channel: ${info.user_name})`);
+        } catch (e) {
+          console.warn('[EventSub] Could not connect:', e);
+          // Non-critical, stream can still work
+        }
       }
     } catch (e) {
       const errorMessage = e instanceof Error ? e.message : String(e);

@@ -15,6 +15,8 @@ pub struct VideoPlayerSettings {
     pub volume: f32,
     pub start_quality: i32,
     pub lock_aspect_ratio: bool,
+    #[serde(default)]
+    pub jump_to_live: bool,
 }
 
 impl Default for VideoPlayerSettings {
@@ -27,6 +29,7 @@ impl Default for VideoPlayerSettings {
             volume: 1.0,
             start_quality: -1,
             lock_aspect_ratio: false,
+            jump_to_live: false,
         }
     }
 }
@@ -220,6 +223,8 @@ pub struct AutoSwitchSettings {
     #[serde(default)]
     pub mode: AutoSwitchMode, // What to switch to when stream goes offline
     pub show_notification: bool, // Show toast when auto-switching
+    #[serde(default = "default_true")]
+    pub auto_redirect_on_raid: bool, // Automatically follow raids to the target channel
 }
 
 impl Default for AutoSwitchSettings {
@@ -228,6 +233,7 @@ impl Default for AutoSwitchSettings {
             enabled: true,
             mode: AutoSwitchMode::SameCategory,
             show_notification: true,
+            auto_redirect_on_raid: true, // Enabled by default
         }
     }
 }

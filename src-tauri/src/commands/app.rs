@@ -1,8 +1,14 @@
 use crate::services::embedded_dashboard;
+use once_cell::sync::Lazy;
+use std::collections::HashMap;
 use std::env;
+use std::sync::Mutex;
 use tauri::command;
 use tauri::window::Window;
 use tauri::Manager;
+
+// In-memory cache for emoji images (codepoint -> base64 data URL)
+static EMOJI_CACHE: Lazy<Mutex<HashMap<String, String>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
 // Compile-time admin IDs from .env or CI environment
 // This is injected by build.rs reading from the .env file
@@ -397,4 +403,51 @@ pub async fn start_analytics_dashboard(app_handle: tauri::AppHandle) -> Result<b
         "Analytics dashboard not available. In development, run 'npm install' in analytics-dashboard folder."
             .to_string(),
     )
+}
+
+/// Fetch an emoji image from CDN and return as base64 data URL
+/// This bypasses the browser's tracking prevention by using Tauri's HTTP client
+#[command]
+pub async fn get_emoji_image(codepoint: String) -> Result<String, String> {
+    // Check cache first
+    {
+        let cache = EMOJI_CACHE.lock().map_err(|e| e.to_string())?;
+        if let Some(data_url) = cache.get(&codepoint) {
+            return Ok(data_url.clone());
+        }
+    }
+
+    // Construct the CDN URL
+    let url = format!(
+        "https://cdn.jsdelivr.net/npm/emoji-datasource-apple@15.1.2/img/apple/64/{}.png",
+        codepoint
+    );
+
+    // Fetch the image using reqwest
+    let response = reqwest::get(&url)
+        .await
+        .map_err(|e| format!("Failed to fetch emoji: {}", e))?;
+
+    if !response.status().is_success() {
+        return Err(format!("Failed to fetch emoji: HTTP {}", response.status()));
+    }
+
+    // Get the image bytes
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|e| format!("Failed to read emoji bytes: {}", e))?;
+
+    // Convert to base64 data URL
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    let base64_data = STANDARD.encode(&bytes);
+    let data_url = format!("data:image/png;base64,{}", base64_data);
+
+    // Cache the result
+    {
+        let mut cache = EMOJI_CACHE.lock().map_err(|e| e.to_string())?;
+        cache.insert(codepoint, data_url.clone());
+    }
+
+    Ok(data_url)
 }

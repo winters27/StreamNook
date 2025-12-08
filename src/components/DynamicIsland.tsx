@@ -3,10 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Bell, Radio, MessageCircle, ChevronRight, User, Download, Gift, Award } from 'lucide-react';
 import { X, SpeakerHigh, SpeakerSlash } from 'phosphor-react';
 import { listen, emit } from '@tauri-apps/api/event';
-import { invoke, convertFileSrc } from '@tauri-apps/api/core';
-import { getCurrentWindow } from '@tauri-apps/api/window';
-import { resolveResource } from '@tauri-apps/api/path';
-import { sendNotification, isPermissionGranted, requestPermission } from '@tauri-apps/plugin-notification';
+import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../stores/AppStore';
 import { badgePollingService, type BadgeNotification } from '../services/badgePollingService';
 import type {
@@ -156,8 +153,6 @@ const DynamicIsland = () => {
     const useDynamicIsland = settings.live_notifications?.use_dynamic_island ?? true;
     const useToast = settings.live_notifications?.use_toast ?? true;
     const quickUpdateOnToast = settings.live_notifications?.quick_update_on_toast ?? false;
-    const useNativeNotifications = settings.live_notifications?.use_native_notifications ?? false;
-    const nativeOnlyWhenUnfocused = settings.live_notifications?.native_only_when_unfocused ?? true;
     const autoUpdateOnStart = settings.auto_update_on_start ?? false;
 
     // Save notifications to cache whenever they change
@@ -238,38 +233,12 @@ const DynamicIsland = () => {
         }
     }, []);
 
-    // Send native Windows desktop notification
-    const sendNativeNotification = useCallback(async (title: string, body: string) => {
-        if (!useNativeNotifications) return;
-
-        try {
-            // Check if we should send based on window focus
-            if (nativeOnlyWhenUnfocused) {
-                const appWindow = getCurrentWindow();
-                const isFocused = await appWindow.isFocused();
-                const isMinimized = await appWindow.isMinimized();
-
-                // Only send if window is not focused or is minimized
-                if (isFocused && !isMinimized) {
-                    return;
-                }
-            }
-
-            // Check and request notification permission if needed
-            let permissionGranted = await isPermissionGranted();
-            if (!permissionGranted) {
-                const permission = await requestPermission();
-                permissionGranted = permission === 'granted';
-            }
-
-            if (permissionGranted) {
-                await sendNotification({ title, body });
-                console.log('[Native Notification] Sent:', title);
-            }
-        } catch (error) {
-            console.warn('Failed to send native notification:', error);
-        }
-    }, [useNativeNotifications, nativeOnlyWhenUnfocused]);
+    // Send native Windows desktop notification (disabled - plugin not installed)
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const sendNativeNotification = useCallback(async (_title: string, _body: string) => {
+        // Native notifications are disabled - the tauri-plugin-notification is not installed
+        // To re-enable, add the plugin to Cargo.toml and re-import the functions
+    }, []);
 
     // Add notification
     const addNotification = useCallback((notification: DynamicIslandNotification) => {
