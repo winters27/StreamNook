@@ -1,3 +1,7 @@
+## [4.8.4] - 2025-12-08
+### 🐛 Bug Fixes
+- Improved chat layout engine with compatibility updates to handle text rendering correctly, especially with custom fonts.
+
 ## [4.8.3] - 2025-12-08
 ### 🐛 Bug Fixes
 - **Sidebar**: Fixed a bug where the sidebar would sometimes incorrectly display the default profile image instead of the streamer's custom profile image. Also optimized sidebar rendering for improved performance.
@@ -646,6 +650,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
