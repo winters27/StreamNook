@@ -82,6 +82,8 @@ export interface ChatDesignSettings {
   mention_color: string; // Hex color for @ mentions
   reply_color: string; // Hex color for reply threads
   mention_animation: boolean; // Enable red-shift animation for mentions
+  show_timestamps?: boolean; // Show timestamp next to each message
+  show_timestamp_seconds?: boolean; // Include seconds in timestamps
 }
 
 export interface LiveNotificationSettings {

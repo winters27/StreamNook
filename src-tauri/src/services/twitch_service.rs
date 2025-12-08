@@ -1168,10 +1168,22 @@ impl TwitchService {
     }
 
     pub async fn get_top_games(_state: &AppState, limit: u32) -> Result<Vec<serde_json::Value>> {
+        let (games, _) = Self::get_top_games_paginated(_state, None, limit).await?;
+        Ok(games)
+    }
+
+    pub async fn get_top_games_paginated(
+        _state: &AppState,
+        cursor: Option<String>,
+        limit: u32,
+    ) -> Result<(Vec<serde_json::Value>, Option<String>)> {
         let token = Self::get_token().await.ok();
         let client = Client::new();
 
-        let url = format!("https://api.twitch.tv/helix/games/top?first={}", limit);
+        let mut url = format!("https://api.twitch.tv/helix/games/top?first={}", limit);
+        if let Some(cursor) = cursor {
+            url.push_str(&format!("&after={}", cursor));
+        }
 
         let mut request = client.get(&url).header("Client-Id", CLIENT_ID);
 
@@ -1180,6 +1192,13 @@ impl TwitchService {
         }
 
         let response = request.send().await?.json::<serde_json::Value>().await?;
+
+        // Get pagination cursor
+        let next_cursor = response
+            .get("pagination")
+            .and_then(|p| p.get("cursor"))
+            .and_then(|c| c.as_str())
+            .map(|s| s.to_string());
 
         let data = response.get("data").and_then(|d| d.as_array());
 
@@ -1237,9 +1256,9 @@ impl TwitchService {
                     games_with_viewers.push(game_data);
                 }
 
-                Ok(games_with_viewers)
+                Ok((games_with_viewers, next_cursor))
             }
-            None => Ok(Vec::new()),
+            None => Ok((Vec::new(), None)),
         }
     }
 

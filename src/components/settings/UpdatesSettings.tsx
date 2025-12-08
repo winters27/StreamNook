@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { useAppStore } from '../../stores/AppStore';
 import { Check, Loader2, Download, RefreshCw, Package, ArrowRight, AlertCircle, ChevronDown, ChevronRight, FileText, Zap, Settings, Github, Sparkles, Bug, Wrench } from 'lucide-react';
+import { parseInlineMarkdown } from '../../services/markdownService';
 
 interface VersionChange {
     from: string;
@@ -102,15 +103,20 @@ const FormatMarkdown = ({ content }: { content: string }) => {
                 }
 
                 if (cleanLine.startsWith('# '))
-                    return <h3 key={i} className="text-sm font-bold text-textPrimary mt-4 mb-2">{cleanLine.replace('# ', '')}</h3>;
+                    return <h3 key={i} className="text-sm font-bold text-textPrimary mt-4 mb-2">{parseInlineMarkdown(cleanLine.replace('# ', ''))}</h3>;
                 if (cleanLine.startsWith('## '))
-                    return <h4 key={i} className="text-xs font-bold text-textPrimary mt-3 mb-1">{cleanLine.replace('## ', '')}</h4>;
+                    return <h4 key={i} className="text-xs font-bold text-textPrimary mt-3 mb-1">{parseInlineMarkdown(cleanLine.replace('## ', ''))}</h4>;
                 if (cleanLine.startsWith('### '))
-                    return <h5 key={i} className="text-xs font-semibold text-textPrimary mt-2">{cleanLine.replace('### ', '')}</h5>;
+                    return <h5 key={i} className="text-xs font-semibold text-textPrimary mt-2">{parseInlineMarkdown(cleanLine.replace('### ', ''))}</h5>;
                 if (cleanLine.startsWith('- ') || cleanLine.startsWith('* '))
-                    return <li key={i} className="ml-4 list-disc marker:text-textMuted">{cleanLine.replace(/^[-*]\s/, '')}</li>;
+                    return (
+                        <div key={i} className="flex items-start gap-2 ml-2">
+                            <span className="text-textMuted mt-0.5">•</span>
+                            <span>{parseInlineMarkdown(cleanLine.replace(/^[-*]\s/, ''))}</span>
+                        </div>
+                    );
 
-                return <p key={i}>{line}</p>;
+                return <p key={i}>{parseInlineMarkdown(line)}</p>;
             })}
         </div>
     );

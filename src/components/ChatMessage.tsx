@@ -1134,6 +1134,31 @@ const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageI
     );
   }
 
+  // Format timestamp for display - localized with optional seconds
+  const formattedTimestamp = useMemo(() => {
+    if (!chatDesign?.show_timestamps) return null;
+
+    // Get timestamp from IRC message tags (tmi-sent-ts is Unix timestamp in milliseconds)
+    const tmiSentTs = parsed.tags.get('tmi-sent-ts');
+    if (!tmiSentTs) return null;
+
+    try {
+      const date = new Date(parseInt(tmiSentTs, 10));
+      // Use navigator.language for proper localization
+      // Include seconds only if the setting is enabled
+      const options: Intl.DateTimeFormatOptions = {
+        hour: 'numeric',
+        minute: '2-digit',
+      };
+      if (chatDesign?.show_timestamp_seconds) {
+        options.second = '2-digit';
+      }
+      return date.toLocaleTimeString(navigator.language || undefined, options);
+    } catch {
+      return null;
+    }
+  }, [chatDesign?.show_timestamps, chatDesign?.show_timestamp_seconds, parsed.tags]);
+
   // Build dynamic styles based on chat design settings
   const messageStyle: React.CSSProperties = {
     paddingTop: `${(chatDesign?.message_spacing ?? 2) / 2}px`,
@@ -1202,6 +1227,10 @@ const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageI
       )}
 
       <div className={`flex items-start ${isFirstMessage ? 'mb-3' : ''}`}>
+        {/* Timestamp - displayed first before everything */}
+        {formattedTimestamp && (
+          <span className="text-textSecondary text-xs mr-1.5 opacity-60 flex-shrink-0 mt-0.5">{formattedTimestamp}</span>
+        )}
         {/* Badges and Message content in a single flex container */}
         <div className="flex flex-wrap items-start gap-2 flex-1 min-w-0">
           {/* Badges */}

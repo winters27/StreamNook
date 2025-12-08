@@ -3,29 +3,39 @@ import { useAppStore } from '../../stores/AppStore';
 const CacheSettings = () => {
   const { settings, updateSettings } = useAppStore();
 
+  // Toggle component for reuse
+  const Toggle = ({ enabled, onChange }: { enabled: boolean; onChange: () => void }) => (
+    <button
+      onClick={onChange}
+      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors flex-shrink-0 ${enabled ? 'bg-accent' : 'bg-gray-600'
+        }`}
+    >
+      <span
+        className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${enabled ? 'translate-x-6' : 'translate-x-1'
+          }`}
+      />
+    </button>
+  );
+
   return (
     <div className="space-y-6">
       {/* Enable Cache */}
-      <div>
-        <label className="flex items-center gap-3 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={settings.cache?.enabled ?? true}
-            onChange={(e) =>
-              updateSettings({
-                ...settings,
-                cache: { ...settings.cache, enabled: e.target.checked },
-              })
-            }
-            className="w-5 h-5 accent-accent cursor-pointer"
-          />
-          <div>
-            <span className="text-sm font-medium text-textPrimary">Enable Cache</span>
-            <p className="text-xs text-textSecondary">
-              Cache emotes and badges to speed up loading
-            </p>
-          </div>
-        </label>
+      <div className="flex items-center justify-between gap-4">
+        <div>
+          <span className="text-sm font-medium text-textPrimary">Enable Cache</span>
+          <p className="text-xs text-textSecondary">
+            Cache emotes and badges to speed up loading
+          </p>
+        </div>
+        <Toggle
+          enabled={settings.cache?.enabled ?? true}
+          onChange={() =>
+            updateSettings({
+              ...settings,
+              cache: { ...settings.cache, enabled: !(settings.cache?.enabled ?? true) },
+            })
+          }
+        />
       </div>
 
       {/* Cache Expiry */}

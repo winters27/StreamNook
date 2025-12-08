@@ -101,6 +101,10 @@ pub struct ChatDesignSettings {
     pub mention_color: String,   // Hex color for @ mentions
     pub reply_color: String,     // Hex color for reply threads
     pub mention_animation: bool, // Enable red-shift animation for mentions
+    #[serde(default)]
+    pub show_timestamps: bool, // Show timestamp next to each message
+    #[serde(default)]
+    pub show_timestamp_seconds: bool, // Include seconds in timestamps
 }
 
 impl Default for ChatDesignSettings {
@@ -114,6 +118,8 @@ impl Default for ChatDesignSettings {
             mention_color: "#ff4444".to_string(),
             reply_color: "#ff6b6b".to_string(),
             mention_animation: true,
+            show_timestamps: false,
+            show_timestamp_seconds: false,
         }
     }
 }

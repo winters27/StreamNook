@@ -213,14 +213,14 @@ const ProfileOverlay = ({ isOpen, onClose, anchorPosition }: ProfileOverlayProps
                     <User size={24} className="text-accent" />
                   )}
                 </div>
-                <div className="flex-1 min-w-0">
+                <div className="flex-1 min-w-0" style={{ isolation: 'isolate' }}>
                   <div className="flex items-center gap-1.5">
-                    <p
-                      className="text-textSecondary text-sm truncate"
-                      style={seventvPaint ? computePaintStyle(seventvPaint as any, '#9146FF') : undefined}
+                    <span
+                      className="text-textSecondary text-sm truncate inline-block"
+                      style={seventvPaint ? { ...computePaintStyle(seventvPaint as any, '#9146FF'), isolation: 'isolate' } : undefined}
                     >
                       @{currentUser?.login || 'user'}
-                    </p>
+                    </span>
                     {currentUser?.broadcaster_type === 'partner' && (
                       <div title="Verified Partner">
                         <svg
@@ -241,6 +241,8 @@ const ProfileOverlay = ({ isOpen, onClose, anchorPosition }: ProfileOverlayProps
                         ...computePaintStyle(seventvPaint as any, '#9146FF'),
                         WebkitBackgroundClip: 'padding-box',
                         backgroundClip: 'padding-box',
+                        isolation: 'isolate',
+                        contain: 'paint',
                       }}
                       title={`Current Paint: ${seventvPaint.name}`}
                       onClick={handleOpen7TVCosmetics}
@@ -251,6 +253,7 @@ const ProfileOverlay = ({ isOpen, onClose, anchorPosition }: ProfileOverlayProps
                           filter: 'invert(1) contrast(1.5)',
                           WebkitBackgroundClip: 'text',
                           backgroundClip: 'text',
+                          isolation: 'isolate',
                         }}
                       >
                         🎨 {seventvPaint.name}

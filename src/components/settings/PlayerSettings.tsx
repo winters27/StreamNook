@@ -5,6 +5,20 @@ import { useAppStore } from '../../stores/AppStore';
 const PlayerSettings = () => {
   const { settings, updateSettings } = useAppStore();
 
+  // Toggle component for reuse
+  const Toggle = ({ enabled, onChange }: { enabled: boolean; onChange: () => void }) => (
+    <button
+      onClick={onChange}
+      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors flex-shrink-0 ${enabled ? 'bg-accent' : 'bg-gray-600'
+        }`}
+    >
+      <span
+        className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${enabled ? 'translate-x-6' : 'translate-x-1'
+          }`}
+      />
+    </button>
+  );
+
   // Default values for streamlink settings
   const streamlinkDefaults = {
     low_latency_enabled: true,
@@ -75,8 +89,9 @@ const PlayerSettings = () => {
                 Automatically switch when current stream goes offline
               </p>
             </div>
-            <button
-              onClick={() =>
+            <Toggle
+              enabled={settings.auto_switch?.enabled ?? true}
+              onChange={() =>
                 updateSettings({
                   ...settings,
                   auto_switch: {
@@ -86,14 +101,7 @@ const PlayerSettings = () => {
                   },
                 })
               }
-              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${settings.auto_switch?.enabled ?? true ? 'bg-accent' : 'bg-gray-600'
-                }`}
-            >
-              <span
-                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${settings.auto_switch?.enabled ?? true ? 'translate-x-6' : 'translate-x-1'
-                  }`}
-              />
-            </button>
+            />
           </div>
 
           {/* Switch Mode */}
@@ -159,8 +167,9 @@ const PlayerSettings = () => {
                 Display a toast when auto-switching streams
               </p>
             </div>
-            <button
-              onClick={() =>
+            <Toggle
+              enabled={settings.auto_switch?.show_notification ?? true}
+              onChange={() =>
                 updateSettings({
                   ...settings,
                   auto_switch: {
@@ -170,14 +179,7 @@ const PlayerSettings = () => {
                   },
                 })
               }
-              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${settings.auto_switch?.show_notification ?? true ? 'bg-accent' : 'bg-gray-600'
-                }`}
-            >
-              <span
-                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${settings.auto_switch?.show_notification ?? true ? 'translate-x-6' : 'translate-x-1'
-                  }`}
-              />
-            </button>
+            />
           </div>
         </div>
       </div>
@@ -249,24 +251,20 @@ const PlayerSettings = () => {
         </h3>
 
         {/* Twitch Low Latency */}
-        <div>
-          <label className="flex items-center gap-3 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={streamlink.low_latency_enabled}
-              onChange={(e) =>
-                updateSettings({
-                  ...settings,
-                  streamlink: { ...streamlink, low_latency_enabled: e.target.checked },
-                })
-              }
-              className="w-5 h-5 accent-accent cursor-pointer"
-            />
-            <div>
-              <span className="text-sm font-medium text-textPrimary">Twitch Low Latency Mode</span>
-              <p className="text-xs text-textSecondary">Uses Twitch's low latency streaming (forces --twitch-low-latency)</p>
-            </div>
-          </label>
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <span className="text-sm font-medium text-textPrimary">Twitch Low Latency Mode</span>
+            <p className="text-xs text-textSecondary">Uses Twitch's low latency streaming (forces --twitch-low-latency)</p>
+          </div>
+          <Toggle
+            enabled={streamlink.low_latency_enabled}
+            onChange={() =>
+              updateSettings({
+                ...settings,
+                streamlink: { ...streamlink, low_latency_enabled: !streamlink.low_latency_enabled },
+              })
+            }
+          />
         </div>
 
         {/* HLS Live Edge */}
@@ -342,45 +340,37 @@ const PlayerSettings = () => {
         </div>
 
         {/* Disable Hosting */}
-        <div>
-          <label className="flex items-center gap-3 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={streamlink.disable_hosting}
-              onChange={(e) =>
-                updateSettings({
-                  ...settings,
-                  streamlink: { ...streamlink, disable_hosting: e.target.checked },
-                })
-              }
-              className="w-5 h-5 accent-accent cursor-pointer"
-            />
-            <div>
-              <span className="text-sm font-medium text-textPrimary">Disable Hosting</span>
-              <p className="text-xs text-textSecondary">Skip streams that are hosting other channels</p>
-            </div>
-          </label>
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <span className="text-sm font-medium text-textPrimary">Disable Hosting</span>
+            <p className="text-xs text-textSecondary">Skip streams that are hosting other channels</p>
+          </div>
+          <Toggle
+            enabled={streamlink.disable_hosting}
+            onChange={() =>
+              updateSettings({
+                ...settings,
+                streamlink: { ...streamlink, disable_hosting: !streamlink.disable_hosting },
+              })
+            }
+          />
         </div>
 
         {/* Use Proxy */}
-        <div>
-          <label className="flex items-center gap-3 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={streamlink.use_proxy}
-              onChange={(e) =>
-                updateSettings({
-                  ...settings,
-                  streamlink: { ...streamlink, use_proxy: e.target.checked },
-                })
-              }
-              className="w-5 h-5 accent-accent cursor-pointer"
-            />
-            <div>
-              <span className="text-sm font-medium text-textPrimary">Use Proxy Routing</span>
-              <p className="text-xs text-textSecondary">Route playlists through CDN proxies (recommended for ad-blocking)</p>
-            </div>
-          </label>
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <span className="text-sm font-medium text-textPrimary">Use Proxy Routing</span>
+            <p className="text-xs text-textSecondary">Route playlists through CDN proxies (recommended for ad-blocking)</p>
+          </div>
+          <Toggle
+            enabled={streamlink.use_proxy}
+            onChange={() =>
+              updateSettings({
+                ...settings,
+                streamlink: { ...streamlink, use_proxy: !streamlink.use_proxy },
+              })
+            }
+          />
         </div>
 
         {/* Proxy Playlist Args */}
@@ -408,24 +398,20 @@ const PlayerSettings = () => {
         )}
 
         {/* Skip SSL Verify */}
-        <div>
-          <label className="flex items-center gap-3 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={streamlink.skip_ssl_verify}
-              onChange={(e) =>
-                updateSettings({
-                  ...settings,
-                  streamlink: { ...streamlink, skip_ssl_verify: e.target.checked },
-                })
-              }
-              className="w-5 h-5 accent-accent cursor-pointer"
-            />
-            <div>
-              <span className="text-sm font-medium text-textPrimary">Skip SSL Verification</span>
-              <p className="text-xs text-textSecondary">⚠️ Only enable if you have connection issues (not recommended)</p>
-            </div>
-          </label>
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <span className="text-sm font-medium text-textPrimary">Skip SSL Verification</span>
+            <p className="text-xs text-textSecondary">⚠️ Only enable if you have connection issues (not recommended)</p>
+          </div>
+          <Toggle
+            enabled={streamlink.skip_ssl_verify}
+            onChange={() =>
+              updateSettings({
+                ...settings,
+                streamlink: { ...streamlink, skip_ssl_verify: !streamlink.skip_ssl_verify },
+              })
+            }
+          />
         </div>
       </div>
 
@@ -435,45 +421,37 @@ const PlayerSettings = () => {
           Video Player
         </h3>
         {/* Autoplay */}
-        <div>
-          <label className="flex items-center gap-3 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={settings.video_player?.autoplay ?? true}
-              onChange={(e) =>
-                updateSettings({
-                  ...settings,
-                  video_player: { ...settings.video_player, autoplay: e.target.checked },
-                })
-              }
-              className="w-5 h-5 accent-accent cursor-pointer"
-            />
-            <div>
-              <span className="text-sm font-medium text-textPrimary">Autoplay</span>
-              <p className="text-xs text-textSecondary">Automatically play stream when loaded</p>
-            </div>
-          </label>
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <span className="text-sm font-medium text-textPrimary">Autoplay</span>
+            <p className="text-xs text-textSecondary">Automatically play stream when loaded</p>
+          </div>
+          <Toggle
+            enabled={settings.video_player?.autoplay ?? true}
+            onChange={() =>
+              updateSettings({
+                ...settings,
+                video_player: { ...settings.video_player, autoplay: !(settings.video_player?.autoplay ?? true) },
+              })
+            }
+          />
         </div>
 
         {/* Low Latency Mode */}
-        <div>
-          <label className="flex items-center gap-3 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={settings.video_player?.low_latency_mode ?? true}
-              onChange={(e) =>
-                updateSettings({
-                  ...settings,
-                  video_player: { ...settings.video_player, low_latency_mode: e.target.checked },
-                })
-              }
-              className="w-5 h-5 accent-accent cursor-pointer"
-            />
-            <div>
-              <span className="text-sm font-medium text-textPrimary">Low Latency Mode</span>
-              <p className="text-xs text-textSecondary">Reduce stream delay for live content (may affect stability)</p>
-            </div>
-          </label>
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <span className="text-sm font-medium text-textPrimary">Low Latency Mode</span>
+            <p className="text-xs text-textSecondary">Reduce stream delay for live content (may affect stability)</p>
+          </div>
+          <Toggle
+            enabled={settings.video_player?.low_latency_mode ?? true}
+            onChange={() =>
+              updateSettings({
+                ...settings,
+                video_player: { ...settings.video_player, low_latency_mode: !(settings.video_player?.low_latency_mode ?? true) },
+              })
+            }
+          />
         </div>
 
         {/* Max Buffer Length */}
@@ -535,45 +513,37 @@ const PlayerSettings = () => {
         </div>
 
         {/* Lock Aspect Ratio */}
-        <div>
-          <label className="flex items-center gap-3 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={settings.video_player?.lock_aspect_ratio ?? false}
-              onChange={(e) =>
-                updateSettings({
-                  ...settings,
-                  video_player: { ...settings.video_player, lock_aspect_ratio: e.target.checked },
-                })
-              }
-              className="w-5 h-5 accent-accent cursor-pointer"
-            />
-            <div>
-              <span className="text-sm font-medium text-textPrimary">Lock Aspect Ratio (16:9)</span>
-              <p className="text-xs text-textSecondary">Prevent letterboxing by constraining window resize to maintain video aspect ratio</p>
-            </div>
-          </label>
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <span className="text-sm font-medium text-textPrimary">Lock Aspect Ratio (16:9)</span>
+            <p className="text-xs text-textSecondary">Prevent letterboxing by constraining window resize to maintain video aspect ratio</p>
+          </div>
+          <Toggle
+            enabled={settings.video_player?.lock_aspect_ratio ?? false}
+            onChange={() =>
+              updateSettings({
+                ...settings,
+                video_player: { ...settings.video_player, lock_aspect_ratio: !(settings.video_player?.lock_aspect_ratio ?? false) },
+              })
+            }
+          />
         </div>
 
         {/* Default Volume and Muted - Kept for initial state */}
-        <div>
-          <label className="flex items-center gap-3 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={settings.video_player?.muted ?? false}
-              onChange={(e) =>
-                updateSettings({
-                  ...settings,
-                  video_player: { ...settings.video_player, muted: e.target.checked },
-                })
-              }
-              className="w-5 h-5 accent-accent cursor-pointer"
-            />
-            <div>
-              <span className="text-sm font-medium text-textPrimary">Start Muted</span>
-              <p className="text-xs text-textSecondary">Begin playback with audio muted</p>
-            </div>
-          </label>
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <span className="text-sm font-medium text-textPrimary">Start Muted</span>
+            <p className="text-xs text-textSecondary">Begin playback with audio muted</p>
+          </div>
+          <Toggle
+            enabled={settings.video_player?.muted ?? false}
+            onChange={() =>
+              updateSettings({
+                ...settings,
+                video_player: { ...settings.video_player, muted: !(settings.video_player?.muted ?? false) },
+              })
+            }
+          />
         </div>
 
         <div>
