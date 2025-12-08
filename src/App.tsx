@@ -35,9 +35,14 @@ interface BadgeVersion {
   set_id?: string;
 }
 
+// Default sizes for different placements (outside component to avoid recreating on each render)
+const DEFAULT_CHAT_WIDTH = 384; // For 'right' placement
+const DEFAULT_CHAT_HEIGHT = 200; // For 'bottom' placement
+
 function App() {
-  const { loadSettings, chatPlacement, isLoading, currentStream, streamUrl, checkAuthStatus, showProfileOverlay, setShowProfileOverlay, addToast, setShowDropsOverlay, showBadgesOverlay, setShowBadgesOverlay, showWhispersOverlay, setShowWhispersOverlay, settings, updateSettings, isTheaterMode, isHomeActive, toggleHome, stopStream } = useAppStore();
-  const [chatSize, setChatSize] = useState(384); // Default 384px (w-96)
+  const { loadSettings, chatPlacement, isLoading, currentStream, streamUrl, checkAuthStatus, showProfileOverlay, setShowProfileOverlay, addToast, setShowDropsOverlay, showBadgesOverlay, setShowBadgesOverlay, showWhispersOverlay, setShowWhispersOverlay, settings, updateSettings, isTheaterMode, isHomeActive, toggleHome, stopStream, loadActiveDropsCache } = useAppStore();
+
+  const [chatSize, setChatSize] = useState(chatPlacement === 'bottom' ? DEFAULT_CHAT_HEIGHT : DEFAULT_CHAT_WIDTH);
   const [isResizing, setIsResizing] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const [selectedBadge, setSelectedBadge] = useState<{ badge: BadgeVersion; setId: string } | null>(null);
@@ -46,13 +51,85 @@ function App() {
   const [changelogVersion, setChangelogVersion] = useState<string | null>(null);
   const [showSetupWizard, setShowSetupWizard] = useState(false);
 
+  // Track previous placement and chat size to detect changes
+  const prevChatPlacementRef = useRef(chatPlacement);
+  const prevChatSizeRef = useRef(chatPlacement === 'bottom' ? DEFAULT_CHAT_HEIGHT : DEFAULT_CHAT_WIDTH);
+
   // Refs for aspect ratio lock to avoid stale closures
   const aspectRatioLockEnabledRef = useRef(false);
-  const chatSizeRef = useRef(384);
+  const chatSizeRef = useRef(chatPlacement === 'bottom' ? DEFAULT_CHAT_HEIGHT : DEFAULT_CHAT_WIDTH);
   const chatPlacementRef = useRef(chatPlacement);
   const isTheaterModeRef = useRef(false);
   const streamUrlRef = useRef<string | null>(null);
   const isAdjustingRef = useRef(false);
+
+  // Handle placement changes - preserve video dimensions when moving chat around
+  useEffect(() => {
+    const handlePlacementChange = async () => {
+      if (prevChatPlacementRef.current === chatPlacement) return;
+
+      const oldPlacement = prevChatPlacementRef.current;
+      const oldChatSize = prevChatSizeRef.current;
+
+      console.log('[ChatSize] Placement changed from', oldPlacement, 'to', chatPlacement);
+
+      // Set appropriate default based on new placement
+      const newSize = chatPlacement === 'bottom' ? DEFAULT_CHAT_HEIGHT : DEFAULT_CHAT_WIDTH;
+      console.log('[ChatSize] Setting chat size to', newSize);
+      setChatSize(newSize);
+      chatSizeRef.current = newSize;
+
+      // Only resize window if aspect ratio lock is enabled and stream is playing
+      const lockEnabled = aspectRatioLockEnabledRef.current;
+      const currentStreamUrl = streamUrlRef.current;
+      const theaterMode = isTheaterModeRef.current;
+
+      if (lockEnabled && currentStreamUrl && !theaterMode) {
+        try {
+          const window = getCurrentWindow();
+
+          // Don't adjust if window is maximized
+          const isMaximized = await window.isMaximized();
+          if (isMaximized) {
+            console.log('[ChatSize] Window is maximized, skipping resize');
+            prevChatPlacementRef.current = chatPlacement;
+            prevChatSizeRef.current = newSize;
+            return;
+          }
+
+          const size = await window.innerSize();
+          const titleBarHeight = 32;
+
+          console.log('[ChatSize] Calculating window size to preserve video dimensions');
+          console.log('[ChatSize] Old layout:', oldPlacement, 'with chat size', oldChatSize);
+          console.log('[ChatSize] New layout:', chatPlacement, 'with chat size', newSize);
+
+          const [newWidth, newHeight] = await invoke<[number, number]>('calculate_aspect_ratio_size_preserve_video', {
+            currentWidth: size.width,
+            currentHeight: size.height,
+            oldChatSize: oldChatSize,
+            newChatSize: newSize,
+            oldChatPlacement: oldPlacement,
+            newChatPlacement: chatPlacement,
+            titleBarHeight: titleBarHeight,
+          });
+
+          console.log('[ChatSize] New window size to preserve video:', newWidth, newHeight);
+
+          if (Math.abs(size.width - newWidth) > 5 || Math.abs(size.height - newHeight) > 5) {
+            await window.setSize(new LogicalSize(newWidth, newHeight));
+          }
+        } catch (error) {
+          console.error('[ChatSize] Failed to resize window:', error);
+        }
+      }
+
+      prevChatPlacementRef.current = chatPlacement;
+      prevChatSizeRef.current = newSize;
+    };
+
+    handlePlacementChange();
+  }, [chatPlacement]);
 
   // Listen for badge detail events from chat
   useEffect(() => {
@@ -104,6 +181,9 @@ function App() {
     const initializeApp = async () => {
       await loadSettings();
       await checkAuthStatus();
+
+      // Load active drops cache on startup (cached for 1 hour)
+      loadActiveDropsCache();
 
       // Pre-fetch cosmetics for current user
       const { currentUser, isAuthenticated } = useAppStore.getState();
@@ -307,6 +387,7 @@ function App() {
 
   useEffect(() => {
     chatSizeRef.current = chatSize;
+    prevChatSizeRef.current = chatSize;
   }, [chatSize]);
 
   useEffect(() => {
@@ -557,69 +638,49 @@ function App() {
     };
   }, []); // Empty deps - set up once and use refs for current values
 
+  // Check for bundle updates on startup
   useEffect(() => {
     const checkUpdates = async () => {
-
-      // Check for updates on startup (only once per component type)
-      let streamlinkUpdateShown = false;
-      let ttvlolUpdateShown = false;
       try {
         const { invoke } = await import('@tauri-apps/api/core');
-        const settings = useAppStore.getState().settings;
 
-        // Check Streamlink updates
-        if (settings.streamlink_path && !streamlinkUpdateShown) {
-          const isInstalled = await invoke('verify_streamlink_installation', {
-            path: settings.streamlink_path
-          }) as boolean;
-
-          if (isInstalled) {
-            const installedVersion = await invoke('get_installed_streamlink_version', {
-              path: settings.streamlink_path
-            }) as string | null;
-
-            if (installedVersion) {
-              const latestVersion = await invoke('get_latest_streamlink_version') as string;
-
-              if (installedVersion !== latestVersion) {
-                streamlinkUpdateShown = true;
-                const { addToast, openSettings } = useAppStore.getState();
-                addToast(
-                  `Streamlink update available! Current: ${installedVersion} → Latest: ${latestVersion}`,
-                  'info',
-                  {
-                    label: 'Open Settings',
-                    onClick: () => openSettings()
-                  }
-                );
-              }
-            }
-          }
+        interface BundleUpdateStatus {
+          update_available: boolean;
+          current_version: string;
+          latest_version: string;
         }
 
-        // Check TTV LOL plugin updates (if enabled)
-        if (settings.ttvlol_plugin?.enabled && !ttvlolUpdateShown) {
-          const installedVersion = await invoke('get_installed_ttvlol_version') as string | null;
+        const bundleStatus = await invoke('check_for_bundle_update') as BundleUpdateStatus;
 
-          if (installedVersion) {
-            const latestVersion = await invoke('get_latest_ttvlol_version') as string;
+        if (bundleStatus.update_available) {
+          const { addToast, openSettings, settings: currentSettings } = useAppStore.getState();
 
-            if (installedVersion !== latestVersion) {
-              ttvlolUpdateShown = true;
-              const { addToast, openSettings } = useAppStore.getState();
-              addToast(
-                `TTV LOL plugin update available! Current: ${installedVersion} → Latest: ${latestVersion}`,
-                'info',
-                {
-                  label: 'Open Settings',
-                  onClick: () => openSettings()
-                }
-              );
+          // Check if auto-update is enabled
+          if (currentSettings.auto_update_on_start) {
+            addToast(
+              `Update available! v${bundleStatus.current_version} → v${bundleStatus.latest_version}. Auto-updating...`,
+              'info'
+            );
+            // Auto-update will be triggered by the backend
+            try {
+              await invoke('download_and_install_bundle');
+            } catch (e) {
+              console.error('Auto-update failed:', e);
+              addToast(`Auto-update failed: ${e}`, 'error');
             }
+          } else {
+            addToast(
+              `StreamNook update available! v${bundleStatus.current_version} → v${bundleStatus.latest_version}`,
+              'info',
+              {
+                label: 'Update',
+                onClick: () => openSettings('Updates')
+              }
+            );
           }
         }
       } catch (error) {
-        console.error('Failed to check for updates:', error);
+        console.error('Failed to check for bundle updates:', error);
       }
     };
     checkUpdates();

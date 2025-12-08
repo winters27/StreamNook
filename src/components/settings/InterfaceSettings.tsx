@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
-import { Layout, Eye, EyeOff, Columns } from 'lucide-react';
+import { Layout, Eye, EyeOff, Columns, X } from 'lucide-react';
 
 // Sidebar mode types
-export type SidebarMode = 'expanded' | 'compact' | 'hidden';
+export type SidebarMode = 'expanded' | 'compact' | 'hidden' | 'disabled';
 
 // Get sidebar settings from localStorage
 export const getSidebarSettings = () => {
@@ -67,13 +67,13 @@ const InterfaceSettings = () => {
                     <label className="text-sm text-textPrimary font-medium">
                         Sidebar Display Mode
                     </label>
-                    <div className="grid grid-cols-3 gap-2">
+                    <div className="grid grid-cols-4 gap-2">
                         {/* Expanded Mode */}
                         <button
                             onClick={() => handleModeChange('expanded')}
                             className={`p-3 rounded-lg border transition-all flex flex-col items-center gap-2 ${sidebarMode === 'expanded'
-                                    ? 'border-accent bg-accent/10 text-accent'
-                                    : 'border-borderSubtle hover:border-border text-textSecondary hover:text-textPrimary'
+                                ? 'border-accent bg-accent/10 text-accent'
+                                : 'border-borderSubtle hover:border-border text-textSecondary hover:text-textPrimary'
                                 }`}
                         >
                             <Columns size={24} />
@@ -87,8 +87,8 @@ const InterfaceSettings = () => {
                         <button
                             onClick={() => handleModeChange('compact')}
                             className={`p-3 rounded-lg border transition-all flex flex-col items-center gap-2 ${sidebarMode === 'compact'
-                                    ? 'border-accent bg-accent/10 text-accent'
-                                    : 'border-borderSubtle hover:border-border text-textSecondary hover:text-textPrimary'
+                                ? 'border-accent bg-accent/10 text-accent'
+                                : 'border-borderSubtle hover:border-border text-textSecondary hover:text-textPrimary'
                                 }`}
                         >
                             <Eye size={24} />
@@ -102,14 +102,29 @@ const InterfaceSettings = () => {
                         <button
                             onClick={() => handleModeChange('hidden')}
                             className={`p-3 rounded-lg border transition-all flex flex-col items-center gap-2 ${sidebarMode === 'hidden'
-                                    ? 'border-accent bg-accent/10 text-accent'
-                                    : 'border-borderSubtle hover:border-border text-textSecondary hover:text-textPrimary'
+                                ? 'border-accent bg-accent/10 text-accent'
+                                : 'border-borderSubtle hover:border-border text-textSecondary hover:text-textPrimary'
                                 }`}
                         >
                             <EyeOff size={24} />
                             <span className="text-xs font-medium">Hidden</span>
                             <span className="text-[10px] text-textMuted text-center">
                                 Show on hover only
+                            </span>
+                        </button>
+
+                        {/* Disabled Mode */}
+                        <button
+                            onClick={() => handleModeChange('disabled')}
+                            className={`p-3 rounded-lg border transition-all flex flex-col items-center gap-2 ${sidebarMode === 'disabled'
+                                ? 'border-accent bg-accent/10 text-accent'
+                                : 'border-borderSubtle hover:border-border text-textSecondary hover:text-textPrimary'
+                                }`}
+                        >
+                            <X size={24} />
+                            <span className="text-xs font-medium">Disabled</span>
+                            <span className="text-[10px] text-textMuted text-center">
+                                Completely hidden
                             </span>
                         </button>
                     </div>
@@ -155,6 +170,11 @@ const InterfaceSettings = () => {
                         {sidebarMode === 'hidden' && (
                             <>
                                 <strong className="text-textSecondary">Hidden:</strong> The sidebar is completely hidden until you move your cursor to the left edge of the window. It will stay visible while your cursor is within the sidebar area.
+                            </>
+                        )}
+                        {sidebarMode === 'disabled' && (
+                            <>
+                                <strong className="text-textSecondary">Disabled:</strong> The sidebar is completely disabled and will not appear at all. Use this option if you prefer a cleaner interface without the streams list.
                             </>
                         )}
                     </p>

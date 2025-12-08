@@ -3,6 +3,7 @@ import { VariableSizeList as List } from 'react-window';
 import AutoSizer from 'react-virtualized-auto-sizer';
 import { invoke } from '@tauri-apps/api/core';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
+import { Pickaxe, Gift } from 'lucide-react';
 import { useTwitchChat } from '../hooks/useTwitchChat';
 import { useAppStore } from '../stores/AppStore';
 import { incrementStat } from '../services/supabaseService';
@@ -255,6 +256,11 @@ const ChatWidget = () => {
   const isInitialLoadRef = useRef<boolean>(false);
   const initialLoadTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
+  // Drops mining state
+  const [dropsCampaign, setDropsCampaign] = useState<{ id: string; name: string; game_name: string } | null>(null);
+  const [isMining, setIsMining] = useState(false);
+  const [isLoadingDrops, setIsLoadingDrops] = useState(false);
+
   // Refs for batching list resets to prevent UI freezing during resizing
   const resetRafIdRef = useRef<number | null>(null);
   const minResetIndexRef = useRef<number>(Infinity);
@@ -377,6 +383,118 @@ const ChatWidget = () => {
       if (currentStream?.user_login !== connectedChannelRef.current) connectedChannelRef.current = null;
     };
   }, [currentStream?.user_login, currentStream?.user_id]);
+
+  // Load drops data when stream changes to check if game has active drops
+  useEffect(() => {
+    const loadDropsForStream = async () => {
+      if (!currentStream?.game_name) {
+        setDropsCampaign(null);
+        setIsMining(false);
+        return;
+      }
+      setIsLoadingDrops(true);
+      try {
+        // Get drops inventory
+        const inventory = await invoke<{ items: Array<{ campaign: { id: string; name: string; game_name: string }; status: string }> }>('get_drops_inventory');
+        if (inventory?.items) {
+          // Find active campaign matching current game
+          const gameName = currentStream.game_name.toLowerCase();
+          const matchingCampaign = inventory.items.find(
+            item => item.status === 'Active' && item.campaign.game_name?.toLowerCase() === gameName
+          );
+          if (matchingCampaign) {
+            setDropsCampaign(matchingCampaign.campaign);
+            // Check if already mining this campaign
+            const miningStatus = await invoke<{ is_mining: boolean; current_campaign: string | null }>('get_mining_status');
+            setIsMining(miningStatus.is_mining && miningStatus.current_campaign === matchingCampaign.campaign.name);
+          } else {
+            setDropsCampaign(null);
+            setIsMining(false);
+          }
+        }
+      } catch (err) {
+        console.warn('[ChatWidget] Could not load drops data:', err);
+        setDropsCampaign(null);
+      } finally {
+        setIsLoadingDrops(false);
+      }
+    };
+    loadDropsForStream();
+  }, [currentStream?.game_name]);
+
+  // Listen for mining status changes from anywhere in the app
+  useEffect(() => {
+    const handleMiningStatusChange = async () => {
+      if (!dropsCampaign) return;
+      try {
+        const miningStatus = await invoke<{ is_mining: boolean; current_campaign: string | null }>('get_mining_status');
+        setIsMining(miningStatus.is_mining && miningStatus.current_campaign === dropsCampaign.name);
+      } catch (err) {
+        console.warn('[ChatWidget] Failed to check mining status:', err);
+      }
+    };
+
+    // Listen for mining events using dynamic import
+    let unlisten: (() => void) | null = null;
+
+    const setupListener = async () => {
+      try {
+        const { listen } = await import('@tauri-apps/api/event');
+        unlisten = await listen('mining-status-changed', handleMiningStatusChange);
+      } catch (err) {
+        console.warn('[ChatWidget] Failed to set up mining event listener:', err);
+      }
+    };
+    setupListener();
+
+    // Also poll every 5 seconds as backup for state sync
+    const pollInterval = setInterval(handleMiningStatusChange, 5000);
+
+    return () => {
+      if (unlisten) unlisten();
+      clearInterval(pollInterval);
+    };
+  }, [dropsCampaign]);
+
+  // Handler to toggle mining drops for current channel
+  const handleToggleMining = async () => {
+    if (!dropsCampaign) return;
+
+    if (isMining) {
+      // Stop mining
+      try {
+        await invoke('stop_mining');
+        setIsMining(false);
+        useAppStore.getState().addToast(`Stopped mining drops for ${dropsCampaign.game_name}`, 'info');
+      } catch (err) {
+        console.error('[ChatWidget] Failed to stop mining:', err);
+        useAppStore.getState().addToast('Failed to stop mining drops', 'error');
+      }
+    } else {
+      // Start mining
+      try {
+        // Try to start mining with channel preference (use current channel's user_id)
+        // If the channel is eligible for this campaign, it will use it
+        // Otherwise, the backend will fall back to recommended channel
+        if (currentStream?.user_id) {
+          await invoke('start_campaign_mining_with_channel', {
+            campaignId: dropsCampaign.id,
+            channelId: currentStream.user_id
+          });
+        } else {
+          // Fall back to automatic channel selection
+          await invoke('start_campaign_mining', {
+            campaignId: dropsCampaign.id
+          });
+        }
+        setIsMining(true);
+        useAppStore.getState().addToast(`Started mining drops for ${dropsCampaign.game_name}`, 'success');
+      } catch (err) {
+        console.error('[ChatWidget] Failed to start mining:', err);
+        useAppStore.getState().addToast('Failed to start mining drops', 'error');
+      }
+    }
+  };
 
   // Force re-measurement of all visible items after programmatic scrolls
   const triggerRemeasurement = useCallback(() => {
@@ -1124,6 +1242,20 @@ const ChatWidget = () => {
                 <button onClick={() => setShowEmotePicker(!showEmotePicker)} className="flex-shrink-0 p-2 text-textSecondary hover:text-textPrimary hover:bg-glass rounded transition-all" title="Emotes">
                   <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM7 9a1 1 0 100-2 1 1 0 000 2zm7-1a1 1 0 11-2 0 1 1 0 012 0zm-.464 5.535a1 1 0 10-1.415-1.414 3 3 0 01-4.242 0 1 1 0 00-1.415 1.414 5 5 0 007.072 0z" clipRule="evenodd" /></svg>
                 </button>
+                {/* Drops mining button - only shows if current game has active drops */}
+                {dropsCampaign && (
+                  <button
+                    onClick={handleToggleMining}
+                    disabled={isLoadingDrops}
+                    className={`flex-shrink-0 p-2 rounded transition-all ${isMining
+                      ? 'text-green-400 bg-glass hover:bg-glass-hover hover:text-red-400'
+                      : 'text-accent bg-glass hover:bg-glass-hover hover:text-accent'
+                      }`}
+                    title={isMining ? `Stop mining drops for ${dropsCampaign.game_name}` : `Start mining drops for ${dropsCampaign.game_name}`}
+                  >
+                    <Pickaxe size={18} className={isMining ? 'animate-pulse' : ''} />
+                  </button>
+                )}
                 <input ref={inputRef} type="text" value={messageInput} onChange={(e) => setMessageInput(e.target.value)} onKeyPress={handleKeyPress}
                   placeholder="Send a message" className="flex-1 min-w-0 glass-input text-textPrimary text-sm px-3 py-2 placeholder-textSecondary" disabled={!isConnected} />
                 <button onClick={handleSendMessage} disabled={!messageInput.trim() || !isConnected} className="flex-shrink-0 p-2 glass-button text-white rounded disabled:opacity-50 disabled:cursor-not-allowed" title="Send message">

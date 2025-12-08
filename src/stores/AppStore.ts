@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
-import type { Settings, TwitchUser, TwitchStream, UserInfo } from '../types';
+import type { Settings, TwitchUser, TwitchStream, UserInfo, TwitchCategory } from '../types';
 import { trackActivity, isStreamlinkError, sendStreamlinkDiagnostics } from '../services/logService';
 import { upsertUser } from '../services/supabaseService';
 
@@ -18,6 +18,48 @@ export interface Toast {
 }
 
 export type SettingsTab = 'Interface' | 'Player' | 'Chat' | 'Integrations' | 'Notifications' | 'Cache' | 'Support' | 'Updates' | 'Analytics';
+
+export type HomeTab = 'following' | 'recommended' | 'browse' | 'search' | 'category';
+
+// Types for drops data - matches backend DropCampaign struct
+export interface DropCampaign {
+  id: string;
+  name: string;
+  game_id: string;
+  game_name: string;
+  description: string;
+  image_url: string;
+  start_at: string;
+  end_at: string;
+  time_based_drops: Array<{
+    id: string;
+    name: string;
+    required_minutes_watched: number;
+    benefit_edges: Array<{
+      id: string;
+      name: string;
+      image_url: string;
+    }>;
+  }>;
+  is_account_connected: boolean;
+  allowed_channels: Array<{ id: string; name: string }>;
+  is_acl_based: boolean;
+  details_url?: string;
+}
+
+interface DropsCache {
+  // All campaigns for reference
+  campaigns: DropCampaign[];
+  // Map from game_id to campaigns (can have multiple per game)
+  byGameId: Map<string, DropCampaign[]>;
+  // Map from game_name (lowercase) to campaigns
+  byGameName: Map<string, DropCampaign[]>;
+  // Timestamp when data was last fetched
+  lastFetchedAt: number;
+}
+
+// Cache duration: 15 minutes in milliseconds (backend uses 5 min, we use 15 for frontend)
+const DROPS_CACHE_DURATION = 15 * 60 * 1000;
 
 interface AppState {
   settings: Settings;
@@ -50,6 +92,13 @@ interface AppState {
   originalChatPlacement: string | null;
   toasts: Toast[];
   isAutoSwitching: boolean;
+  // Navigation state for deep linking
+  homeActiveTab: HomeTab;
+  homeSelectedCategory: TwitchCategory | null;
+  dropsSearchTerm: string;
+  // Centralized drops cache
+  dropsCache: DropsCache | null;
+  isLoadingDropsCache: boolean;
   handleStreamOffline: () => Promise<void>;
   addToast: (message: string | React.ReactNode, type: 'info' | 'success' | 'warning' | 'error' | 'live', action?: { label: string; onClick: () => void }) => void;
   removeToast: (id: number) => void;
@@ -79,6 +128,17 @@ interface AppState {
   toggleFavoriteStreamer: (userId: string) => Promise<void>;
   isFavoriteStreamer: (userId: string) => boolean;
   toggleHome: () => void;
+  // Navigation actions for deep linking
+  setHomeActiveTab: (tab: HomeTab) => void;
+  setHomeSelectedCategory: (category: TwitchCategory | null) => void;
+  setDropsSearchTerm: (term: string) => void;
+  navigateToHomeTab: (tab: HomeTab, category?: TwitchCategory) => void;
+  navigateToCategoryByName: (categoryName: string) => Promise<void>;
+  openDropsWithSearch: (searchTerm: string) => void;
+  // Centralized drops cache actions
+  loadActiveDropsCache: (forceRefresh?: boolean) => Promise<void>;
+  getDropsCampaignByGameId: (gameId: string) => DropCampaign | undefined;
+  getDropsCampaignByGameName: (gameName: string) => DropCampaign | undefined;
 }
 
 // Flags to ensure we only show session toasts once per app session
@@ -137,6 +197,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   originalChatPlacement: null,
   toasts: [],
   isAutoSwitching: false,
+  // Navigation state for deep linking
+  homeActiveTab: 'following' as HomeTab,
+  homeSelectedCategory: null,
+  dropsSearchTerm: '',
+  // Centralized drops cache
+  dropsCache: null,
+  isLoadingDropsCache: false,
 
   handleStreamOffline: async () => {
     const state = get();
@@ -927,5 +994,145 @@ export const useAppStore = create<AppState>((set, get) => ({
     const newHomeActive = !state.isHomeActive;
     trackActivity(newHomeActive ? 'Opened Home' : 'Closed Home');
     set({ isHomeActive: newHomeActive });
+  },
+
+  // Navigation actions for deep linking
+  setHomeActiveTab: (tab: HomeTab) => {
+    set({ homeActiveTab: tab });
+  },
+
+  setHomeSelectedCategory: (category: TwitchCategory | null) => {
+    set({ homeSelectedCategory: category });
+  },
+
+  setDropsSearchTerm: (term: string) => {
+    set({ dropsSearchTerm: term });
+  },
+
+  navigateToHomeTab: (tab: HomeTab, category?: TwitchCategory) => {
+    trackActivity(`Navigated to Home tab: ${tab}`);
+    set({
+      homeActiveTab: tab,
+      homeSelectedCategory: category || null,
+      isHomeActive: true,
+      // Close any overlays
+      showBadgesOverlay: false,
+      showDropsOverlay: false,
+    });
+  },
+
+  navigateToCategoryByName: async (categoryName: string) => {
+    trackActivity(`Navigating to category: ${categoryName}`);
+
+    // Create a partial category object with just the name
+    // Home.tsx will detect this (no ID) and use get_streams_by_game_name to load streams
+    const partialCategory: TwitchCategory = {
+      id: '', // Empty ID signals Home.tsx to load by name
+      name: categoryName,
+      box_art_url: '',
+    };
+
+    // Navigate to the category view - Home.tsx will load streams by game name
+    set({
+      homeActiveTab: 'category',
+      homeSelectedCategory: partialCategory,
+      isHomeActive: true,
+      showBadgesOverlay: false,
+      showDropsOverlay: false,
+    });
+
+    get().addToast(`Loading ${categoryName} streams...`, 'info');
+  },
+
+  openDropsWithSearch: (searchTerm: string) => {
+    trackActivity(`Opening Drops with search: ${searchTerm}`);
+    set({
+      dropsSearchTerm: searchTerm,
+      showDropsOverlay: true,
+      showBadgesOverlay: false,
+    });
+  },
+
+  // Centralized drops cache loading with 15-minute cache duration
+  loadActiveDropsCache: async (forceRefresh = false) => {
+    const { dropsCache, isLoadingDropsCache } = get();
+
+    // Don't reload if already loading
+    if (isLoadingDropsCache) return;
+
+    // Check if cache is still valid
+    if (!forceRefresh && dropsCache) {
+      const cacheAge = Date.now() - dropsCache.lastFetchedAt;
+      if (cacheAge < DROPS_CACHE_DURATION) {
+        console.log(`[DropsCache] Using cached data (${Math.round(cacheAge / 60000)}min old, ${dropsCache.campaigns.length} campaigns)`);
+        return;
+      }
+    }
+
+    set({ isLoadingDropsCache: true });
+
+    try {
+      // Use get_active_drop_campaigns which returns all 117+ active campaigns
+      const campaigns = await invoke<DropCampaign[]>('get_active_drop_campaigns');
+
+      if (campaigns && campaigns.length > 0) {
+        const byGameId = new Map<string, DropCampaign[]>();
+        const byGameName = new Map<string, DropCampaign[]>();
+
+        for (const campaign of campaigns) {
+          // Index by game_id (can have multiple campaigns per game)
+          if (campaign.game_id) {
+            const existing = byGameId.get(campaign.game_id) || [];
+            existing.push(campaign);
+            byGameId.set(campaign.game_id, existing);
+          }
+          // Index by game_name (lowercase for case-insensitive lookup)
+          if (campaign.game_name) {
+            const key = campaign.game_name.toLowerCase();
+            const existing = byGameName.get(key) || [];
+            existing.push(campaign);
+            byGameName.set(key, existing);
+          }
+        }
+
+        set({
+          dropsCache: {
+            campaigns,
+            byGameId,
+            byGameName,
+            lastFetchedAt: Date.now(),
+          },
+          isLoadingDropsCache: false,
+        });
+
+        console.log(`[DropsCache] Loaded ${campaigns.length} active campaigns for ${byGameId.size} games`);
+      } else {
+        set({
+          dropsCache: {
+            campaigns: [],
+            byGameId: new Map(),
+            byGameName: new Map(),
+            lastFetchedAt: Date.now(),
+          },
+          isLoadingDropsCache: false,
+        });
+        console.log('[DropsCache] No active campaigns found');
+      }
+    } catch (e) {
+      console.error('[DropsCache] Failed to load active drops:', e);
+      set({ isLoadingDropsCache: false });
+    }
+  },
+
+  // Returns the first campaign for a game (for displaying indicator)
+  getDropsCampaignByGameId: (gameId: string) => {
+    const campaigns = get().dropsCache?.byGameId.get(gameId);
+    return campaigns?.[0];
+  },
+
+  // Returns the first campaign for a game name (case-insensitive)
+  getDropsCampaignByGameName: (gameName: string) => {
+    const campaigns = get().dropsCache?.byGameName.get(gameName.toLowerCase());
+    return campaigns?.[0];
   },
 }));

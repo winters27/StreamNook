@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { useAppStore } from '../stores/AppStore';
-import { ChevronLeft, ChevronRight, Users, Sparkles, Radio, Heart } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Users, Sparkles, Radio, Heart, Gift } from 'lucide-react';
 import type { TwitchStream } from '../types';
 import { invoke } from '@tauri-apps/api/core';
 import { getSidebarSettings, type SidebarMode } from './settings/InterfaceSettings';
@@ -83,6 +83,34 @@ const Sidebar = () => {
     // Cache for profile images fetched from Twitch Helix API
     const [profileImages, setProfileImages] = useState<Map<string, string>>(new Map());
     const fetchingProfilesRef = useRef<Set<string>>(new Set());
+
+    // Drops-enabled games tracking (by game_name lowercase)
+    const [dropsGameNames, setDropsGameNames] = useState<Set<string>>(new Set());
+
+    // Load drops data to know which games have active drops
+    useEffect(() => {
+        const loadActiveDrops = async () => {
+            try {
+                const inventory = await invoke<{ items: Array<{ campaign: { game_name: string }; status: string }> }>('get_drops_inventory');
+                if (inventory?.items) {
+                    const gameNames = new Set<string>();
+                    for (const item of inventory.items) {
+                        if (item.status === 'Active' && item.campaign.game_name) {
+                            gameNames.add(item.campaign.game_name.toLowerCase());
+                        }
+                    }
+                    setDropsGameNames(gameNames);
+                }
+            } catch (err) {
+                // Silently fail - drops indicator is optional
+                console.warn('[Sidebar] Could not load drops data:', err);
+            }
+        };
+        loadActiveDrops();
+        // Refresh every 5 minutes
+        const interval = setInterval(loadActiveDrops, 5 * 60 * 1000);
+        return () => clearInterval(interval);
+    }, []);
 
     // Listen for settings changes from InterfaceSettings
     useEffect(() => {
@@ -298,6 +326,10 @@ const Sidebar = () => {
                     showExpanded: isVisible
                 };
 
+            case 'disabled':
+                // Completely disabled - never show
+                return { visible: false, width: 0, showExpanded: false };
+
             default:
                 return { visible: true, width: COMPACT_WIDTH, showExpanded: false };
         }
@@ -310,6 +342,11 @@ const Sidebar = () => {
     }, []);
 
     const { visible, width, showExpanded } = calculateSidebarState();
+
+    // If sidebar is completely disabled, render nothing
+    if (sidebarMode === 'disabled') {
+        return null;
+    }
 
     // Sort followed streams by favorites first
     const sortedFollowedStreams = [...followedStreams].sort((a, b) => {
@@ -370,6 +407,7 @@ const Sidebar = () => {
     const StreamItem = ({ stream, showFavorite = false }: { stream: TwitchStream; showFavorite?: boolean }) => {
         const isCurrentStream = currentStream?.user_login === stream.user_login;
         const isFavorite = isFavoriteStreamer(stream.user_id);
+        const hasDrops = stream.game_name ? dropsGameNames.has(stream.game_name.toLowerCase()) : false;
 
         return (
             <div
@@ -382,7 +420,7 @@ const Sidebar = () => {
                     ${showExpanded ? 'gap-2 justify-start' : 'gap-0 justify-center'}
                 `}
                 onClick={() => handleStreamClick(stream)}
-                title={showExpanded ? undefined : `${stream.user_name} - ${stream.game_name}`}
+                title={showExpanded ? undefined : `${stream.user_name} - ${stream.game_name}${hasDrops ? ' (Drops enabled)' : ''}`}
             >
                 {/* Avatar with live indicator */}
                 <div className="relative flex-shrink-0 transition-all duration-200">
@@ -395,6 +433,12 @@ const Sidebar = () => {
                         }}
                     />
                     <div className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-background animate-pulse" style={{ backgroundColor: '#eb0000' }} />
+                    {/* Drops indicator on avatar - only show in compact mode */}
+                    {hasDrops && !showExpanded && (
+                        <div className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-accent flex items-center justify-center border border-background">
+                            <Gift size={10} className="text-white" />
+                        </div>
+                    )}
                 </div>
 
                 {/* Stream info - only show when expanded */}
@@ -412,6 +456,12 @@ const Sidebar = () => {
                         </div>
                         <div className="flex items-center gap-1 text-xs text-textMuted truncate">
                             <span className="truncate">{stream.game_name || 'Just Chatting'}</span>
+                            {/* Drops indicator - show next to game name */}
+                            {hasDrops && (
+                                <span title="Drops enabled">
+                                    <Gift size={10} className="text-accent flex-shrink-0" />
+                                </span>
+                            )}
                         </div>
                     </div>
                 )}

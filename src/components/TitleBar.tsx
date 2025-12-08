@@ -1,5 +1,5 @@
 import { Window } from '@tauri-apps/api/window';
-import { Home, Droplet, User, Settings, Proportions, Palette, Check } from 'lucide-react';
+import { Home, Gift, User, Settings, Proportions, Palette, Check } from 'lucide-react';
 import { Minus, X, CornersOut, CornersIn, Medal } from 'phosphor-react';
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { useAppStore } from '../stores/AppStore';
@@ -168,58 +168,32 @@ const TitleBar = () => {
               const isChannelPointsMining = dropsSettings?.auto_claim_channel_points ?? false;
               const isBothActive = isMiningActive && isChannelPointsMining;
 
-              // Determine droplet color and puddle class
-              let dropletColor = 'text-textSecondary';
-              let puddleColor = 'bg-green-500/30';
-              let splashColor = 'bg-green-500/60';
+              // Determine gift box color/shimmer class
+              // Silver = channel points only, Gold = drops only, Iridescent = both
+              let giftClass = '';
               let title = 'Drops & Points';
 
               if (isBothActive) {
-                dropletColor = 'text-purple-500 rainbow-drop-icon';
-                puddleColor = 'rainbow-puddle-icon';
-                splashColor = 'bg-purple-500/60';
-                title = 'Drops & Points (Both Mining Active)';
+                giftClass = 'gift-shimmer-iridescent';
+                title = 'Drops & Points (Both Active)';
               } else if (isMiningActive) {
-                dropletColor = 'text-green-500';
-                puddleColor = 'bg-green-500/30';
-                splashColor = 'bg-green-500/60';
+                giftClass = 'gift-shimmer-gold';
                 title = 'Drops & Points (Drops Mining Active)';
               } else if (isChannelPointsMining) {
-                dropletColor = 'text-blue-500';
-                puddleColor = 'bg-blue-500/30';
-                splashColor = 'bg-blue-500/60';
+                giftClass = 'gift-shimmer-silver';
                 title = 'Drops & Points (Channel Points Active)';
               }
 
               const isAnyMiningActive = isMiningActive || isChannelPointsMining;
 
               return (
-                <>
-                  <button
-                    onClick={() => setShowDropsOverlay(true)}
-                    className="p-1.5 text-textSecondary hover:text-textPrimary hover:bg-glass rounded transition-all duration-200"
-                    title={title}
-                  >
-                    {isAnyMiningActive ? (
-                      <>
-                        <div className={`relative z-10 ${isBothActive ? 'rainbow-drop-icon' : ''}`}>
-                          <Droplet size={14} className={`animate-droplet ${isBothActive ? '' : dropletColor}`} fill="currentColor" />
-                        </div>
-                        {/* Rippling puddle at bottom */}
-                        <div className="absolute bottom-0 left-1/2 -translate-x-1/2 translate-y-1/2 w-3 h-1 pointer-events-none">
-                          <div className={`absolute inset-0 rounded-full blur-[1px] ${isBothActive ? 'rainbow-puddle-icon' : `animate-ripple ${puddleColor}`}`} />
-                        </div>
-                      </>
-                    ) : (
-                      <Droplet size={14} fill="currentColor" />
-                    )}
-                  </button>
-                  {showSplash && (
-                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                      <div className={`w-2 h-2 ${splashColor} rounded-full animate-splash`} />
-                    </div>
-                  )}
-                </>
+                <button
+                  onClick={() => setShowDropsOverlay(true)}
+                  className="p-1.5 text-textSecondary hover:text-textPrimary hover:bg-glass rounded transition-all duration-200"
+                  title={title}
+                >
+                  <Gift size={16} className={isAnyMiningActive ? giftClass : ''} />
+                </button>
               );
             })()}
           </div>
@@ -231,23 +205,6 @@ const TitleBar = () => {
             title="Global Badges"
           >
             <Medal size={16} />
-          </button>
-
-          {/* Profile Button */}
-          <button
-            onClick={() => setShowProfileOverlay(!showProfileOverlay)}
-            className="p-1.5 text-textSecondary hover:text-textPrimary hover:bg-glass rounded transition-all duration-200"
-            title={isAuthenticated ? 'Profile' : 'Login'}
-          >
-            {isAuthenticated && currentUser?.profile_image_url ? (
-              <img
-                src={currentUser.profile_image_url}
-                alt="Profile"
-                className="w-4 h-4 rounded-full object-cover"
-              />
-            ) : (
-              <User size={16} />
-            )}
           </button>
 
           {/* Theme Picker Button */}
@@ -337,6 +294,23 @@ const TitleBar = () => {
         </div>
 
         <div className="flex space-x-1" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+          {/* Profile Button */}
+          <button
+            onClick={() => setShowProfileOverlay(!showProfileOverlay)}
+            className="p-1.5 text-textSecondary hover:text-textPrimary hover:bg-glass rounded transition-all duration-200"
+            title={isAuthenticated ? 'Profile' : 'Login'}
+          >
+            {isAuthenticated && currentUser?.profile_image_url ? (
+              <img
+                src={currentUser.profile_image_url}
+                alt="Profile"
+                className="w-4 h-4 rounded-full object-cover"
+              />
+            ) : (
+              <User size={16} />
+            )}
+          </button>
+
           {/* Compact View Button - only show when stream is playing */}
           {streamUrl && (
             <button
