@@ -108,7 +108,6 @@ fn main() {
     Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(live_notification_service.clone())
         .manage(whisper_service.clone())
@@ -245,6 +244,7 @@ fn main() {
             check_dashboard_available,
             is_dashboard_running,
             auto_start_dashboard_for_admin,
+            get_emoji_image,
             // Twitch commands
             twitch_login,
             twitch_start_device_login,

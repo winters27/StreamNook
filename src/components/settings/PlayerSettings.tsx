@@ -98,6 +98,7 @@ const PlayerSettings = () => {
                     enabled: !(settings.auto_switch?.enabled ?? true),
                     mode: settings.auto_switch?.mode ?? 'same_category',
                     show_notification: settings.auto_switch?.show_notification ?? true,
+                    auto_redirect_on_raid: settings.auto_switch?.auto_redirect_on_raid ?? true,
                   },
                 })
               }
@@ -121,6 +122,7 @@ const PlayerSettings = () => {
                       enabled: settings.auto_switch?.enabled ?? true,
                       mode: 'same_category',
                       show_notification: settings.auto_switch?.show_notification ?? true,
+                      auto_redirect_on_raid: settings.auto_switch?.auto_redirect_on_raid ?? true,
                     },
                   })
                 }
@@ -139,6 +141,7 @@ const PlayerSettings = () => {
                       enabled: settings.auto_switch?.enabled ?? true,
                       mode: 'followed_streams',
                       show_notification: settings.auto_switch?.show_notification ?? true,
+                      auto_redirect_on_raid: settings.auto_switch?.auto_redirect_on_raid ?? true,
                     },
                   })
                 }
@@ -176,6 +179,33 @@ const PlayerSettings = () => {
                     enabled: settings.auto_switch?.enabled ?? true,
                     mode: settings.auto_switch?.mode ?? 'same_category',
                     show_notification: !(settings.auto_switch?.show_notification ?? true),
+                    auto_redirect_on_raid: settings.auto_switch?.auto_redirect_on_raid ?? true,
+                  },
+                })
+              }
+            />
+          </div>
+
+          {/* Auto-Redirect on Raid */}
+          <div className="flex items-center justify-between">
+            <div>
+              <label className="text-sm font-medium text-textPrimary">
+                Auto-Redirect on Raid
+              </label>
+              <p className="text-xs text-textSecondary">
+                Automatically follow raids to the target channel (requires login)
+              </p>
+            </div>
+            <Toggle
+              enabled={settings.auto_switch?.auto_redirect_on_raid ?? true}
+              onChange={() =>
+                updateSettings({
+                  ...settings,
+                  auto_switch: {
+                    enabled: settings.auto_switch?.enabled ?? true,
+                    mode: settings.auto_switch?.mode ?? 'same_category',
+                    show_notification: settings.auto_switch?.show_notification ?? true,
+                    auto_redirect_on_raid: !(settings.auto_switch?.auto_redirect_on_raid ?? true),
                   },
                 })
               }
@@ -449,6 +479,23 @@ const PlayerSettings = () => {
               updateSettings({
                 ...settings,
                 video_player: { ...settings.video_player, low_latency_mode: !(settings.video_player?.low_latency_mode ?? true) },
+              })
+            }
+          />
+        </div>
+
+        {/* Jump to Live on Load */}
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <span className="text-sm font-medium text-textPrimary">Jump to Live on Load</span>
+            <p className="text-xs text-textSecondary">Automatically jump to the live edge when stream starts (fixes 15s delay)</p>
+          </div>
+          <Toggle
+            enabled={settings.video_player?.jump_to_live ?? false}
+            onChange={() =>
+              updateSettings({
+                ...settings,
+                video_player: { ...settings.video_player, jump_to_live: !(settings.video_player?.jump_to_live ?? false) },
               })
             }
           />

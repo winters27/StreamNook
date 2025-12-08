@@ -4,6 +4,58 @@ import { Search, ArrowLeft, Heart, Maximize2, X, Gift, Pickaxe, Check } from 'lu
 import { invoke } from '@tauri-apps/api/core';
 import type { TwitchStream, TwitchCategory } from '../types';
 import LoadingWidget from './LoadingWidget';
+import { parseEmojisProxied, EmojiSegment } from '../services/emojiService';
+
+// Component to render stream title with Apple-style emojis (inline)
+const StreamTitleWithEmojis = ({ title, className = '' }: { title: string; className?: string }) => {
+    const [segments, setSegments] = useState<EmojiSegment[]>([]);
+    const [isLoading, setIsLoading] = useState(true);
+
+    useEffect(() => {
+        let mounted = true;
+
+        parseEmojisProxied(title)
+            .then((result) => {
+                if (mounted) {
+                    setSegments(result);
+                    setIsLoading(false);
+                }
+            })
+            .catch(() => {
+                if (mounted) {
+                    setSegments([{ type: 'text', content: title }]);
+                    setIsLoading(false);
+                }
+            });
+
+        return () => {
+            mounted = false;
+        };
+    }, [title]);
+
+    if (isLoading) {
+        return <>{title}</>;
+    }
+
+    return (
+        <>
+            {segments.map((segment, idx) =>
+                segment.type === 'emoji' && segment.emojiUrl && segment.emojiUrl.startsWith('data:') ? (
+                    <img
+                        key={idx}
+                        src={segment.emojiUrl}
+                        alt={segment.content}
+                        className="inline-block w-4 h-4 object-contain align-text-bottom mx-px"
+                        style={{ verticalAlign: '-3px' }}
+                        loading="lazy"
+                    />
+                ) : (
+                    <span key={idx}>{segment.content}</span>
+                )
+            )}
+        </>
+    );
+};
 
 // Types for drops data
 interface DropCampaign {
@@ -799,7 +851,7 @@ const Home = () => {
                                             </div>
                                             <div className="space-y-0.5">
                                                 <h3 className="text-textPrimary font-medium text-sm line-clamp-1 group-hover:text-accent transition-colors">
-                                                    {stream.title}
+                                                    <StreamTitleWithEmojis title={stream.title} />
                                                 </h3>
                                                 <div className="flex items-center gap-1">
                                                     <p className="text-textSecondary text-xs">{stream.user_name}</p>
@@ -918,7 +970,7 @@ const Home = () => {
                                                 </div>
                                                 <div className="space-y-0.5">
                                                     <h3 className="text-textPrimary font-medium text-sm line-clamp-1 group-hover:text-accent transition-colors">
-                                                        {stream.title}
+                                                        <StreamTitleWithEmojis title={stream.title} />
                                                     </h3>
                                                     <div className="flex items-center gap-1">
                                                         <p className="text-textSecondary text-xs">{stream.user_name}</p>

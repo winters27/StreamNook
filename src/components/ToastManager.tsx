@@ -4,7 +4,7 @@ import { useAppStore, Toast } from '../stores/AppStore';
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
-import { parseEmojis } from '../services/emojiService';
+import { parseEmojisProxied, EmojiSegment } from '../services/emojiService';
 
 interface LiveNotification {
   streamer_name: string;
@@ -16,6 +16,57 @@ interface LiveNotification {
   stream_url: string;
   is_test?: boolean;
 }
+
+// Component to render stream title with Apple-style emojis (inline)
+const StreamTitleWithEmojis = ({ title }: { title: string }) => {
+  const [segments, setSegments] = useState<EmojiSegment[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+
+  useEffect(() => {
+    let mounted = true;
+
+    parseEmojisProxied(title)
+      .then((result) => {
+        if (mounted) {
+          setSegments(result);
+          setIsLoading(false);
+        }
+      })
+      .catch(() => {
+        if (mounted) {
+          setSegments([{ type: 'text', content: title }]);
+          setIsLoading(false);
+        }
+      });
+
+    return () => {
+      mounted = false;
+    };
+  }, [title]);
+
+  if (isLoading) {
+    return <>{title}</>;
+  }
+
+  return (
+    <>
+      {segments.map((segment, idx) =>
+        segment.type === 'emoji' && segment.emojiUrl && segment.emojiUrl.startsWith('data:') ? (
+          <img
+            key={idx}
+            src={segment.emojiUrl}
+            alt={segment.content}
+            className="inline-block w-3.5 h-3.5 object-contain mx-px"
+            style={{ verticalAlign: '-2px' }}
+            loading="lazy"
+          />
+        ) : (
+          <span key={idx}>{segment.content}</span>
+        )
+      )}
+    </>
+  );
+};
 
 // Funny joke messages for when users click on test notifications
 const TEST_NOTIFICATION_JOKES = [
@@ -190,20 +241,8 @@ const ToastManager = () => {
                 <div className="text-xs font-normal text-textSecondary truncate max-w-full">Playing {notification.game_name}</div>
               )}
               {notification.stream_title && (
-                <div className="text-[11px] text-textSecondary/60 truncate max-w-full flex items-center gap-0.5">
-                  {parseEmojis(notification.stream_title).map((segment, idx) =>
-                    segment.type === 'emoji' ? (
-                      <img
-                        key={idx}
-                        src={segment.emojiUrl}
-                        alt={segment.content}
-                        className="inline-block w-3.5 h-3.5 object-contain align-middle"
-                        loading="lazy"
-                      />
-                    ) : (
-                      <span key={idx} className="truncate">{segment.content}</span>
-                    )
-                  )}
+                <div className="text-[11px] text-textSecondary/60 truncate max-w-full">
+                  <StreamTitleWithEmojis title={notification.stream_title} />
                 </div>
               )}
             </div>

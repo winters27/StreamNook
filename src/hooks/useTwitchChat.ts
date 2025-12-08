@@ -10,11 +10,29 @@ const CHAT_BUFFER_SIZE = 150;
 // Total max including buffer
 const CHAT_MAX_WITH_BUFFER = CHAT_HISTORY_MAX + CHAT_BUFFER_SIZE;
 
+// Deletion event types from IRC
+interface ClearMsgEvent {
+  type: 'CLEARMSG';
+  target_msg_id: string;
+  login: string;
+}
+
+interface ClearChatEvent {
+  type: 'CLEARCHAT';
+  target_user_id?: string;
+  target_user?: string;
+  ban_duration?: number;
+}
+
 export const useTwitchChat = () => {
   const [messages, setMessages] = useState<any[]>([]);
   const [isPausedForBuffer, setIsPausedForBuffer] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Track deleted message IDs for showing "[deleted]" styling
+  const [deletedMessageIds, setDeletedMessageIds] = useState<Set<string>>(new Set());
+  // Track users whose messages are cleared (timeout/ban)
+  const [clearedUserIds, setClearedUserIds] = useState<Set<string>>(new Set());
 
   // Use refs for all mutable state that needs to be accessed in callbacks
   const wsRef = useRef<WebSocket | null>(null);
@@ -255,10 +273,38 @@ export const useTwitchChat = () => {
           return;
         }
 
-        // Check if message is JSON (new format with layout)
+        // Check if message is JSON (new format with layout, or deletion events)
         if (message.startsWith('{')) {
           try {
             const parsed = JSON.parse(message);
+
+            // Handle CLEARMSG event - single message deleted by mod
+            if (parsed.type === 'CLEARMSG' && parsed.target_msg_id) {
+              console.log('[Chat] CLEARMSG: Message deleted by mod:', parsed.target_msg_id, 'user:', parsed.login);
+              setDeletedMessageIds(prev => {
+                const newSet = new Set(prev);
+                newSet.add(parsed.target_msg_id);
+                return newSet;
+              });
+              return;
+            }
+
+            // Handle CLEARCHAT event - user timed out/banned or chat cleared
+            if (parsed.type === 'CLEARCHAT') {
+              if (parsed.target_user_id) {
+                // User was timed out or banned - mark all their messages as deleted
+                console.log('[Chat] CLEARCHAT: User timed out/banned:', parsed.target_user, 'duration:', parsed.ban_duration);
+                setClearedUserIds(prev => {
+                  const newSet = new Set(prev);
+                  newSet.add(parsed.target_user_id);
+                  return newSet;
+                });
+              } else {
+                // Full chat clear - this is rare, usually mod action
+                console.log('[Chat] CLEARCHAT: Full chat clear');
+              }
+              return;
+            }
 
             // It's a structured ChatMessage
             const messageId = parsed.id;
@@ -703,5 +749,5 @@ export const useTwitchChat = () => {
     }
   }, [trimToLimit]);
 
-  return { messages, connectChat, sendMessage, isConnected, error, setPaused };
+  return { messages, connectChat, sendMessage, isConnected, error, setPaused, deletedMessageIds, clearedUserIds };
 };

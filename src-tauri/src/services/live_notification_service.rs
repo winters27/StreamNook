@@ -4,8 +4,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter, Manager};
-use tauri_plugin_notification::NotificationExt;
+use tauri::{AppHandle, Emitter};
 use tokio::sync::RwLock;
 use tokio::time::{interval, Duration};
 
@@ -103,11 +102,9 @@ impl LiveNotificationService {
 
                         live_set.retain(|login| current_live_logins.contains(login));
 
-                        // Send notifications for new live streamers
+                        // Send in-app notifications for new live streamers
                         for stream in new_live_streamers {
-                            if let Err(e) =
-                                Self::send_notification(&app_handle, &app_state, &stream).await
-                            {
+                            if let Err(e) = Self::send_notification(&app_handle, &stream).await {
                                 eprintln!("Failed to send live notification: {}", e);
                             }
                         }
@@ -132,16 +129,15 @@ impl LiveNotificationService {
 
     async fn send_notification(
         app_handle: &AppHandle,
-        app_state: &AppState,
         stream: &crate::models::stream::TwitchStream,
     ) -> Result<()> {
-        // Always fetch streamer avatar
+        // Fetch streamer avatar
         let streamer_avatar = match TwitchService::get_user_by_login(&stream.user_login).await {
             Ok(user) => user.profile_image_url,
             Err(_) => None,
         };
 
-        // Always get game image if game name is available
+        // Get game image if game name is available
         let game_image = if !stream.game_name.is_empty() {
             Self::get_game_box_art(&stream.game_name).await.ok()
         } else {
@@ -162,64 +158,12 @@ impl LiveNotificationService {
         // Emit event to frontend (for in-app notifications)
         app_handle.emit("streamer-went-live", &notification)?;
 
-        // Check if native notifications are enabled
-        let (use_native, native_only_when_unfocused) = {
-            let settings = app_state.settings.lock().unwrap();
-            (
-                settings.live_notifications.use_native_notifications,
-                settings.live_notifications.native_only_when_unfocused,
-            )
-        };
-
-        if use_native {
-            // Check if we should send native notification
-            let should_send_native = if native_only_when_unfocused {
-                // Check if the main window is focused
-                if let Some(window) = app_handle.get_webview_window("main") {
-                    !window.is_focused().unwrap_or(true) || window.is_minimized().unwrap_or(false)
-                } else {
-                    true // If window doesn't exist, send the notification
-                }
-            } else {
-                true // Always send if not limited to unfocused
-            };
-
-            if should_send_native {
-                Self::send_native_notification(app_handle, &notification);
-            }
-        }
+        println!(
+            "[In-App Notification] {} is now live!",
+            notification.streamer_name
+        );
 
         Ok(())
-    }
-
-    fn send_native_notification(app_handle: &AppHandle, notification: &LiveNotification) {
-        let title = format!("{} is now live!", notification.streamer_name);
-        let body = if let Some(ref game) = notification.game_name {
-            if game.is_empty() {
-                notification.stream_title.clone().unwrap_or_default()
-            } else {
-                format!(
-                    "Playing {} - {}",
-                    game,
-                    notification.stream_title.clone().unwrap_or_default()
-                )
-            }
-        } else {
-            notification.stream_title.clone().unwrap_or_default()
-        };
-
-        // Send native notification using Tauri's notification plugin
-        if let Err(e) = app_handle
-            .notification()
-            .builder()
-            .title(&title)
-            .body(&body)
-            .show()
-        {
-            eprintln!("Failed to send native notification: {}", e);
-        } else {
-            println!("[Native Notification] Sent: {}", title);
-        }
     }
 
     async fn get_game_box_art(game_name: &str) -> Result<String> {
@@ -244,7 +188,7 @@ impl LiveNotificationService {
         if let Some(data) = response.get("data").and_then(|d| d.as_array()) {
             if let Some(game) = data.first() {
                 if let Some(box_art_url) = game.get("box_art_url").and_then(|u| u.as_str()) {
-                    // Replace template variables with actual dimensions
+                    // Replace template variables with actual dimensions (285x380 box art)
                     let image_url = box_art_url
                         .replace("{width}", "285")
                         .replace("{height}", "380");

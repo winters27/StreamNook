@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useAppStore } from '../../stores/AppStore';
 import { invoke } from '@tauri-apps/api/core';
-import { Bell, Radio, MessageCircle, Download, Smartphone, MessageSquare, Gift, Award, Monitor, Zap } from 'lucide-react';
+import { Bell, Radio, MessageCircle, Download, Smartphone, MessageSquare, Gift, Award, Zap } from 'lucide-react';
 
 const NotificationsSettings = () => {
   const { settings, updateSettings } = useAppStore();
@@ -130,49 +130,6 @@ const NotificationsSettings = () => {
                     })}
                   />
                 </div>
-
-                {/* Native Desktop Notifications Toggle */}
-                <div className="flex items-center justify-between gap-4 p-3 bg-glass/30 rounded-lg border border-amber-500/20">
-                  <div className="flex items-center gap-3 flex-1">
-                    <div className="w-8 h-8 rounded-lg bg-amber-500/20 flex items-center justify-center flex-shrink-0">
-                      <Monitor size={16} className="text-amber-400" />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-textPrimary">
-                        Windows Desktop Notifications
-                      </label>
-                      <p className="text-xs text-textSecondary mt-0.5">
-                        Show native Windows notifications in the system tray
-                      </p>
-                    </div>
-                  </div>
-                  <Toggle
-                    enabled={liveNotifications.use_native_notifications ?? false}
-                    onChange={() => updateLiveNotifications({
-                      use_native_notifications: !(liveNotifications.use_native_notifications ?? false)
-                    })}
-                  />
-                </div>
-
-                {/* Native Only When Unfocused Toggle (shown when native is enabled) */}
-                {liveNotifications.use_native_notifications && (
-                  <div className="flex items-center justify-between gap-4 p-3 bg-glass/30 rounded-lg ml-4 border-l-2 border-amber-500/30">
-                    <div className="flex-1">
-                      <label className="block text-sm font-medium text-textPrimary">
-                        Only When App is Unfocused
-                      </label>
-                      <p className="text-xs text-textSecondary mt-0.5">
-                        Only show desktop notifications when the app is minimized or not in focus
-                      </p>
-                    </div>
-                    <Toggle
-                      enabled={liveNotifications.native_only_when_unfocused ?? true}
-                      onChange={() => updateLiveNotifications({
-                        native_only_when_unfocused: !(liveNotifications.native_only_when_unfocused ?? true)
-                      })}
-                    />
-                  </div>
-                )}
               </div>
             </div>
 
@@ -436,7 +393,7 @@ const NotificationsSettings = () => {
               About Notifications
             </p>
             <p className="text-xs text-textSecondary">
-              Choose how you receive notifications: the Dynamic Island (notification center at the top), Toast popups (bottom of screen), Windows desktop notifications, or any combination. Windows desktop notifications appear in your system tray and can be configured to only show when the app is minimized or unfocused - perfect for when you're multitasking! Click on in-app notifications to take action - live notifications start the stream, whisper notifications open the conversation, and update notifications take you to the Updates page.
+              Choose how you receive notifications: the Dynamic Island (notification center at the top), Toast popups (bottom of screen), or both. Click on notifications to take action - live notifications start the stream, whisper notifications open the conversation, and update notifications take you to the Updates page.
             </p>
           </div>
         </div>

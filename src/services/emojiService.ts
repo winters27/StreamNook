@@ -1,8 +1,12 @@
 /**
  * Emoji Service - Converts Unicode emojis to iOS-style emoji images
- * Uses CDN-hosted Apple emoji images for cross-platform consistency
+ * Uses Tauri proxy to fetch CDN-hosted Apple emoji images (bypasses tracking prevention)
  */
 import { SHORTCODE_TO_UNICODE } from './emojiMap';
+import { invoke } from '@tauri-apps/api/core';
+
+// Cache for proxied emoji URLs (codepoint -> data URL)
+const proxiedEmojiCache = new Map<string, string>();
 
 // Regular expression to match emoji characters
 // This regex covers most common emojis including:
@@ -160,4 +164,104 @@ export async function validateEmojiUrl(emoji: string): Promise<boolean> {
         };
         img.src = getAppleEmojiUrl(emoji);
     });
+}
+
+/**
+ * Gets the Apple emoji image URL through Tauri's proxy
+ * This bypasses browser tracking prevention by using Tauri's HTTP client
+ * Returns a base64 data URL that can be used directly in img src
+ */
+export async function getProxiedEmojiUrl(emoji: string): Promise<string> {
+    const codepoint = emojiToCodepoint(emoji);
+
+    // Check frontend cache first
+    if (proxiedEmojiCache.has(codepoint)) {
+        return proxiedEmojiCache.get(codepoint)!;
+    }
+
+    try {
+        // Fetch through Tauri proxy (cached in Rust backend)
+        const dataUrl = await invoke<string>('get_emoji_image', { codepoint });
+
+        // Cache in frontend
+        proxiedEmojiCache.set(codepoint, dataUrl);
+
+        return dataUrl;
+    } catch (error) {
+        console.warn(`Failed to fetch emoji via proxy: ${codepoint}`, error);
+        // Return the native emoji as fallback
+        return emoji;
+    }
+}
+
+/**
+ * Parses text and returns segments with emojis separated, using proxied URLs
+ * This is an async version that fetches emoji images through Tauri's proxy
+ */
+export async function parseEmojisProxied(text: string): Promise<EmojiSegment[]> {
+    if (!text) {
+        return [];
+    }
+
+    // First replace any shortcodes with actual unicode emojis
+    const processedText = replaceShortcodes(text);
+
+    // Reset regex lastIndex
+    EMOJI_REGEX.lastIndex = 0;
+
+    const segments: EmojiSegment[] = [];
+    const emojiPromises: Array<{ index: number; emoji: string; promise: Promise<string> }> = [];
+    let lastIndex = 0;
+    let match: RegExpExecArray | null;
+    let segmentIndex = 0;
+
+    while ((match = EMOJI_REGEX.exec(processedText)) !== null) {
+        // Add text before the emoji
+        if (match.index > lastIndex) {
+            segments.push({
+                type: 'text',
+                content: processedText.substring(lastIndex, match.index),
+            });
+            segmentIndex++;
+        }
+
+        // Add placeholder for the emoji (will be filled with proxied URL)
+        const emoji = match[0];
+        const emojiSegmentIndex = segmentIndex;
+        segments.push({
+            type: 'emoji',
+            content: emoji,
+            emojiUrl: emoji, // Temporary, will be replaced
+        });
+
+        // Start fetching the proxied URL
+        emojiPromises.push({
+            index: emojiSegmentIndex,
+            emoji,
+            promise: getProxiedEmojiUrl(emoji),
+        });
+
+        segmentIndex++;
+        lastIndex = match.index + emoji.length;
+    }
+
+    // Add remaining text after the last emoji
+    if (lastIndex < processedText.length) {
+        segments.push({
+            type: 'text',
+            content: processedText.substring(lastIndex),
+        });
+    }
+
+    // Wait for all emoji URLs to be fetched
+    const results = await Promise.all(emojiPromises.map(p => p.promise));
+
+    // Update emoji segments with proxied URLs
+    emojiPromises.forEach((p, i) => {
+        if (segments[p.index]) {
+            segments[p.index].emojiUrl = results[i];
+        }
+    });
+
+    return segments.length > 0 ? segments : [{ type: 'text', content: processedText }];
 }

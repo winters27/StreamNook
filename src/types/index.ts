@@ -6,6 +6,7 @@ export interface VideoPlayerSettings {
   volume: number;
   start_quality: number;
   lock_aspect_ratio: boolean;
+  jump_to_live?: boolean;
 }
 
 export interface CacheSettings {
@@ -113,6 +114,7 @@ export interface AutoSwitchSettings {
   enabled: boolean;
   mode: AutoSwitchMode;         // 'same_category' = switch to stream in same game, 'followed_streams' = switch to a followed streamer
   show_notification: boolean;   // Show toast when auto-switching
+  auto_redirect_on_raid?: boolean; // Automatically follow raids to the target channel
 }
 
 export interface Settings {
