@@ -4,6 +4,20 @@ import ColorWheelPicker from '../ColorWheelPicker';
 const ChatSettings = () => {
   const { settings, updateSettings } = useAppStore();
 
+  // Toggle component for reuse
+  const Toggle = ({ enabled, onChange }: { enabled: boolean; onChange: () => void }) => (
+    <button
+      onClick={onChange}
+      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors flex-shrink-0 ${enabled ? 'bg-accent' : 'bg-gray-600'
+        }`}
+    >
+      <span
+        className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${enabled ? 'translate-x-6' : 'translate-x-1'
+          }`}
+      />
+    </button>
+  );
+
   return (
     <div className="space-y-6">
       {/* Chat Placement */}
@@ -17,8 +31,8 @@ const ChatSettings = () => {
               key={placement}
               onClick={() => updateSettings({ ...settings, chat_placement: placement as any })}
               className={`flex-1 px-4 py-2 text-sm font-medium rounded transition-all ${settings.chat_placement === placement
-                  ? 'glass-button text-white'
-                  : 'bg-glass text-textSecondary hover:bg-glass-hover'
+                ? 'glass-button text-white'
+                : 'bg-glass text-textSecondary hover:bg-glass-hover'
                 }`}
             >
               {placement.charAt(0).toUpperCase() + placement.slice(1)}
@@ -36,71 +50,63 @@ const ChatSettings = () => {
 
         <div className="space-y-4">
           {/* Show Dividers */}
-          <div>
-            <label className="flex items-center gap-3 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={settings.chat_design?.show_dividers ?? true}
-                onChange={(e) =>
-                  updateSettings({
-                    ...settings,
-                    chat_design: {
-                      ...settings.chat_design,
-                      show_dividers: e.target.checked,
-                      alternating_backgrounds: settings.chat_design?.alternating_backgrounds ?? false,
-                      message_spacing: settings.chat_design?.message_spacing ?? 2,
-                      font_size: settings.chat_design?.font_size ?? 14,
-                      font_weight: settings.chat_design?.font_weight ?? 400,
-                      mention_color: settings.chat_design?.mention_color ?? '#ff4444',
-                      reply_color: settings.chat_design?.reply_color ?? '#ff6b6b',
-                      mention_animation: settings.chat_design?.mention_animation ?? true,
-                    },
-                  })
-                }
-                className="w-5 h-5 accent-accent cursor-pointer"
-              />
-              <div>
-                <span className="text-sm font-medium text-textPrimary">Show Message Dividers</span>
-                <p className="text-xs text-textSecondary">
-                  Display subtle lines between chat messages
-                </p>
-              </div>
-            </label>
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <span className="text-sm font-medium text-textPrimary">Show Message Dividers</span>
+              <p className="text-xs text-textSecondary">
+                Display subtle lines between chat messages
+              </p>
+            </div>
+            <Toggle
+              enabled={settings.chat_design?.show_dividers ?? true}
+              onChange={() =>
+                updateSettings({
+                  ...settings,
+                  chat_design: {
+                    ...settings.chat_design,
+                    show_dividers: !(settings.chat_design?.show_dividers ?? true),
+                    alternating_backgrounds: settings.chat_design?.alternating_backgrounds ?? false,
+                    message_spacing: settings.chat_design?.message_spacing ?? 2,
+                    font_size: settings.chat_design?.font_size ?? 14,
+                    font_weight: settings.chat_design?.font_weight ?? 400,
+                    mention_color: settings.chat_design?.mention_color ?? '#ff4444',
+                    reply_color: settings.chat_design?.reply_color ?? '#ff6b6b',
+                    mention_animation: settings.chat_design?.mention_animation ?? true,
+                  },
+                })
+              }
+            />
           </div>
 
           {/* Alternating Backgrounds */}
-          <div>
-            <label className="flex items-center gap-3 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={settings.chat_design?.alternating_backgrounds ?? false}
-                onChange={(e) =>
-                  updateSettings({
-                    ...settings,
-                    chat_design: {
-                      ...settings.chat_design,
-                      show_dividers: settings.chat_design?.show_dividers ?? true,
-                      alternating_backgrounds: e.target.checked,
-                      message_spacing: settings.chat_design?.message_spacing ?? 2,
-                      font_size: settings.chat_design?.font_size ?? 14,
-                      font_weight: settings.chat_design?.font_weight ?? 400,
-                      mention_color: settings.chat_design?.mention_color ?? '#ff4444',
-                      reply_color: settings.chat_design?.reply_color ?? '#ff6b6b',
-                      mention_animation: settings.chat_design?.mention_animation ?? true,
-                    },
-                  })
-                }
-                className="w-5 h-5 accent-accent cursor-pointer"
-              />
-              <div>
-                <span className="text-sm font-medium text-textPrimary">
-                  Alternating Backgrounds
-                </span>
-                <p className="text-xs text-textSecondary">
-                  Alternate message background colors using your theme palette
-                </p>
-              </div>
-            </label>
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <span className="text-sm font-medium text-textPrimary">
+                Alternating Backgrounds
+              </span>
+              <p className="text-xs text-textSecondary">
+                Alternate message background colors using your theme palette
+              </p>
+            </div>
+            <Toggle
+              enabled={settings.chat_design?.alternating_backgrounds ?? false}
+              onChange={() =>
+                updateSettings({
+                  ...settings,
+                  chat_design: {
+                    ...settings.chat_design,
+                    show_dividers: settings.chat_design?.show_dividers ?? true,
+                    alternating_backgrounds: !(settings.chat_design?.alternating_backgrounds ?? false),
+                    message_spacing: settings.chat_design?.message_spacing ?? 2,
+                    font_size: settings.chat_design?.font_size ?? 14,
+                    font_weight: settings.chat_design?.font_weight ?? 400,
+                    mention_color: settings.chat_design?.mention_color ?? '#ff4444',
+                    reply_color: settings.chat_design?.reply_color ?? '#ff6b6b',
+                    mention_animation: settings.chat_design?.mention_animation ?? true,
+                  },
+                })
+              }
+            />
           </div>
 
           {/* Message Spacing */}
@@ -199,12 +205,78 @@ const ChatSettings = () => {
           </div>
 
           {/* Mention Animation */}
-          <div>
-            <label className="flex items-center gap-3 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={settings.chat_design?.mention_animation ?? true}
-                onChange={(e) =>
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <span className="text-sm font-medium text-textPrimary">Mention Animation</span>
+              <p className="text-xs text-textSecondary">
+                Flash animation when you're mentioned or replied to
+              </p>
+            </div>
+            <Toggle
+              enabled={settings.chat_design?.mention_animation ?? true}
+              onChange={() =>
+                updateSettings({
+                  ...settings,
+                  chat_design: {
+                    ...settings.chat_design,
+                    show_dividers: settings.chat_design?.show_dividers ?? true,
+                    alternating_backgrounds: settings.chat_design?.alternating_backgrounds ?? false,
+                    message_spacing: settings.chat_design?.message_spacing ?? 2,
+                    font_size: settings.chat_design?.font_size ?? 14,
+                    font_weight: settings.chat_design?.font_weight ?? 400,
+                    mention_color: settings.chat_design?.mention_color ?? '#ff4444',
+                    reply_color: settings.chat_design?.reply_color ?? '#ff6b6b',
+                    mention_animation: !(settings.chat_design?.mention_animation ?? true),
+                    show_timestamps: settings.chat_design?.show_timestamps ?? false,
+                  },
+                })
+              }
+            />
+          </div>
+
+          {/* Show Timestamps */}
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <span className="text-sm font-medium text-textPrimary">Show Timestamps</span>
+              <p className="text-xs text-textSecondary">
+                Display the time each message was sent next to the username
+              </p>
+            </div>
+            <Toggle
+              enabled={settings.chat_design?.show_timestamps ?? false}
+              onChange={() =>
+                updateSettings({
+                  ...settings,
+                  chat_design: {
+                    ...settings.chat_design,
+                    show_dividers: settings.chat_design?.show_dividers ?? true,
+                    alternating_backgrounds: settings.chat_design?.alternating_backgrounds ?? false,
+                    message_spacing: settings.chat_design?.message_spacing ?? 2,
+                    font_size: settings.chat_design?.font_size ?? 14,
+                    font_weight: settings.chat_design?.font_weight ?? 400,
+                    mention_color: settings.chat_design?.mention_color ?? '#ff4444',
+                    reply_color: settings.chat_design?.reply_color ?? '#ff6b6b',
+                    mention_animation: settings.chat_design?.mention_animation ?? true,
+                    show_timestamps: !(settings.chat_design?.show_timestamps ?? false),
+                    show_timestamp_seconds: settings.chat_design?.show_timestamp_seconds ?? false,
+                  },
+                })
+              }
+            />
+          </div>
+
+          {/* Show Seconds (sub-option, only when timestamps enabled) */}
+          {settings.chat_design?.show_timestamps && (
+            <div className="flex items-center justify-between gap-4 ml-8 border-l-2 border-borderSubtle pl-4">
+              <div>
+                <span className="text-sm font-medium text-textPrimary">Include Seconds</span>
+                <p className="text-xs text-textSecondary">
+                  Show seconds in timestamps (e.g., 7:42:30 PM instead of 7:42 PM)
+                </p>
+              </div>
+              <Toggle
+                enabled={settings.chat_design?.show_timestamp_seconds ?? false}
+                onChange={() =>
                   updateSettings({
                     ...settings,
                     chat_design: {
@@ -216,20 +288,15 @@ const ChatSettings = () => {
                       font_weight: settings.chat_design?.font_weight ?? 400,
                       mention_color: settings.chat_design?.mention_color ?? '#ff4444',
                       reply_color: settings.chat_design?.reply_color ?? '#ff6b6b',
-                      mention_animation: e.target.checked,
+                      mention_animation: settings.chat_design?.mention_animation ?? true,
+                      show_timestamps: settings.chat_design?.show_timestamps ?? false,
+                      show_timestamp_seconds: !(settings.chat_design?.show_timestamp_seconds ?? false),
                     },
                   })
                 }
-                className="w-5 h-5 accent-accent cursor-pointer"
               />
-              <div>
-                <span className="text-sm font-medium text-textPrimary">Mention Animation</span>
-                <p className="text-xs text-textSecondary">
-                  Flash animation when you're mentioned or replied to
-                </p>
-              </div>
-            </label>
-          </div>
+            </div>
+          )}
 
           {/* Mention Color */}
           <ColorWheelPicker

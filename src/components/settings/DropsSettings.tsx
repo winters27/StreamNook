@@ -7,6 +7,21 @@ const DropsSettings = () => {
   const [isInitializing, setIsInitializing] = useState(false);
   const [showPrioritySettings, setShowPrioritySettings] = useState(false);
 
+  // Toggle component for reuse
+  const Toggle = ({ enabled, onChange, disabled = false }: { enabled: boolean; onChange: () => void; disabled?: boolean }) => (
+    <button
+      onClick={onChange}
+      disabled={disabled}
+      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors flex-shrink-0 ${disabled ? 'opacity-50 cursor-not-allowed' : ''
+        } ${enabled && !disabled ? 'bg-accent' : 'bg-gray-600'}`}
+    >
+      <span
+        className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${enabled ? 'translate-x-6' : 'translate-x-1'
+          }`}
+      />
+    </button>
+  );
+
   // Check mining status on mount and listen for updates
   useEffect(() => {
     const checkMiningStatus = async () => {
@@ -27,10 +42,10 @@ const DropsSettings = () => {
       unlisten = await listen<any>('mining-status-update', (event) => {
         const status = event.payload;
         console.log('Mining status update received:', status);
-        
+
         // Update mining state based on actual status
         setIsMining(status.is_mining);
-        
+
         // Clear initializing state when we get confirmation
         if (status.is_mining && isInitializing) {
           setIsInitializing(false);
@@ -46,21 +61,22 @@ const DropsSettings = () => {
     };
   }, [isInitializing]);
 
-  const handleMiningToggle = async (enabled: boolean) => {
+  const handleMiningToggle = async () => {
+    const enabled = !isMining;
     try {
       const { invoke } = await import('@tauri-apps/api/core');
-      
+
       if (enabled) {
         // Show loading state when turning on
         setIsInitializing(true);
-        
+
         // First update the setting
         await updateDropsSettings({ auto_mining_enabled: enabled });
-        
+
         // Start the mining service (this spawns a background task)
         // The mining-status-update event will tell us when it's actually running
         await invoke('start_auto_mining');
-        
+
         // Note: Don't set isMining or clear isInitializing here
         // Wait for the mining-status-update event to confirm it started
       } else {
@@ -109,20 +125,13 @@ const DropsSettings = () => {
       {/* Auto Mining Section */}
       <div className="border-b border-border pb-6">
         <h3 className="text-lg font-semibold text-textPrimary mb-4">Automated Mining</h3>
-        
+
         {/* Enable Auto Mining */}
         <div className="mb-4">
-          <label className="flex items-center gap-3 cursor-pointer">
-            <div className="relative">
-              <input
-                type="checkbox"
-                checked={isMining}
-                onChange={(e) => handleMiningToggle(e.target.checked)}
-                disabled={isInitializing}
-                className="w-5 h-5 accent-accent cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-              />
+          <div className="flex items-center justify-between gap-4">
+            <div className="relative flex items-center gap-3">
               {isInitializing && (
-                <div className="absolute inset-0 flex items-center justify-center">
+                <div className="flex items-center justify-center">
                   <svg
                     className="animate-spin h-4 w-4 text-accent"
                     xmlns="http://www.w3.org/2000/svg"
@@ -145,17 +154,22 @@ const DropsSettings = () => {
                   </svg>
                 </div>
               )}
+              <div>
+                <span className="text-sm font-medium text-textPrimary">
+                  Enable Auto Mining
+                  {isInitializing && <span className="ml-2 text-xs text-accent">(Initializing...)</span>}
+                </span>
+                <p className="text-xs text-textSecondary">
+                  Automatically watch streams to earn drops
+                </p>
+              </div>
             </div>
-            <div>
-              <span className="text-sm font-medium text-textPrimary">
-                Enable Auto Mining
-                {isInitializing && <span className="ml-2 text-xs text-accent">(Initializing...)</span>}
-              </span>
-              <p className="text-xs text-textSecondary">
-                Automatically watch streams to earn drops
-              </p>
-            </div>
-          </label>
+            <Toggle
+              enabled={isMining}
+              onChange={handleMiningToggle}
+              disabled={isInitializing}
+            />
+          </div>
         </div>
 
         {/* Priority Mode */}
@@ -165,8 +179,8 @@ const DropsSettings = () => {
           </label>
           <select
             value={settings.drops?.priority_mode ?? 'PriorityOnly'}
-            onChange={(e) => updateDropsSettings({ 
-              priority_mode: e.target.value as 'PriorityOnly' | 'EndingSoonest' | 'LowAvailFirst' 
+            onChange={(e) => updateDropsSettings({
+              priority_mode: e.target.value as 'PriorityOnly' | 'EndingSoonest' | 'LowAvailFirst'
             })}
             className="w-full px-3 py-2 bg-background border border-border rounded-md text-textPrimary text-sm"
           >
@@ -213,7 +227,7 @@ const DropsSettings = () => {
             <p className="text-xs text-textSecondary mb-3">
               Add games in order of priority. The miner will prefer these games when selecting channels.
             </p>
-            
+
             {/* Priority Games List */}
             <div className="space-y-2 mb-3">
               {(settings.drops?.priority_games ?? []).map((game, index) => (
@@ -249,8 +263,8 @@ const DropsSettings = () => {
                     const input = e.currentTarget;
                     const gameName = input.value.trim();
                     if (gameName && !(settings.drops?.priority_games ?? []).includes(gameName)) {
-                      updateDropsSettings({ 
-                        priority_games: [...(settings.drops?.priority_games ?? []), gameName] 
+                      updateDropsSettings({
+                        priority_games: [...(settings.drops?.priority_games ?? []), gameName]
                       });
                       input.value = '';
                     }
@@ -262,8 +276,8 @@ const DropsSettings = () => {
                   const input = document.getElementById('priority-game-input') as HTMLInputElement;
                   const gameName = input.value.trim();
                   if (gameName && !(settings.drops?.priority_games ?? []).includes(gameName)) {
-                    updateDropsSettings({ 
-                      priority_games: [...(settings.drops?.priority_games ?? []), gameName] 
+                    updateDropsSettings({
+                      priority_games: [...(settings.drops?.priority_games ?? []), gameName]
                     });
                     input.value = '';
                   }
@@ -279,7 +293,7 @@ const DropsSettings = () => {
             <p className="text-xs text-textSecondary mb-3">
               Games to never mine, even if they have active campaigns.
             </p>
-            
+
             <div className="space-y-2 mb-3">
               {(settings.drops?.excluded_games ?? []).map((game, index) => (
                 <div key={index} className="flex items-center gap-2 bg-backgroundSecondary p-2 rounded">
@@ -312,8 +326,8 @@ const DropsSettings = () => {
                     const input = e.currentTarget;
                     const gameName = input.value.trim();
                     if (gameName && !(settings.drops?.excluded_games ?? []).includes(gameName)) {
-                      updateDropsSettings({ 
-                        excluded_games: [...(settings.drops?.excluded_games ?? []), gameName] 
+                      updateDropsSettings({
+                        excluded_games: [...(settings.drops?.excluded_games ?? []), gameName]
                       });
                       input.value = '';
                     }
@@ -325,8 +339,8 @@ const DropsSettings = () => {
                   const input = document.getElementById('excluded-game-input') as HTMLInputElement;
                   const gameName = input.value.trim();
                   if (gameName && !(settings.drops?.excluded_games ?? []).includes(gameName)) {
-                    updateDropsSettings({ 
-                      excluded_games: [...(settings.drops?.excluded_games ?? []), gameName] 
+                    updateDropsSettings({
+                      excluded_games: [...(settings.drops?.excluded_games ?? []), gameName]
                     });
                     input.value = '';
                   }
@@ -343,110 +357,100 @@ const DropsSettings = () => {
       {/* Auto-claim Section */}
       <div className="border-b border-border pb-6">
         <h3 className="text-lg font-semibold text-textPrimary mb-4">Auto-claim</h3>
-        
+
         {/* Auto-claim Drops */}
         <div className="mb-4">
-          <label className="flex items-center gap-3 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={settings.drops?.auto_claim_drops ?? true}
-              onChange={async (e) => {
-                await updateDropsSettings({ auto_claim_drops: e.target.checked });
-              }}
-              className="w-5 h-5 accent-accent cursor-pointer"
-            />
+          <div className="flex items-center justify-between gap-4">
             <div>
               <span className="text-sm font-medium text-textPrimary">Auto-claim Drops</span>
               <p className="text-xs text-textSecondary">
                 Automatically claim drops when they're ready
               </p>
             </div>
-          </label>
+            <Toggle
+              enabled={settings.drops?.auto_claim_drops ?? true}
+              onChange={async () => {
+                await updateDropsSettings({ auto_claim_drops: !(settings.drops?.auto_claim_drops ?? true) });
+              }}
+            />
+          </div>
         </div>
 
         {/* Auto-claim Channel Points */}
         <div className="mb-4">
-          <label className="flex items-center gap-3 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={settings.drops?.auto_claim_channel_points ?? true}
-              onChange={async (e) => {
-                await updateDropsSettings({ auto_claim_channel_points: e.target.checked });
-              }}
-              className="w-5 h-5 accent-accent cursor-pointer"
-            />
+          <div className="flex items-center justify-between gap-4">
             <div>
               <span className="text-sm font-medium text-textPrimary">Auto-claim Channel Points</span>
               <p className="text-xs text-textSecondary">
                 Automatically claim channel point bonuses
               </p>
             </div>
-          </label>
+            <Toggle
+              enabled={settings.drops?.auto_claim_channel_points ?? true}
+              onChange={async () => {
+                await updateDropsSettings({ auto_claim_channel_points: !(settings.drops?.auto_claim_channel_points ?? true) });
+              }}
+            />
+          </div>
         </div>
       </div>
 
       {/* Notifications Section */}
       <div className="border-b border-border pb-6">
         <h3 className="text-lg font-semibold text-textPrimary mb-4">Notifications</h3>
-        
+
         {/* Notify on Drop Available */}
         <div className="mb-4">
-          <label className="flex items-center gap-3 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={settings.drops?.notify_on_drop_available ?? true}
-              onChange={async (e) => {
-                await updateDropsSettings({ notify_on_drop_available: e.target.checked });
-              }}
-              className="w-5 h-5 accent-accent cursor-pointer"
-            />
+          <div className="flex items-center justify-between gap-4">
             <div>
               <span className="text-sm font-medium text-textPrimary">Notify When Drop Ready</span>
               <p className="text-xs text-textSecondary">
                 Show notification when a drop is ready to claim
               </p>
             </div>
-          </label>
+            <Toggle
+              enabled={settings.drops?.notify_on_drop_available ?? true}
+              onChange={async () => {
+                await updateDropsSettings({ notify_on_drop_available: !(settings.drops?.notify_on_drop_available ?? true) });
+              }}
+            />
+          </div>
         </div>
 
         {/* Notify on Drop Claimed */}
         <div className="mb-4">
-          <label className="flex items-center gap-3 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={settings.drops?.notify_on_drop_claimed ?? true}
-              onChange={async (e) => {
-                await updateDropsSettings({ notify_on_drop_claimed: e.target.checked });
-              }}
-              className="w-5 h-5 accent-accent cursor-pointer"
-            />
+          <div className="flex items-center justify-between gap-4">
             <div>
               <span className="text-sm font-medium text-textPrimary">Notify When Drop Claimed</span>
               <p className="text-xs text-textSecondary">
                 Show notification when a drop has been claimed
               </p>
             </div>
-          </label>
+            <Toggle
+              enabled={settings.drops?.notify_on_drop_claimed ?? true}
+              onChange={async () => {
+                await updateDropsSettings({ notify_on_drop_claimed: !(settings.drops?.notify_on_drop_claimed ?? true) });
+              }}
+            />
+          </div>
         </div>
 
         {/* Notify on Points Claimed */}
         <div className="mb-4">
-          <label className="flex items-center gap-3 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={settings.drops?.notify_on_points_claimed ?? false}
-              onChange={async (e) => {
-                await updateDropsSettings({ notify_on_points_claimed: e.target.checked });
-              }}
-              className="w-5 h-5 accent-accent cursor-pointer"
-            />
+          <div className="flex items-center justify-between gap-4">
             <div>
               <span className="text-sm font-medium text-textPrimary">Notify When Points Claimed</span>
               <p className="text-xs text-textSecondary">
                 Show notification when channel points are claimed
               </p>
             </div>
-          </label>
+            <Toggle
+              enabled={settings.drops?.notify_on_points_claimed ?? false}
+              onChange={async () => {
+                await updateDropsSettings({ notify_on_points_claimed: !(settings.drops?.notify_on_points_claimed ?? false) });
+              }}
+            />
+          </div>
         </div>
       </div>
 

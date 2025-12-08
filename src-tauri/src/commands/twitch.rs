@@ -149,6 +149,17 @@ pub async fn get_top_games(
 }
 
 #[tauri::command]
+pub async fn get_top_games_paginated(
+    state: State<'_, AppState>,
+    cursor: Option<String>,
+    limit: u32,
+) -> Result<(Vec<serde_json::Value>, Option<String>), String> {
+    TwitchService::get_top_games_paginated(&state, cursor, limit)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn get_streams_by_game(
     state: State<'_, AppState>,
     game_id: String,

@@ -259,6 +259,7 @@ fn main() {
             open_browser_url,
             focus_window,
             get_top_games,
+            get_top_games_paginated,
             get_streams_by_game,
             search_channels,
             search_categories,

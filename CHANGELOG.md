@@ -1,3 +1,15 @@
+## [4.8.1] - 2025-12-07
+### ✨ Features
+- **Browse Categories**: Improved browsing experience with infinite scroll for top games.
+- **Chat Timestamps**: Added an option to display timestamps in chat, including optional seconds, for better message context.
+
+### 🐛 Bug Fixes
+- Resolved overflow issues with 7TV paint displays on user profiles.
+
+### 🔧 Maintenance
+- Improved user interface consistency by standardizing toggle switches in settings panels.
+- Improved Changelog rendering and support for markdown
+
 ## [4.8.0] - 2025-12-07
 ### ✨ Features
 - **Auto-Updating**: StreamNook now automatically checks for updates and installs them for you! You can enable or disable auto-updates in the settings.
@@ -616,6 +628,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 

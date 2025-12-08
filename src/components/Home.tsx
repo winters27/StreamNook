@@ -64,6 +64,9 @@ const Home = () => {
     const [isSearching, setIsSearching] = useState(false);
     const [topGames, setTopGames] = useState<TwitchCategory[]>([]);
     const [isLoadingGames, setIsLoadingGames] = useState(false);
+    const [gamesCursor, setGamesCursor] = useState<string | null>(null);
+    const [hasMoreGames, setHasMoreGames] = useState(true);
+    const [isLoadingMoreGames, setIsLoadingMoreGames] = useState(false);
     const [categoryStreams, setCategoryStreams] = useState<TwitchStream[]>([]);
     const [isLoadingCategoryStreams, setIsLoadingCategoryStreams] = useState(false);
     const [animatingHearts, setAnimatingHearts] = useState<Set<string>>(new Set());
@@ -104,14 +107,41 @@ const Home = () => {
 
     const loadTopGames = async () => {
         setIsLoadingGames(true);
+        setGamesCursor(null);
+        setHasMoreGames(true);
         try {
-            const games = await invoke('get_top_games', { limit: 40 }) as TwitchCategory[];
+            const [games, cursor] = await invoke('get_top_games_paginated', {
+                cursor: null,
+                limit: 40
+            }) as [TwitchCategory[], string | null];
             setTopGames(games);
+            setGamesCursor(cursor);
+            setHasMoreGames(!!cursor);
         } catch (e) {
             console.error('Failed to load top games:', e);
             setTopGames([]);
+            setHasMoreGames(false);
         } finally {
             setIsLoadingGames(false);
+        }
+    };
+
+    const loadMoreTopGames = async () => {
+        if (!hasMoreGames || isLoadingMoreGames || !gamesCursor) return;
+
+        setIsLoadingMoreGames(true);
+        try {
+            const [games, cursor] = await invoke('get_top_games_paginated', {
+                cursor: gamesCursor,
+                limit: 40
+            }) as [TwitchCategory[], string | null];
+            setTopGames(prev => [...prev, ...games]);
+            setGamesCursor(cursor);
+            setHasMoreGames(!!cursor);
+        } catch (e) {
+            console.error('Failed to load more top games:', e);
+        } finally {
+            setIsLoadingMoreGames(false);
         }
     };
 
@@ -413,24 +443,32 @@ const Home = () => {
     };
 
     const handleScroll = useCallback(() => {
-        const showingRecommended = activeTab === 'recommended';
-        if (!showingRecommended || !hasMoreRecommended || isLoadingMore || loadingRef.current) {
-            return;
-        }
-
         const container = scrollContainerRef.current;
         if (!container) return;
 
         const { scrollTop, scrollHeight, clientHeight } = container;
         const scrollPercentage = (scrollTop + clientHeight) / scrollHeight;
 
-        if (scrollPercentage > 0.8) {
-            loadingRef.current = true;
-            loadMoreRecommendedStreams().finally(() => {
-                loadingRef.current = false;
-            });
+        // Handle recommended streams infinite scroll
+        if (activeTab === 'recommended' && hasMoreRecommended && !isLoadingMore && !loadingRef.current) {
+            if (scrollPercentage > 0.8) {
+                loadingRef.current = true;
+                loadMoreRecommendedStreams().finally(() => {
+                    loadingRef.current = false;
+                });
+            }
         }
-    }, [activeTab, hasMoreRecommended, isLoadingMore, loadMoreRecommendedStreams]);
+
+        // Handle categories (browse) infinite scroll
+        if (activeTab === 'browse' && hasMoreGames && !isLoadingMoreGames && !loadingRef.current) {
+            if (scrollPercentage > 0.8) {
+                loadingRef.current = true;
+                loadMoreTopGames().finally(() => {
+                    loadingRef.current = false;
+                });
+            }
+        }
+    }, [activeTab, hasMoreRecommended, isLoadingMore, loadMoreRecommendedStreams, hasMoreGames, isLoadingMoreGames, loadMoreTopGames]);
 
     useEffect(() => {
         const container = scrollContainerRef.current;
@@ -614,74 +652,90 @@ const Home = () => {
                                 </div>
                             </div>
                         ) : (
-                            <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-8 gap-3">
-                                {topGames.map(game => {
-                                    const dropsCampaign = dropsGameIds.get(game.id);
-                                    const hasDrops = !!dropsCampaign;
+                            <>
+                                <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-8 gap-3">
+                                    {topGames.map(game => {
+                                        const dropsCampaign = dropsGameIds.get(game.id);
+                                        const hasDrops = !!dropsCampaign;
 
-                                    return (
-                                        <div
-                                            key={game.id}
-                                            className={`glass-panel cursor-pointer hover:bg-glass-hover transition-all duration-200 group overflow-hidden relative ${hasDrops ? 'ring-2 ring-accent shadow-accent/40' : ''}`}
-                                            style={hasDrops ? { boxShadow: '0 0 15px var(--color-accent-muted)' } : undefined}
-                                            onClick={() => handleCategoryClick(game)}
-                                        >
-                                            <div className="relative overflow-hidden">
-                                                <img
-                                                    src={getGameBoxArt(game.box_art_url)}
-                                                    alt={game.name}
-                                                    className="w-full aspect-[3/4] object-cover group-hover:scale-105 transition-transform duration-200"
-                                                />
-                                                {/* Drops overlay gradient */}
-                                                {hasDrops && (
-                                                    <div className="absolute inset-0 bg-gradient-to-t from-accent/40 via-transparent to-accent/20 pointer-events-none" />
-                                                )}
-                                                {/* Drops Badge */}
-                                                {hasDrops && (
-                                                    <div className="absolute top-2 left-2 flex items-center gap-1.5 px-2.5 py-1 bg-accent rounded-md text-white text-xs font-bold shadow-lg animate-pulse">
-                                                        <Gift size={14} className="drop-shadow-lg" />
-                                                        <span>DROPS</span>
-                                                    </div>
-                                                )}
-                                                {/* Mine Drops Button - Always visible for drops categories */}
-                                                {hasDrops && (
-                                                    <button
-                                                        onClick={(e) => handleStartMining(e, dropsCampaign)}
-                                                        className={`absolute bottom-2 right-2 left-2 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md text-white text-xs font-semibold transition-all shadow-lg ${activeMiningIds.has(dropsCampaign.id)
-                                                            ? 'bg-green-600 cursor-default'
-                                                            : 'bg-accent hover:bg-accent-hover hover:scale-105'
-                                                            }`}
-                                                        title={activeMiningIds.has(dropsCampaign.id) ? `Mining ${dropsCampaign.name}` : `Start mining ${dropsCampaign.name}`}
-                                                        disabled={activeMiningIds.has(dropsCampaign.id)}
-                                                    >
-                                                        {activeMiningIds.has(dropsCampaign.id) ? (
-                                                            <>
-                                                                <Pickaxe size={14} className="animate-pulse" />
-                                                                <span>Mining</span>
-                                                            </>
-                                                        ) : (
-                                                            <>
-                                                                <Pickaxe size={14} />
-                                                                <span>Start Mining</span>
-                                                            </>
-                                                        )}
-                                                    </button>
-                                                )}
+                                        return (
+                                            <div
+                                                key={game.id}
+                                                className={`glass-panel cursor-pointer hover:bg-glass-hover transition-all duration-200 group overflow-hidden relative ${hasDrops ? 'ring-2 ring-accent shadow-accent/40' : ''}`}
+                                                style={hasDrops ? { boxShadow: '0 0 15px var(--color-accent-muted)' } : undefined}
+                                                onClick={() => handleCategoryClick(game)}
+                                            >
+                                                <div className="relative overflow-hidden">
+                                                    <img
+                                                        src={getGameBoxArt(game.box_art_url)}
+                                                        alt={game.name}
+                                                        className="w-full aspect-[3/4] object-cover group-hover:scale-105 transition-transform duration-200"
+                                                    />
+                                                    {/* Drops overlay gradient */}
+                                                    {hasDrops && (
+                                                        <div className="absolute inset-0 bg-gradient-to-t from-accent/40 via-transparent to-accent/20 pointer-events-none" />
+                                                    )}
+                                                    {/* Drops Badge */}
+                                                    {hasDrops && (
+                                                        <div className="absolute top-2 left-2 z-10">
+                                                            <div className="drops-badge-glass-lg">
+                                                                <Gift size={14} className="drop-shadow-lg" />
+                                                                <span>DROPS</span>
+                                                            </div>
+                                                        </div>
+                                                    )}
+                                                    {/* Mine Drops Button - Always visible for drops categories */}
+                                                    {hasDrops && (
+                                                        <button
+                                                            onClick={(e) => handleStartMining(e, dropsCampaign)}
+                                                            className={`absolute bottom-2 right-2 left-2 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md text-white text-xs font-semibold transition-all shadow-lg ${activeMiningIds.has(dropsCampaign.id)
+                                                                ? 'bg-green-600 cursor-default'
+                                                                : 'bg-accent hover:bg-accent-hover hover:scale-105'
+                                                                }`}
+                                                            title={activeMiningIds.has(dropsCampaign.id) ? `Mining ${dropsCampaign.name}` : `Start mining ${dropsCampaign.name}`}
+                                                            disabled={activeMiningIds.has(dropsCampaign.id)}
+                                                        >
+                                                            {activeMiningIds.has(dropsCampaign.id) ? (
+                                                                <>
+                                                                    <Pickaxe size={14} className="animate-pulse" />
+                                                                    <span>Mining</span>
+                                                                </>
+                                                            ) : (
+                                                                <>
+                                                                    <Pickaxe size={14} />
+                                                                    <span>Start Mining</span>
+                                                                </>
+                                                            )}
+                                                        </button>
+                                                    )}
+                                                </div>
+                                                <div className="p-2">
+                                                    <h3 className="text-textPrimary font-medium text-sm line-clamp-2 group-hover:text-accent transition-colors">
+                                                        {game.name}
+                                                    </h3>
+                                                    {game.viewer_count !== undefined && (
+                                                        <p className="text-textSecondary text-xs mt-0.5">
+                                                            {game.viewer_count.toLocaleString()} viewers
+                                                        </p>
+                                                    )}
+                                                </div>
                                             </div>
-                                            <div className="p-2">
-                                                <h3 className="text-textPrimary font-medium text-sm line-clamp-2 group-hover:text-accent transition-colors">
-                                                    {game.name}
-                                                </h3>
-                                                {game.viewer_count !== undefined && (
-                                                    <p className="text-textSecondary text-xs mt-0.5">
-                                                        {game.viewer_count.toLocaleString()} viewers
-                                                    </p>
-                                                )}
-                                            </div>
-                                        </div>
-                                    );
-                                })}
-                            </div>
+                                        );
+                                    })}
+                                </div>
+                                {/* Loading indicator for infinite scroll */}
+                                {isLoadingMoreGames && (
+                                    <div className="flex justify-center items-center py-6">
+                                        <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-accent"></div>
+                                    </div>
+                                )}
+                                {/* End of categories message */}
+                                {!hasMoreGames && topGames.length > 0 && (
+                                    <div className="text-center py-6">
+                                        <p className="text-textSecondary text-xs">No more categories</p>
+                                    </div>
+                                )}
+                            </>
                         )}
                     </>
                 )}
@@ -733,7 +787,7 @@ const Home = () => {
                                                     </div>
                                                     {/* Drops indicator badge */}
                                                     {hasDrops && (
-                                                        <div className="flex items-center gap-1 px-1.5 py-0.5 bg-accent rounded text-white text-xs font-bold shadow-lg">
+                                                        <div className="drops-badge-glass">
                                                             <Gift size={10} />
                                                             <span>DROPS</span>
                                                         </div>
@@ -836,7 +890,7 @@ const Home = () => {
                                                         </div>
                                                         {/* Drops indicator badge */}
                                                         {hasDrops && (
-                                                            <div className="flex items-center gap-1 px-1.5 py-0.5 bg-accent rounded text-white text-xs font-bold shadow-lg">
+                                                            <div className="drops-badge-glass">
                                                                 <Gift size={10} />
                                                                 <span>DROPS</span>
                                                             </div>
