@@ -564,6 +564,26 @@ body {
 }
 
 /* Heart break animation for unfavoriting */
+/* Mining Started - Fly Up Animation */
+@keyframes fly-up-fade {
+  0% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  30% {
+    opacity: 1;
+    transform: translateY(-50px) scale(1.2);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-150px) scale(0.8);
+  }
+}
+
+.animate-fly-up-fade {
+  animation: fly-up-fade 1s ease-out forwards;
+}
+
 @keyframes heart-break {
   0% {
     transform: scale(1) rotate(0deg) translateY(0);
@@ -1169,6 +1189,66 @@ body {
 
 .rainbow-drop-icon {
   animation: rainbow-icon-color 3s linear infinite;
+}
+
+/* ============================================
+   Gift Box Shimmer Animations for Title Bar
+   ============================================ */
+
+/* Silver pulse - Channel Points only */
+@keyframes gift-pulse-silver {
+  0%, 100% {
+    color: #a8a8a8;
+    filter: drop-shadow(0 0 2px rgba(192, 192, 192, 0.3));
+  }
+  50% {
+    color: #e8e8e8;
+    filter: drop-shadow(0 0 6px rgba(255, 255, 255, 0.6));
+  }
+}
+
+.gift-shimmer-silver {
+  animation: gift-pulse-silver 2s ease-in-out infinite;
+}
+
+/* Gold pulse - Drops Mining only */
+@keyframes gift-pulse-gold {
+  0%, 100% {
+    color: #c9a227;
+    filter: drop-shadow(0 0 2px rgba(201, 162, 39, 0.3));
+  }
+  50% {
+    color: #ffd700;
+    filter: drop-shadow(0 0 8px rgba(255, 215, 0, 0.7));
+  }
+}
+
+.gift-shimmer-gold {
+  animation: gift-pulse-gold 2s ease-in-out infinite;
+}
+
+/* Iridescent pulse - Both active (rainbow color cycling) */
+@keyframes gift-pulse-iridescent {
+  0%, 100% {
+    color: #799df1;
+    filter: drop-shadow(0 0 4px rgba(121, 157, 241, 0.5));
+  }
+  25% {
+    color: #60c1ec;
+    filter: drop-shadow(0 0 6px rgba(96, 193, 236, 0.6));
+  }
+  50% {
+    color: #7bd9de;
+    filter: drop-shadow(0 0 6px rgba(123, 217, 222, 0.6));
+  }
+  75% {
+    color: #cfb0d2;
+    filter: drop-shadow(0 0 4px rgba(207, 176, 210, 0.5));
+  }
+}
+
+.gift-shimmer-iridescent {
+  animation: gift-pulse-iridescent 4s ease-in-out infinite;
 }
 
 /* Rainbow puddle background animation - combines ripple and color change */

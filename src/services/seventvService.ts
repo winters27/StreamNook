@@ -82,6 +82,7 @@ interface BadgeV4 {
 interface UserCosmeticsResponse {
   paints: PaintV4[];
   badges: BadgeV4[];
+  seventvUserId?: string; // The user's 7TV profile ID
 }
 
 // Cache for 7TV user data
@@ -381,13 +382,14 @@ export async function getUserCosmetics(twitchId: string): Promise<UserCosmeticsR
 
       if (!userData?.data?.users?.userByConnection) {
         userCache.set(twitchId, {
-          data: { paints: [], badges: [] },
+          data: { paints: [], badges: [], seventvUserId: undefined },
           timestamp: now
         });
-        return { paints: [], badges: [] };
+        return { paints: [], badges: [], seventvUserId: undefined };
       }
 
       const data = userData.data.users.userByConnection;
+      const seventvUserId = data.id; // The user's 7TV profile ID
       const activePaintId = data.style?.activePaint?.id;
       const activeBadgeId = data.style?.activeBadge?.id;
 
@@ -440,7 +442,8 @@ export async function getUserCosmetics(twitchId: string): Promise<UserCosmeticsR
 
       const result = {
         paints: paints.filter((p) => p !== null),
-        badges: badges.filter((b) => b !== null)
+        badges: badges.filter((b) => b !== null),
+        seventvUserId
       };
 
       // NO aggressive caching here - cosmetics will be cached lazily when displayed
@@ -449,7 +452,7 @@ export async function getUserCosmetics(twitchId: string): Promise<UserCosmeticsR
       return result;
     } catch (error) {
       console.error('[7TV] Failed to fetch user cosmetics:', error);
-      const emptyResult = { paints: [], badges: [] };
+      const emptyResult = { paints: [], badges: [], seventvUserId: undefined };
       userCache.set(twitchId, { data: emptyResult, timestamp: now });
       return emptyResult;
     } finally {

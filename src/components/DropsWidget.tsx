@@ -120,7 +120,6 @@ export default function DropsWidget() {
 
   // UI state
   const [activeTab, setActiveTab] = useState<Tab>('campaigns');
-  const [searchTerm, setSearchTerm] = useState('');
   const [lastProgressUpdate, setLastProgressUpdate] = useState<number>(0);
   const [updatedDropIds, setUpdatedDropIds] = useState<Set<string>>(new Set());
 
@@ -130,7 +129,12 @@ export default function DropsWidget() {
   // Settings state
   const [dropsSettings, setDropsSettings] = useState<any>(null);
   const [showInventory, setShowInventory] = useState(false);
-  const { addToast } = useAppStore();
+  const { addToast, dropsSearchTerm, setDropsSearchTerm } = useAppStore();
+
+  // Use store state for search term (allows external navigation to set search)
+  const searchTerm = dropsSearchTerm;
+  const setSearchTerm = setDropsSearchTerm;
+
   const prevProgressRef = useRef<DropProgress[]>([]);
 
   // Channel picker modal state

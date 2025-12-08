@@ -1,20 +1,15 @@
 import { useAppStore } from '../../stores/AppStore';
-import { Check } from 'lucide-react';
 import { useState, useEffect } from 'react';
 
 const IntegrationsSettings = () => {
   const { settings, updateSettings } = useAppStore();
   const [ttvlolInstalledVersion, setTtvlolInstalledVersion] = useState<string | null>(null);
-  const [ttvlolLatestVersion, setTtvlolLatestVersion] = useState<string | null>(null);
-  const [ttvlolUpdateAvailable, setTtvlolUpdateAvailable] = useState<boolean>(false);
 
-  // Load TTV LOL plugin version and check for updates
+  // Load TTV LOL plugin version
   useEffect(() => {
-    const loadTtvlolVersionAndCheckUpdates = async () => {
+    const loadTtvlolVersion = async () => {
       if (!settings.ttvlol_plugin?.enabled) {
         setTtvlolInstalledVersion(null);
-        setTtvlolLatestVersion(null);
-        setTtvlolUpdateAvailable(false);
         return;
       }
 
@@ -32,28 +27,13 @@ const IntegrationsSettings = () => {
             ttvlol_plugin: { ...settings.ttvlol_plugin, installed_version: installed },
           });
         }
-
-        if (installed) {
-          // Get latest version
-          const latest = (await invoke('get_latest_ttvlol_version')) as string;
-          setTtvlolLatestVersion(latest);
-
-          // Compare versions
-          const needsUpdate = installed !== latest;
-          setTtvlolUpdateAvailable(needsUpdate);
-        } else {
-          setTtvlolLatestVersion(null);
-          setTtvlolUpdateAvailable(false);
-        }
       } catch (error) {
         console.error('Failed to get TTV LOL plugin version:', error);
         setTtvlolInstalledVersion(null);
-        setTtvlolLatestVersion(null);
-        setTtvlolUpdateAvailable(false);
       }
     };
 
-    loadTtvlolVersionAndCheckUpdates();
+    loadTtvlolVersion();
   }, [settings.ttvlol_plugin?.enabled]);
 
   return (
@@ -145,74 +125,10 @@ const IntegrationsSettings = () => {
           </div>
 
           {/* Plugin Version Info */}
-          {settings.ttvlol_plugin?.enabled && (
-            <div>
-              {ttvlolInstalledVersion && ttvlolLatestVersion && (
-                <p className="text-xs mb-2">
-                  <span className="text-textSecondary">Current: </span>
-                  <span className="text-textPrimary font-medium">{ttvlolInstalledVersion}</span>
-                  <span className="text-textSecondary"> → Latest: </span>
-                  <span
-                    className={
-                      ttvlolUpdateAvailable
-                        ? 'text-yellow-300 font-medium'
-                        : 'text-green-400 font-medium'
-                    }
-                  >
-                    {ttvlolLatestVersion}
-                  </span>
-                </p>
-              )}
-              <button
-                onClick={async () => {
-                  try {
-                    const { invoke } = await import('@tauri-apps/api/core');
-                    const { addToast } = useAppStore.getState();
-
-                    if (ttvlolUpdateAvailable) {
-                      addToast('Updating TTV LOL plugin...', 'info');
-
-                      try {
-                        const version = (await invoke(
-                          'download_and_install_ttvlol_plugin'
-                        )) as string;
-                        addToast(`TTV LOL plugin updated to v${version}!`, 'success');
-                        setTtvlolInstalledVersion(version);
-                        setTtvlolUpdateAvailable(false);
-                        updateSettings({
-                          ...settings,
-                          ttvlol_plugin: { ...settings.ttvlol_plugin, installed_version: version },
-                        });
-                      } catch (error) {
-                        console.error('Failed to update plugin:', error);
-                        addToast('Failed to update TTV LOL plugin: ' + error, 'error');
-                      }
-                    } else {
-                      addToast(`TTV LOL plugin is up to date (v${ttvlolInstalledVersion})`, 'success');
-                    }
-                  } catch (error) {
-                    console.error('Failed to check for updates:', error);
-                    const { addToast } = useAppStore.getState();
-                    addToast('Failed to check for updates: ' + error, 'error');
-                  }
-                }}
-                disabled={!ttvlolUpdateAvailable}
-                className={`px-4 py-2 text-white text-sm font-medium rounded transition-all ${
-                  ttvlolUpdateAvailable
-                    ? 'bg-yellow-500 hover:bg-yellow-600'
-                    : 'bg-gray-600 cursor-not-allowed opacity-50'
-                }`}
-              >
-                {ttvlolUpdateAvailable ? (
-                  'Update Plugin'
-                ) : (
-                  <span className="flex items-center gap-2">
-                    <Check size={16} className="text-green-400" strokeWidth={3} />
-                    Up to Date
-                  </span>
-                )}
-              </button>
-            </div>
+          {settings.ttvlol_plugin?.enabled && ttvlolInstalledVersion && (
+            <p className="text-xs text-textSecondary">
+              Installed version: <span className="text-textPrimary font-medium">{ttvlolInstalledVersion}</span>
+            </p>
           )}
         </div>
       </div>

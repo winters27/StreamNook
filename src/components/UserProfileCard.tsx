@@ -272,13 +272,26 @@ const UserProfileCard = ({
               </div>
             )}
             {seventvPaint && (
-              <span
-                className="px-2 py-0.5 rounded-full text-[10px] font-semibold border border-current opacity-80"
-                style={usernameStyle}
+              <div
+                className="px-1.5 py-px rounded text-[9px] font-bold inline-block relative overflow-hidden"
+                style={{
+                  ...computePaintStyle(seventvPaint as any, color),
+                  WebkitBackgroundClip: 'padding-box',
+                  backgroundClip: 'padding-box',
+                }}
                 title={`7TV Paint: ${seventvPaint.name}`}
               >
-                🎨 {seventvPaint.name}
-              </span>
+                <span
+                  style={{
+                    ...computePaintStyle(seventvPaint as any, color),
+                    filter: 'invert(1) contrast(1.5)',
+                    WebkitBackgroundClip: 'text',
+                    backgroundClip: 'text',
+                  }}
+                >
+                  🎨 {seventvPaint.name}
+                </span>
+              </div>
             )}
           </div>
           <p className="text-sm text-textSecondary mb-3">@{username}</p>

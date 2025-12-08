@@ -1632,6 +1632,35 @@ impl TwitchService {
         Ok(game_id)
     }
 
+    /// Search for categories by name (uses Twitch search API for fuzzy matching)
+    /// Returns a list of matching categories with id, name, and box_art_url
+    pub async fn search_categories(query: &str, limit: u32) -> Result<Vec<serde_json::Value>> {
+        let token = Self::get_token().await.ok();
+        let client = Client::new();
+
+        let url = format!(
+            "https://api.twitch.tv/helix/search/categories?query={}&first={}",
+            urlencoding::encode(query),
+            limit
+        );
+
+        let mut request = client.get(&url).header("Client-Id", CLIENT_ID);
+
+        if let Some(token) = &token {
+            request = request.header(AUTHORIZATION, format!("Bearer {}", token));
+        }
+
+        let response = request.send().await?.json::<serde_json::Value>().await?;
+
+        let data = response
+            .get("data")
+            .and_then(|d| d.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        Ok(data)
+    }
+
     /// Send a whisper message to another user
     /// Requires user:manage:whispers scope
     pub async fn send_whisper(to_user_id: &str, message: &str) -> Result<()> {

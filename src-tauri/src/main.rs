@@ -151,8 +151,9 @@ fn main() {
                 }
             });
 
-            // Verify token health on startup (proactively refresh if needed)
-            tauri::async_runtime::spawn(async {
+            // Verify token health on startup and auto-start dashboard for admins
+            let admin_app_handle = app_handle.clone();
+            tauri::async_runtime::spawn(async move {
                 use services::twitch_service::TwitchService;
 
                 println!("[Main] Starting token health verification...");
@@ -169,6 +170,21 @@ fn main() {
                             );
                             if status.needs_refresh {
                                 println!("[Main] ⚠️ Token expires soon, but will auto-refresh on next API call");
+                            }
+
+                            // Auto-start analytics dashboard for admin users
+                            println!("[Main] Checking if user is admin for dashboard auto-start...");
+                            match auto_start_dashboard_for_admin(admin_app_handle).await {
+                                Ok(started) => {
+                                    if started {
+                                        println!("[Main] ✅ Analytics dashboard auto-started for admin user");
+                                    } else {
+                                        println!("[Main] Dashboard not auto-started (not admin or not available)");
+                                    }
+                                }
+                                Err(e) => {
+                                    println!("[Main] Failed to auto-start dashboard: {}", e);
+                                }
                             }
                         } else {
                             println!(
@@ -221,39 +237,45 @@ fn main() {
             get_app_authors,
             get_window_size,
             calculate_aspect_ratio_size,
+            calculate_aspect_ratio_size_preserve_video,
             get_system_info,
             start_analytics_dashboard,
             is_dev_environment,
+            is_admin_user,
+            check_dashboard_available,
+            is_dashboard_running,
+            auto_start_dashboard_for_admin,
             // Twitch commands
             twitch_login,
             twitch_start_device_login,
             twitch_complete_device_login,
             twitch_logout,
             has_stored_credentials,
-        get_followed_streams,
-        get_channel_info,
-        get_user_info,
-        get_recommended_streams,
-        get_recommended_streams_paginated,
-        open_browser_url,
-        focus_window,
-        get_top_games,
-        get_streams_by_game,
-        search_channels,
-        get_user_by_id,
-        get_user_by_login,
-        follow_channel,
-        unfollow_channel,
-        check_following_status,
-        verify_token_health,
-        force_refresh_token,
-        check_stream_online,
-        get_streams_by_game_name,
-        send_whisper,
-        start_whisper_listener,
-        get_whisper_history,
-        search_whisper_user,
-        import_all_whisper_history,
+            get_followed_streams,
+            get_channel_info,
+            get_user_info,
+            get_recommended_streams,
+            get_recommended_streams_paginated,
+            open_browser_url,
+            focus_window,
+            get_top_games,
+            get_streams_by_game,
+            search_channels,
+            search_categories,
+            get_user_by_id,
+            get_user_by_login,
+            follow_channel,
+            unfollow_channel,
+            check_following_status,
+            verify_token_health,
+            force_refresh_token,
+            check_stream_online,
+            get_streams_by_game_name,
+            send_whisper,
+            start_whisper_listener,
+            get_whisper_history,
+            search_whisper_user,
+            import_all_whisper_history,
             // Streaming commands
             start_stream,
             stop_stream,

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Activity, ExternalLink, Globe, RefreshCw } from 'lucide-react';
+import { Activity, ExternalLink, Globe, RefreshCw, CheckCircle, AlertCircle } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import {
     isSupabaseConfigured,
@@ -11,7 +11,20 @@ export default function AnalyticsSettings() {
     const [onlineCount, setOnlineCount] = useState(0);
     const [isOpening, setIsOpening] = useState(false);
     const [isDev, setIsDev] = useState(false);
+    const [isAdmin, setIsAdmin] = useState(false);
+    const [dashboardAvailable, setDashboardAvailable] = useState(false);
+    const [dashboardRunning, setDashboardRunning] = useState(false);
+    const [isLoading, setIsLoading] = useState(true);
     const configured = isSupabaseConfigured();
+
+    const checkDashboardStatus = async () => {
+        try {
+            const running = await invoke('is_dashboard_running') as boolean;
+            setDashboardRunning(running);
+        } catch (error) {
+            console.error('Failed to check dashboard status:', error);
+        }
+    };
 
     const handleOpenDashboard = async () => {
         setIsOpening(true);
@@ -19,16 +32,21 @@ export default function AnalyticsSettings() {
             // Attempt to start the server (returns true if already running, false if started)
             await invoke('start_analytics_dashboard');
 
+            // Give the server a moment to start
+            await new Promise(resolve => setTimeout(resolve, 500));
+
             // Open via system browser
-            const { invoke: invokeCore } = await import('@tauri-apps/api/core');
-            // Check if we have open_browser_url command available, otherwise fall back to window.open
             try {
                 await invoke('open_browser_url', { url: 'http://localhost:5173' });
             } catch (e) {
                 window.open('http://localhost:5173', '_blank');
             }
+
+            // Update dashboard running status
+            await checkDashboardStatus();
         } catch (error) {
             console.error('Failed to start dashboard:', error);
+            // Still try to open the URL in case it's running
             window.open('http://localhost:5173', '_blank');
         } finally {
             setIsOpening(false);
@@ -36,10 +54,37 @@ export default function AnalyticsSettings() {
     };
 
     useEffect(() => {
-        // Check if we are in a dev environment
-        invoke('is_dev_environment')
-            .then((res) => setIsDev(res as boolean))
-            .catch(() => setIsDev(false));
+        const init = async () => {
+            setIsLoading(true);
+            try {
+                // Check if we are in a dev environment
+                const devResult = await invoke('is_dev_environment') as boolean;
+                setIsDev(devResult);
+                console.log('[Analytics] isDev:', devResult);
+
+                // Check if user is admin
+                const adminResult = await invoke('is_admin_user') as boolean;
+                setIsAdmin(adminResult);
+                console.log('[Analytics] isAdmin:', adminResult);
+
+                // Check if dashboard is available
+                const availableResult = await invoke('check_dashboard_available') as boolean;
+                setDashboardAvailable(availableResult);
+                console.log('[Analytics] dashboardAvailable:', availableResult);
+
+                // Check if dashboard is running
+                await checkDashboardStatus();
+            } catch (error) {
+                console.error('[Analytics] Error during init:', error);
+                setIsDev(false);
+                setIsAdmin(false);
+                setDashboardAvailable(false);
+            } finally {
+                setIsLoading(false);
+            }
+        };
+
+        init();
 
         if (!configured) return;
 
@@ -48,10 +93,28 @@ export default function AnalyticsSettings() {
             setOnlineCount(count);
         });
 
+        // Check dashboard status periodically
+        const statusInterval = setInterval(checkDashboardStatus, 5000);
+
         return () => {
             if (unsubOnline) unsubOnline();
+            clearInterval(statusInterval);
         };
     }, [configured]);
+
+    // Show loading state
+    if (isLoading) {
+        return (
+            <div className="p-6 max-w-2xl mx-auto text-center">
+                <div className="bg-glass rounded-xl border border-borderSubtle p-8 shadow-lg">
+                    <div className="w-16 h-16 rounded-full bg-accent/20 flex items-center justify-center mx-auto mb-6">
+                        <RefreshCw className="w-8 h-8 text-accent animate-spin" />
+                    </div>
+                    <h2 className="text-2xl font-bold text-textPrimary mb-4">Loading Analytics...</h2>
+                </div>
+            </div>
+        );
+    }
 
     if (!configured) {
         return (
@@ -77,8 +140,9 @@ export default function AnalyticsSettings() {
         );
     }
 
-    // Public / Production View for End Users
-    if (!isDev) {
+    // Public / Production View for End Users (Non-Admins)
+    // Only show this if NOT dev AND NOT admin
+    if (!isDev && !isAdmin) {
         return (
             <div className="p-6 max-w-2xl mx-auto text-center">
                 <div className="bg-glass rounded-xl border border-borderSubtle p-8 shadow-lg">
@@ -98,6 +162,7 @@ export default function AnalyticsSettings() {
         );
     }
 
+    // Admin / Dev View - Show Dashboard Controls
     return (
         <div className="p-6 max-w-2xl mx-auto text-center">
             <div className="bg-glass rounded-xl border border-borderSubtle p-8 shadow-lg">
@@ -105,27 +170,39 @@ export default function AnalyticsSettings() {
                     <Activity className="w-8 h-8 text-accent" />
                 </div>
 
-                <h2 className="text-2xl font-bold text-textPrimary mb-4">Analytics & User Tracking</h2>
+                <h2 className="text-2xl font-bold text-textPrimary mb-4">Analytics Dashboard</h2>
+
+                {isAdmin && !isDev && (
+                    <div className="bg-purple-500/10 border border-purple-500/30 rounded-lg p-3 mb-6 flex items-center justify-center gap-2">
+                        <CheckCircle className="w-4 h-4 text-purple-400" />
+                        <span className="text-sm text-purple-400 font-medium">Admin Access Granted</span>
+                    </div>
+                )}
 
                 <p className="text-textSecondary mb-8">
-                    The analytics dashboard has been moved to a dedicated web application.
-                    This allows for better visualization, more detailed stats, and accessibility outside of the main application.
+                    Access the full analytics dashboard to view real-time statistics, user activity, and application metrics.
                 </p>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8 text-left">
                     <div className="bg-background/40 rounded-lg p-4 border border-borderSubtle">
                         <div className="flex items-center gap-3 mb-2">
-                            <div className="w-8 h-8 rounded-lg bg-success/20 flex items-center justify-center">
-                                <Globe className="w-4 h-4 text-success" />
+                            <div className={`w-8 h-8 rounded-lg ${dashboardRunning ? 'bg-success/20' : 'bg-warning/20'} flex items-center justify-center`}>
+                                <Globe className={`w-4 h-4 ${dashboardRunning ? 'text-success' : 'text-warning'}`} />
                             </div>
                             <div>
-                                <div className="text-sm text-textMuted">Status</div>
-                                <div className="font-semibold text-success flex items-center gap-2">
-                                    Active & Tracking
-                                    <span className="relative flex h-2 w-2">
-                                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-success opacity-75"></span>
-                                        <span className="relative inline-flex rounded-full h-2 w-2 bg-success"></span>
-                                    </span>
+                                <div className="text-sm text-textMuted">Dashboard Server</div>
+                                <div className={`font-semibold ${dashboardRunning ? 'text-success' : 'text-warning'} flex items-center gap-2`}>
+                                    {dashboardRunning ? (
+                                        <>
+                                            Running
+                                            <span className="relative flex h-2 w-2">
+                                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-success opacity-75"></span>
+                                                <span className="relative inline-flex rounded-full h-2 w-2 bg-success"></span>
+                                            </span>
+                                        </>
+                                    ) : (
+                                        <>Stopped</>
+                                    )}
                                 </div>
                             </div>
                         </div>
@@ -144,21 +221,33 @@ export default function AnalyticsSettings() {
                     </div>
                 </div>
 
+                {!dashboardAvailable && (
+                    <div className="bg-error/10 border border-error/30 rounded-lg p-4 mb-6 flex items-center gap-3">
+                        <AlertCircle className="w-5 h-5 text-error flex-shrink-0" />
+                        <p className="text-sm text-error text-left">
+                            Dashboard files not found. {isDev ? 'Run "npm run build" in analytics-dashboard folder.' : 'This build may be missing the embedded dashboard.'}
+                        </p>
+                    </div>
+                )}
+
                 <div className="flex flex-col gap-4 max-w-sm mx-auto">
                     <button
                         onClick={handleOpenDashboard}
-                        disabled={isOpening}
-                        className="flex items-center justify-center gap-2 px-6 py-3 bg-accent hover:bg-accent-hover text-background font-bold rounded-xl transition-all shadow-lg hover:shadow-accent/20 cursor-pointer disabled:opacity-70"
+                        disabled={isOpening || !dashboardAvailable}
+                        className="flex items-center justify-center gap-2 px-6 py-3 bg-accent hover:bg-accent-hover text-background font-bold rounded-xl transition-all shadow-lg hover:shadow-accent/20 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                         {isOpening ? (
                             <RefreshCw className="w-5 h-5 animate-spin" />
                         ) : (
                             <ExternalLink className="w-5 h-5" />
                         )}
-                        {isOpening ? 'Starting Dashboard...' : 'Open Web Dashboard'}
+                        {isOpening ? 'Starting Dashboard...' : dashboardRunning ? 'Open Dashboard' : 'Start & Open Dashboard'}
                     </button>
                     <p className="text-xs text-textMuted">
-                        Note: This will automatically start the dashboard server if it's not running.
+                        {dashboardRunning
+                            ? 'Dashboard is running on localhost:5173'
+                            : 'This will start the dashboard server and open it in your browser.'
+                        }
                     </p>
                 </div>
             </div>

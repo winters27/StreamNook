@@ -1,9 +1,31 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
-import { useAppStore } from '../stores/AppStore';
-import { Search, Grid3x3, ArrowLeft, Heart, Maximize2, X } from 'lucide-react';
+import { useAppStore, HomeTab } from '../stores/AppStore';
+import { Search, ArrowLeft, Heart, Maximize2, X, Gift, Pickaxe, Check } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import type { TwitchStream, TwitchCategory } from '../types';
 import LoadingWidget from './LoadingWidget';
+
+// Types for drops data
+interface DropCampaign {
+    id: string;
+    name: string;
+    game_id: string;
+    game_name: string;
+}
+
+interface InventoryItem {
+    campaign: DropCampaign;
+    status: string;
+}
+
+interface InventoryResponse {
+    items: InventoryItem[];
+}
+
+interface MiningStatus {
+    is_mining: boolean;
+    current_campaign: string | null;
+}
 
 const Home = () => {
     const {
@@ -21,21 +43,38 @@ const Home = () => {
         loginToTwitch,
         isLoading,
         streamUrl,
-        toggleHome
+        toggleHome,
+        // Navigation state from AppStore
+        homeActiveTab,
+        homeSelectedCategory,
+        setHomeActiveTab,
+        setHomeSelectedCategory,
     } = useAppStore();
 
-    const [activeTab, setActiveTab] = useState<'following' | 'recommended' | 'browse' | 'search' | 'category'>('following');
+    // Use store state directly
+    const activeTab = homeActiveTab;
+    const selectedCategory = homeSelectedCategory;
+
+    // Wrapper functions to update store state
+    const setActiveTab = (tab: HomeTab) => setHomeActiveTab(tab);
+    const setSelectedCategory = (category: TwitchCategory | null) => setHomeSelectedCategory(category);
+
     const [searchQuery, setSearchQuery] = useState('');
     const [searchResults, setSearchResults] = useState<TwitchStream[]>([]);
     const [isSearching, setIsSearching] = useState(false);
     const [topGames, setTopGames] = useState<TwitchCategory[]>([]);
     const [isLoadingGames, setIsLoadingGames] = useState(false);
-    const [selectedCategory, setSelectedCategory] = useState<TwitchCategory | null>(null);
     const [categoryStreams, setCategoryStreams] = useState<TwitchStream[]>([]);
     const [isLoadingCategoryStreams, setIsLoadingCategoryStreams] = useState(false);
     const [animatingHearts, setAnimatingHearts] = useState<Set<string>>(new Set());
     const [isSearchExpanded, setIsSearchExpanded] = useState(false);
     const searchInputRef = useRef<HTMLInputElement>(null);
+
+    // Drops-enabled categories tracking (by game_id)
+    const [dropsGameIds, setDropsGameIds] = useState<Map<string, DropCampaign>>(new Map());
+    // Drops by game name (for stream cards which have game_name)
+    const [dropsGameNames, setDropsGameNames] = useState<Map<string, DropCampaign>>(new Map());
+    const [isLoadingDrops, setIsLoadingDrops] = useState(false);
 
     const scrollContainerRef = useRef<HTMLDivElement>(null);
     const loadingRef = useRef(false);
@@ -43,6 +82,8 @@ const Home = () => {
     useEffect(() => {
         loadFollowedStreams();
         loadRecommendedStreams();
+        // Load drops data early so we can show indicators on stream cards
+        loadActiveDrops();
     }, [loadFollowedStreams, loadRecommendedStreams]);
 
     // Auto-select the appropriate tab based on auth status
@@ -74,11 +115,176 @@ const Home = () => {
         }
     };
 
+    // Load active drops campaigns and build maps for both game_id and game_name lookup
+    const loadActiveDrops = async () => {
+        setIsLoadingDrops(true);
+        try {
+            const inventory = await invoke<InventoryResponse>('get_drops_inventory');
+            if (inventory && inventory.items && inventory.items.length > 0) {
+                const dropsIdMap = new Map<string, DropCampaign>();
+                const dropsNameMap = new Map<string, DropCampaign>();
+                for (const item of inventory.items) {
+                    // Only include active campaigns
+                    if (item.status === 'Active') {
+                        if (item.campaign.game_id) {
+                            dropsIdMap.set(item.campaign.game_id, item.campaign);
+                        }
+                        if (item.campaign.game_name) {
+                            dropsNameMap.set(item.campaign.game_name.toLowerCase(), item.campaign);
+                        }
+                    }
+                }
+                setDropsGameIds(dropsIdMap);
+                setDropsGameNames(dropsNameMap);
+                console.log(`[Home] Found ${dropsIdMap.size} categories with active drops`);
+
+                // Also check current mining status to sync state
+                try {
+                    const miningStatus = await invoke<MiningStatus>('get_mining_status');
+                    if (miningStatus.is_mining && miningStatus.current_campaign) {
+                        // Find the campaign ID that matches the current_campaign name
+                        for (const item of inventory.items) {
+                            if (item.campaign.name === miningStatus.current_campaign) {
+                                console.log(`[Home] Already mining campaign: ${item.campaign.name}`);
+                                setActiveMiningIds(prev => new Set(prev).add(item.campaign.id));
+                                break;
+                            }
+                        }
+                    }
+                } catch (e) {
+                    console.warn('Could not get mining status:', e);
+                }
+            } else {
+                setDropsGameIds(new Map());
+                setDropsGameNames(new Map());
+            }
+        } catch (e) {
+            console.error('Failed to load active drops:', e);
+            setDropsGameIds(new Map());
+            setDropsGameNames(new Map());
+        } finally {
+            setIsLoadingDrops(false);
+        }
+    };
+
+    // State for mining animation and tracking actively mining campaigns
+    const [activeMiningIds, setActiveMiningIds] = useState<Set<string>>(new Set());
+    const [flyingDroplet, setFlyingDroplet] = useState<{ visible: boolean; x: number; y: number } | null>(null);
+
+    // Create a map from campaign name to campaign ID for reverse lookup
+    const campaignNameToIdRef = useRef<Map<string, string>>(new Map());
+
+    // Effect to poll mining status and keep UI in sync with backend
+    useEffect(() => {
+        const syncMiningStatus = async () => {
+            try {
+                const miningStatus = await invoke<MiningStatus>('get_mining_status');
+
+                if (miningStatus.is_mining && miningStatus.current_campaign) {
+                    // Find the campaign ID that matches the current_campaign name
+                    const campaignId = campaignNameToIdRef.current.get(miningStatus.current_campaign);
+                    if (campaignId) {
+                        setActiveMiningIds(prev => {
+                            // Only update if not already in the set
+                            if (!prev.has(campaignId)) {
+                                const newSet = new Set<string>();
+                                newSet.add(campaignId);
+                                return newSet;
+                            }
+                            // If already has the right ID, ensure it's the ONLY one
+                            if (prev.size > 1 || !prev.has(campaignId)) {
+                                return new Set([campaignId]);
+                            }
+                            return prev;
+                        });
+                    }
+                } else {
+                    // Not mining - clear the active mining IDs
+                    setActiveMiningIds(prev => {
+                        if (prev.size > 0) {
+                            return new Set<string>();
+                        }
+                        return prev;
+                    });
+                }
+            } catch (e) {
+                // Silently fail - might not be authenticated or backend not ready
+            }
+        };
+
+        // Initial sync
+        syncMiningStatus();
+
+        // Poll every 5 seconds
+        const interval = setInterval(syncMiningStatus, 5000);
+
+        // Also listen for mining status change events
+        let unlisten: (() => void) | null = null;
+        const setupListener = async () => {
+            try {
+                const { listen } = await import('@tauri-apps/api/event');
+                unlisten = await listen('mining-status-changed', syncMiningStatus);
+            } catch (err) {
+                // Event listener not available
+            }
+        };
+        setupListener();
+
+        return () => {
+            clearInterval(interval);
+            if (unlisten) unlisten();
+        };
+    }, []);
+
+    // Update campaign name-to-ID map when drops data loads
+    useEffect(() => {
+        const nameToId = new Map<string, string>();
+        dropsGameIds.forEach((campaign) => {
+            nameToId.set(campaign.name, campaign.id);
+        });
+        campaignNameToIdRef.current = nameToId;
+    }, [dropsGameIds]);
+
+    // Handler to start mining drops for a category
+    const handleStartMining = async (e: React.MouseEvent, campaign: DropCampaign) => {
+        e.stopPropagation(); // Don't trigger category click
+
+        // If already mining this campaign, don't do anything
+        if (activeMiningIds.has(campaign.id)) return;
+
+        // Get button position for flying animation
+        const button = e.currentTarget as HTMLElement;
+        const rect = button.getBoundingClientRect();
+        const centerX = rect.left + rect.width / 2;
+        const centerY = rect.top + rect.height / 2;
+
+        try {
+            await invoke('start_campaign_mining', { campaignId: campaign.id });
+            console.log(`[Home] Started mining drops for ${campaign.name}`);
+
+            // Add to active mining set (permanent until page refresh)
+            setActiveMiningIds(prev => new Set(prev).add(campaign.id));
+
+            // Start flying droplet animation
+            setFlyingDroplet({ visible: true, x: centerX, y: centerY });
+
+            // Clear flying animation after it completes
+            setTimeout(() => setFlyingDroplet(null), 1000);
+
+        } catch (error) {
+            console.error('Failed to start mining:', error);
+        }
+    };
+
     const handleBrowseClick = () => {
         setActiveTab('browse');
         setIsSearchExpanded(false);
         if (topGames.length === 0) {
             loadTopGames();
+        }
+        // Also load drops data
+        if (dropsGameIds.size === 0) {
+            loadActiveDrops();
         }
     };
 
@@ -102,6 +308,33 @@ const Home = () => {
             setIsLoadingCategoryStreams(false);
         }
     };
+
+    // Load streams by game name when navigating from badge overlay (category has no ID)
+    const loadCategoryStreamsByName = async (gameName: string) => {
+        setIsLoadingCategoryStreams(true);
+        setCategoryStreams([]);
+
+        try {
+            const streams = await invoke('get_streams_by_game_name', {
+                gameName: gameName,
+                excludeUserLogin: null,
+                limit: 40
+            }) as TwitchStream[];
+            setCategoryStreams(streams);
+        } catch (e) {
+            console.error('Failed to load category streams by name:', e);
+            setCategoryStreams([]);
+        } finally {
+            setIsLoadingCategoryStreams(false);
+        }
+    };
+
+    // Effect to handle navigation from badge overlay (category with empty ID)
+    useEffect(() => {
+        if (activeTab === 'category' && selectedCategory && !selectedCategory.id && selectedCategory.name) {
+            loadCategoryStreamsByName(selectedCategory.name);
+        }
+    }, [activeTab, selectedCategory]);
 
     const handleBackToBrowse = () => {
         setActiveTab('browse');
@@ -218,18 +451,18 @@ const Home = () => {
     return (
         <div className="flex flex-col h-full bg-background">
             {/* Compact Header */}
-            <div className="flex items-center justify-center gap-3 px-4 py-2.5 border-b border-borderSubtle relative">
-                {/* Category back button - absolute left */}
+            <div className="flex items-center justify-center gap-3 px-4 py-2.5 border-b border-borderSubtle relative min-h-[48px]">
+                {/* Category back button and name - absolute left with proper spacing */}
                 {activeTab === 'category' && selectedCategory && (
-                    <div className="absolute left-4 flex items-center gap-1">
+                    <div className="absolute left-4 flex items-center gap-2 max-w-[40%]">
                         <button
                             onClick={handleBackToBrowse}
-                            className="p-1.5 text-textSecondary hover:text-textPrimary hover:bg-glass rounded transition-all"
+                            className="p-2 glass-panel hover:bg-glass-hover rounded-lg transition-all group flex-shrink-0"
                             title="Back to Browse"
                         >
-                            <ArrowLeft size={18} />
+                            <ArrowLeft size={18} className="text-textSecondary group-hover:text-textPrimary transition-colors" />
                         </button>
-                        <span className="text-textPrimary font-medium text-sm truncate max-w-[150px]">
+                        <span className="text-textPrimary font-medium text-sm truncate">
                             {selectedCategory.name}
                         </span>
                     </div>
@@ -267,12 +500,11 @@ const Home = () => {
                             </button>
                             <button
                                 onClick={handleBrowseClick}
-                                className={`px-3 py-1.5 text-sm font-medium rounded-lg transition-all flex items-center gap-1 whitespace-nowrap ${activeTab === 'browse'
+                                className={`px-3 py-1.5 text-sm font-medium rounded-lg transition-all whitespace-nowrap ${activeTab === 'browse'
                                     ? 'glass-button text-white'
                                     : 'text-textSecondary hover:text-textPrimary hover:bg-glass-hover'
                                     }`}
                             >
-                                <Grid3x3 size={14} />
                                 Categories
                             </button>
                             {searchResults.length > 0 && (
@@ -306,7 +538,7 @@ const Home = () => {
                                 }`}
                         >
                             <div className="flex items-center gap-1.5 w-full px-1.5 py-1">
-                                <div className="flex-1 flex items-center glass-button rounded-lg">
+                                <div className="flex-1 flex items-center glass-button rounded-lg hover:shadow-none">
                                     <input
                                         ref={searchInputRef}
                                         type="text"
@@ -383,31 +615,72 @@ const Home = () => {
                             </div>
                         ) : (
                             <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-8 gap-3">
-                                {topGames.map(game => (
-                                    <div
-                                        key={game.id}
-                                        className="glass-panel cursor-pointer hover:bg-glass-hover transition-all duration-200 group overflow-hidden"
-                                        onClick={() => handleCategoryClick(game)}
-                                    >
-                                        <div className="relative overflow-hidden">
-                                            <img
-                                                src={getGameBoxArt(game.box_art_url)}
-                                                alt={game.name}
-                                                className="w-full aspect-[3/4] object-cover group-hover:scale-105 transition-transform duration-200"
-                                            />
+                                {topGames.map(game => {
+                                    const dropsCampaign = dropsGameIds.get(game.id);
+                                    const hasDrops = !!dropsCampaign;
+
+                                    return (
+                                        <div
+                                            key={game.id}
+                                            className={`glass-panel cursor-pointer hover:bg-glass-hover transition-all duration-200 group overflow-hidden relative ${hasDrops ? 'ring-2 ring-accent shadow-accent/40' : ''}`}
+                                            style={hasDrops ? { boxShadow: '0 0 15px var(--color-accent-muted)' } : undefined}
+                                            onClick={() => handleCategoryClick(game)}
+                                        >
+                                            <div className="relative overflow-hidden">
+                                                <img
+                                                    src={getGameBoxArt(game.box_art_url)}
+                                                    alt={game.name}
+                                                    className="w-full aspect-[3/4] object-cover group-hover:scale-105 transition-transform duration-200"
+                                                />
+                                                {/* Drops overlay gradient */}
+                                                {hasDrops && (
+                                                    <div className="absolute inset-0 bg-gradient-to-t from-accent/40 via-transparent to-accent/20 pointer-events-none" />
+                                                )}
+                                                {/* Drops Badge */}
+                                                {hasDrops && (
+                                                    <div className="absolute top-2 left-2 flex items-center gap-1.5 px-2.5 py-1 bg-accent rounded-md text-white text-xs font-bold shadow-lg animate-pulse">
+                                                        <Gift size={14} className="drop-shadow-lg" />
+                                                        <span>DROPS</span>
+                                                    </div>
+                                                )}
+                                                {/* Mine Drops Button - Always visible for drops categories */}
+                                                {hasDrops && (
+                                                    <button
+                                                        onClick={(e) => handleStartMining(e, dropsCampaign)}
+                                                        className={`absolute bottom-2 right-2 left-2 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md text-white text-xs font-semibold transition-all shadow-lg ${activeMiningIds.has(dropsCampaign.id)
+                                                            ? 'bg-green-600 cursor-default'
+                                                            : 'bg-accent hover:bg-accent-hover hover:scale-105'
+                                                            }`}
+                                                        title={activeMiningIds.has(dropsCampaign.id) ? `Mining ${dropsCampaign.name}` : `Start mining ${dropsCampaign.name}`}
+                                                        disabled={activeMiningIds.has(dropsCampaign.id)}
+                                                    >
+                                                        {activeMiningIds.has(dropsCampaign.id) ? (
+                                                            <>
+                                                                <Pickaxe size={14} className="animate-pulse" />
+                                                                <span>Mining</span>
+                                                            </>
+                                                        ) : (
+                                                            <>
+                                                                <Pickaxe size={14} />
+                                                                <span>Start Mining</span>
+                                                            </>
+                                                        )}
+                                                    </button>
+                                                )}
+                                            </div>
+                                            <div className="p-2">
+                                                <h3 className="text-textPrimary font-medium text-sm line-clamp-2 group-hover:text-accent transition-colors">
+                                                    {game.name}
+                                                </h3>
+                                                {game.viewer_count !== undefined && (
+                                                    <p className="text-textSecondary text-xs mt-0.5">
+                                                        {game.viewer_count.toLocaleString()} viewers
+                                                    </p>
+                                                )}
+                                            </div>
                                         </div>
-                                        <div className="p-2">
-                                            <h3 className="text-textPrimary font-medium text-sm line-clamp-2 group-hover:text-accent transition-colors">
-                                                {game.name}
-                                            </h3>
-                                            {game.viewer_count !== undefined && (
-                                                <p className="text-textSecondary text-xs mt-0.5">
-                                                    {game.viewer_count.toLocaleString()} viewers
-                                                </p>
-                                            )}
-                                        </div>
-                                    </div>
-                                ))}
+                                    );
+                                })}
                             </div>
                         )}
                     </>
@@ -434,40 +707,58 @@ const Home = () => {
                             </div>
                         ) : (
                             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-3">
-                                {categoryStreams.map(stream => (
-                                    <div
-                                        key={stream.id}
-                                        className="glass-panel p-2.5 cursor-pointer hover:bg-glass-hover transition-all duration-200 group"
-                                        onClick={() => handleStreamClick(stream)}
-                                    >
-                                        <div className="relative mb-2 overflow-hidden rounded">
-                                            <img
-                                                src={getThumbnailUrl(stream.thumbnail_url)}
-                                                alt={stream.title}
-                                                className="w-full aspect-video object-cover group-hover:scale-105 transition-transform duration-200"
-                                            />
-                                            <div className="absolute top-1.5 left-1.5 live-dot text-xs px-1.5 py-0.5">
-                                                LIVE
+                                {categoryStreams.map(stream => {
+                                    // Check if the current category has active drops
+                                    const categoryDropsCampaign = selectedCategory?.id
+                                        ? dropsGameIds.get(selectedCategory.id)
+                                        : (selectedCategory?.name ? dropsGameNames.get(selectedCategory.name.toLowerCase()) : undefined);
+                                    const hasDrops = !!categoryDropsCampaign;
+
+                                    return (
+                                        <div
+                                            key={stream.id}
+                                            className={`glass-panel p-2.5 cursor-pointer hover:bg-glass-hover transition-all duration-200 group ${hasDrops ? 'ring-2 ring-accent/60' : ''}`}
+                                            style={hasDrops ? { boxShadow: '0 0 12px var(--color-accent-muted)' } : undefined}
+                                            onClick={() => handleStreamClick(stream)}
+                                        >
+                                            <div className="relative mb-2 overflow-hidden rounded">
+                                                <img
+                                                    src={getThumbnailUrl(stream.thumbnail_url)}
+                                                    alt={stream.title}
+                                                    className="w-full aspect-video object-cover group-hover:scale-105 transition-transform duration-200"
+                                                />
+                                                <div className="absolute top-1.5 left-1.5 flex items-center gap-1">
+                                                    <div className="live-dot text-xs px-1.5 py-0.5">
+                                                        LIVE
+                                                    </div>
+                                                    {/* Drops indicator badge */}
+                                                    {hasDrops && (
+                                                        <div className="flex items-center gap-1 px-1.5 py-0.5 bg-accent rounded text-white text-xs font-bold shadow-lg">
+                                                            <Gift size={10} />
+                                                            <span>DROPS</span>
+                                                        </div>
+                                                    )}
+                                                </div>
+                                                <div className="absolute bottom-1.5 left-1.5 px-2 py-0.5 glass-button text-white text-xs font-medium rounded">
+                                                    {stream.viewer_count.toLocaleString()} viewers
+                                                </div>
                                             </div>
-                                            <div className="absolute bottom-1.5 left-1.5 px-2 py-0.5 glass-button text-white text-xs font-medium rounded">
-                                                {stream.viewer_count.toLocaleString()} viewers
+                                            <div className="space-y-0.5">
+                                                <h3 className="text-textPrimary font-medium text-sm line-clamp-1 group-hover:text-accent transition-colors">
+                                                    {stream.title}
+                                                </h3>
+                                                <div className="flex items-center gap-1">
+                                                    <p className="text-textSecondary text-xs">{stream.user_name}</p>
+                                                    {stream.broadcaster_type === 'partner' && (
+                                                        <svg className="w-3 h-3 flex-shrink-0" viewBox="0 0 16 16" fill="#9146FF">
+                                                            <path fillRule="evenodd" d="M12.5 3.5 8 2 3.5 3.5 2 8l1.5 4.5L8 14l4.5-1.5L14 8l-1.5-4.5ZM7 11l4.5-4.5L10 5 7 8 5.5 6.5 4 8l3 3Z" clipRule="evenodd"></path>
+                                                        </svg>
+                                                    )}
+                                                </div>
                                             </div>
                                         </div>
-                                        <div className="space-y-0.5">
-                                            <h3 className="text-textPrimary font-medium text-sm line-clamp-1 group-hover:text-accent transition-colors">
-                                                {stream.title}
-                                            </h3>
-                                            <div className="flex items-center gap-1">
-                                                <p className="text-textSecondary text-xs">{stream.user_name}</p>
-                                                {stream.broadcaster_type === 'partner' && (
-                                                    <svg className="w-3 h-3 flex-shrink-0" viewBox="0 0 16 16" fill="#9146FF">
-                                                        <path fillRule="evenodd" d="M12.5 3.5 8 2 3.5 3.5 2 8l1.5 4.5L8 14l4.5-1.5L14 8l-1.5-4.5ZM7 11l4.5-4.5L10 5 7 8 5.5 6.5 4 8l3 3Z" clipRule="evenodd"></path>
-                                                    </svg>
-                                                )}
-                                            </div>
-                                        </div>
-                                    </div>
-                                ))}
+                                    );
+                                })}
                             </div>
                         )}
                     </>
@@ -524,6 +815,9 @@ const Home = () => {
                                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-3">
                                     {displayStreams.map(stream => {
                                         const isFavorite = isFavoriteStreamer(stream.user_id);
+                                        // Check if stream's game has active drops
+                                        const streamDropsCampaign = stream.game_name ? dropsGameNames.get(stream.game_name.toLowerCase()) : undefined;
+                                        const hasDrops = !!streamDropsCampaign;
                                         return (
                                             <div
                                                 key={stream.id}
@@ -536,8 +830,17 @@ const Home = () => {
                                                         alt={stream.title}
                                                         className="w-full aspect-video object-cover group-hover:scale-105 transition-transform duration-200"
                                                     />
-                                                    <div className="absolute top-1.5 left-1.5 live-dot text-xs px-1.5 py-0.5">
-                                                        LIVE
+                                                    <div className="absolute top-1.5 left-1.5 flex items-center gap-1">
+                                                        <div className="live-dot text-xs px-1.5 py-0.5">
+                                                            LIVE
+                                                        </div>
+                                                        {/* Drops indicator badge */}
+                                                        {hasDrops && (
+                                                            <div className="flex items-center gap-1 px-1.5 py-0.5 bg-accent rounded text-white text-xs font-bold shadow-lg">
+                                                                <Gift size={10} />
+                                                                <span>DROPS</span>
+                                                            </div>
+                                                        )}
                                                     </div>
                                                     <div className="absolute bottom-1.5 left-1.5 px-2 py-0.5 glass-button text-white text-xs font-medium rounded">
                                                         {stream.viewer_count.toLocaleString()} viewers
@@ -571,7 +874,12 @@ const Home = () => {
                                                             </svg>
                                                         )}
                                                     </div>
-                                                    <p className="text-textSecondary text-xs line-clamp-1">{stream.game_name}</p>
+                                                    <div className="flex items-center gap-1">
+                                                        <p className="text-textSecondary text-xs line-clamp-1">{stream.game_name}</p>
+                                                        {hasDrops && (
+                                                            <Gift size={10} className="text-accent flex-shrink-0" />
+                                                        )}
+                                                    </div>
                                                 </div>
                                             </div>
                                         );
@@ -590,6 +898,25 @@ const Home = () => {
                             </>
                         )}
                     </>
+                )}
+
+                {/* Flying Gift Animation - flies up toward title bar */}
+                {flyingDroplet && (
+                    <div
+                        className="fixed pointer-events-none z-50"
+                        style={{
+                            left: flyingDroplet.x,
+                            top: flyingDroplet.y,
+                            transform: 'translate(-50%, -50%)',
+                        }}
+                    >
+                        <div className="animate-fly-up-fade">
+                            <Gift
+                                size={24}
+                                className="gift-shimmer-gold drop-shadow-[0_0_10px_rgba(255,215,0,0.8)]"
+                            />
+                        </div>
+                    </div>
                 )}
             </div>
         </div>

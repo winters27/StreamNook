@@ -1,4 +1,4 @@
-import { X, Droplet } from 'lucide-react';
+import { X, Gift } from 'lucide-react';
 import { useAppStore } from '../stores/AppStore';
 import DropsWidget from './DropsWidget';
 
@@ -10,16 +10,16 @@ export default function DropsOverlay() {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm group">
       {/* Hover-sensitive background overlay */}
-      <div 
+      <div
         className="absolute inset-0 group-hover:pointer-events-none"
         onClick={() => setShowDropsOverlay(false)}
       />
-      
+
       <div className="w-full max-w-4xl h-[80vh] bg-background rounded-lg shadow-2xl border border-borderLight flex flex-col overflow-hidden relative z-10">
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-borderLight bg-backgroundSecondary">
           <h2 className="text-lg font-semibold text-textPrimary flex items-center gap-2">
-            <Droplet size={20} className="text-accent" fill="currentColor" />
+            <Gift size={20} className="text-accent" />
             Drops & Channel Points
           </h2>
           <button

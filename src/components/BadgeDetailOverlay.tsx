@@ -1,6 +1,30 @@
-import { X } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { X, ExternalLink, Gift, ArrowLeft } from 'lucide-react';
+import { useEffect, useState, useMemo, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { useAppStore } from '../stores/AppStore';
+import { parseBadgeForLinks, type ParsedBadgeLink } from '../services/badgeParsingService';
+
+interface TwitchCategory {
+  id: string;
+  name: string;
+  box_art_url?: string;
+}
+
+interface DropCampaign {
+  id: string;
+  name: string;
+  game_name: string;
+  game_id: string;
+}
+
+interface InventoryItem {
+  campaign: DropCampaign;
+  status: string;
+}
+
+interface InventoryResponse {
+  items: InventoryItem[];
+}
 
 interface BadgeVersion {
   id: string;
@@ -30,6 +54,147 @@ interface BadgeDetailOverlayProps {
 const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverlayProps) => {
   const [badgeBaseInfo, setBadgeBaseInfo] = useState<BadgeMetadata | null>(null);
   const [loadingBadgeBase, setLoadingBadgeBase] = useState(true);
+  const [refinedLinks, setRefinedLinks] = useState<ParsedBadgeLink[]>([]);
+  const [loadingCategories, setLoadingCategories] = useState(false);
+
+  // Get navigation functions from store
+  const { navigateToCategoryByName, openDropsWithSearch, setShowBadgesOverlay } = useAppStore();
+
+  // Parse badge text for deep links
+  const parsedLinks = useMemo(() => {
+    return parseBadgeForLinks(badge.description, badgeBaseInfo?.more_info ?? undefined);
+  }, [badge.description, badgeBaseInfo?.more_info]);
+
+  // Search Twitch for better category/drops names and validate they exist
+  const refineLinks = useCallback(async (links: ParsedBadgeLink[]) => {
+    if (links.length === 0) {
+      setRefinedLinks([]);
+      return;
+    }
+
+    setLoadingCategories(true);
+    const validLinks: ParsedBadgeLink[] = [];
+
+    for (const link of links) {
+      if (link.type === 'category') {
+        // Validate and refine category names using Twitch search API
+        try {
+          const results = await invoke<TwitchCategory[]>('search_categories', {
+            query: link.name,
+            limit: 5
+          });
+
+          if (results && results.length > 0) {
+            // Find the best match - prefer exact match, then longest name that contains our search term
+            const searchLower = link.name.toLowerCase();
+
+            let bestMatch = results[0];
+
+            // First, check for exact match (case-insensitive)
+            const exactMatch = results.find(r => r.name.toLowerCase() === searchLower);
+            if (exactMatch) {
+              bestMatch = exactMatch;
+            } else {
+              // Otherwise, find the best fuzzy match
+              // Prioritize results where our search term is contained in the result name
+              const containingMatches = results.filter(r =>
+                r.name.toLowerCase().includes(searchLower) ||
+                searchLower.includes(r.name.toLowerCase())
+              );
+
+              if (containingMatches.length > 0) {
+                // Prefer longer names as they're more specific (e.g., "Tom Clancy's Rainbow Six Siege X")
+                bestMatch = containingMatches.reduce((best, curr) =>
+                  curr.name.length > best.name.length ? curr : best
+                );
+              }
+            }
+
+            console.log(`[BadgeDetail] Refined category: "${link.name}" → "${bestMatch.name}"`);
+
+            // Add the validated link with refined name
+            validLinks.push({
+              ...link,
+              name: bestMatch.name,
+            });
+          } else {
+            console.log(`[BadgeDetail] No matching category found for "${link.name}", skipping`);
+          }
+        } catch (error) {
+          console.warn(`[BadgeDetail] Failed to search categories for "${link.name}":`, error);
+          // Keep original link on error
+          validLinks.push(link);
+        }
+      } else if (link.type === 'drops') {
+        // Validate drops event names using active drops campaigns
+        try {
+          const inventory = await invoke<InventoryResponse>('get_drops_inventory');
+
+          if (inventory && inventory.items && inventory.items.length > 0) {
+            const searchLower = link.name.toLowerCase();
+
+            // Search for matching campaign name or game name
+            const matchingCampaign = inventory.items.find(item => {
+              const campaignLower = item.campaign.name.toLowerCase();
+              const gameLower = item.campaign.game_name.toLowerCase();
+
+              return campaignLower.includes(searchLower) ||
+                searchLower.includes(campaignLower) ||
+                gameLower.includes(searchLower) ||
+                searchLower.includes(gameLower);
+            });
+
+            if (matchingCampaign) {
+              console.log(`[BadgeDetail] Refined drops: "${link.name}" → "${matchingCampaign.campaign.name}"`);
+
+              // Add the validated link with official campaign name
+              validLinks.push({
+                ...link,
+                name: matchingCampaign.campaign.name,
+              });
+            } else {
+              console.log(`[BadgeDetail] No matching drops campaign found for "${link.name}", skipping`);
+              // Don't add invalid drops links
+            }
+          } else {
+            console.log(`[BadgeDetail] No drops campaigns available to validate "${link.name}", skipping`);
+            // Don't add drops links if we can't validate them
+          }
+        } catch (error) {
+          console.warn(`[BadgeDetail] Failed to search drops for "${link.name}":`, error);
+          // Don't add unvalidated drops links
+        }
+      }
+    }
+
+    setRefinedLinks(validLinks);
+    setLoadingCategories(false);
+  }, []);
+
+  // Refine and validate links when parsed links change
+  useEffect(() => {
+    if (parsedLinks.length > 0) {
+      refineLinks(parsedLinks);
+    } else {
+      setRefinedLinks([]);
+    }
+  }, [parsedLinks, refineLinks]);
+
+  // Use refined links if available, otherwise fall back to parsed links
+  const displayLinks = refinedLinks.length > 0 ? refinedLinks : parsedLinks;
+
+  // Handle clicking on a parsed link
+  const handleLinkClick = (link: ParsedBadgeLink) => {
+    // Close the badge overlay first
+    setShowBadgesOverlay(false);
+    onClose();
+
+    if (link.type === 'category') {
+      navigateToCategoryByName(link.name);
+    } else if (link.type === 'drops') {
+      openDropsWithSearch(link.name);
+    }
+  };
 
   // Fetch BadgeBase.co information
   useEffect(() => {
@@ -666,19 +831,10 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
           <div className="flex items-center gap-3">
             <button
               onClick={onBack}
-              className="p-2 hover:bg-glass rounded-lg transition-colors"
+              className="p-2 hover:bg-glass rounded-lg transition-all group"
               title="Back to badges"
             >
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                fill="none"
-                viewBox="0 0 24 24"
-                strokeWidth={2}
-                stroke="currentColor"
-                className="w-5 h-5 text-textSecondary"
-              >
-                <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5" />
-              </svg>
+              <ArrowLeft size={20} className="text-textSecondary group-hover:text-textPrimary transition-colors" />
             </button>
             <div>
               <div className="flex items-center gap-2">
@@ -753,6 +909,40 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
                 />
               </a>
             </div>
+
+            {/* Quick Actions - Show when parsed links are found */}
+            {displayLinks.length > 0 && (
+              <div className="space-y-4">
+                <h3 className="text-sm font-semibold text-accent uppercase tracking-wide">
+                  Quick Actions
+                  {loadingCategories && (
+                    <span className="ml-2 text-xs text-textSecondary font-normal">(refining...)</span>
+                  )}
+                </h3>
+                <div className="flex flex-wrap gap-3">
+                  {displayLinks.map((link, index) => (
+                    <button
+                      key={index}
+                      onClick={() => handleLinkClick(link)}
+                      className="flex items-center gap-2 px-4 py-2.5 bg-glass hover:bg-glass-hover border border-borderSubtle hover:border-accent/50 rounded-lg transition-all group"
+                    >
+                      {link.type === 'drops' && (
+                        <Gift size={18} className="text-accent group-hover:scale-110 transition-transform" />
+                      )}
+                      <div className="text-left">
+                        <div className="text-sm font-medium text-textPrimary group-hover:text-accent transition-colors">
+                          {link.type === 'category' ? 'Browse Category' : 'View Drops'}
+                        </div>
+                        <div className="text-xs text-textSecondary">
+                          {link.name}
+                        </div>
+                      </div>
+                      <ExternalLink size={14} className="text-textSecondary opacity-0 group-hover:opacity-100 transition-opacity ml-1" />
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* Additional Info */}
             <div className="space-y-4">
