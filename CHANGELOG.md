@@ -1,3 +1,15 @@
+## [4.8.0] - 2025-12-07
+### ✨ Features
+- **Auto-Updating**: StreamNook now automatically checks for updates and installs them for you! You can enable or disable auto-updates in the settings.
+- **Admin Dashboard**: Added a local analytics dashboard that admins can use to view usage statistics. Admins are detected via Twitch authentication.
+- **Drops Mining in Chat**: You can now quickly start/stop mining drops directly from the chat window if the stream is playing a drops-enabled game.
+- **Badge Quick Actions**: Badge details now include quick actions for drops campaigns, allowing you to easily view linked drops campaigns directly from a badge.
+- **Persistent Video Dimensions**: The video player now preserves pixel dimensions as you adjust the chat size, ensuring that the displayed content is consistent.
+- **Drops Search**: Added basic search to the Drops Overlay.
+
+### 🐛 Bug Fixes
+- Fixed stream auto-restart issue
+
 ## [4.7.9] - 2025-12-06
 ### ✨ Features
 - Added support for animated 7TV emotes in chat, bringing more expressive communication to your viewing experience.
@@ -604,6 +616,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
