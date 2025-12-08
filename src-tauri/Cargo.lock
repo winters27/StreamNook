@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "StreamNook"
-version = "4.8.0"
+version = "4.8.1"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -5072,7 +5072,7 @@ dependencies = [
 [[package]]
 name = "tauri-plugin-notification"
 version = "2.3.3"
-source = "git+https://github.com/tauri-apps/plugins-workspace?branch=v2#d9d51eb8ea2fd6ce3298ec0dc370cc04351a9b98"
+source = "git+https://github.com/tauri-apps/plugins-workspace?branch=v2#e4a40f44232834727334ceb4f8a0db30553eded9"
 dependencies = [
  "log",
  "notify-rust",
@@ -5090,7 +5090,7 @@ dependencies = [
 [[package]]
 name = "tauri-plugin-opener"
 version = "2.5.2"
-source = "git+https://github.com/tauri-apps/plugins-workspace?branch=v2#d9d51eb8ea2fd6ce3298ec0dc370cc04351a9b98"
+source = "git+https://github.com/tauri-apps/plugins-workspace?branch=v2#e4a40f44232834727334ceb4f8a0db30553eded9"
 dependencies = [
  "dunce",
  "glob",
@@ -5111,7 +5111,7 @@ dependencies = [
 [[package]]
 name = "tauri-plugin-shell"
 version = "2.3.3"
-source = "git+https://github.com/tauri-apps/plugins-workspace?branch=v2#d9d51eb8ea2fd6ce3298ec0dc370cc04351a9b98"
+source = "git+https://github.com/tauri-apps/plugins-workspace?branch=v2#e4a40f44232834727334ceb4f8a0db30553eded9"
 dependencies = [
  "encoding_rs",
  "log",
