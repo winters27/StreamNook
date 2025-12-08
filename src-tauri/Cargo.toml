@@ -49,7 +49,7 @@ strsim = "0.11.1"
 uuid = { version = "1.19.0", features = ["v4"] }
 urlencoding = "2.1.3"
 chrono = { version = "0.4.42", features = ["serde"] }
-scraper = "0.24.0"
+scraper = "0.25.0"
 once_cell = "1.21.3"
 sevenz-rust = "0.6"
 cosmic-text = "0.15.0"
