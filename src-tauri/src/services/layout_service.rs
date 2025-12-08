@@ -1,5 +1,7 @@
 use crate::models::chat_layout::LayoutResult;
-use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, SwashCache, Weight};
+use cosmic_text::{
+    Align, Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, SwashCache, Weight,
+};
 use std::sync::Mutex;
 use tauri::State;
 
@@ -73,13 +75,17 @@ impl LayoutService {
         let effective_width = width - 28.0; // badges ~20px + gap ~8px
 
         // Set size
-        buffer.set_size(&mut font_system, effective_width.max(100.0), f32::MAX);
+        buffer.set_size(
+            &mut font_system,
+            Some(effective_width.max(100.0)),
+            Some(f32::MAX),
+        );
 
         // Set text with Satoshi font
         // Using "Satoshi" family name. cosmic-text should find it from the loaded data.
         let attrs = Attrs::new().family(Family::Name("Satoshi"));
 
-        buffer.set_text(&mut font_system, text, attrs, Shaping::Advanced);
+        buffer.set_text(&mut font_system, text, &attrs, Shaping::Advanced, None);
 
         // Shape (calculate glyphs)
         buffer.shape_until_scroll(&mut font_system, false);
