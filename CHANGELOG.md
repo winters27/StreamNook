@@ -1,3 +1,10 @@
+## [4.8.3] - 2025-12-08
+### 🐛 Bug Fixes
+- **Sidebar**: Fixed a bug where the sidebar would sometimes incorrectly display the default profile image instead of the streamer's custom profile image. Also optimized sidebar rendering for improved performance.
+
+### 🔧 Maintenance
+- Removed some unused code and temporary files to improve build times and reduce the application's overall size.
+
 ## [4.8.2] - 2025-12-08
 ### ✨ Features
 - **Raid Auto-Follow:** Automatically follow raids to the raided channel, ensuring you never miss the action (requires Twitch login).
@@ -639,6 +646,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 

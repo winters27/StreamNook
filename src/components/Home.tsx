@@ -7,7 +7,7 @@ import LoadingWidget from './LoadingWidget';
 import { parseEmojisProxied, EmojiSegment } from '../services/emojiService';
 
 // Component to render stream title with Apple-style emojis (inline)
-const StreamTitleWithEmojis = ({ title, className = '' }: { title: string; className?: string }) => {
+const StreamTitleWithEmojis = ({ title }: { title: string }) => {
     const [segments, setSegments] = useState<EmojiSegment[]>([]);
     const [isLoading, setIsLoading] = useState(true);
 

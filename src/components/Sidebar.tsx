@@ -341,6 +341,21 @@ const Sidebar = () => {
         setIsResizing(true);
     }, []);
 
+    // Get profile image - must be defined before early return to maintain hook order
+    const getProfileImage = useCallback((stream: TwitchStream): string => {
+        if (stream.profile_image_url) {
+            return stream.profile_image_url;
+        }
+        const cachedImage = profileImages.get(stream.user_id);
+        if (cachedImage) {
+            return cachedImage;
+        }
+        if (stream.thumbnail_url) {
+            return stream.thumbnail_url.replace('{width}', '150').replace('{height}', '150');
+        }
+        return `https://static-cdn.jtvnw.net/user-default-pictures-uv/75305d54-c7cc-40d1-bb9c-91c46bf27829-profile_image-70x70.png`;
+    }, [profileImages]);
+
     const { visible, width, showExpanded } = calculateSidebarState();
 
     // If sidebar is completely disabled, render nothing
@@ -389,20 +404,6 @@ const Sidebar = () => {
         }
         return count.toString();
     };
-
-    const getProfileImage = useCallback((stream: TwitchStream): string => {
-        if (stream.profile_image_url) {
-            return stream.profile_image_url;
-        }
-        const cachedImage = profileImages.get(stream.user_id);
-        if (cachedImage) {
-            return cachedImage;
-        }
-        if (stream.thumbnail_url) {
-            return stream.thumbnail_url.replace('{width}', '150').replace('{height}', '150');
-        }
-        return `https://static-cdn.jtvnw.net/user-default-pictures-uv/75305d54-c7cc-40d1-bb9c-91c46bf27829-profile_image-70x70.png`;
-    }, [profileImages]);
 
     const StreamItem = ({ stream, showFavorite = false }: { stream: TwitchStream; showFavorite?: boolean }) => {
         const isCurrentStream = currentStream?.user_login === stream.user_login;

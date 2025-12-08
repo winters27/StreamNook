@@ -4,6 +4,9 @@ node_modules/
 # Production
 dist/
 src-tauri/target/
+
+# Tauri auto-generated schemas (regenerated on every build)
+src-tauri/gen/schemas/
 scripts/release_manager.ps1
 scripts/generate_emoji_map.js
 scripts/generate_emoji_categories.js
