@@ -1,3 +1,14 @@
+## [4.8.2] - 2025-12-08
+### ✨ Features
+- **Raid Auto-Follow:** Automatically follow raids to the raided channel, ensuring you never miss the action (requires Twitch login).
+- **Emoji Rendering**: Enjoy consistent emoji display across all platforms with new Apple-style emoji rendering in chat and stream titles.
+- **In-App Notifications**: Notifications are now delivered directly within the StreamNook app, keeping you informed without relying on system notifications.
+- **Jump to Live:** Added new video player setting to jump to the live edge of the stream on load.
+
+### 🐛 Bug Fixes
+- Moderators can now delete messages and apply timed-out or bans in chat, and these actions now reflected in the chat
+- Toast (Pop-up) notifications now load emojis and are consistent with what's displayed in the in-app chat
+
 ## [4.8.1] - 2025-12-07
 ### ✨ Features
 - **Browse Categories**: Improved browsing experience with infinite scroll for top games.
@@ -628,6 +639,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
