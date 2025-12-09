@@ -16,10 +16,10 @@ const ChannelPointsLeaderboard = ({ onStreamClick }: ChannelPointsLeaderboardPro
 
   useEffect(() => {
     fetchBalances();
-    
+
     // Refresh every 30 seconds
     const interval = setInterval(fetchBalances, 30000);
-    
+
     return () => clearInterval(interval);
   }, []);
 
@@ -29,7 +29,7 @@ const ChannelPointsLeaderboard = ({ onStreamClick }: ChannelPointsLeaderboardPro
       // Sort by balance descending (highest first)
       const sorted = data.sort((a, b) => b.balance - a.balance);
       setBalances(sorted);
-      
+
       // Fetch profile pictures for all users
       await fetchProfilePictures(sorted);
     } catch (error) {
@@ -43,11 +43,11 @@ const ChannelPointsLeaderboard = ({ onStreamClick }: ChannelPointsLeaderboardPro
     try {
       // Get Twitch credentials
       const [clientId, token] = await invoke<[string, string]>('get_twitch_credentials');
-      
+
       // Batch fetch user data from Twitch API (max 100 at a time)
       const usernames = balanceData.map(b => b.channel_name);
       const queryParams = usernames.map(name => `login=${encodeURIComponent(name)}`).join('&');
-      
+
       const response = await fetch(
         `https://api.twitch.tv/helix/users?${queryParams}`,
         {
@@ -57,34 +57,25 @@ const ChannelPointsLeaderboard = ({ onStreamClick }: ChannelPointsLeaderboardPro
           }
         }
       );
-      
+
       if (response.ok) {
         const data = await response.json();
-        
+
         // Create a map of username -> profile_image_url
         const pics: Record<string, string> = {};
         if (data.data && Array.isArray(data.data)) {
-          data.data.forEach((user: any) => {
+          data.data.forEach((user: { profile_image_url?: string; login?: string }) => {
             if (user.profile_image_url && user.login) {
               pics[user.login.toLowerCase()] = user.profile_image_url;
             }
           });
         }
-        
+
         setProfilePics(pics);
       }
     } catch (error) {
       console.error('Failed to fetch profile pictures:', error);
     }
-  };
-
-  const formatPoints = (points: number): string => {
-    if (points >= 1000000) {
-      return `${(points / 1000000).toFixed(1)}M`;
-    } else if (points >= 1000) {
-      return `${(points / 1000).toFixed(1)}K`;
-    }
-    return points.toString();
   };
 
   const handleStreamClick = (channelName: string) => {
@@ -95,7 +86,7 @@ const ChannelPointsLeaderboard = ({ onStreamClick }: ChannelPointsLeaderboardPro
       const streamInfo = followedStreams.find(
         s => s.user_login.toLowerCase() === channelName.toLowerCase()
       );
-      
+
       if (streamInfo) {
         startStream(channelName, streamInfo);
       } else {
@@ -105,11 +96,11 @@ const ChannelPointsLeaderboard = ({ onStreamClick }: ChannelPointsLeaderboardPro
   };
 
   const getStreamerInfo = (channelName: string) => {
-    // Find the stream in followed streams to get the profile picture from Helix API
+    // Find the stream in followed streams to get live status
     const stream = followedStreams.find(
       s => s.user_login.toLowerCase() === channelName.toLowerCase()
     );
-    
+
     return {
       profilePicUrl: stream?.profile_image_url || null,
       isLive: !!stream,
@@ -147,7 +138,7 @@ const ChannelPointsLeaderboard = ({ onStreamClick }: ChannelPointsLeaderboardPro
       <div className="space-y-1.5 max-h-96 overflow-y-auto pr-1 custom-scrollbar">
         {balances.map((balance, index) => {
           const streamerInfo = getStreamerInfo(balance.channel_name);
-          
+
           // Define styles for top 3 positions
           const getCardStyle = () => {
             if (index === 0) {
@@ -159,14 +150,14 @@ const ChannelPointsLeaderboard = ({ onStreamClick }: ChannelPointsLeaderboardPro
             }
             return '';
           };
-          
+
           const getRankBadgeStyle = () => {
             if (index === 0) return 'bg-yellow-500/20 text-yellow-400 border-yellow-500/40';
             if (index === 1) return 'bg-gray-400/20 text-gray-300 border-gray-400/40';
             if (index === 2) return 'bg-orange-600/20 text-orange-400 border-orange-500/40';
             return 'bg-glass text-textSecondary border-borderLight';
           };
-          
+
           return (
             <div
               key={balance.channel_id}
@@ -174,20 +165,20 @@ const ChannelPointsLeaderboard = ({ onStreamClick }: ChannelPointsLeaderboardPro
             >
               {/* Shimmer effect for top 3 */}
               {index < 3 && (
-                <div 
+                <div
                   className="absolute inset-0 opacity-30 pointer-events-none"
                   style={{
-                    background: index === 0 
+                    background: index === 0
                       ? 'linear-gradient(90deg, transparent 0%, transparent 40%, rgba(251, 191, 36, 0.2) 50%, transparent 60%, transparent 100%)'
                       : index === 1
-                      ? 'linear-gradient(90deg, transparent 0%, transparent 40%, rgba(203, 213, 225, 0.2) 50%, transparent 60%, transparent 100%)'
-                      : 'linear-gradient(90deg, transparent 0%, transparent 40%, rgba(249, 115, 22, 0.2) 50%, transparent 60%, transparent 100%)',
+                        ? 'linear-gradient(90deg, transparent 0%, transparent 40%, rgba(203, 213, 225, 0.2) 50%, transparent 60%, transparent 100%)'
+                        : 'linear-gradient(90deg, transparent 0%, transparent 40%, rgba(249, 115, 22, 0.2) 50%, transparent 60%, transparent 100%)',
                     backgroundSize: '200% 100%',
                     animation: 'shimmer 3s ease-in-out infinite',
                   }}
                 />
               )}
-              
+
               {/* Rank Badge */}
               <div className={`flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold border ${getRankBadgeStyle()} relative z-10`}>
                 {index + 1}
@@ -199,19 +190,24 @@ const ChannelPointsLeaderboard = ({ onStreamClick }: ChannelPointsLeaderboardPro
                   <img
                     src={profilePics[balance.channel_name.toLowerCase()]}
                     alt={balance.channel_name}
-                    className="w-9 h-9 rounded-full object-cover border border-borderLight"
+                    className={`w-9 h-9 rounded-full object-cover border ${streamerInfo.isLive ? 'border-green-500' : 'border-borderLight'}`}
                     onError={(e) => {
                       // Fallback to first letter if image fails
                       e.currentTarget.style.display = 'none';
-                      e.currentTarget.nextElementSibling?.classList.remove('hidden');
+                      const sibling = e.currentTarget.nextElementSibling;
+                      if (sibling) sibling.classList.remove('hidden');
                     }}
                   />
                 ) : null}
-                <div 
+                <div
                   className={`${profilePics[balance.channel_name.toLowerCase()] ? 'hidden' : ''} w-9 h-9 rounded-full bg-accent/20 flex items-center justify-center text-accent font-bold text-sm`}
                 >
                   {balance.channel_name.charAt(0).toUpperCase()}
                 </div>
+                {/* Live indicator dot */}
+                {streamerInfo.isLive && (
+                  <div className="absolute -bottom-0.5 -right-0.5 w-3 h-3 bg-green-500 rounded-full border-2 border-background" />
+                )}
               </div>
 
               {/* Streamer Info */}
@@ -224,6 +220,9 @@ const ChannelPointsLeaderboard = ({ onStreamClick }: ChannelPointsLeaderboardPro
                   {balance.channel_name}
                   <ExternalLink className="inline-block w-3 h-3 ml-1 opacity-0 group-hover:opacity-100 transition-opacity" />
                 </button>
+                {streamerInfo.isLive && (
+                  <span className="text-xs text-green-400">Live</span>
+                )}
               </div>
 
               {/* Points Display */}

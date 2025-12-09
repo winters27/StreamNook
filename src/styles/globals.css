@@ -126,6 +126,7 @@
   --color-accent: #97b1b9;
   --color-accent-hover: #adc4cc;
   --color-accent-muted: rgba(151, 177, 185, 0.5);
+  --color-accent-neon: #c8e0e8;  /* Brighter neon variant for highlights */
 
   /* Border colors */
   --color-border: rgba(151, 177, 185, 0.3);
@@ -1580,4 +1581,182 @@ body {
   );
   animation: metal-shine-sweep 3s ease-in-out infinite;
   pointer-events: none;
+}
+
+/* ============================================
+   Drops Center Progress Shimmer Animation
+   ============================================ */
+
+/* Shimmer animation for progress bars */
+@keyframes progress-shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.animate-progress-shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--color-accent) 0%,
+    var(--color-accent-hover) 50%,
+    var(--color-accent) 100%
+  );
+  background-size: 200% 100%;
+  animation: progress-shimmer 1.5s ease-in-out infinite;
+}
+
+/* Side panel slide animation */
+@keyframes slide-in-right {
+  from { 
+    transform: translateX(100%); 
+    opacity: 0; 
+  }
+  to { 
+    transform: translateX(0); 
+    opacity: 1; 
+  }
+}
+
+@keyframes slide-out-right {
+  from { 
+    transform: translateX(0); 
+    opacity: 1; 
+  }
+  to { 
+    transform: translateX(100%); 
+    opacity: 0; 
+  }
+}
+
+.animate-slide-in-right {
+  animation: slide-in-right 0.3s ease-out forwards;
+}
+
+.animate-slide-out-right {
+  animation: slide-out-right 0.3s ease-in forwards;
+}
+
+/* Glass hover state utility */
+.hover\:bg-glass-hover:hover {
+  background-color: var(--color-surface-hover);
+}
+
+.bg-glass {
+  background-color: var(--color-surface);
+}
+
+/* ============================================
+   Mining Card Green Shimmer Border Animation
+   ============================================ */
+
+@keyframes mining-border-shimmer {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+.mining-card-border {
+  position: relative;
+}
+
+.mining-card-border::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 2px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--color-success) 30%, transparent) 15%,
+    color-mix(in srgb, var(--color-success) 60%, transparent) 30%,
+    var(--color-success) 50%,
+    color-mix(in srgb, var(--color-success) 60%, transparent) 70%,
+    color-mix(in srgb, var(--color-success) 30%, transparent) 85%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  animation: mining-border-shimmer 2s ease-in-out infinite;
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* Mining card glow effect */
+/* Mining shimmer overlay - tilted sweeping animation across the card */
+.mining-shimmer-overlay {
+  position: relative;
+  overflow: hidden;
+}
+
+.mining-shimmer-overlay::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 50%;
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--color-accent-neon) 15%, transparent) 20%,
+    color-mix(in srgb, var(--color-accent-neon) 35%, transparent) 50%,
+    color-mix(in srgb, var(--color-accent-neon) 15%, transparent) 80%,
+    transparent 100%
+  );
+  animation: mining-shine-sweep 2.5s ease-in-out infinite;
+  pointer-events: none;
+  z-index: 5;
+}
+
+@keyframes mining-shine-sweep {
+  0% {
+    transform: translateX(-200%) skewX(-15deg);
+  }
+  100% {
+    transform: translateX(400%) skewX(-15deg);
+  }
+}
+
+/* Mining progress bar - neon accent with shimmer */
+.mining-progress-bar {
+  background: linear-gradient(
+    90deg,
+    var(--color-accent-neon) 0%,
+    color-mix(in srgb, var(--color-accent-neon) 80%, white) 50%,
+    var(--color-accent-neon) 100%
+  );
+  background-size: 200% 100%;
+  animation: progress-shimmer 1.5s ease-in-out infinite;
+}
+
+.mining-card-border::after {
+  content: '';
+  position: absolute;
+  inset: -4px;
+  border-radius: inherit;
+  background: radial-gradient(
+    ellipse at center,
+    color-mix(in srgb, var(--color-success) 20%, transparent) 0%,
+    transparent 70%
+  );
+  pointer-events: none;
+  z-index: 0;
+  animation: mining-glow-pulse 2s ease-in-out infinite;
+}
+
+@keyframes mining-glow-pulse {
+  0%, 100% {
+    opacity: 0.5;
+  }
+  50% {
+    opacity: 1;
+  }
 }

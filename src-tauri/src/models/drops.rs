@@ -35,7 +35,7 @@ pub struct TimeBasedDrop {
     pub name: String,
     pub required_minutes_watched: i32,
     pub benefit_edges: Vec<DropBenefit>,
-    #[serde(rename = "self")]
+    /// Progress data for this drop - NOT renamed to "self" so frontend can access as "progress"
     pub progress: Option<DropProgress>,
 }
 
@@ -54,6 +54,10 @@ pub struct DropProgress {
     pub required_minutes_watched: i32,
     pub is_claimed: bool,
     pub last_updated: DateTime<Utc>,
+    /// The dropInstanceID from Twitch API - required for claiming drops
+    /// Format is typically: "UserID#CampaignID#DropID" or a unique ID
+    #[serde(default)]
+    pub drop_instance_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

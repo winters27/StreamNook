@@ -5,6 +5,9 @@ module.exports = {
   ],
   theme: {
     extend: {
+      screens: {
+        '3xl': '1920px',
+      },
       colors: {
         // Theme-aware colors using CSS variables
         background: 'var(--color-background)',
@@ -13,6 +16,7 @@ module.exports = {
         accent: 'var(--color-accent)',
         'accent-hover': 'var(--color-accent-hover)',
         'accent-muted': 'var(--color-accent-muted)',
+        'accent-neon': 'var(--color-accent-neon)',
         textPrimary: 'var(--color-text-primary)',
         textSecondary: 'var(--color-text-secondary)',
         textMuted: 'var(--color-text-muted)',

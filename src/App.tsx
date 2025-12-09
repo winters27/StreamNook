@@ -238,6 +238,12 @@ function App() {
         useAppStore.getState().loadFollowedStreams();
       });
 
+      // Listen for mining status updates (for title bar gift box animation)
+      const unlistenMiningStatus = await listen<{ is_mining: boolean }>('mining-status-update', (event) => {
+        console.log('[App] Mining status update:', event.payload.is_mining);
+        useAppStore.getState().setMiningActive(event.payload.is_mining);
+      });
+
       // Listen for whisper import events (global listener so import works from any UI)
       const unlistenWhisperProgress = await listen<{ step: number; status: string; detail: string; current: number; total: number }>(
         'whisper-import-progress',
@@ -315,6 +321,7 @@ function App() {
         unlistenDropsError();
         unlistenStartWhisper();
         unlistenRefreshFollowing();
+        unlistenMiningStatus();
         unlistenWhisperProgress();
         unlistenWhisperComplete();
         clearInterval(authCheckInterval);
@@ -613,13 +620,24 @@ function App() {
     exitPip();
   }, [isHomeActive]);
 
-  // Listen for PIP exit (e.g., user clicks "back to tab" in PIP window) to return to stream view
+  // Listen for PIP exit (e.g., user clicks "back to tab" or "X" in PIP window)
   useEffect(() => {
-    const handleLeavePip = () => {
-      // If we're in Home view and PIP was exited (by user clicking back to tab), return to stream
+    const handleLeavePip = (event: Event) => {
+      // If we're in Home view and PIP was exited, check why
       if (isHomeActive && streamUrl) {
-        console.log('[PIP] User exited PIP via back to tab, returning to stream view');
-        toggleHome();
+        const videoElement = event.target as HTMLVideoElement;
+
+        // If video is paused/ended, user clicked X to close PIP - stop the stream
+        // If video is still playing, user clicked "back to tab" - return to stream view
+        if (videoElement && videoElement.paused) {
+          console.log('[PIP] User closed PIP via X button, stopping stream');
+          stopStream();
+          // Also exit home mode since there's no stream anymore
+          toggleHome();
+        } else {
+          console.log('[PIP] User exited PIP via back to tab, returning to stream view');
+          toggleHome();
+        }
       }
     };
 
@@ -634,7 +652,7 @@ function App() {
         videoElement.removeEventListener('leavepictureinpicture', handleLeavePip);
       }
     };
-  }, [isHomeActive, streamUrl, toggleHome]);
+  }, [isHomeActive, streamUrl, toggleHome, stopStream]);
 
   // Handle aspect ratio locking when setting changes or chat is resized
   useEffect(() => {

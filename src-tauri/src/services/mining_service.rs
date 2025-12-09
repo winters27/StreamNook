@@ -83,9 +83,18 @@ impl MiningService {
                     );
 
                     // Update mining status with new progress
-                    if let Ok(mut status) = mining_status.try_write() {
+                    {
+                        let mut status = mining_status.write().await;
                         if let Some(ref mut current_drop) = status.current_drop {
+                            println!(
+                                "Comparing current_drop.drop_id: {} with payload drop_id: {}",
+                                current_drop.drop_id, drop_id
+                            );
                             if current_drop.drop_id == drop_id {
+                                println!(
+                                    "✅ Updated drop progress from WebSocket: {}/{} minutes for drop {}",
+                                    current_minutes, required_minutes, drop_id
+                                );
                                 current_drop.current_minutes = current_minutes;
                                 current_drop.required_minutes = required_minutes;
                                 current_drop.progress_percentage =
@@ -105,9 +114,140 @@ impl MiningService {
 
                                 // Emit updated status to frontend
                                 let current_status = status.clone();
+                                // Drop the lock before emitting to avoid holding it during emit (though emit shouldn't block much)
                                 drop(status);
                                 let _ = app_handle.emit("mining-status-update", &current_status);
+                            } else {
+                                println!("⚠️ Drop ID mismatch in mining status update. Got {}, expected {}", drop_id, current_drop.drop_id);
+                                
+                                // We have a mismatch. Attempts to find the correct drop info and update status.
+                                drop(status); // Release lock before calling drops_service
+
+                                let drops_service_lock = drops_service.lock().await;
+                                // Access cached campaigns via internal method or field if exposed (it is public in struct but field access might be tricky if not pub)
+                                // Only cached_campaigns is needed. It is pub in DropsService struct? 
+                                // Looking at view_file of drops_service.rs, cached_campaigns field is NOT pub. 
+                                // But `get_all_active_campaigns_cached` returns Vec<DropCampaign>.
+                                let _ = drops_service_lock;
+                                // Wait, we can't access fields if they are private.
+                                // But we can call `get_all_active_campaigns_cached`.
+                                // However, that is async and we are in a async block.
+                                // Since we already have the lock, we can't call async methods on it if we hold the lock? 
+                                // `websockets_listener` has `drops_service` which is `Arc<Mutex<DropsService>>`?
+                                // In `services/mining_service.rs`, `drops_service` is `Arc<Mutex<DropsService>>`.
+                                // But `DropsService` methods take `&self`.
+                                // If we lock it, we get `MutexGuard<DropsService>`. We can't call async methods on `&self` easily if we hold the guard?
+                                // Actually `DropsService` methods are async.
+                                
+                                drop(drops_service_lock);
+                                
+                                // We need to query drops service for campaigns to find the drop name.
+                                // We'll just define a helper block
+                                let campaigns_result = drops_service.lock().await.get_all_active_campaigns_cached().await;
+                                
+                                if let Ok(campaigns) = campaigns_result {
+                                    // Search for the drop
+                                    let mut found_drop_info = None;
+                                    for campaign in campaigns {
+                                        if let Some(drop) = campaign.time_based_drops.iter().find(|d| d.id == drop_id) {
+                                            // Found it!
+                                            let progress_percentage = (current_minutes as f32 / required_minutes as f32) * 100.0;
+                                            
+                                            let estimated_completion = if current_minutes > 0 && current_minutes < required_minutes {
+                                                let remaining_minutes = required_minutes - current_minutes;
+                                                Some(Utc::now() + chrono::Duration::minutes(remaining_minutes as i64))
+                                            } else {
+                                                None
+                                            };
+                                            
+                                            // Determine drop name
+                                            let drop_name = if let Some(benefit) = drop.benefit_edges.first() {
+                                                benefit.name.clone()
+                                            } else {
+                                                drop.name.clone()
+                                            };
+
+                                            found_drop_info = Some(CurrentDropInfo {
+                                                drop_id: drop.id.clone(),
+                                                drop_name,
+                                                campaign_name: campaign.name.clone(),
+                                                game_name: campaign.game_name.clone(),
+                                                current_minutes,
+                                                required_minutes,
+                                                progress_percentage,
+                                                estimated_completion
+                                            });
+                                            break;
+                                        }
+                                    }
+                                    
+                                    if let Some(new_drop_info) = found_drop_info {
+                                        println!("✅ Found metadata for mismatched drop: {} ({})", new_drop_info.drop_name, new_drop_info.game_name);
+                                        let mut status = mining_status.write().await;
+                                        status.current_drop = Some(new_drop_info);
+                                        status.last_update = Utc::now();
+                                        
+                                        // Emit
+                                        let current_status = status.clone();
+                                        drop(status);
+                                        let _ = app_handle.emit("mining-status-update", &current_status);
+                                    } else {
+                                        println!("❌ Could not find metadata for drop ID: {}", drop_id);
+                                    }
+                                }
                             }
+                        } else {
+                            println!("⚠️ No current_drop in mining status during update. Attempting to recover...");
+                             drop(status); // Release lock
+                             
+                            // Same recovery logic as above
+                            let campaigns_result = drops_service.lock().await.get_all_active_campaigns_cached().await;
+                            
+                             if let Ok(campaigns) = campaigns_result {
+                                // Search for the drop
+                                let mut found_drop_info = None;
+                                for campaign in campaigns {
+                                    if let Some(drop) = campaign.time_based_drops.iter().find(|d| d.id == drop_id) {
+                                        // Found it!
+                                        let drop_name = if let Some(benefit) = drop.benefit_edges.first() {
+                                            benefit.name.clone()
+                                        } else {
+                                            drop.name.clone()
+                                        };
+                                        
+                                        let estimated_completion = if current_minutes > 0 && current_minutes < required_minutes {
+                                             let remaining_minutes = required_minutes - current_minutes;
+                                             Some(Utc::now() + chrono::Duration::minutes(remaining_minutes as i64))
+                                        } else {
+                                             None
+                                        };
+
+                                        found_drop_info = Some(CurrentDropInfo {
+                                            drop_id: drop.id.clone(),
+                                            drop_name,
+                                            campaign_name: campaign.name.clone(),
+                                            game_name: campaign.game_name.clone(),
+                                            current_minutes,
+                                            required_minutes,
+                                            progress_percentage: (current_minutes as f32 / required_minutes as f32) * 100.0,
+                                            estimated_completion
+                                        });
+                                        break;
+                                    }
+                                }
+                                
+                                if let Some(new_drop_info) = found_drop_info {
+                                    println!("✅ Recovered drop info from scratch: {} ({})", new_drop_info.drop_name, new_drop_info.game_name);
+                                    let mut status = mining_status.write().await;
+                                    status.current_drop = Some(new_drop_info);
+                                    status.last_update = Utc::now();
+                                    
+                                     // Emit
+                                    let current_status = status.clone();
+                                    drop(status);
+                                    let _ = app_handle.emit("mining-status-update", &current_status);
+                                }
+                             }
                         }
                     }
 
@@ -439,9 +579,9 @@ impl MiningService {
                                                     current_channel.name
                                                 );
                                                 consecutive_failures = 0;
-                                                if let Ok(mut status) =
-                                                    mining_status_clone.try_write()
                                                 {
+                                                    let mut status =
+                                                        mining_status_clone.write().await;
                                                     status.last_update = Utc::now();
                                                 }
                                             }
@@ -509,9 +649,11 @@ impl MiningService {
                                                                 );
                                                             }
 
-                                                            if let Ok(mut status) =
-                                                                mining_status_clone.try_write()
                                                             {
+                                                                let mut status =
+                                                                    mining_status_clone
+                                                                        .write()
+                                                                        .await;
                                                                 status.current_channel =
                                                                     Some(new_channel.clone());
                                                                 status.eligible_channels =
@@ -727,8 +869,20 @@ impl MiningService {
                                     println!("📦 Found active campaign: {}", campaign.name);
                                     status.current_campaign = Some(campaign.name.clone());
 
-                                    // Find the current drop being progressed
-                                    if let Some(drop) = campaign.time_based_drops.first() {
+                                    // Find the current drop being progressed (first unclaimed one)
+                                    let target_drop = campaign
+                                        .time_based_drops
+                                        .iter()
+                                        .find(|d| {
+                                            if let Some(prog) = &d.progress {
+                                                !prog.is_claimed
+                                            } else {
+                                                true // If no progress info, assume unclaimed
+                                            }
+                                        })
+                                        .or(campaign.time_based_drops.first());
+
+                                    if let Some(drop) = target_drop {
                                         let drop_progress =
                                             drops_service.lock().await.get_drop_progress().await;
                                         let current_minutes = drop_progress
@@ -1019,10 +1173,81 @@ impl MiningService {
                                     }
                                 });
 
-                                // WebSocket will handle all progress updates in real-time
-                                // No need for periodic polling - this eliminates unnecessary API calls
+                                // Start periodic inventory polling (fallback since WebSocket drops progress is unreliable)
+                                let drops_service_poll = drops_service.clone();
+                                let mining_status_poll = mining_status.clone();
+                                let app_handle_poll = app_handle.clone();
+                                let is_running_poll = is_running.clone();
+                                // Get the game name from the target campaign for filtering
+                                let game_name_poll = target_campaign
+                                    .first()
+                                    .map(|c| c.game_name.clone())
+                                    .unwrap_or_default();
 
-                                // Connect WebSocket AFTER status is fully populated
+                                tokio::spawn(async move {
+                                    let mut poll_interval =
+                                        tokio::time::interval(tokio::time::Duration::from_secs(60)); // Poll every minute
+                                    poll_interval.tick().await; // Skip first immediate tick
+
+                                    loop {
+                                        if !*is_running_poll.read().await {
+                                            println!("🛑 Stopping inventory polling loop");
+                                            break;
+                                        }
+
+                                        println!(
+                                            "📊 Polling inventory for drops progress (game: {})...",
+                                            game_name_poll
+                                        );
+                                        match drops_service_poll
+                                            .lock()
+                                            .await
+                                            .fetch_inventory()
+                                            .await
+                                        {
+                                            Ok(inventory) => {
+                                                for item in inventory.items {
+                                                    // Filter by game/category - include all campaigns for this game
+                                                    if item.campaign.game_name != game_name_poll {
+                                                        continue;
+                                                    }
+
+                                                    println!(
+                                                        "📊 Found campaign for {}: {}",
+                                                        item.campaign.game_name, item.campaign.name
+                                                    );
+
+                                                    for drop in item.campaign.time_based_drops {
+                                                        if let Some(progress) = &drop.progress {
+                                                            let current_minutes =
+                                                                progress.current_minutes_watched;
+                                                            let required_minutes =
+                                                                drop.required_minutes_watched;
+
+                                                            println!("📊 Inventory poll: {}/{} minutes for drop {}", 
+                                                                current_minutes, required_minutes, drop.id);
+
+                                                            // Emit the progress update
+                                                            let _ = app_handle_poll.emit("drops-progress-update", serde_json::json!({
+                                                                "drop_id": drop.id,
+                                                                "current_minutes": current_minutes,
+                                                                "required_minutes": required_minutes,
+                                                                "timestamp": chrono::Utc::now().to_rfc3339()
+                                                            }));
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            Err(e) => {
+                                                eprintln!("⚠️ Failed to poll inventory: {}", e);
+                                            }
+                                        }
+
+                                        poll_interval.tick().await;
+                                    }
+                                });
+
+                                // Connect WebSocket AFTER status is fully populated (may provide faster updates if working)
                                 println!(
                                     "🔌 Connecting WebSocket for drops updates (AFTER status populated)..."
                                 );
@@ -1783,41 +2008,18 @@ impl MiningService {
     }
 
     /// Send watch payload to Twitch to progress drops
+    /// Uses the official spade.twitch.tv tracking endpoint (same as TwitchDropsMiner)
     async fn send_watch_payload(
         client: &Client,
         channel: &MiningChannel,
         broadcast_id: &str,
         token: &str,
         cached_user_id: &Arc<RwLock<Option<String>>>,
-        cached_spade_url: &Arc<RwLock<Option<String>>>,
+        _cached_spade_url: &Arc<RwLock<Option<String>>>,
     ) -> Result<bool> {
-        // Get spade URL (check cache first)
-        let spade_url = {
-            let cached = cached_spade_url.read().await;
-            if let Some(url) = cached.as_ref() {
-                url.clone()
-            } else {
-                drop(cached); // Release read lock before acquiring write lock
-
-                // Fetch spade URL from HTML
-                let url = match Self::get_spade_url(client, &channel.name).await {
-                    Ok(url) => {
-                        println!("📡 Got spade URL for {}: {}", channel.name, url);
-                        url
-                    }
-                    Err(e) => {
-                        eprintln!("❌ Failed to get spade URL for {}: {}", channel.name, e);
-                        return Ok(false);
-                    }
-                };
-
-                // Cache it
-                let mut cached_write = cached_spade_url.write().await;
-                *cached_write = Some(url.clone());
-                println!("💾 Cached spade URL for future use");
-                url
-            }
-        };
+        // Use the official Twitch spade tracking endpoint
+        // This is the stable URL that doesn't expire (unlike video-edge segment URLs)
+        let spade_url = "https://spade.twitch.tv/track";
 
         // Get user ID (check cache first)
         let user_id = {
@@ -1864,23 +2066,74 @@ impl MiningService {
         let payload_str = serde_json::to_string(&payload_data)?;
         let encoded = general_purpose::STANDARD.encode(payload_str.as_bytes());
 
-        // Send the watch payload
-        let response = client
-            .post(&spade_url)
+        // Send the watch payload with detailed error handling
+        let response_result = client
+            .post(spade_url)
             .form(&[("data", encoded)])
+            .timeout(std::time::Duration::from_secs(15)) // Explicit 15 second timeout
             .send()
-            .await?;
+            .await;
 
-        let status = response.status();
-        if status.as_u16() == 204 {
-            println!("✅ Watch payload sent successfully to {}", channel.name);
-            Ok(true)
-        } else {
-            println!(
-                "⚠️ Watch payload returned status {} for {}",
-                status, channel.name
-            );
-            Ok(false)
+        match response_result {
+            Ok(response) => {
+                let status = response.status();
+                if status.as_u16() == 204 {
+                    println!("✅ Watch payload sent successfully to {}", channel.name);
+                    Ok(true)
+                } else {
+                    // Log detailed status info
+                    let status_code = status.as_u16();
+                    let response_text = response
+                        .text()
+                        .await
+                        .unwrap_or_else(|_| "Unable to read body".to_string());
+                    println!(
+                        "⚠️ Watch payload returned HTTP {} for {} - Response: {}",
+                        status_code,
+                        channel.name,
+                        if response_text.len() > 200 {
+                            &response_text[..200]
+                        } else {
+                            &response_text
+                        }
+                    );
+
+                    // Log specific status codes for debugging
+                    match status_code {
+                        429 => println!("   ⏱️ Rate limited by Twitch!"),
+                        401 | 403 => println!("   🔐 Authentication/authorization issue"),
+                        404 => println!("   🔍 Spade URL not found - may need to refresh"),
+                        500..=599 => println!("   🔥 Twitch server error"),
+                        _ => {}
+                    }
+
+                    Ok(false)
+                }
+            }
+            Err(e) => {
+                // Detailed error classification
+                if e.is_timeout() {
+                    println!(
+                        "⏱️ Watch payload TIMEOUT for {} - Request took too long",
+                        channel.name
+                    );
+                } else if e.is_connect() {
+                    println!(
+                        "🔌 Watch payload CONNECTION ERROR for {} - {}",
+                        channel.name, e
+                    );
+                } else if e.is_request() {
+                    println!(
+                        "📤 Watch payload REQUEST ERROR for {} - {}",
+                        channel.name, e
+                    );
+                } else {
+                    println!("❌ Watch payload ERROR for {} - {}", channel.name, e);
+                }
+
+                // Return error instead of Ok(false) so caller knows it was an actual error
+                Err(anyhow::anyhow!("Watch payload failed: {}", e))
+            }
         }
     }
 

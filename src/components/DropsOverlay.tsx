@@ -1,6 +1,6 @@
 import { X, Gift } from 'lucide-react';
 import { useAppStore } from '../stores/AppStore';
-import DropsWidget from './DropsWidget';
+import DropsCenter from './DropsCenter';
 
 export default function DropsOverlay() {
   const { showDropsOverlay, setShowDropsOverlay } = useAppStore();
@@ -15,7 +15,7 @@ export default function DropsOverlay() {
         onClick={() => setShowDropsOverlay(false)}
       />
 
-      <div className="w-full max-w-4xl h-[80vh] bg-background rounded-lg shadow-2xl border border-borderLight flex flex-col overflow-hidden relative z-10">
+      <div className="w-[95vw] max-w-[1800px] h-[90vh] bg-background rounded-xl shadow-2xl border border-borderLight flex flex-col overflow-hidden relative z-10 animate-in zoom-in-95 duration-200">
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-borderLight bg-backgroundSecondary">
           <h2 className="text-lg font-semibold text-textPrimary flex items-center gap-2">
@@ -33,7 +33,7 @@ export default function DropsOverlay() {
 
         {/* Content */}
         <div className="flex-1 overflow-hidden">
-          <DropsWidget />
+          <DropsCenter />
         </div>
       </div>
     </div>

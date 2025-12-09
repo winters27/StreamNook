@@ -73,7 +73,7 @@ impl DropsWebSocketService {
     ) -> Result<()> {
         println!("🔌 Connecting to Twitch PubSub WebSocket...");
 
-        let url = "wss://pubsub-edge.twitch.tv/v1";
+        let url = "wss://pubsub-edge.twitch.tv";
         let (ws_stream, _) = connect_async(url).await?;
         let (mut write, mut read) = ws_stream.split();
 
@@ -125,8 +125,11 @@ impl DropsWebSocketService {
                 msg = read.next() => {
                     match msg {
                         Some(Ok(Message::Text(text))) => {
+                            println!("📨 [DropsWS] Received raw message: {}", &text[..text.len().min(200)]);
                             if let Ok(data) = serde_json::from_str::<serde_json::Value>(&text) {
                                 Self::handle_message(data, app_handle).await;
+                            } else {
+                                println!("❌ [DropsWS] Failed to parse JSON message");
                             }
                         }
                         Some(Ok(Message::Close(_))) => {
@@ -157,17 +160,32 @@ impl DropsWebSocketService {
 
     async fn handle_message(message: serde_json::Value, app_handle: &AppHandle) {
         let msg_type = message["type"].as_str().unwrap_or("");
+        println!("📬 [DropsWS] Message type: {}", msg_type);
 
         match msg_type {
             "MESSAGE" => {
                 // Parse the actual message data
                 if let Some(topic) = message["data"]["topic"].as_str() {
+                    println!("📬 [DropsWS] MESSAGE on topic: {}", topic);
                     if let Some(message_str) = message["data"]["message"].as_str() {
+                        println!(
+                            "📬 [DropsWS] Inner message: {}",
+                            &message_str[..message_str.len().min(300)]
+                        );
                         if let Ok(msg_data) = serde_json::from_str::<serde_json::Value>(message_str)
                         {
                             Self::handle_topic_message(topic, msg_data, app_handle).await;
+                        } else {
+                            println!("❌ [DropsWS] Failed to parse inner message JSON");
                         }
+                    } else {
+                        println!("⚠️ [DropsWS] No message field in data");
                     }
+                } else {
+                    println!(
+                        "⚠️ [DropsWS] No topic field in MESSAGE: {:?}",
+                        message["data"]
+                    );
                 }
             }
             "RESPONSE" => {

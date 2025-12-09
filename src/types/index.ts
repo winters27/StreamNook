@@ -66,9 +66,18 @@ export interface CurrentDropInfo {
   game_name: string;
 }
 
+export interface DropsDeviceCodeInfo {
+  user_code: string;
+  verification_uri: string;
+  device_code: string;
+  interval: number;
+  expires_in: number;
+}
+
 export interface MiningStatus {
   is_mining: boolean;
   current_channel: MiningChannel | null;
+  current_campaign: string | null;
   current_drop: CurrentDropInfo | null;
   eligible_channels: MiningChannel[];
   last_update: string;
@@ -230,6 +239,26 @@ export interface TwitchCategory extends TwitchGame {
   tags?: string[];
 }
 
+// Unified Game Interface for Drops UI Overhaul
+export interface UnifiedGame {
+  id: string;                          // Game ID
+  name: string;                        // Game Name
+  box_art_url: string;                 // Game artwork
+
+  // Active campaign data
+  active_campaigns: DropCampaign[];    // Currently running campaigns
+  total_active_drops: number;          // Sum of drops across campaigns
+  drops_in_progress: number;           // Drops being worked on
+
+  // Inventory data
+  inventory_items: InventoryItem[];    // Past/earned campaigns
+  total_claimed: number;               // Total claimed drops for this game
+
+  // Status
+  is_mining: boolean;                  // Currently mining this game
+  has_claimable: boolean;              // Has drops ready to claim
+}
+
 // Drops inventory types
 export interface DropBenefit {
   id: string;
@@ -244,6 +273,7 @@ export interface DropProgress {
   required_minutes_watched: number;
   is_claimed: boolean;
   last_updated: string;
+  drop_instance_id?: string; // Required for claiming drops - compound ID from Twitch
 }
 
 export interface TimeBasedDrop {

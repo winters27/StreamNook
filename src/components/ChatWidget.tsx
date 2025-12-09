@@ -4,6 +4,7 @@ import AutoSizer from 'react-virtualized-auto-sizer';
 import { invoke } from '@tauri-apps/api/core';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { Pickaxe, Gift } from 'lucide-react';
+import { MiningStatus } from '../types';
 import { useTwitchChat } from '../hooks/useTwitchChat';
 import { useAppStore } from '../stores/AppStore';
 import { incrementStat } from '../services/supabaseService';
@@ -396,23 +397,28 @@ const ChatWidget = () => {
       }
       setIsLoadingDrops(true);
       try {
-        // Get drops inventory
-        const inventory = await invoke<{ items: Array<{ campaign: { id: string; name: string; game_name: string }; status: string }> }>('get_drops_inventory');
-        if (inventory?.items) {
+        // Get active drop campaigns (not inventory - we want all active campaigns)
+        const campaigns = await invoke<Array<{ id: string; name: string; game_name: string; game_id: string }>>('get_active_drop_campaigns');
+        if (campaigns && campaigns.length > 0) {
           // Find active campaign matching current game
           const gameName = currentStream.game_name.toLowerCase();
-          const matchingCampaign = inventory.items.find(
-            item => item.status === 'Active' && item.campaign.game_name?.toLowerCase() === gameName
+          const matchingCampaign = campaigns.find(
+            campaign => campaign.game_name?.toLowerCase() === gameName
           );
           if (matchingCampaign) {
-            setDropsCampaign(matchingCampaign.campaign);
-            // Check if already mining this campaign
-            const miningStatus = await invoke<{ is_mining: boolean; current_campaign: string | null }>('get_mining_status');
-            setIsMining(miningStatus.is_mining && miningStatus.current_campaign === matchingCampaign.campaign.name);
+            setDropsCampaign(matchingCampaign);
+            // Check if already mining this game (check by game_name, not campaign name)
+            const miningStatus = await invoke<MiningStatus>('get_mining_status');
+            const miningGameName = miningStatus.current_drop?.game_name?.toLowerCase() ||
+              miningStatus.current_channel?.game_name?.toLowerCase();
+            setIsMining(miningStatus.is_mining && miningGameName === gameName);
           } else {
             setDropsCampaign(null);
             setIsMining(false);
           }
+        } else {
+          setDropsCampaign(null);
+          setIsMining(false);
         }
       } catch (err) {
         console.warn('[ChatWidget] Could not load drops data:', err);
@@ -427,10 +433,13 @@ const ChatWidget = () => {
   // Listen for mining status changes from anywhere in the app
   useEffect(() => {
     const handleMiningStatusChange = async () => {
-      if (!dropsCampaign) return;
+      if (!dropsCampaign || !currentStream?.game_name) return;
       try {
-        const miningStatus = await invoke<{ is_mining: boolean; current_campaign: string | null }>('get_mining_status');
-        setIsMining(miningStatus.is_mining && miningStatus.current_campaign === dropsCampaign.name);
+        const miningStatus = await invoke<MiningStatus>('get_mining_status');
+        const gameName = currentStream.game_name.toLowerCase();
+        const miningGameName = miningStatus.current_drop?.game_name?.toLowerCase() ||
+          miningStatus.current_channel?.game_name?.toLowerCase();
+        setIsMining(miningStatus.is_mining && miningGameName === gameName);
       } catch (err) {
         console.warn('[ChatWidget] Failed to check mining status:', err);
       }
@@ -465,7 +474,7 @@ const ChatWidget = () => {
     if (isMining) {
       // Stop mining
       try {
-        await invoke('stop_mining');
+        await invoke('stop_auto_mining');
         setIsMining(false);
         useAppStore.getState().addToast(`Stopped mining drops for ${dropsCampaign.game_name}`, 'info');
       } catch (err) {

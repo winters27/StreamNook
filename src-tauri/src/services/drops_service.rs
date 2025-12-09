@@ -98,40 +98,41 @@ struct DropSelfProgress {
     is_claimed: bool,
 }
 
+// Response structure for ChannelPointsContext persisted query
 #[derive(Debug, Deserialize)]
-struct ChannelPointsData {
-    community: CommunityPoints,
+struct ChannelPointsContextData {
+    channel: Option<ChannelPointsChannel>,
 }
 
 #[derive(Debug, Deserialize)]
-struct CommunityPoints {
-    channel: ChannelPoints,
-}
-
-#[derive(Debug, Deserialize)]
-struct ChannelPoints {
-    #[serde(rename = "self")]
-    self_points: SelfPoints,
-}
-
-#[derive(Debug, Deserialize)]
-struct SelfPoints {
-    #[serde(rename = "communityPoints")]
-    community_points: CommunityPointsBalance,
-    #[serde(rename = "availableClaim")]
-    available_claim: Option<AvailableClaim>,
-}
-
-#[derive(Debug, Deserialize)]
-struct CommunityPointsBalance {
-    balance: i32,
-}
-
-#[derive(Debug, Deserialize)]
-struct AvailableClaim {
+struct ChannelPointsChannel {
     id: String,
-    #[serde(rename = "pointsEarned")]
-    points_earned: i32,
+    #[serde(rename = "self")]
+    self_data: Option<ChannelPointsSelf>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChannelPointsSelf {
+    #[serde(rename = "communityPoints")]
+    community_points: Option<CommunityPointsInfo>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CommunityPointsInfo {
+    balance: i32,
+    #[serde(rename = "availableClaim")]
+    available_claim: Option<AvailableClaimInfo>,
+    #[serde(rename = "activeMultipliers")]
+    active_multipliers: Option<Vec<serde_json::Value>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AvailableClaimInfo {
+    id: String,
+    #[serde(rename = "pointsEarnedBaseline")]
+    points_earned_baseline: Option<i32>,
+    #[serde(rename = "pointsEarnedTotal")]
+    points_earned_total: Option<i32>,
 }
 
 pub struct DropsService {
@@ -409,8 +410,16 @@ impl DropsService {
                             self_data["currentMinutesWatched"].as_i64().unwrap_or(0) as i32;
                         is_claimed = self_data["isClaimed"].as_bool().unwrap_or(false);
 
+                        // Parse the dropInstanceID - this is the key for claiming drops!
                         let drop_instance_id =
                             self_data["dropInstanceID"].as_str().map(|s| s.to_string());
+
+                        if drop_instance_id.is_some() {
+                            println!(
+                                "📋 Found dropInstanceID for {}: {:?}",
+                                drop_id, drop_instance_id
+                            );
+                        }
 
                         progress = Some(DropProgress {
                             campaign_id: campaign_json["id"].as_str().unwrap_or("").to_string(),
@@ -419,6 +428,7 @@ impl DropsService {
                             required_minutes_watched: required_minutes,
                             is_claimed,
                             last_updated: Utc::now(),
+                            drop_instance_id, // Store the dropInstanceID for claiming!
                         });
                     } else {
                         // Check claimed_benefits to determine if claimed
@@ -834,26 +844,77 @@ impl DropsService {
         Ok(filtered_result)
     }
 
-    pub async fn claim_drop(&self, drop_id: &str) -> Result<()> {
+    pub async fn claim_drop(
+        &self,
+        drop_id: &str,
+        provided_drop_instance_id: Option<&str>,
+    ) -> Result<()> {
         let token = DropsAuthService::get_token().await?;
 
-        let mutation = r#"
-        mutation ClaimDrop($input: ClaimDropRewardsInput!) {
-            claimDropRewards(input: $input) {
-                status
-            }
-        }
-        "#;
+        // First check if a drop_instance_id was provided directly from the frontend
+        // This is the most reliable method - the frontend extracts it from inventory data
+        let drop_instance_id = if let Some(provided_id) = provided_drop_instance_id {
+            println!(
+                "🎁 Using provided dropInstanceID from frontend: {}",
+                provided_id
+            );
+            provided_id.to_string()
+        } else {
+            // Second, check if we have a stored drop_instance_id from the API response
+            let (stored_instance_id, campaign_id) = {
+                let progress_map = self.drop_progress.read().await;
+                if let Some(progress) = progress_map.get(drop_id) {
+                    (
+                        progress.drop_instance_id.clone(),
+                        progress.campaign_id.clone(),
+                    )
+                } else {
+                    (None, String::new())
+                }
+            };
 
+            if let Some(instance_id) = stored_instance_id {
+                // Use the stored dropInstanceID from the API
+                println!("🎁 Using stored dropInstanceID from API: {}", instance_id);
+                instance_id
+            } else {
+                // Fallback: Generate dropInstanceID in format: user_id#campaign_id#drop_id
+                // This is how TwitchDropsMiner constructs the claim ID when not available
+                let user_id = self.get_user_id_from_token(&token).await?;
+
+                if campaign_id.is_empty() {
+                    // Last resort: just use drop_id
+                    println!("⚠️ No campaign_id available, using drop_id as fallback");
+                    drop_id.to_string()
+                } else {
+                    let generated_id = format!("{}#{}#{}", user_id, campaign_id, drop_id);
+                    println!("🎁 Generated dropInstanceID: {}", generated_id);
+                    generated_id
+                }
+            }
+        };
+
+        println!(
+            "🎁 Claiming drop: {} with dropInstanceID: {}",
+            drop_id, drop_instance_id
+        );
+
+        // Use persisted query format like TwitchDropsMiner does
         let response = self
             .client
             .post("https://gql.twitch.tv/gql")
             .headers(self.create_gql_headers(&token))
             .json(&serde_json::json!({
-                "query": mutation,
+                "operationName": "DropsPage_ClaimDropRewards",
                 "variables": {
                     "input": {
-                        "dropInstanceID": drop_id
+                        "dropInstanceID": drop_instance_id
+                    }
+                },
+                "extensions": {
+                    "persistedQuery": {
+                        "version": 1,
+                        "sha256Hash": "a455deea71bdc9015b78eb49f4acfbce8baa7ccbedd28e549bb025bd0f751930"
                     }
                 }
             }))
@@ -861,9 +922,42 @@ impl DropsService {
             .await?;
 
         let status = response.status();
+        let response_text = response.text().await?;
+
+        println!("📡 Claim response status: {}", status);
+        println!("📡 Claim response: {}", response_text);
+
         if !status.is_success() {
-            let error_text = response.text().await?;
-            return Err(anyhow::anyhow!("Failed to claim drop: {}", error_text));
+            return Err(anyhow::anyhow!("Failed to claim drop: {}", response_text));
+        }
+
+        // Parse response to check for errors
+        let response_json: serde_json::Value = serde_json::from_str(&response_text)?;
+
+        if let Some(errors) = response_json.get("errors") {
+            println!("❌ GraphQL errors: {:?}", errors);
+            return Err(anyhow::anyhow!("GraphQL errors: {:?}", errors));
+        }
+
+        // Check claimDropRewards response status
+        if let Some(data) = response_json.get("data") {
+            if let Some(claim_result) = data.get("claimDropRewards") {
+                let result_status = claim_result
+                    .get("status")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("UNKNOWN");
+
+                println!("🎁 Claim result status: {}", result_status);
+
+                match result_status {
+                    "ELIGIBLE_FOR_ALL" | "DROP_INSTANCE_ALREADY_CLAIMED" => {
+                        println!("✅ Drop claimed successfully!");
+                    }
+                    _ => {
+                        println!("⚠️ Unexpected claim status: {}", result_status);
+                    }
+                }
+            }
         }
 
         // Update progress to mark as claimed
@@ -876,6 +970,27 @@ impl DropsService {
         Ok(())
     }
 
+    /// Get user ID from token by validating it with Twitch
+    async fn get_user_id_from_token(&self, token: &str) -> Result<String> {
+        let response = self
+            .client
+            .get("https://id.twitch.tv/oauth2/validate")
+            .header(AUTHORIZATION, format!("OAuth {}", token))
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            return Err(anyhow::anyhow!("Failed to validate token"));
+        }
+
+        let validation: serde_json::Value = response.json().await?;
+        let user_id = validation["user_id"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("No user_id in token validation response"))?;
+
+        Ok(user_id.to_string())
+    }
+
     pub async fn check_channel_points(
         &self,
         channel_id: &str,
@@ -883,67 +998,86 @@ impl DropsService {
     ) -> Result<Option<ChannelPointsClaim>> {
         let token = DropsAuthService::get_token().await?;
 
-        let query = r#"
-        query ChannelPointsContext($channelLogin: String!) {
-            community(id: $channelLogin) {
-                channel {
-                    self {
-                        communityPoints {
-                            balance
-                        }
-                        availableClaim {
-                            id
-                            pointsEarned
-                        }
-                    }
-                }
-            }
-        }
-        "#;
-
+        // Use persisted query like TwitchDropsMiner
         let response = self
             .client
             .post("https://gql.twitch.tv/gql")
             .headers(self.create_gql_headers(&token))
             .json(&serde_json::json!({
-                "query": query,
+                "operationName": "ChannelPointsContext",
                 "variables": {
-                    "channelLogin": channel_name
+                    "channelLogin": channel_name.to_lowercase()
+                },
+                "extensions": {
+                    "persistedQuery": {
+                        "version": 1,
+                        "sha256Hash": "9988086babc615a918a1e9a722ff41d98847acac822645209ac7379eecb27152"
+                    }
                 }
             }))
             .send()
             .await?;
 
-        let gql_response: GraphQLResponse<ChannelPointsData> = response.json().await?;
+        let response_json: serde_json::Value = response.json().await?;
 
-        if let Some(errors) = gql_response.errors {
+        // Check for errors
+        if let Some(errors) = response_json.get("errors") {
             return Err(anyhow::anyhow!("GraphQL errors: {:?}", errors));
         }
 
-        if let Some(data) = gql_response.data {
-            let self_points = &data.community.channel.self_points;
+        // Parse the response - structure is: data.channel.self.communityPoints
+        if let Some(data) = response_json.get("data") {
+            if let Some(channel) = data.get("channel") {
+                let channel_id_from_response = channel
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(channel_id);
 
-            // Update balance
-            let balance = ChannelPointsBalance {
-                channel_id: channel_id.to_string(),
-                channel_name: channel_name.to_string(),
-                balance: self_points.community_points.balance,
-                last_updated: Utc::now(),
-            };
+                if let Some(self_data) = channel.get("self") {
+                    if let Some(community_points) = self_data.get("communityPoints") {
+                        let balance_val = community_points
+                            .get("balance")
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or(0) as i32;
 
-            let mut balances = self.channel_points_balances.write().await;
-            balances.insert(channel_id.to_string(), balance);
+                        // Update balance
+                        let balance = ChannelPointsBalance {
+                            channel_id: channel_id_from_response.to_string(),
+                            channel_name: channel_name.to_string(),
+                            balance: balance_val,
+                            last_updated: Utc::now(),
+                        };
 
-            // Check if there's a claim available
-            if let Some(claim) = &self_points.available_claim {
-                return Ok(Some(ChannelPointsClaim {
-                    id: claim.id.clone(),
-                    channel_id: channel_id.to_string(),
-                    channel_name: channel_name.to_string(),
-                    points_earned: claim.points_earned,
-                    claimed_at: Utc::now(),
-                    claim_type: ChannelPointsClaimType::Watch,
-                }));
+                        let mut balances = self.channel_points_balances.write().await;
+                        balances.insert(channel_id_from_response.to_string(), balance);
+
+                        // Check if there's a claim available
+                        if let Some(available_claim) = community_points.get("availableClaim") {
+                            if !available_claim.is_null() {
+                                let claim_id = available_claim
+                                    .get("id")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                let points_earned = available_claim
+                                    .get("pointsEarnedTotal")
+                                    .or_else(|| available_claim.get("pointsEarnedBaseline"))
+                                    .and_then(|v| v.as_i64())
+                                    .unwrap_or(50)
+                                    as i32;
+
+                                return Ok(Some(ChannelPointsClaim {
+                                    id: claim_id,
+                                    channel_id: channel_id_from_response.to_string(),
+                                    channel_name: channel_name.to_string(),
+                                    points_earned,
+                                    claimed_at: Utc::now(),
+                                    claim_type: ChannelPointsClaimType::Watch,
+                                }));
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -1273,6 +1407,7 @@ impl DropsService {
                 required_minutes_watched: required_minutes,
                 is_claimed: false,
                 last_updated: Utc::now(),
+                drop_instance_id: None, // Will be populated when we fetch from API
             };
             progress_map.insert(drop_id.clone(), progress);
 
@@ -1305,66 +1440,85 @@ impl DropsService {
         headers.insert("Origin", HeaderValue::from_static(CLIENT_URL));
         headers.insert("Referer", HeaderValue::from_static(CLIENT_URL));
 
-        let query = r#"
-        query ChannelPointsContext($channelLogin: String!) {
-            community(id: $channelLogin) {
-                channel {
-                    self {
-                        communityPoints {
-                            balance
-                        }
-                        availableClaim {
-                            id
-                            pointsEarned
-                        }
-                    }
-                }
-            }
-        }
-        "#;
-
+        // Use persisted query like TwitchDropsMiner
         let response = client
             .post("https://gql.twitch.tv/gql")
             .headers(headers)
             .json(&serde_json::json!({
-                "query": query,
+                "operationName": "ChannelPointsContext",
                 "variables": {
-                    "channelLogin": channel_name
+                    "channelLogin": channel_name.to_lowercase()
+                },
+                "extensions": {
+                    "persistedQuery": {
+                        "version": 1,
+                        "sha256Hash": "9988086babc615a918a1e9a722ff41d98847acac822645209ac7379eecb27152"
+                    }
                 }
             }))
             .send()
             .await?;
 
-        let gql_response: GraphQLResponse<ChannelPointsData> = response.json().await?;
+        let response_json: serde_json::Value = response.json().await?;
 
-        if let Some(errors) = gql_response.errors {
+        // Check for errors
+        if let Some(errors) = response_json.get("errors") {
             return Err(anyhow::anyhow!("GraphQL errors: {:?}", errors));
         }
 
-        if let Some(data) = gql_response.data {
-            let self_points = &data.community.channel.self_points;
+        // Parse the response - structure is: data.channel.self.communityPoints
+        if let Some(data) = response_json.get("data") {
+            if let Some(channel) = data.get("channel") {
+                let channel_id_from_response = channel
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(channel_id);
 
-            // Update balance
-            let balance = ChannelPointsBalance {
-                channel_id: channel_id.to_string(),
-                channel_name: channel_name.to_string(),
-                balance: self_points.community_points.balance,
-                last_updated: Utc::now(),
-            };
+                if let Some(self_data) = channel.get("self") {
+                    if let Some(community_points) = self_data.get("communityPoints") {
+                        let balance_val = community_points
+                            .get("balance")
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or(0) as i32;
 
-            let mut balances_lock = balances.write().await;
-            balances_lock.insert(channel_id.to_string(), balance);
+                        // Update balance
+                        let balance = ChannelPointsBalance {
+                            channel_id: channel_id_from_response.to_string(),
+                            channel_name: channel_name.to_string(),
+                            balance: balance_val,
+                            last_updated: Utc::now(),
+                        };
 
-            // Check if there's a claim available
-            if let Some(claim) = &self_points.available_claim {
-                return Ok(Some(ChannelPointsClaim {
-                    id: claim.id.clone(),
-                    channel_id: channel_id.to_string(),
-                    channel_name: channel_name.to_string(),
-                    points_earned: claim.points_earned,
-                    claimed_at: Utc::now(),
-                    claim_type: ChannelPointsClaimType::Watch,
-                }));
+                        let mut balances_lock = balances.write().await;
+                        balances_lock.insert(channel_id_from_response.to_string(), balance);
+
+                        // Check if there's a claim available
+                        if let Some(available_claim) = community_points.get("availableClaim") {
+                            if !available_claim.is_null() {
+                                let claim_id = available_claim
+                                    .get("id")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                let points_earned = available_claim
+                                    .get("pointsEarnedTotal")
+                                    .or_else(|| available_claim.get("pointsEarnedBaseline"))
+                                    .and_then(|v| v.as_i64())
+                                    .unwrap_or(50)
+                                    as i32;
+
+                                return Ok(Some(ChannelPointsClaim {
+                                    id: claim_id,
+                                    channel_id: channel_id_from_response.to_string(),
+                                    channel_name: channel_name.to_string(),
+                                    points_earned,
+                                    claimed_at: Utc::now(),
+                                    claim_type: ChannelPointsClaimType::Watch,
+                                }));
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -1528,6 +1682,7 @@ impl DropsService {
                             required_minutes_watched: drop.required_minutes_watched,
                             is_claimed: self_progress.is_claimed,
                             last_updated: Utc::now(),
+                            drop_instance_id: None, // Internal query doesn't return dropInstanceID
                         };
                         progress_map.insert(drop.id.clone(), progress);
                     }
@@ -1585,7 +1740,60 @@ impl DropsService {
     ) -> Result<()> {
         let token = DropsAuthService::get_token().await?;
 
-        // Create headers similar to the main methods
+        // First, check if we have a stored drop_instance_id from the API response
+        let (stored_instance_id, campaign_id) = {
+            let progress_map = drop_progress.read().await;
+            if let Some(progress) = progress_map.get(drop_id) {
+                (
+                    progress.drop_instance_id.clone(),
+                    progress.campaign_id.clone(),
+                )
+            } else {
+                (None, String::new())
+            }
+        };
+
+        // Determine the dropInstanceID to use
+        let drop_instance_id = if let Some(instance_id) = stored_instance_id {
+            // Use the stored dropInstanceID from the API (this is the correct one!)
+            println!(
+                "🎁 [Auto] Using stored dropInstanceID from API: {}",
+                instance_id
+            );
+            instance_id
+        } else {
+            // Fallback: Generate dropInstanceID in format: user_id#campaign_id#drop_id
+            // Get user_id from token validation
+            let validation_response = client
+                .get("https://id.twitch.tv/oauth2/validate")
+                .header(AUTHORIZATION, format!("OAuth {}", token))
+                .send()
+                .await?;
+
+            if !validation_response.status().is_success() {
+                return Err(anyhow::anyhow!("Failed to validate token for auto-claim"));
+            }
+
+            let validation: serde_json::Value = validation_response.json().await?;
+            let user_id = validation["user_id"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("No user_id in token validation"))?;
+
+            if campaign_id.is_empty() {
+                drop_id.to_string()
+            } else {
+                let generated_id = format!("{}#{}#{}", user_id, campaign_id, drop_id);
+                println!("🎁 [Auto] Generated dropInstanceID: {}", generated_id);
+                generated_id
+            }
+        };
+
+        println!(
+            "🎁 [Auto] Claiming drop: {} with dropInstanceID: {}",
+            drop_id, drop_instance_id
+        );
+
+        // Create headers
         let mut headers = HeaderMap::new();
         headers.insert("Client-ID", HeaderValue::from_static(CLIENT_ID));
         headers.insert(ACCEPT, HeaderValue::from_static("*/*"));
@@ -1598,22 +1806,21 @@ impl DropsService {
         headers.insert("Origin", HeaderValue::from_static(CLIENT_URL));
         headers.insert("Referer", HeaderValue::from_static(CLIENT_URL));
 
-        let mutation = r#"
-        mutation ClaimDrop($input: ClaimDropRewardsInput!) {
-            claimDropRewards(input: $input) {
-                status
-            }
-        }
-        "#;
-
+        // Use persisted query format
         let response = client
             .post("https://gql.twitch.tv/gql")
             .headers(headers)
             .json(&serde_json::json!({
-                "query": mutation,
+                "operationName": "DropsPage_ClaimDropRewards",
                 "variables": {
                     "input": {
-                        "dropInstanceID": drop_id
+                        "dropInstanceID": drop_instance_id
+                    }
+                },
+                "extensions": {
+                    "persistedQuery": {
+                        "version": 1,
+                        "sha256Hash": "a455deea71bdc9015b78eb49f4acfbce8baa7ccbedd28e549bb025bd0f751930"
                     }
                 }
             }))
@@ -1621,9 +1828,21 @@ impl DropsService {
             .await?;
 
         let status = response.status();
+        let response_text = response.text().await?;
+
+        println!("📡 [Auto] Claim response status: {}", status);
+        println!("📡 [Auto] Claim response: {}", response_text);
+
         if !status.is_success() {
-            let error_text = response.text().await?;
-            return Err(anyhow::anyhow!("Failed to claim drop: {}", error_text));
+            return Err(anyhow::anyhow!("Failed to claim drop: {}", response_text));
+        }
+
+        // Parse response to check for errors
+        let response_json: serde_json::Value = serde_json::from_str(&response_text)?;
+
+        if let Some(errors) = response_json.get("errors") {
+            println!("❌ [Auto] GraphQL errors: {:?}", errors);
+            return Err(anyhow::anyhow!("GraphQL errors: {:?}", errors));
         }
 
         // Update progress to mark as claimed
