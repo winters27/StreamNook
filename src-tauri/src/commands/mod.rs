@@ -1,4 +1,5 @@
 pub mod app;
+pub mod automation;
 pub mod badge_metadata;
 pub mod badges;
 pub mod cache;

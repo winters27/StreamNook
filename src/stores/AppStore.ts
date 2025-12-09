@@ -886,12 +886,30 @@ export const useAppStore = create<AppState>((set, get) => ({
       // Show the user code to the user
       get().addToast(`Enter code ${userCode} at twitch.tv/activate`, 'info');
 
-      // Open the verification URL in browser
+      // Open the verification URL in an in-app WebView window
+      // This ensures Twitch session cookies are stored in WebView2's shared profile
+      // which enables follow/unfollow and other web-based features
       try {
-        await invoke('open_browser_url', { url: verificationUri });
-        console.log('Browser opened successfully');
+        const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+        const loginWindow = new WebviewWindow('twitch-login', {
+          url: verificationUri,
+          title: 'Log in to Twitch',
+          width: 500,
+          height: 700,
+          center: true,
+          resizable: true,
+          minimizable: true,
+          maximizable: false,
+        });
+
+        loginWindow.once('tauri://error', (e) => {
+          console.error('Failed to open login window:', e);
+          get().addToast(`Please visit ${verificationUri} and enter code: ${userCode}`, 'warning');
+        });
+
+        console.log('In-app login window opened successfully');
       } catch (e) {
-        console.error('Failed to open browser:', e);
+        console.error('Failed to open login window:', e);
         get().addToast(`Please visit ${verificationUri} and enter code: ${userCode}`, 'warning');
       }
 
@@ -900,6 +918,18 @@ export const useAppStore = create<AppState>((set, get) => ({
 
       const unlisten = await listen('twitch-login-complete', async () => {
         console.log('Login complete event received');
+
+        // Close the login window
+        try {
+          const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+          const loginWindow = await WebviewWindow.getByLabel('twitch-login');
+          if (loginWindow) {
+            await loginWindow.close();
+            console.log('Login window closed');
+          }
+        } catch (e) {
+          console.warn('Could not close login window:', e);
+        }
 
         // After successful login, check auth status FIRST
         await get().checkAuthStatus();

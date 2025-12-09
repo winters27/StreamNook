@@ -4,7 +4,9 @@
   "description": "Main application capabilities",
   "windows": [
     "main",
-    "profile-*"
+    "profile-*",
+    "subscribe-*",
+    "automation-*"
   ],
   "permissions": [
     "core:window:allow-close",

@@ -1,6 +1,10 @@
-## [4.8.4] - 2025-12-08
-### 🐛 Bug Fixes
-- Improved chat layout engine with compatibility updates to handle text rendering correctly, especially with custom fonts.
+## [4.9.0] - 2025-12-08
+### ✨ Features
+- **Automated Follow/Unfollow**: You can now follow and unfollow channels directly from StreamNook using a new automation feature. This uses your existing Twitch login and a hidden browser window to perform the action, so you don't have to leave the app!
+- **In-App Drops Login**: The Drops login process now happens within the StreamNook app using a secure in-app browser window. This simplifies the login process and improves security.
+
+### ⚡ Performance
+- Optimized the process for checking if you're following a streamer to use a more efficient Twitch API endpoint.
 
 ## [4.8.3] - 2025-12-08
 ### 🐛 Bug Fixes

@@ -1568,8 +1568,10 @@ impl TwitchService {
         // Get the current user's ID
         let user_info = Self::get_user_info().await?;
 
+        // Use the new channels/followed endpoint (the old users/follows was deprecated)
+        // This endpoint checks if user_id follows broadcaster_id
         let url = format!(
-            "https://api.twitch.tv/helix/users/follows?from_id={}&to_id={}",
+            "https://api.twitch.tv/helix/channels/followed?user_id={}&broadcaster_id={}",
             user_info.id, target_user_id
         );
 
@@ -1578,16 +1580,34 @@ impl TwitchService {
             .header(AUTHORIZATION, format!("Bearer {}", token))
             .header("Client-Id", CLIENT_ID)
             .send()
-            .await?
-            .json::<serde_json::Value>()
             .await?;
 
+        // Check if request was successful
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            println!(
+                "[check_following_status] API error: {} - {}",
+                status, error_text
+            );
+            // Return false if we can't check (might not be following)
+            return Ok(false);
+        }
+
+        let json: serde_json::Value = response.json().await?;
+
         // If data array has items, user is following
-        let is_following = response
+        // The new endpoint returns total in the response and data array with the follow info
+        let is_following = json
             .get("data")
             .and_then(|d| d.as_array())
             .map(|arr| !arr.is_empty())
             .unwrap_or(false);
+
+        println!(
+            "[check_following_status] User {} following {}: {}",
+            user_info.id, target_user_id, is_following
+        );
 
         Ok(is_following)
     }

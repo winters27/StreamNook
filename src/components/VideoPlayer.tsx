@@ -4,6 +4,8 @@ import Plyr from 'plyr';
 import 'plyr/dist/plyr.css';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { invoke } from '@tauri-apps/api/core';
+import { Loader2 } from 'lucide-react';
+import { Heart, HeartBreak } from 'phosphor-react';
 import { useAppStore } from '../stores/AppStore';
 import { getBadgeInfo, fetchChannelBadges } from '../services/twitchBadges';
 
@@ -25,6 +27,12 @@ const VideoPlayer = () => {
   const [availableQualities, setAvailableQualities] = useState<string[]>([]);
   const [isHovering, setIsHovering] = useState(false);
   const [subscriberBadgeUrl, setSubscriberBadgeUrl] = useState<string | null>(null);
+
+  // Follow state
+  const [isFollowing, setIsFollowing] = useState<boolean | null>(null);
+  const [followLoading, setFollowLoading] = useState(false);
+  const [checkingFollowStatus, setCheckingFollowStatus] = useState(true);
+  const [heartDropAnimation, setHeartDropAnimation] = useState(false);
 
   // Track consecutive fatal errors to determine when stream is truly offline
   const fatalErrorCountRef = useRef<number>(0);
@@ -861,6 +869,85 @@ const VideoPlayer = () => {
     };
   }, [currentStream?.user_id]);
 
+  // Check follow status when stream changes
+  useEffect(() => {
+    if (!currentStream?.user_id) {
+      setIsFollowing(null);
+      setCheckingFollowStatus(false);
+      return;
+    }
+
+    const checkFollowStatus = async () => {
+      try {
+        setCheckingFollowStatus(true);
+        const result = await invoke<boolean>('check_following_status', { targetUserId: currentStream.user_id });
+        setIsFollowing(result);
+      } catch (err) {
+        console.error('[VideoPlayer] Failed to check follow status:', err);
+        setIsFollowing(false);
+      } finally {
+        setCheckingFollowStatus(false);
+      }
+    };
+
+    checkFollowStatus();
+  }, [currentStream?.user_id]);
+
+  // Handle follow/unfollow action using browser automation
+  const handleFollowClick = useCallback(async () => {
+    if (followLoading || !currentStream?.user_login) return;
+
+    const action = isFollowing ? 'unfollow' : 'follow';
+
+    // If unfollowing, trigger the drop animation first
+    if (isFollowing) {
+      setHeartDropAnimation(true);
+      // Wait for animation to complete before showing loading
+      await new Promise(resolve => setTimeout(resolve, 600));
+      setHeartDropAnimation(false);
+    }
+
+    setFollowLoading(true);
+    console.log(`[VideoPlayer] Initiating ${action} for ${currentStream.user_login}`);
+
+    try {
+      const result = await invoke<{ success: boolean; message: string; action: string }>('automate_connection', {
+        channel: currentStream.user_login,
+        action: action
+      });
+
+      console.log('[VideoPlayer] Automation result:', result);
+
+      if (result.success) {
+        setIsFollowing(prev => !prev);
+        console.log(`[VideoPlayer] Successfully ${action}ed ${currentStream.user_login}`);
+      } else {
+        console.error(`[VideoPlayer] ${action} failed:`, result.message);
+
+        // Check if user is not logged in
+        if (result.message.includes('NOT_LOGGED_IN')) {
+          // Open subscribe window so user can log in
+          const webview = new WebviewWindow(`login-${Date.now()}`, {
+            url: `https://www.twitch.tv/login`,
+            title: 'Log in to Twitch',
+            width: 500,
+            height: 700,
+            center: true,
+            resizable: true,
+          });
+
+          webview.once('tauri://error', (e) => {
+            console.error('Error opening login window:', e);
+          });
+        }
+      }
+    } catch (err: any) {
+      console.error(`[VideoPlayer] ${action} error:`, err);
+    } finally {
+      setFollowLoading(false);
+    }
+  }, [currentStream?.user_login, isFollowing, followLoading]);
+
   // Handle subscribe button click
   const handleSubscribeClick = useCallback(() => {
     if (currentStream?.user_login) {
@@ -904,12 +991,60 @@ const VideoPlayer = () => {
         playsInline
       />
 
-      {/* Subscribe Button Overlay */}
+      {/* Follow & Subscribe Button Overlay */}
       {currentStream && (
         <div
-          className={`absolute top-3 right-3 z-50 transition-all duration-200 ${isHovering ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-2 pointer-events-none'
+          className={`absolute top-3 right-3 z-50 flex items-center gap-2 transition-all duration-200 ${isHovering ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-2 pointer-events-none'
             }`}
         >
+          {/* Follow Button - Icon Only with Glow */}
+          <button
+            onClick={handleFollowClick}
+            disabled={followLoading || checkingFollowStatus}
+            className={`flex items-center justify-center p-2.5 rounded-full transition-all duration-200 hover:scale-110 ${followLoading || checkingFollowStatus
+              ? 'opacity-60 cursor-wait bg-background/60 backdrop-blur-md'
+              : isFollowing
+                ? 'bg-red-500/20 hover:bg-red-500/30'
+                : 'bg-emerald-500/20 hover:bg-emerald-500/30'
+              }`}
+            style={{
+              boxShadow: followLoading || checkingFollowStatus
+                ? 'none'
+                : isFollowing
+                  ? '0 0 15px rgba(239, 68, 68, 0.35), 0 0 25px rgba(239, 68, 68, 0.15)'
+                  : '0 0 15px rgba(16, 185, 129, 0.35), 0 0 25px rgba(16, 185, 129, 0.15)'
+            }}
+            title={
+              checkingFollowStatus
+                ? 'Checking follow status...'
+                : followLoading
+                  ? 'Processing...'
+                  : isFollowing
+                    ? `Unfollow ${currentStream.user_name}`
+                    : `Follow ${currentStream.user_name}`
+            }
+          >
+            {followLoading || checkingFollowStatus ? (
+              <Loader2 className="w-6 h-6 animate-spin text-textSecondary" />
+            ) : heartDropAnimation ? (
+              <HeartBreak
+                weight="fill"
+                className="w-6 h-6 text-red-400 animate-heart-drop"
+              />
+            ) : isFollowing ? (
+              <HeartBreak
+                weight="fill"
+                className="w-6 h-6 text-red-400 drop-shadow-[0_0_5px_rgba(239,68,68,0.7)]"
+              />
+            ) : (
+              <Heart
+                weight="fill"
+                className="w-6 h-6 text-emerald-400 drop-shadow-[0_0_5px_rgba(16,185,129,0.7)]"
+              />
+            )}
+          </button>
+
+          {/* Subscribe Button */}
           <button
             onClick={handleSubscribeClick}
             className="flex items-center gap-2 px-4 py-2 glass-button text-textPrimary text-sm font-semibold rounded-lg shadow-lg transition-all duration-200 hover:scale-105"
