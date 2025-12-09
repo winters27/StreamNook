@@ -85,11 +85,15 @@ Built from the ground up with Rust and React, StreamNook delivers a buttery-smoo
 ### First-Class Chat Experience
 - Full Twitch chat integration with native IRC support
 - 7TV, BetterTTV, and FrankerFaceZ emote support (all the emotes, all the time)
+- **Animated 7TV emotes** - Full support for animated emotes and zero-width overlays
 - Badge rendering for subs, mods, and VIPs
 - Third-party badge integration (show off those achievements)
 - Smooth scrolling and message rendering that doesn't stutter
-- Native emoji support with emoji picker
-- Bits cheers display with animated icons
+- **Apple-style emoji rendering** - Consistent emoji display across all platforms
+- Native emoji picker for easy emoji selection
+- Bits cheers display with animated icons and tier colors
+- **Chat timestamps** - Optional message timestamps with seconds support
+- **Moderator tools** - Delete messages, timeouts, and bans reflected in chat
 
 ### Home Screen & Discovery
 - Browse followed and recommended streams
@@ -100,10 +104,18 @@ Built from the ground up with Rust and React, StreamNook delivers a buttery-smoo
 ### Automated Farming & Rewards
 - **Auto Channel Points Mining** - Automatically collect channel points from your favorite streamers
 - **Auto Drops Farming** - Never miss a Twitch Drop again with automated campaign tracking
+- **In-App Drops Login** - Secure in-app browser window for drops authentication
+- **Quick Mining Toggle** - Start/stop mining drops directly from the chat window
 - **Channel Points Leaderboard** - Track your channel points across all streamers you watch
 - **Twitch Inventory Viewer** - View and manage all your earned drops and rewards in one place
 - **Manual Channel Selection** - Choose specific channels for drops mining
+- **Badge Quick Actions** - View linked drops campaigns directly from badge details
 - Set it and forget it - StreamNook handles the grinding while you sleep
+
+### Channel Automation
+- **Follow/Unfollow from App** - Follow and unfollow channels directly from StreamNook
+- **Raid Auto-Follow** - Automatically follow raids to keep up with the action
+- Uses secure in-app browser automation - no manual intervention needed
 
 ### Live Notifications
 - Desktop notifications when your favorite streamers go live
@@ -142,8 +154,11 @@ Built from the ground up with Rust and React, StreamNook delivers a buttery-smoo
 - Granular settings for every aspect of the app
 - Custom quality presets
 - Advanced Streamlink settings (low-latency, HLS live edge, proxy)
+- **Custom Streamlink path** - Use your own Streamlink installation
+- **Jump to live edge** - Skip to live on stream load
 - Auto-switch to another stream when current goes offline
 - Automatic updates with optional auto-install
+- **Whisper history import** - Import your entire Twitch whisper history
 
 ### Lightweight Architecture
 - Built with Rust for maximum performance
@@ -212,6 +227,16 @@ We're constantly improving StreamNook. Here's what's on the horizon:
 - Moderation tools
 
 ### Recently Completed
+- ✅ **Animated 7TV emotes** with zero-width overlay support
+- ✅ **Follow/Unfollow automation** directly from the app
+- ✅ **Raid auto-follow** for seamless raid tracking
+- ✅ **Whisper history import** - import your entire DM history
+- ✅ **In-app drops login** with secure browser window
+- ✅ **Chat timestamps** with optional seconds display
+- ✅ **Moderator tools** - bans/timeouts reflected in chat
+- ✅ **Apple-style emoji rendering** across all platforms
+- ✅ **Custom Streamlink path** support
+- ✅ **Quick mining toggle** from chat window
 - ✅ Home screen with stream browsing and discovery
 - ✅ Picture-in-picture mode
 - ✅ Sidebar navigation
@@ -282,4 +307,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
   </div>
 </div>
 
-<!-- Build: 2025.12.05 -->
+<!-- Build: 2025.12.08 -->
