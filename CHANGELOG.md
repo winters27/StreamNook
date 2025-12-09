@@ -1,3 +1,11 @@
+## [4.9.2] - 2025-12-08
+### ✨ Features
+- **Authentication**: Improved authentication process with a one-time data cleanup to ensure a fresh login experience.
+
+### 🐛 Bug Fixes
+- **Chat**: Improved chat auto-scrolling behavior to keep up with the latest messages even during resets.
+- **Follow/Unfollow**: Added helpful error messages when following or unfollowing a channel fails. These messages suggest logging out and back in to re-authenticate.
+
 ## [4.9.1] - 2025-12-08
 ### ✨ Features
 - **Whisper Import**: You can now import your entire Twitch whisper history directly into StreamNook! This feature runs automatically in the background after logging in and will allow you to access your private messages.
@@ -668,6 +676,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
