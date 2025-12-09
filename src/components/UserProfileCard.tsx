@@ -1,5 +1,6 @@
-import { useState, useEffect, useMemo, useRef } from 'react';
-import { MessageCircle } from 'lucide-react';
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { MessageCircle, UserPlus, UserMinus, Loader2 } from 'lucide-react';
+import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../stores/AppStore';
 import { getUserCosmetics, computePaintStyle, getBadgeImageUrl } from '../services/seventvService';
 import { getAllUserBadges, TwitchBadge } from '../services/badgeService';
@@ -89,6 +90,11 @@ const UserProfileCard = ({
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
   const [cardPosition, setCardPosition] = useState({ x: 0, y: 0 });
   const cardRef = useRef<HTMLDivElement>(null);
+
+  // Follow state
+  const [isFollowing, setIsFollowing] = useState<boolean | null>(null);
+  const [followLoading, setFollowLoading] = useState(false);
+  const [followError, setFollowError] = useState<string | null>(null);
 
   useEffect(() => {
     const fetchUserData = async () => {
@@ -194,6 +200,40 @@ const UserProfileCard = ({
   }), [cardPosition, isDragging]);
 
   const isStandaloneWindow = window.location.hash.startsWith('#/profile');
+
+  // Handle follow/unfollow action using browser automation
+  const handleFollowAction = useCallback(async () => {
+    if (followLoading) return;
+
+    setFollowLoading(true);
+    setFollowError(null);
+
+    const action = isFollowing ? 'unfollow' : 'follow';
+    console.log(`[UserProfileCard] Initiating ${action} for ${username}`);
+
+    try {
+      const result = await invoke<{ success: boolean; message: string; action: string }>('automate_connection', {
+        channel: username,
+        action: action
+      });
+
+      console.log('[UserProfileCard] Automation result:', result);
+
+      if (result.success) {
+        // Toggle the follow state
+        setIsFollowing(prev => !prev);
+        console.log(`[UserProfileCard] Successfully ${action}ed ${username}`);
+      } else {
+        setFollowError(result.message);
+        console.error(`[UserProfileCard] ${action} failed:`, result.message);
+      }
+    } catch (err: any) {
+      console.error(`[UserProfileCard] ${action} error:`, err);
+      setFollowError(err?.message || `Failed to ${action}`);
+    } finally {
+      setFollowLoading(false);
+    }
+  }, [username, isFollowing, followLoading]);
 
   // Combine all badges into one array for display
   const allBadges = useMemo(() => {
@@ -367,7 +407,36 @@ const UserProfileCard = ({
           </div>
 
           {/* Action Buttons */}
-          <div className="flex gap-2">
+          <div className="flex gap-2 flex-wrap">
+            {/* Follow/Unfollow Button */}
+            <button
+              onClick={handleFollowAction}
+              disabled={followLoading}
+              className={`glass-button text-white text-xs py-2 px-3 rounded text-center transition-colors flex items-center justify-center gap-1.5 min-w-[90px] ${followLoading
+                  ? 'opacity-50 cursor-wait'
+                  : isFollowing
+                    ? 'hover:bg-red-500/20 border-red-500/30'
+                    : 'hover:bg-green-500/20 border-green-500/30'
+                }`}
+              title={followLoading ? 'Processing...' : isFollowing ? `Unfollow ${displayName}` : `Follow ${displayName}`}
+            >
+              {followLoading ? (
+                <>
+                  <Loader2 size={14} className="animate-spin text-purple-400" />
+                  <span className="hidden sm:inline">Working...</span>
+                </>
+              ) : isFollowing ? (
+                <>
+                  <UserMinus size={14} className="text-red-400" />
+                  <span>Unfollow</span>
+                </>
+              ) : (
+                <>
+                  <UserPlus size={14} className="text-green-400" />
+                  <span>Follow</span>
+                </>
+              )}
+            </button>
             <a href={`https://www.twitch.tv/${username}`} target="_blank" rel="noopener noreferrer" className="flex-1 glass-button text-white text-xs py-2 px-3 rounded text-center hover:bg-accent/20 transition-colors">
               View Channel
             </a>

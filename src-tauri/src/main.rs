@@ -27,8 +27,9 @@
 #![allow(clippy::collapsible_match)]
 
 use commands::{
-    app::*, badge_metadata::*, badges::*, cache::*, chat::*, components::*, cosmetics_cache::*,
-    discord::*, drops::*, layout::*, settings::*, streaming::*, twitch::*, universal_cache::*,
+    app::*, automation::*, badge_metadata::*, badges::*, cache::*, chat::*, components::*,
+    cosmetics_cache::*, discord::*, drops::*, layout::*, settings::*, streaming::*, twitch::*,
+    universal_cache::*,
 };
 use models::settings::{AppState, Settings};
 use services::background_service::BackgroundService;
@@ -399,6 +400,8 @@ fn main() {
             download_and_install_bundle,
             // Layout commands
             update_layout_config,
+            // Automation commands
+            automate_connection,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

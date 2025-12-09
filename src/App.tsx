@@ -225,6 +225,12 @@ function App() {
         useAppStore.getState().openWhisperWithUser(event.payload);
       });
 
+      // Listen for refresh-following-list events (triggered by follow/unfollow automation)
+      const unlistenRefreshFollowing = await listen('refresh-following-list', () => {
+        console.log('[App] Received refresh-following-list event, refreshing...');
+        useAppStore.getState().loadFollowedStreams();
+      });
+
       // Set up periodic auth check to detect session expiry while watching
       // Check every 5 minutes
       const authCheckInterval = setInterval(async () => {
@@ -242,6 +248,7 @@ function App() {
         unlistenChannelPoints();
         unlistenDropsError();
         unlistenStartWhisper();
+        unlistenRefreshFollowing();
         clearInterval(authCheckInterval);
       };
     };

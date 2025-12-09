@@ -1,6 +1,6 @@
-import { useEffect, useState, useMemo, useRef } from 'react';
+import { useEffect, useState, useMemo, useRef, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { open } from '@tauri-apps/plugin-shell';
+import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { useAppStore } from '../stores/AppStore';
 import { listen } from '@tauri-apps/api/event';
 import { X, Search, TrendingUp, Settings as SettingsIcon, BarChart3, Gift, Lock, ExternalLink, Play, Pause, Package } from 'lucide-react';
@@ -178,6 +178,34 @@ export default function DropsWidget() {
     }
   };
 
+  // Open in-app WebView window for drops verification
+  const openDropsVerificationWindow = useCallback(async (verificationUri: string) => {
+    try {
+      // Close any existing drops login window
+      const existingWindow = await WebviewWindow.getByLabel('drops-login');
+      if (existingWindow) {
+        await existingWindow.close();
+      }
+    } catch {
+      // Window doesn't exist, continue
+    }
+
+    const loginWindow = new WebviewWindow('drops-login', {
+      url: verificationUri,
+      title: 'Drops Login - Twitch',
+      width: 500,
+      height: 700,
+      center: true,
+      resizable: true,
+      minimizable: true,
+      maximizable: false,
+    });
+
+    loginWindow.once('tauri://error', (e) => {
+      console.error('Failed to open drops login window:', e);
+    });
+  }, []);
+
   const startDropsLogin = async () => {
     try {
       setIsAuthenticating(true);
@@ -186,7 +214,8 @@ export default function DropsWidget() {
       const deviceInfo = await invoke<DropsDeviceCodeInfo>('start_drops_device_flow');
       setDeviceCodeInfo(deviceInfo);
 
-      await open(deviceInfo.verification_uri);
+      // Open in an in-app WebView window
+      await openDropsVerificationWindow(deviceInfo.verification_uri);
 
       pollForToken(deviceInfo);
     } catch (err) {
@@ -206,11 +235,29 @@ export default function DropsWidget() {
 
       console.log('[DROPS AUTH] Token obtained successfully!');
 
+      // Close the drops login window on success
+      try {
+        const dropsWindow = await WebviewWindow.getByLabel('drops-login');
+        if (dropsWindow) {
+          await dropsWindow.close();
+          console.log('Drops login window closed');
+        }
+      } catch {
+        // Window doesn't exist, continue
+      }
+
       setIsAuthenticated(true);
       setIsAuthenticating(false);
       setDeviceCodeInfo(null);
 
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      addToast('Drops login successful!', 'success');
+
+      // Focus the main app window
+      try {
+        await invoke('focus_window');
+      } catch (focusError) {
+        console.error('Failed to focus window:', focusError);
+      }
 
       await loadDropsData();
     } catch (err) {
@@ -600,14 +647,14 @@ export default function DropsWidget() {
               </div>
               <div className="pt-2 border-t border-borderLight">
                 <p className="text-sm text-textSecondary mb-3">
-                  A browser window should have opened automatically.
+                  A login window should have opened automatically.
                 </p>
                 <button
-                  onClick={() => open(deviceCodeInfo.verification_uri)}
+                  onClick={() => openDropsVerificationWindow(deviceCodeInfo.verification_uri)}
                   className="flex items-center justify-center gap-2 w-full px-4 py-2 bg-glass hover:bg-glassHover text-textPrimary rounded-lg transition-colors text-sm"
                 >
                   <ExternalLink size={16} />
-                  <span>Open Verification Page</span>
+                  <span>Reopen Verification Window</span>
                 </button>
               </div>
               <div className="flex items-center justify-center gap-2 text-xs text-textSecondary pt-2">

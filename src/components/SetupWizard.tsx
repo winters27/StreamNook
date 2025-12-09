@@ -15,9 +15,9 @@ import {
     AlertCircle,
     Settings
 } from 'lucide-react';
-import { open } from '@tauri-apps/plugin-shell';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { useAppStore } from '../stores/AppStore';
 
 interface SetupWizardProps {
@@ -139,6 +139,34 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
         }
     }, [currentStep, status.componentsInstalled, isExtracting, status.extractionError, extractComponents]);
 
+    // Open in-app WebView window for verification
+    const openDropsVerificationWindow = useCallback(async (verificationUri: string) => {
+        try {
+            // Close any existing drops login window
+            const existingWindow = await WebviewWindow.getByLabel('drops-login');
+            if (existingWindow) {
+                await existingWindow.close();
+            }
+        } catch {
+            // Window doesn't exist, continue
+        }
+
+        const loginWindow = new WebviewWindow('drops-login', {
+            url: verificationUri,
+            title: 'Drops Login - Twitch',
+            width: 500,
+            height: 700,
+            center: true,
+            resizable: true,
+            minimizable: true,
+            maximizable: false,
+        });
+
+        loginWindow.once('tauri://error', (e) => {
+            console.error('Failed to open drops login window:', e);
+        });
+    }, []);
+
     // Handle drops authentication (Android client device code flow)
     const handleDropsLogin = useCallback(async () => {
         setIsAuthenticating(true);
@@ -148,8 +176,8 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
             const deviceInfo = await invoke('start_drops_device_flow') as DropsDeviceCodeInfo;
             setDropsDeviceCode(deviceInfo);
 
-            // Open the verification page
-            await open(deviceInfo.verification_uri);
+            // Open the verification page in an in-app WebView
+            await openDropsVerificationWindow(deviceInfo.verification_uri);
 
             // Poll for token completion
             try {
@@ -159,7 +187,17 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                     expiresIn: deviceInfo.expires_in,
                 });
 
-                // Success!
+                // Success! Close the drops login window
+                try {
+                    const dropsWindow = await WebviewWindow.getByLabel('drops-login');
+                    if (dropsWindow) {
+                        await dropsWindow.close();
+                        console.log('Drops login window closed');
+                    }
+                } catch {
+                    // Window doesn't exist, continue
+                }
+
                 setStatus(prev => ({ ...prev, dropsAuthenticated: true }));
                 setDropsDeviceCode(null);
                 addToast('Drops login successful!', 'success');
@@ -383,14 +421,14 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                                 </div>
                                 <div className="pt-3 border-t border-borderSubtle mt-3">
                                     <p className="text-xs text-textMuted mb-2">
-                                        A browser window should have opened automatically.
+                                        A login window should have opened automatically.
                                     </p>
                                     <button
-                                        onClick={() => open(dropsDeviceCode.verification_uri)}
+                                        onClick={() => openDropsVerificationWindow(dropsDeviceCode.verification_uri)}
                                         className="flex items-center justify-center gap-2 w-full px-3 py-2 bg-glass hover:bg-glass-hover text-textSecondary hover:text-textPrimary rounded-lg transition-colors text-xs"
                                     >
                                         <ExternalLink size={14} />
-                                        <span>Open Verification Page</span>
+                                        <span>Reopen Verification Window</span>
                                     </button>
                                 </div>
                                 <div className="flex items-center justify-center gap-2 text-xs text-textMuted mt-3">
