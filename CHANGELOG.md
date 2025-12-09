@@ -1,3 +1,11 @@
+## [4.9.5] - 2025-12-08
+### ✨ Features
+- **Discord Rich Presence**: Improved the stream watching animation in Discord rich presence for a more engaging experience.
+
+## [4.9.4] - 2025-12-08
+### 🔧 Maintenance
+- Updated the README with new screenshots and descriptions to better showcase StreamNook's features.
+
 ## [4.9.2] - 2025-12-08
 ### ✨ Features
 - **Authentication**: Improved authentication process with a one-time data cleanup to ensure a fresh login experience.
@@ -676,6 +684,8 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
+
 
 
 
