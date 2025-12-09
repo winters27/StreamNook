@@ -1,3 +1,11 @@
+## [4.9.2] - 2025-12-08
+### ✨ Features
+- **Picture-in-Picture**: Due to internal changes with StreamNook's Picture-in-Picture mode, you will be required to log in again after this update.
+- Starting a stream from the sidebar navigation will now automatically exit the home screen.
+
+### 🐛 Bug Fixes
+- Exiting Picture-in-Picture mode will now fully close the stream.
+
 ## [4.9.1] - 2025-12-08
 ### ✨ Features
 - **Whisper Import**: You can now import your entire Twitch whisper history directly into StreamNook! This feature runs automatically in the background after logging in and will allow you to access your private messages.
@@ -668,6 +676,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
