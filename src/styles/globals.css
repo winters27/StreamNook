@@ -964,6 +964,31 @@ body {
   background: #000;
 }
 
+/* Custom overlay positioning for Plyr fullscreen mode */
+/* When Plyr goes fullscreen, ensure our custom overlays are still visible */
+.video-player-container:fullscreen .subscribe-overlay,
+.video-player-container:-webkit-full-screen .subscribe-overlay,
+.video-player-container:-moz-full-screen .subscribe-overlay,
+.video-player-container:-ms-fullscreen .subscribe-overlay,
+.plyr--fullscreen-active ~ .subscribe-overlay,
+.plyr:fullscreen ~ .subscribe-overlay,
+.plyr:-webkit-full-screen ~ .subscribe-overlay {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  z-index: 2147483647;
+}
+
+/* Alternative approach: Target elements when document has fullscreen element */
+:fullscreen .subscribe-overlay,
+:-webkit-full-screen .subscribe-overlay,
+:-moz-full-screen .subscribe-overlay {
+  position: fixed !important;
+  top: 12px !important;
+  right: 12px !important;
+  z-index: 2147483647 !important;
+}
+
 /* PIP mode */
 .video-player-container .plyr--pip-supported [data-plyr="pip"] {
   display: inline-block;

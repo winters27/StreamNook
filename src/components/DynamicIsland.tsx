@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Bell, Radio, MessageCircle, ChevronRight, User, Download, Gift, Award } from 'lucide-react';
+import { Bell, Radio, MessageCircle, ChevronRight, User, Download, Gift, Award, Check, CheckCheck } from 'lucide-react';
 import { X, SpeakerHigh, SpeakerSlash } from 'phosphor-react';
 import { listen, emit } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
@@ -935,6 +935,22 @@ const DynamicIsland = () => {
         setHasUnread(false);
     };
 
+    // Mark single notification as read
+    const markAsRead = (id: string, e: React.MouseEvent) => {
+        e.stopPropagation();
+        setNotifications(prev =>
+            prev.map(n => n.id === id ? { ...n, read: true } : n)
+        );
+    };
+
+    // Mark all notifications as read
+    const markAllAsRead = () => {
+        setNotifications(prev =>
+            prev.map(n => ({ ...n, read: true }))
+        );
+        setHasUnread(false);
+    };
+
     // Get unread count
     const unreadCount = notifications.filter(n => !n.read).length;
 
@@ -1393,30 +1409,57 @@ const DynamicIsland = () => {
                                                         </>
                                                     ) : null}
 
-                                                    <div className="flex items-center gap-2 flex-shrink-0">
+                                                    <div className="flex items-center gap-1.5 flex-shrink-0">
                                                         <span className="text-white/30 text-xs">
                                                             {formatTimeAgo(notification.timestamp)}
                                                         </span>
+                                                        {/* Mark as read button - only show for unread notifications */}
+                                                        {!notification.read && (
+                                                            <button
+                                                                onClick={(e) => markAsRead(notification.id, e)}
+                                                                className="opacity-0 group-hover:opacity-100 text-white/30 hover:text-green-400 transition-all p-0.5"
+                                                                title="Mark as read"
+                                                            >
+                                                                <Check size={14} />
+                                                            </button>
+                                                        )}
                                                         <button
                                                             onClick={(e) => clearNotification(notification.id, e)}
-                                                            className="opacity-0 group-hover:opacity-100 text-white/30 hover:text-white transition-all"
+                                                            className="opacity-0 group-hover:opacity-100 text-white/30 hover:text-white transition-all p-0.5"
+                                                            title="Remove notification"
                                                         >
-                                                            <X size={16} />
+                                                            <X size={14} />
                                                         </button>
-                                                        <ChevronRight size={16} className="text-white/30" />
+                                                        <ChevronRight size={14} className="text-white/30" />
                                                     </div>
                                                 </motion.div>
                                             ))}
-                                            {/* Clear All Footer */}
-                                            <button
-                                                onClick={(e) => {
-                                                    e.stopPropagation();
-                                                    clearAllNotifications();
-                                                }}
-                                                className="w-full mt-2 py-2 text-white/40 hover:text-white/70 text-xs transition-colors text-center rounded-lg hover:bg-white/5"
-                                            >
-                                                Clear all notifications
-                                            </button>
+                                            {/* Footer Actions */}
+                                            <div className="flex gap-2 mt-2">
+                                                {/* Mark All as Read Button - only show if there are unread */}
+                                                {unreadCount > 0 && (
+                                                    <button
+                                                        onClick={(e) => {
+                                                            e.stopPropagation();
+                                                            markAllAsRead();
+                                                        }}
+                                                        className="flex-1 py-2 text-white/40 hover:text-green-400 text-xs transition-colors text-center rounded-lg hover:bg-white/5 flex items-center justify-center gap-1.5"
+                                                    >
+                                                        <CheckCheck size={12} />
+                                                        Mark all read
+                                                    </button>
+                                                )}
+                                                {/* Clear All Button */}
+                                                <button
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        clearAllNotifications();
+                                                    }}
+                                                    className={`${unreadCount > 0 ? 'flex-1' : 'w-full'} py-2 text-white/40 hover:text-white/70 text-xs transition-colors text-center rounded-lg hover:bg-white/5`}
+                                                >
+                                                    Clear all
+                                                </button>
+                                            </div>
                                         </div>
                                     )}
                                 </div>
