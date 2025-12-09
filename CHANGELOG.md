@@ -1,10 +1,10 @@
-## [4.9.3] - 2025-12-08
+## [4.9.5] - 2025-12-08
 ### ✨ Features
-- **Enhanced Chat**: Optional chat timestamps with seconds, moderator tools (bans/timeouts), and consistent Apple-style emoji rendering.
-- **Channel Automation**: Follow and unfollow channels directly from StreamNook. Automatically follow raids to stay connected.
-- **Drops Mining**: In-app drops login with secure browser. Start/stop mining drops quickly from the chat window.
-- **Streamlink Customization**: Use your own Streamlink installation with a custom path.
-- **Whispers**: Import your entire Twitch whisper history into StreamNook.
+- **Discord Rich Presence**: Improved the stream watching animation in Discord rich presence for a more engaging experience.
+
+## [4.9.4] - 2025-12-08
+### 🔧 Maintenance
+- Updated the README with new screenshots and descriptions to better showcase StreamNook's features.
 
 ## [4.9.2] - 2025-12-08
 ### ✨ Features
@@ -684,6 +684,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 

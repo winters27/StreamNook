@@ -48,26 +48,43 @@ Built from the ground up with Rust and React, StreamNook delivers a buttery-smoo
 
 <div align="center">
 
-### Main Interface
-<img src="src-tauri/images/watching.jpg" alt="Watching a stream" width="800">
+### 🎬 Watching Streams
+*Stream viewing with full chat integration and emote support*
+<img src="src-tauri/images/watching_stream.gif" alt="Watching a stream" width="800">
 
-### Live Following
-<img src="src-tauri/images/following_live.jpg" alt="Live Following" width="800">
+### 📺 Sidebar Navigation
+*Quick access to all your favorite features*
+<img src="src-tauri/images/sidebar.png" alt="Sidebar Navigation" width="800">
 
-### Drops & Inventory Management
+### 👥 Following List
+*See who's live at a glance*
+<img src="src-tauri/images/following.png" alt="Following List" width="800">
+
+### 🎮 Browse Categories
+*Discover new content across Twitch categories*
+<img src="src-tauri/images/browsing_categories.png" alt="Browsing Categories" width="800">
+
+### 🔔 Dynamic Island
+*macOS-inspired notification center for real-time updates*
+<img src="src-tauri/images/dynamic_island.png" alt="Dynamic Island" width="800">
+
+### 🎁 Drops Farming
+*Automated drops collection and campaign tracking*
+<img src="src-tauri/images/drops_farming.png" alt="Drops Farming" width="800">
+
+### 🏅 Badge Collection
 <p>
-  <img src="src-tauri/images/drops.png" alt="Drops" width="400">
-  <img src="src-tauri/images/drops_inventory.png" alt="Drops Inventory" width="400">
-</p>
-<p>
-    <img src="src-tauri/images/drops_stats.png" alt="Drops Stats" width="800">
+  <img src="src-tauri/images/twitch_global_badges.png" alt="Twitch Global Badges" width="400">
+  <img src="src-tauri/images/badge_info.gif" alt="Badge Info Details" width="400">
 </p>
 
-### Badges
-<p>
-    <img src="src-tauri/images/badges.png" alt="Badges" width="400">
-    <img src="src-tauri/images/badges_info.png" alt="Badge Info" width="400">
-</p>
+### 💬 Native Whispers
+*Full whisper messaging with history support*
+<img src="src-tauri/images/native_whispers.png" alt="Native Whispers" width="800">
+
+### 🎨 Theme Customization
+*Multiple beautiful themes to match your style*
+<img src="src-tauri/images/theme_switcher.png" alt="Theme Switcher" width="800">
 
 </div>
 
