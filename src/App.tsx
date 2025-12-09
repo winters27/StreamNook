@@ -39,6 +39,9 @@ interface BadgeVersion {
 // This key is set after the force re-login to ensure it only happens once
 const WEBVIEW_RELOGIN_MIGRATION_KEY = 'streamnook-webview-relogin-v4.9.1';
 
+// One-time migration flag for v2.1.0 - force re-login for PIP behavior changes
+const V210_RELOGIN_MIGRATION_KEY = 'streamnook-relogin-v2.1.0';
+
 // Default sizes for different placements (outside component to avoid recreating on each render)
 const DEFAULT_CHAT_WIDTH = 384; // For 'right' placement
 const DEFAULT_CHAT_HEIGHT = 200; // For 'bottom' placement
@@ -409,6 +412,37 @@ function App() {
           localStorage.setItem(WEBVIEW_RELOGIN_MIGRATION_KEY, 'true');
         }
 
+        // One-time force re-login for v2.1.0 - PIP behavior changes
+        // This only triggers once per user, ever, and only if they're currently logged in
+        const hasCompletedV210Migration = localStorage.getItem(V210_RELOGIN_MIGRATION_KEY);
+        if (!hasCompletedV210Migration && isAuthenticated) {
+          console.log('[App] One-time force re-login for v2.1.0 update');
+
+          // Mark migration as complete BEFORE logout so it only happens once
+          localStorage.setItem(V210_RELOGIN_MIGRATION_KEY, 'true');
+
+          // Log the user out
+          await logoutFromTwitch();
+
+          // Show a toast explaining why
+          addToast(
+            'Please log in again to continue using StreamNook',
+            'info'
+          );
+
+          // Update last seen version
+          await updateSettings({ ...settings, last_seen_version: currentVersion });
+
+          // Show the setup wizard so they can log back in
+          setShowSetupWizard(true);
+          return;
+        }
+
+        // Mark migration as complete for users who weren't logged in (no action needed)
+        if (!hasCompletedV210Migration) {
+          localStorage.setItem(V210_RELOGIN_MIGRATION_KEY, 'true');
+        }
+
         // If there's no last seen version (first run) or the version has changed
         if (lastSeenVersion && lastSeenVersion !== currentVersion) {
           console.log('[App] Version changed, showing changelog');
@@ -571,13 +605,14 @@ function App() {
     exitPip();
   }, [isHomeActive]);
 
-  // Listen for PIP exit (e.g., user clicks "back to tab" in PIP window) to return to stream view
+  // Listen for PIP exit (e.g., user clicks "X" in PIP window) to close the stream
   useEffect(() => {
     const handleLeavePip = () => {
-      // If we're in Home view and PIP was exited (by user clicking back to tab), return to stream
+      // If we're in Home view and PIP was exited (by user clicking X), close the stream
+      // The user has a dedicated "Return to stream" button if they want to return
       if (isHomeActive && streamUrl) {
-        console.log('[PIP] User exited PIP via back to tab, returning to stream view');
-        toggleHome();
+        console.log('[PIP] User exited PIP via X button, closing stream');
+        stopStream();
       }
     };
 
@@ -592,7 +627,7 @@ function App() {
         videoElement.removeEventListener('leavepictureinpicture', handleLeavePip);
       }
     };
-  }, [isHomeActive, streamUrl, toggleHome]);
+  }, [isHomeActive, streamUrl, stopStream]);
 
   // Handle aspect ratio locking when setting changes or chat is resized
   useEffect(() => {

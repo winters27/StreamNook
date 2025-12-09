@@ -53,6 +53,8 @@ const Sidebar = () => {
         isAuthenticated,
         isFavoriteStreamer,
         toggleFavoriteStreamer,
+        isHomeActive,
+        toggleHome,
     } = useAppStore();
 
     // Sidebar mode from settings
@@ -374,6 +376,10 @@ const Sidebar = () => {
 
     const handleStreamClick = (stream: TwitchStream) => {
         startStream(stream.user_login, stream);
+        // Exit Home view (and PIP mode) when clicking a stream from the sidebar
+        if (isHomeActive) {
+            toggleHome();
+        }
     };
 
     const handleFavoriteClick = (e: React.MouseEvent, userId: string) => {
