@@ -270,7 +270,6 @@ const ChatWidget = () => {
 
   // Track if we should auto-scroll to bottom (when user is at bottom)
   const shouldAutoScrollRef = useRef<boolean>(true);
-  const pendingScrollRef = useRef<boolean>(false);
 
 
 
@@ -674,19 +673,28 @@ const ChatWidget = () => {
               // If we should auto-scroll (at bottom, not paused), scroll to bottom after reset
               // This fixes the glitch where messages appear under the input bar
               if (shouldAutoScrollRef.current && !isPaused && messages.length > 0) {
-                // Check if this is a recent message (within last 3 messages)
-                const isRecentMessage = index >= messages.length - 3;
+                // Check if this is a recent message (within last 5 messages)
+                const isRecentMessage = minResetIndexRef.current >= messages.length - 5;
                 if (isRecentMessage) {
-                  // Schedule scroll to bottom after the reset takes effect
-                  if (!pendingScrollRef.current) {
-                    pendingScrollRef.current = true;
-                    requestAnimationFrame(() => {
-                      if (listRef.current && shouldAutoScrollRef.current && !isPaused) {
-                        listRef.current.scrollToItem(messages.length - 1, 'end');
-                      }
-                      pendingScrollRef.current = false;
-                    });
+                  // Multi-stage scroll correction to handle async height updates
+                  // Stage 1: Immediate scroll after RAF
+                  if (listRef.current && shouldAutoScrollRef.current && !isPaused) {
+                    listRef.current.scrollToItem(messages.length - 1, 'end');
                   }
+
+                  // Stage 2: After a microtask to let react-window recalculate
+                  queueMicrotask(() => {
+                    if (listRef.current && shouldAutoScrollRef.current && !isPaused) {
+                      listRef.current.scrollToItem(messages.length - 1, 'end');
+                    }
+                  });
+
+                  // Stage 3: After another RAF to catch any remaining layout shifts
+                  requestAnimationFrame(() => {
+                    if (listRef.current && shouldAutoScrollRef.current && !isPaused) {
+                      listRef.current.scrollToItem(messages.length - 1, 'end');
+                    }
+                  });
                 }
               }
             }

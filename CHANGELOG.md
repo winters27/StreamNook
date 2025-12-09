@@ -1,10 +1,10 @@
 ## [4.9.2] - 2025-12-08
 ### ✨ Features
-- **Picture-in-Picture**: Due to internal changes with StreamNook's Picture-in-Picture mode, you will be required to log in again after this update.
-- Starting a stream from the sidebar navigation will now automatically exit the home screen.
+- **Authentication**: Improved authentication process with a one-time data cleanup to ensure a fresh login experience.
 
 ### 🐛 Bug Fixes
-- Exiting Picture-in-Picture mode will now fully close the stream.
+- **Chat**: Improved chat auto-scrolling behavior to keep up with the latest messages even during resets.
+- **Follow/Unfollow**: Added helpful error messages when following or unfollowing a channel fails. These messages suggest logging out and back in to re-authenticate.
 
 ## [4.9.1] - 2025-12-08
 ### ✨ Features

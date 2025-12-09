@@ -57,6 +57,70 @@ pub async fn twitch_logout(state: State<'_, AppState>) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// Clear WebView2 browsing data (cookies, cache, etc.) to force re-login
+/// This is used during migrations or when a full logout is required
+#[tauri::command]
+pub async fn clear_webview_data(app: AppHandle) -> Result<(), String> {
+    use std::fs;
+    use tauri::Manager;
+
+    println!("[CLEAR_WEBVIEW] Starting WebView2 data cleanup...");
+
+    // Try multiple possible locations for WebView2 data
+    let mut paths_to_clear = Vec::new();
+
+    // 1. Tauri's app_data_dir (typically AppData/Local/com.streamnook.dev/)
+    if let Ok(app_data_dir) = app.path().app_data_dir() {
+        paths_to_clear.push(app_data_dir.join("EBWebView"));
+    }
+
+    // 2. Config directory (AppData/Roaming/StreamNook/)
+    if let Some(config_dir) = dirs::config_dir() {
+        paths_to_clear.push(config_dir.join("StreamNook").join("EBWebView"));
+    }
+
+    // 3. Local data directory (AppData/Local/)
+    if let Some(local_dir) = dirs::data_local_dir() {
+        paths_to_clear.push(local_dir.join("StreamNook").join("EBWebView"));
+        paths_to_clear.push(local_dir.join("com.streamnook.dev").join("EBWebView"));
+    }
+
+    // 4. Roaming data directory
+    if let Some(data_dir) = dirs::data_dir() {
+        paths_to_clear.push(data_dir.join("StreamNook").join("EBWebView"));
+    }
+
+    let mut cleared_any = false;
+    for webview_data_path in paths_to_clear {
+        if webview_data_path.exists() {
+            println!(
+                "[CLEAR_WEBVIEW] Found WebView2 data at: {:?}",
+                webview_data_path
+            );
+
+            // Remove the entire WebView2 data directory
+            if let Err(e) = fs::remove_dir_all(&webview_data_path) {
+                eprintln!(
+                    "[CLEAR_WEBVIEW] Warning: Could not fully remove {:?}: {}",
+                    webview_data_path, e
+                );
+            } else {
+                println!(
+                    "[CLEAR_WEBVIEW] Successfully cleared: {:?}",
+                    webview_data_path
+                );
+                cleared_any = true;
+            }
+        }
+    }
+
+    if !cleared_any {
+        println!("[CLEAR_WEBVIEW] No WebView2 data directories found to clear");
+    }
+
+    Ok(())
+}
+
 /// Check if stored credentials exist (for showing appropriate toasts)
 #[tauri::command]
 pub async fn has_stored_credentials() -> Result<bool, String> {

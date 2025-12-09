@@ -39,8 +39,8 @@ interface BadgeVersion {
 // This key is set after the force re-login to ensure it only happens once
 const WEBVIEW_RELOGIN_MIGRATION_KEY = 'streamnook-webview-relogin-v4.9.1';
 
-// One-time migration flag for v2.1.0 - force re-login for PIP behavior changes
-const V210_RELOGIN_MIGRATION_KEY = 'streamnook-relogin-v2.1.0';
+// One-time migration flag for v2.2.0 - force re-login with full webview data clear
+const V220_RELOGIN_MIGRATION_KEY = 'streamnook-relogin-v2.2.0';
 
 // Default sizes for different placements (outside component to avoid recreating on each render)
 const DEFAULT_CHAT_WIDTH = 384; // For 'right' placement
@@ -412,17 +412,25 @@ function App() {
           localStorage.setItem(WEBVIEW_RELOGIN_MIGRATION_KEY, 'true');
         }
 
-        // One-time force re-login for v2.1.0 - PIP behavior changes
-        // This only triggers once per user, ever, and only if they're currently logged in
-        const hasCompletedV210Migration = localStorage.getItem(V210_RELOGIN_MIGRATION_KEY);
-        if (!hasCompletedV210Migration && isAuthenticated) {
-          console.log('[App] One-time force re-login for v2.1.0 update');
+        // One-time force re-login for v2.2.0 with full webview data clear
+        // This ensures Twitch session cookies are fully cleared so user must re-login
+        const hasCompletedV220Migration = localStorage.getItem(V220_RELOGIN_MIGRATION_KEY);
+        if (!hasCompletedV220Migration && isAuthenticated) {
+          console.log('[App] One-time force re-login for v2.2.0 update');
 
           // Mark migration as complete BEFORE logout so it only happens once
-          localStorage.setItem(V210_RELOGIN_MIGRATION_KEY, 'true');
+          localStorage.setItem(V220_RELOGIN_MIGRATION_KEY, 'true');
 
-          // Log the user out
+          // Log the user out (clears app tokens)
           await logoutFromTwitch();
+
+          // Also clear WebView2 browsing data (cookies, cache) so Twitch session is fully cleared
+          try {
+            await invoke('clear_webview_data');
+            console.log('[App] WebView2 data cleared successfully');
+          } catch (e) {
+            console.warn('[App] Failed to clear WebView2 data:', e);
+          }
 
           // Show a toast explaining why
           addToast(
@@ -439,8 +447,8 @@ function App() {
         }
 
         // Mark migration as complete for users who weren't logged in (no action needed)
-        if (!hasCompletedV210Migration) {
-          localStorage.setItem(V210_RELOGIN_MIGRATION_KEY, 'true');
+        if (!hasCompletedV220Migration) {
+          localStorage.setItem(V220_RELOGIN_MIGRATION_KEY, 'true');
         }
 
         // If there's no last seen version (first run) or the version has changed

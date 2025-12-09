@@ -943,10 +943,21 @@ const VideoPlayer = () => {
           webview.once('tauri://error', (e) => {
             console.error('Error opening login window:', e);
           });
+        } else {
+          // Show helpful toast message for other failures
+          useAppStore.getState().addToast(
+            `Follow/Unfollow failed. Try logging out and back in via Settings to re-authenticate.`,
+            'error'
+          );
         }
       }
     } catch (err: any) {
       console.error(`[VideoPlayer] ${action} error:`, err);
+      // Show helpful error message
+      useAppStore.getState().addToast(
+        `Follow/Unfollow failed. Try logging out and back in via Settings to re-authenticate.`,
+        'error'
+      );
     } finally {
       setFollowLoading(false);
     }
