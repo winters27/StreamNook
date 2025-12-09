@@ -1,3 +1,11 @@
+## [4.9.3] - 2025-12-08
+### ✨ Features
+- **Enhanced Chat**: Optional chat timestamps with seconds, moderator tools (bans/timeouts), and consistent Apple-style emoji rendering.
+- **Channel Automation**: Follow and unfollow channels directly from StreamNook. Automatically follow raids to stay connected.
+- **Drops Mining**: In-app drops login with secure browser. Start/stop mining drops quickly from the chat window.
+- **Streamlink Customization**: Use your own Streamlink installation with a custom path.
+- **Whispers**: Import your entire Twitch whisper history into StreamNook.
+
 ## [4.9.2] - 2025-12-08
 ### ✨ Features
 - **Authentication**: Improved authentication process with a one-time data cleanup to ensure a fresh login experience.
@@ -676,6 +684,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
