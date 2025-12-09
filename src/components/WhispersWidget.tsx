@@ -274,35 +274,49 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
                     console.log(`[Whispers] Auto-imported ${totalMessages} messages from ${data.conversations.length} conversations`);
                     setImportProgress(`✓ Auto-imported ${totalMessages} messages`);
 
-                    // Fetch profile pictures for all imported users via Twitch Helix API
-                    const usersToFetchProfilePics = Array.from(newConversations.entries()).filter(([, c]) => !c.profile_image_url);
-                    if (usersToFetchProfilePics.length > 0) {
-                        console.log(`[Whispers] Fetching ${usersToFetchProfilePics.length} profile pictures...`);
-                        setImportProgress(`Fetching ${usersToFetchProfilePics.length} profile pictures...`);
+                    // Resolve user IDs and fetch profile pictures for all imported users
+                    // This ensures conversations use numeric Twitch user IDs as keys (not usernames)
+                    const usersToResolve = Array.from(newConversations.entries()).filter(([key, c]) => {
+                        // Need to resolve if: key is not numeric OR missing profile image
+                        const needsIdResolution = !/^\d+$/.test(key);
+                        return needsIdResolution || !c.profile_image_url;
+                    });
 
-                        for (const [mapKey, conv] of usersToFetchProfilePics) {
+                    if (usersToResolve.length > 0) {
+                        console.log(`[Whispers] Resolving ${usersToResolve.length} user IDs and profile pictures...`);
+                        setImportProgress(`Resolving ${usersToResolve.length} user IDs...`);
+
+                        const resolvedConversations = new Map(newConversations);
+
+                        for (const [mapKey, conv] of usersToResolve) {
                             try {
                                 // Use search_whisper_user to look up by login (username)
                                 const result = await invoke<[string, string, string, string | null] | null>('search_whisper_user', { username: conv.user_login });
-                                if (result && result[3]) {
-                                    const [, , , profileUrl] = result;
-                                    console.log(`[Whispers] Got profile pic for ${conv.user_login}: ${profileUrl}`);
+                                if (result && result[0]) {
+                                    const [realUserId, , , profileUrl] = result;
+                                    console.log(`[Whispers] Resolved ${conv.user_login}: ${mapKey} -> ${realUserId}`);
 
-                                    // Update only the profile picture, keep the same Map key
-                                    setConversations(prev => {
-                                        const updated = new Map(prev);
-                                        const existing = updated.get(mapKey);
-                                        if (existing) {
-                                            existing.profile_image_url = profileUrl || undefined;
-                                        }
-                                        return updated;
-                                    });
+                                    // Update the conversation with resolved data
+                                    conv.user_id = realUserId;
+                                    if (profileUrl) {
+                                        conv.profile_image_url = profileUrl;
+                                    }
+
+                                    // If the key was a username (not numeric), migrate to numeric ID
+                                    if (!/^\d+$/.test(mapKey)) {
+                                        resolvedConversations.delete(mapKey);
+                                        resolvedConversations.set(realUserId, conv);
+                                        console.log(`[Whispers] Migrated key from "${mapKey}" to "${realUserId}"`);
+                                    }
                                 }
                             } catch (err) {
-                                console.warn(`[Whispers] Failed to fetch profile for ${conv.user_login}:`, err);
+                                console.warn(`[Whispers] Failed to resolve user ${conv.user_login}:`, err);
                             }
                         }
-                        console.log('[Whispers] Profile picture fetching complete');
+
+                        // Update state with resolved conversations
+                        setConversations(resolvedConversations);
+                        console.log('[Whispers] User ID resolution complete');
                     }
 
                     setImportProgress(`✓ Auto-imported ${totalMessages} messages`);
@@ -439,16 +453,54 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
             };
             setConversations(prev => {
                 const newConversations = new Map(prev);
-                const existing = newConversations.get(data.from_user_id);
+
+                // First try to find by numeric user ID
+                let existing = newConversations.get(data.from_user_id);
+                let existingKey = data.from_user_id;
+
+                // If not found, check if there's a conversation keyed by username (from imported data)
+                // This handles the case where imported conversations use username as key
+                if (!existing) {
+                    const loginLower = data.from_user_login.toLowerCase();
+                    // Check for conversation keyed by login
+                    if (newConversations.has(loginLower)) {
+                        existing = newConversations.get(loginLower);
+                        existingKey = loginLower;
+                    } else {
+                        // Also check all conversations by user_login match
+                        for (const [key, conv] of newConversations.entries()) {
+                            if (conv.user_login.toLowerCase() === loginLower) {
+                                existing = conv;
+                                existingKey = key;
+                                break;
+                            }
+                        }
+                    }
+                }
+
                 if (existing) {
                     // Check for duplicate message before adding
                     const messageExists = existing.messages.some(m => m.id === whisperMessage.id);
                     if (!messageExists) {
                         existing.messages.push(whisperMessage);
                         existing.last_message_timestamp = Date.now();
-                        if (activeConversation !== data.from_user_id) {
+                        if (activeConversation !== existingKey && activeConversation !== data.from_user_id) {
                             existing.unread_count += 1;
                         }
+                    }
+
+                    // If the conversation was found by username key, migrate it to use numeric ID
+                    if (existingKey !== data.from_user_id) {
+                        // Update the user_id in the conversation object
+                        existing.user_id = data.from_user_id;
+                        // Update profile image if we have it and they don't
+                        if (profileImageUrl && !existing.profile_image_url) {
+                            existing.profile_image_url = profileImageUrl;
+                        }
+                        // Remove old key and add with new numeric ID key
+                        newConversations.delete(existingKey);
+                        newConversations.set(data.from_user_id, existing);
+                        console.log(`[Whispers] Migrated conversation key from "${existingKey}" to "${data.from_user_id}"`);
                     }
                 } else {
                     newConversations.set(data.from_user_id, {

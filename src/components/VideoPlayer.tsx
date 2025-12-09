@@ -25,8 +25,12 @@ const VideoPlayer = () => {
   const userInitiatedPauseRef = useRef<boolean>(false);
   const hasJumpedToLiveRef = useRef<boolean>(false);
   const [availableQualities, setAvailableQualities] = useState<string[]>([]);
-  const [isHovering, setIsHovering] = useState(false);
   const [subscriberBadgeUrl, setSubscriberBadgeUrl] = useState<string | null>(null);
+
+  // Overlay visibility state (works in both normal and fullscreen modes)
+  const [showOverlay, setShowOverlay] = useState(false);
+  const overlayTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const OVERLAY_HIDE_DELAY = 2600; // Match Plyr's native control hide timing (2.6s)
 
   // Follow state
   const [isFollowing, setIsFollowing] = useState<boolean | null>(null);
@@ -873,6 +877,66 @@ const VideoPlayer = () => {
     };
   }, [currentStream?.user_id]);
 
+  // Clear overlay timer helper - use ref to avoid dependency issues
+  const clearOverlayTimer = useCallback(() => {
+    if (overlayTimerRef.current) {
+      clearTimeout(overlayTimerRef.current);
+      overlayTimerRef.current = null;
+    }
+  }, []);
+
+  // Start overlay hide timer - use ref to avoid dependency issues
+  const startOverlayHideTimer = useCallback(() => {
+    if (overlayTimerRef.current) {
+      clearTimeout(overlayTimerRef.current);
+    }
+    overlayTimerRef.current = setTimeout(() => {
+      setShowOverlay(false);
+    }, OVERLAY_HIDE_DELAY);
+  }, []);
+
+  // Handle mouse events for overlay visibility (works in both normal and fullscreen modes)
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const handleMouseMove = () => {
+      // Show overlay on mouse movement
+      setShowOverlay(true);
+      // Reset the hide timer
+      startOverlayHideTimer();
+    };
+
+    const handleMouseEnter = () => {
+      setShowOverlay(true);
+      startOverlayHideTimer();
+    };
+
+    const handleMouseLeave = () => {
+      // Hide immediately when mouse leaves (unless timer is still running)
+      // Clear any existing timer and hide
+      if (overlayTimerRef.current) {
+        clearTimeout(overlayTimerRef.current);
+        overlayTimerRef.current = null;
+      }
+      setShowOverlay(false);
+    };
+
+    container.addEventListener('mousemove', handleMouseMove);
+    container.addEventListener('mouseenter', handleMouseEnter);
+    container.addEventListener('mouseleave', handleMouseLeave);
+
+    return () => {
+      container.removeEventListener('mousemove', handleMouseMove);
+      container.removeEventListener('mouseenter', handleMouseEnter);
+      container.removeEventListener('mouseleave', handleMouseLeave);
+      if (overlayTimerRef.current) {
+        clearTimeout(overlayTimerRef.current);
+        overlayTimerRef.current = null;
+      }
+    };
+  }, [startOverlayHideTimer]);
+
   // Check follow status when stream changes
   useEffect(() => {
     if (!currentStream?.user_id) {
@@ -991,8 +1055,6 @@ const VideoPlayer = () => {
         minHeight: '300px',
         position: 'relative',
       }}
-      onMouseEnter={() => setIsHovering(true)}
-      onMouseLeave={() => setIsHovering(false)}
     >
       <video
         ref={videoRef}
@@ -1009,7 +1071,9 @@ const VideoPlayer = () => {
       {/* Follow & Subscribe Button Overlay */}
       {currentStream && (
         <div
-          className={`absolute top-3 right-3 z-50 flex items-center gap-2 transition-all duration-200 ${isHovering ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-2 pointer-events-none'
+          className={`subscribe-overlay absolute top-3 right-3 z-50 flex items-center gap-2 transition-all duration-300 ${showOverlay
+            ? 'opacity-100 translate-y-0'
+            : 'opacity-0 -translate-y-2 pointer-events-none'
             }`}
         >
           {/* Follow Button - Icon Only with Glow */}

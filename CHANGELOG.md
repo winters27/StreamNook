@@ -1,3 +1,11 @@
+## [4.9.6] - 2025-12-08
+### ✨ Features
+- **Notification Management**: You can now mark individual notifications as read, or mark all notifications as read within the notification center.
+- **Improved Stream Controls**: The stream controls overlay (follow/subscribe) now appears on mouse movement and automatically hides after a short delay, even in fullscreen mode. This provides a cleaner viewing experience.
+
+### 🐛 Bug Fixes
+- **Whisper Import**: Improved whisper history import to correctly handle user ID resolution, ensuring imported conversations are properly linked and display correctly.
+
 ## [4.9.5] - 2025-12-08
 ### ✨ Features
 - **Discord Rich Presence**: Improved the stream watching animation in Discord rich presence for a more engaging experience.
@@ -684,6 +692,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
