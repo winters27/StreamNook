@@ -375,6 +375,11 @@ const Sidebar = () => {
     });
 
     const handleStreamClick = (stream: TwitchStream) => {
+        // Exit home/PIP mode when clicking on a new stream from sidebar
+        // This ensures the user goes directly to the stream view
+        if (isHomeActive) {
+            toggleHome();
+        }
         startStream(stream.user_login, stream);
         // Exit Home view (and PIP mode) when clicking a stream from the sidebar
         if (isHomeActive) {

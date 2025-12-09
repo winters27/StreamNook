@@ -1262,6 +1262,31 @@ export const getThemesByCategory = (category: Theme['category']): Theme[] => {
 
 export const DEFAULT_THEME_ID = 'winters-glass';
 
+// Helper function to lighten a hex color for neon effect
+const lightenColor = (hex: string, percent: number): string => {
+    // Handle rgb/rgba colors
+    if (hex.startsWith('rgb')) {
+        // For rgba colors, just return the base accent hover which is usually lighter
+        return hex;
+    }
+
+    // Remove # if present
+    hex = hex.replace('#', '');
+
+    // Parse hex values
+    let r = parseInt(hex.substring(0, 2), 16);
+    let g = parseInt(hex.substring(2, 4), 16);
+    let b = parseInt(hex.substring(4, 6), 16);
+
+    // Lighten by mixing with white
+    r = Math.min(255, Math.round(r + (255 - r) * (percent / 100)));
+    g = Math.min(255, Math.round(g + (255 - g) * (percent / 100)));
+    b = Math.min(255, Math.round(b + (255 - b) * (percent / 100)));
+
+    // Convert back to hex
+    return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+};
+
 // Apply theme to CSS variables
 export const applyTheme = (theme: Theme): void => {
     const root = document.documentElement;
@@ -1286,6 +1311,8 @@ export const applyTheme = (theme: Theme): void => {
     root.style.setProperty('--color-accent', palette.accent);
     root.style.setProperty('--color-accent-hover', palette.accentHover);
     root.style.setProperty('--color-accent-muted', palette.accentMuted);
+    // Generate neon variant by lightening accent by 30%
+    root.style.setProperty('--color-accent-neon', lightenColor(palette.accent, 30));
 
     // Border colors
     root.style.setProperty('--color-border', palette.border);

@@ -1,6 +1,7 @@
 use anyhow::Result;
 use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -11,8 +12,17 @@ use tokio::time::{interval, Duration};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use uuid::Uuid;
 
+use crate::services::drops_auth_service::DropsAuthService;
+
 const PUBSUB_URL: &str = "wss://pubsub-edge.twitch.tv";
 const MAX_TOPICS_PER_CONNECTION: usize = 50;
+
+/// Mapping structure for channel information
+#[derive(Debug, Clone)]
+pub struct ChannelMapping {
+    pub login: String,
+    pub display_name: String,
+}
 
 #[derive(Debug, Clone)]
 pub struct ChannelPointsWebSocketService {
@@ -20,8 +30,8 @@ pub struct ChannelPointsWebSocketService {
     auth_token: Arc<RwLock<String>>,
     user_id: Arc<RwLock<String>>,
     app_handle: Option<AppHandle>,
-    // Mapping of channel_id to channel_login for resolving channel names in events
-    channel_id_to_login: Arc<RwLock<HashMap<String, String>>>,
+    // Mapping of channel_id to channel info (login and display_name) for resolving channel names in events
+    channel_mappings: Arc<RwLock<HashMap<String, ChannelMapping>>>,
 }
 
 #[derive(Debug)]
@@ -58,23 +68,46 @@ impl ChannelPointsWebSocketService {
             auth_token: Arc::new(RwLock::new(String::new())),
             user_id: Arc::new(RwLock::new(String::new())),
             app_handle: None,
-            channel_id_to_login: Arc::new(RwLock::new(HashMap::new())),
+            channel_mappings: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
-    /// Register channel ID to login mapping for resolving channel names in events
-    pub async fn register_channel_mapping(&self, channel_id: &str, channel_login: &str) {
-        let mut mapping = self.channel_id_to_login.write().await;
-        mapping.insert(channel_id.to_string(), channel_login.to_lowercase());
+    /// Register channel ID to login/display_name mapping for resolving channel names in events
+    pub async fn register_channel_mapping(
+        &self,
+        channel_id: &str,
+        channel_login: &str,
+        channel_display_name: &str,
+    ) {
+        let mut mapping = self.channel_mappings.write().await;
+        mapping.insert(
+            channel_id.to_string(),
+            ChannelMapping {
+                login: channel_login.to_lowercase(),
+                display_name: channel_display_name.to_string(),
+            },
+        );
         println!(
-            "📝 Registered channel mapping: {} -> {}",
-            channel_id, channel_login
+            "📝 Registered channel mapping: {} -> {} ({})",
+            channel_id, channel_login, channel_display_name
         );
     }
 
     /// Get channel login from channel ID
     pub async fn get_channel_login(&self, channel_id: &str) -> Option<String> {
-        let mapping = self.channel_id_to_login.read().await;
+        let mapping = self.channel_mappings.read().await;
+        mapping.get(channel_id).map(|m| m.login.clone())
+    }
+
+    /// Get channel display name from channel ID
+    pub async fn get_channel_display_name(&self, channel_id: &str) -> Option<String> {
+        let mapping = self.channel_mappings.read().await;
+        mapping.get(channel_id).map(|m| m.display_name.clone())
+    }
+
+    /// Get full channel mapping from channel ID
+    pub async fn get_channel_mapping(&self, channel_id: &str) -> Option<ChannelMapping> {
+        let mapping = self.channel_mappings.read().await;
         mapping.get(channel_id).cloned()
     }
 
@@ -141,7 +174,7 @@ impl ChannelPointsWebSocketService {
             let auth_token = auth_token.to_string();
             let app_handle_clone = app_handle.clone();
             let connections = self.connections.clone();
-            let channel_mapping = self.channel_id_to_login.clone();
+            let channel_mappings = self.channel_mappings.clone();
 
             tokio::spawn(async move {
                 if let Err(e) = Self::handle_connection(
@@ -151,7 +184,7 @@ impl ChannelPointsWebSocketService {
                     connections,
                     app_handle_clone,
                     index,
-                    channel_mapping,
+                    channel_mappings,
                 )
                 .await
                 {
@@ -199,7 +232,7 @@ impl ChannelPointsWebSocketService {
         connections: Arc<RwLock<Vec<WebSocketConnection>>>,
         app_handle: AppHandle,
         index: usize,
-        channel_id_to_login: Arc<RwLock<HashMap<String, String>>>,
+        channel_mappings: Arc<RwLock<HashMap<String, ChannelMapping>>>,
     ) -> Result<()> {
         println!(
             "🔗 Connecting WebSocket #{} with {} topics",
@@ -281,7 +314,7 @@ impl ChannelPointsWebSocketService {
                             &connections,
                             &connection_id,
                             index,
-                            &channel_id_to_login,
+                            &channel_mappings,
                         )
                         .await;
                     }
@@ -324,7 +357,7 @@ impl ChannelPointsWebSocketService {
                 connections,
                 app_handle,
                 index,
-                channel_id_to_login,
+                channel_mappings,
             ))
             .await
         } else {
@@ -339,7 +372,7 @@ impl ChannelPointsWebSocketService {
         connections: &Arc<RwLock<Vec<WebSocketConnection>>>,
         connection_id: &str,
         index: usize,
-        channel_id_to_login: &Arc<RwLock<HashMap<String, String>>>,
+        channel_mappings: &Arc<RwLock<HashMap<String, ChannelMapping>>>,
     ) {
         match msg.msg_type.as_str() {
             "MESSAGE" => {
@@ -360,7 +393,7 @@ impl ChannelPointsWebSocketService {
                                     message_data,
                                     app_handle,
                                     channel_id,
-                                    channel_id_to_login,
+                                    channel_mappings,
                                 )
                                 .await;
                             }
@@ -414,7 +447,7 @@ impl ChannelPointsWebSocketService {
         message_data: Value,
         app_handle: &AppHandle,
         _topic_channel_id: Option<String>,
-        channel_id_to_login: &Arc<RwLock<HashMap<String, String>>>,
+        channel_mappings: &Arc<RwLock<HashMap<String, ChannelMapping>>>,
     ) {
         if let Some(event_type) = message_data["type"].as_str() {
             match event_type {
@@ -436,25 +469,67 @@ impl ChannelPointsWebSocketService {
                         .or_else(|| message_data["data"]["channel_id"].as_str())
                         .map(|s| s.to_string());
 
-                    // Try to extract channel login from various possible paths
+                    // Try to extract channel login from various possible paths in the message
                     let mut channel_login = message_data["data"]["channel_login"]
                         .as_str()
                         .or_else(|| message_data["data"]["channel"]["login"].as_str())
                         .or_else(|| message_data["data"]["point_gain"]["channel_login"].as_str())
                         .map(|s| s.to_string());
 
-                    // If we don't have the channel_login but we have channel_id, try to resolve from mapping
-                    if channel_login.is_none() {
-                        if let Some(ref cid) = channel_id {
-                            let mapping = channel_id_to_login.read().await;
-                            channel_login = mapping.get(cid).cloned();
-                        }
-                    }
-
-                    let channel_display_name = message_data["data"]["channel"]["display_name"]
+                    // Try to extract channel display name from various possible paths in the message
+                    let mut channel_display_name = message_data["data"]["channel"]["display_name"]
                         .as_str()
                         .or_else(|| message_data["data"]["point_gain"]["channel_name"].as_str())
                         .map(|s| s.to_string());
+
+                    // If we don't have the channel info but we have channel_id, try to resolve from mapping
+                    if let Some(ref cid) = channel_id {
+                        let mapping = channel_mappings.read().await;
+                        if let Some(channel_info) = mapping.get(cid) {
+                            // Use mapping values if we don't have them from the message
+                            if channel_login.is_none() {
+                                channel_login = Some(channel_info.login.clone());
+                            }
+                            if channel_display_name.is_none() {
+                                channel_display_name = Some(channel_info.display_name.clone());
+                            }
+                        } else {
+                            // Drop the read lock before doing API call
+                            drop(mapping);
+
+                            // Channel not in mapping - try to look it up via API (for drops mining channels)
+                            println!(
+                                "🔍 Channel {} not in mapping, attempting API lookup...",
+                                cid
+                            );
+                            if let Ok(Some((login, display_name))) =
+                                Self::lookup_channel_by_id(cid).await
+                            {
+                                println!(
+                                    "✅ Resolved channel {} -> {} ({})",
+                                    cid, login, display_name
+                                );
+
+                                // Cache it for future use
+                                let mut mapping_write = channel_mappings.write().await;
+                                mapping_write.insert(
+                                    cid.clone(),
+                                    ChannelMapping {
+                                        login: login.clone(),
+                                        display_name: display_name.clone(),
+                                    },
+                                );
+                                drop(mapping_write);
+
+                                if channel_login.is_none() {
+                                    channel_login = Some(login);
+                                }
+                                if channel_display_name.is_none() {
+                                    channel_display_name = Some(display_name);
+                                }
+                            }
+                        }
+                    }
 
                     // Unwrap values for cleaner logging
                     let channel_id_str = channel_id.as_deref().unwrap_or("unknown");
@@ -617,5 +692,65 @@ impl ChannelPointsWebSocketService {
         let mut connections = self.connections.write().await;
         connections.clear();
         println!("🔌 All WebSocket connections closed");
+    }
+
+    /// Look up channel info by ID via Twitch API (fallback for unknown channels)
+    async fn lookup_channel_by_id(channel_id: &str) -> Result<Option<(String, String)>> {
+        // Use drops client ID for GQL query
+        const CLIENT_ID: &str = "kd1unb4b3q4t58fwlpcbzcbnm76a8fp";
+
+        let token = match DropsAuthService::get_token().await {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("❌ Failed to get token for channel lookup: {}", e);
+                return Ok(None);
+            }
+        };
+
+        let client = Client::new();
+
+        let query = r#"
+        query GetUserById($userId: ID!) {
+            user(id: $userId) {
+                id
+                login
+                displayName
+            }
+        }
+        "#;
+
+        let response = client
+            .post("https://gql.twitch.tv/gql")
+            .header("Client-Id", CLIENT_ID)
+            .header("Authorization", format!("Bearer {}", token))
+            .json(&json!({
+                "query": query,
+                "variables": {
+                    "userId": channel_id
+                }
+            }))
+            .send()
+            .await;
+
+        match response {
+            Ok(resp) => {
+                if let Ok(result) = resp.json::<Value>().await {
+                    if let Some(user) = result["data"]["user"].as_object() {
+                        let login = user["login"].as_str().unwrap_or("").to_string();
+                        let display_name =
+                            user["displayName"].as_str().unwrap_or(&login).to_string();
+
+                        if !login.is_empty() {
+                            return Ok(Some((login, display_name)));
+                        }
+                    }
+                }
+                Ok(None)
+            }
+            Err(e) => {
+                eprintln!("❌ API lookup failed for channel {}: {}", channel_id, e);
+                Ok(None)
+            }
+        }
     }
 }

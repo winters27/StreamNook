@@ -110,6 +110,7 @@ interface AppState {
   isAuthenticated: boolean;
   currentUser: TwitchUser | null;
   isMiningActive: boolean;
+  setMiningActive: (active: boolean) => void;
   isTheaterMode: boolean;
   originalChatPlacement: string | null;
   toasts: Toast[];
@@ -218,6 +219,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   isAuthenticated: false,
   currentUser: null,
   isMiningActive: false,
+  setMiningActive: (active: boolean) => set({ isMiningActive: active }),
   isTheaterMode: false,
   originalChatPlacement: null,
   toasts: [],

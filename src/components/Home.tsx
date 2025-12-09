@@ -65,18 +65,33 @@ interface DropCampaign {
     game_name: string;
 }
 
-interface InventoryItem {
-    campaign: DropCampaign;
-    status: string;
+interface MiningChannel {
+    id: string;
+    name: string;
+    display_name: string;
+    game_name: string;
+    viewer_count: number;
+    is_live: boolean;
+    drops_enabled: boolean;
 }
 
-interface InventoryResponse {
-    items: InventoryItem[];
+interface CurrentDropInfo {
+    campaign_id: string;
+    campaign_name: string;
+    drop_id: string;
+    drop_name: string;
+    required_minutes: number;
+    current_minutes: number;
+    game_name: string;
 }
 
 interface MiningStatus {
     is_mining: boolean;
+    current_channel: MiningChannel | null;
     current_campaign: string | null;
+    current_drop: CurrentDropInfo | null;
+    eligible_channels: MiningChannel[];
+    last_update: string;
 }
 
 const Home = () => {
@@ -206,19 +221,17 @@ const Home = () => {
     const loadActiveDrops = async () => {
         setIsLoadingDrops(true);
         try {
-            const inventory = await invoke<InventoryResponse>('get_drops_inventory');
-            if (inventory && inventory.items && inventory.items.length > 0) {
+            // Use get_active_drop_campaigns for ALL active campaigns (not just inventory)
+            const campaigns = await invoke<DropCampaign[]>('get_active_drop_campaigns');
+            if (campaigns && campaigns.length > 0) {
                 const dropsIdMap = new Map<string, DropCampaign>();
                 const dropsNameMap = new Map<string, DropCampaign>();
-                for (const item of inventory.items) {
-                    // Only include active campaigns
-                    if (item.status === 'Active') {
-                        if (item.campaign.game_id) {
-                            dropsIdMap.set(item.campaign.game_id, item.campaign);
-                        }
-                        if (item.campaign.game_name) {
-                            dropsNameMap.set(item.campaign.game_name.toLowerCase(), item.campaign);
-                        }
+                for (const campaign of campaigns) {
+                    if (campaign.game_id) {
+                        dropsIdMap.set(campaign.game_id, campaign);
+                    }
+                    if (campaign.game_name) {
+                        dropsNameMap.set(campaign.game_name.toLowerCase(), campaign);
                     }
                 }
                 setDropsGameIds(dropsIdMap);
@@ -228,13 +241,17 @@ const Home = () => {
                 // Also check current mining status to sync state
                 try {
                     const miningStatus = await invoke<MiningStatus>('get_mining_status');
-                    if (miningStatus.is_mining && miningStatus.current_campaign) {
-                        // Find the campaign ID that matches the current_campaign name
-                        for (const item of inventory.items) {
-                            if (item.campaign.name === miningStatus.current_campaign) {
-                                console.log(`[Home] Already mining campaign: ${item.campaign.name}`);
-                                setActiveMiningIds(prev => new Set(prev).add(item.campaign.id));
-                                break;
+                    if (miningStatus.is_mining) {
+                        // Find campaign ID by matching game_name from current_drop or current_channel
+                        const miningGameName = miningStatus.current_drop?.game_name?.toLowerCase() ||
+                            miningStatus.current_channel?.game_name?.toLowerCase();
+                        if (miningGameName) {
+                            for (const campaign of campaigns) {
+                                if (campaign.game_name?.toLowerCase() === miningGameName) {
+                                    console.log(`[Home] Already mining campaign: ${campaign.name}`);
+                                    setActiveMiningIds(prev => new Set(prev).add(campaign.id));
+                                    break;
+                                }
                             }
                         }
                     }
@@ -267,23 +284,28 @@ const Home = () => {
             try {
                 const miningStatus = await invoke<MiningStatus>('get_mining_status');
 
-                if (miningStatus.is_mining && miningStatus.current_campaign) {
-                    // Find the campaign ID that matches the current_campaign name
-                    const campaignId = campaignNameToIdRef.current.get(miningStatus.current_campaign);
-                    if (campaignId) {
-                        setActiveMiningIds(prev => {
-                            // Only update if not already in the set
-                            if (!prev.has(campaignId)) {
-                                const newSet = new Set<string>();
-                                newSet.add(campaignId);
-                                return newSet;
+                if (miningStatus.is_mining) {
+                    // Find campaign ID by matching game_name from current_drop or current_channel
+                    const miningGameName = miningStatus.current_drop?.game_name?.toLowerCase() ||
+                        miningStatus.current_channel?.game_name?.toLowerCase();
+
+                    if (miningGameName) {
+                        // Find the campaign for this game
+                        let foundCampaignId: string | null = null;
+                        dropsGameNames.forEach((campaign, gameName) => {
+                            if (gameName === miningGameName) {
+                                foundCampaignId = campaign.id;
                             }
-                            // If already has the right ID, ensure it's the ONLY one
-                            if (prev.size > 1 || !prev.has(campaignId)) {
-                                return new Set([campaignId]);
-                            }
-                            return prev;
                         });
+
+                        if (foundCampaignId) {
+                            setActiveMiningIds(prev => {
+                                if (prev.size === 1 && prev.has(foundCampaignId!)) {
+                                    return prev; // No change needed
+                                }
+                                return new Set([foundCampaignId!]);
+                            });
+                        }
                     }
                 } else {
                     // Not mining - clear the active mining IDs
@@ -332,34 +354,49 @@ const Home = () => {
         campaignNameToIdRef.current = nameToId;
     }, [dropsGameIds]);
 
-    // Handler to start mining drops for a category
-    const handleStartMining = async (e: React.MouseEvent, campaign: DropCampaign) => {
+    // Handler to toggle mining drops for a category (start or stop)
+    const handleToggleMining = async (e: React.MouseEvent, campaign: DropCampaign) => {
         e.stopPropagation(); // Don't trigger category click
 
-        // If already mining this campaign, don't do anything
-        if (activeMiningIds.has(campaign.id)) return;
+        const isCurrentlyMining = activeMiningIds.has(campaign.id);
 
-        // Get button position for flying animation
-        const button = e.currentTarget as HTMLElement;
-        const rect = button.getBoundingClientRect();
-        const centerX = rect.left + rect.width / 2;
-        const centerY = rect.top + rect.height / 2;
+        if (isCurrentlyMining) {
+            // Stop mining
+            try {
+                await invoke('stop_auto_mining');
+                console.log(`[Home] Stopped mining drops for ${campaign.name}`);
+                setActiveMiningIds(new Set()); // Clear all mining IDs
+                useAppStore.getState().addToast(`Stopped mining drops for ${campaign.game_name}`, 'info');
+            } catch (error) {
+                console.error('Failed to stop mining:', error);
+                useAppStore.getState().addToast('Failed to stop mining drops', 'error');
+            }
+        } else {
+            // Start mining
+            // Get button position for flying animation
+            const button = e.currentTarget as HTMLElement;
+            const rect = button.getBoundingClientRect();
+            const centerX = rect.left + rect.width / 2;
+            const centerY = rect.top + rect.height / 2;
 
-        try {
-            await invoke('start_campaign_mining', { campaignId: campaign.id });
-            console.log(`[Home] Started mining drops for ${campaign.name}`);
+            try {
+                await invoke('start_campaign_mining', { campaignId: campaign.id });
+                console.log(`[Home] Started mining drops for ${campaign.name}`);
 
-            // Add to active mining set (permanent until page refresh)
-            setActiveMiningIds(prev => new Set(prev).add(campaign.id));
+                // Add to active mining set
+                setActiveMiningIds(new Set([campaign.id]));
 
-            // Start flying droplet animation
-            setFlyingDroplet({ visible: true, x: centerX, y: centerY });
+                // Start flying droplet animation
+                setFlyingDroplet({ visible: true, x: centerX, y: centerY });
 
-            // Clear flying animation after it completes
-            setTimeout(() => setFlyingDroplet(null), 1000);
+                // Clear flying animation after it completes
+                setTimeout(() => setFlyingDroplet(null), 1000);
 
-        } catch (error) {
-            console.error('Failed to start mining:', error);
+                useAppStore.getState().addToast(`Started mining drops for ${campaign.game_name}`, 'success');
+            } catch (error) {
+                console.error('Failed to start mining:', error);
+                useAppStore.getState().addToast('Failed to start mining drops', 'error');
+            }
         }
     };
 
@@ -742,16 +779,15 @@ const Home = () => {
                                                             </div>
                                                         </div>
                                                     )}
-                                                    {/* Mine Drops Button - Always visible for drops categories */}
+                                                    {/* Mine Drops Button - Toggle start/stop mining */}
                                                     {hasDrops && (
                                                         <button
-                                                            onClick={(e) => handleStartMining(e, dropsCampaign)}
+                                                            onClick={(e) => handleToggleMining(e, dropsCampaign)}
                                                             className={`absolute bottom-2 right-2 left-2 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md text-white text-xs font-semibold transition-all shadow-lg ${activeMiningIds.has(dropsCampaign.id)
-                                                                ? 'bg-green-600 cursor-default'
+                                                                ? 'bg-green-600 hover:bg-red-600 hover:scale-105'
                                                                 : 'bg-accent hover:bg-accent-hover hover:scale-105'
                                                                 }`}
-                                                            title={activeMiningIds.has(dropsCampaign.id) ? `Mining ${dropsCampaign.name}` : `Start mining ${dropsCampaign.name}`}
-                                                            disabled={activeMiningIds.has(dropsCampaign.id)}
+                                                            title={activeMiningIds.has(dropsCampaign.id) ? `Click to stop mining ${dropsCampaign.name}` : `Start mining ${dropsCampaign.name}`}
                                                         >
                                                             {activeMiningIds.has(dropsCampaign.id) ? (
                                                                 <>

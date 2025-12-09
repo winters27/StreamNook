@@ -126,10 +126,14 @@ impl BackgroundService {
                         );
                         let mut ws = ws_service.lock().await;
 
-                        // Register channel ID to login mappings before connecting
+                        // Register channel ID to login/display_name mappings before connecting
                         for stream in &streams {
-                            ws.register_channel_mapping(&stream.user_id, &stream.user_login)
-                                .await;
+                            ws.register_channel_mapping(
+                                &stream.user_id,
+                                &stream.user_login,
+                                &stream.user_name,
+                            )
+                            .await;
                         }
 
                         if let Err(e) = ws
@@ -246,6 +250,8 @@ impl BackgroundService {
             let mut stream_watch_history: HashMap<String, DateTime<Utc>> = HashMap::new();
             let mut current_rotation_index: usize = 0; // Track where we are in the rotation
 
+            println!("🔄 [CP-WATCH] Channel points watch loop started");
+
             while *is_running_watch.read().await {
                 watch_interval.tick().await;
                 minutes_since_rotation += 1;
@@ -255,7 +261,13 @@ impl BackgroundService {
                     s.drops.auto_claim_channel_points
                 };
 
+                println!(
+                    "🔍 [CP-WATCH] Tick - auto_claim_channel_points={}",
+                    auto_claim_enabled
+                );
+
                 if !auto_claim_enabled {
+                    println!("⏸️ [CP-WATCH] Channel points farming disabled in settings");
                     // If disabled, stop watching all streams
                     let cps = cps_watch.lock().await;
                     let watching = cps.get_watching_streams().await;

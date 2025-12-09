@@ -1,9 +1,16 @@
-## [4.9.7] - 2025-12-08
+## [5.0.0] - 2025-12-09
 ### ✨ Features
-- **Badge Refresh**: Added the ability to manually refresh all badge metadata, ensuring you always have the latest badge information available.
+- **Revamped Drops Center**: Experience a completely redesigned Drops Center with a sleek, user-friendly interface. Enjoy intuitive navigation, clear progress tracking, and comprehensive game information, making drops mining easier than ever.
+- **Enhanced Drops Mining**: Improved drops mining system with more accurate progress tracking, real-time updates, and better channel selection for optimal rewards.
+- **Improved Drop Claiming**: Resolved issues with automated drop claiming. The app now correctly identifies and claims earned drops, guaranteeing that you receive all your rewards.
 
-### 🔧 Maintenance
-- Improved the badge update process to automatically refresh badge data that is older than 7 days, ensuring your app stays up-to-date with the latest Twitch badges.
+### 🐛 Bug Fixes
+- Resolved an issue where the stream would freeze when switching channels.
+- The app will now automatically re-establish the stream connection if it is interupted by a momentary internet blip.
+- Fixed problems with incorrect channel selection while mining.
+
+### ⚡ Performance
+- Improved the performance of loading emotes in chat, especially during peak hours.
 
 ## [4.9.6] - 2025-12-08
 ### ✨ Features

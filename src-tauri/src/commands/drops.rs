@@ -47,10 +47,14 @@ pub async fn get_drop_progress(state: State<'_, AppState>) -> Result<Vec<DropPro
 }
 
 #[tauri::command]
-pub async fn claim_drop(drop_id: String, state: State<'_, AppState>) -> Result<(), String> {
+pub async fn claim_drop(
+    drop_id: String,
+    drop_instance_id: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
     let drops_service = state.drops_service.lock().await;
     drops_service
-        .claim_drop(&drop_id)
+        .claim_drop(&drop_id, drop_instance_id.as_deref())
         .await
         .map_err(|e| e.to_string())
 }
