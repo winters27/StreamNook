@@ -26,7 +26,8 @@ interface WhispersWidgetProps {
 
 type SortOption = 'recent' | 'name' | 'unread';
 
-const WHISPERS_STORAGE_KEY = 'streamnook-whisper-conversations';
+const WHISPERS_LOCALSTORAGE_KEY = 'streamnook-whisper-conversations';
+const WHISPERS_MIGRATED_KEY = 'streamnook-whispers-migrated-to-disk';
 
 // Parse various date formats from imported whispers
 const parseWhisperDate = (dateStr: string): number => {
@@ -69,20 +70,54 @@ const emojiCategories: Record<string, string[]> = {
     'Symbols': ['❤️', '💯', '✨', '⭐', '🔥', '💥', '✅', '❌', '➕', '➖', '✖️', '➡️', '⬅️', '⬆️', '⬇️', '🔴', '🟠', '🟡', '🟢', '🔵', '🟣', '⚫', '⚪', '🟤']
 };
 
-// Helper to serialize Map to localStorage
-const saveConversationsToStorage = (conversations: Map<string, WhisperConversation>) => {
+// Helper to convert Map to object for Tauri storage
+const mapToObject = (map: Map<string, WhisperConversation>): Record<string, WhisperConversation> => {
+    const obj: Record<string, WhisperConversation> = {};
+    map.forEach((value, key) => {
+        obj[key] = value;
+    });
+    return obj;
+};
+
+// Helper to convert object from Tauri storage to Map
+const objectToMap = (obj: Record<string, WhisperConversation>): Map<string, WhisperConversation> => {
+    const map = new Map<string, WhisperConversation>();
+    Object.entries(obj).forEach(([key, value]) => {
+        map.set(key, value);
+    });
+    return map;
+};
+
+// Save conversations to disk via Tauri backend
+const saveConversationsToDisk = async (conversations: Map<string, WhisperConversation>) => {
     try {
-        const data = Array.from(conversations.entries());
-        localStorage.setItem(WHISPERS_STORAGE_KEY, JSON.stringify(data));
+        const conversationsObj = mapToObject(conversations);
+        await invoke('save_whisper_storage', { conversations: conversationsObj });
+        console.log('[Whispers] Saved to disk:', conversations.size, 'conversations');
     } catch (error) {
-        console.warn('[Whispers] Failed to save to localStorage:', error);
+        console.warn('[Whispers] Failed to save to disk:', error);
     }
 };
 
-// Helper to load Map from localStorage with deduplication
-const loadConversationsFromStorage = (): Map<string, WhisperConversation> => {
+// Load conversations from disk via Tauri backend
+const loadConversationsFromDisk = async (): Promise<Map<string, WhisperConversation>> => {
     try {
-        const data = localStorage.getItem(WHISPERS_STORAGE_KEY);
+        const storage = await invoke<{ conversations: Record<string, WhisperConversation>; version: number }>('load_whisper_storage');
+        if (storage && storage.conversations) {
+            const map = objectToMap(storage.conversations);
+            console.log('[Whispers] Loaded from disk:', map.size, 'conversations');
+            return map;
+        }
+    } catch (error) {
+        console.warn('[Whispers] Failed to load from disk:', error);
+    }
+    return new Map();
+};
+
+// Legacy: Load from localStorage for migration purposes
+const loadConversationsFromLocalStorage = (): Map<string, WhisperConversation> | null => {
+    try {
+        const data = localStorage.getItem(WHISPERS_LOCALSTORAGE_KEY);
         if (data) {
             const entries = JSON.parse(data) as [string, WhisperConversation][];
             // Deduplicate messages in each conversation
@@ -102,13 +137,47 @@ const loadConversationsFromStorage = (): Map<string, WhisperConversation> => {
     } catch (error) {
         console.warn('[Whispers] Failed to load from localStorage:', error);
     }
-    return new Map();
+    return null;
+};
+
+// Migrate from localStorage to disk storage (one-time migration)
+const migrateFromLocalStorage = async (): Promise<Map<string, WhisperConversation>> => {
+    // Check if already migrated
+    if (localStorage.getItem(WHISPERS_MIGRATED_KEY)) {
+        console.log('[Whispers] Already migrated, loading from disk');
+        return loadConversationsFromDisk();
+    }
+
+    // Check if there's localStorage data to migrate
+    const localStorageData = loadConversationsFromLocalStorage();
+    if (localStorageData && localStorageData.size > 0) {
+        console.log('[Whispers] Migrating', localStorageData.size, 'conversations from localStorage to disk...');
+        try {
+            const conversationsObj = mapToObject(localStorageData);
+            await invoke('migrate_whispers_from_localstorage', { conversations: conversationsObj });
+            // Mark as migrated
+            localStorage.setItem(WHISPERS_MIGRATED_KEY, 'true');
+            // Clear localStorage data (optional - keep for safety)
+            // localStorage.removeItem(WHISPERS_LOCALSTORAGE_KEY);
+            console.log('[Whispers] Migration complete');
+            return localStorageData;
+        } catch (error) {
+            console.error('[Whispers] Migration failed:', error);
+            // Fall back to localStorage data
+            return localStorageData;
+        }
+    }
+
+    // No localStorage data, mark as migrated and load from disk
+    localStorage.setItem(WHISPERS_MIGRATED_KEY, 'true');
+    return loadConversationsFromDisk();
 };
 
 const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
-    const [conversations, setConversations] = useState<Map<string, WhisperConversation>>(() => loadConversationsFromStorage());
+    const [conversations, setConversations] = useState<Map<string, WhisperConversation>>(new Map());
+    const [isLoading, setIsLoading] = useState(true);
     const [activeConversation, setActiveConversation] = useState<string | null>(null);
-    const { whisperTargetUser, clearWhisperTargetUser } = useAppStore();
+    const { whisperTargetUser, clearWhisperTargetUser, whisperImportState } = useAppStore();
     const previousActiveConversationRef = useRef<string | null>(null);
     const [message, setMessage] = useState('');
     const [isSending, setIsSending] = useState(false);
@@ -134,6 +203,124 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
     const sendingRef = useRef(false);
 
     const { currentUser, settings } = useAppStore();
+
+    // Listen for auto-import whisper data event
+    useEffect(() => {
+        let unlisten: (() => void) | undefined;
+
+        const setupListener = async () => {
+            // Listen for the actual data object (emitted directly from backend)
+            unlisten = await listen<{ version: number; exportedAt: string; myUserId: string | null; myUsername: string | null; conversations: any[] }>('whisper-data-ready', async (event) => {
+                const data = event.payload;
+                console.log('[Whispers] Auto-import data received directly:', data.conversations?.length, 'conversations');
+
+                try {
+                    if (!data.version || !data.conversations || !Array.isArray(data.conversations)) {
+                        throw new Error('Invalid data format.');
+                    }
+
+                    console.log(`[Whispers] Auto-importing ${data.conversations.length} conversations...`);
+
+                    const myUsername = currentUser?.login || currentUser?.username || data.myUsername || '';
+                    const myUserId = currentUser?.user_id || data.myUserId || '';
+                    const myDisplayName = currentUser?.display_name || currentUser?.username || data.myUsername || '';
+
+                    const newConversations = new Map(conversations);
+
+                    for (const conv of data.conversations) {
+                        const userId = conv.user.id || conv.user.login.toLowerCase();
+                        const existing = newConversations.get(userId);
+                        const importedMessages: Whisper[] = conv.messages.map((msg: any) => {
+                            const isSent = msg.isSent === true || (msg.fromUserName && myUsername && msg.fromUserName.toLowerCase() === myUsername.toLowerCase());
+                            return {
+                                id: msg.id,
+                                from_user_id: msg.fromUserId || (isSent ? myUserId : userId),
+                                from_user_login: msg.fromUserLogin || (isSent ? myUsername : conv.user.login),
+                                from_user_name: msg.fromUserName || (isSent ? myDisplayName : conv.user.displayName),
+                                to_user_id: isSent ? userId : myUserId,
+                                to_user_login: isSent ? conv.user.login : myUsername,
+                                to_user_name: isSent ? conv.user.displayName : myDisplayName,
+                                message: msg.content,
+                                timestamp: parseWhisperDate(msg.sentAt),
+                                is_sent: isSent,
+                            };
+                        });
+
+                        if (existing) {
+                            const existingIds = new Set(existing.messages.map(m => m.id));
+                            const uniqueNewMessages = importedMessages.filter(m => !existingIds.has(m.id));
+                            existing.messages = [...existing.messages, ...uniqueNewMessages].sort((a, b) => a.timestamp - b.timestamp);
+                            if (!existing.profile_image_url && conv.user.profileImageURL) {
+                                existing.profile_image_url = conv.user.profileImageURL;
+                            }
+                            if (existing.messages.length > 0) {
+                                existing.last_message_timestamp = existing.messages[existing.messages.length - 1].timestamp;
+                            }
+                        } else {
+                            newConversations.set(userId, {
+                                user_id: userId,
+                                user_login: conv.user.login,
+                                user_name: conv.user.displayName,
+                                profile_image_url: conv.user.profileImageURL || null,
+                                messages: importedMessages.sort((a, b) => a.timestamp - b.timestamp),
+                                last_message_timestamp: conv.lastMessageAt ? parseWhisperDate(conv.lastMessageAt) : Date.now(),
+                                unread_count: 0,
+                            });
+                        }
+                    }
+
+                    setConversations(newConversations);
+                    const totalMessages = data.conversations.reduce((sum: number, conv: any) => sum + conv.messages.length, 0);
+                    console.log(`[Whispers] Auto-imported ${totalMessages} messages from ${data.conversations.length} conversations`);
+                    setImportProgress(`✓ Auto-imported ${totalMessages} messages`);
+
+                    // Fetch profile pictures for all imported users via Twitch Helix API
+                    const usersToFetchProfilePics = Array.from(newConversations.entries()).filter(([, c]) => !c.profile_image_url);
+                    if (usersToFetchProfilePics.length > 0) {
+                        console.log(`[Whispers] Fetching ${usersToFetchProfilePics.length} profile pictures...`);
+                        setImportProgress(`Fetching ${usersToFetchProfilePics.length} profile pictures...`);
+
+                        for (const [mapKey, conv] of usersToFetchProfilePics) {
+                            try {
+                                // Use search_whisper_user to look up by login (username)
+                                const result = await invoke<[string, string, string, string | null] | null>('search_whisper_user', { username: conv.user_login });
+                                if (result && result[3]) {
+                                    const [, , , profileUrl] = result;
+                                    console.log(`[Whispers] Got profile pic for ${conv.user_login}: ${profileUrl}`);
+
+                                    // Update only the profile picture, keep the same Map key
+                                    setConversations(prev => {
+                                        const updated = new Map(prev);
+                                        const existing = updated.get(mapKey);
+                                        if (existing) {
+                                            existing.profile_image_url = profileUrl || undefined;
+                                        }
+                                        return updated;
+                                    });
+                                }
+                            } catch (err) {
+                                console.warn(`[Whispers] Failed to fetch profile for ${conv.user_login}:`, err);
+                            }
+                        }
+                        console.log('[Whispers] Profile picture fetching complete');
+                    }
+
+                    setImportProgress(`✓ Auto-imported ${totalMessages} messages`);
+                    setTimeout(() => setImportProgress(''), 3000);
+                } catch (err) {
+                    console.error('[Whispers] Failed to process auto-import data:', err);
+                }
+            });
+        };
+
+        setupListener();
+
+        return () => {
+            if (unlisten) {
+                unlisten();
+            }
+        };
+    }, [currentUser, conversations]);
 
     // Handle initial target user from profile card whisper button
     useEffect(() => {
@@ -165,12 +352,29 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
     // Get current conversation
     const currentConversation = activeConversation ? conversations.get(activeConversation) : null;
 
-    // Save conversations to localStorage whenever they change
+    // Load conversations from disk on mount (with migration from localStorage)
     useEffect(() => {
+        const loadConversations = async () => {
+            setIsLoading(true);
+            try {
+                const loaded = await migrateFromLocalStorage();
+                setConversations(loaded);
+            } catch (error) {
+                console.error('[Whispers] Failed to load conversations:', error);
+            } finally {
+                setIsLoading(false);
+            }
+        };
+        loadConversations();
+    }, []);
+
+    // Save conversations to disk whenever they change (debounced)
+    useEffect(() => {
+        if (isLoading) return; // Don't save during initial load
         if (conversations.size > 0) {
-            saveConversationsToStorage(conversations);
+            saveConversationsToDisk(conversations);
         }
-    }, [conversations]);
+    }, [conversations, isLoading]);
 
     // Close menus when clicking outside
     useEffect(() => {
@@ -402,64 +606,48 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
             const totalMessages = data.conversations.reduce((sum: number, conv: any) => sum + conv.messages.length, 0);
             setImportProgress(`✓ Imported ${totalMessages} messages`);
 
-            // Second pass: fetch missing profile pictures in background
-            if (usersNeedingProfilePics.length > 0) {
-                setImportProgress(`Fetching ${usersNeedingProfilePics.length} profile pictures...`);
-                for (const visitorId of usersNeedingProfilePics) {
-                    try {
-                        const conv = newConversations.get(visitorId);
-                        if (!conv) continue;
+            // Second pass: Resolve user IDs and fetch profile pictures
+            // This ensures all imported conversations have valid numeric Twitch user IDs
+            setImportProgress(`Resolving ${newConversations.size} user IDs...`);
+            const resolvedConversations = new Map<string, WhisperConversation>();
 
-                        // Try to get user info by login name (most reliable for imported whispers)
-                        let profileUrl: string | undefined;
+            for (const [originalKey, conv] of newConversations.entries()) {
+                try {
+                    // Check if user_id needs to be resolved (non-numeric)
+                    const needsIdResolution = !conv.user_id || !/^\d+$/.test(conv.user_id);
 
-                        // First try search_whisper_user which uses login
-                        try {
-                            const result = await invoke<[string, string, string, string | null] | null>('search_whisper_user', { username: conv.user_login });
-                            if (result && result[3]) {
-                                profileUrl = result[3];
-                                // Also update the user_id with the real Twitch ID
-                                const realUserId = result[0];
-                                if (realUserId && realUserId !== visitorId) {
-                                    // Update conversation with real user ID
-                                    newConversations.delete(visitorId);
-                                    conv.user_id = realUserId;
-                                    conv.profile_image_url = profileUrl;
-                                    newConversations.set(realUserId, conv);
-                                }
+                    if (needsIdResolution || !conv.profile_image_url) {
+                        // Look up user by login to get numeric ID and profile picture
+                        const result = await invoke<[string, string, string, string | null] | null>('search_whisper_user', { username: conv.user_login });
+                        if (result && result[0]) {
+                            const [realUserId, , , profileUrl] = result;
+                            // Update the conversation with resolved data
+                            conv.user_id = realUserId;
+                            if (profileUrl) {
+                                conv.profile_image_url = profileUrl;
                             }
-                        } catch {
-                            // Fallback: try get_user_by_id if we have a numeric ID
-                            if (/^\d+$/.test(visitorId)) {
-                                try {
-                                    const userInfo = await invoke<UserInfo>('get_user_by_id', { userId: visitorId });
-                                    if (userInfo?.profile_image_url) {
-                                        profileUrl = userInfo.profile_image_url;
-                                    }
-                                } catch {
-                                    // Ignore
-                                }
-                            }
+                            // Store with the real user ID as key
+                            resolvedConversations.set(realUserId, conv);
+                            console.log(`[Whispers] Resolved ${conv.user_login}: ${originalKey} -> ${realUserId}`);
+                        } else {
+                            // Couldn't resolve, keep original (might not be able to send to this user)
+                            resolvedConversations.set(originalKey, conv);
+                            console.warn(`[Whispers] Could not resolve user: ${conv.user_login}`);
                         }
-
-                        if (profileUrl) {
-                            setConversations(prev => {
-                                const updated = new Map(prev);
-                                const c = updated.get(conv.user_id) || updated.get(visitorId);
-                                if (c && !c.profile_image_url) {
-                                    c.profile_image_url = profileUrl;
-                                }
-                                return updated;
-                            });
-                        }
-                    } catch {
-                        // Ignore errors fetching profile pics
+                    } else {
+                        // Already has valid user_id, just copy over
+                        resolvedConversations.set(conv.user_id, conv);
                     }
+                } catch (err) {
+                    // Keep original on error
+                    resolvedConversations.set(originalKey, conv);
+                    console.warn(`[Whispers] Error resolving ${conv.user_login}:`, err);
                 }
-                // Update state with corrected user IDs
-                setConversations(newConversations);
-                setImportProgress(`✓ Imported ${totalMessages} messages`);
             }
+
+            // Update state with resolved conversations
+            setConversations(resolvedConversations);
+            setImportProgress(`✓ Imported ${totalMessages} messages from ${resolvedConversations.size} users`);
 
             if (fileInputRef.current) fileInputRef.current.value = '';
             setTimeout(() => setImportProgress(''), 3000);
@@ -512,6 +700,42 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
         if (!message.trim() || isSending || !activeConversation || sendingRef.current) return;
         const conversation = conversations.get(activeConversation);
         if (!conversation) return;
+
+        // Use the stored user_id from the conversation, not the map key
+        // This handles imported conversations where the key might be the username
+        let targetUserId = conversation.user_id;
+
+        // If user_id is not numeric, try to look it up by username
+        if (!targetUserId || !/^\d+$/.test(targetUserId)) {
+            console.log('[Whispers] User ID not numeric, looking up by login:', conversation.user_login);
+            try {
+                const result = await invoke<[string, string, string, string | null] | null>('search_whisper_user', { username: conversation.user_login });
+                if (result && result[0]) {
+                    targetUserId = result[0];
+                    // Update the conversation with the correct user_id
+                    setConversations(prev => {
+                        const updated = new Map(prev);
+                        const conv = updated.get(activeConversation);
+                        if (conv) {
+                            conv.user_id = targetUserId;
+                            if (result[3]) {
+                                conv.profile_image_url = result[3];
+                            }
+                        }
+                        return updated;
+                    });
+                    console.log('[Whispers] Found user ID:', targetUserId);
+                } else {
+                    setError('Cannot send: User not found on Twitch.');
+                    return;
+                }
+            } catch (err) {
+                console.error('[Whispers] Failed to look up user:', err);
+                setError('Cannot send: Failed to look up user.');
+                return;
+            }
+        }
+
         const messageToSend = message.trim();
         const messageId = generateMessageId();
         sendingRef.current = true;
@@ -520,7 +744,7 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
         setError(null);
         setShowEmojiPicker(false);
         try {
-            await invoke('send_whisper', { toUserId: activeConversation, message: messageToSend });
+            await invoke('send_whisper', { toUserId: targetUserId, message: messageToSend });
             const sentMessage: Whisper = {
                 id: messageId,
                 from_user_id: currentUser?.user_id || '',
@@ -573,13 +797,15 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
         return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
     };
 
-    // Get sorted conversations
-    const sortedConversations = Array.from(conversations.values()).sort((a, b) => {
-        if (sortOption === 'recent') return b.last_message_timestamp - a.last_message_timestamp;
-        if (sortOption === 'name') return a.user_name.localeCompare(b.user_name);
-        if (sortOption === 'unread') return b.unread_count - a.unread_count || b.last_message_timestamp - a.last_message_timestamp;
-        return 0;
-    });
+    // Get sorted conversations with their Map keys
+    const sortedConversations = Array.from(conversations.entries())
+        .map(([key, conv]) => ({ key, ...conv }))
+        .sort((a, b) => {
+            if (sortOption === 'recent') return b.last_message_timestamp - a.last_message_timestamp;
+            if (sortOption === 'name') return a.user_name.localeCompare(b.user_name);
+            if (sortOption === 'unread') return b.unread_count - a.unread_count || b.last_message_timestamp - a.last_message_timestamp;
+            return 0;
+        });
 
     const totalUnread = sortedConversations.reduce((sum, c) => sum + c.unread_count, 0);
 
@@ -624,14 +850,32 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
                         </div>
                         <div className="flex items-center gap-1">
                             <input type="file" ref={fileInputRef} onChange={handleFileImport} accept=".json" className="hidden" />
-                            <button
-                                onClick={() => setShowImportWizard(true)}
-                                disabled={isImportingAll}
-                                className="p-2 text-textSecondary hover:text-purple-400 hover:bg-glass rounded-lg transition-colors disabled:opacity-50"
-                                title="Import whisper history"
-                            >
-                                {isImportingAll ? <Loader2 size={18} className="animate-spin" /> : <Download size={18} />}
-                            </button>
+                            {/* Background Import Indicator */}
+                            {whisperImportState.isImporting && (
+                                <button
+                                    onClick={() => setShowImportWizard(true)}
+                                    className="flex items-center gap-2 px-2 py-1.5 bg-purple-500/20 hover:bg-purple-500/30 border border-purple-500/30 rounded-lg transition-colors animate-pulse"
+                                    title="Click to view import progress"
+                                >
+                                    <Loader2 size={14} className="text-purple-400 animate-spin" />
+                                    <span className="text-purple-400 text-xs font-medium">
+                                        {whisperImportState.exportProgress.total > 0
+                                            ? `${whisperImportState.exportProgress.current + 1}/${whisperImportState.exportProgress.total}`
+                                            : 'Importing...'}
+                                    </span>
+                                </button>
+                            )}
+                            {/* Import Button (only show when not importing) */}
+                            {!whisperImportState.isImporting && (
+                                <button
+                                    onClick={() => setShowImportWizard(true)}
+                                    disabled={isImportingAll}
+                                    className="p-2 text-textSecondary hover:text-purple-400 hover:bg-glass rounded-lg transition-colors disabled:opacity-50"
+                                    title="Import whisper history"
+                                >
+                                    {isImportingAll ? <Loader2 size={18} className="animate-spin" /> : <Download size={18} />}
+                                </button>
+                            )}
                             <button
                                 onClick={() => setShowNewConversation(true)}
                                 className="p-2 text-textSecondary hover:text-purple-400 hover:bg-glass rounded-lg transition-colors"
@@ -692,9 +936,9 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
                         ) : (
                             sortedConversations.map((conv) => (
                                 <div
-                                    key={conv.user_id}
-                                    className={`group relative w-full flex items-center gap-3 px-4 py-3 hover:bg-glass transition-colors cursor-pointer ${activeConversation === conv.user_id ? 'bg-glass' : ''}`}
-                                    onClick={() => setActiveConversation(conv.user_id)}
+                                    key={conv.key}
+                                    className={`group relative w-full flex items-center gap-3 px-4 py-3 hover:bg-glass transition-colors cursor-pointer ${activeConversation === conv.key ? 'bg-glass' : ''}`}
+                                    onClick={() => setActiveConversation(conv.key)}
                                 >
                                     <div className="relative flex-shrink-0">
                                         {conv.profile_image_url ? (
@@ -721,14 +965,14 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
                                         <button
                                             onClick={(e) => {
                                                 e.stopPropagation();
-                                                // Delete the conversation
+                                                // Delete the conversation using the Map key
                                                 setConversations(prev => {
                                                     const newConversations = new Map(prev);
-                                                    newConversations.delete(conv.user_id);
+                                                    newConversations.delete(conv.key);
                                                     return newConversations;
                                                 });
                                                 // If this was the active conversation, clear it
-                                                if (activeConversation === conv.user_id) {
+                                                if (activeConversation === conv.key) {
                                                     setActiveConversation(null);
                                                 }
                                             }}
@@ -940,25 +1184,6 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
             <WhisperImportWizard
                 isOpen={showImportWizard}
                 onClose={() => setShowImportWizard(false)}
-                onImport={async (file: File) => {
-                    // Create a synthetic event for the existing handler
-                    const dataTransfer = new DataTransfer();
-                    dataTransfer.items.add(file);
-
-                    // Create a mock input element with the file
-                    const mockInput = document.createElement('input');
-                    mockInput.type = 'file';
-                    Object.defineProperty(mockInput, 'files', {
-                        value: dataTransfer.files
-                    });
-
-                    // Create a synthetic event
-                    const syntheticEvent = {
-                        target: mockInput
-                    } as React.ChangeEvent<HTMLInputElement>;
-
-                    await handleFileImport(syntheticEvent);
-                }}
             />
         </motion.div>
     );

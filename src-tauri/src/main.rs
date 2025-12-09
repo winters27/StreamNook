@@ -29,7 +29,7 @@
 use commands::{
     app::*, automation::*, badge_metadata::*, badges::*, cache::*, chat::*, components::*,
     cosmetics_cache::*, discord::*, drops::*, layout::*, settings::*, streaming::*, twitch::*,
-    universal_cache::*,
+    universal_cache::*, whisper_storage::*,
 };
 use models::settings::{AppState, Settings};
 use services::background_service::BackgroundService;
@@ -402,6 +402,17 @@ fn main() {
             update_layout_config,
             // Automation commands
             automate_connection,
+            scrape_whispers,
+            receive_whisper_export,
+            emit_whisper_progress,
+            // Whisper Storage commands
+            load_whisper_storage,
+            save_whisper_storage,
+            save_whisper_conversation,
+            append_whisper_message,
+            delete_whisper_conversation,
+            get_whisper_storage_path,
+            migrate_whispers_from_localstorage,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

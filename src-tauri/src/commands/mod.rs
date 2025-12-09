@@ -13,3 +13,4 @@ pub mod settings;
 pub mod streaming;
 pub mod twitch;
 pub mod universal_cache;
+pub mod whisper_storage;

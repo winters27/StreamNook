@@ -52,6 +52,10 @@ module.exports = {
         xs: '2px',
       },
       keyframes: {
+        'fade-in': {
+          '0%': { opacity: '0', transform: 'translateY(-4px)' },
+          '100%': { opacity: '1', transform: 'translateY(0)' },
+        },
         shimmer: {
           '0%': { backgroundPosition: '-200% 0' },
           '100%': { backgroundPosition: '200% 0' },
@@ -120,6 +124,7 @@ module.exports = {
         },
       },
       animation: {
+        'fade-in': 'fade-in 0.3s ease-out forwards',
         shimmer: 'shimmer 2s ease-in-out infinite',
         droplet: 'droplet 2.5s ease-in-out infinite',
         splash: 'splash 0.6s ease-out forwards',

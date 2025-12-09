@@ -1,3 +1,17 @@
+## [4.9.1] - 2025-12-08
+### ✨ Features
+- **Whisper Import**: You can now import your entire Twitch whisper history directly into StreamNook! This feature runs automatically in the background after logging in and will allow you to access your private messages.
+- **Custom Streamlink Path**: Added the ability to specify a custom path to your Streamlink installation. This resolves issues where the bundled Streamlink version fails to extract correctly and you can select from your drive a portable or manually installed version of the software.
+
+### 🐛 Bug Fixes
+- Fixed a conflict with Plyr's local storage interfering with configured app settings.
+
+### ⚡ Performance
+- Loading may take slightly longer with proxy enabled. A notification is now shown that provides an explanation and guidance on removing it.
+
+### 🔧 Maintenance
+- Login via the Twitch website is only required once to authorize the app. StreamNook will then attempt to re-authenticate silently in the background to avoid needing re-authorization.
+
 ## [4.9.0] - 2025-12-08
 ### ✨ Features
 - **Automated Follow/Unfollow**: You can now follow and unfollow channels directly from StreamNook using a new automation feature. This uses your existing Twitch login and a hidden browser window to perform the action, so you don't have to leave the app!
@@ -654,6 +668,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 

@@ -134,11 +134,16 @@ const Home = () => {
     const scrollContainerRef = useRef<HTMLDivElement>(null);
     const loadingRef = useRef(false);
 
+    // Track if the Home component has initialized (to avoid showing LoadingWidget on user-initiated login)
+    const [hasInitialized, setHasInitialized] = useState(false);
+
     useEffect(() => {
         loadFollowedStreams();
         loadRecommendedStreams();
         // Load drops data early so we can show indicators on stream cards
         loadActiveDrops();
+        // Mark as initialized after first load attempt
+        setHasInitialized(true);
     }, [loadFollowedStreams, loadRecommendedStreams]);
 
     // Auto-select the appropriate tab based on auth status
@@ -682,7 +687,8 @@ const Home = () => {
 
             {/* Content */}
             <div ref={scrollContainerRef} className="flex-1 overflow-y-auto p-4 scrollbar-thin relative">
-                {isLoading && !isAuthenticated && (
+                {/* Only show full LoadingWidget during initial app load, not user-initiated login */}
+                {isLoading && !isAuthenticated && !hasInitialized && (
                     <LoadingWidget useFunnyMessages={true} />
                 )}
 
@@ -914,6 +920,26 @@ const Home = () => {
                                                 ? 'Could not load streams.'
                                                 : `No channels found for "${searchQuery}".`}
                                     </p>
+                                    {/* Login prompt for unauthenticated users when streams fail to load */}
+                                    {!isAuthenticated && activeTab === 'recommended' && (
+                                        <div className="mt-4 pt-4 border-t border-borderSubtle">
+                                            <p className="text-textSecondary text-xs mb-3">
+                                                Log in for a better experience
+                                            </p>
+                                            <button
+                                                onClick={loginToTwitch}
+                                                disabled={isLoading}
+                                                className="glass-button flex items-center justify-center gap-2 px-4 py-2.5 text-white text-sm font-medium rounded-lg transition-all hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100 mx-auto"
+                                            >
+                                                <svg fill="currentColor" viewBox="0 0 512 512" className="w-4 h-4">
+                                                    <path d="M80,32,48,112V416h96v64h64l64-64h80L464,304V32ZM416,288l-64,64H256l-64,64V352H112V80H416Z" />
+                                                    <rect x="320" y="143" width="48" height="129" />
+                                                    <rect x="208" y="143" width="48" height="129" />
+                                                </svg>
+                                                <span>{isLoading ? 'Logging in...' : 'Login with Twitch'}</span>
+                                            </button>
+                                        </div>
+                                    )}
                                 </div>
                             </div>
                         ) : (
