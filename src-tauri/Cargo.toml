@@ -60,8 +60,3 @@ mime_guess = "2.0"
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
-
-
-
-
-
