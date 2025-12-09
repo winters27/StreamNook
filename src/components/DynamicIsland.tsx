@@ -1079,11 +1079,13 @@ const DynamicIsland = () => {
                                     // Default state with sound indicator and notification count
                                     <div className="flex items-center w-full">
                                         {/* Sound indicator */}
-                                        {soundEnabled ? (
-                                            <SpeakerHigh size={16} className="text-white/60" />
-                                        ) : (
-                                            <SpeakerSlash size={16} className="text-white/40" />
-                                        )}
+                                        <div className="w-4 flex-shrink-0">
+                                            {soundEnabled ? (
+                                                <SpeakerHigh size={16} className="text-white/60" />
+                                            ) : (
+                                                <SpeakerSlash size={16} className="text-white/40" />
+                                            )}
+                                        </div>
 
                                         {/* Notification count badge with solid accent color - centered */}
                                         {hasUnread && unreadCount > 0 && (
@@ -1108,6 +1110,11 @@ const DynamicIsland = () => {
                                                 </motion.div>
                                             </div>
                                         )}
+
+                                        {/* Empty spacer on the right to balance the sound icon */}
+                                        {hasUnread && unreadCount > 0 && (
+                                            <div className="w-4 flex-shrink-0" />
+                                        )}
                                     </div>
                                 )}
                             </motion.div>
@@ -1126,7 +1133,7 @@ const DynamicIsland = () => {
                             >
                                 {/* Header */}
                                 <div
-                                    className="relative flex items-center justify-between px-5 py-4"
+                                    className="relative flex items-center px-5 py-4"
                                     style={{
                                         borderBottom: '1px solid rgba(255, 255, 255, 0.1)',
                                     }}
@@ -1140,7 +1147,16 @@ const DynamicIsland = () => {
                                         }}
                                         title="Click to close"
                                     />
-                                    <div className="flex items-center gap-2">
+                                    {/* Sound icon on the left */}
+                                    <div className="flex-shrink-0">
+                                        {soundEnabled ? (
+                                            <SpeakerHigh size={16} className="text-white/40" />
+                                        ) : (
+                                            <SpeakerSlash size={16} className="text-white/30" />
+                                        )}
+                                    </div>
+                                    {/* Centered notifications text and count */}
+                                    <div className="flex-1 flex items-center justify-center gap-2">
                                         <span className="text-white font-semibold text-base">Notifications</span>
                                         {unreadCount > 0 && (
                                             <span
@@ -1152,28 +1168,9 @@ const DynamicIsland = () => {
                                                 {unreadCount}
                                             </span>
                                         )}
-                                        {soundEnabled ? (
-                                            <SpeakerHigh size={16} className="text-white/40" />
-                                        ) : (
-                                            <SpeakerSlash size={16} className="text-white/30" />
-                                        )}
                                     </div>
-                                    <button
-                                        onClick={(e) => {
-                                            e.stopPropagation();
-                                            setIsExpanded(false);
-                                            setShowWhispersOverlay(true);
-                                        }}
-                                        className="text-xs transition-all flex items-center gap-1.5 px-2.5 py-1 rounded-lg hover:bg-white/10"
-                                        style={{
-                                            color: 'var(--color-accent)',
-                                            border: '1px solid rgba(255, 255, 255, 0.15)',
-                                        }}
-                                        title="Open Whispers"
-                                    >
-                                        <MessageCircle size={12} />
-                                        Whispers
-                                    </button>
+                                    {/* Empty spacer on the right to balance the sound icon */}
+                                    <div className="flex-shrink-0 w-4" />
                                 </div>
 
                                 {/* Notifications List */}

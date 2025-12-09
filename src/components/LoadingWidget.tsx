@@ -158,9 +158,10 @@ const FUNNY_MESSAGES = [
 interface LoadingWidgetProps {
   message?: string;
   useFunnyMessages?: boolean;
+  showProxyNote?: boolean;
 }
 
-const LoadingWidget = ({ message, useFunnyMessages = false }: LoadingWidgetProps) => {
+const LoadingWidget = ({ message, useFunnyMessages = false, showProxyNote = false }: LoadingWidgetProps) => {
   const [currentMessageIndex, setCurrentMessageIndex] = useState(() =>
     Math.floor(Math.random() * FUNNY_MESSAGES.length)
   );
@@ -231,6 +232,40 @@ const LoadingWidget = ({ message, useFunnyMessages = false }: LoadingWidgetProps
 
   return (
     <div className="absolute inset-0 flex items-center justify-center bg-black/70 backdrop-blur-sm">
+      {/* Proxy/Ad-blocker note - positioned at top left */}
+      {showProxyNote && (
+        <div className="absolute top-4 left-4 max-w-xs animate-fade-in">
+          <div className="glass-panel p-3 rounded-lg border border-accent/30 bg-background/80 backdrop-blur-md">
+            <div className="flex items-start gap-2">
+              <svg
+                className="w-4 h-4 text-accent flex-shrink-0 mt-0.5"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                />
+              </svg>
+              <div className="space-y-1">
+                <p className="text-textPrimary text-xs font-medium">
+                  Ad-Free Proxy Active
+                </p>
+                <p className="text-textSecondary text-xs leading-relaxed">
+                  Loading may take longer as we're rerouting through proxy servers for an ad-free experience.
+                </p>
+                <p className="text-textMuted text-[10px] leading-relaxed">
+                  If initial load times bother you, consider disabling the TTV LOL PRO plugin in Settings → Integrations.
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="flex flex-col items-center gap-6">
         {/* Use the canvas-based Penrose triangle animation */}
         <PenroseCanvas />

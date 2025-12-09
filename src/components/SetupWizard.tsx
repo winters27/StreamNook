@@ -13,11 +13,15 @@ import {
     Tv,
     Package,
     AlertCircle,
-    Settings
+    Settings,
+    FolderOpen,
+    MessageCircle,
+    Wand2
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
+import { open } from '@tauri-apps/plugin-dialog';
 import { useAppStore } from '../stores/AppStore';
 
 interface SetupWizardProps {
@@ -52,14 +56,18 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
         mainAuthenticated: false,
     });
     const [error, setError] = useState<string | null>(null);
+    const [customStreamlinkPath, setCustomStreamlinkPath] = useState<string | null>(null);
+    const [isSelectingFolder, setIsSelectingFolder] = useState(false);
 
-    const { addToast, settings, updateSettings, isAuthenticated, checkAuthStatus, loginToTwitch } = useAppStore();
+    const { addToast, settings, updateSettings, isAuthenticated, checkAuthStatus, loginToTwitch, whisperImportState, setWhisperImportState, resetWhisperImportState } = useAppStore();
+    const [whisperImportStarted, setWhisperImportStarted] = useState(false);
 
     const steps = [
         { title: 'Welcome', description: 'Get started with StreamNook', icon: Sparkles },
         { title: 'Setting Up', description: 'Preparing components', icon: Settings },
         { title: 'Drops', description: 'Sign in for drops/inventory', icon: Package },
         { title: 'Login', description: 'Sign in to Twitch', icon: User },
+        { title: 'Whispers', description: 'Import chat history', icon: MessageCircle },
         { title: 'Ready!', description: 'All set up', icon: Tv }
     ];
 
@@ -117,6 +125,64 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
             setIsExtracting(false);
         }
     }, [settings, updateSettings, addToast]);
+
+    // Handle manual folder selection for custom streamlink installation
+    const handleSelectFolder = useCallback(async () => {
+        try {
+            setIsSelectingFolder(true);
+            const selected = await open({
+                directory: true,
+                multiple: false,
+                title: 'Select Streamlink Folder',
+            });
+
+            if (selected && typeof selected === 'string') {
+                setCustomStreamlinkPath(selected);
+            }
+        } catch (error) {
+            console.error('Failed to open folder picker:', error);
+            addToast('Failed to open folder picker', 'error');
+        } finally {
+            setIsSelectingFolder(false);
+        }
+    }, [addToast]);
+
+    // Handle using the custom streamlink path
+    const handleUseCustomPath = useCallback(async () => {
+        if (!customStreamlinkPath) {
+            addToast('Please select a Streamlink folder first', 'warning');
+            return;
+        }
+
+        // Update settings with the custom path
+        const streamlinkDefaults = {
+            low_latency_enabled: true,
+            hls_live_edge: 3,
+            stream_timeout: 60,
+            retry_streams: 3,
+            disable_hosting: true,
+            skip_ssl_verify: false,
+            use_proxy: true,
+            proxy_playlist: '--twitch-proxy-playlist=https://lb-na.cdn-perfprod.com,https://eu.luminous.dev --twitch-proxy-playlist-fallback',
+        };
+
+        const currentStreamlink = settings.streamlink || streamlinkDefaults;
+        const newSettings = {
+            ...settings,
+            streamlink: {
+                ...currentStreamlink,
+                custom_streamlink_path: customStreamlinkPath
+            }
+        };
+
+        await updateSettings(newSettings);
+        setStatus(prev => ({ ...prev, componentsInstalled: true, extractionError: null }));
+        setError(null); // Clear any extraction error
+        addToast('Custom Streamlink path saved!', 'success');
+
+        // Auto-advance to next step
+        setCurrentStep(2);
+    }, [customStreamlinkPath, settings, updateSettings, addToast]);
 
     // Initial check on mount
     useEffect(() => {
@@ -324,13 +390,17 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                         <div className={`w-16 h-16 rounded-full flex items-center justify-center mb-6 ${status.componentsInstalled === true
                             ? 'bg-green-500/20'
                             : status.extractionError
-                                ? 'bg-red-500/20'
+                                ? (customStreamlinkPath ? 'bg-green-500/20' : 'bg-yellow-500/20')
                                 : 'bg-purple-500/20'
                             }`}>
                             {status.componentsInstalled === true ? (
                                 <CheckCircle2 size={28} className="text-green-400" />
                             ) : status.extractionError ? (
-                                <AlertCircle size={28} className="text-red-400" />
+                                customStreamlinkPath ? (
+                                    <CheckCircle2 size={28} className="text-green-400" />
+                                ) : (
+                                    <AlertCircle size={28} className="text-yellow-400" />
+                                )
                             ) : (
                                 <Loader2 size={28} className="text-purple-400 animate-spin" />
                             )}
@@ -339,36 +409,100 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                             {status.componentsInstalled === true
                                 ? 'Setup Complete!'
                                 : status.extractionError
-                                    ? 'Setup Failed'
+                                    ? (customStreamlinkPath ? 'Custom Path Selected' : 'Auto-Setup Failed')
                                     : 'Setting Up...'}
                         </h2>
-                        <p className="text-textSecondary mb-6 max-w-md">
+                        <p className="text-textSecondary mb-4 max-w-md">
                             {status.componentsInstalled === true
                                 ? 'Streamlink and TTV LOL ad blocker are ready!'
                                 : status.extractionError
-                                    ? 'There was an error setting up components.'
+                                    ? (customStreamlinkPath
+                                        ? 'Click "Use Custom Path" below to continue with your Streamlink installation.'
+                                        : 'Bundled components not found. You can try again or select a custom Streamlink installation.')
                                     : 'Installing Streamlink and TTV LOL ad blocker...'}
                         </p>
                         {status.extractionError && (
-                            <div className="flex flex-col items-center gap-4">
-                                <div className="flex items-center gap-2 text-red-400 text-sm p-3 bg-red-500/10 rounded-lg max-w-md">
-                                    <AlertCircle size={16} className="flex-shrink-0" />
-                                    <span className="text-left">{status.extractionError}</span>
+                            <div className="flex flex-col items-center gap-4 w-full max-w-sm">
+                                {/* Only show error message if no custom path selected */}
+                                {!customStreamlinkPath && (
+                                    <div className="flex items-center gap-2 text-yellow-400 text-xs p-2 bg-yellow-500/10 rounded-lg w-full">
+                                        <AlertCircle size={14} className="flex-shrink-0" />
+                                        <span className="text-left truncate">{status.extractionError}</span>
+                                    </div>
+                                )}
+
+                                {/* Manual Path Selection */}
+                                <div className="w-full p-4 bg-glass rounded-xl border border-borderSubtle">
+                                    <p className="text-sm text-textPrimary font-medium mb-3">
+                                        Select your Streamlink folder:
+                                    </p>
+                                    <div className="flex gap-2 mb-2">
+                                        <input
+                                            type="text"
+                                            value={customStreamlinkPath || ''}
+                                            readOnly
+                                            placeholder="No folder selected..."
+                                            className="flex-1 min-w-0 glass-input text-textPrimary text-sm px-3 py-2 rounded-lg bg-glass border border-borderSubtle truncate"
+                                        />
+                                        <button
+                                            onClick={handleSelectFolder}
+                                            disabled={isSelectingFolder}
+                                            className="px-4 py-2 bg-glass hover:bg-glass-hover text-textPrimary text-sm font-medium rounded-lg flex items-center gap-2 disabled:opacity-50 border border-borderSubtle transition-colors flex-shrink-0"
+                                        >
+                                            <FolderOpen size={16} />
+                                            {isSelectingFolder ? '...' : 'Browse'}
+                                        </button>
+                                    </div>
+                                    {customStreamlinkPath && (
+                                        <p className="text-xs text-green-400 mb-3 break-all">
+                                            ✓ Path selected: <span className="font-mono text-green-300">{customStreamlinkPath.length > 40 ? '...' + customStreamlinkPath.slice(-40) : customStreamlinkPath}</span>
+                                        </p>
+                                    )}
+                                    <button
+                                        onClick={handleUseCustomPath}
+                                        disabled={!customStreamlinkPath}
+                                        className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-purple-500 hover:bg-purple-600 disabled:bg-purple-500/30 disabled:cursor-not-allowed text-white rounded-lg font-medium transition-colors text-sm"
+                                    >
+                                        <CheckCircle2 size={16} />
+                                        Use Custom Path
+                                    </button>
                                 </div>
+
+                                {/* Divider */}
+                                <div className="flex items-center gap-3 w-full">
+                                    <div className="flex-1 h-px bg-borderSubtle" />
+                                    <span className="text-xs text-textMuted">or</span>
+                                    <div className="flex-1 h-px bg-borderSubtle" />
+                                </div>
+
+                                {/* Retry Button */}
                                 <button
                                     onClick={extractComponents}
                                     disabled={isExtracting}
-                                    className="flex items-center justify-center gap-2 px-6 py-3 bg-purple-500 hover:bg-purple-600 disabled:bg-purple-500/50 text-white rounded-xl font-medium transition-colors"
+                                    className="flex items-center justify-center gap-2 px-6 py-2.5 bg-glass hover:bg-glass-hover border border-borderSubtle text-textPrimary rounded-lg font-medium transition-colors text-sm"
                                 >
                                     {isExtracting ? (
                                         <>
-                                            <Loader2 size={18} className="animate-spin" />
+                                            <Loader2 size={16} className="animate-spin" />
                                             Retrying...
                                         </>
                                     ) : (
-                                        'Try Again'
+                                        'Try Auto-Setup Again'
                                     )}
                                 </button>
+
+                                {/* Help Link */}
+                                <p className="text-xs text-textMuted mt-2">
+                                    Need Streamlink?{' '}
+                                    <a
+                                        href="https://streamlink.github.io/install.html#windows-portable"
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="text-purple-400 hover:text-purple-300 inline-flex items-center gap-1"
+                                    >
+                                        Download portable version <ExternalLink size={10} />
+                                    </a>
+                                </p>
                             </div>
                         )}
                         {!status.extractionError && !status.componentsInstalled && (
@@ -535,7 +669,134 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                     </motion.div>
                 );
 
-            case 4: // Complete
+            case 4: // Whispers Import (Optional)
+                return (
+                    <motion.div
+                        initial={{ opacity: 0, y: 20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -20 }}
+                        className="flex flex-col items-center text-center px-8 py-6"
+                    >
+                        <div className={`w-16 h-16 rounded-full flex items-center justify-center mb-6 ${whisperImportStarted ? (whisperImportState.result ? 'bg-green-500/20' : 'bg-purple-500/20') : 'bg-purple-500/20'}`}>
+                            {whisperImportState.result ? (
+                                <CheckCircle2 size={28} className="text-green-400" />
+                            ) : whisperImportState.isImporting ? (
+                                <Loader2 size={28} className="text-purple-400 animate-spin" />
+                            ) : (
+                                <MessageCircle size={28} className="text-purple-400" />
+                            )}
+                        </div>
+                        <h2 className="text-xl font-bold text-textPrimary mb-3">
+                            {whisperImportState.result ? 'Whispers Imported!' : whisperImportState.isImporting ? 'Importing Whispers...' : 'Import Whisper History'}
+                        </h2>
+                        <p className="text-textSecondary mb-2 max-w-md">
+                            {whisperImportState.result
+                                ? `Successfully imported ${whisperImportState.result.conversations} conversations with ${whisperImportState.result.messages.toLocaleString()} messages.`
+                                : whisperImportState.isImporting
+                                    ? 'Please wait while we fetch your whisper history...'
+                                    : 'Import your Twitch whisper history to access all your private messages.'}
+                        </p>
+                        {!whisperImportState.isImporting && !whisperImportState.result && (
+                            <p className="text-textMuted text-xs mb-6 max-w-md">
+                                This runs silently in the background and may take a few minutes.
+                            </p>
+                        )}
+
+                        {/* Import Progress */}
+                        {whisperImportState.isImporting && whisperImportState.progress && (
+                            <div className="w-full max-w-sm mb-4">
+                                <div className="bg-glass border border-borderSubtle rounded-xl p-4">
+                                    <div className="flex items-center gap-3 mb-2">
+                                        <Loader2 size={16} className="text-purple-400 animate-spin" />
+                                        <span className="text-sm text-textPrimary">{whisperImportState.progress.detail}</span>
+                                    </div>
+                                    {whisperImportState.exportProgress && whisperImportState.exportProgress.total > 0 && (
+                                        <div className="mt-2">
+                                            <div className="flex justify-between text-xs text-textMuted mb-1">
+                                                <span>Progress</span>
+                                                <span>{whisperImportState.exportProgress.current + 1}/{whisperImportState.exportProgress.total}</span>
+                                            </div>
+                                            <div className="h-1.5 bg-glass rounded-full overflow-hidden">
+                                                <div
+                                                    className="h-full bg-purple-500 rounded-full transition-all duration-300"
+                                                    style={{ width: `${((whisperImportState.exportProgress.current + 1) / whisperImportState.exportProgress.total) * 100}%` }}
+                                                />
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        )}
+
+                        {whisperImportState.error && (
+                            <div className="flex items-center gap-2 text-red-400 text-sm mb-4 p-3 bg-red-500/10 rounded-lg">
+                                <AlertCircle size={16} />
+                                <span>{whisperImportState.error}</span>
+                            </div>
+                        )}
+
+                        <div className="flex flex-col gap-3 w-full max-w-xs">
+                            {!whisperImportState.isImporting && !whisperImportState.result && (
+                                <button
+                                    onClick={async () => {
+                                        setWhisperImportStarted(true);
+                                        setWhisperImportState({
+                                            isImporting: true,
+                                            error: null,
+                                            result: null,
+                                            progress: { step: 0, status: 'running', detail: 'Starting...', current: 0, total: 4 },
+                                            estimatedEndTime: null,
+                                            totalConversations: 0,
+                                            exportProgress: { current: 0, total: 0, username: '' }
+                                        });
+                                        try {
+                                            await invoke('scrape_whispers');
+                                        } catch (err) {
+                                            console.error('[SetupWizard] Whisper import failed:', err);
+                                            setWhisperImportState({
+                                                isImporting: false,
+                                                error: err instanceof Error ? err.message : String(err)
+                                            });
+                                        }
+                                    }}
+                                    className="flex items-center justify-center gap-2 px-6 py-3 bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white rounded-xl font-medium transition-all shadow-lg shadow-purple-500/25"
+                                >
+                                    <Wand2 size={18} />
+                                    Start Import
+                                </button>
+                            )}
+                            {whisperImportState.result && (
+                                <div className="flex items-center justify-center gap-2 text-green-400 mb-2">
+                                    <CheckCircle2 size={20} />
+                                    <span className="font-medium">Import Complete!</span>
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Features List */}
+                        {!whisperImportState.isImporting && !whisperImportState.result && (
+                            <div className="mt-6 flex flex-col gap-2 w-full max-w-xs">
+                                <div className="flex items-center gap-2 text-left p-2 bg-glass/50 rounded-lg">
+                                    <Check size={12} className="text-green-400 flex-shrink-0" />
+                                    <span className="text-xs text-textMuted">Runs silently in background</span>
+                                </div>
+                                <div className="flex items-center gap-2 text-left p-2 bg-glass/50 rounded-lg">
+                                    <Check size={12} className="text-green-400 flex-shrink-0" />
+                                    <span className="text-xs text-textMuted">Your data stays private</span>
+                                </div>
+                            </div>
+                        )}
+
+                        <button
+                            onClick={() => setCurrentStep(5)}
+                            className="mt-4 text-sm text-textSecondary hover:text-textPrimary transition-colors"
+                        >
+                            {whisperImportState.isImporting ? 'Continue in background →' : (whisperImportState.result ? 'Continue →' : 'Skip for now →')}
+                        </button>
+                    </motion.div>
+                );
+
+            case 5: // Complete
                 return (
                     <motion.div
                         initial={{ opacity: 0, y: 20 }}
@@ -579,6 +840,18 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                                 )}
                                 <span className="text-sm text-textSecondary">
                                     Twitch {status.mainAuthenticated ? 'signed in' : 'not signed in'}
+                                </span>
+                            </div>
+                            <div className={`flex items-center gap-3 p-3 rounded-lg ${whisperImportState.result ? 'bg-green-500/10' : 'bg-gray-500/10'}`}>
+                                {whisperImportState.result ? (
+                                    <CheckCircle2 size={18} className="text-green-400" />
+                                ) : whisperImportState.isImporting ? (
+                                    <Loader2 size={18} className="text-purple-400 animate-spin" />
+                                ) : (
+                                    <X size={18} className="text-gray-400" />
+                                )}
+                                <span className="text-sm text-textSecondary">
+                                    Whispers {whisperImportState.result ? 'imported' : whisperImportState.isImporting ? 'importing...' : 'not imported'}
                                 </span>
                             </div>
                         </div>
@@ -672,7 +945,7 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                 <div className="flex items-center justify-between px-6 py-4 border-t border-borderSubtle">
                     <button
                         onClick={() => setCurrentStep(Math.max(0, currentStep - 1))}
-                        disabled={currentStep === 0 || currentStep === 1 || currentStep === 4}
+                        disabled={currentStep === 0 || currentStep === 1 || currentStep === 5}
                         className="flex items-center gap-2 px-4 py-2 text-textSecondary hover:text-textPrimary disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                     >
                         <ChevronLeft size={16} />

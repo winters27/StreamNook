@@ -6,7 +6,10 @@
     "main",
     "profile-*",
     "subscribe-*",
-    "automation-*"
+    "automation-*",
+    "whisper-scraper",
+    "twitch-login",
+    "drops-login"
   ],
   "permissions": [
     "core:window:allow-close",

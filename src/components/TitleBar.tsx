@@ -1,5 +1,5 @@
 import { Window } from '@tauri-apps/api/window';
-import { Home, Gift, User, Settings, Proportions, Palette, Check } from 'lucide-react';
+import { Home, Gift, User, Settings, Proportions, Palette, Check, MessageCircle } from 'lucide-react';
 import { Minus, X, CornersOut, CornersIn, Medal } from 'phosphor-react';
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { useAppStore } from '../stores/AppStore';
@@ -12,7 +12,7 @@ import { themes, themeCategories, getThemeById, applyTheme, Theme } from '../the
 
 const TitleBar = () => {
   const store = useAppStore();
-  const { openSettings, setShowProfileOverlay, setShowDropsOverlay, setShowBadgesOverlay, showProfileOverlay, isAuthenticated, currentUser, isMiningActive, isTheaterMode, toggleTheaterMode, streamUrl, settings, updateSettings, isHomeActive, toggleHome } = store;
+  const { openSettings, setShowProfileOverlay, setShowDropsOverlay, setShowBadgesOverlay, setShowWhispersOverlay, showProfileOverlay, isAuthenticated, currentUser, isMiningActive, isTheaterMode, toggleTheaterMode, streamUrl, settings, updateSettings, isHomeActive, toggleHome, whisperImportState } = store;
   const [showAbout, setShowAbout] = useState(false);
   const [showSplash, setShowSplash] = useState(false);
   const [showThemePicker, setShowThemePicker] = useState(false);
@@ -294,6 +294,19 @@ const TitleBar = () => {
         </div>
 
         <div className="flex space-x-1" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+          {/* Whispers Button */}
+          <button
+            onClick={() => setShowWhispersOverlay(true)}
+            className="relative p-1.5 text-textSecondary hover:text-textPrimary hover:bg-glass rounded transition-all duration-200"
+            title="Whispers"
+          >
+            <MessageCircle size={16} />
+            {/* Import indicator */}
+            {whisperImportState.isImporting && (
+              <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-purple-500 rounded-full animate-pulse" />
+            )}
+          </button>
+
           {/* Profile Button */}
           <button
             onClick={() => setShowProfileOverlay(!showProfileOverlay)}

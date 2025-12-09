@@ -330,6 +330,8 @@ const VideoPlayer = () => {
             tooltips: { controls: true, seek: true },
             hideControls: true,
             clickToPlay: true,
+            // Disable Plyr's built-in localStorage - we manage settings via Tauri backend
+            storage: { enabled: false },
           });
 
           playerRef.current = player;
@@ -670,6 +672,8 @@ const VideoPlayer = () => {
         invertTime: false,
         keyboard: { focused: true, global: true },
         tooltips: { controls: true, seek: true },
+        // Disable Plyr's built-in localStorage - we manage settings via Tauri backend
+        storage: { enabled: false },
       });
 
       playerRef.current = player;

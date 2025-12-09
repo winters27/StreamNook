@@ -35,6 +35,10 @@ interface BadgeVersion {
   set_id?: string;
 }
 
+// One-time migration flag for v4.9.1 webview features
+// This key is set after the force re-login to ensure it only happens once
+const WEBVIEW_RELOGIN_MIGRATION_KEY = 'streamnook-webview-relogin-v4.9.1';
+
 // Default sizes for different placements (outside component to avoid recreating on each render)
 const DEFAULT_CHAT_WIDTH = 384; // For 'right' placement
 const DEFAULT_CHAT_HEIGHT = 200; // For 'bottom' placement
@@ -231,6 +235,65 @@ function App() {
         useAppStore.getState().loadFollowedStreams();
       });
 
+      // Listen for whisper import events (global listener so import works from any UI)
+      const unlistenWhisperProgress = await listen<{ step: number; status: string; detail: string; current: number; total: number }>(
+        'whisper-import-progress',
+        (event) => {
+          const { step, status, detail, current, total } = event.payload;
+          const { setWhisperImportState } = useAppStore.getState();
+          setWhisperImportState({
+            progress: { step, status: status as any, detail, current, total }
+          });
+
+          // Track export progress for step 3
+          if (step === 3 && status === 'running') {
+            const match = detail.match(/Exporting: (.+)/);
+            setWhisperImportState({
+              exportProgress: { current, total, username: match ? match[1] : '' }
+            });
+          }
+
+          // When step 2 completes, set the estimated end time
+          if (step === 2 && status === 'complete') {
+            const countMatch = detail.match(/Found (\d+) conversations/);
+            if (countMatch) {
+              const count = parseInt(countMatch[1], 10);
+              const SECONDS_PER_CONVERSATION = 3;
+              const estimatedSeconds = count * SECONDS_PER_CONVERSATION;
+              const endTime = Date.now() + (estimatedSeconds * 1000);
+              setWhisperImportState({
+                totalConversations: count,
+                estimatedEndTime: endTime
+              });
+            }
+          }
+        }
+      );
+
+      const unlistenWhisperComplete = await listen<{ success: boolean; message: string; conversations: number; messages: number }>(
+        'whisper-import-complete',
+        (event) => {
+          const { success, message, conversations, messages } = event.payload;
+          const { setWhisperImportState, addToast } = useAppStore.getState();
+          if (success) {
+            console.log('[App] Whisper import completed:', conversations, 'conversations,', messages, 'messages');
+            setWhisperImportState({
+              isImporting: false,
+              result: { conversations, messages },
+              error: null
+            });
+            addToast(`Imported ${messages.toLocaleString()} whisper messages from ${conversations} conversations`, 'success');
+          } else {
+            console.error('[App] Whisper import failed:', message);
+            setWhisperImportState({
+              isImporting: false,
+              error: message
+            });
+            addToast(`Whisper import failed: ${message}`, 'error');
+          }
+        }
+      );
+
       // Set up periodic auth check to detect session expiry while watching
       // Check every 5 minutes
       const authCheckInterval = setInterval(async () => {
@@ -249,6 +312,8 @@ function App() {
         unlistenDropsError();
         unlistenStartWhisper();
         unlistenRefreshFollowing();
+        unlistenWhisperProgress();
+        unlistenWhisperComplete();
         clearInterval(authCheckInterval);
       };
     };
@@ -302,16 +367,47 @@ function App() {
     checkForFirstTimeSetup();
   }, [settings.streamlink_path, settings.setup_complete, updateSettings]);
 
-  // Check if we need to show the changelog after an update
+  // Check if we need to show the changelog after an update (and force relogin if needed)
   useEffect(() => {
     const checkForVersionChange = async () => {
       try {
         // Get the current app version
         const currentVersion = await invoke<string>('get_current_app_version');
-        const { settings } = useAppStore.getState();
+        const { settings, logoutFromTwitch, isAuthenticated } = useAppStore.getState();
         const lastSeenVersion = settings.last_seen_version;
 
         console.log('[App] Version check - Current:', currentVersion, 'Last seen:', lastSeenVersion);
+
+        // One-time force re-login for v4.9.1 webview features
+        // This only triggers once per user, ever, and only if they're currently logged in
+        const hasCompletedWebviewMigration = localStorage.getItem(WEBVIEW_RELOGIN_MIGRATION_KEY);
+        if (!hasCompletedWebviewMigration && isAuthenticated) {
+          console.log('[App] One-time force re-login for webview features (v4.9.1)');
+
+          // Mark migration as complete BEFORE logout so it only happens once
+          localStorage.setItem(WEBVIEW_RELOGIN_MIGRATION_KEY, 'true');
+
+          // Log the user out
+          await logoutFromTwitch();
+
+          // Show a toast explaining why
+          addToast(
+            'Please log in again to enable new features (whisper import, follow/unfollow)',
+            'info'
+          );
+
+          // Update last seen version
+          await updateSettings({ ...settings, last_seen_version: currentVersion });
+
+          // Show the setup wizard so they can log back in
+          setShowSetupWizard(true);
+          return;
+        }
+
+        // Mark migration as complete for users who weren't logged in (no action needed)
+        if (!hasCompletedWebviewMigration) {
+          localStorage.setItem(WEBVIEW_RELOGIN_MIGRATION_KEY, 'true');
+        }
 
         // If there's no last seen version (first run) or the version has changed
         if (lastSeenVersion && lastSeenVersion !== currentVersion) {
@@ -332,7 +428,7 @@ function App() {
     if (settings.streamlink_path !== undefined) {
       checkForVersionChange();
     }
-  }, [settings.streamlink_path, updateSettings]);
+  }, [settings.streamlink_path, updateSettings, addToast]);
 
   // Handle changelog close - update the last seen version
   const handleChangelogClose = async () => {
@@ -770,7 +866,7 @@ function App() {
           {/* Loading state when starting stream */}
           {isLoading && !streamUrl && (
             <div className="absolute inset-0 z-20 bg-black">
-              <LoadingWidget useFunnyMessages={true} />
+              <LoadingWidget useFunnyMessages={true} showProxyNote={settings.ttvlol_plugin?.enabled ?? false} />
             </div>
           )}
 
@@ -784,7 +880,7 @@ function App() {
                 <div className="w-full h-full">
                   <VideoPlayer key={streamUrl} />
                 </div>
-                {isLoading && <LoadingWidget useFunnyMessages={true} />}
+                {isLoading && <LoadingWidget useFunnyMessages={true} showProxyNote={settings.ttvlol_plugin?.enabled ?? false} />}
               </div>
               {/* Chat - hidden when Home is active but kept mounted */}
               {chatPlacement !== 'hidden' && (

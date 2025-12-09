@@ -9,6 +9,10 @@ import { initLogCapture } from './services/logService';
 initLogCapture();
 console.log('[App] StreamNook starting...');
 
+// Remove Plyr's localStorage - we manage player settings via Tauri backend
+// Plyr has built-in localStorage persistence that conflicts with our settings management
+localStorage.removeItem('plyr');
+
 // Check if this is a profile card window based on URL hash
 const isProfileCard = window.location.hash.startsWith('#/profile');
 
