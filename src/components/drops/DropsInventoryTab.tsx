@@ -147,7 +147,7 @@ export default function DropsInventoryTab({
     // Claim all drops for a game (with delay between claims)
     const [claimingGameId, setClaimingGameId] = useState<string | null>(null);
 
-    const handleClaimAllForGame = useCallback(async (gameId: string, gameName: string) => {
+    const handleClaimAllForGame = useCallback(async (gameId: string, _gameName: string) => {
         const group = gameGroups.find(g => g.gameId === gameId);
         if (!group) return;
 
