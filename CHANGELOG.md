@@ -1,3 +1,10 @@
+## [4.9.7] - 2025-12-08
+### ✨ Features
+- **Badge Refresh**: Added the ability to manually refresh all badge metadata, ensuring you always have the latest badge information available.
+
+### 🔧 Maintenance
+- Improved the badge update process to automatically refresh badge data that is older than 7 days, ensuring your app stays up-to-date with the latest Twitch badges.
+
 ## [4.9.6] - 2025-12-08
 ### ✨ Features
 - **Notification Management**: You can now mark individual notifications as read, or mark all notifications as read within the notification center.
@@ -692,6 +699,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
