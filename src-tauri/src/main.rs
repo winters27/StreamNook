@@ -251,6 +251,7 @@ fn main() {
             twitch_start_device_login,
             twitch_complete_device_login,
             twitch_logout,
+            clear_webview_data,
             has_stored_credentials,
             get_followed_streams,
             get_channel_info,

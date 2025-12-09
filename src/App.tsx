@@ -39,6 +39,9 @@ interface BadgeVersion {
 // This key is set after the force re-login to ensure it only happens once
 const WEBVIEW_RELOGIN_MIGRATION_KEY = 'streamnook-webview-relogin-v4.9.1';
 
+// One-time migration flag for v2.2.0 - force re-login with full webview data clear
+const V220_RELOGIN_MIGRATION_KEY = 'streamnook-relogin-v2.2.0';
+
 // Default sizes for different placements (outside component to avoid recreating on each render)
 const DEFAULT_CHAT_WIDTH = 384; // For 'right' placement
 const DEFAULT_CHAT_HEIGHT = 200; // For 'bottom' placement
@@ -407,6 +410,45 @@ function App() {
         // Mark migration as complete for users who weren't logged in (no action needed)
         if (!hasCompletedWebviewMigration) {
           localStorage.setItem(WEBVIEW_RELOGIN_MIGRATION_KEY, 'true');
+        }
+
+        // One-time force re-login for v2.2.0 with full webview data clear
+        // This ensures Twitch session cookies are fully cleared so user must re-login
+        const hasCompletedV220Migration = localStorage.getItem(V220_RELOGIN_MIGRATION_KEY);
+        if (!hasCompletedV220Migration && isAuthenticated) {
+          console.log('[App] One-time force re-login for v2.2.0 update');
+
+          // Mark migration as complete BEFORE logout so it only happens once
+          localStorage.setItem(V220_RELOGIN_MIGRATION_KEY, 'true');
+
+          // Log the user out (clears app tokens)
+          await logoutFromTwitch();
+
+          // Also clear WebView2 browsing data (cookies, cache) so Twitch session is fully cleared
+          try {
+            await invoke('clear_webview_data');
+            console.log('[App] WebView2 data cleared successfully');
+          } catch (e) {
+            console.warn('[App] Failed to clear WebView2 data:', e);
+          }
+
+          // Show a toast explaining why
+          addToast(
+            'Please log in again to continue using StreamNook',
+            'info'
+          );
+
+          // Update last seen version
+          await updateSettings({ ...settings, last_seen_version: currentVersion });
+
+          // Show the setup wizard so they can log back in
+          setShowSetupWizard(true);
+          return;
+        }
+
+        // Mark migration as complete for users who weren't logged in (no action needed)
+        if (!hasCompletedV220Migration) {
+          localStorage.setItem(V220_RELOGIN_MIGRATION_KEY, 'true');
         }
 
         // If there's no last seen version (first run) or the version has changed

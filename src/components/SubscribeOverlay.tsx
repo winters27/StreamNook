@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { X, Star, UserPlus, UserMinus, Loader2 } from 'lucide-react';
+import { useAppStore } from '../stores/AppStore';
 
 interface SubscribeOverlayProps {
   channel: string;
@@ -68,9 +69,19 @@ const SubscribeOverlay = ({ channel }: SubscribeOverlayProps) => {
         console.log(`[SubscribeOverlay] Successfully ${action}ed ${channel}`);
       } else {
         console.error(`[SubscribeOverlay] ${action} failed:`, result.message);
+        // Show helpful toast message
+        useAppStore.getState().addToast(
+          `Follow/Unfollow failed. Try logging out and back in via Settings to re-authenticate.`,
+          'error'
+        );
       }
     } catch (err: any) {
       console.error(`[SubscribeOverlay] ${action} error:`, err);
+      // Show helpful error message
+      useAppStore.getState().addToast(
+        `Follow/Unfollow failed. Try logging out and back in via Settings to re-authenticate.`,
+        'error'
+      );
     } finally {
       setFollowLoading(false);
     }
@@ -89,10 +100,10 @@ const SubscribeOverlay = ({ channel }: SubscribeOverlayProps) => {
         onClick={handleFollowAction}
         disabled={followLoading || checkingFollowStatus}
         className={`flex items-center gap-2 glass-button text-white px-4 py-2 text-sm font-medium transition-all ${followLoading || checkingFollowStatus
-            ? 'opacity-50 cursor-wait'
-            : isFollowing
-              ? 'hover:bg-red-500/20'
-              : 'hover:bg-green-500/20'
+          ? 'opacity-50 cursor-wait'
+          : isFollowing
+            ? 'hover:bg-red-500/20'
+            : 'hover:bg-green-500/20'
           }`}
         title={
           checkingFollowStatus

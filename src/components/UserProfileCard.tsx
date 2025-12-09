@@ -226,10 +226,20 @@ const UserProfileCard = ({
       } else {
         setFollowError(result.message);
         console.error(`[UserProfileCard] ${action} failed:`, result.message);
+        // Show helpful toast message
+        useAppStore.getState().addToast(
+          `Follow/Unfollow failed. Try logging out and back in via Settings to re-authenticate.`,
+          'error'
+        );
       }
     } catch (err: any) {
       console.error(`[UserProfileCard] ${action} error:`, err);
       setFollowError(err?.message || `Failed to ${action}`);
+      // Show helpful error message
+      useAppStore.getState().addToast(
+        `Follow/Unfollow failed. Try logging out and back in via Settings to re-authenticate.`,
+        'error'
+      );
     } finally {
       setFollowLoading(false);
     }
@@ -413,10 +423,10 @@ const UserProfileCard = ({
               onClick={handleFollowAction}
               disabled={followLoading}
               className={`glass-button text-white text-xs py-2 px-3 rounded text-center transition-colors flex items-center justify-center gap-1.5 min-w-[90px] ${followLoading
-                  ? 'opacity-50 cursor-wait'
-                  : isFollowing
-                    ? 'hover:bg-red-500/20 border-red-500/30'
-                    : 'hover:bg-green-500/20 border-green-500/30'
+                ? 'opacity-50 cursor-wait'
+                : isFollowing
+                  ? 'hover:bg-red-500/20 border-red-500/30'
+                  : 'hover:bg-green-500/20 border-green-500/30'
                 }`}
               title={followLoading ? 'Processing...' : isFollowing ? `Unfollow ${displayName}` : `Follow ${displayName}`}
             >
