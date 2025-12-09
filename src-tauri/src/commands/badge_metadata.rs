@@ -25,6 +25,7 @@ pub struct BadgeMetadataCached {
 pub async fn fetch_badge_metadata(
     badge_set_id: String,
     badge_version: String,
+    force: Option<bool>,
 ) -> Result<BadgeMetadata, String> {
     // Create cache key with metadata prefix to distinguish from badge data
     let cache_key = format!("metadata:{}-v{}", badge_set_id, badge_version);
@@ -35,19 +36,24 @@ pub async fn fetch_badge_metadata(
         badge_set_id, badge_version
     );
 
-    // Check universal cache first
-    println!("[BadgeMetadata] Checking cache for: {}", cache_key);
-    if let Ok(Some(cached)) = get_cached_item(CacheType::Badge, &cache_key).await {
-        println!("[BadgeMetadata] Found in cache: {}", cache_key);
-        if let Ok(cached_info) = serde_json::from_value::<BadgeMetadataCached>(cached.data) {
-            // Return full info with URL
-            return Ok(BadgeMetadata {
-                date_added: cached_info.date_added,
-                usage_stats: cached_info.usage_stats,
-                more_info: cached_info.more_info,
-                info_url: url,
-            });
+    // Check universal cache first (unless force refresh is requested)
+    let should_force = force.unwrap_or(false);
+    if !should_force {
+        println!("[BadgeMetadata] Checking cache for: {}", cache_key);
+        if let Ok(Some(cached)) = get_cached_item(CacheType::Badge, &cache_key).await {
+            println!("[BadgeMetadata] Found in cache: {}", cache_key);
+            if let Ok(cached_info) = serde_json::from_value::<BadgeMetadataCached>(cached.data) {
+                // Return full info with URL
+                return Ok(BadgeMetadata {
+                    date_added: cached_info.date_added,
+                    usage_stats: cached_info.usage_stats,
+                    more_info: cached_info.more_info,
+                    info_url: url,
+                });
+            }
         }
+    } else {
+        println!("[BadgeMetadata] Force refresh requested for: {}", cache_key);
     }
 
     println!("[BadgeMetadata] Fetching info from: {}", url);

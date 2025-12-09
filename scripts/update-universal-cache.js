@@ -22,6 +22,13 @@ const MANIFEST_PATH = path.join(CACHE_DIR, 'manifest.json');
 const TWITCH_CLIENT_ID = process.env.TWITCH_CLIENT_ID;
 const TWITCH_CLIENT_SECRET = process.env.TWITCH_CLIENT_SECRET;
 
+// Force refresh ALL badges (set via environment variable or CLI arg)
+const FORCE_REFRESH_ALL = process.env.FORCE_REFRESH_ALL === 'true' || process.argv.includes('--force-refresh');
+
+// Maximum age in days before forcing a refresh of badge metadata
+// Badges older than this will be refreshed to check for updates
+const MAX_CACHE_AGE_DAYS = 7;
+
 // Rate limiting for BadgeBase
 const BADGEBASE_DELAY_MS = 300;
 
@@ -290,10 +297,19 @@ async function main() {
 
     // Step 5: Fetch metadata for each badge
     console.log('\n[Metadata] Fetching badge metadata...');
+    if (FORCE_REFRESH_ALL) {
+      console.log('[Metadata] ⚡ FORCE_REFRESH_ALL is enabled - will refresh ALL badges');
+    }
+
     let fetched = 0;
     let skipped = 0;
     let failed = 0;
+    let refreshed = 0;
     let newBadges = [];
+    let refreshedBadges = [];
+
+    const currentTimestamp = getTimestamp();
+    const maxAgeSeconds = MAX_CACHE_AGE_DAYS * 24 * 60 * 60;
 
     for (const badgeSet of badgeSets) {
       for (const version of badgeSet.versions) {
@@ -301,12 +317,33 @@ async function main() {
 
         // Check if we already have this metadata
         const existing = manifest.entries[metadataKey];
+        let shouldFetch = true;
+        let isRefresh = false;
+
         if (existing && existing.metadata && existing.data) {
-          // Skip if we have valid metadata and it's from badgebase
+          // Check if we have valid metadata from badgebase
           if (existing.metadata.source === 'badgebase' && existing.data.date_added) {
-            skipped++;
-            continue;
+            // Check if force refresh is enabled
+            if (FORCE_REFRESH_ALL) {
+              shouldFetch = true;
+              isRefresh = true;
+            }
+            // Check if the cache is older than MAX_CACHE_AGE_DAYS
+            else if (existing.metadata.timestamp &&
+              (currentTimestamp - existing.metadata.timestamp) > maxAgeSeconds) {
+              shouldFetch = true;
+              isRefresh = true;
+            }
+            // Otherwise skip
+            else {
+              shouldFetch = false;
+              skipped++;
+            }
           }
+        }
+
+        if (!shouldFetch) {
+          continue;
         }
 
         // Fetch metadata from external source
@@ -314,6 +351,11 @@ async function main() {
         const metadata = await fetchBadgeMetadata(badgeSet.set_id, version.id);
 
         if (metadata) {
+          // Check if more_info has changed (for logging purposes)
+          const oldMoreInfo = existing?.data?.more_info;
+          const newMoreInfo = metadata.more_info;
+          const moreInfoChanged = isRefresh && oldMoreInfo !== newMoreInfo;
+
           manifest.entries[metadataKey] = {
             id: metadataKey,
             cache_type: 'badge',
@@ -325,10 +367,18 @@ async function main() {
               version: 1,
             },
           };
-          fetched++;
-          newBadges.push(`${badgeSet.set_id}-v${version.id} (${version.title})`);
-          // Only log new badges, not every single one
-          console.log(`[Metadata] ✓ New: ${badgeSet.set_id}-v${version.id} (${version.title})`);
+
+          if (isRefresh) {
+            refreshed++;
+            if (moreInfoChanged) {
+              refreshedBadges.push(`${badgeSet.set_id}-v${version.id} (${version.title}) - more_info UPDATED`);
+              console.log(`[Metadata] ↻ Refreshed (updated): ${badgeSet.set_id}-v${version.id} (${version.title})`);
+            }
+          } else {
+            fetched++;
+            newBadges.push(`${badgeSet.set_id}-v${version.id} (${version.title})`);
+            console.log(`[Metadata] ✓ New: ${badgeSet.set_id}-v${version.id} (${version.title})`);
+          }
         } else {
           failed++;
           // Don't log every failed badge, we'll summarize at the end
@@ -364,14 +414,20 @@ async function main() {
     console.log('Summary:');
     console.log(`  Total badge sets: ${badgeSets.length}`);
     console.log(`  Total versions: ${totalVersions}`);
-    console.log(`  Metadata fetched: ${fetched}`);
-    console.log(`  Metadata skipped (already cached): ${skipped}`);
+    console.log(`  Metadata new: ${fetched}`);
+    console.log(`  Metadata refreshed: ${refreshed}`);
+    console.log(`  Metadata skipped (cached < ${MAX_CACHE_AGE_DAYS} days): ${skipped}`);
     console.log(`  Metadata failed: ${failed}`);
     console.log(`  Manifest entries: ${Object.keys(manifest.entries).length}`);
 
     if (newBadges.length > 0) {
       console.log('\nNew badges added:');
       newBadges.forEach(b => console.log(`  - ${b}`));
+    }
+
+    if (refreshedBadges.length > 0) {
+      console.log('\nBadges with updated more_info:');
+      refreshedBadges.forEach(b => console.log(`  - ${b}`));
     }
 
     console.log('\n' + '='.repeat(50));

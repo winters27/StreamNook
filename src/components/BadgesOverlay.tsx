@@ -221,8 +221,8 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
 
       setBadgesWithMetadata(flattened);
 
-      // Fetch metadata for all badges
-      await fetchAllBadgeMetadata(flattened);
+      // Fetch metadata for all badges with force=true to bypass cache
+      await fetchAllBadgeMetadata(flattened, true);
 
       // Check for and fetch any new badges that don't have metadata yet
       await checkAndFetchMissingMetadata();
@@ -235,50 +235,56 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
     }
   };
 
-  const fetchAllBadgeMetadata = async (badgeList: BadgeWithMetadata[]) => {
+  const fetchAllBadgeMetadata = async (badgeList: BadgeWithMetadata[], forceRefresh: boolean = false) => {
     setLoadingMetadata(true);
 
     // First, load ALL badge cache in ONE call (fast batch lookup)
     const metadataCache: Record<string, BadgeMetadata> = {};
-    const uncachedBadges: BadgeWithMetadata[] = [];
+    let uncachedBadges: BadgeWithMetadata[] = [];
 
-    console.log('[BadgesOverlay] Batch loading all badge cache...');
-    try {
-      const allBadgeCache = await invoke<Record<string, { data: any; position?: number }>>('get_all_universal_cached_items', {
-        cacheType: 'badge',
-      });
+    // If force refresh, skip cache and fetch all badges fresh
+    if (forceRefresh) {
+      console.log('[BadgesOverlay] Force refresh requested, fetching ALL badge metadata from BadgeBase...');
+      uncachedBadges = [...badgeList];
+    } else {
+      console.log('[BadgesOverlay] Batch loading all badge cache...');
+      try {
+        const allBadgeCache = await invoke<Record<string, { data: any; position?: number }>>('get_all_universal_cached_items', {
+          cacheType: 'badge',
+        });
 
-      // Map badges to their cache entries
-      for (const badge of badgeList) {
-        const cacheKey = `metadata:${badge.set_id}-v${badge.id}`;
-        const cached = allBadgeCache[cacheKey];
+        // Map badges to their cache entries
+        for (const badge of badgeList) {
+          const cacheKey = `metadata:${badge.set_id}-v${badge.id}`;
+          const cached = allBadgeCache[cacheKey];
 
-        if (cached) {
-          const metadata = cached.data as BadgeMetadata;
-          (metadata as any).position = cached.position;
-          metadataCache[`${badge.set_id}/${badge.id}`] = metadata;
-        } else {
-          uncachedBadges.push(badge);
+          if (cached) {
+            const metadata = cached.data as BadgeMetadata;
+            (metadata as any).position = cached.position;
+            metadataCache[`${badge.set_id}/${badge.id}`] = metadata;
+          } else {
+            uncachedBadges.push(badge);
+          }
         }
+
+        console.log(`[BadgesOverlay] Found ${Object.keys(metadataCache).length} badges in cache (batch), need to fetch ${uncachedBadges.length} from API`);
+      } catch (err) {
+        console.error('[BadgesOverlay] Failed to batch load cache, falling back to uncached:', err);
+        // If batch load fails, treat all as uncached
+        uncachedBadges.push(...badgeList);
       }
 
-      console.log(`[BadgesOverlay] Found ${Object.keys(metadataCache).length} badges in cache (batch), need to fetch ${uncachedBadges.length} from API`);
-    } catch (err) {
-      console.error('[BadgesOverlay] Failed to batch load cache, falling back to uncached:', err);
-      // If batch load fails, treat all as uncached
-      uncachedBadges.push(...badgeList);
+      // Update UI with cached data immediately
+      if (Object.keys(metadataCache).length > 0) {
+        const updatedBadges = badgeList.map(badge => ({
+          ...badge,
+          badgebase_info: metadataCache[`${badge.set_id}/${badge.id}`]
+        }));
+        setBadgesWithMetadata(updatedBadges);
+      }
     }
 
-    // Update UI with cached data immediately
-    if (Object.keys(metadataCache).length > 0) {
-      const updatedBadges = badgeList.map(badge => ({
-        ...badge,
-        badgebase_info: metadataCache[`${badge.set_id}/${badge.id}`]
-      }));
-      setBadgesWithMetadata(updatedBadges);
-    }
-
-    // Now fetch only the uncached badges in batches
+    // Now fetch badges from API (all badges if force refresh, or only uncached badges)
     if (uncachedBadges.length > 0) {
       const batchSize = 10; // Process 10 badges at a time
 
@@ -290,6 +296,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
             invoke<BadgeMetadata>('fetch_badge_metadata', {
               badgeSetId: badge.set_id,
               badgeVersion: badge.id,
+              force: forceRefresh,
             })
           )
         );
