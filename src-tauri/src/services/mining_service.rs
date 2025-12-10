@@ -27,6 +27,7 @@ pub struct MiningService {
     cached_user_id: Arc<RwLock<Option<String>>>, // Cache user ID to avoid repeated validation calls
     cached_spade_url: Arc<RwLock<Option<String>>>, // Cache spade URL to avoid repeated HTML fetches
     event_listener_id: Arc<RwLock<Option<u32>>>, // Store event listener ID for cleanup
+    current_mining_game: Arc<RwLock<Option<String>>>, // Track current game to detect session changes
 }
 
 impl MiningService {
@@ -46,6 +47,7 @@ impl MiningService {
             cached_user_id: Arc::new(RwLock::new(None)),
             cached_spade_url: Arc::new(RwLock::new(None)),
             event_listener_id: Arc::new(RwLock::new(None)),
+            current_mining_game: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -167,9 +169,13 @@ impl MiningService {
                                                 drop.name.clone()
                                             };
 
+                                            // Get drop image from benefit_edges
+                                            let drop_image = drop.benefit_edges.first().map(|b| b.image_url.clone());
+                                            
                                             found_drop_info = Some(CurrentDropInfo {
                                                 drop_id: drop.id.clone(),
                                                 drop_name,
+                                                drop_image,
                                                 campaign_name: campaign.name.clone(),
                                                 game_name: campaign.game_name.clone(),
                                                 current_minutes,
@@ -222,9 +228,13 @@ impl MiningService {
                                              None
                                         };
 
+                                        // Get drop image from benefit_edges
+                                        let drop_image = drop.benefit_edges.first().map(|b| b.image_url.clone());
+                                        
                                         found_drop_info = Some(CurrentDropInfo {
                                             drop_id: drop.id.clone(),
                                             drop_name,
+                                            drop_image,
                                             campaign_name: campaign.name.clone(),
                                             game_name: campaign.game_name.clone(),
                                             current_minutes,
@@ -480,9 +490,14 @@ impl MiningService {
                                                 drop.name.clone()
                                             };
 
+                                        // Get drop image from benefit_edges
+                                        let drop_image =
+                                            drop.benefit_edges.first().map(|b| b.image_url.clone());
+
                                         status.current_drop = Some(CurrentDropInfo {
                                             drop_id: drop.id.clone(),
                                             drop_name,
+                                            drop_image,
                                             campaign_name: campaign.name.clone(),
                                             game_name: campaign.game_name.clone(),
                                             current_minutes,
@@ -914,9 +929,14 @@ impl MiningService {
                                                 drop.name.clone()
                                             };
 
+                                        // Get drop image from benefit_edges
+                                        let drop_image =
+                                            drop.benefit_edges.first().map(|b| b.image_url.clone());
+
                                         status.current_drop = Some(CurrentDropInfo {
                                             drop_id: drop.id.clone(),
                                             drop_name,
+                                            drop_image,
                                             campaign_name: campaign.name.clone(),
                                             game_name: campaign.game_name.clone(),
                                             current_minutes,
@@ -1008,6 +1028,7 @@ impl MiningService {
                                 let eligible_channels_clone = eligible_channels.clone();
                                 let cached_user_id_clone = cached_user_id.clone();
                                 let cached_spade_url_clone = cached_spade_url.clone();
+                                let watch_session_channel = best_channel.name.clone(); // Track this session's channel
 
                                 tokio::spawn(async move {
                                     let mut current_channel = best_channel_clone;
@@ -1020,8 +1041,23 @@ impl MiningService {
                                     loop {
                                         // Check if still running
                                         if !*is_running_clone.read().await {
-                                            println!("🛑 Stopping watch payload loop");
+                                            println!("🛑 Stopping watch payload loop for {} (mining stopped)", watch_session_channel);
                                             break;
+                                        }
+
+                                        // Check if we're still mining this channel's game - if not, stop this loop
+                                        {
+                                            let status = mining_status_clone.read().await;
+                                            if let Some(ref mining_channel) = status.current_channel
+                                            {
+                                                if mining_channel.game_name
+                                                    != current_channel.game_name
+                                                {
+                                                    println!("🛑 Stopping watch payload loop for {} (switched to {})", 
+                                                        watch_session_channel, mining_channel.game_name);
+                                                    break;
+                                                }
+                                            }
                                         }
 
                                         // Send watch payload
@@ -1183,6 +1219,7 @@ impl MiningService {
                                     .first()
                                     .map(|c| c.game_name.clone())
                                     .unwrap_or_default();
+                                let game_name_session = game_name_poll.clone(); // Track this session's game
 
                                 tokio::spawn(async move {
                                     let mut poll_interval =
@@ -1191,8 +1228,21 @@ impl MiningService {
 
                                     loop {
                                         if !*is_running_poll.read().await {
-                                            println!("🛑 Stopping inventory polling loop");
+                                            println!("🛑 Stopping inventory polling loop for {} (mining stopped)", game_name_session);
                                             break;
+                                        }
+
+                                        // Check if we're still mining the same game - if not, stop this polling loop
+                                        // This handles the case where a new mining session started for a different game
+                                        {
+                                            let status = mining_status_poll.read().await;
+                                            if let Some(ref channel) = status.current_channel {
+                                                if channel.game_name != game_name_session {
+                                                    println!("🛑 Stopping inventory polling loop for {} (switched to {})", 
+                                                        game_name_session, channel.game_name);
+                                                    break;
+                                                }
+                                            }
                                         }
 
                                         println!(
@@ -1217,19 +1267,130 @@ impl MiningService {
                                                         item.campaign.game_name, item.campaign.name
                                                     );
 
-                                                    for drop in item.campaign.time_based_drops {
-                                                        if let Some(progress) = &drop.progress {
+                                                    for time_drop in item.campaign.time_based_drops
+                                                    {
+                                                        if let Some(progress) = &time_drop.progress
+                                                        {
                                                             let current_minutes =
                                                                 progress.current_minutes_watched;
                                                             let required_minutes =
-                                                                drop.required_minutes_watched;
+                                                                time_drop.required_minutes_watched;
 
-                                                            println!("📊 Inventory poll: {}/{} minutes for drop {}", 
-                                                                current_minutes, required_minutes, drop.id);
+                                                            // Get drop name and image from benefit_edges
+                                                            let (drop_name, drop_image) =
+                                                                if let Some(benefit) =
+                                                                    time_drop.benefit_edges.first()
+                                                                {
+                                                                    println!("  🖼️ Found benefit: {} with image: {}", benefit.name, if benefit.image_url.is_empty() { "(empty)" } else { &benefit.image_url });
+                                                                    (
+                                                                        benefit.name.clone(),
+                                                                        benefit.image_url.clone(),
+                                                                    )
+                                                                } else {
+                                                                    println!("  ⚠️ No benefit_edges for drop {}, using drop.name: {}", time_drop.id, time_drop.name);
+                                                                    (
+                                                                        time_drop.name.clone(),
+                                                                        String::new(),
+                                                                    )
+                                                                };
 
-                                                            // Emit the progress update
+                                                            println!("📊 Inventory poll: {}/{} minutes for {} ({}) [image: {}]", 
+                                                                current_minutes, required_minutes, drop_name.clone(), time_drop.id,
+                                                                if drop_image.is_empty() { "NONE" } else { "found" });
+
+                                                            // FIRST: Update mining_status.current_drop directly with full metadata
+                                                            // This ensures the status always has the correct name/image from the first update
+                                                            {
+                                                                let mut status = mining_status_poll
+                                                                    .write()
+                                                                    .await;
+                                                                let should_update =
+                                                                    if let Some(ref current_drop) =
+                                                                        status.current_drop
+                                                                    {
+                                                                        // Update if this is the same drop (progress update) OR if current_drop is missing metadata
+                                                                        current_drop.drop_id
+                                                                            == time_drop.id
+                                                                            || current_drop
+                                                                                .drop_name
+                                                                                .is_empty()
+                                                                    } else {
+                                                                        // No current drop set - set it now with the first drop that has progress
+                                                                        true
+                                                                    };
+
+                                                                if should_update {
+                                                                    let progress_percentage =
+                                                                        (current_minutes as f32
+                                                                            / required_minutes
+                                                                                as f32)
+                                                                            * 100.0;
+                                                                    let estimated_completion =
+                                                                        if current_minutes > 0
+                                                                            && current_minutes
+                                                                                < required_minutes
+                                                                        {
+                                                                            let remaining = required_minutes - current_minutes;
+                                                                            Some(chrono::Utc::now() + chrono::Duration::minutes(remaining as i64))
+                                                                        } else {
+                                                                            None
+                                                                        };
+
+                                                                    // Get drop image for CurrentDropInfo
+                                                                    let drop_image_opt =
+                                                                        if drop_image.is_empty() {
+                                                                            None
+                                                                        } else {
+                                                                            Some(drop_image.clone())
+                                                                        };
+
+                                                                    status.current_drop =
+                                                                        Some(CurrentDropInfo {
+                                                                            drop_id: time_drop
+                                                                                .id
+                                                                                .clone(),
+                                                                            drop_name: drop_name
+                                                                                .clone(),
+                                                                            drop_image:
+                                                                                drop_image_opt,
+                                                                            campaign_name: item
+                                                                                .campaign
+                                                                                .name
+                                                                                .clone(),
+                                                                            game_name: item
+                                                                                .campaign
+                                                                                .game_name
+                                                                                .clone(),
+                                                                            current_minutes,
+                                                                            required_minutes,
+                                                                            progress_percentage,
+                                                                            estimated_completion,
+                                                                        });
+                                                                    status.last_update =
+                                                                        chrono::Utc::now();
+
+                                                                    println!("✅ [Inventory] Set current_drop: {} ({}/{})", drop_name, current_minutes, required_minutes);
+
+                                                                    // Emit mining status update to frontend
+                                                                    let current_status =
+                                                                        status.clone();
+                                                                    std::mem::drop(status);
+                                                                    let _ = app_handle_poll.emit(
+                                                                        "mining-status-update",
+                                                                        &current_status,
+                                                                    );
+                                                                } else {
+                                                                    std::mem::drop(status);
+                                                                }
+                                                            }
+
+                                                            // ALSO emit the progress update event (for other listeners and frontend progress tracking)
                                                             let _ = app_handle_poll.emit("drops-progress-update", serde_json::json!({
-                                                                "drop_id": drop.id,
+                                                                "drop_id": time_drop.id,
+                                                                "drop_name": drop_name,
+                                                                "drop_image": drop_image,
+                                                                "campaign_name": item.campaign.name,
+                                                                "game_name": item.campaign.game_name,
                                                                 "current_minutes": current_minutes,
                                                                 "required_minutes": required_minutes,
                                                                 "timestamp": chrono::Utc::now().to_rfc3339()
@@ -1437,9 +1598,16 @@ impl MiningService {
                                                 None
                                             };
 
+                                            // Get drop image from benefit_edges
+                                            let drop_image = drop
+                                                .benefit_edges
+                                                .first()
+                                                .map(|b| b.image_url.clone());
+
                                             status.current_drop = Some(CurrentDropInfo {
                                                 drop_id: drop.id.clone(),
                                                 drop_name: drop.name.clone(),
+                                                drop_image,
                                                 campaign_name: campaign.name.clone(),
                                                 game_name: campaign.game_name.clone(),
                                                 current_minutes,

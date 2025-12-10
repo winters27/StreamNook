@@ -239,6 +239,10 @@ export default function DropsCenter() {
             // Clear the mine all queue
             setMineAllQueue(null);
 
+            // Clear ALL in-progress entries to prevent stale data when switching games
+            // We completely reset and let the new mining session repopulate fresh data
+            setProgress([]);
+
             // Then call the backend to actually stop
             await invoke('stop_auto_mining');
             addToast('Mining stopped', 'info');

@@ -74,7 +74,24 @@ export default function GameCard({
     const findBestProgressDrop = () => {
         if (!isMining) return null;
 
-        // Get all active (not claimed, not complete) progress entries
+        // PRIMARY: Use miningStatus.current_drop if available (has freshest data from backend)
+        if (miningStatus?.current_drop) {
+            const { drop_id, current_minutes, required_minutes, drop_name, drop_image } = miningStatus.current_drop;
+            // Use drop_image directly from miningStatus if available, fallback to globalDropMap
+            const metadata = globalDropMap.get(drop_id);
+            const benefitImage = drop_image || metadata?.benefitImage || '';
+            const benefitName = drop_name || metadata?.benefitName || 'Drop';
+
+            return {
+                dropId: drop_id,
+                current: current_minutes ?? 0,
+                required: required_minutes ?? 1,
+                benefitImage,
+                benefitName
+            };
+        }
+
+        // FALLBACK: Get all active (not claimed, not complete) progress entries
         const activeProgressEntries = progress.filter(p =>
             !p.is_claimed &&
             p.current_minutes_watched > 0 &&
@@ -82,18 +99,6 @@ export default function GameCard({
         );
 
         if (activeProgressEntries.length === 0) {
-            // Fall back to miningStatus.current_drop
-            if (miningStatus?.current_drop) {
-                const { drop_id, current_minutes, required_minutes } = miningStatus.current_drop;
-                const metadata = globalDropMap.get(drop_id);
-                return {
-                    dropId: drop_id,
-                    current: current_minutes ?? 0,
-                    required: required_minutes ?? 1,
-                    benefitImage: metadata?.benefitImage || '',
-                    benefitName: metadata?.benefitName || miningStatus.current_drop.drop_name || 'Drop'
-                };
-            }
             return null;
         }
 
@@ -109,13 +114,14 @@ export default function GameCard({
             }
         }
 
+        // Use cached drop_image/drop_name from progress if available, fallback to globalDropMap
         const metadata = globalDropMap.get(bestDrop.drop_id);
         return {
             dropId: bestDrop.drop_id,
             current: bestDrop.current_minutes_watched,
             required: bestDrop.required_minutes_watched,
-            benefitImage: metadata?.benefitImage || '',
-            benefitName: metadata?.benefitName || 'Drop in progress'
+            benefitImage: bestDrop.drop_image || metadata?.benefitImage || '',
+            benefitName: bestDrop.drop_name || metadata?.benefitName || 'Drop in progress'
         };
     };
 

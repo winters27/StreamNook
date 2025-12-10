@@ -184,12 +184,17 @@ export default function GameDetailPanel({
                             p.current_minutes_watched < p.required_minutes_watched // Not yet 100%
                         );
 
-                        // Show ALL active progress - when watching a game category, Twitch sends
-                        // progress for ALL eligible drops, not just the ones we have metadata for
-                        // This ensures we display all drops being mined
-                        const progressForThisGame = activeProgress;
+                        // ONLY show progress for drops that belong to this game's campaigns/inventory
+                        // This prevents showing drops from other games when switching
+                        const progressForThisGame = activeProgress.filter(p => {
+                            // Check if this drop belongs to this game (either local or global lookup confirms it)
+                            const isLocalDrop = localDropMap.has(p.drop_id);
+                            const globalLookup = globalDropMap.get(p.drop_id);
+                            const belongsToThisGame = isLocalDrop || (globalLookup && globalLookup.gameName === game.name);
+                            return belongsToThisGame;
+                        });
 
-                        console.log('[GameDetailPanel] Active progress entries (showing all):', progressForThisGame.length);
+                        console.log('[GameDetailPanel] Active progress entries for this game:', progressForThisGame.length);
 
                         // Map each progress entry to its drop object (for benefit image/name)
                         const dropsWithProgress = progressForThisGame.map(dropProg => {

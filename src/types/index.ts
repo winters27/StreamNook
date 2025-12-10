@@ -61,6 +61,7 @@ export interface CurrentDropInfo {
   campaign_name: string;
   drop_id: string;
   drop_name: string;
+  drop_image?: string; // Image URL from benefit_edges
   required_minutes: number;
   current_minutes: number;
   game_name: string;
@@ -274,6 +275,8 @@ export interface DropProgress {
   is_claimed: boolean;
   last_updated: string;
   drop_instance_id?: string; // Required for claiming drops - compound ID from Twitch
+  drop_name?: string; // Cached drop name from backend events
+  drop_image?: string; // Cached drop image from backend events
 }
 
 export interface TimeBasedDrop {

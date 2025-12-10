@@ -182,6 +182,7 @@ pub struct MiningStatus {
 pub struct CurrentDropInfo {
     pub drop_id: String,
     pub drop_name: String,
+    pub drop_image: Option<String>, // Benefit image URL for display
     pub campaign_name: String,
     pub game_name: String,
     pub current_minutes: i32,
