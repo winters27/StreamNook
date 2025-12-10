@@ -1,3 +1,11 @@
+## [5.0.1] - 2025-12-09
+### ✨ Features
+- **Drop Images**: Drops are now displayed with their images throughout the Drops Center, making it easier to identify the rewards you're earning.
+
+### 🐛 Bug Fixes
+- Fixed an issue where stopping drops mining would leave stale data in the UI.
+- Improved game session tracking to ensure drops progress is correctly displayed when switching between games.
+
 ## [5.0.0] - 2025-12-09
 ### ✨ Features
 - **Revamped Drops Center**: Experience a completely redesigned Drops Center with a sleek, user-friendly interface. Enjoy intuitive navigation, clear progress tracking, and comprehensive game information, making drops mining easier than ever.
@@ -706,6 +714,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
