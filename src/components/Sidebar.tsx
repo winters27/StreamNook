@@ -381,10 +381,6 @@ const Sidebar = () => {
             toggleHome();
         }
         startStream(stream.user_login, stream);
-        // Exit Home view (and PIP mode) when clicking a stream from the sidebar
-        if (isHomeActive) {
-            toggleHome();
-        }
     };
 
     const handleFavoriteClick = (e: React.MouseEvent, userId: string) => {

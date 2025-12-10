@@ -1,3 +1,10 @@
+## [5.0.2] - 2025-12-09
+### ✨ Features
+- **Smart Auto-Switch**: Improved auto-switching logic to prevent it from interrupting raid redirects. Now, StreamNook will wait a short period after a raid before switching channels.
+
+### 🐛 Bug Fixes
+- Resolved an issue where clicking a stream in the sidebar would unnecessarily toggle the home view.
+
 ## [5.0.1] - 2025-12-09
 ### ✨ Features
 - **Drop Images**: Drops are now displayed with their images throughout the Drops Center, making it easier to identify the rewards you're earning.
@@ -714,6 +721,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 

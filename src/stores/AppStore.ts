@@ -115,6 +115,8 @@ interface AppState {
   originalChatPlacement: string | null;
   toasts: Toast[];
   isAutoSwitching: boolean;
+  // Track when raid redirect occurred to prevent auto-switch from overriding
+  lastRaidRedirectTime: number;
   // Navigation state for deep linking
   homeActiveTab: HomeTab;
   homeSelectedCategory: TwitchCategory | null;
@@ -224,6 +226,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   originalChatPlacement: null,
   toasts: [],
   isAutoSwitching: false,
+  // Track when raid redirect occurred to prevent auto-switch from overriding
+  lastRaidRedirectTime: 0,
   // Navigation state for deep linking
   homeActiveTab: 'following' as HomeTab,
   homeSelectedCategory: null,
@@ -244,11 +248,20 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   handleStreamOffline: async () => {
     const state = get();
-    const { currentStream, settings, isAutoSwitching } = state;
+    const { currentStream, settings, isAutoSwitching, lastRaidRedirectTime } = state;
 
     // Prevent multiple auto-switch attempts
     if (isAutoSwitching) {
       console.log('[AutoSwitch] Already in progress, skipping');
+      return;
+    }
+
+    // Check if a raid redirect recently happened (within last 15 seconds)
+    // This prevents auto-switch from overriding a raid redirect
+    const timeSinceRaidRedirect = Date.now() - lastRaidRedirectTime;
+    const RAID_COOLDOWN_MS = 15000; // 15 seconds
+    if (lastRaidRedirectTime > 0 && timeSinceRaidRedirect < RAID_COOLDOWN_MS) {
+      console.log(`[AutoSwitch] Skipping - raid redirect occurred ${Math.round(timeSinceRaidRedirect / 1000)}s ago`);
       return;
     }
 
@@ -783,6 +796,9 @@ export const useAppStore = create<AppState>((set, get) => ({
             // Raid callback - redirect to raided channel
             onRaid: autoRedirectOnRaid ? async (targetLogin: string, viewerCount: number) => {
               console.log(`[EventSub] Raid detected! Redirecting to ${targetLogin} (${viewerCount} viewers)`);
+
+              // Mark that a raid redirect is happening - this prevents auto-switch from overriding
+              set({ lastRaidRedirectTime: Date.now() });
 
               // Show notification toast
               get().addToast(`🎉 Raid starting! Joining ${targetLogin}...`, 'info');
