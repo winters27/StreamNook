@@ -6,6 +6,7 @@ const DropsSettings = () => {
   const [isMining, setIsMining] = useState(false);
   const [isInitializing, setIsInitializing] = useState(false);
   const [showPrioritySettings, setShowPrioritySettings] = useState(false);
+  const [showRecoverySettings, setShowRecoverySettings] = useState(false);
 
   // Toggle component for reuse
   const Toggle = ({ enabled, onChange, disabled = false }: { enabled: boolean; onChange: () => void; disabled?: boolean }) => (
@@ -349,6 +350,193 @@ const DropsSettings = () => {
               >
                 Add
               </button>
+            </div>
+          </div>
+        )}
+
+        {/* Recovery Settings Button */}
+        <button
+          onClick={() => setShowRecoverySettings(!showRecoverySettings)}
+          className="w-full mt-3 px-4 py-2 bg-backgroundSecondary hover:bg-backgroundSecondary/80 border border-border text-textPrimary rounded-md text-sm font-medium transition-colors"
+        >
+          {showRecoverySettings ? 'Hide' : 'Configure'} Recovery Settings
+        </button>
+
+        {/* Recovery Settings Panel */}
+        {showRecoverySettings && (
+          <div className="mt-4 p-4 bg-background border border-border rounded-md">
+            <h4 className="text-sm font-semibold text-textPrimary mb-3 flex items-center gap-2">
+              <span className="text-lg">🛡️</span>
+              Mining Recovery System
+            </h4>
+            <p className="text-xs text-textSecondary mb-4">
+              Configure how StreamNook handles stuck mining sessions, offline streamers, and stale progress.
+            </p>
+
+            {/* Recovery Mode */}
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-textPrimary mb-2">
+                Recovery Mode
+              </label>
+              <select
+                value={settings.drops?.recovery_settings?.recovery_mode ?? 'Automatic'}
+                onChange={(e) => updateDropsSettings({
+                  recovery_settings: {
+                    ...(settings.drops?.recovery_settings ?? {}),
+                    recovery_mode: e.target.value as 'Automatic' | 'Relaxed' | 'ManualOnly'
+                  }
+                })}
+                className="w-full px-3 py-2 bg-background border border-border rounded-md text-textPrimary text-sm"
+              >
+                <option value="Automatic">Automatic (7 min threshold)</option>
+                <option value="Relaxed">Relaxed (15 min threshold)</option>
+                <option value="ManualOnly">Manual Only (notify but don't switch)</option>
+              </select>
+              <p className="text-xs text-textSecondary mt-1">
+                How aggressively to handle stuck mining sessions
+              </p>
+            </div>
+
+            {/* Stale Progress Threshold */}
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-textPrimary mb-2">
+                Stale Progress Threshold: {Math.round((settings.drops?.recovery_settings?.stale_progress_threshold_seconds ?? 420) / 60)} minutes
+              </label>
+              <input
+                type="range"
+                min="180"
+                max="900"
+                step="60"
+                value={settings.drops?.recovery_settings?.stale_progress_threshold_seconds ?? 420}
+                onChange={(e) => updateDropsSettings({
+                  recovery_settings: {
+                    ...(settings.drops?.recovery_settings ?? {}),
+                    stale_progress_threshold_seconds: parseInt(e.target.value)
+                  }
+                })}
+                className="w-full accent-accent cursor-pointer"
+              />
+              <p className="text-xs text-textSecondary mt-1">
+                Switch streamers if no progress increase for this long (3-15 minutes)
+              </p>
+            </div>
+
+            {/* Streamer Blacklist Duration */}
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-textPrimary mb-2">
+                Streamer Blacklist Duration: {Math.round((settings.drops?.recovery_settings?.streamer_blacklist_duration_seconds ?? 600) / 60)} minutes
+              </label>
+              <input
+                type="range"
+                min="300"
+                max="1800"
+                step="60"
+                value={settings.drops?.recovery_settings?.streamer_blacklist_duration_seconds ?? 600}
+                onChange={(e) => updateDropsSettings({
+                  recovery_settings: {
+                    ...(settings.drops?.recovery_settings ?? {}),
+                    streamer_blacklist_duration_seconds: parseInt(e.target.value)
+                  }
+                })}
+                className="w-full accent-accent cursor-pointer"
+              />
+              <p className="text-xs text-textSecondary mt-1">
+                How long to avoid a streamer after they fail (5-30 minutes)
+              </p>
+            </div>
+
+            {/* Campaign Deprioritize Duration */}
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-textPrimary mb-2">
+                Campaign Deprioritize Duration: {Math.round((settings.drops?.recovery_settings?.campaign_deprioritize_duration_seconds ?? 1800) / 60)} minutes
+              </label>
+              <input
+                type="range"
+                min="600"
+                max="3600"
+                step="300"
+                value={settings.drops?.recovery_settings?.campaign_deprioritize_duration_seconds ?? 1800}
+                onChange={(e) => updateDropsSettings({
+                  recovery_settings: {
+                    ...(settings.drops?.recovery_settings ?? {}),
+                    campaign_deprioritize_duration_seconds: parseInt(e.target.value)
+                  }
+                })}
+                className="w-full accent-accent cursor-pointer"
+              />
+              <p className="text-xs text-textSecondary mt-1">
+                How long to deprioritize a campaign with no working streamers (10-60 minutes)
+              </p>
+            </div>
+
+            {/* Detect Game Category Change */}
+            <div className="mb-4">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <span className="text-sm font-medium text-textPrimary">Detect Game Category Changes</span>
+                  <p className="text-xs text-textSecondary">
+                    Switch if streamer changes to a different game
+                  </p>
+                </div>
+                <Toggle
+                  enabled={settings.drops?.recovery_settings?.detect_game_category_change ?? true}
+                  onChange={async () => {
+                    await updateDropsSettings({
+                      recovery_settings: {
+                        ...(settings.drops?.recovery_settings ?? {}),
+                        detect_game_category_change: !(settings.drops?.recovery_settings?.detect_game_category_change ?? true)
+                      }
+                    });
+                  }}
+                />
+              </div>
+            </div>
+
+            {/* Notify on Recovery Actions */}
+            <div className="mb-4">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <span className="text-sm font-medium text-textPrimary">Notify on Recovery Actions</span>
+                  <p className="text-xs text-textSecondary">
+                    Show notifications when streamers are switched
+                  </p>
+                </div>
+                <Toggle
+                  enabled={settings.drops?.recovery_settings?.notify_on_recovery_action ?? true}
+                  onChange={async () => {
+                    await updateDropsSettings({
+                      recovery_settings: {
+                        ...(settings.drops?.recovery_settings ?? {}),
+                        notify_on_recovery_action: !(settings.drops?.recovery_settings?.notify_on_recovery_action ?? true)
+                      }
+                    });
+                  }}
+                />
+              </div>
+            </div>
+
+            {/* Max Recovery Attempts */}
+            <div className="mb-2">
+              <label className="block text-sm font-medium text-textPrimary mb-2">
+                Max Recovery Attempts: {settings.drops?.recovery_settings?.max_recovery_attempts ?? 5}
+              </label>
+              <input
+                type="range"
+                min="3"
+                max="10"
+                step="1"
+                value={settings.drops?.recovery_settings?.max_recovery_attempts ?? 5}
+                onChange={(e) => updateDropsSettings({
+                  recovery_settings: {
+                    ...(settings.drops?.recovery_settings ?? {}),
+                    max_recovery_attempts: parseInt(e.target.value)
+                  }
+                })}
+                className="w-full accent-accent cursor-pointer"
+              />
+              <p className="text-xs text-textSecondary mt-1">
+                Stop mining after this many consecutive failures (3-10)
+              </p>
             </div>
           </div>
         )}

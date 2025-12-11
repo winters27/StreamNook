@@ -31,6 +31,18 @@ export interface StreamlinkSettings {
   custom_streamlink_path?: string; // Custom folder path for portable/installed Streamlink
 }
 
+export type RecoveryMode = 'Automatic' | 'Relaxed' | 'ManualOnly';
+
+export interface RecoverySettings {
+  recovery_mode?: RecoveryMode;
+  stale_progress_threshold_seconds?: number;
+  streamer_blacklist_duration_seconds?: number;
+  campaign_deprioritize_duration_seconds?: number;
+  detect_game_category_change?: boolean;
+  notify_on_recovery_action?: boolean;
+  max_recovery_attempts?: number;
+}
+
 export interface DropsSettings {
   auto_claim_drops: boolean;
   auto_claim_channel_points: boolean;
@@ -44,6 +56,8 @@ export interface DropsSettings {
   excluded_games?: string[];
   priority_mode?: 'PriorityOnly' | 'EndingSoonest' | 'LowAvailFirst';
   watch_interval_seconds?: number;
+  // Recovery settings
+  recovery_settings?: RecoverySettings;
 }
 
 export interface MiningChannel {
@@ -258,6 +272,7 @@ export interface UnifiedGame {
   // Status
   is_mining: boolean;                  // Currently mining this game
   has_claimable: boolean;              // Has drops ready to claim
+  all_drops_claimed: boolean;          // All available drops have been claimed (game complete)
 }
 
 // Drops inventory types

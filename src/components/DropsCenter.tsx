@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { useAppStore } from '../stores/AppStore';
@@ -75,6 +75,12 @@ export default function DropsCenter() {
 
     // Settings State
     const [dropsSettings, setDropsSettings] = useState<DropsSettings | null>(null);
+
+    // Ref for the games container to scroll to top when mining starts
+    const gamesContainerRef = useRef<HTMLDivElement>(null);
+
+    // Track the previously mining game to detect when mining starts
+    const prevMiningGameRef = useRef<string | null>(null);
 
     // Derived state for filtering
     const filteredGames = useMemo(() => {
@@ -375,12 +381,19 @@ export default function DropsCenter() {
             setIsLoading(true);
             setError(null);
 
-            const [campaignsData, progressData, statsData, inventoryData] = await Promise.all([
+            // Fetch mining status along with other data to ensure proper sorting on initial load
+            const [campaignsData, progressData, statsData, inventoryData, currentMiningStatus] = await Promise.all([
                 invoke<DropCampaign[]>('get_active_drop_campaigns').catch(() => [] as DropCampaign[]),
                 invoke<DropProgress[]>('get_drop_progress').catch(() => [] as DropProgress[]),
                 invoke<DropsStatistics>('get_drops_statistics').catch(() => null),
                 invoke<InventoryResponse>('get_drops_inventory').catch(() => null),
+                invoke<MiningStatus>('get_mining_status').catch(() => null),
             ]);
+
+            // Update mining status state if we got a fresh one
+            if (currentMiningStatus) {
+                setMiningStatus(currentMiningStatus);
+            }
 
             if (progressData) setProgress(progressData);
             if (statsData) setStatistics(statsData);
@@ -402,7 +415,8 @@ export default function DropsCenter() {
                         inventory_items: [],
                         total_claimed: 0,
                         is_mining: false,
-                        has_claimable: false
+                        has_claimable: false,
+                        all_drops_claimed: false
                     };
                     gamesMap.set(id, game);
                 }
@@ -441,20 +455,45 @@ export default function DropsCenter() {
                 });
             }
 
-            // Get the current mining game name (case-insensitive)
-            const miningGameName = miningStatus?.current_drop?.game_name?.toLowerCase() ||
-                miningStatus?.current_channel?.game_name?.toLowerCase();
+            // Get the current mining game name (case-insensitive) - use freshly fetched status
+            const activeMiningStatus = currentMiningStatus || miningStatus;
+            const miningGameName = activeMiningStatus?.current_drop?.game_name?.toLowerCase() ||
+                activeMiningStatus?.current_channel?.game_name?.toLowerCase();
 
-            // Update is_mining flag for each game
+            // Update is_mining flag and calculate all_drops_claimed for each game
             gamesMap.forEach(game => {
-                if (miningStatus?.is_mining && miningGameName) {
+                if (activeMiningStatus?.is_mining && miningGameName) {
                     game.is_mining = game.name.toLowerCase() === miningGameName;
+                }
+
+                // Check if all drops in all active campaigns have been claimed
+                if (game.active_campaigns.length > 0 && game.total_active_drops > 0) {
+                    let totalDropsInCampaigns = 0;
+                    let claimedDropsCount = 0;
+
+                    game.active_campaigns.forEach(campaign => {
+                        campaign.time_based_drops.forEach(drop => {
+                            totalDropsInCampaigns++;
+                            const prog = progressData?.find(p => p.drop_id === drop.id);
+                            if (prog?.is_claimed) {
+                                claimedDropsCount++;
+                            }
+                        });
+                    });
+
+                    // All drops claimed if we have drops and all are claimed
+                    game.all_drops_claimed = totalDropsInCampaigns > 0 && claimedDropsCount === totalDropsInCampaigns;
                 }
             });
 
             setUnifiedGames(Array.from(gamesMap.values()).sort((a, b) => {
+                // Mining games first
                 if (a.is_mining !== b.is_mining) return a.is_mining ? -1 : 1;
+                // Completed games (all drops claimed) go to bottom
+                if (a.all_drops_claimed !== b.all_drops_claimed) return a.all_drops_claimed ? 1 : -1;
+                // Games with claimable drops next
                 if (a.has_claimable !== b.has_claimable) return a.has_claimable ? -1 : 1;
+                // Then by number of active campaigns
                 if (a.active_campaigns.length !== b.active_campaigns.length) {
                     return b.active_campaigns.length - a.active_campaigns.length;
                 }
@@ -671,6 +710,27 @@ export default function DropsCenter() {
 
         console.log('[DropsCenter] Updating is_mining flag. Mining:', miningStatus.is_mining, 'Game:', miningGameName);
 
+        // Detect if mining just started for a new game (to trigger scroll)
+        const currentMiningGame = miningStatus.is_mining && miningGameName ? miningGameName : null;
+        const prevMiningGame = prevMiningGameRef.current;
+
+        // If a new game started mining (different from previous), scroll to top
+        if (currentMiningGame && currentMiningGame !== prevMiningGame) {
+            console.log('[DropsCenter] New mining game detected, scrolling to top:', currentMiningGame);
+            // Small delay to allow the list to re-sort first
+            setTimeout(() => {
+                if (gamesContainerRef.current) {
+                    gamesContainerRef.current.scrollTo({
+                        top: 0,
+                        behavior: 'smooth'
+                    });
+                }
+            }, 100);
+        }
+
+        // Update the ref for next comparison
+        prevMiningGameRef.current = currentMiningGame;
+
         setUnifiedGames(prevGames => {
             const updated = prevGames.map(game => ({
                 ...game,
@@ -679,10 +739,15 @@ export default function DropsCenter() {
                     : false
             }));
 
-            // Re-sort to put mining game first
+            // Re-sort with full sorting logic
             return updated.sort((a, b) => {
+                // Mining games first
                 if (a.is_mining !== b.is_mining) return a.is_mining ? -1 : 1;
+                // Completed games (all drops claimed) go to bottom
+                if (a.all_drops_claimed !== b.all_drops_claimed) return a.all_drops_claimed ? 1 : -1;
+                // Games with claimable drops next
                 if (a.has_claimable !== b.has_claimable) return a.has_claimable ? -1 : 1;
+                // Then by number of active campaigns
                 if (a.active_campaigns.length !== b.active_campaigns.length) {
                     return b.active_campaigns.length - a.active_campaigns.length;
                 }
@@ -830,7 +895,7 @@ export default function DropsCenter() {
 
                 {/* Games Tab */}
                 {!isLoading && activeTab === 'games' && (
-                    <div className="h-full overflow-y-auto p-4 custom-scrollbar">
+                    <div ref={gamesContainerRef} className="h-full overflow-y-auto p-4 custom-scrollbar">
                         {/* Empty State */}
                         {filteredGames.length === 0 && (
                             <div className="flex items-center justify-center h-full">

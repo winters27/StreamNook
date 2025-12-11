@@ -1,3 +1,12 @@
+## [5.0.3] - 2025-12-11
+### ✨ Features
+- **Automatic Stream Recovery**: StreamNook can now automatically recover from common mining issues like offline streamers, stalled progress, and game category changes! Configure the new recovery settings to customize the behavior.
+- **Improved Sidebar**: The sidebar's expand-on-hover mode is now smoother and prevents layout jumps.
+- **Game Completion Status**: The Drops Center now shows when you've claimed all available drops for a game.
+
+### 🐛 Bug Fixes
+- Improved whisper error messages to be more specific about why a message failed to send.
+
 ## [5.0.2] - 2025-12-09
 ### ✨ Features
 - **Smart Auto-Switch**: Improved auto-switching logic to prevent it from interrupting raid redirects. Now, StreamNook will wait a short period after a raid before switching channels.
@@ -721,6 +730,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 

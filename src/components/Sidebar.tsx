@@ -307,15 +307,19 @@ const Sidebar = () => {
         switch (sidebarMode) {
             case 'expanded':
                 // Always fully expanded
-                return { visible: true, width: expandedWidth, showExpanded: true };
+                return { visible: true, width: expandedWidth, showExpanded: true, isOverlay: false };
 
             case 'compact':
                 // Show compact, expand on hover if enabled, or if manually expanded
                 const shouldExpand = isManuallyExpanded || (expandOnHover && isHovered);
+                // When expand-on-hover is enabled, always use overlay mode (whether hovering or not)
+                // This prevents layout jumps during expand/contract animations
+                const isCompactOverlay = expandOnHover && !isManuallyExpanded;
                 return {
                     visible: true,
                     width: shouldExpand ? expandedWidth : COMPACT_WIDTH,
-                    showExpanded: shouldExpand
+                    showExpanded: shouldExpand,
+                    isOverlay: isCompactOverlay
                 };
 
             case 'hidden':
@@ -325,15 +329,16 @@ const Sidebar = () => {
                 return {
                     visible: isVisible,
                     width: isVisible ? expandedWidth : 0,
-                    showExpanded: isVisible
+                    showExpanded: isVisible,
+                    isOverlay: true
                 };
 
             case 'disabled':
                 // Completely disabled - never show
-                return { visible: false, width: 0, showExpanded: false };
+                return { visible: false, width: 0, showExpanded: false, isOverlay: false };
 
             default:
-                return { visible: true, width: COMPACT_WIDTH, showExpanded: false };
+                return { visible: true, width: COMPACT_WIDTH, showExpanded: false, isOverlay: false };
         }
     }, [sidebarMode, expandOnHover, isHovered, isEdgeHovered, isManuallyExpanded, expandedWidth, isResizing]);
 
@@ -358,7 +363,7 @@ const Sidebar = () => {
         return `https://static-cdn.jtvnw.net/user-default-pictures-uv/75305d54-c7cc-40d1-bb9c-91c46bf27829-profile_image-70x70.png`;
     }, [profileImages]);
 
-    const { visible, width, showExpanded } = calculateSidebarState();
+    const { visible, width, showExpanded, isOverlay } = calculateSidebarState();
 
     // If sidebar is completely disabled, render nothing
     if (sidebarMode === 'disabled') {
@@ -530,24 +535,32 @@ const Sidebar = () => {
                 />
             )}
 
+            {/* Spacer for compact overlay mode to maintain layout - only when in overlay mode */}
+            {sidebarMode === 'compact' && expandOnHover && isOverlay && (
+                <div style={{ width: COMPACT_WIDTH, minWidth: COMPACT_WIDTH, flexShrink: 0 }} />
+            )}
+
             {/* Main sidebar */}
             <div
                 ref={sidebarRef}
                 className={`
                     h-full border-r border-borderSubtle flex flex-col flex-shrink-0 
                     transition-[width,min-width,opacity,transform,background-color,backdrop-filter] duration-300 ease-[cubic-bezier(0.4,0,0.2,1)]
-                    ${sidebarMode === 'hidden' ? 'fixed left-0 top-0 z-30 mt-8' : 'relative'}
+                    ${isOverlay ? 'fixed left-0 top-0 z-30 mt-8' : 'relative'}
                     ${showExpanded ? 'backdrop-blur-xl' : 'bg-tertiary'}
                 `}
                 style={{
                     width: width,
-                    minWidth: sidebarMode === 'hidden' ? 0 : width,
+                    minWidth: isOverlay ? 0 : width,
                     opacity: visible ? 1 : 0,
                     pointerEvents: visible ? 'auto' : 'none',
                     transform: visible ? 'translateX(0)' : 'translateX(-10px)',
                     backgroundColor: showExpanded ? 'rgba(26, 26, 27, 0.75)' : undefined,
                 }}
                 onMouseEnter={() => {
+                    // Skip hover tracking in expanded mode - it's always expanded
+                    if (sidebarMode === 'expanded') return;
+
                     // Cancel any pending close timeout
                     if (closeTimeoutRef.current) {
                         clearTimeout(closeTimeoutRef.current);
@@ -556,11 +569,15 @@ const Sidebar = () => {
                     setIsHovered(true);
                 }}
                 onMouseLeave={() => {
+                    // Skip hover tracking in expanded mode - it's always expanded
+                    if (sidebarMode === 'expanded') return;
+
                     // Don't close while resizing
                     if (isResizing) return;
 
-                    // Add a delay before closing in hidden mode
-                    if (sidebarMode === 'hidden') {
+                    // Add a delay before closing in hidden mode or compact overlay mode
+                    const shouldDelay = sidebarMode === 'hidden' || (sidebarMode === 'compact' && expandOnHover);
+                    if (shouldDelay) {
                         closeTimeoutRef.current = setTimeout(() => {
                             setIsHovered(false);
                             setIsEdgeHovered(false);
@@ -608,7 +625,12 @@ const Sidebar = () => {
                 {/* Scrollable stream list */}
                 <div
                     ref={scrollContainerRef}
-                    className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-thin py-1"
+                    className={`flex-1 overflow-x-hidden py-1 ${
+                        // Hide scrollbar in compact mode with expand-on-hover when not expanded
+                        sidebarMode === 'compact' && expandOnHover && !showExpanded
+                            ? 'overflow-y-hidden'
+                            : 'overflow-y-auto scrollbar-thin'
+                        }`}
                 >
                     {/* Followed Streams Section */}
                     {isAuthenticated && sortedFollowedStreams.length > 0 && (
