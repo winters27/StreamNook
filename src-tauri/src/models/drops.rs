@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DropCampaign {
@@ -123,6 +123,9 @@ pub struct DropsSettings {
     pub excluded_games: HashSet<String>,
     pub priority_mode: PriorityMode,
     pub watch_interval_seconds: u64,
+    // Recovery settings
+    #[serde(default)]
+    pub recovery_settings: RecoverySettings,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -147,6 +150,287 @@ impl Default for DropsSettings {
             excluded_games: HashSet::new(),
             priority_mode: PriorityMode::PriorityOnly,
             watch_interval_seconds: 20,
+            // Recovery defaults
+            recovery_settings: RecoverySettings::default(),
+        }
+    }
+}
+
+// ============================================
+// RECOVERY SYSTEM MODELS
+// ============================================
+
+/// Settings for automatic mining recovery behavior
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecoverySettings {
+    /// How long without progress before considering mining "stale" (in seconds)
+    /// Default: 420 (7 minutes)
+    pub stale_progress_threshold_seconds: u64,
+    /// How long to blacklist a streamer after issues (in seconds)
+    /// Default: 600 (10 minutes)
+    pub streamer_blacklist_duration_seconds: u64,
+    /// How long to deprioritize a stuck campaign (in seconds)
+    /// Default: 1800 (30 minutes)
+    pub campaign_deprioritize_duration_seconds: u64,
+    /// Interval for checking stream status (separate from watch payload) (in seconds)
+    /// Default: 180 (3 minutes)
+    pub stream_status_check_interval_seconds: u64,
+    /// Recovery behavior mode
+    pub recovery_mode: RecoveryMode,
+    /// Whether to notify user when recovery actions are taken
+    pub notify_on_recovery_action: bool,
+    /// Whether to detect and handle game category changes
+    pub detect_game_category_change: bool,
+}
+
+impl Default for RecoverySettings {
+    fn default() -> Self {
+        Self {
+            stale_progress_threshold_seconds: 420,        // 7 minutes
+            streamer_blacklist_duration_seconds: 600,     // 10 minutes
+            campaign_deprioritize_duration_seconds: 1800, // 30 minutes
+            stream_status_check_interval_seconds: 180,    // 3 minutes
+            recovery_mode: RecoveryMode::Automatic,
+            notify_on_recovery_action: true,
+            detect_game_category_change: true,
+        }
+    }
+}
+
+/// Recovery behavior mode
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum RecoveryMode {
+    /// Automatically switch streamers/campaigns when issues detected (5-7 min threshold)
+    Automatic,
+    /// More relaxed thresholds (15 min), notify first before auto-switching
+    Relaxed,
+    /// Only notify user, never auto-switch
+    ManualOnly,
+}
+
+/// A temporarily blacklisted streamer (in-memory, not persisted)
+#[derive(Debug, Clone)]
+pub struct BlacklistedStreamer {
+    pub channel_id: String,
+    pub channel_name: String,
+    pub reason: BlacklistReason,
+    pub blacklisted_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+}
+
+/// Reason why a streamer was blacklisted
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum BlacklistReason {
+    /// Multiple watch payload failures
+    WatchPayloadFailures,
+    /// Streamer went offline
+    WentOffline,
+    /// Progress stalled while watching
+    StaleProgress,
+    /// Streamer changed to non-drops game category
+    GameCategoryChanged,
+}
+
+/// A temporarily deprioritized campaign
+#[derive(Debug, Clone)]
+pub struct DeprioritizedCampaign {
+    pub campaign_id: String,
+    pub campaign_name: String,
+    pub game_name: String,
+    pub reason: DeprioritizeReason,
+    pub deprioritized_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+}
+
+/// Reason why a campaign was deprioritized
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum DeprioritizeReason {
+    /// No online streamers available
+    NoStreamersAvailable,
+    /// All streamers for this campaign failed
+    AllStreamersFailed,
+    /// Progress stalled across multiple streamers
+    StaleProgressPersistent,
+}
+
+/// Event emitted when a recovery action is taken
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecoveryEvent {
+    pub event_type: RecoveryEventType,
+    pub timestamp: DateTime<Utc>,
+    pub details: RecoveryEventDetails,
+}
+
+/// Types of recovery events
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum RecoveryEventType {
+    StreamerSwitched,
+    StreamerBlacklisted,
+    CampaignDeprioritized,
+    CampaignRotated,
+    StaleProgressDetected,
+    GameCategoryChanged,
+    StreamerWentOffline,
+}
+
+/// Details about a recovery event
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecoveryEventDetails {
+    pub from_channel: Option<String>,
+    pub to_channel: Option<String>,
+    pub from_campaign: Option<String>,
+    pub to_campaign: Option<String>,
+    pub reason: String,
+}
+
+/// Extended mining status with recovery tracking
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MiningStatusExtended {
+    /// Base mining status
+    #[serde(flatten)]
+    pub base: MiningStatus,
+    /// When progress last increased (for stale detection)
+    pub last_progress_increase_at: Option<DateTime<Utc>>,
+    /// Last known progress value (for detecting increases)
+    pub last_known_progress_minutes: i32,
+    /// Current streamer's game category (for change detection)
+    pub current_streamer_game: Option<String>,
+    /// Recent recovery events (for UI display)
+    pub recent_recovery_events: Vec<RecoveryEvent>,
+}
+
+impl Default for MiningStatusExtended {
+    fn default() -> Self {
+        Self {
+            base: MiningStatus::default(),
+            last_progress_increase_at: None,
+            last_known_progress_minutes: 0,
+            current_streamer_game: None,
+            recent_recovery_events: Vec::new(),
+        }
+    }
+}
+
+/// Tracking state for the recovery watchdog (in-memory)
+#[derive(Debug, Clone)]
+pub struct RecoveryWatchdogState {
+    /// Blacklisted streamers (temporary, in-memory)
+    pub blacklisted_streamers: HashMap<String, BlacklistedStreamer>,
+    /// Deprioritized campaigns (temporary, in-memory)
+    pub deprioritized_campaigns: HashMap<String, DeprioritizedCampaign>,
+    /// When the last stream status check was performed
+    pub last_stream_status_check: Option<DateTime<Utc>>,
+    /// When progress last increased
+    pub last_progress_increase_at: Option<DateTime<Utc>>,
+    /// Last known progress value
+    pub last_known_progress_minutes: i32,
+    /// The expected game category for the current campaign
+    pub expected_game_category: Option<String>,
+}
+
+impl Default for RecoveryWatchdogState {
+    fn default() -> Self {
+        Self {
+            blacklisted_streamers: HashMap::new(),
+            deprioritized_campaigns: HashMap::new(),
+            last_stream_status_check: None,
+            last_progress_increase_at: None,
+            last_known_progress_minutes: 0,
+            expected_game_category: None,
+        }
+    }
+}
+
+impl RecoveryWatchdogState {
+    /// Check if a streamer is currently blacklisted
+    pub fn is_streamer_blacklisted(&self, channel_id: &str) -> bool {
+        if let Some(blacklisted) = self.blacklisted_streamers.get(channel_id) {
+            Utc::now() < blacklisted.expires_at
+        } else {
+            false
+        }
+    }
+
+    /// Check if a campaign is currently deprioritized
+    pub fn is_campaign_deprioritized(&self, campaign_id: &str) -> bool {
+        if let Some(deprioritized) = self.deprioritized_campaigns.get(campaign_id) {
+            Utc::now() < deprioritized.expires_at
+        } else {
+            false
+        }
+    }
+
+    /// Add a streamer to the blacklist
+    pub fn blacklist_streamer(
+        &mut self,
+        channel_id: String,
+        channel_name: String,
+        reason: BlacklistReason,
+        duration_seconds: u64,
+    ) {
+        let now = Utc::now();
+        self.blacklisted_streamers.insert(
+            channel_id.clone(),
+            BlacklistedStreamer {
+                channel_id,
+                channel_name,
+                reason,
+                blacklisted_at: now,
+                expires_at: now + chrono::Duration::seconds(duration_seconds as i64),
+            },
+        );
+    }
+
+    /// Deprioritize a campaign
+    pub fn deprioritize_campaign(
+        &mut self,
+        campaign_id: String,
+        campaign_name: String,
+        game_name: String,
+        reason: DeprioritizeReason,
+        duration_seconds: u64,
+    ) {
+        let now = Utc::now();
+        self.deprioritized_campaigns.insert(
+            campaign_id.clone(),
+            DeprioritizedCampaign {
+                campaign_id,
+                campaign_name,
+                game_name,
+                reason,
+                deprioritized_at: now,
+                expires_at: now + chrono::Duration::seconds(duration_seconds as i64),
+            },
+        );
+    }
+
+    /// Clean up expired blacklist/deprioritize entries
+    pub fn cleanup_expired(&mut self) {
+        let now = Utc::now();
+        self.blacklisted_streamers.retain(|_, v| v.expires_at > now);
+        self.deprioritized_campaigns
+            .retain(|_, v| v.expires_at > now);
+    }
+
+    /// Update progress tracking - returns true if progress increased
+    pub fn update_progress(&mut self, new_progress_minutes: i32) -> bool {
+        let increased = new_progress_minutes > self.last_known_progress_minutes;
+        if increased {
+            self.last_progress_increase_at = Some(Utc::now());
+        }
+        self.last_known_progress_minutes = new_progress_minutes;
+        increased
+    }
+
+    /// Check if progress is stale based on threshold
+    pub fn is_progress_stale(&self, threshold_seconds: u64) -> bool {
+        if let Some(last_increase) = self.last_progress_increase_at {
+            let stale_threshold = chrono::Duration::seconds(threshold_seconds as i64);
+            Utc::now() - last_increase > stale_threshold
+        } else {
+            // If we've never seen progress increase but have been running, consider it stale
+            // after the threshold
+            false
         }
     }
 }

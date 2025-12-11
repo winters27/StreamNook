@@ -1,5 +1,17 @@
 import { useState } from 'react';
-import { Settings, TrendingUp, X, Plus, Ban, Star } from 'lucide-react';
+import { Settings, TrendingUp, X, Plus, Ban, Star, Shield, AlertTriangle } from 'lucide-react';
+
+type RecoveryMode = 'Automatic' | 'Relaxed' | 'ManualOnly';
+
+interface RecoverySettings {
+    recovery_mode?: RecoveryMode;
+    stale_progress_threshold_seconds?: number;
+    streamer_blacklist_duration_seconds?: number;
+    campaign_deprioritize_duration_seconds?: number;
+    detect_game_category_change?: boolean;
+    notify_on_recovery_action?: boolean;
+    max_recovery_attempts?: number;
+}
 
 interface DropsSettings {
     auto_claim_drops: boolean;
@@ -13,6 +25,7 @@ interface DropsSettings {
     excluded_games: string[];
     priority_mode: 'PriorityOnly' | 'EndingSoonest' | 'LowAvailFirst';
     watch_interval_seconds: number;
+    recovery_settings?: RecoverySettings;
 }
 
 interface DropsSettingsTabProps {
@@ -134,7 +147,7 @@ export default function DropsSettingsTab({
                         <TrendingUp size={18} className="text-accent" />
                         Priority Strategy
                     </h4>
-                    
+
                     <select
                         value={settings.priority_mode}
                         onChange={(e) => onUpdateSettings({ priority_mode: e.target.value as DropsSettings['priority_mode'] })}
@@ -144,7 +157,7 @@ export default function DropsSettingsTab({
                         <option value="EndingSoonest">Campaigns Ending Soonest</option>
                         <option value="LowAvailFirst">Low Availability First</option>
                     </select>
-                    
+
                     <p className="text-xs text-textSecondary mt-2 px-1">
                         Determines which drop campaigns are mined first when multiple are available.
                     </p>
@@ -279,6 +292,125 @@ export default function DropsSettingsTab({
                         </button>
                     </div>
                 </div>
+
+                {/* Recovery Settings Card */}
+                <div className="glass-panel p-6">
+                    <div className="flex justify-between items-center mb-4">
+                        <h4 className="text-base font-semibold text-textPrimary flex items-center gap-2">
+                            <Shield size={18} className="text-emerald-400" />
+                            Mining Recovery
+                        </h4>
+                        <span className="text-xs text-textSecondary bg-glass px-2 py-1 rounded">
+                            Auto-recovery
+                        </span>
+                    </div>
+
+                    <p className="text-xs text-textSecondary mb-4">
+                        Configure how StreamNook handles stuck mining sessions, offline streamers, and stale progress.
+                    </p>
+
+                    {/* Recovery Mode */}
+                    <div className="mb-4">
+                        <label className="block text-sm font-medium text-textPrimary mb-2">
+                            Recovery Mode
+                        </label>
+                        <select
+                            value={settings.recovery_settings?.recovery_mode ?? 'Automatic'}
+                            onChange={(e) => onUpdateSettings({
+                                recovery_settings: {
+                                    ...settings.recovery_settings,
+                                    recovery_mode: e.target.value as RecoveryMode
+                                }
+                            })}
+                            className="w-full px-4 py-2.5 bg-background border border-borderLight rounded-lg text-textPrimary focus:border-accent focus:outline-none cursor-pointer"
+                        >
+                            <option value="Automatic">Automatic (7 min threshold)</option>
+                            <option value="Relaxed">Relaxed (15 min threshold)</option>
+                            <option value="ManualOnly">Manual Only (notify but don't switch)</option>
+                        </select>
+                        <p className="text-xs text-textSecondary mt-1">
+                            How aggressively to handle stuck mining sessions
+                        </p>
+                    </div>
+
+                    {/* Stale Progress Threshold */}
+                    <div className="mb-4">
+                        <label className="block text-sm font-medium text-textPrimary mb-2">
+                            Stale Progress Threshold: {Math.round((settings.recovery_settings?.stale_progress_threshold_seconds ?? 420) / 60)} minutes
+                        </label>
+                        <input
+                            type="range"
+                            min="180"
+                            max="900"
+                            step="60"
+                            value={settings.recovery_settings?.stale_progress_threshold_seconds ?? 420}
+                            onChange={(e) => onUpdateSettings({
+                                recovery_settings: {
+                                    ...settings.recovery_settings,
+                                    stale_progress_threshold_seconds: parseInt(e.target.value)
+                                }
+                            })}
+                            className="w-full accent-accent cursor-pointer"
+                        />
+                        <p className="text-xs text-textSecondary mt-1">
+                            Switch streamers if no progress increase for this long (3-15 min)
+                        </p>
+                    </div>
+
+                    {/* Streamer Blacklist Duration */}
+                    <div className="mb-4">
+                        <label className="block text-sm font-medium text-textPrimary mb-2">
+                            Streamer Blacklist Duration: {Math.round((settings.recovery_settings?.streamer_blacklist_duration_seconds ?? 600) / 60)} minutes
+                        </label>
+                        <input
+                            type="range"
+                            min="300"
+                            max="1800"
+                            step="60"
+                            value={settings.recovery_settings?.streamer_blacklist_duration_seconds ?? 600}
+                            onChange={(e) => onUpdateSettings({
+                                recovery_settings: {
+                                    ...settings.recovery_settings,
+                                    streamer_blacklist_duration_seconds: parseInt(e.target.value)
+                                }
+                            })}
+                            className="w-full accent-accent cursor-pointer"
+                        />
+                        <p className="text-xs text-textSecondary mt-1">
+                            How long to avoid a streamer after they fail (5-30 min)
+                        </p>
+                    </div>
+
+                    <div className="h-px bg-borderLight my-4" />
+
+                    {/* Detect Game Category Change */}
+                    <ToggleSetting
+                        label="Detect Game Category Changes"
+                        description="Switch if streamer changes to a different game"
+                        checked={settings.recovery_settings?.detect_game_category_change ?? true}
+                        onChange={(checked) => onUpdateSettings({
+                            recovery_settings: {
+                                ...settings.recovery_settings,
+                                detect_game_category_change: checked
+                            }
+                        })}
+                    />
+
+                    <div className="h-px bg-borderLight mx-2" />
+
+                    {/* Notify on Recovery Actions */}
+                    <ToggleSetting
+                        label="Notify on Recovery Actions"
+                        description="Show notifications when streamers are switched"
+                        checked={settings.recovery_settings?.notify_on_recovery_action ?? true}
+                        onChange={(checked) => onUpdateSettings({
+                            recovery_settings: {
+                                ...settings.recovery_settings,
+                                notify_on_recovery_action: checked
+                            }
+                        })}
+                    />
+                </div>
             </div>
         </div>
     );
@@ -312,7 +444,7 @@ function ToggleSetting({ label, description, checked, onChange, highlight }: Tog
                     className="sr-only peer"
                 />
                 <div className={`w-11 h-6 rounded-full transition-all peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-accent/50 
-                    ${checked 
+                    ${checked
                         ? highlight ? 'bg-accent border-accent' : 'bg-accent border-accent'
                         : 'bg-gray-700/50 border-borderLight'
                     } border-2

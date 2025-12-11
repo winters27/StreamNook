@@ -13,6 +13,10 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Listener};
 use tokio::sync::RwLock;
 
+// Recovery system constants
+const DEFAULT_STALE_THRESHOLD_SECONDS: u64 = 420; // 7 minutes
+const RELAXED_STALE_THRESHOLD_SECONDS: u64 = 900; // 15 minutes for relaxed mode
+
 // Use Android app client ID for drops-related queries
 const CLIENT_ID: &str = "kd1unb4b3q4t58fwlpcbzcbnm76a8fp";
 
@@ -28,6 +32,8 @@ pub struct MiningService {
     cached_spade_url: Arc<RwLock<Option<String>>>, // Cache spade URL to avoid repeated HTML fetches
     event_listener_id: Arc<RwLock<Option<u32>>>, // Store event listener ID for cleanup
     current_mining_game: Arc<RwLock<Option<String>>>, // Track current game to detect session changes
+    // Recovery system state
+    recovery_state: Arc<RwLock<RecoveryWatchdogState>>,
 }
 
 impl MiningService {
@@ -48,6 +54,8 @@ impl MiningService {
             cached_spade_url: Arc::new(RwLock::new(None)),
             event_listener_id: Arc::new(RwLock::new(None)),
             current_mining_game: Arc::new(RwLock::new(None)),
+            // Initialize recovery watchdog state
+            recovery_state: Arc::new(RwLock::new(RecoveryWatchdogState::default())),
         }
     }
 
@@ -2645,4 +2653,424 @@ struct ChannelStatus {
     is_online: bool,
     drops_enabled: bool,
     viewers: i32,
+}
+
+/// Extended channel status with game category info
+struct ExtendedChannelStatus {
+    is_online: bool,
+    drops_enabled: bool,
+    viewers: i32,
+    current_game_id: Option<String>,
+    current_game_name: Option<String>,
+}
+
+// ============================================
+// RECOVERY WATCHDOG HELPER FUNCTIONS
+// ============================================
+
+impl MiningService {
+    /// Check stream status including current game category (for game change detection)
+    async fn check_channel_status_extended(
+        client: &Client,
+        channel_id: &str,
+        token: &str,
+    ) -> Result<Option<ExtendedChannelStatus>> {
+        let query = r#"
+        query ChannelStatusExtended($channelID: ID!) {
+            user(id: $channelID) {
+                id
+                login
+                stream {
+                    id
+                    viewersCount
+                    game {
+                        id
+                        name
+                    }
+                }
+            }
+        }
+        "#;
+
+        let response = client
+            .post("https://gql.twitch.tv/gql")
+            .header("Client-Id", CLIENT_ID)
+            .header("Authorization", format!("Bearer {}", token))
+            .json(&serde_json::json!({
+                "query": query,
+                "variables": {
+                    "channelID": channel_id
+                }
+            }))
+            .send()
+            .await?;
+
+        let result: serde_json::Value = response.json().await?;
+
+        if let Some(user) = result["data"]["user"].as_object() {
+            if let Some(stream) = user["stream"].as_object() {
+                let viewers = stream["viewersCount"].as_i64().unwrap_or(0) as i32;
+
+                let (game_id, game_name) = if let Some(game) = stream.get("game") {
+                    if let Some(game_obj) = game.as_object() {
+                        (
+                            game_obj
+                                .get("id")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string()),
+                            game_obj
+                                .get("name")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string()),
+                        )
+                    } else {
+                        (None, None)
+                    }
+                } else {
+                    (None, None)
+                };
+
+                return Ok(Some(ExtendedChannelStatus {
+                    is_online: true,
+                    drops_enabled: true, // Would need additional check for actual drops status
+                    viewers,
+                    current_game_id: game_id,
+                    current_game_name: game_name,
+                }));
+            }
+        }
+
+        Ok(None)
+    }
+
+    /// Emit a recovery event to the frontend
+    fn emit_recovery_event(
+        app_handle: &AppHandle,
+        event_type: RecoveryEventType,
+        details: RecoveryEventDetails,
+        notify_user: bool,
+    ) {
+        let event = RecoveryEvent {
+            event_type: event_type.clone(),
+            timestamp: Utc::now(),
+            details: details.clone(),
+        };
+
+        // Always emit the technical event for logging/debugging
+        let _ = app_handle.emit("mining-recovery-event", &event);
+
+        // If user notification is enabled, emit a user-friendly toast notification
+        if notify_user {
+            let (title, message) = match event_type {
+                RecoveryEventType::StreamerSwitched => (
+                    "Switched Streamer",
+                    format!(
+                        "Switched from {} to {} - {}",
+                        details.from_channel.unwrap_or_default(),
+                        details.to_channel.unwrap_or_default(),
+                        details.reason
+                    ),
+                ),
+                RecoveryEventType::StreamerBlacklisted => (
+                    "Streamer Temporarily Blocked",
+                    format!(
+                        "{} temporarily blacklisted - {}",
+                        details.from_channel.unwrap_or_default(),
+                        details.reason
+                    ),
+                ),
+                RecoveryEventType::CampaignDeprioritized => (
+                    "Campaign Deprioritized",
+                    format!(
+                        "{} temporarily deprioritized - {}",
+                        details.from_campaign.unwrap_or_default(),
+                        details.reason
+                    ),
+                ),
+                RecoveryEventType::CampaignRotated => (
+                    "Campaign Changed",
+                    format!(
+                        "Switched from {} to {} - {}",
+                        details.from_campaign.unwrap_or_default(),
+                        details.to_campaign.unwrap_or_default(),
+                        details.reason
+                    ),
+                ),
+                RecoveryEventType::StaleProgressDetected => (
+                    "Progress Stalled",
+                    format!(
+                        "No progress detected on {} - {}",
+                        details.from_channel.unwrap_or_default(),
+                        details.reason
+                    ),
+                ),
+                RecoveryEventType::GameCategoryChanged => (
+                    "Streamer Changed Game",
+                    format!(
+                        "{} is no longer playing the required game - {}",
+                        details.from_channel.unwrap_or_default(),
+                        details.reason
+                    ),
+                ),
+                RecoveryEventType::StreamerWentOffline => (
+                    "Streamer Went Offline",
+                    format!(
+                        "{} went offline - {}",
+                        details.from_channel.unwrap_or_default(),
+                        details.reason
+                    ),
+                ),
+            };
+
+            let _ = app_handle.emit(
+                "mining-recovery-notification",
+                json!({
+                    "title": title,
+                    "message": message,
+                    "type": "warning",
+                    "timestamp": Utc::now().to_rfc3339()
+                }),
+            );
+        }
+    }
+
+    /// Get the effective stale threshold based on recovery mode
+    fn get_stale_threshold(settings: &DropsSettings) -> u64 {
+        match settings.recovery_settings.recovery_mode {
+            RecoveryMode::Automatic => settings.recovery_settings.stale_progress_threshold_seconds,
+            RecoveryMode::Relaxed => {
+                // Use 1.5x the configured threshold for relaxed mode, minimum 15 minutes
+                let relaxed = (settings.recovery_settings.stale_progress_threshold_seconds as f64
+                    * 1.5) as u64;
+                relaxed.max(RELAXED_STALE_THRESHOLD_SECONDS)
+            }
+            RecoveryMode::ManualOnly => {
+                // Very long threshold for manual mode - essentially disabled
+                u64::MAX
+            }
+        }
+    }
+
+    /// Check if progress is stale and take appropriate action based on recovery mode
+    async fn handle_stale_progress_check(
+        recovery_state: &Arc<RwLock<RecoveryWatchdogState>>,
+        settings: &DropsSettings,
+        current_channel: &MiningChannel,
+        app_handle: &AppHandle,
+    ) -> Option<BlacklistReason> {
+        let threshold = Self::get_stale_threshold(settings);
+
+        let is_stale = {
+            let state = recovery_state.read().await;
+            state.is_progress_stale(threshold)
+        };
+
+        if !is_stale {
+            return None;
+        }
+
+        println!(
+            "⚠️ Stale progress detected for {} (no progress in {} seconds)",
+            current_channel.name, threshold
+        );
+
+        // Emit recovery event
+        Self::emit_recovery_event(
+            app_handle,
+            RecoveryEventType::StaleProgressDetected,
+            RecoveryEventDetails {
+                from_channel: Some(current_channel.name.clone()),
+                to_channel: None,
+                from_campaign: None,
+                to_campaign: None,
+                reason: format!("No progress increase in {} minutes", threshold / 60),
+            },
+            settings.recovery_settings.notify_on_recovery_action,
+        );
+
+        // If manual mode, don't auto-blacklist, just notify
+        if settings.recovery_settings.recovery_mode == RecoveryMode::ManualOnly {
+            println!("📢 Manual mode - notifying user but not auto-switching");
+            return None;
+        }
+
+        Some(BlacklistReason::StaleProgress)
+    }
+
+    /// Check if streamer changed game category
+    async fn check_game_category_change(
+        client: &Client,
+        token: &str,
+        current_channel: &MiningChannel,
+        expected_game_id: &str,
+        settings: &DropsSettings,
+        app_handle: &AppHandle,
+    ) -> Option<BlacklistReason> {
+        if !settings.recovery_settings.detect_game_category_change {
+            return None;
+        }
+
+        match Self::check_channel_status_extended(client, &current_channel.id, token).await {
+            Ok(Some(status)) => {
+                if let Some(ref current_game_id) = status.current_game_id {
+                    if current_game_id != expected_game_id {
+                        let current_game_name = status
+                            .current_game_name
+                            .unwrap_or_else(|| "Unknown".to_string());
+                        println!(
+                            "🎮 Game category changed! {} switched from {} to {}",
+                            current_channel.name, current_channel.game_name, current_game_name
+                        );
+
+                        Self::emit_recovery_event(
+                            app_handle,
+                            RecoveryEventType::GameCategoryChanged,
+                            RecoveryEventDetails {
+                                from_channel: Some(current_channel.name.clone()),
+                                to_channel: None,
+                                from_campaign: Some(current_channel.game_name.clone()),
+                                to_campaign: Some(current_game_name.clone()),
+                                reason: format!(
+                                    "Streamer switched from {} to {}",
+                                    current_channel.game_name, current_game_name
+                                ),
+                            },
+                            settings.recovery_settings.notify_on_recovery_action,
+                        );
+
+                        if settings.recovery_settings.recovery_mode != RecoveryMode::ManualOnly {
+                            return Some(BlacklistReason::GameCategoryChanged);
+                        }
+                    }
+                }
+            }
+            Ok(None) => {
+                // Stream went offline
+                println!(
+                    "📴 {} went offline during game category check",
+                    current_channel.name
+                );
+
+                Self::emit_recovery_event(
+                    app_handle,
+                    RecoveryEventType::StreamerWentOffline,
+                    RecoveryEventDetails {
+                        from_channel: Some(current_channel.name.clone()),
+                        to_channel: None,
+                        from_campaign: None,
+                        to_campaign: None,
+                        reason: "Stream went offline".to_string(),
+                    },
+                    settings.recovery_settings.notify_on_recovery_action,
+                );
+
+                if settings.recovery_settings.recovery_mode != RecoveryMode::ManualOnly {
+                    return Some(BlacklistReason::WentOffline);
+                }
+            }
+            Err(e) => {
+                eprintln!("❌ Failed to check game category: {}", e);
+            }
+        }
+
+        None
+    }
+
+    /// Update recovery state when progress is received
+    pub async fn on_progress_received(&self, current_minutes: i32) {
+        let mut state = self.recovery_state.write().await;
+        let increased = state.update_progress(current_minutes);
+        if increased {
+            println!(
+                "📈 Progress increased to {} minutes, resetting stale timer",
+                current_minutes
+            );
+        }
+    }
+
+    /// Get the current recovery state (for debugging/UI)
+    pub async fn get_recovery_state(&self) -> RecoveryWatchdogState {
+        self.recovery_state.read().await.clone()
+    }
+
+    /// Reset recovery state when starting a new mining session
+    async fn reset_recovery_state(&self, expected_game: Option<String>) {
+        let mut state = self.recovery_state.write().await;
+        state.last_progress_increase_at = Some(Utc::now());
+        state.last_known_progress_minutes = 0;
+        state.expected_game_category = expected_game;
+        state.last_stream_status_check = Some(Utc::now());
+        // Clean up expired entries
+        state.cleanup_expired();
+        println!("🔄 Recovery state reset for new mining session");
+    }
+
+    /// Select best channel while respecting blacklist
+    fn select_best_channel_with_blacklist(
+        channels: &[MiningChannel],
+        _campaigns: &[DropCampaign],
+        settings: &DropsSettings,
+        recovery_state: &RecoveryWatchdogState,
+    ) -> Option<MiningChannel> {
+        if channels.is_empty() {
+            println!("⚠️ No channels available to select from");
+            return None;
+        }
+
+        println!(
+            "🔍 Selecting best channel from {} eligible channels (with blacklist check)",
+            channels.len()
+        );
+
+        let mut scored_channels: Vec<(MiningChannel, i32)> = channels
+            .iter()
+            .filter(|ch| {
+                // Filter out blacklisted channels
+                if recovery_state.is_streamer_blacklisted(&ch.id) {
+                    println!("  ⛔ {} is blacklisted, skipping", ch.name);
+                    return false;
+                }
+                ch.is_online && ch.drops_enabled
+            })
+            .map(|ch| {
+                let mut score = 0;
+
+                // Priority game bonus
+                if let Some(priority_index) = settings
+                    .priority_games
+                    .iter()
+                    .position(|g| g == &ch.game_name)
+                {
+                    let priority_bonus = 10000 - (priority_index as i32 * 100);
+                    score += priority_bonus;
+                }
+
+                // ACL-based channels get priority
+                if ch.is_acl_based {
+                    score += 5000;
+                }
+
+                // Viewer count scoring
+                let viewer_bonus = (ch.viewers / 10).min(1000);
+                score += viewer_bonus;
+
+                (ch.clone(), score)
+            })
+            .collect();
+
+        if scored_channels.is_empty() {
+            println!("⚠️ No online, non-blacklisted channels with drops enabled");
+            return None;
+        }
+
+        scored_channels.sort_by(|a, b| b.1.cmp(&a.1));
+
+        scored_channels.first().map(|(ch, score)| {
+            println!(
+                "🎯 Selected channel: {} with {} viewers (score: {})",
+                ch.name, ch.viewers, score
+            );
+            ch.clone()
+        })
+    }
 }
