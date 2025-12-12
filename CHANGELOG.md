@@ -1,3 +1,19 @@
+## [5.0.4] - 2025-12-11
+### ✨ Features
+- **Badge Collection**: Introducing a new Twitch Global Badge collection system! Track your collected badges, earn ranks, and show off your achievements.
+- **Drops Mining**: Enhanced the "Mine All" feature for Twitch Drops, prioritizing campaigns with existing progress and skipping already completed ones. Mining now starts with the drop closest to completion!
+- **Profile**: 7TV users can now create accounts directly from the profile overlay. 
+- **Video Player**: Added automatic closing of the subscription window after a successful subscription.
+
+### 🐛 Bug Fixes
+- Fixed an issue where the app window wouldn't focus after exiting Picture-in-Picture mode.
+- Resolved an issue where the home screen tabs would reset after navigating from a category or search result.
+- Fixed a bug where the Drops login window was not closed after successful authentication.
+- Fixed DropsCenter logging and drop ID parsing
+
+### ⚡ Performance
+- Improved the Drops mining queue for faster and more efficient reward collection.
+
 ## [5.0.3] - 2025-12-11
 ### ✨ Features
 - **Automatic Stream Recovery**: StreamNook can now automatically recover from common mining issues like offline streamers, stalled progress, and game category changes! Configure the new recovery settings to customize the behavior.
@@ -730,6 +746,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
