@@ -136,10 +136,19 @@ export default function DropsCenter() {
                 expiresIn: deviceInfo.expires_in,
             });
 
+            // Close the login webview window
             try {
-                const w = await WebviewWindow.getByLabel('drops-login');
-                if (w) await w.close();
-            } catch { }
+                const loginWindow = await WebviewWindow.getByLabel('drops-login');
+                if (loginWindow) {
+                    console.log('[DropsCenter] Closing drops-login webview window');
+                    await loginWindow.close();
+                    console.log('[DropsCenter] Successfully closed drops-login window');
+                } else {
+                    console.log('[DropsCenter] No drops-login window found to close');
+                }
+            } catch (closeErr) {
+                console.warn('[DropsCenter] Failed to close drops-login window:', closeErr);
+            }
 
             setIsAuthenticated(true);
             setIsAuthenticating(false);
@@ -150,6 +159,12 @@ export default function DropsCenter() {
             console.error('Failed to complete drops login:', err);
             setError(err instanceof Error ? err.message : String(err));
             setIsAuthenticating(false);
+            
+            // Also try to close the login window on error
+            try {
+                const loginWindow = await WebviewWindow.getByLabel('drops-login');
+                if (loginWindow) await loginWindow.close();
+            } catch { }
         }
     };
 
@@ -308,6 +323,7 @@ export default function DropsCenter() {
     };
 
     // Mine All Game - starts mining all campaigns for a game sequentially
+    // Smart start: Skip campaigns that are already fully complete and start from the first incomplete one
     const handleMineAllGame = async (gameName: string, campaignIds: string[]) => {
         if (campaignIds.length === 0) {
             addToast('No campaigns to mine for this game', 'info');
@@ -316,28 +332,207 @@ export default function DropsCenter() {
 
         console.log(`[DropsCenter] Starting Mine All for ${gameName} with ${campaignIds.length} campaigns`);
 
-        // Stop any current mining first
+        // Find the game to check campaign completion status
+        const game = unifiedGames.find(g => g.name.toLowerCase() === gameName.toLowerCase());
+        
+        // IMPORTANT: Save current progress before any async operations that might clear it
+        const currentProgress = [...progress];
+        console.log(`[DropsCenter] Saved progress state with ${currentProgress.length} entries`);
+        
+        // Filter out campaigns that are already fully complete (all drops claimed or 100% watched)
+        // and find the first incomplete campaign to start from
+        const incompleteCampaignIds: string[] = [];
+        
+        for (let i = 0; i < campaignIds.length; i++) {
+            const campaignId = campaignIds[i];
+            const campaign = game?.active_campaigns.find(c => c.id === campaignId);
+            
+            if (!campaign) {
+                // Campaign not found, include it just in case
+                console.log(`[DropsCenter] Campaign ID ${campaignId} not found in active_campaigns, including anyway`);
+                incompleteCampaignIds.push(campaignId);
+                continue;
+            }
+            
+            // Also find the matching inventory item for this campaign (has better progress data)
+            const inventoryItem = game?.inventory_items.find(item => 
+                item.campaign.id === campaignId || 
+                item.campaign.name.toLowerCase() === campaign.name.toLowerCase()
+            );
+            
+            // Get drops from inventory if available (more accurate), otherwise from campaign
+            const dropsToCheck = inventoryItem?.campaign.time_based_drops || campaign.time_based_drops;
+            
+            console.log(`[DropsCenter] Campaign "${campaign.name}": ${dropsToCheck.length} drops to check (from ${inventoryItem ? 'inventory' : 'campaign'})`);
+            
+            // If no drops, consider it incomplete (we can't determine completion status)
+            if (!dropsToCheck || dropsToCheck.length === 0) {
+                console.log(`[DropsCenter] Campaign "${campaign.name}" has no drops, assuming incomplete`);
+                incompleteCampaignIds.push(campaignId);
+                continue;
+            }
+            
+            // Check if all drops in this campaign are complete (100% watched or claimed)
+            // We need to check multiple sources for completion:
+            // 1. The inventory item's drop progress (most reliable)
+            // 2. The campaign's drop progress field
+            // 3. The saved progress state array (from real-time updates)
+            let allDropsComplete = true;
+            
+            for (const drop of dropsToCheck) {
+                // First check: The drop's own progress field from the API (inventory or campaign)
+                const dropOwnProgress = drop.progress;
+                
+                if (dropOwnProgress?.is_claimed) {
+                    console.log(`[DropsCenter] Drop "${drop.name}" is claimed`);
+                    continue; // This drop is complete
+                }
+                
+                // Check if 100% complete from drop's own progress
+                if (dropOwnProgress) {
+                    const isCompleteFromOwn = dropOwnProgress.current_minutes_watched >= dropOwnProgress.required_minutes_watched;
+                    if (isCompleteFromOwn) {
+                        console.log(`[DropsCenter] Drop "${drop.name}" is 100% complete (${dropOwnProgress.current_minutes_watched}/${dropOwnProgress.required_minutes_watched})`);
+                        continue; // This drop is complete
+                    }
+                    // Has progress but not complete - this drop is incomplete
+                    console.log(`[DropsCenter] Drop "${drop.name}" is in progress (${dropOwnProgress.current_minutes_watched}/${dropOwnProgress.required_minutes_watched})`);
+                    allDropsComplete = false;
+                    break; // Found an incomplete drop, no need to check more
+                }
+                
+                // Second check: The saved progress state array (NOT the current state which may be cleared)
+                const progressEntry = currentProgress.find(p => p.drop_id === drop.id);
+                if (progressEntry) {
+                    const isComplete = progressEntry.current_minutes_watched >= progressEntry.required_minutes_watched;
+                    const isClaimed = progressEntry.is_claimed;
+                    if (isComplete || isClaimed) {
+                        console.log(`[DropsCenter] Drop "${drop.name}" complete from progress array`);
+                        continue; // This drop is complete
+                    }
+                    // Has progress but not complete
+                    console.log(`[DropsCenter] Drop "${drop.name}" in progress from array (${progressEntry.current_minutes_watched}/${progressEntry.required_minutes_watched})`);
+                    allDropsComplete = false;
+                    break; // Found an incomplete drop
+                }
+                
+                // No progress data found at all - assume NOT complete (need to start mining)
+                console.log(`[DropsCenter] Drop "${drop.name}" (ID: ${drop.id}) has no progress data, assuming incomplete`);
+                allDropsComplete = false;
+                break; // Found an incomplete drop
+            }
+            
+            // A campaign is incomplete if any drop is not complete
+            if (!allDropsComplete) {
+                incompleteCampaignIds.push(campaignId);
+                console.log(`[DropsCenter] Campaign "${campaign.name}" is incomplete, including in queue`);
+            } else {
+                console.log(`[DropsCenter] Campaign "${campaign.name}" is fully complete, skipping`);
+            }
+        }
+        
+        // If all campaigns are complete, notify the user
+        if (incompleteCampaignIds.length === 0) {
+            addToast(`All campaigns for ${gameName} are already complete!`, 'success');
+            return;
+        }
+        
+        const skippedCount = campaignIds.length - incompleteCampaignIds.length;
+        if (skippedCount > 0) {
+            console.log(`[DropsCenter] Skipping ${skippedCount} completed campaigns, starting with ${incompleteCampaignIds.length} remaining`);
+        }
+
+        // SMART PRIORITIZATION: Sort incomplete campaigns to prioritize ones with existing progress
+        // This ensures we finish drops we've already started before moving to new ones
+        const sortedIncompleteCampaignIds = [...incompleteCampaignIds].sort((a, b) => {
+            const campaignA = game?.active_campaigns.find(c => c.id === a);
+            const campaignB = game?.active_campaigns.find(c => c.id === b);
+            
+            // Get inventory items for each campaign
+            const inventoryA = game?.inventory_items.find(item => 
+                item.campaign.id === a || 
+                (campaignA && item.campaign.name.toLowerCase() === campaignA.name.toLowerCase())
+            );
+            const inventoryB = game?.inventory_items.find(item => 
+                item.campaign.id === b || 
+                (campaignB && item.campaign.name.toLowerCase() === campaignB.name.toLowerCase())
+            );
+            
+            // Calculate progress percentage for each campaign
+            const getProgressPercent = (inventoryItem: typeof inventoryA, campaign: typeof campaignA) => {
+                const drops = inventoryItem?.campaign.time_based_drops || campaign?.time_based_drops || [];
+                if (drops.length === 0) return -1; // No drops = unknown, put last
+                
+                let totalProgress = 0;
+                for (const drop of drops) {
+                    const dropProgress = drop.progress;
+                    if (dropProgress) {
+                        const percent = dropProgress.required_minutes_watched > 0 
+                            ? (dropProgress.current_minutes_watched / dropProgress.required_minutes_watched) * 100 
+                            : 0;
+                        totalProgress += percent;
+                    }
+                    // Also check the saved progress array
+                    const progressEntry = currentProgress.find(p => p.drop_id === drop.id);
+                    if (progressEntry) {
+                        const percent = progressEntry.required_minutes_watched > 0 
+                            ? (progressEntry.current_minutes_watched / progressEntry.required_minutes_watched) * 100 
+                            : 0;
+                        totalProgress = Math.max(totalProgress, percent);
+                    }
+                }
+                return totalProgress;
+            };
+            
+            const progressA = getProgressPercent(inventoryA, campaignA);
+            const progressB = getProgressPercent(inventoryB, campaignB);
+            
+            // Sort by progress descending (highest progress first)
+            // Campaigns with -1 (no drops/unknown) go to the end
+            if (progressA === -1 && progressB === -1) return 0;
+            if (progressA === -1) return 1; // A goes to end
+            if (progressB === -1) return -1; // B goes to end
+            return progressB - progressA; // Higher progress first
+        });
+        
+        console.log(`[DropsCenter] Sorted campaign order (by progress):`, sortedIncompleteCampaignIds.map(id => {
+            const campaign = game?.active_campaigns.find(c => c.id === id);
+            return campaign?.name || id;
+        }));
+
+        // Stop any current mining first (AFTER checking completion status)
         if (miningStatus?.is_mining) {
-            await handleStopMining();
+            // Use a simpler stop that doesn't clear progress
+            try {
+                await invoke('stop_auto_mining');
+            } catch (err) {
+                console.error('Failed to stop mining:', err);
+            }
             // Wait a moment for the stop to take effect
             await new Promise(resolve => setTimeout(resolve, 500));
         }
 
-        // Set up the mine all queue
+        // Set up the mine all queue with sorted campaigns (highest progress first)
         setMineAllQueue({
             gameName,
-            campaignIds,
+            campaignIds: sortedIncompleteCampaignIds,
             currentIndex: 0
         });
 
-        // Start mining the first campaign
+        // Start mining the first campaign (the one with highest progress)
         try {
             if (dropsSettings?.auto_mining_enabled) {
                 await updateDropsSettings({ auto_mining_enabled: false });
             }
 
-            await invoke('start_campaign_mining', { campaignId: campaignIds[0] });
-            addToast(`Mining all ${campaignIds.length} campaigns for ${gameName}`, 'success');
+            await invoke('start_campaign_mining', { campaignId: sortedIncompleteCampaignIds[0] });
+            
+            // Show appropriate message
+            if (skippedCount > 0) {
+                addToast(`Mining ${incompleteCampaignIds.length} remaining campaigns for ${gameName} (${skippedCount} already complete)`, 'success');
+            } else {
+                addToast(`Mining all ${incompleteCampaignIds.length} campaigns for ${gameName}`, 'success');
+            }
         } catch (err) {
             console.error('Failed to start mine all:', err);
             addToast('Failed to start mining', 'error');
@@ -759,38 +954,87 @@ export default function DropsCenter() {
     // ---- Render: Authentication Screen ----
     if (!isAuthenticated) {
         return (
-            <div className="flex flex-col items-center justify-center h-full p-8 text-center animate-in fade-in duration-500">
-                <div className="max-w-md space-y-6">
-                    <div className="flex justify-center">
-                        <div className="p-6 bg-accent/10 rounded-full border-2 border-accent/20">
-                            <Gift className="w-16 h-16 text-accent" />
+            <div className="relative flex flex-col items-center justify-center h-full overflow-hidden">
+                {/* Background blur effect with subtle pattern */}
+                <div className="absolute inset-0 bg-gradient-to-br from-background via-backgroundSecondary to-background opacity-90" />
+                
+                {/* Decorative elements - faded gift icons scattered */}
+                <div className="absolute inset-0 overflow-hidden pointer-events-none">
+                    <Gift className="absolute top-[10%] left-[15%] w-12 h-12 text-accent/5 rotate-12" />
+                    <Gift className="absolute top-[25%] right-[20%] w-8 h-8 text-accent/5 -rotate-6" />
+                    <Gift className="absolute bottom-[30%] left-[25%] w-10 h-10 text-accent/5 rotate-[-15deg]" />
+                    <Gift className="absolute bottom-[15%] right-[15%] w-14 h-14 text-accent/5 rotate-6" />
+                    <Gift className="absolute top-[60%] left-[10%] w-6 h-6 text-accent/5 rotate-45" />
+                    <Gift className="absolute top-[40%] right-[10%] w-16 h-16 text-accent/5 -rotate-12" />
+                </div>
+
+                {/* Main content card */}
+                <div className="relative z-10 animate-in fade-in zoom-in-95 duration-500">
+                    <div className="glass-panel border border-accent/20 rounded-2xl p-10 max-w-lg mx-4 text-center shadow-2xl shadow-accent/10">
+                        {/* Icon with glow effect */}
+                        <div className="flex justify-center mb-6">
+                            <div className="relative">
+                                <div className="absolute inset-0 bg-accent/30 rounded-full blur-xl animate-pulse" />
+                                <div className="relative p-5 bg-gradient-to-br from-accent/20 to-accent/5 rounded-full border border-accent/30">
+                                    <Gift className="w-14 h-14 text-accent" />
+                                </div>
+                            </div>
                         </div>
-                    </div>
-                    <div className="space-y-2">
-                        <h2 className="text-2xl font-bold text-textPrimary">Drops Center</h2>
-                        <p className="text-textSecondary">
-                            Connect your Twitch account to start mining drops and earning rewards automatically.
+
+                        {/* Title & Description */}
+                        <div className="space-y-3 mb-8">
+                            <h2 className="text-3xl font-bold text-textPrimary">Drops Center</h2>
+                            <p className="text-textSecondary text-base leading-relaxed">
+                                Connect your Twitch account to unlock automatic drop mining, campaign tracking, and reward collection.
+                            </p>
+                        </div>
+
+                        {/* Features preview - what users get */}
+                        <div className="grid grid-cols-3 gap-4 mb-8 py-4 border-y border-borderLight/50">
+                            <div className="text-center">
+                                <div className="text-accent font-semibold text-lg">Auto</div>
+                                <div className="text-textSecondary text-xs">Mining</div>
+                            </div>
+                            <div className="text-center border-x border-borderLight/50">
+                                <div className="text-accent font-semibold text-lg">Track</div>
+                                <div className="text-textSecondary text-xs">Progress</div>
+                            </div>
+                            <div className="text-center">
+                                <div className="text-accent font-semibold text-lg">Claim</div>
+                                <div className="text-textSecondary text-xs">Rewards</div>
+                            </div>
+                        </div>
+
+                        {/* Device Code Display (when authenticating) */}
+                        {isAuthenticating && deviceCodeInfo && (
+                            <div className="mb-6 p-6 bg-accent/5 rounded-xl border border-accent/30 animate-in fade-in slide-in-from-bottom-2 duration-300">
+                                <p className="text-xs text-textSecondary uppercase tracking-wider mb-3">Enter this code on Twitch</p>
+                                <div className="text-4xl font-mono font-bold text-accent tracking-[0.3em] py-2 select-all">
+                                    {deviceCodeInfo.user_code}
+                                </div>
+                                <div className="flex items-center justify-center gap-2 mt-4 text-textSecondary text-sm">
+                                    <div className="w-2 h-2 bg-accent rounded-full animate-pulse" />
+                                    <span>Waiting for authorization...</span>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Login Button */}
+                        {!isAuthenticating && (
+                            <button
+                                onClick={startDropsLogin}
+                                className="w-full px-8 py-4 bg-[#9146FF] hover:bg-[#7c3aed] text-white rounded-xl transition-all duration-200 font-semibold flex items-center justify-center gap-3 shadow-lg shadow-[#9146FF]/25 hover:shadow-[#9146FF]/40 hover:scale-[1.02] active:scale-[0.98]"
+                            >
+                                <TwitchIcon size={22} />
+                                <span className="text-base">Connect with Twitch</span>
+                            </button>
+                        )}
+
+                        {/* Info note */}
+                        <p className="mt-6 text-xs text-textSecondary/70">
+                            Uses Twitch's Android app authentication for drop compatibility
                         </p>
                     </div>
-
-                    {isAuthenticating && deviceCodeInfo && (
-                        <div className="glass-panel p-6 space-y-4 border border-accent/30">
-                            <div className="text-5xl font-mono font-bold text-accent tracking-widest py-4">
-                                {deviceCodeInfo.user_code}
-                            </div>
-                            <p className="text-sm text-textSecondary">Enter this code on the login window</p>
-                        </div>
-                    )}
-
-                    {!isAuthenticating && (
-                        <button
-                            onClick={startDropsLogin}
-                            className="w-full px-6 py-3 glass-button hover:bg-glass-hover text-textPrimary rounded-lg transition-all font-semibold flex items-center justify-center gap-2"
-                        >
-                            <TwitchIcon size={20} />
-                            <span>Connect Twitch Account</span>
-                        </button>
-                    )}
                 </div>
             </div>
         );

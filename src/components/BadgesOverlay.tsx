@@ -1,6 +1,9 @@
-import { useEffect, useState, useMemo } from 'react';
-import { X, ArrowUpDown, RefreshCw } from 'lucide-react';
+import { useEffect, useState, useMemo, useRef } from 'react';
+import { createPortal } from 'react-dom';
+import { X, ArrowUpDown, RefreshCw, Check, Trophy, Award, ChevronUp } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
+import { useAppStore } from '../stores/AppStore';
+import { getFullProfileWithFallback, getProfileFromMemoryCache } from '../services/cosmeticsCache';
 
 interface BadgeVersion {
   id: string;
@@ -38,6 +41,7 @@ interface BadgesOverlayProps {
 }
 
 const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
+  const { isAuthenticated, currentUser, currentStream } = useAppStore();
   const [badges, setBadges] = useState<BadgeSet[]>([]);
   const [badgesWithMetadata, setBadgesWithMetadata] = useState<BadgeWithMetadata[]>([]);
   const [loading, setLoading] = useState(true);
@@ -47,10 +51,405 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
   const [sortBy, setSortBy] = useState<SortOption>('date-newest');
   const [cacheAge, setCacheAge] = useState<number | null>(null);
   const [newBadgesCount, setNewBadgesCount] = useState(0);
+  const [showRankList, setShowRankList] = useState(false);
+  const [dropdownPosition, setDropdownPosition] = useState<{ top: number; left: number } | null>(null);
+  const rankButtonRef = useRef<HTMLButtonElement>(null);
+  
+  // User's collected global badges (Set of "setId_version" keys)
+  const [collectedBadgeKeys, setCollectedBadgeKeys] = useState<Set<string>>(new Set());
+  const [loadingUserBadges, setLoadingUserBadges] = useState(false);
 
   useEffect(() => {
     loadBadges();
   }, []);
+
+  // Load user's collected badges when authenticated
+  useEffect(() => {
+    if (isAuthenticated && currentUser) {
+      loadUserBadges();
+    }
+  }, [isAuthenticated, currentUser]);
+
+  // Load user's badges from profile cache or API
+  const loadUserBadges = async () => {
+    if (!currentUser) return;
+    
+    setLoadingUserBadges(true);
+    try {
+      // Try to get from memory cache first
+      let profile = getProfileFromMemoryCache(currentUser.user_id);
+      
+      if (!profile) {
+        // Fetch if not cached
+        const channelId = currentStream?.user_id || currentUser.user_id;
+        const channelName = currentStream?.user_login || currentUser.login || currentUser.username;
+        profile = await getFullProfileWithFallback(
+          currentUser.user_id,
+          currentUser.login || currentUser.username,
+          channelId,
+          channelName
+        );
+      }
+      
+      if (profile?.twitchBadges) {
+        // Create a Set of badge keys the user owns
+        const keys = new Set<string>();
+        profile.twitchBadges.forEach((badge: any) => {
+          // User badges have setID and version
+          if (badge.setID && badge.version) {
+            keys.add(`${badge.setID}_${badge.version}`);
+          }
+        });
+        setCollectedBadgeKeys(keys);
+        console.log(`[BadgesOverlay] User has ${keys.size} collected badges`);
+      }
+    } catch (err) {
+      console.error('[BadgesOverlay] Failed to load user badges:', err);
+    } finally {
+      setLoadingUserBadges(false);
+    }
+  };
+
+  // Check if user has collected a specific badge
+  const isCollected = (badge: BadgeWithMetadata): boolean => {
+    return collectedBadgeKeys.has(`${badge.set_id}_${badge.id}`);
+  };
+
+  // Badge set IDs that are NOT true global collectibles and shouldn't count towards collection
+  // These badges are either: channel-specific, role-based, paid-only, or not earnable by regular users
+  const channelSpecificBadgeSets = new Set([
+    // Channel-specific badges
+    'subscriber',          // Channel subscriptions (1-month, 2-month, 3-month, 6-month, etc.)
+    'sub-gifter',          // Gift sub badges (varies by count)
+    'sub-gift-leader',     // Sub gift leaderboard
+    'founder',             // Channel founder
+    'vip',                 // Channel VIP
+    'moderator',           // Channel moderator
+    'artist-badge',        // Channel artist
+    'moments',             // Channel moments
+    
+    // Cheering / Bits badges
+    'bits',                // Bits cheering badges (Cheer 1, 100, 1000, 5000, 10000, 100000)
+    'bits-leader',         // Bits leaderboard
+    'bits-charity',        // Bits for charity
+    'anonymous-cheerer',   // Anonymous cheering
+    
+    // Hype Train
+    'hype-train',          // Hype train conductors
+    
+    // Predictions
+    'predictions',         // Predicted badges (blue/pink)
+    
+    // GIF-related badges
+    'sub-gift-count',      // GIF subs
+    'clip-champ',          // Clips Leader
+    'clips-leader',        // Clips Leader alternate
+    'gift-leader',         // GIF Leader / GIFter Leader
+    'gifter-leader',       // GIFter Leader alternate
+    
+    // Twitch Staff & Special Roles (not earnable by regular users)
+    'staff',               // Twitch staff
+    'admin',               // Twitch admin
+    'global_mod',          // Global mod
+    'broadcaster',         // Broadcaster badge
+    'verified-moderator',  // Verified Moderator
+    'automod',             // AutoMod
+    'chatbot',             // ChatBot badge
+    'twitch-intern',       // Twitch Intern badges
+    'lead-moderator',      // Lead Moderator
+    
+    // Paid / Subscription-based badges (not globally earnable)
+    'turbo',               // Twitch Turbo
+    'prime',               // Prime Gaming
+    'prime-gaming',        // Prime Gaming alternate
+    
+    // Ambassador / Partner program badges
+    'ambassador',          // Twitch Ambassador
+    'partner',             // Twitch Partner
+    
+    // Anniversary badges
+    'twitchanniversary',   // Twitch Anniversary
+    'twitch-anniversary',  // Twitch Anniversary alternate
+    
+    // Developer badges
+    'game-developer',      // Game Developer badge
+    'extension',           // Extension developer
+    
+    // Accessibility badges (not collectibles)
+    'no_audio',            // Watching without audio
+    'no_video',            // Listening only
+    
+    // Event-specific / Limited badges that aren't collectible
+    'survival-cup-4',      // Survival Cup 4
+  ]);
+
+  // Check if a badge is a true "global" collectible badge
+  const isGlobalCollectibleBadge = (badge: BadgeWithMetadata): boolean => {
+    return !channelSpecificBadgeSets.has(badge.set_id);
+  };
+
+  // Filter badges to only include true global collectibles
+  const globalCollectibleBadges = useMemo(() => {
+    return badgesWithMetadata.filter(isGlobalCollectibleBadge);
+  }, [badgesWithMetadata]);
+
+  // Count collected global badges
+  const collectedCount = useMemo(() => {
+    if (collectedBadgeKeys.size === 0) return 0;
+    return globalCollectibleBadges.filter(badge => isCollected(badge)).length;
+  }, [globalCollectibleBadges, collectedBadgeKeys]);
+
+  // Total global collectible badges
+  const totalGlobalBadges = globalCollectibleBadges.length;
+
+  // Collection rank system based on percentage collected - Epic tier system
+  const getCollectionRank = (collected: number, total: number) => {
+    if (total === 0) return null;
+    const percentage = (collected / total) * 100;
+    
+    // 10 Epic rank tiers with unique themes
+    if (percentage >= 95) {
+      return {
+        title: 'APEX',
+        tier: 'apex',
+        description: 'The final form',
+        animationClass: 'rank-apex',
+        colors: {
+          from: '#ff0080',
+          via: '#7928ca',
+          to: '#00d4ff',
+          glow: 'rgba(121, 40, 202, 0.5)',
+          bg: 'from-[#ff0080]/20 via-[#7928ca]/20 to-[#00d4ff]/20',
+          border: '[#7928ca]/50',
+          sparkle: ['#ff0080', '#7928ca', '#00d4ff', '#ff6b6b', '#feca57']
+        }
+      };
+    } else if (percentage >= 85) {
+      return {
+        title: 'TITAN',
+        tier: 'titan',
+        description: 'Diamond incarnate',
+        animationClass: 'rank-titan',
+        colors: {
+          from: '#e8e8e8',
+          via: '#c0c0c0',
+          to: '#a8d8ea',
+          glow: 'rgba(200, 200, 220, 0.5)',
+          bg: 'from-[#e8e8e8]/15 via-[#c0c0c0]/15 to-[#a8d8ea]/15',
+          border: '[#c0c0c0]/40',
+          sparkle: ['#ffffff', '#e8e8e8', '#a8d8ea', '#ffd700']
+        }
+      };
+    } else if (percentage >= 73) {
+      return {
+        title: 'AEON',
+        tier: 'aeon',
+        description: 'Cosmic wanderer',
+        animationClass: 'rank-aeon',
+        colors: {
+          from: '#1a1a2e',
+          via: '#4a0080',
+          to: '#ffd700',
+          glow: 'rgba(74, 0, 128, 0.4)',
+          bg: 'from-[#1a1a2e]/20 via-[#4a0080]/20 to-[#ffd700]/10',
+          border: '[#ffd700]/30',
+          sparkle: ['#ffd700', '#4a0080', '#ffffff', '#ff6b6b']
+        }
+      };
+    } else if (percentage >= 59) {
+      return {
+        title: 'NEXUS',
+        tier: 'nexus',
+        description: 'Grid architect',
+        animationClass: 'rank-nexus',
+        colors: {
+          from: '#7c3aed',
+          via: '#a855f7',
+          to: '#c084fc',
+          glow: 'rgba(124, 58, 237, 0.4)',
+          bg: 'from-[#7c3aed]/15 via-[#a855f7]/15 to-[#c084fc]/15',
+          border: '[#7c3aed]/40',
+          sparkle: ['#7c3aed', '#a855f7', '#c084fc', '#e879f9']
+        }
+      };
+    } else if (percentage >= 47) {
+      return {
+        title: 'AURORA',
+        tier: 'aurora',
+        description: 'Northern light bearer',
+        animationClass: 'rank-aurora',
+        colors: {
+          from: '#14b8a6',
+          via: '#a855f7',
+          to: '#ec4899',
+          glow: 'rgba(20, 184, 166, 0.35)',
+          bg: 'from-[#14b8a6]/12 via-[#a855f7]/12 to-[#ec4899]/12',
+          border: '[#14b8a6]/35',
+          sparkle: ['#14b8a6', '#a855f7', '#ec4899', '#06b6d4']
+        }
+      };
+    } else if (percentage >= 35) {
+      return {
+        title: 'VANGUARD',
+        tier: 'vanguard',
+        description: 'Chrome sentinel',
+        animationClass: 'rank-vanguard',
+        colors: {
+          from: '#94a3b8',
+          via: '#64748b',
+          to: '#cbd5e1',
+          glow: 'rgba(148, 163, 184, 0.35)',
+          bg: 'from-[#94a3b8]/12 via-[#64748b]/12 to-[#cbd5e1]/12',
+          border: '[#94a3b8]/35',
+          sparkle: ['#94a3b8', '#cbd5e1', '#e2e8f0', '#f1f5f9']
+        }
+      };
+    } else if (percentage >= 23) {
+      return {
+        title: 'PHANTOM',
+        tier: 'phantom',
+        description: 'Ethereal presence',
+        animationClass: 'rank-phantom',
+        colors: {
+          from: '#06b6d4',
+          via: '#22d3d1',
+          to: '#67e8f9',
+          glow: 'rgba(6, 182, 212, 0.35)',
+          bg: 'from-[#06b6d4]/12 via-[#22d3d1]/12 to-[#67e8f9]/12',
+          border: '[#06b6d4]/35',
+          sparkle: ['#06b6d4', '#22d3d1', '#67e8f9', '#a5f3fc']
+        }
+      };
+    } else if (percentage >= 13) {
+      return {
+        title: 'RONIN',
+        tier: 'ronin',
+        description: 'Blade of the void',
+        animationClass: 'rank-ronin',
+        colors: {
+          from: '#3b82f6',
+          via: '#60a5fa',
+          to: '#0ea5e9',
+          glow: 'rgba(59, 130, 246, 0.4)',
+          bg: 'from-[#3b82f6]/15 via-[#60a5fa]/15 to-[#0ea5e9]/15',
+          border: '[#3b82f6]/40',
+          sparkle: ['#3b82f6', '#60a5fa', '#0ea5e9', '#38bdf8']
+        }
+      };
+    } else if (percentage >= 6) {
+      return {
+        title: 'NOMAD',
+        tier: 'nomad',
+        description: 'Desert wanderer',
+        animationClass: 'rank-nomad',
+        colors: {
+          from: '#78716c',
+          via: '#a8a29e',
+          to: '#d4a84b',
+          glow: 'rgba(212, 168, 75, 0.25)',
+          bg: 'from-[#78716c]/10 via-[#a8a29e]/10 to-[#d4a84b]/10',
+          border: '[#d4a84b]/25',
+          sparkle: ['#78716c', '#a8a29e', '#d4a84b', '#f5d0a9']
+        }
+      };
+    } else if (percentage >= 0.1) {
+      return {
+        title: 'DRIFTER',
+        tier: 'drifter',
+        description: 'Signal in the static',
+        animationClass: 'rank-drifter',
+        colors: {
+          from: '#6b7280',
+          via: '#9ca3af',
+          to: '#e5e7eb',
+          glow: 'rgba(156, 163, 175, 0.2)',
+          bg: 'from-[#6b7280]/8 via-[#9ca3af]/8 to-[#e5e7eb]/8',
+          border: '[#9ca3af]/20',
+          sparkle: ['#6b7280', '#9ca3af', '#e5e7eb', '#f3f4f6']
+        }
+      };
+    }
+    return null;
+  };
+
+  // Get current rank
+  const currentRank = useMemo(() => {
+    return getCollectionRank(collectedCount, totalGlobalBadges);
+  }, [collectedCount, totalGlobalBadges]);
+
+  // All ranks for display in ranks list - Epic 10-tier system
+  const allRanks = [
+    {
+      title: 'APEX',
+      requirement: '95%+',
+      description: 'The final form',
+      tier: 'apex',
+      colors: { from: '#ff0080', via: '#7928ca', to: '#00d4ff' }
+    },
+    {
+      title: 'TITAN',
+      requirement: '85%+',
+      description: 'Diamond incarnate',
+      tier: 'titan',
+      colors: { from: '#e8e8e8', via: '#c0c0c0', to: '#a8d8ea' }
+    },
+    {
+      title: 'AEON',
+      requirement: '73%+',
+      description: 'Cosmic wanderer',
+      tier: 'aeon',
+      colors: { from: '#1a1a2e', via: '#4a0080', to: '#ffd700' }
+    },
+    {
+      title: 'NEXUS',
+      requirement: '59%+',
+      description: 'Grid architect',
+      tier: 'nexus',
+      colors: { from: '#7c3aed', via: '#a855f7', to: '#c084fc' }
+    },
+    {
+      title: 'AURORA',
+      requirement: '47%+',
+      description: 'Northern light bearer',
+      tier: 'aurora',
+      colors: { from: '#14b8a6', via: '#a855f7', to: '#ec4899' }
+    },
+    {
+      title: 'VANGUARD',
+      requirement: '35%+',
+      description: 'Chrome sentinel',
+      tier: 'vanguard',
+      colors: { from: '#94a3b8', via: '#64748b', to: '#cbd5e1' }
+    },
+    {
+      title: 'PHANTOM',
+      requirement: '23%+',
+      description: 'Ethereal presence',
+      tier: 'phantom',
+      colors: { from: '#06b6d4', via: '#22d3d1', to: '#67e8f9' }
+    },
+    {
+      title: 'RONIN',
+      requirement: '13%+',
+      description: 'Blade of the void',
+      tier: 'ronin',
+      colors: { from: '#3b82f6', via: '#60a5fa', to: '#0ea5e9' }
+    },
+    {
+      title: 'NOMAD',
+      requirement: '6%+',
+      description: 'Desert wanderer',
+      tier: 'nomad',
+      colors: { from: '#78716c', via: '#a8a29e', to: '#d4a84b' }
+    },
+    {
+      title: 'DRIFTER',
+      requirement: '0.1%+',
+      description: 'Signal in the static',
+      tier: 'drifter',
+      colors: { from: '#6b7280', via: '#9ca3af', to: '#e5e7eb' }
+    }
+  ];
 
   const loadBadges = async () => {
     try {
@@ -873,11 +1272,144 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
       <div className="bg-secondary border border-borderSubtle rounded-lg shadow-2xl w-[90vw] h-[85vh] max-w-7xl flex flex-col relative z-10">
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-borderSubtle">
-          <div>
-            <h2 className="text-xl font-bold text-textPrimary">Twitch Global Badges</h2>
-            <p className="text-sm text-textSecondary mt-1">
-              Click on any badge to view detailed information
-            </p>
+          <div className="flex items-center gap-4">
+            <div>
+              <h2 className="text-xl font-bold text-textPrimary">Twitch Global Badges</h2>
+              <p className="text-sm text-textSecondary mt-1">
+                Click on any badge to view detailed information
+              </p>
+            </div>
+            
+            {/* Collection Counter - only shows truly global collectible badges */}
+            {isAuthenticated && totalGlobalBadges > 0 && (
+              <div 
+                className={`flex items-center gap-3 px-4 py-2.5 bg-gradient-to-r ${
+                  currentRank?.colors.bg || 'from-[#6b7280]/10 via-[#9ca3af]/10 to-[#d1d5db]/10'
+                } border border-${currentRank?.colors.border || '[#6b7280]/30'} rounded-xl relative overflow-visible cursor-pointer hover:brightness-110 transition-all`}
+                style={{ 
+                  borderColor: currentRank ? `${currentRank.colors.from}30` : 'rgba(107, 114, 128, 0.3)',
+                  boxShadow: currentRank ? `0 0 20px ${currentRank.colors.glow}` : 'none'
+                }}
+                onClick={() => {
+                  // Set dropdown position when opening
+                  if (!showRankList && rankButtonRef.current) {
+                    const rect = rankButtonRef.current.getBoundingClientRect();
+                    setDropdownPosition({ top: rect.bottom + 8, left: rect.left - 280 });
+                  }
+                  setShowRankList(!showRankList);
+                }}
+              >
+                {/* Sparkle effects - using rank colors */}
+                <div className="absolute inset-0 overflow-hidden pointer-events-none">
+                  {(currentRank?.colors.sparkle || ['#6b7280', '#9ca3af', '#d1d5db', '#4b5563']).map((color, i) => (
+                    <div 
+                      key={i}
+                      className="absolute w-1 h-1 rounded-full animate-ping"
+                      style={{ 
+                        backgroundColor: color,
+                        opacity: 0.5 + (i * 0.1),
+                        top: `${20 + (i * 20)}%`, 
+                        left: `${15 + (i * 25)}%`,
+                        animationDelay: `${i * 0.5}s`,
+                        animationDuration: `${2 + (i * 0.3)}s`
+                      }} 
+                    />
+                  ))}
+                </div>
+                <div 
+                  className="flex items-center justify-center w-9 h-9 rounded-lg shadow-lg relative"
+                  style={{
+                    background: currentRank 
+                      ? `linear-gradient(to bottom right, ${currentRank.colors.from}, ${currentRank.colors.via}, ${currentRank.colors.to})`
+                      : 'linear-gradient(to bottom right, #6b7280, #9ca3af, #d1d5db)'
+                  }}
+                >
+                  <div className="absolute inset-0 bg-gradient-to-tr from-transparent via-white/20 to-transparent rounded-lg" />
+                  <Trophy size={18} className="text-white drop-shadow-sm relative z-10" style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.3))' }} />
+                </div>
+                <div className="flex flex-col relative z-10">
+                  {currentRank && (
+                    <span 
+                      className="text-xs font-bold uppercase tracking-wider"
+                      style={{
+                        background: `linear-gradient(to right, ${currentRank.colors.from}, ${currentRank.colors.via}, ${currentRank.colors.to})`,
+                        WebkitBackgroundClip: 'text',
+                        WebkitTextFillColor: 'transparent',
+                        backgroundClip: 'text'
+                      }}
+                    >
+                      {currentRank.title}
+                    </span>
+                  )}
+                  <div className="flex items-baseline gap-1">
+                    {loadingUserBadges ? (
+                      <div 
+                        className="w-4 h-4 border-2 border-t-transparent rounded-full animate-spin" 
+                        style={{ borderColor: currentRank?.colors.from || '#6b7280' }}
+                      />
+                    ) : (
+                      <>
+                        <span 
+                          className="text-lg font-bold"
+                          style={{
+                            background: currentRank 
+                              ? `linear-gradient(to right, ${currentRank.colors.from}, ${currentRank.colors.via}, ${currentRank.colors.to})`
+                              : 'linear-gradient(to right, #6b7280, #9ca3af, #d1d5db)',
+                            WebkitBackgroundClip: 'text',
+                            WebkitTextFillColor: 'transparent',
+                            backgroundClip: 'text'
+                          }}
+                        >
+                          {collectedCount}
+                        </span>
+                        <span className="text-textSecondary text-sm">/ {totalGlobalBadges}</span>
+                      </>
+                    )}
+                  </div>
+                </div>
+                {collectedCount > 0 && !loadingUserBadges && totalGlobalBadges > 0 && (
+                  <div 
+                    className="ml-2 px-2 py-0.5 rounded-full relative z-10"
+                    style={{
+                      background: currentRank 
+                        ? `linear-gradient(to right, ${currentRank.colors.from}20, ${currentRank.colors.to}20)`
+                        : 'linear-gradient(to right, rgba(107, 114, 128, 0.2), rgba(156, 163, 175, 0.2))',
+                      border: `1px solid ${currentRank?.colors.from || '#6b7280'}30`
+                    }}
+                  >
+                    <span 
+                      className="text-xs font-medium"
+                      style={{
+                        background: currentRank 
+                          ? `linear-gradient(to right, ${currentRank.colors.from}, ${currentRank.colors.via})`
+                          : 'linear-gradient(to right, #6b7280, #9ca3af)',
+                        WebkitBackgroundClip: 'text',
+                        WebkitTextFillColor: 'transparent',
+                        backgroundClip: 'text'
+                      }}
+                    >
+                      {Math.round((collectedCount / totalGlobalBadges) * 100)}%
+                    </span>
+                  </div>
+                )}
+                {/* View Ranks Button */}
+                <button
+                  ref={rankButtonRef}
+                  onClick={(e) => { 
+                    e.stopPropagation(); 
+                    if (!showRankList && rankButtonRef.current) {
+                      const rect = rankButtonRef.current.getBoundingClientRect();
+                      setDropdownPosition({ top: rect.bottom + 8, left: rect.left - 280 });
+                    }
+                    setShowRankList(!showRankList); 
+                  }}
+                  className="ml-1 p-1.5 rounded-lg hover:bg-white/10 transition-colors relative z-10"
+                  title="View all collector ranks"
+                >
+                  <Award size={16} className="text-textSecondary hover:text-textPrimary transition-colors" />
+                </button>
+              </div>
+            )}
           </div>
           <button
             onClick={onClose}
@@ -1022,17 +1554,23 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
                 {sortedBadges.map((badge, index) => {
                   const isAvailable = isBadgeAvailable(badge);
                   const isComingSoon = isBadgeComingSoon(badge);
+                  const hasCollected = isAuthenticated && isCollected(badge);
                   return (
                     <button
                       key={`${badge.set_id}-${badge.id}-${index}`}
                       onClick={() => onBadgeClick(badge, badge.set_id)}
-                      className={`flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-glass transition-all duration-200 group relative ${isAvailable ? 'ring-2 ring-green-500/50' : isComingSoon ? 'ring-2 ring-blue-500/50' : ''
-                        }`}
-                      title={badge.title}
+                      className={`flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-glass transition-all duration-200 group relative ${
+                        hasCollected ? 'ring-2 ring-[#d4a84b]/50 bg-[#d4a84b]/5' :
+                        isAvailable ? 'ring-2 ring-green-500/50' : 
+                        isComingSoon ? 'ring-2 ring-blue-500/50' : ''
+                      }`}
+                      title={hasCollected ? `${badge.title} (Collected!)` : badge.title}
                     >
-                      <div className={`w-18 h-18 flex items-center justify-center bg-glass rounded-lg group-hover:scale-110 transition-transform duration-200 ${isAvailable ? 'shadow-[0_0_20px_rgba(34,197,94,0.4)]' :
+                      <div className={`w-18 h-18 flex items-center justify-center bg-glass rounded-lg group-hover:scale-110 transition-transform duration-200 relative ${
+                        hasCollected ? 'shadow-[0_0_20px_rgba(212,168,75,0.35)]' :
+                        isAvailable ? 'shadow-[0_0_20px_rgba(34,197,94,0.4)]' :
                         isComingSoon ? 'shadow-[0_0_20px_rgba(59,130,246,0.4)]' : ''
-                        }`}>
+                      }`}>
                         <img
                           src={badge.image_url_4x}
                           alt={badge.title}
@@ -1040,13 +1578,23 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
                           loading="lazy"
                         />
                       </div>
-                      {isAvailable && (
+                      {/* Collected indicator - takes priority over other indicators */}
+                      {hasCollected && (
+                        <span className="absolute top-1 right-1 w-5 h-5 bg-gradient-to-br from-[#d4a84b] via-[#f0d78c] to-[#b8860b] rounded-full flex items-center justify-center shadow-lg overflow-hidden">
+                          <div className="absolute inset-0 bg-gradient-to-tr from-transparent via-white/30 to-transparent" />
+                          <Check size={12} className="text-[#2a1a0a] relative z-10" strokeWidth={3} />
+                        </span>
+                      )}
+                      {/* Status indicators - only show if not collected */}
+                      {!hasCollected && isAvailable && (
                         <span className="absolute top-1 right-1 w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
                       )}
-                      {isComingSoon && (
+                      {!hasCollected && isComingSoon && (
                         <span className="absolute top-1 right-1 w-2 h-2 bg-blue-500 rounded-full animate-pulse"></span>
                       )}
-                      <span className="text-xs text-textSecondary text-center line-clamp-2 group-hover:text-textPrimary transition-colors">
+                      <span className={`text-xs text-center line-clamp-2 transition-colors font-medium ${
+                        hasCollected ? 'bg-gradient-to-r from-[#d4a84b] via-[#f0d78c] to-[#c9a227] bg-clip-text text-transparent' : 'text-textSecondary group-hover:text-textPrimary'
+                      }`}>
                         {badge.title}
                       </span>
                     </button>
@@ -1057,6 +1605,203 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
           )}
         </div>
       </div>
+      
+      {/* Ranks Dropdown Portal - rendered outside the DOM hierarchy to prevent cursor flicker */}
+      {showRankList && dropdownPosition && createPortal(
+        <>
+          {/* Invisible overlay to capture clicks */}
+          <div 
+            className="fixed inset-0"
+            style={{ zIndex: 99998 }}
+            onClick={() => setShowRankList(false)}
+          />
+          <div 
+            className="fixed w-80 bg-primary border border-borderSubtle rounded-xl shadow-2xl overflow-hidden backdrop-blur-xl"
+            style={{ 
+              zIndex: 99999,
+              top: dropdownPosition.top,
+              left: Math.max(8, dropdownPosition.left)
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="p-3 border-b border-borderSubtle bg-secondary">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Trophy size={16} className="text-accent" />
+                  <span className="font-semibold text-textPrimary">Collector Ranks</span>
+                </div>
+                <button
+                  onClick={() => setShowRankList(false)}
+                  className="p-1 hover:bg-glass rounded-lg transition-colors"
+                >
+                  <X size={14} className="text-textSecondary" />
+                </button>
+              </div>
+              <p className="text-xs text-textSecondary mt-1">Collect global badges to rank up!</p>
+            </div>
+            {/* Epic tier animations */}
+            <style>{`
+              /* DRIFTER - VHS static fade */
+              @keyframes drifter-static { 0%, 100% { opacity: 0.7; } 50% { opacity: 0.9; } }
+              @keyframes drifter-flare { 0% { opacity: 0; transform: translateX(-100%); } 50% { opacity: 0.3; } 100% { opacity: 0; transform: translateX(100%); } }
+              .rank-drifter-icon { animation: drifter-static 2s ease-in-out infinite; }
+              .rank-drifter-text { animation: drifter-static 3s ease-in-out infinite; }
+              
+              /* NOMAD - Sand particles, golden glow */
+              @keyframes nomad-dust { 0%, 100% { opacity: 0.5; transform: translateX(0); } 50% { opacity: 0.8; transform: translateX(2px); } }
+              @keyframes nomad-glow { 0%, 100% { box-shadow: 0 0 8px rgba(212, 168, 75, 0.3); } 50% { box-shadow: 0 0 16px rgba(212, 168, 75, 0.5); } }
+              .rank-nomad-icon { animation: nomad-glow 3s ease-in-out infinite; }
+              .rank-nomad-text { animation: nomad-dust 4s ease-in-out infinite; }
+              
+              /* RONIN - Neon katana slash, electric blue */
+              @keyframes ronin-slash { 0% { background-position: -200% center; } 100% { background-position: 200% center; } }
+              @keyframes ronin-pulse { 0%, 100% { box-shadow: 0 0 10px rgba(59, 130, 246, 0.4), 0 0 20px rgba(14, 165, 233, 0.2); } 50% { box-shadow: 0 0 20px rgba(59, 130, 246, 0.6), 0 0 40px rgba(14, 165, 233, 0.4); } }
+              .rank-ronin-icon { animation: ronin-pulse 1.5s ease-in-out infinite; }
+              .rank-ronin-text { background: linear-gradient(90deg, #3b82f6, #60a5fa, #0ea5e9, #38bdf8, #3b82f6); background-size: 200% auto; -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; animation: ronin-slash 2s linear infinite; }
+              
+              /* PHANTOM - Ghostly cyan, chromatic aberration */
+              @keyframes phantom-ghost { 0%, 100% { opacity: 0.8; filter: blur(0px); } 50% { opacity: 1; filter: blur(0.5px); } }
+              @keyframes phantom-aberration { 0%, 100% { text-shadow: -1px 0 #06b6d4, 1px 0 #67e8f9; } 50% { text-shadow: -2px 0 #06b6d4, 2px 0 #67e8f9; } }
+              .rank-phantom-icon { animation: phantom-ghost 2s ease-in-out infinite; }
+              .rank-phantom-text { animation: phantom-aberration 3s ease-in-out infinite; }
+              
+              /* VANGUARD - Chrome holographic, rotation */
+              @keyframes vanguard-holo { 0% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } 100% { background-position: 0% 50%; } }
+              @keyframes vanguard-shine { 0%, 100% { opacity: 0.2; } 50% { opacity: 0.4; } }
+              .rank-vanguard-icon { background: linear-gradient(45deg, #94a3b8, #cbd5e1, #e2e8f0, #94a3b8); background-size: 200% 200%; animation: vanguard-holo 4s ease infinite; }
+              .rank-vanguard-text { background: linear-gradient(90deg, #94a3b8, #cbd5e1, #e2e8f0, #94a3b8); background-size: 200% auto; -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; animation: vanguard-holo 3s ease infinite; }
+              
+              /* AURORA - Northern lights flow */
+              @keyframes aurora-flow { 0% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } 100% { background-position: 0% 50%; } }
+              @keyframes aurora-shimmer { 0%, 100% { opacity: 0.8; } 50% { opacity: 1; } }
+              .rank-aurora-icon { background: linear-gradient(135deg, #14b8a6, #a855f7, #ec4899, #14b8a6); background-size: 300% 300%; animation: aurora-flow 6s ease infinite; }
+              .rank-aurora-text { background: linear-gradient(90deg, #14b8a6, #a855f7, #ec4899, #06b6d4, #14b8a6); background-size: 200% auto; -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; animation: aurora-flow 4s ease infinite; }
+              
+              /* NEXUS - Wireframe grid, glitch */
+              @keyframes nexus-grid { 0%, 100% { opacity: 0.9; } 50% { opacity: 1; } }
+              @keyframes nexus-glitch { 0%, 92%, 100% { transform: translate(0); } 93% { transform: translate(-2px, 1px); } 95% { transform: translate(2px, -1px); } 97% { transform: translate(-1px, 2px); } }
+              .rank-nexus-icon { animation: nexus-grid 2s ease-in-out infinite, nexus-glitch 4s step-end infinite; }
+              .rank-nexus-text { background: linear-gradient(90deg, #7c3aed, #a855f7, #c084fc, #e879f9, #7c3aed); background-size: 200% auto; -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; animation: aurora-flow 3s ease infinite, nexus-glitch 5s step-end infinite; }
+              
+              /* AEON - Cosmic nebula, golden filaments */
+              @keyframes aeon-nebula { 0% { background-position: 0% 0%; } 100% { background-position: 100% 100%; } }
+              @keyframes aeon-pulse { 0%, 100% { box-shadow: 0 0 15px rgba(255, 215, 0, 0.3), 0 0 30px rgba(74, 0, 128, 0.2); } 50% { box-shadow: 0 0 25px rgba(255, 215, 0, 0.5), 0 0 50px rgba(74, 0, 128, 0.3); } }
+              .rank-aeon-icon { background: linear-gradient(135deg, #1a1a2e, #4a0080, #ffd700); animation: aeon-pulse 3s ease-in-out infinite; }
+              .rank-aeon-text { background: linear-gradient(90deg, #ffd700, #4a0080, #ffffff, #ffd700); background-size: 300% auto; -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; animation: aeon-nebula 8s linear infinite; }
+              
+              /* TITAN - Liquid mercury, prismatic diamond */
+              @keyframes titan-mercury { 0%, 100% { background-position: 0% 50%; filter: brightness(1); } 25% { filter: brightness(1.1); } 50% { background-position: 100% 50%; filter: brightness(1.2); } 75% { filter: brightness(1.1); } }
+              @keyframes titan-flare { 0%, 100% { box-shadow: 0 0 20px rgba(255, 255, 255, 0.3), 0 0 40px rgba(168, 216, 234, 0.2); } 50% { box-shadow: 0 0 30px rgba(255, 255, 255, 0.5), 0 0 60px rgba(168, 216, 234, 0.4), 0 0 80px rgba(255, 215, 0, 0.2); } }
+              .rank-titan-icon { background: linear-gradient(135deg, #e8e8e8, #ffffff, #c0c0c0, #a8d8ea, #e8e8e8); background-size: 200% 200%; animation: titan-mercury 4s ease infinite, titan-flare 3s ease-in-out infinite; }
+              .rank-titan-text { background: linear-gradient(90deg, #e8e8e8, #ffffff, #a8d8ea, #ffd700, #e8e8e8); background-size: 300% auto; -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; animation: titan-mercury 5s ease infinite; }
+              
+              /* APEX - Full adaptive RGB, floating effect */
+              @keyframes apex-rgb { 0% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } 100% { background-position: 0% 50%; } }
+              @keyframes apex-float { 0%, 100% { transform: translateY(0) scale(1); } 50% { transform: translateY(-2px) scale(1.02); } }
+              @keyframes apex-glow { 0%, 100% { box-shadow: 0 0 20px rgba(255, 0, 128, 0.4), 0 0 40px rgba(121, 40, 202, 0.3), 0 0 60px rgba(0, 212, 255, 0.2); } 33% { box-shadow: 0 0 25px rgba(121, 40, 202, 0.5), 0 0 50px rgba(0, 212, 255, 0.4), 0 0 70px rgba(255, 0, 128, 0.3); } 66% { box-shadow: 0 0 30px rgba(0, 212, 255, 0.5), 0 0 55px rgba(255, 0, 128, 0.4), 0 0 80px rgba(121, 40, 202, 0.3); } }
+              .rank-apex-icon { background: linear-gradient(135deg, #ff0080, #7928ca, #00d4ff, #ff0080); background-size: 300% 300%; animation: apex-rgb 3s ease infinite, apex-float 2s ease-in-out infinite, apex-glow 4s ease-in-out infinite; }
+              .rank-apex-text { background: linear-gradient(90deg, #ff0080, #7928ca, #00d4ff, #ff6b6b, #feca57, #ff0080); background-size: 300% auto; -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; animation: apex-rgb 2s ease infinite; }
+            `}</style>
+            <div className="p-2 space-y-1 max-h-96 overflow-y-auto custom-scrollbar">
+              {allRanks.map((rank) => {
+                const isCurrentRank = currentRank?.title === rank.title;
+                const currentPercentage = totalGlobalBadges > 0 ? Math.round((collectedCount / totalGlobalBadges) * 100) : 0;
+                const requiredPercentage = parseFloat(rank.requirement.replace(/[^0-9.]/g, '')) || 0;
+                const isAchieved = currentPercentage >= requiredPercentage;
+                
+                return (
+                  <div 
+                    key={rank.title}
+                    className={`flex items-center gap-3 p-2.5 rounded-lg transition-all ${
+                      isCurrentRank 
+                        ? 'bg-gradient-to-r from-[#ffffff08] to-transparent' 
+                        : isAchieved 
+                          ? 'bg-[#ffffff05]' 
+                          : 'opacity-60'
+                    }`}
+                    style={{
+                      boxShadow: isCurrentRank ? `inset 0 0 0 1px ${rank.colors.from}50` : undefined
+                    }}
+                  >
+                    {/* Rank Icon */}
+                    <div 
+                      className={`w-8 h-8 rounded-lg flex items-center justify-center shadow-md relative overflow-hidden flex-shrink-0 rank-${rank.tier}-icon`}
+                      style={{
+                        background: `linear-gradient(to bottom right, ${rank.colors.from}, ${rank.colors.via}, ${rank.colors.to})`
+                      }}
+                    >
+                      <div className="absolute inset-0 bg-gradient-to-tr from-transparent via-white/20 to-transparent" />
+                      <Trophy 
+                        size={14} 
+                        className="text-white relative z-10"
+                        style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.3))' }}
+                      />
+                    </div>
+                    
+                    {/* Rank Info */}
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span 
+                          className={`font-bold text-sm tracking-wider rank-${rank.tier}-text`}
+                          style={{
+                            background: `linear-gradient(to right, ${rank.colors.from}, ${rank.colors.via}, ${rank.colors.to})`,
+                            WebkitBackgroundClip: 'text',
+                            WebkitTextFillColor: 'transparent',
+                            backgroundClip: 'text'
+                          }}
+                        >
+                          {rank.title}
+                        </span>
+                        {isCurrentRank && (
+                          <span className="px-1.5 py-0.5 bg-accent/20 text-accent text-[10px] font-bold rounded uppercase">
+                            Current
+                          </span>
+                        )}
+                        {isAchieved && !isCurrentRank && (
+                          <Check size={12} className="text-green-500" />
+                        )}
+                      </div>
+                      <p className="text-[11px] text-textSecondary truncate">{rank.description}</p>
+                    </div>
+                    
+                    {/* Requirement Badge */}
+                    <div 
+                      className="px-2 py-1 rounded-md text-xs font-medium flex-shrink-0"
+                      style={{
+                        background: `linear-gradient(to right, ${rank.colors.from}15, ${rank.colors.to}15)`,
+                        color: rank.colors.from
+                      }}
+                    >
+                      {rank.requirement}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            {/* Progress to next rank */}
+            {currentRank && currentRank.title !== 'APEX' && (
+              <div className="p-3 border-t border-borderSubtle bg-glass/30">
+                <div className="flex items-center gap-2 text-xs text-textSecondary">
+                  <ChevronUp size={12} />
+                  <span>
+                    {(() => {
+                      const nextRankIndex = allRanks.findIndex(r => r.title === currentRank.title) - 1;
+                      if (nextRankIndex >= 0) {
+                        const nextRank = allRanks[nextRankIndex];
+                        const nextRequired = parseFloat(nextRank.requirement.replace(/[^0-9.]/g, '')) || 100;
+                        const badgesNeeded = Math.ceil((nextRequired / 100) * totalGlobalBadges) - collectedCount;
+                        return `${badgesNeeded} more badge${badgesNeeded !== 1 ? 's' : ''} to ${nextRank.title}`;
+                      }
+                      return 'Keep collecting!';
+                    })()}
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+        </>,
+        document.body
+      )}
     </div>
   );
 };

@@ -382,6 +382,35 @@ export const useTwitchChat = () => {
         // Legacy/System message handling (strings)
         console.log('[Chat] Received string message:', message);
 
+        // Check for USERNOTICE (subscription events) and dispatch custom event
+        if (message.includes('USERNOTICE')) {
+          // Extract relevant fields from USERNOTICE
+          const loginMatch = message.match(/(?:^|;)login=([^;]+)/);
+          const msgIdMatch = message.match(/(?:^|;)msg-id=([^;]+)/);
+          const displayNameMatch = message.match(/(?:^|;)display-name=([^;]+)/);
+          
+          const login = loginMatch ? loginMatch[1] : null;
+          const msgId = msgIdMatch ? msgIdMatch[1] : null;
+          const displayName = displayNameMatch ? displayNameMatch[1] : null;
+          
+          // Check if this is a subscription-related event
+          const subTypes = ['sub', 'resub', 'subgift', 'submysterygift', 'giftpaidupgrade', 'primepaidupgrade', 'anongiftpaidupgrade'];
+          if (login && msgId && subTypes.includes(msgId)) {
+            console.log('[Chat] Detected subscription event:', { login, msgId, displayName });
+            
+            // Dispatch a custom event for subscription detection
+            const subscriptionEvent = new CustomEvent('twitch-subscription-detected', {
+              detail: {
+                login: login.toLowerCase(),
+                msgId,
+                displayName,
+                rawMessage: message
+              }
+            });
+            window.dispatchEvent(subscriptionEvent);
+          }
+        }
+
         // Extract message ID and user ID from IRC tags
         // IMPORTANT: Match the actual message ID, not reply-parent-msg-id
         const idMatch = message.match(/(?:^|;)id=([^;]+)/);

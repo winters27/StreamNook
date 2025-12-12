@@ -976,11 +976,14 @@ export const useAppStore = create<AppState>((set, get) => ({
           const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
           const loginWindow = await WebviewWindow.getByLabel('twitch-login');
           if (loginWindow) {
+            console.log('[TwitchLogin] Closing twitch-login webview window');
             await loginWindow.close();
-            console.log('Login window closed');
+            console.log('[TwitchLogin] Successfully closed twitch-login window');
+          } else {
+            console.log('[TwitchLogin] No twitch-login window found to close');
           }
         } catch (e) {
-          console.warn('Could not close login window:', e);
+          console.warn('[TwitchLogin] Failed to close twitch-login window:', e);
         }
 
         // After successful login, check auth status FIRST
@@ -1004,11 +1007,24 @@ export const useAppStore = create<AppState>((set, get) => ({
       });
 
       // Also listen for login errors
-      const unlistenError = await listen('twitch-login-error', (event) => {
+      const unlistenError = await listen('twitch-login-error', async (event) => {
         console.error('Login error event received:', event.payload);
         const errorMessage = String(event.payload);
         get().addToast(`Login failed: ${errorMessage}`, 'error');
         set({ isLoading: false });
+
+        // Also close the login window on error
+        try {
+          const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+          const loginWindow = await WebviewWindow.getByLabel('twitch-login');
+          if (loginWindow) {
+            console.log('[TwitchLogin] Closing twitch-login window after error');
+            await loginWindow.close();
+          }
+        } catch (e) {
+          console.warn('[TwitchLogin] Failed to close twitch-login window on error:', e);
+        }
+
         unlistenError();
       });
 

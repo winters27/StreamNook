@@ -26,6 +26,7 @@ const ProfileOverlay = ({ isOpen, onClose, anchorPosition }: ProfileOverlayProps
   const [seventvBadges, setSeventvBadges] = useState<SevenTVBadge[]>([]);
   const [seventvPaint, setSeventvPaint] = useState<SevenTVPaint | null>(null);
   const [seventvUserId, setSeventvUserId] = useState<string | null>(null);
+  const [has7TVAccountChecked, setHas7TVAccountChecked] = useState(false);
   const [isLoadingBadges, setIsLoadingBadges] = useState(false);
   const hasInitializedRef = useRef(false);
   const lastUserIdRef = useRef<string | null>(null);
@@ -39,6 +40,7 @@ const ProfileOverlay = ({ isOpen, onClose, anchorPosition }: ProfileOverlayProps
       setSeventvBadges([]);
       setSeventvPaint(null);
       setSeventvUserId(null);
+      setHas7TVAccountChecked(false);
       lastUserIdRef.current = null;
       hasInitializedRef.current = false;
       return;
@@ -73,6 +75,7 @@ const ProfileOverlay = ({ isOpen, onClose, anchorPosition }: ProfileOverlayProps
     setThirdPartyBadges(profile.thirdPartyBadges);
     setSeventvBadges(profile.seventvCosmetics.badges);
     setSeventvUserId(profile.seventvCosmetics.seventvUserId || null);
+    setHas7TVAccountChecked(true);
 
     const selectedPaint = profile.seventvCosmetics.paints.find((p: any) => p.selected);
     if (selectedPaint) {
@@ -88,6 +91,16 @@ const ProfileOverlay = ({ isOpen, onClose, anchorPosition }: ProfileOverlayProps
       await open(`https://7tv.app/users/${seventvUserId}/cosmetics`);
     } catch (err) {
       console.error('Failed to open 7TV cosmetics page:', err);
+    }
+  };
+
+  // Open 7TV homepage for account creation
+  const handleCreate7TVAccount = async () => {
+    try {
+      const { open } = await import('@tauri-apps/plugin-shell');
+      await open('https://7tv.app/');
+    } catch (err) {
+      console.error('Failed to open 7TV page:', err);
     }
   };
 
@@ -263,15 +276,15 @@ const ProfileOverlay = ({ isOpen, onClose, anchorPosition }: ProfileOverlayProps
                 </div>
               </div>
 
-              {/* Badges Section */}
-              {(twitchBadges.length > 0 || seventvBadges.length > 0 || thirdPartyBadges.length > 0) && (
+              {/* Badges Section - Filter out broadcaster and subscriber badges as they're irrelevant in profile context */}
+              {(twitchBadges.filter(b => b.setID !== 'broadcaster' && b.setID !== 'subscriber').length > 0 || seventvBadges.length > 0 || thirdPartyBadges.length > 0) && (
                 <div className="space-y-3">
                   {/* Twitch Badges */}
-                  {twitchBadges.length > 0 && (
+                  {twitchBadges.filter(b => b.setID !== 'broadcaster' && b.setID !== 'subscriber').length > 0 && (
                     <div>
                       <p className="text-[10px] text-textSecondary mb-1.5 font-semibold uppercase tracking-wide">Twitch Badges</p>
                       <div className="flex items-center gap-1.5 flex-wrap p-2 glass-panel rounded-lg">
-                        {twitchBadges.map((badge, idx) => (
+                        {twitchBadges.filter(b => b.setID !== 'broadcaster' && b.setID !== 'subscriber').map((badge, idx) => (
                           <img
                             key={`twitch-${badge.id}-${idx}`}
                             src={badge.image1x}
@@ -361,24 +374,44 @@ const ProfileOverlay = ({ isOpen, onClose, anchorPosition }: ProfileOverlayProps
                 </div>
               )}
 
-              {/* Edit 7TV Cosmetics Button */}
-              {seventvUserId && (
-                <button
-                  onClick={handleOpen7TVCosmetics}
-                  className="w-full flex items-center justify-center gap-2 px-4 py-2.5 glass-button text-textPrimary font-medium group"
-                >
-                  {/* 7TV Logo - same as emote picker */}
-                  <svg
-                    className="w-4 h-4 text-[#29b6f6] group-hover:scale-110 transition-transform"
-                    viewBox="0 0 28 21"
-                    fill="currentColor"
+              {/* 7TV Button - Edit Cosmetics or Create Account */}
+              {has7TVAccountChecked && (
+                seventvUserId ? (
+                  <button
+                    onClick={handleOpen7TVCosmetics}
+                    className="w-full flex items-center justify-center gap-2 px-4 py-2.5 glass-button text-textPrimary font-medium group"
                   >
-                    <path d="M20.7465 5.48825L21.9799 3.33745L22.646 2.20024L21.4125 0.0494437V0H14.8259L17.2928 4.3016L17.9836 5.48825H20.7465Z" />
-                    <path d="M7.15395 19.9258L14.5546 7.02104L15.4673 5.43884L13.0004 1.13724L12.3097 0.0247596H1.8995L0.666057 2.17556L0 3.31276L1.23344 5.46356V5.51301H9.12745L2.96025 16.267L2.09685 17.7998L3.33029 19.9506V20H7.15395" />
-                    <path d="M17.4655 19.9257H21.2398L26.1736 11.3225L27.037 9.83924L25.8036 7.68844V7.63899H22.0046L19.5377 11.9406L19.365 12.262L16.8981 7.96038L16.7255 7.63899L14.2586 11.9406L13.5679 13.1272L17.2682 19.5796L17.4655 19.9257Z" />
-                  </svg>
-                  <span>Edit 7TV Cosmetics</span>
-                </button>
+                    {/* 7TV Logo */}
+                    <svg
+                      className="w-4 h-4 text-[#29b6f6] group-hover:scale-110 transition-transform"
+                      viewBox="0 0 28 21"
+                      fill="currentColor"
+                    >
+                      <path d="M20.7465 5.48825L21.9799 3.33745L22.646 2.20024L21.4125 0.0494437V0H14.8259L17.2928 4.3016L17.9836 5.48825H20.7465Z" />
+                      <path d="M7.15395 19.9258L14.5546 7.02104L15.4673 5.43884L13.0004 1.13724L12.3097 0.0247596H1.8995L0.666057 2.17556L0 3.31276L1.23344 5.46356V5.51301H9.12745L2.96025 16.267L2.09685 17.7998L3.33029 19.9506V20H7.15395" />
+                      <path d="M17.4655 19.9257H21.2398L26.1736 11.3225L27.037 9.83924L25.8036 7.68844V7.63899H22.0046L19.5377 11.9406L19.365 12.262L16.8981 7.96038L16.7255 7.63899L14.2586 11.9406L13.5679 13.1272L17.2682 19.5796L17.4655 19.9257Z" />
+                    </svg>
+                    <span>Edit 7TV Cosmetics</span>
+                  </button>
+                ) : (
+                  <button
+                    onClick={handleCreate7TVAccount}
+                    className="w-full flex items-center justify-center gap-2 px-4 py-2.5 glass-button text-textPrimary font-medium group"
+                  >
+                    {/* 7TV Logo */}
+                    <svg
+                      className="w-4 h-4 text-[#29b6f6] group-hover:scale-110 transition-transform"
+                      viewBox="0 0 28 21"
+                      fill="currentColor"
+                    >
+                      <path d="M20.7465 5.48825L21.9799 3.33745L22.646 2.20024L21.4125 0.0494437V0H14.8259L17.2928 4.3016L17.9836 5.48825H20.7465Z" />
+                      <path d="M7.15395 19.9258L14.5546 7.02104L15.4673 5.43884L13.0004 1.13724L12.3097 0.0247596H1.8995L0.666057 2.17556L0 3.31276L1.23344 5.46356V5.51301H9.12745L2.96025 16.267L2.09685 17.7998L3.33029 19.9506V20H7.15395" />
+                      <path d="M17.4655 19.9257H21.2398L26.1736 11.3225L27.037 9.83924L25.8036 7.68844V7.63899H22.0046L19.5377 11.9406L19.365 12.262L16.8981 7.96038L16.7255 7.63899L14.2586 11.9406L13.5679 13.1272L17.2682 19.5796L17.4655 19.9257Z" />
+                    </svg>
+                    <span>Create 7TV Account</span>
+                    <ExternalLink size={14} className="opacity-60" />
+                  </button>
+                )
               )}
 
               {/* Logout Button */}
