@@ -622,7 +622,7 @@ function App() {
 
   // Listen for PIP exit (e.g., user clicks "back to tab" or "X" in PIP window)
   useEffect(() => {
-    const handleLeavePip = (event: Event) => {
+    const handleLeavePip = async (event: Event) => {
       // If we're in Home view and PIP was exited, check why
       if (isHomeActive && streamUrl) {
         const videoElement = event.target as HTMLVideoElement;
@@ -636,6 +636,13 @@ function App() {
           toggleHome();
         } else {
           console.log('[PIP] User exited PIP via back to tab, returning to stream view');
+          // Focus the app window so user doesn't have to click on it
+          try {
+            const window = getCurrentWindow();
+            await window.setFocus();
+          } catch (error) {
+            console.warn('[PIP] Failed to focus window:', error);
+          }
           toggleHome();
         }
       }

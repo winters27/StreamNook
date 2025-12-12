@@ -162,13 +162,18 @@ const Home = () => {
     }, [loadFollowedStreams, loadRecommendedStreams]);
 
     // Auto-select the appropriate tab based on auth status
+    // Skip if we're in a navigation-specific tab (e.g., navigated from badge overlay)
     useEffect(() => {
+        // Don't override navigation-specific tabs (category from deep links, search results)
+        if (homeActiveTab === 'category' || homeActiveTab === 'search') {
+            return;
+        }
         if (isAuthenticated && followedStreams.length > 0) {
             setActiveTab('following');
         } else if (!isAuthenticated || followedStreams.length === 0) {
             setActiveTab('recommended');
         }
-    }, [isAuthenticated, followedStreams.length]);
+    }, [isAuthenticated, followedStreams.length, homeActiveTab]);
 
     // Focus search input when expanded
     useEffect(() => {

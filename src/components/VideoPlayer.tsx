@@ -15,7 +15,7 @@ const VideoPlayer = () => {
   const hlsRef = useRef<Hls | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const progressUpdateIntervalRef = useRef<number | null>(null);
-  const { streamUrl, settings, getAvailableQualities, changeStreamQuality, handleStreamOffline, isAutoSwitching, currentStream } = useAppStore();
+  const { streamUrl, settings, getAvailableQualities, changeStreamQuality, handleStreamOffline, isAutoSwitching, currentStream, currentUser } = useAppStore();
   const playerSettings = settings.video_player;
   // Store settings in a ref so createPlayer doesn't need to depend on them
   // This prevents player recreation when volume/muted settings change
@@ -1027,10 +1027,61 @@ const VideoPlayer = () => {
     }
   }, [currentStream?.user_login, isFollowing, followLoading]);
 
+  // Track the subscribe window reference for auto-close on successful subscription
+  const subscribeWindowRef = useRef<WebviewWindow | null>(null);
+  const subscribeWindowLabelRef = useRef<string | null>(null);
+
+  // Listen for subscription events to auto-close the subscribe window
+  useEffect(() => {
+    const handleSubscriptionDetected = async (event: Event) => {
+      const customEvent = event as CustomEvent<{ login: string; msgId: string; displayName: string }>;
+      const { login, msgId, displayName } = customEvent.detail;
+      const currentUserLogin = currentUser?.login?.toLowerCase();
+      
+      console.log('[VideoPlayer] Subscription event detected:', { login, msgId, displayName, currentUserLogin });
+      
+      // Check if this subscription is from the current user
+      if (currentUserLogin && login === currentUserLogin && subscribeWindowLabelRef.current) {
+        console.log('[VideoPlayer] Detected own subscription! Auto-closing subscribe window...');
+        
+        // Show success toast
+        useAppStore.getState().addToast(
+          `🎉 Subscription successful! ${msgId === 'subgift' ? 'Gift sent!' : 'Thank you for subscribing!'}`,
+          'success'
+        );
+        
+        // Close the subscribe window
+        try {
+          const subscribeWindow = await WebviewWindow.getByLabel(subscribeWindowLabelRef.current);
+          if (subscribeWindow) {
+            await subscribeWindow.close();
+            console.log('[VideoPlayer] Subscribe window closed successfully');
+          }
+        } catch (e) {
+          console.warn('[VideoPlayer] Failed to close subscribe window:', e);
+        }
+        
+        // Clear the reference
+        subscribeWindowRef.current = null;
+        subscribeWindowLabelRef.current = null;
+      }
+    };
+
+    // Add the event listener
+    window.addEventListener('twitch-subscription-detected', handleSubscriptionDetected);
+    
+    return () => {
+      window.removeEventListener('twitch-subscription-detected', handleSubscriptionDetected);
+    };
+  }, [currentUser?.login]);
+
   // Handle subscribe button click
   const handleSubscribeClick = useCallback(() => {
     if (currentStream?.user_login) {
-      const webview = new WebviewWindow(`subscribe-${currentStream.user_login}`, {
+      const windowLabel = `subscribe-${currentStream.user_login}-${Date.now()}`;
+      subscribeWindowLabelRef.current = windowLabel;
+      
+      const webview = new WebviewWindow(windowLabel, {
         url: `https://www.twitch.tv/subs/${currentStream.user_login}`,
         title: `Subscribe to ${currentStream.user_name}`,
         width: 800,
@@ -1041,8 +1092,19 @@ const VideoPlayer = () => {
         maximizable: true,
       });
 
+      subscribeWindowRef.current = webview;
+
       webview.once('tauri://error', (e) => {
         console.error('Error opening subscribe window:', e);
+        subscribeWindowRef.current = null;
+        subscribeWindowLabelRef.current = null;
+      });
+      
+      // Clear reference when window is closed manually
+      webview.once('tauri://destroyed', () => {
+        console.log('[VideoPlayer] Subscribe window closed by user');
+        subscribeWindowRef.current = null;
+        subscribeWindowLabelRef.current = null;
       });
     }
   }, [currentStream]);

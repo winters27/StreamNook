@@ -206,7 +206,9 @@ impl MiningService {
                                         drop(status);
                                         let _ = app_handle.emit("mining-status-update", &current_status);
                                     } else {
-                                        println!("❌ Could not find metadata for drop ID: {}", drop_id);
+                                        // This is normal - the drop might be from a different campaign in the same game
+                                        // The inventory polling will provide accurate data for all drops
+                                        println!("ℹ️ Drop {} is being tracked by inventory polling (not in campaigns cache)", drop_id);
                                     }
                                 }
                             }
@@ -1264,7 +1266,20 @@ impl MiningService {
                                             .await
                                         {
                                             Ok(inventory) => {
-                                                for item in inventory.items {
+                                                // SMART DROP SELECTION: Collect all drops with progress, then pick the best one
+                                                // This ensures we show the drop with highest progress percentage
+                                                let mut all_drops_with_progress: Vec<(
+                                                    String, // drop_id
+                                                    String, // drop_name
+                                                    String, // drop_image
+                                                    String, // campaign_name
+                                                    String, // game_name
+                                                    i32,    // current_minutes
+                                                    i32,    // required_minutes
+                                                    f32,    // progress_percentage
+                                                )> = Vec::new();
+
+                                                for item in &inventory.items {
                                                     // Filter by game/category - include all campaigns for this game
                                                     if item.campaign.game_name != game_name_poll {
                                                         continue;
@@ -1275,7 +1290,7 @@ impl MiningService {
                                                         item.campaign.game_name, item.campaign.name
                                                     );
 
-                                                    for time_drop in item.campaign.time_based_drops
+                                                    for time_drop in &item.campaign.time_based_drops
                                                     {
                                                         if let Some(progress) = &time_drop.progress
                                                         {
@@ -1283,6 +1298,11 @@ impl MiningService {
                                                                 progress.current_minutes_watched;
                                                             let required_minutes =
                                                                 time_drop.required_minutes_watched;
+
+                                                            // Skip drops that are already complete (100%+)
+                                                            if current_minutes >= required_minutes {
+                                                                continue;
+                                                            }
 
                                                             // Get drop name and image from benefit_edges
                                                             let (drop_name, drop_image) =
@@ -1302,109 +1322,145 @@ impl MiningService {
                                                                     )
                                                                 };
 
-                                                            println!("📊 Inventory poll: {}/{} minutes for {} ({}) [image: {}]", 
-                                                                current_minutes, required_minutes, drop_name.clone(), time_drop.id,
-                                                                if drop_image.is_empty() { "NONE" } else { "found" });
-
-                                                            // FIRST: Update mining_status.current_drop directly with full metadata
-                                                            // This ensures the status always has the correct name/image from the first update
-                                                            {
-                                                                let mut status = mining_status_poll
-                                                                    .write()
-                                                                    .await;
-                                                                let should_update =
-                                                                    if let Some(ref current_drop) =
-                                                                        status.current_drop
-                                                                    {
-                                                                        // Update if this is the same drop (progress update) OR if current_drop is missing metadata
-                                                                        current_drop.drop_id
-                                                                            == time_drop.id
-                                                                            || current_drop
-                                                                                .drop_name
-                                                                                .is_empty()
-                                                                    } else {
-                                                                        // No current drop set - set it now with the first drop that has progress
-                                                                        true
-                                                                    };
-
-                                                                if should_update {
-                                                                    let progress_percentage =
-                                                                        (current_minutes as f32
-                                                                            / required_minutes
-                                                                                as f32)
-                                                                            * 100.0;
-                                                                    let estimated_completion =
-                                                                        if current_minutes > 0
-                                                                            && current_minutes
-                                                                                < required_minutes
-                                                                        {
-                                                                            let remaining = required_minutes - current_minutes;
-                                                                            Some(chrono::Utc::now() + chrono::Duration::minutes(remaining as i64))
-                                                                        } else {
-                                                                            None
-                                                                        };
-
-                                                                    // Get drop image for CurrentDropInfo
-                                                                    let drop_image_opt =
-                                                                        if drop_image.is_empty() {
-                                                                            None
-                                                                        } else {
-                                                                            Some(drop_image.clone())
-                                                                        };
-
-                                                                    status.current_drop =
-                                                                        Some(CurrentDropInfo {
-                                                                            drop_id: time_drop
-                                                                                .id
-                                                                                .clone(),
-                                                                            drop_name: drop_name
-                                                                                .clone(),
-                                                                            drop_image:
-                                                                                drop_image_opt,
-                                                                            campaign_name: item
-                                                                                .campaign
-                                                                                .name
-                                                                                .clone(),
-                                                                            game_name: item
-                                                                                .campaign
-                                                                                .game_name
-                                                                                .clone(),
-                                                                            current_minutes,
-                                                                            required_minutes,
-                                                                            progress_percentage,
-                                                                            estimated_completion,
-                                                                        });
-                                                                    status.last_update =
-                                                                        chrono::Utc::now();
-
-                                                                    println!("✅ [Inventory] Set current_drop: {} ({}/{})", drop_name, current_minutes, required_minutes);
-
-                                                                    // Emit mining status update to frontend
-                                                                    let current_status =
-                                                                        status.clone();
-                                                                    std::mem::drop(status);
-                                                                    let _ = app_handle_poll.emit(
-                                                                        "mining-status-update",
-                                                                        &current_status,
-                                                                    );
+                                                            let progress_percentage =
+                                                                if required_minutes > 0 {
+                                                                    (current_minutes as f32
+                                                                        / required_minutes as f32)
+                                                                        * 100.0
                                                                 } else {
-                                                                    std::mem::drop(status);
-                                                                }
-                                                            }
+                                                                    0.0
+                                                                };
 
-                                                            // ALSO emit the progress update event (for other listeners and frontend progress tracking)
-                                                            let _ = app_handle_poll.emit("drops-progress-update", serde_json::json!({
-                                                                "drop_id": time_drop.id,
-                                                                "drop_name": drop_name,
-                                                                "drop_image": drop_image,
-                                                                "campaign_name": item.campaign.name,
-                                                                "game_name": item.campaign.game_name,
-                                                                "current_minutes": current_minutes,
-                                                                "required_minutes": required_minutes,
-                                                                "timestamp": chrono::Utc::now().to_rfc3339()
-                                                            }));
+                                                            println!("📊 Inventory poll: {}/{} minutes for {} ({}) [{:.1}%]", 
+                                                                current_minutes, required_minutes, drop_name, time_drop.id, progress_percentage);
+
+                                                            all_drops_with_progress.push((
+                                                                time_drop.id.clone(),
+                                                                drop_name,
+                                                                drop_image,
+                                                                item.campaign.name.clone(),
+                                                                item.campaign.game_name.clone(),
+                                                                current_minutes,
+                                                                required_minutes,
+                                                                progress_percentage,
+                                                            ));
                                                         }
                                                     }
+                                                }
+
+                                                // Sort by progress percentage (highest first) to show the drop closest to completion
+                                                all_drops_with_progress.sort_by(|a, b| {
+                                                    b.7.partial_cmp(&a.7)
+                                                        .unwrap_or(std::cmp::Ordering::Equal)
+                                                });
+
+                                                // Update current_drop with the drop that has the highest progress
+                                                if let Some((
+                                                    drop_id,
+                                                    drop_name,
+                                                    drop_image,
+                                                    campaign_name,
+                                                    game_name,
+                                                    current_minutes,
+                                                    required_minutes,
+                                                    progress_percentage,
+                                                )) = all_drops_with_progress.first()
+                                                {
+                                                    let mut status =
+                                                        mining_status_poll.write().await;
+
+                                                    // Check if we should update (different drop or higher progress)
+                                                    let should_update =
+                                                        if let Some(ref current_drop) =
+                                                            status.current_drop
+                                                        {
+                                                            // Always update if this is a different drop with higher progress
+                                                            // Or if it's the same drop (progress update)
+                                                            current_drop.drop_id != *drop_id
+                                                                || current_drop.current_minutes
+                                                                    != *current_minutes
+                                                        } else {
+                                                            true // No current drop set
+                                                        };
+
+                                                    if should_update {
+                                                        let estimated_completion =
+                                                            if *current_minutes > 0
+                                                                && *current_minutes
+                                                                    < *required_minutes
+                                                            {
+                                                                let remaining = *required_minutes
+                                                                    - *current_minutes;
+                                                                Some(
+                                                                    chrono::Utc::now()
+                                                                        + chrono::Duration::minutes(
+                                                                            remaining as i64,
+                                                                        ),
+                                                                )
+                                                            } else {
+                                                                None
+                                                            };
+
+                                                        let drop_image_opt =
+                                                            if drop_image.is_empty() {
+                                                                None
+                                                            } else {
+                                                                Some(drop_image.clone())
+                                                            };
+
+                                                        status.current_drop =
+                                                            Some(CurrentDropInfo {
+                                                                drop_id: drop_id.clone(),
+                                                                drop_name: drop_name.clone(),
+                                                                drop_image: drop_image_opt,
+                                                                campaign_name: campaign_name
+                                                                    .clone(),
+                                                                game_name: game_name.clone(),
+                                                                current_minutes: *current_minutes,
+                                                                required_minutes: *required_minutes,
+                                                                progress_percentage:
+                                                                    *progress_percentage,
+                                                                estimated_completion,
+                                                            });
+                                                        status.last_update = chrono::Utc::now();
+
+                                                        println!("✅ [Inventory] Set current_drop to HIGHEST progress: {} ({}/{} = {:.1}%)", 
+                                                            drop_name, current_minutes, required_minutes, progress_percentage);
+
+                                                        // Emit mining status update to frontend
+                                                        let current_status = status.clone();
+                                                        std::mem::drop(status);
+                                                        let _ = app_handle_poll.emit(
+                                                            "mining-status-update",
+                                                            &current_status,
+                                                        );
+                                                    } else {
+                                                        std::mem::drop(status);
+                                                    }
+                                                }
+
+                                                // Emit progress update events for ALL drops (for frontend tracking)
+                                                for (
+                                                    drop_id,
+                                                    drop_name,
+                                                    drop_image,
+                                                    campaign_name,
+                                                    game_name,
+                                                    current_minutes,
+                                                    required_minutes,
+                                                    _,
+                                                ) in &all_drops_with_progress
+                                                {
+                                                    let _ = app_handle_poll.emit("drops-progress-update", serde_json::json!({
+                                                        "drop_id": drop_id,
+                                                        "drop_name": drop_name,
+                                                        "drop_image": drop_image,
+                                                        "campaign_name": campaign_name,
+                                                        "game_name": game_name,
+                                                        "current_minutes": current_minutes,
+                                                        "required_minutes": required_minutes,
+                                                        "timestamp": chrono::Utc::now().to_rfc3339()
+                                                    }));
                                                 }
                                             }
                                             Err(e) => {
