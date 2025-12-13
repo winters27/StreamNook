@@ -782,6 +782,9 @@ impl ChannelPointsWebSocketService {
                         let prediction_id = event.get("id").and_then(|v| v.as_str()).unwrap_or("");
                         let status = event.get("status").and_then(|v| v.as_str()).unwrap_or("");
                         let title = event.get("title").and_then(|v| v.as_str()).unwrap_or("");
+                        // Extract winning_outcome_id for RESOLVED predictions
+                        let winning_outcome_id =
+                            event.get("winning_outcome_id").and_then(|v| v.as_str());
 
                         // Extract updated outcomes
                         let mut outcomes: Vec<Value> = Vec::new();
@@ -823,8 +826,8 @@ impl ChannelPointsWebSocketService {
                         }
 
                         println!(
-                            "🔮 Prediction updated on {}: {} - Status: {}",
-                            channel_display, title, status
+                            "🔮 Prediction updated on {}: {} - Status: {} - Winner: {:?}",
+                            channel_display, title, status, winning_outcome_id
                         );
 
                         // Emit update to frontend
@@ -835,7 +838,8 @@ impl ChannelPointsWebSocketService {
                                 "prediction_id": prediction_id,
                                 "title": title,
                                 "status": status,
-                                "outcomes": outcomes
+                                "outcomes": outcomes,
+                                "winning_outcome_id": winning_outcome_id
                             }),
                         );
                     }

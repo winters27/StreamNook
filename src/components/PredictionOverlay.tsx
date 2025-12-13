@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { Trophy, Users, ChevronDown, ChevronUp, Hourglass, PartyPopper, Frown, RefreshCw, CheckCircle2, XCircle } from 'lucide-react';
@@ -39,14 +39,28 @@ const PredictionOverlay = ({ channelId, channelLogin }: PredictionOverlayProps) 
   const [activePrediction, setActivePrediction] = useState<PredictionData | null>(null);
   const [selectedOutcome, setSelectedOutcome] = useState<string | null>(null);
   const [betAmount, setBetAmount] = useState<number>(10);
+  const [betAmountInput, setBetAmountInput] = useState<string>('10');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [timeRemaining, setTimeRemaining] = useState<number>(0);
   const [isLocked, setIsLocked] = useState(false);
   const [channelPoints, setChannelPoints] = useState<number | null>(null);
   const [isExpanded, setIsExpanded] = useState(true);
   const [hasPlacedBet, setHasPlacedBet] = useState(false);
-  const [resolutionState, setResolutionState] = useState<'none' | 'pending' | 'win' | 'loss' | 'refund'>('none');
+  const [resolutionState, setResolutionState] = useState<'none' | 'pending' | 'win' | 'loss' | 'refund' | 'announced'>('none');
   const [winningOutcomeId, setWinningOutcomeId] = useState<string | null>(null);
+
+  // Refs to track latest values for use in event listeners (avoids stale closures)
+  const hasPlacedBetRef = useRef(hasPlacedBet);
+  const selectedOutcomeRef = useRef(selectedOutcome);
+
+  // Keep refs in sync with state
+  useEffect(() => {
+    hasPlacedBetRef.current = hasPlacedBet;
+  }, [hasPlacedBet]);
+
+  useEffect(() => {
+    selectedOutcomeRef.current = selectedOutcome;
+  }, [selectedOutcome]);
 
   const { addToast, currentStream } = useAppStore();
 
@@ -64,6 +78,64 @@ const PredictionOverlay = ({ channelId, channelLogin }: PredictionOverlayProps) 
       fromStore: { user_id: currentStream?.user_id, user_login: currentStream?.user_login }
     });
   }, [currentChannelId, currentChannelLogin, channelId, channelLogin, currentStream]);
+
+  // Fetch active prediction on mount/channel change (for late-joiners)
+  useEffect(() => {
+    const fetchActivePrediction = async () => {
+      if (!currentChannelLogin) return;
+      
+      console.log('[Prediction] 🔍 Checking for active prediction on channel:', currentChannelLogin);
+      
+      try {
+        const result = await invoke<PredictionData | null>('get_active_prediction', {
+          channelLogin: currentChannelLogin
+        });
+        
+        if (result) {
+          console.log('[Prediction] ✅ Found active prediction on mount:', result);
+          
+          // Only set if we don't already have this prediction active
+          if (!activePrediction || activePrediction.prediction_id !== result.prediction_id) {
+            setActivePrediction(result);
+            setIsLocked(result.status === 'LOCKED');
+            setIsExpanded(true);
+            setResolutionState('none');
+            setSelectedOutcome(null);
+            setHasPlacedBet(false);
+            
+            // Calculate remaining time if prediction is still ACTIVE
+            if (result.status === 'ACTIVE' && result.created_at) {
+              const createdAt = new Date(result.created_at).getTime();
+              const elapsed = Math.floor((Date.now() - createdAt) / 1000);
+              const remaining = Math.max(0, result.prediction_window_seconds - elapsed);
+              setTimeRemaining(remaining);
+              
+              if (remaining === 0) {
+                setIsLocked(true);
+              }
+            } else {
+              setTimeRemaining(0);
+            }
+          }
+        } else {
+          console.log('[Prediction] No active prediction found on channel');
+        }
+      } catch (err) {
+        console.warn('[Prediction] Failed to fetch active prediction:', err);
+      }
+    };
+    
+    // Reset state when channel changes
+    setActivePrediction(null);
+    setSelectedOutcome(null);
+    setHasPlacedBet(false);
+    setResolutionState('none');
+    setWinningOutcomeId(null);
+    setChannelPoints(null);
+    
+    // Fetch active prediction for the new channel
+    fetchActivePrediction();
+  }, [currentChannelLogin]);
 
   // Fetch channel points when prediction becomes active
   const fetchChannelPoints = useCallback(async () => {
@@ -202,30 +274,43 @@ const PredictionOverlay = ({ channelId, channelLogin }: PredictionOverlayProps) 
             console.log('[Prediction] 🔄 Prediction is being resolved...');
             setResolutionState('pending');
           } else if (prediction.status === 'RESOLVED') {
-            console.log('[Prediction] ✅ Prediction RESOLVED!');
-            // Find the winning outcome - check outcomes for winner
-            const winningOutcome = prediction.outcomes?.find(o => 
-              (o as any).winner === true || (o as any).top_predictors?.length > 0
-            );
+            console.log('[Prediction] ✅ Prediction RESOLVED! winning_outcome_id:', prediction.winning_outcome_id);
             
-            if (winningOutcome) {
-              setWinningOutcomeId(winningOutcome.id);
+            // Use the winning_outcome_id from the event payload
+            const winningId = prediction.winning_outcome_id;
+            
+            if (winningId) {
+              const winningOutcome = prediction.outcomes?.find(o => o.id === winningId);
+              setWinningOutcomeId(winningId);
+              
+              // Use refs to get latest values (avoids stale closure issue)
+              const userBet = hasPlacedBetRef.current;
+              const userSelectedOutcome = selectedOutcomeRef.current;
+              
+              console.log('[Prediction] 🎯 Resolution check:', {
+                winningId,
+                userBet,
+                userSelectedOutcome,
+                didWin: userSelectedOutcome === winningId
+              });
+              
               // Did user win or lose?
-              if (hasPlacedBet && selectedOutcome) {
-                if (selectedOutcome === winningOutcome.id) {
+              if (userBet && userSelectedOutcome) {
+                if (userSelectedOutcome === winningId) {
                   setResolutionState('win');
-                  addToast(`🎉 You WON! "${winningOutcome.title}" was correct!`, 'success');
+                  addToast(`🎉 You WON! "${winningOutcome?.title || 'Unknown'}" was correct!`, 'success');
                 } else {
                   setResolutionState('loss');
-                  addToast(`😢 You lost. "${winningOutcome.title}" was the winner.`, 'error');
+                  addToast(`😢 You lost. "${winningOutcome?.title || 'Unknown'}" was the winner.`, 'error');
                 }
               } else {
-                // User didn't bet, just show result
-                setResolutionState('win'); // Show winner animation regardless
-                addToast(`🏆 Prediction ended! Winner: ${winningOutcome.title}`, 'success');
+                // User didn't bet, just show neutral result announcement
+                setResolutionState('announced');
+                addToast(`🏆 Prediction ended! Winner: ${winningOutcome?.title || 'Unknown'}`, 'success');
               }
             } else {
-              // No winner found - might be cancelled/refunded
+              // No winner ID - prediction was cancelled/refunded
+              console.log('[Prediction] No winning_outcome_id - prediction was refunded');
               setResolutionState('refund');
               addToast(`🔄 Prediction refunded`, 'info');
             }
@@ -474,33 +559,55 @@ const PredictionOverlay = ({ channelId, channelLogin }: PredictionOverlayProps) 
                 <div className="flex items-center gap-2 p-2 bg-backgroundSecondary rounded-lg border border-border">
                   {/* Number Input */}
                   <input
-                    type="number"
-                    value={betAmount}
-                    onChange={(e) => setBetAmount(Math.max(1, parseInt(e.target.value) || 0))}
-                    min={1}
-                    max={channelPoints || 250000}
-                    className="w-20 px-2 py-1.5 bg-background border border-border rounded-md text-textPrimary text-sm font-medium focus:outline-none focus:ring-2 focus:ring-purple-500/50 focus:border-purple-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                    placeholder="Amt"
+                    type="text"
+                    inputMode="numeric"
+                    value={betAmountInput}
+                    onChange={(e) => {
+                      // Allow only numbers
+                      const value = e.target.value.replace(/[^0-9]/g, '');
+                      setBetAmountInput(value);
+                      // Update betAmount if valid
+                      const num = parseInt(value) || 0;
+                      if (num > 0) {
+                        setBetAmount(num);
+                      }
+                    }}
+                    onBlur={() => {
+                      // Validate on blur - ensure minimum of 1 and max of channel points
+                      const num = parseInt(betAmountInput) || 1;
+                      const maxPoints = channelPoints || 250000;
+                      const clamped = Math.min(Math.max(1, num), maxPoints);
+                      setBetAmount(clamped);
+                      setBetAmountInput(clamped.toString());
+                    }}
+                    className="w-24 px-2 py-1.5 bg-background border border-border rounded-md text-textPrimary text-sm font-medium focus:outline-none focus:ring-2 focus:ring-purple-500/50 focus:border-purple-500"
+                    placeholder="Amount"
                   />
                   
                   {/* Quick Amount Buttons - fewer presets */}
                   <div className="flex gap-1">
-                    {[10, 100].map(amount => (
+                    {[10, 100, 1000].map(amount => (
                       <button
                         key={amount}
-                        onClick={() => setBetAmount(amount)}
+                        onClick={() => {
+                          setBetAmount(amount);
+                          setBetAmountInput(amount.toString());
+                        }}
                         className={`px-2 py-1.5 text-xs font-medium rounded transition-colors border ${
                           betAmount === amount 
                             ? 'bg-purple-500/30 border-purple-500/60 text-purple-300'
                             : 'bg-background border-border text-textSecondary hover:bg-backgroundSecondary'
                         }`}
                       >
-                        {amount}
+                        {amount >= 1000 ? `${amount / 1000}k` : amount}
                       </button>
                     ))}
                     {channelPoints && (
                       <button
-                        onClick={() => setBetAmount(channelPoints)}
+                        onClick={() => {
+                          setBetAmount(channelPoints);
+                          setBetAmountInput(channelPoints.toString());
+                        }}
                         className="px-2 py-1.5 text-xs font-bold bg-purple-500/30 hover:bg-purple-500/40 border border-purple-500/60 rounded transition-colors text-purple-300"
                       >
                         ALL
@@ -586,6 +693,22 @@ const PredictionOverlay = ({ channelId, channelLogin }: PredictionOverlayProps) 
                   </div>
                   <span className="text-blue-400 text-lg font-bold">Points Refunded</span>
                   <p className="text-blue-300/80 text-sm mt-1">Prediction was cancelled</p>
+                </div>
+              </div>
+            )}
+            
+            {resolutionState === 'announced' && (
+              <div className="px-3 pb-3">
+                <div className="py-4 px-4 bg-gradient-to-r from-purple-500/30 to-indigo-500/30 border-2 border-purple-400 rounded-lg text-center">
+                  <div className="flex justify-center mb-2">
+                    <Trophy className="w-8 h-8 text-purple-400" />
+                  </div>
+                  <span className="text-purple-400 text-lg font-bold">Prediction Ended</span>
+                  {winningOutcomeId && (
+                    <p className="text-purple-300/80 text-sm mt-1">
+                      Winner: {activePrediction.outcomes.find(o => o.id === winningOutcomeId)?.title}
+                    </p>
+                  )}
                 </div>
               </div>
             )}

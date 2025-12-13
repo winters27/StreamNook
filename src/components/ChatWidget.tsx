@@ -2,8 +2,17 @@ import React, { useEffect, useRef, useState, useMemo, useCallback, useLayoutEffe
 import { VariableSizeList as List } from 'react-window';
 import AutoSizer from 'react-virtualized-auto-sizer';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { Pickaxe, Gift } from 'lucide-react';
+
+// Channel Points Icon (Twitch style)
+const ChannelPointsIcon = ({ className = "", size = 14 }: { className?: string; size?: number }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" className={className} fill="currentColor">
+    <path d="M12 5v2a5 5 0 0 1 5 5h2a7 7 0 0 0-7-7Z"></path>
+    <path fillRule="evenodd" d="M1 12C1 5.925 5.925 1 12 1s11 4.925 11 11-4.925 11-11 11S1 18.075 1 12Zm11 9a9 9 0 1 1 0-18 9 9 0 0 1 0 18Z" clipRule="evenodd"></path>
+  </svg>
+);
 import { MiningStatus } from '../types';
 import { useTwitchChat } from '../hooks/useTwitchChat';
 import { useAppStore } from '../stores/AppStore';
@@ -266,6 +275,11 @@ const ChatWidget = () => {
   const [isMining, setIsMining] = useState(false);
   const [isLoadingDrops, setIsLoadingDrops] = useState(false);
 
+  // Channel points state
+  const [channelPoints, setChannelPoints] = useState<number | null>(null);
+  const [channelPointsHovered, setChannelPointsHovered] = useState(false);
+  const [isLoadingChannelPoints, setIsLoadingChannelPoints] = useState(false);
+
   // Refs for batching list resets to prevent UI freezing during resizing
   const resetRafIdRef = useRef<number | null>(null);
   const minResetIndexRef = useRef<number>(Infinity);
@@ -382,11 +396,86 @@ const ChatWidget = () => {
       connectChat(currentStream.user_login, currentStream.user_id);
       loadEmotes(currentStream.user_login, currentStream.user_id);
       userMessageHistory.current.clear();
+      // Reset channel points when switching channels
+      setChannelPoints(null);
     }
     return () => {
       if (currentStream?.user_login !== connectedChannelRef.current) connectedChannelRef.current = null;
     };
   }, [currentStream?.user_login, currentStream?.user_id]);
+
+  // Fetch channel points for current channel from cached balances
+  const fetchChannelPoints = useCallback(async () => {
+    if (!currentStream?.user_id) return;
+    
+    console.log('[ChatWidget] fetchChannelPoints - looking for channel:', currentStream.user_id);
+    
+    try {
+      // Get all cached channel points balances from background service
+      const balances = await invoke<Array<{ channel_id: string; balance: number }>>('get_all_channel_points_balances');
+      
+      console.log('[ChatWidget] All balances:', balances);
+      
+      // Find balance for current channel
+      const channelBalance = balances?.find(b => b.channel_id === currentStream.user_id);
+      
+      if (channelBalance && typeof channelBalance.balance === 'number') {
+        console.log('[ChatWidget] ✅ Found cached balance:', channelBalance.balance);
+        setChannelPoints(channelBalance.balance);
+        return;
+      }
+      
+      // If no cached balance, try direct query (may fail with outdated GQL schema)
+      console.log('[ChatWidget] No cached balance, trying direct query...');
+      
+      try {
+        const result = await invoke<any>('get_channel_points_balance', {
+          channelId: currentStream.user_id
+        });
+        
+        const balance = result?.balance || result?.points;
+        if (typeof balance === 'number') {
+          console.log('[ChatWidget] ✅ Got balance from direct query:', balance);
+          setChannelPoints(balance);
+          return;
+        }
+      } catch (err) {
+        console.warn('[ChatWidget] Direct query failed (expected if GQL outdated):', err);
+      }
+      
+      console.log('[ChatWidget] No channel points available yet - will update via events');
+    } catch (err) {
+      console.error('[ChatWidget] Failed to fetch channel points:', err);
+    }
+  }, [currentStream?.user_id]);
+
+  // Listen for channel points updates from backend events
+  useEffect(() => {
+    if (!currentStream?.user_id) return;
+    
+    const unlistenSpent = listen<{ channel_id?: string | null; points: number; balance: number }>('channel-points-spent', (event) => {
+      console.log('[ChatWidget] 💸 Points spent event:', event.payload, 'currentChannel:', currentStream.user_id);
+      // Update if channel matches OR if no channel_id in event (prediction bets sometimes don't include it)
+      if (!event.payload.channel_id || event.payload.channel_id === currentStream.user_id) {
+        console.log('[ChatWidget] ✅ Updating channel points to:', event.payload.balance);
+        setChannelPoints(event.payload.balance);
+      }
+    });
+
+    const unlistenEarned = listen<{ channel_id?: string | null; points: number; balance: number }>('channel-points-earned', (event) => {
+      console.log('[ChatWidget] 💰 Points earned event:', event.payload, 'currentChannel:', currentStream.user_id);
+      // Update if channel matches OR if no channel_id in event
+      if (!event.payload.channel_id || event.payload.channel_id === currentStream.user_id) {
+        console.log('[ChatWidget] ✅ Updating channel points to:', event.payload.balance);
+        setChannelPoints(event.payload.balance);
+      }
+    });
+
+    return () => {
+      unlistenSpent.then(fn => fn());
+      unlistenEarned.then(fn => fn());
+    };
+  }, [currentStream?.user_id]);
 
   // Load drops data when stream changes to check if game has active drops
   useEffect(() => {
@@ -1387,6 +1476,42 @@ const ChatWidget = () => {
                 <button onClick={() => setShowEmotePicker(!showEmotePicker)} className="flex-shrink-0 p-2 text-textSecondary hover:text-textPrimary hover:bg-glass rounded transition-all" title="Emotes">
                   <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM7 9a1 1 0 100-2 1 1 0 000 2zm7-1a1 1 0 11-2 0 1 1 0 012 0zm-.464 5.535a1 1 0 10-1.415-1.414 3 3 0 01-4.242 0 1 1 0 00-1.415 1.414 5 5 0 007.072 0z" clipRule="evenodd" /></svg>
                 </button>
+                {/* Channel Points button - shows tooltip on hover */}
+                <div 
+                  className="relative flex-shrink-0 group"
+                  onMouseEnter={() => {
+                    setChannelPointsHovered(true);
+                    if (channelPoints === null && !isLoadingChannelPoints) {
+                      setIsLoadingChannelPoints(true);
+                      fetchChannelPoints().finally(() => setIsLoadingChannelPoints(false));
+                    }
+                  }}
+                  onMouseLeave={() => setChannelPointsHovered(false)}
+                >
+                  <button
+                    className="p-2 rounded transition-all text-textSecondary hover:text-orange-400 hover:bg-glass group-hover:text-orange-400"
+                    title="Channel Points"
+                  >
+                    <ChannelPointsIcon size={18} />
+                  </button>
+                  {/* Points tooltip - visible on hover */}
+                  {channelPointsHovered && (
+                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-black/95 border border-border rounded-lg shadow-lg whitespace-nowrap z-50">
+                      <div className="flex items-center gap-1.5">
+                        <ChannelPointsIcon size={14} className="text-orange-400" />
+                        {isLoadingChannelPoints ? (
+                          <span className="text-sm text-textSecondary">Loading...</span>
+                        ) : channelPoints !== null ? (
+                          <span className="text-sm font-bold text-orange-400">{channelPoints.toLocaleString()}</span>
+                        ) : (
+                          <span className="text-sm text-textSecondary">--</span>
+                        )}
+                      </div>
+                      {/* Arrow pointing down */}
+                      <div className="absolute top-full left-1/2 -translate-x-1/2 w-0 h-0 border-l-4 border-r-4 border-t-4 border-transparent border-t-black/95" />
+                    </div>
+                  )}
+                </div>
                 {/* Drops mining button - only shows if current game has active drops */}
                 {dropsCampaign && (
                   <button

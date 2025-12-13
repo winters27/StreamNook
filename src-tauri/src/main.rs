@@ -392,6 +392,7 @@ fn main() {
             open_drop_details,
             // Prediction commands
             place_prediction,
+            get_active_prediction,
             get_channel_points_for_channel,
             // Component commands
             check_components_installed,
