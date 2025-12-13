@@ -300,6 +300,9 @@ export interface TimeBasedDrop {
   required_minutes_watched: number;
   benefit_edges: DropBenefit[];
   progress?: DropProgress;
+  /** Whether this drop can be auto-mined. Drops with required_minutes_watched = 0 
+   * are event-based, badge-based, or require special actions and cannot be auto-mined */
+  is_mineable?: boolean;
 }
 
 export interface AllowedChannel {
@@ -320,6 +323,7 @@ export interface DropCampaign {
   is_account_connected: boolean;
   allowed_channels: AllowedChannel[];
   is_acl_based: boolean;
+  account_link?: string; // URL to connect game account for drops
 }
 
 export type CampaignStatus = 'Active' | 'Upcoming' | 'Expired';
@@ -339,6 +343,18 @@ export interface InventoryResponse {
   active_campaigns: number;
   upcoming_campaigns: number;
   expired_campaigns: number;
+  completed_drops: CompletedDrop[];
+}
+
+export interface CompletedDrop {
+  id: string;
+  name: string;
+  image_url: string;
+  game_name: string | null;
+  is_connected: boolean;
+  required_account_link: string | null;
+  last_awarded_at: string;
+  total_count: number;
 }
 
 export interface ClaimedDrop {

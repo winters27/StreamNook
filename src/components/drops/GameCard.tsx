@@ -1,6 +1,27 @@
 import { useRef, useEffect, useState } from 'react';
 import { Check, Clock, Package, Square, Play } from 'lucide-react';
-import type { UnifiedGame, DropProgress, MiningStatus } from '../../types';
+import type { UnifiedGame, DropProgress, MiningStatus, DropCampaign } from '../../types';
+
+// Helper to check if a campaign is mineable (has time-based drops that require watching)
+function isCampaignMineable(campaign: DropCampaign): boolean {
+    // Campaign is mineable if it has any time_based_drops
+    // The API only gives us time_based_drops, so if we have them, they're mineable
+    // Subscription/gift-based campaigns won't have time_based_drops populated
+    if (!campaign.time_based_drops || campaign.time_based_drops.length === 0) {
+        return false;
+    }
+    
+    // Check if at least one drop requires watch time (> 0 minutes)
+    // Use >= 0 check since undefined/null would fail > 0 check incorrectly
+    // Also fallback to true if we have drops but required_minutes_watched isn't set
+    const hasWatchTimeDrops = campaign.time_based_drops.some(drop => {
+        const minutes = drop.required_minutes_watched;
+        // If required_minutes_watched is not set or is positive, it's mineable
+        return minutes === undefined || minutes === null || minutes > 0;
+    });
+    
+    return hasWatchTimeDrops;
+}
 
 interface GameCardProps {
     game: UnifiedGame;
@@ -165,22 +186,37 @@ export default function GameCard({
     const boxArtUrl = getHighResBoxArt(game.box_art_url);
 
     // Calculate claimable drops count and overall progress
+    // IMPORTANT: Prefer per-drop embedded progress (drop.progress) because it comes directly
+    // from the CampaignDetails GQL `timeBasedDrops.self` and is accurate even when the
+    // separate `progress[]` array hasn't been populated yet.
     let claimableCount = 0;
     let inProgressCount = 0;
     let totalMinutesWatched = 0;
     let totalMinutesRequired = 0;
 
+    const getProgressForDrop = (dropId: string, embedded?: DropProgress) => {
+        return progress.find(p => p.drop_id === dropId) || embedded || null;
+    };
+
     game.active_campaigns.forEach(campaign => {
         campaign.time_based_drops.forEach(drop => {
-            const prog = progress.find(p => p.drop_id === drop.id);
-            if (prog && !prog.is_claimed) {
-                totalMinutesWatched += prog.current_minutes_watched;
-                totalMinutesRequired += prog.required_minutes_watched;
-                if (prog.current_minutes_watched >= prog.required_minutes_watched) {
-                    claimableCount++;
-                } else if (prog.current_minutes_watched > 0) {
-                    inProgressCount++;
-                }
+            const prog = getProgressForDrop(drop.id, drop.progress);
+            if (!prog) return;
+
+            const required = prog.required_minutes_watched || drop.required_minutes_watched || 0;
+            // If claimed, treat it as fully completed for summary purposes
+            const current = prog.is_claimed ? required : (prog.current_minutes_watched || 0);
+
+            if (required > 0) {
+                totalMinutesRequired += required;
+                totalMinutesWatched += Math.min(current, required);
+            }
+
+            // Claimable = 100% watched but not claimed
+            if (!prog.is_claimed && required > 0 && current >= required) {
+                claimableCount++;
+            } else if (!prog.is_claimed && current > 0 && required > 0 && current < required) {
+                inProgressCount++;
             }
         });
     });
@@ -365,21 +401,30 @@ export default function GameCard({
                             )}
                         </div>
 
-                        {/* Mine All Button - only shows when no mining is happening */}
-                        {campaignCount > 0 && onMineAllGame && !miningStatus?.is_mining && (
-                            <button
-                                onClick={(e) => {
-                                    e.stopPropagation();
-                                    const campaignIds = game.active_campaigns.map(c => c.id);
-                                    onMineAllGame(game.name, campaignIds);
-                                }}
-                                className="flex items-center gap-1 px-2 py-1 rounded-md bg-accent/20 hover:bg-accent/40 active:bg-accent/50 text-accent border border-accent/40 hover:border-accent/70 shadow-sm hover:shadow-md hover:shadow-accent/20 transform hover:scale-105 active:scale-95 transition-all duration-150 shrink-0"
-                                title={`Mine all ${campaignCount} campaign${campaignCount !== 1 ? 's' : ''} for ${game.name}`}
-                            >
-                                <Play size={10} fill="currentColor" />
-                                <span className="text-[10px] font-semibold">Mine</span>
-                            </button>
-                        )}
+                        {/* Mine All Button - only shows when no mining is happening AND there are mineable campaigns */}
+                        {(() => {
+                            // Filter to only mineable campaigns (those with time-based drops requiring watch time)
+                            const mineableCampaigns = game.active_campaigns.filter(isCampaignMineable);
+                            const mineableCount = mineableCampaigns.length;
+                            
+                            if (mineableCount > 0 && onMineAllGame && !miningStatus?.is_mining) {
+                                return (
+                                    <button
+                                        onClick={(e) => {
+                                            e.stopPropagation();
+                                            const mineableCampaignIds = mineableCampaigns.map(c => c.id);
+                                            onMineAllGame(game.name, mineableCampaignIds);
+                                        }}
+                                        className="flex items-center gap-1 px-2 py-1 rounded-md bg-accent/20 hover:bg-accent/40 active:bg-accent/50 text-accent border border-accent/40 hover:border-accent/70 shadow-sm hover:shadow-md hover:shadow-accent/20 transform hover:scale-105 active:scale-95 transition-all duration-150 shrink-0"
+                                        title={`Mine ${mineableCount} campaign${mineableCount !== 1 ? 's' : ''} for ${game.name}`}
+                                    >
+                                        <Play size={10} fill="currentColor" />
+                                        <span className="text-[10px] font-semibold">Mine</span>
+                                    </button>
+                                );
+                            }
+                            return null;
+                        })()}
                     </div>
                 )}
             </div>

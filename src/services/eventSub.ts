@@ -3,6 +3,10 @@ import { invoke } from '@tauri-apps/api/core';
 const EVENTSUB_WS_URL = 'wss://eventsub.wss.twitch.tv/ws';
 const HELIX_SUBSCRIPTION_URL = 'https://api.twitch.tv/helix/eventsub/subscriptions';
 
+// Cooldown between connection attempts to avoid hitting Twitch's rate limits
+const CONNECTION_COOLDOWN_MS = 5000; // 5 seconds minimum between connections
+const SUBSCRIPTION_DELAY_MS = 500; // Delay between subscription requests
+
 interface EventSubMessage {
     metadata: {
         message_id: string;
@@ -64,14 +68,64 @@ export class EventSubService {
     private keepAliveInterval: number | null = null;
     private reconnectAttempts: number = 0;
     private maxReconnectAttempts: number = 5;
+    private lastConnectionTime: number = 0;
+    private pendingConnect: { channelId: string; callbacks: EventSubCallbacks } | null = null;
+    private connectTimeout: ReturnType<typeof setTimeout> | null = null;
+    private isConnecting: boolean = false;
+    private rateLimitBackoff: number = 0; // Exponential backoff on 429 errors
 
     constructor() { }
 
     public async connect(channelId: string, callbacks: EventSubCallbacks) {
-        if (this.socket) {
-            this.disconnect();
+        // If same channel, skip reconnection
+        if (this.currentChannelId === channelId && this.socket && this.socket.readyState === WebSocket.OPEN) {
+            console.log('[EventSub] Already connected to this channel, skipping');
+            return;
         }
 
+        // Calculate required cooldown (includes rate limit backoff)
+        const timeSinceLastConnection = Date.now() - this.lastConnectionTime;
+        const effectiveCooldown = CONNECTION_COOLDOWN_MS + this.rateLimitBackoff;
+        const remainingCooldown = effectiveCooldown - timeSinceLastConnection;
+
+        // If we're within cooldown, debounce the connection
+        if (remainingCooldown > 0 || this.isConnecting) {
+            console.log(`[EventSub] Connection cooldown active, will connect in ${Math.max(remainingCooldown, 1000)}ms`);
+            
+            // Store the pending connection request (overwrites previous pending)
+            this.pendingConnect = { channelId, callbacks };
+            
+            // Clear existing timeout if any
+            if (this.connectTimeout) {
+                clearTimeout(this.connectTimeout);
+            }
+            
+            // Schedule the connection after cooldown
+            this.connectTimeout = setTimeout(() => {
+                this.connectTimeout = null;
+                const pending = this.pendingConnect;
+                this.pendingConnect = null;
+                if (pending) {
+                    this.doConnect(pending.channelId, pending.callbacks);
+                }
+            }, Math.max(remainingCooldown, 1000));
+            
+            return;
+        }
+
+        await this.doConnect(channelId, callbacks);
+    }
+
+    private async doConnect(channelId: string, callbacks: EventSubCallbacks) {
+        // Disconnect existing connection first and wait for cleanup
+        if (this.socket) {
+            this.disconnect();
+            // Small delay to ensure socket cleanup completes
+            await new Promise(resolve => setTimeout(resolve, 500));
+        }
+
+        this.isConnecting = true;
+        this.lastConnectionTime = Date.now();
         this.currentChannelId = channelId;
         this.callbacks = callbacks;
         this.reconnectAttempts = 0;
@@ -125,10 +179,18 @@ export class EventSubService {
 
     private cleanup() {
         this.sessionId = null;
+        this.isConnecting = false;
+        this.currentChannelId = null;
         if (this.keepAliveInterval) {
             clearInterval(this.keepAliveInterval);
             this.keepAliveInterval = null;
         }
+        // Clear pending connection if any (we're disconnecting intentionally)
+        if (this.connectTimeout) {
+            clearTimeout(this.connectTimeout);
+            this.connectTimeout = null;
+        }
+        this.pendingConnect = null;
     }
 
     private async handleMessage(message: EventSubMessage) {
@@ -241,28 +303,50 @@ export class EventSubService {
     private async subscribeToAllEvents(broadcasterId: string) {
         console.log(`[EventSub] Subscribing to all events for broadcaster: ${broadcasterId}`);
 
-        // Subscribe to each event type based on which callbacks are provided
-        const subscriptionPromises: Promise<void>[] = [];
+        // Mark connection as complete after session welcome
+        this.isConnecting = false;
+        
+        // Reset rate limit backoff on successful connection
+        this.rateLimitBackoff = 0;
+
+        // Subscribe sequentially with delays to avoid rate limiting
+        // This is safer than parallel requests
+        const subscriptions: Array<{ type: string; version: string; condition: Record<string, string> }> = [];
 
         if (this.callbacks.onRaid) {
-            subscriptionPromises.push(this.subscribeToEvent('channel.raid', '1', {
-                from_broadcaster_user_id: broadcasterId,
-            }));
+            subscriptions.push({
+                type: 'channel.raid',
+                version: '1',
+                condition: { from_broadcaster_user_id: broadcasterId },
+            });
         }
 
         if (this.callbacks.onStreamOffline) {
-            subscriptionPromises.push(this.subscribeToEvent('stream.offline', '1', {
-                broadcaster_user_id: broadcasterId,
-            }));
+            subscriptions.push({
+                type: 'stream.offline',
+                version: '1',
+                condition: { broadcaster_user_id: broadcasterId },
+            });
         }
 
         if (this.callbacks.onChannelUpdate) {
-            subscriptionPromises.push(this.subscribeToEvent('channel.update', '2', {
-                broadcaster_user_id: broadcasterId,
-            }));
+            subscriptions.push({
+                type: 'channel.update',
+                version: '2',
+                condition: { broadcaster_user_id: broadcasterId },
+            });
         }
 
-        await Promise.all(subscriptionPromises);
+        // Subscribe sequentially with delays
+        for (let i = 0; i < subscriptions.length; i++) {
+            const sub = subscriptions[i];
+            await this.subscribeToEvent(sub.type, sub.version, sub.condition);
+            
+            // Add delay between subscriptions (except after the last one)
+            if (i < subscriptions.length - 1) {
+                await new Promise(resolve => setTimeout(resolve, SUBSCRIPTION_DELAY_MS));
+            }
+        }
     }
 
     private async subscribeToEvent(type: string, version: string, condition: Record<string, string>) {
@@ -296,7 +380,22 @@ export class EventSubService {
 
             if (!response.ok) {
                 const errorText = await response.text();
-                console.error(`[EventSub] ${type} subscription failed: ${response.status} ${response.statusText}`, errorText);
+                
+                // Handle 429 Too Many Requests - apply exponential backoff
+                if (response.status === 429) {
+                    console.warn(`[EventSub] Rate limited (429) on ${type} subscription. Applying backoff.`);
+                    // Increase backoff exponentially: 5s -> 10s -> 20s -> 40s (max 60s)
+                    this.rateLimitBackoff = Math.min(
+                        this.rateLimitBackoff === 0 ? 5000 : this.rateLimitBackoff * 2,
+                        60000
+                    );
+                    console.warn(`[EventSub] Rate limit backoff increased to ${this.rateLimitBackoff}ms`);
+                    
+                    // Don't retry here - the connection cooldown will handle it on next connect
+                    return;
+                }
+                
+                console.error(`[EventSub] ${type} subscription failed: ${response.status}`, errorText);
                 return;
             }
 

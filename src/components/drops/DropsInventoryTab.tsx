@@ -1,9 +1,32 @@
 import { useState, useMemo, useCallback } from 'react';
-import { Package, Gift, Check, Clock, AlertCircle, ChevronDown, ChevronRight, Search, Filter, Sparkles } from 'lucide-react';
-import type { InventoryItem, DropProgress, CampaignStatus } from '../../types';
+import { Package, Gift, Check, Clock, AlertCircle, ChevronDown, ChevronRight, Search, Filter, Sparkles, Ban, Star } from 'lucide-react';
+import type { InventoryItem, DropProgress, CampaignStatus, CompletedDrop, TimeBasedDrop } from '../../types';
+
+// Helper to check if a drop is mineable (time-based with watch requirement)
+// Drops with required_minutes_watched = 0 are event-based, gift-based, or sub-based
+function isDropMineable(drop: TimeBasedDrop): boolean {
+    // If is_mineable is explicitly set, use it
+    if (typeof drop.is_mineable === 'boolean') {
+        return drop.is_mineable;
+    }
+    
+    // Check if required_minutes_watched is set and > 0
+    if (drop.required_minutes_watched > 0) {
+        return true;
+    }
+    
+    // Check if the drop has progress data with required_minutes
+    if (drop.progress && drop.progress.required_minutes_watched > 0) {
+        return true;
+    }
+    
+    // Default: not mineable if we can't determine watch time requirement
+    return false;
+}
 
 interface DropsInventoryTabProps {
     inventoryItems: InventoryItem[];
+    completedDrops: CompletedDrop[];
     progress: DropProgress[];
     onClaimDrop: (dropId: string, dropInstanceId?: string) => void;
 }
@@ -12,10 +35,12 @@ type FilterStatus = 'all' | 'claimable' | 'in_progress' | 'claimed' | 'expired';
 
 export default function DropsInventoryTab({
     inventoryItems,
+    completedDrops,
     progress,
     onClaimDrop
 }: DropsInventoryTabProps) {
     const [expandedGames, setExpandedGames] = useState<Set<string>>(new Set());
+    const [showCompletedDrops, setShowCompletedDrops] = useState(false);
     const [searchTerm, setSearchTerm] = useState('');
     const [filterStatus, setFilterStatus] = useState<FilterStatus>('all');
 
@@ -63,8 +88,13 @@ export default function DropsInventoryTab({
             // Count claimable and in-progress drops
             item.campaign.time_based_drops.forEach(drop => {
                 const dropProgress = drop.progress || progress.find(p => p.drop_id === drop.id);
-                if (dropProgress) {
-                    const isComplete = dropProgress.current_minutes_watched >= dropProgress.required_minutes_watched;
+                
+                // Only count mineable (time-based) drops for claimable/in-progress stats
+                const mineable = isDropMineable(drop);
+                
+                if (dropProgress && mineable) {
+                    const requiredMins = dropProgress.required_minutes_watched || drop.required_minutes_watched;
+                    const isComplete = requiredMins > 0 && dropProgress.current_minutes_watched >= requiredMins;
                     if (isComplete && !dropProgress.is_claimed) {
                         group.claimableDrops++;
                     } else if (!isComplete && dropProgress.current_minutes_watched > 0) {
@@ -122,15 +152,20 @@ export default function DropsInventoryTab({
         });
     };
 
-    // Get all claimable drops for a game group
+    // Get all claimable drops for a game group (only mineable drops)
     const getClaimableDropsForGame = useCallback((group: typeof gameGroups[0]) => {
         const claimableDrops: { dropId: string; dropInstanceId?: string }[] = [];
 
         group.items.forEach(item => {
             item.campaign.time_based_drops.forEach(drop => {
+                // Only include mineable (time-based) drops
+                const mineable = isDropMineable(drop);
+                if (!mineable) return;
+                
                 const dropProgress = drop.progress || progress.find(p => p.drop_id === drop.id);
                 if (dropProgress) {
-                    const isComplete = dropProgress.current_minutes_watched >= dropProgress.required_minutes_watched;
+                    const requiredMins = dropProgress.required_minutes_watched || drop.required_minutes_watched;
+                    const isComplete = requiredMins > 0 && dropProgress.current_minutes_watched >= requiredMins;
                     if (isComplete && !dropProgress.is_claimed) {
                         claimableDrops.push({
                             dropId: drop.id,
@@ -295,6 +330,85 @@ export default function DropsInventoryTab({
 
             {/* Games List */}
             <div className="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-3">
+                {/* Completed Drops Section */}
+                {completedDrops.length > 0 && (
+                    <div className="glass-panel border border-green-500/30 overflow-hidden">
+                        <button
+                            onClick={() => setShowCompletedDrops(!showCompletedDrops)}
+                            className="w-full flex items-center justify-between gap-3 p-3 hover:bg-surface/50 transition-colors"
+                        >
+                            <div className="flex items-center gap-3">
+                                <div className="p-2 rounded-lg bg-green-500/20 border border-green-500/30">
+                                    <Check size={20} className="text-green-400" />
+                                </div>
+                                <div className="text-left">
+                                    <h3 className="font-bold text-textPrimary">Completed Drops</h3>
+                                    <p className="text-xs text-textSecondary">
+                                        {completedDrops.length} drop{completedDrops.length !== 1 ? 's' : ''} you've earned across all campaigns
+                                    </p>
+                                </div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                                <span className="px-2 py-1 text-xs font-bold rounded-lg bg-green-500/20 text-green-400 border border-green-500/30">
+                                    {completedDrops.length} total
+                                </span>
+                                {showCompletedDrops ? (
+                                    <ChevronDown size={18} className="text-textSecondary" />
+                                ) : (
+                                    <ChevronRight size={18} className="text-textSecondary" />
+                                )}
+                            </div>
+                        </button>
+                        
+                        {showCompletedDrops && (
+                            <div className="border-t border-green-500/20 bg-background/50 p-3">
+                                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
+                                    {completedDrops.map(drop => (
+                                        <div
+                                            key={drop.id}
+                                            className="group glass-panel border border-green-500/20 hover:border-green-500/40 rounded-lg overflow-hidden transition-all hover:scale-105"
+                                            title={`${drop.name}${drop.game_name ? ` - ${drop.game_name}` : ''}${drop.total_count > 1 ? ` (x${drop.total_count})` : ''}`}
+                                        >
+                                            {/* Drop Image */}
+                                            <div className="relative aspect-square bg-backgroundSecondary">
+                                                <img
+                                                    src={drop.image_url}
+                                                    alt={drop.name}
+                                                    className="w-full h-full object-contain"
+                                                    loading="lazy"
+                                                />
+                                                {/* Completed Overlay */}
+                                                <div className="absolute inset-0 bg-green-500/20 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                                                    <div className="w-10 h-10 rounded-full bg-green-500 flex items-center justify-center">
+                                                        <Check size={20} className="text-white" />
+                                                    </div>
+                                                </div>
+                                                {/* Count Badge */}
+                                                {drop.total_count > 1 && (
+                                                    <div className="absolute top-1 right-1 px-1.5 py-0.5 rounded-full bg-green-500 text-white text-[10px] font-bold shadow-lg">
+                                                        x{drop.total_count}
+                                                    </div>
+                                                )}
+                                            </div>
+                                            {/* Drop Info */}
+                                            <div className="p-2">
+                                                <p className="text-xs font-medium text-textPrimary truncate" title={drop.name}>
+                                                    {drop.name}
+                                                </p>
+                                                {drop.game_name && (
+                                                    <p className="text-[10px] text-textSecondary truncate mt-0.5">
+                                                        {drop.game_name}
+                                                    </p>
+                                                )}
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                )}
+
                 {filteredGroups.length === 0 ? (
                     <div className="text-center py-12">
                         <Package size={32} className="mx-auto text-textSecondary opacity-40 mb-3" />
@@ -460,9 +574,17 @@ function CampaignSection({ item, progress, onClaimDrop, getStatusBadge }: Campai
                     const dropProgress = drop.progress || progress.find(p => p.drop_id === drop.id);
                     const currentMinutes = dropProgress?.current_minutes_watched || 0;
                     const requiredMinutes = dropProgress?.required_minutes_watched || drop.required_minutes_watched;
-                    const isComplete = currentMinutes >= requiredMinutes;
+                    
+                    // Check if this drop is mineable (time-based with watch requirement)
+                    const mineable = isDropMineable(drop);
+                    
+                    // For time-based drops: complete when watched >= required
+                    // For non-time-based drops: never consider them "complete" via watching
+                    const isComplete = mineable && requiredMinutes > 0 && currentMinutes >= requiredMinutes;
                     const isClaimed = dropProgress?.is_claimed || false;
-                    const isClaimable = isComplete && !isClaimed;
+                    
+                    // Only claimable if: mineable, complete, and not already claimed
+                    const isClaimable = isComplete && !isClaimed && mineable;
                     const progressPercent = requiredMinutes > 0 ? (currentMinutes / requiredMinutes) * 100 : 0;
 
                     const benefit = drop.benefit_edges[0];
@@ -474,7 +596,9 @@ function CampaignSection({ item, progress, onClaimDrop, getStatusBadge }: Campai
                                 ? 'bg-green-500/10 border border-green-500/20'
                                 : isClaimable
                                     ? 'bg-yellow-500/10 border border-yellow-500/30'
-                                    : 'bg-background/50 border border-borderLight'
+                                    : !mineable
+                                        ? 'bg-purple-500/5 border border-purple-500/20'
+                                        : 'bg-background/50 border border-borderLight'
                                 }`}
                         >
                             {/* Benefit Image */}
@@ -501,6 +625,12 @@ function CampaignSection({ item, progress, onClaimDrop, getStatusBadge }: Campai
                                         <span className="text-[8px] font-bold text-black">!</span>
                                     </div>
                                 )}
+                                {/* Special indicator for non-mineable drops */}
+                                {!mineable && !isClaimed && (
+                                    <div className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-purple-500 flex items-center justify-center shadow-lg">
+                                        <Star size={8} className="text-white" />
+                                    </div>
+                                )}
                             </div>
 
                             {/* Drop Info */}
@@ -513,7 +643,14 @@ function CampaignSection({ item, progress, onClaimDrop, getStatusBadge }: Campai
                                         <span className="text-[10px] text-green-400 font-medium">Claimed</span>
                                     ) : isClaimable ? (
                                         <span className="text-[10px] text-yellow-400 font-semibold animate-pulse">Ready to claim!</span>
+                                    ) : !mineable ? (
+                                        // Non-mineable drop: show what's required
+                                        <span className="text-[10px] text-purple-400 font-medium flex items-center gap-1">
+                                            <Ban size={10} />
+                                            Requires gift/sub or special action
+                                        </span>
                                     ) : (
+                                        // Normal time-based drop progress
                                         <>
                                             <div className="flex-1 h-1 bg-background rounded-full overflow-hidden border border-borderLight max-w-[100px]">
                                                 <div
@@ -529,7 +666,7 @@ function CampaignSection({ item, progress, onClaimDrop, getStatusBadge }: Campai
                                 </div>
                             </div>
 
-                            {/* Claim Button */}
+                            {/* Claim Button - only for mineable drops that are complete */}
                             {isClaimable && (
                                 <button
                                     onClick={(e) => {
@@ -540,6 +677,13 @@ function CampaignSection({ item, progress, onClaimDrop, getStatusBadge }: Campai
                                 >
                                     Claim
                                 </button>
+                            )}
+
+                            {/* Event/Special Badge for non-mineable drops */}
+                            {!mineable && !isClaimed && (
+                                <span className="px-2 py-1 text-[9px] font-semibold rounded bg-purple-500/20 text-purple-400 border border-purple-500/30 shrink-0 whitespace-nowrap">
+                                    Event Only
+                                </span>
                             )}
 
                             {/* Expired Warning for Claimable */}

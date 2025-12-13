@@ -405,8 +405,13 @@ impl ChannelPointsWebSocketService {
                                 Self::handle_raid_event(message_data, app_handle, channel_id).await;
                             }
                             "predictions-channel-v1" => {
-                                Self::handle_prediction_event(message_data, app_handle, channel_id)
-                                    .await;
+                                Self::handle_prediction_event(
+                                    message_data,
+                                    app_handle,
+                                    channel_id,
+                                    channel_mappings,
+                                )
+                                .await;
                             }
                             _ => {}
                         }
@@ -647,15 +652,238 @@ impl ChannelPointsWebSocketService {
     /// Handle prediction events
     async fn handle_prediction_event(
         message_data: Value,
-        _app_handle: &AppHandle,
+        app_handle: &AppHandle,
         channel_id: Option<String>,
+        channel_mappings: &Arc<RwLock<HashMap<String, ChannelMapping>>>,
     ) {
+        // Resolve channel name from mapping or API
+        let channel_name = if let Some(ref cid) = channel_id {
+            let mapping = channel_mappings.read().await;
+            if let Some(channel_info) = mapping.get(cid) {
+                Some(channel_info.login.clone())
+            } else {
+                drop(mapping);
+                // Try API lookup
+                if let Ok(Some((login, display_name))) = Self::lookup_channel_by_id(cid).await {
+                    // Cache for future use
+                    let mut mapping_write = channel_mappings.write().await;
+                    mapping_write.insert(
+                        cid.clone(),
+                        ChannelMapping {
+                            login: login.clone(),
+                            display_name: display_name.clone(),
+                        },
+                    );
+                    Some(login)
+                } else {
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        // Format display string: "channel_name (ID)" or just "ID"
+        let channel_display = match (&channel_name, &channel_id) {
+            (Some(name), Some(id)) => format!("{} ({})", name, id),
+            (None, Some(id)) => id.clone(),
+            _ => "unknown".to_string(),
+        };
+
         if let Some(event_type) = message_data["type"].as_str() {
-            if event_type == "event-created" {
-                let title = message_data["data"]["event"]["title"]
-                    .as_str()
-                    .unwrap_or("");
-                println!("🔮 Prediction created on {:?}: {}", channel_id, title);
+            match event_type {
+                "event-created" => {
+                    // Extract full prediction details
+                    if let Some(event) = message_data["data"]["event"].as_object() {
+                        let title = event.get("title").and_then(|v| v.as_str()).unwrap_or("");
+                        let prediction_id = event.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                        let prediction_window_seconds = event
+                            .get("prediction_window_seconds")
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or(0);
+                        let created_at = event
+                            .get("created_at")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        let status = event
+                            .get("status")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("ACTIVE");
+
+                        // Extract outcomes (the prediction options)
+                        let mut outcomes: Vec<Value> = Vec::new();
+                        if let Some(outcomes_array) =
+                            event.get("outcomes").and_then(|v| v.as_array())
+                        {
+                            for outcome in outcomes_array {
+                                if let Some(outcome_obj) = outcome.as_object() {
+                                    let outcome_id = outcome_obj
+                                        .get("id")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("");
+                                    let outcome_title = outcome_obj
+                                        .get("title")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("");
+                                    let color = outcome_obj
+                                        .get("color")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("BLUE");
+                                    let total_points = outcome_obj
+                                        .get("total_points")
+                                        .and_then(|v| v.as_i64())
+                                        .unwrap_or(0);
+                                    let total_users = outcome_obj
+                                        .get("total_users")
+                                        .and_then(|v| v.as_i64())
+                                        .unwrap_or(0);
+
+                                    outcomes.push(json!({
+                                        "id": outcome_id,
+                                        "title": outcome_title,
+                                        "color": color,
+                                        "total_points": total_points,
+                                        "total_users": total_users
+                                    }));
+                                }
+                            }
+                        }
+
+                        println!(
+                            "🔮 Prediction created on {}: {} (ID: {}, {} outcomes)",
+                            channel_display,
+                            title,
+                            prediction_id,
+                            outcomes.len()
+                        );
+
+                        // Emit to frontend
+                        let emit_result = app_handle.emit(
+                            "prediction-created",
+                            json!({
+                                "channel_id": channel_id,
+                                "prediction_id": prediction_id,
+                                "title": title,
+                                "outcomes": outcomes,
+                                "prediction_window_seconds": prediction_window_seconds,
+                                "created_at": created_at,
+                                "status": status
+                            }),
+                        );
+                        println!(
+                            "📤 Emitted prediction-created event to frontend: {:?}",
+                            emit_result.is_ok()
+                        );
+                    }
+                }
+                "event-updated" => {
+                    // Handle prediction updates (new bets, status changes)
+                    if let Some(event) = message_data["data"]["event"].as_object() {
+                        let prediction_id = event.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                        let status = event.get("status").and_then(|v| v.as_str()).unwrap_or("");
+                        let title = event.get("title").and_then(|v| v.as_str()).unwrap_or("");
+
+                        // Extract updated outcomes
+                        let mut outcomes: Vec<Value> = Vec::new();
+                        if let Some(outcomes_array) =
+                            event.get("outcomes").and_then(|v| v.as_array())
+                        {
+                            for outcome in outcomes_array {
+                                if let Some(outcome_obj) = outcome.as_object() {
+                                    let outcome_id = outcome_obj
+                                        .get("id")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("");
+                                    let outcome_title = outcome_obj
+                                        .get("title")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("");
+                                    let color = outcome_obj
+                                        .get("color")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("BLUE");
+                                    let total_points = outcome_obj
+                                        .get("total_points")
+                                        .and_then(|v| v.as_i64())
+                                        .unwrap_or(0);
+                                    let total_users = outcome_obj
+                                        .get("total_users")
+                                        .and_then(|v| v.as_i64())
+                                        .unwrap_or(0);
+
+                                    outcomes.push(json!({
+                                        "id": outcome_id,
+                                        "title": outcome_title,
+                                        "color": color,
+                                        "total_points": total_points,
+                                        "total_users": total_users
+                                    }));
+                                }
+                            }
+                        }
+
+                        println!(
+                            "🔮 Prediction updated on {}: {} - Status: {}",
+                            channel_display, title, status
+                        );
+
+                        // Emit update to frontend
+                        let _ = app_handle.emit(
+                            "prediction-updated",
+                            json!({
+                                "channel_id": channel_id,
+                                "prediction_id": prediction_id,
+                                "title": title,
+                                "status": status,
+                                "outcomes": outcomes
+                            }),
+                        );
+                    }
+                }
+                "event-locked" => {
+                    // Prediction locked - no more bets allowed
+                    if let Some(event) = message_data["data"]["event"].as_object() {
+                        let prediction_id = event.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                        let title = event.get("title").and_then(|v| v.as_str()).unwrap_or("");
+
+                        println!("🔒 Prediction locked on {}: {}", channel_display, title);
+
+                        let _ = app_handle.emit(
+                            "prediction-locked",
+                            json!({
+                                "channel_id": channel_id,
+                                "prediction_id": prediction_id,
+                                "title": title
+                            }),
+                        );
+                    }
+                }
+                "event-ended" => {
+                    // Prediction ended - has a winner
+                    if let Some(event) = message_data["data"]["event"].as_object() {
+                        let prediction_id = event.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                        let title = event.get("title").and_then(|v| v.as_str()).unwrap_or("");
+                        let winning_outcome_id =
+                            event.get("winning_outcome_id").and_then(|v| v.as_str());
+
+                        let winner_display = winning_outcome_id.unwrap_or("cancelled");
+                        println!(
+                            "🏆 Prediction ended on {}: {} - Winner: {}",
+                            channel_display, title, winner_display
+                        );
+
+                        let _ = app_handle.emit(
+                            "prediction-ended",
+                            json!({
+                                "channel_id": channel_id,
+                                "prediction_id": prediction_id,
+                                "title": title,
+                                "winning_outcome_id": winning_outcome_id
+                            }),
+                        );
+                    }
+                }
+                _ => {}
             }
         }
     }

@@ -161,11 +161,12 @@ const Home = () => {
         setHasInitialized(true);
     }, [loadFollowedStreams, loadRecommendedStreams]);
 
-    // Auto-select the appropriate tab based on auth status
-    // Skip if we're in a navigation-specific tab (e.g., navigated from badge overlay)
+    // Auto-select the appropriate tab based on auth status on initial mount only
+    // This effect should NOT run when user clicks tabs - remove homeActiveTab from deps
     useEffect(() => {
-        // Don't override navigation-specific tabs (category from deep links, search results)
-        if (homeActiveTab === 'category' || homeActiveTab === 'search') {
+        // Don't override if user has navigated to a specific tab
+        // Only auto-select on initial mount or when auth status truly changes
+        if (homeActiveTab === 'category' || homeActiveTab === 'search' || homeActiveTab === 'browse') {
             return;
         }
         if (isAuthenticated && followedStreams.length > 0) {
@@ -173,7 +174,9 @@ const Home = () => {
         } else if (!isAuthenticated || followedStreams.length === 0) {
             setActiveTab('recommended');
         }
-    }, [isAuthenticated, followedStreams.length, homeActiveTab]);
+        // Note: homeActiveTab intentionally not in deps to prevent feedback loop
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isAuthenticated, followedStreams.length]);
 
     // Focus search input when expanded
     useEffect(() => {

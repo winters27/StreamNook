@@ -34,6 +34,8 @@ pub struct MiningService {
     current_mining_game: Arc<RwLock<Option<String>>>, // Track current game to detect session changes
     // Recovery system state
     recovery_state: Arc<RwLock<RecoveryWatchdogState>>,
+    // Session ID to prevent old loops from continuing when new session starts
+    mining_session_id: Arc<RwLock<u64>>,
 }
 
 impl MiningService {
@@ -56,6 +58,8 @@ impl MiningService {
             current_mining_game: Arc::new(RwLock::new(None)),
             // Initialize recovery watchdog state
             recovery_state: Arc::new(RwLock::new(RecoveryWatchdogState::default())),
+            // Initialize session ID counter
+            mining_session_id: Arc::new(RwLock::new(0)),
         }
     }
 
@@ -731,6 +735,296 @@ impl MiningService {
                                     }
                                 });
 
+                                // Start periodic inventory polling (fallback since WebSocket drops progress is unreliable)
+                                let drops_service_poll = drops_service.clone();
+                                let mining_status_poll = mining_status.clone();
+                                let app_handle_poll = app_handle.clone();
+                                let is_running_poll = is_running.clone();
+                                // Get the game name AND campaign name from the target campaign for filtering
+                                let game_name_poll = target_campaign
+                                    .first()
+                                    .map(|c| c.game_name.clone())
+                                    .unwrap_or_default();
+                                let campaign_name_poll = target_campaign
+                                    .first()
+                                    .map(|c| c.name.clone())
+                                    .unwrap_or_default();
+                                let game_name_session = game_name_poll.clone();
+                                let campaign_name_session = campaign_name_poll.clone();
+
+                                tokio::spawn(async move {
+                                    let mut poll_interval =
+                                        tokio::time::interval(tokio::time::Duration::from_secs(60)); // Poll every minute
+                                    poll_interval.tick().await; // Skip first immediate tick
+
+                                    loop {
+                                        if !*is_running_poll.read().await {
+                                            println!("🛑 Stopping inventory polling loop for {} (mining stopped)", game_name_session);
+                                            break;
+                                        }
+
+                                        // Check if we're still mining the same game
+                                        {
+                                            let status = mining_status_poll.read().await;
+                                            if let Some(ref channel) = status.current_channel {
+                                                if channel.game_name != game_name_session {
+                                                    println!("🛑 Stopping inventory polling loop for {} (switched to {})", 
+                                                        game_name_session, channel.game_name);
+                                                    break;
+                                                }
+                                            }
+                                        }
+
+                                        println!(
+                                            "📊 Polling inventory for drops progress (campaign: {}, game: {})...",
+                                            campaign_name_poll, game_name_poll
+                                        );
+                                        match drops_service_poll
+                                            .lock()
+                                            .await
+                                            .fetch_inventory()
+                                            .await
+                                        {
+                                            Ok(inventory) => {
+                                                let mut all_drops_with_progress: Vec<(
+                                                    String,
+                                                    String,
+                                                    String,
+                                                    String,
+                                                    String,
+                                                    i32,
+                                                    i32,
+                                                    f32,
+                                                )> = Vec::new();
+
+                                                for item in &inventory.items {
+                                                    if item.campaign.game_name != game_name_poll {
+                                                        continue;
+                                                    }
+
+                                                    if item.campaign.name != campaign_name_poll {
+                                                        println!(
+                                                            "📊 Skipping campaign {} (mining specific campaign: {})",
+                                                            item.campaign.name, campaign_name_poll
+                                                        );
+                                                        continue;
+                                                    }
+
+                                                    println!(
+                                                        "📊 Found target campaign for {}: {}",
+                                                        item.campaign.game_name, item.campaign.name
+                                                    );
+
+                                                    for time_drop in &item.campaign.time_based_drops
+                                                    {
+                                                        if let Some(progress) = &time_drop.progress
+                                                        {
+                                                            let current_minutes =
+                                                                progress.current_minutes_watched;
+                                                            let required_minutes =
+                                                                time_drop.required_minutes_watched;
+
+                                                            if current_minutes >= required_minutes {
+                                                                continue;
+                                                            }
+
+                                                            let (drop_name, drop_image) =
+                                                                if let Some(benefit) =
+                                                                    time_drop.benefit_edges.first()
+                                                                {
+                                                                    (
+                                                                        benefit.name.clone(),
+                                                                        benefit.image_url.clone(),
+                                                                    )
+                                                                } else {
+                                                                    (
+                                                                        time_drop.name.clone(),
+                                                                        String::new(),
+                                                                    )
+                                                                };
+
+                                                            let progress_percentage =
+                                                                if required_minutes > 0 {
+                                                                    (current_minutes as f32
+                                                                        / required_minutes as f32)
+                                                                        * 100.0
+                                                                } else {
+                                                                    0.0
+                                                                };
+
+                                                            println!("📊 Inventory poll: {}/{} minutes for {} ({}) [{:.1}%]", 
+                                                                current_minutes, required_minutes, drop_name, time_drop.id, progress_percentage);
+
+                                                            all_drops_with_progress.push((
+                                                                time_drop.id.clone(),
+                                                                drop_name,
+                                                                drop_image,
+                                                                item.campaign.name.clone(),
+                                                                item.campaign.game_name.clone(),
+                                                                current_minutes,
+                                                                required_minutes,
+                                                                progress_percentage,
+                                                            ));
+                                                        }
+                                                    }
+                                                }
+
+                                                all_drops_with_progress.sort_by(|a, b| {
+                                                    b.7.partial_cmp(&a.7)
+                                                        .unwrap_or(std::cmp::Ordering::Equal)
+                                                });
+
+                                                if let Some((
+                                                    drop_id,
+                                                    drop_name,
+                                                    drop_image,
+                                                    campaign_name,
+                                                    game_name,
+                                                    current_minutes,
+                                                    required_minutes,
+                                                    progress_percentage,
+                                                )) = all_drops_with_progress.first()
+                                                {
+                                                    let mut status =
+                                                        mining_status_poll.write().await;
+
+                                                    let should_update =
+                                                        if let Some(ref current_drop) =
+                                                            status.current_drop
+                                                        {
+                                                            current_drop.drop_id != *drop_id
+                                                                || current_drop.current_minutes
+                                                                    != *current_minutes
+                                                        } else {
+                                                            true
+                                                        };
+
+                                                    if should_update {
+                                                        let estimated_completion =
+                                                            if *current_minutes > 0
+                                                                && *current_minutes
+                                                                    < *required_minutes
+                                                            {
+                                                                let remaining = *required_minutes
+                                                                    - *current_minutes;
+                                                                Some(
+                                                                    chrono::Utc::now()
+                                                                        + chrono::Duration::minutes(
+                                                                            remaining as i64,
+                                                                        ),
+                                                                )
+                                                            } else {
+                                                                None
+                                                            };
+
+                                                        let drop_image_opt =
+                                                            if drop_image.is_empty() {
+                                                                None
+                                                            } else {
+                                                                Some(drop_image.clone())
+                                                            };
+
+                                                        status.current_drop =
+                                                            Some(CurrentDropInfo {
+                                                                drop_id: drop_id.clone(),
+                                                                drop_name: drop_name.clone(),
+                                                                drop_image: drop_image_opt,
+                                                                campaign_name: campaign_name
+                                                                    .clone(),
+                                                                game_name: game_name.clone(),
+                                                                current_minutes: *current_minutes,
+                                                                required_minutes: *required_minutes,
+                                                                progress_percentage:
+                                                                    *progress_percentage,
+                                                                estimated_completion,
+                                                            });
+                                                        status.last_update = chrono::Utc::now();
+
+                                                        println!("✅ [Inventory] Set current_drop to HIGHEST progress: {} ({}/{} = {:.1}%)", 
+                                                            drop_name, current_minutes, required_minutes, progress_percentage);
+
+                                                        let current_status = status.clone();
+                                                        std::mem::drop(status);
+                                                        let _ = app_handle_poll.emit(
+                                                            "mining-status-update",
+                                                            &current_status,
+                                                        );
+                                                    } else {
+                                                        std::mem::drop(status);
+                                                    }
+                                                }
+
+                                                // Emit progress update events for ALL drops
+                                                for (
+                                                    drop_id,
+                                                    drop_name,
+                                                    drop_image,
+                                                    campaign_name,
+                                                    game_name,
+                                                    current_minutes,
+                                                    required_minutes,
+                                                    _,
+                                                ) in &all_drops_with_progress
+                                                {
+                                                    let _ = app_handle_poll.emit("drops-progress-update", serde_json::json!({
+                                                        "drop_id": drop_id,
+                                                        "drop_name": drop_name,
+                                                        "drop_image": drop_image,
+                                                        "campaign_name": campaign_name,
+                                                        "game_name": game_name,
+                                                        "current_minutes": current_minutes,
+                                                        "required_minutes": required_minutes,
+                                                        "timestamp": chrono::Utc::now().to_rfc3339()
+                                                    }));
+                                                }
+
+                                                // Drop completion detection
+                                                if all_drops_with_progress.is_empty() {
+                                                    println!("🎉 All drops for campaign '{}' ({}) are complete (100%)!", campaign_name_session, game_name_session);
+
+                                                    {
+                                                        let mut running =
+                                                            is_running_poll.write().await;
+                                                        *running = false;
+                                                    }
+
+                                                    {
+                                                        let mut status =
+                                                            mining_status_poll.write().await;
+                                                        status.is_mining = false;
+                                                        status.current_channel = None;
+                                                        status.current_campaign = None;
+                                                        status.current_drop = None;
+                                                        status.eligible_channels = Vec::new();
+                                                        status.last_update = chrono::Utc::now();
+                                                    }
+
+                                                    let current_status =
+                                                        mining_status_poll.read().await.clone();
+                                                    let _ = app_handle_poll.emit(
+                                                        "mining-status-update",
+                                                        &current_status,
+                                                    );
+
+                                                    let _ = app_handle_poll.emit("mining-complete", serde_json::json!({
+                                                        "game_name": game_name_session,
+                                                        "campaign_name": campaign_name_session,
+                                                        "reason": format!("All drops for '{}' are complete (100%)", campaign_name_session),
+                                                        "timestamp": chrono::Utc::now().to_rfc3339()
+                                                    }));
+
+                                                    break;
+                                                }
+                                            }
+                                            Err(e) => {
+                                                eprintln!("⚠️ Failed to poll inventory: {}", e);
+                                            }
+                                        }
+
+                                        poll_interval.tick().await;
+                                    }
+                                });
+
                                 // Connect WebSocket
                                 let websocket_service =
                                     Arc::new(tokio::sync::Mutex::new(DropsWebSocketService::new()));
@@ -786,12 +1080,17 @@ impl MiningService {
         campaign_id: String,
         app_handle: AppHandle,
     ) -> Result<()> {
-        // Check if already running
+        // Increment session ID to invalidate any old running loops
+        let session_id = {
+            let mut sid = self.mining_session_id.write().await;
+            *sid += 1;
+            println!("🆔 New mining session ID: {}", *sid);
+            *sid
+        };
+
+        // Set running state
         {
             let mut is_running = self.is_running.write().await;
-            if *is_running {
-                return Ok(());
-            }
             *is_running = true;
         }
 
@@ -894,35 +1193,64 @@ impl MiningService {
                                     println!("📦 Found active campaign: {}", campaign.name);
                                     status.current_campaign = Some(campaign.name.clone());
 
-                                    // Find the current drop being progressed (first unclaimed one)
-                                    let target_drop = campaign
+                                    // Get all unclaimed drops with their progress percentages
+                                    let drop_progress =
+                                        drops_service.lock().await.get_drop_progress().await;
+
+                                    // Calculate progress for all unclaimed drops and sort by percentage (highest first)
+                                    let mut drops_with_progress: Vec<_> = campaign
                                         .time_based_drops
                                         .iter()
-                                        .find(|d| {
+                                        .filter(|d| {
                                             if let Some(prog) = &d.progress {
                                                 !prog.is_claimed
                                             } else {
                                                 true // If no progress info, assume unclaimed
                                             }
                                         })
-                                        .or(campaign.time_based_drops.first());
+                                        .map(|drop| {
+                                            let current_minutes = drop_progress
+                                                .iter()
+                                                .find(|p| p.drop_id == drop.id)
+                                                .map(|p| p.current_minutes_watched)
+                                                .unwrap_or(0);
+                                            let progress_percentage =
+                                                if drop.required_minutes_watched > 0 {
+                                                    (current_minutes as f32
+                                                        / drop.required_minutes_watched as f32)
+                                                        * 100.0
+                                                } else {
+                                                    0.0
+                                                };
+                                            (drop, current_minutes, progress_percentage)
+                                        })
+                                        .collect();
 
-                                    if let Some(drop) = target_drop {
-                                        let drop_progress =
-                                            drops_service.lock().await.get_drop_progress().await;
-                                        let current_minutes = drop_progress
-                                            .iter()
-                                            .find(|p| p.drop_id == drop.id)
-                                            .map(|p| p.current_minutes_watched)
-                                            .unwrap_or(0);
+                                    // Sort by progress percentage descending (highest first = closest to completion)
+                                    drops_with_progress.sort_by(|a, b| {
+                                        b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal)
+                                    });
 
-                                        let progress_percentage = (current_minutes as f32
-                                            / drop.required_minutes_watched as f32)
-                                            * 100.0;
+                                    println!("📊 Sorted drops by progress (highest first):");
+                                    for (drop, mins, pct) in &drops_with_progress {
+                                        let name = drop
+                                            .benefit_edges
+                                            .first()
+                                            .map(|b| b.name.as_str())
+                                            .unwrap_or(&drop.name);
+                                        println!(
+                                            "  - {} ({}/{} mins = {:.1}%)",
+                                            name, mins, drop.required_minutes_watched, pct
+                                        );
+                                    }
 
-                                        let estimated_completion = if current_minutes > 0 {
+                                    // Select the drop with highest progress percentage
+                                    if let Some((drop, current_minutes, progress_percentage)) =
+                                        drops_with_progress.first()
+                                    {
+                                        let estimated_completion = if *current_minutes > 0 {
                                             let remaining_minutes =
-                                                drop.required_minutes_watched - current_minutes;
+                                                drop.required_minutes_watched - *current_minutes;
                                             Some(
                                                 Utc::now()
                                                     + Duration::minutes(remaining_minutes as i64),
@@ -943,15 +1271,20 @@ impl MiningService {
                                         let drop_image =
                                             drop.benefit_edges.first().map(|b| b.image_url.clone());
 
+                                        println!(
+                                            "🎯 Selected HIGHEST progress drop: {} ({:.1}%)",
+                                            drop_name, progress_percentage
+                                        );
+
                                         status.current_drop = Some(CurrentDropInfo {
                                             drop_id: drop.id.clone(),
                                             drop_name,
                                             drop_image,
                                             campaign_name: campaign.name.clone(),
                                             game_name: campaign.game_name.clone(),
-                                            current_minutes,
+                                            current_minutes: *current_minutes,
                                             required_minutes: drop.required_minutes_watched,
-                                            progress_percentage,
+                                            progress_percentage: *progress_percentage,
                                             estimated_completion,
                                         });
                                     }
@@ -1224,12 +1557,21 @@ impl MiningService {
                                 let mining_status_poll = mining_status.clone();
                                 let app_handle_poll = app_handle.clone();
                                 let is_running_poll = is_running.clone();
-                                // Get the game name from the target campaign for filtering
+                                // Get the game name AND campaign name from the target campaign for filtering
+                                // We need to filter by SPECIFIC campaign, not just game!
                                 let game_name_poll = target_campaign
                                     .first()
                                     .map(|c| c.game_name.clone())
                                     .unwrap_or_default();
+                                let campaign_name_poll = target_campaign
+                                    .first()
+                                    .map(|c| c.name.clone())
+                                    .unwrap_or_default();
                                 let game_name_session = game_name_poll.clone(); // Track this session's game
+                                let campaign_name_session = campaign_name_poll.clone(); // Track this session's specific campaign
+
+                                // Get auto_mining_enabled setting to decide if we should continue after completion
+                                let auto_mining_enabled_poll = settings.auto_mining_enabled;
 
                                 tokio::spawn(async move {
                                     let mut poll_interval =
@@ -1256,8 +1598,8 @@ impl MiningService {
                                         }
 
                                         println!(
-                                            "📊 Polling inventory for drops progress (game: {})...",
-                                            game_name_poll
+                                            "📊 Polling inventory for drops progress (campaign: {}, game: {})...",
+                                            campaign_name_poll, game_name_poll
                                         );
                                         match drops_service_poll
                                             .lock()
@@ -1266,8 +1608,8 @@ impl MiningService {
                                             .await
                                         {
                                             Ok(inventory) => {
-                                                // SMART DROP SELECTION: Collect all drops with progress, then pick the best one
-                                                // This ensures we show the drop with highest progress percentage
+                                                // SPECIFIC CAMPAIGN TRACKING: Only track drops from the campaign the user clicked on
+                                                // This ensures we show progress for the exact campaign they selected
                                                 let mut all_drops_with_progress: Vec<(
                                                     String, // drop_id
                                                     String, // drop_name
@@ -1280,13 +1622,23 @@ impl MiningService {
                                                 )> = Vec::new();
 
                                                 for item in &inventory.items {
-                                                    // Filter by game/category - include all campaigns for this game
+                                                    // Filter by SPECIFIC CAMPAIGN - only show drops from the campaign user clicked on
+                                                    // First check game matches, then check campaign name matches
                                                     if item.campaign.game_name != game_name_poll {
                                                         continue;
                                                     }
 
+                                                    // IMPORTANT: Filter by specific campaign name, not just game!
+                                                    if item.campaign.name != campaign_name_poll {
+                                                        println!(
+                                                            "📊 Skipping campaign {} (mining specific campaign: {})",
+                                                            item.campaign.name, campaign_name_poll
+                                                        );
+                                                        continue;
+                                                    }
+
                                                     println!(
-                                                        "📊 Found campaign for {}: {}",
+                                                        "📊 Found target campaign for {}: {}",
                                                         item.campaign.game_name, item.campaign.name
                                                     );
 
@@ -1462,6 +1814,61 @@ impl MiningService {
                                                         "timestamp": chrono::Utc::now().to_rfc3339()
                                                     }));
                                                 }
+
+                                                // ================================================
+                                                // DROP COMPLETION DETECTION (Campaign Mining)
+                                                // ================================================
+                                                // If all_drops_with_progress is empty, it means all drops for this game are complete (100%)
+                                                //
+                                                // For start_campaign_mining (single campaign or Mine All Game queue):
+                                                // - ALWAYS stop and emit completion event
+                                                // - The FRONTEND decides whether to start the next campaign (if there's a Mine All queue)
+                                                // - This handles both single campaign (stop) and Mine All Game (frontend starts next)
+                                                //
+                                                // For start_mining (auto-mining mode), it has its own loop that continues globally.
+                                                if all_drops_with_progress.is_empty() {
+                                                    println!("🎉 All drops for campaign '{}' ({}) are complete (100%)!", campaign_name_session, game_name_session);
+                                                    println!("🛑 Campaign mining complete - stopping and notifying frontend");
+
+                                                    // Set running to false to stop all loops for this campaign
+                                                    {
+                                                        let mut running =
+                                                            is_running_poll.write().await;
+                                                        *running = false;
+                                                    }
+
+                                                    // Clear mining status
+                                                    {
+                                                        let mut status =
+                                                            mining_status_poll.write().await;
+                                                        status.is_mining = false;
+                                                        status.current_channel = None;
+                                                        status.current_campaign = None;
+                                                        status.current_drop = None;
+                                                        status.eligible_channels = Vec::new();
+                                                        status.last_update = chrono::Utc::now();
+                                                    }
+
+                                                    // Emit status update to clear the UI
+                                                    let current_status =
+                                                        mining_status_poll.read().await.clone();
+                                                    let _ = app_handle_poll.emit(
+                                                        "mining-status-update",
+                                                        &current_status,
+                                                    );
+
+                                                    // Emit completion event - frontend decides whether to start next campaign
+                                                    // (if there's a Mine All queue) or stay stopped (single campaign)
+                                                    let _ = app_handle_poll.emit("mining-complete", serde_json::json!({
+                                                        "game_name": game_name_session,
+                                                        "campaign_name": campaign_name_session,
+                                                        "reason": format!("All drops for '{}' are complete (100%)", campaign_name_session),
+                                                        "timestamp": chrono::Utc::now().to_rfc3339()
+                                                    }));
+
+                                                    println!("✅ Campaign '{}' mining complete - frontend will handle next steps", campaign_name_session);
+                                                    break; // Exit the polling loop
+                                                }
                                             }
                                             Err(e) => {
                                                 eprintln!("⚠️ Failed to poll inventory: {}", e);
@@ -1528,6 +1935,7 @@ impl MiningService {
     }
 
     /// Start the automated mining process (cycles through all eligible campaigns)
+    /// OPTIMIZED: Finds FIRST available live channel quickly instead of gathering all channels
     pub async fn start_mining(&self, app_handle: AppHandle) -> Result<()> {
         // Check if already running
         {
@@ -1552,7 +1960,9 @@ impl MiningService {
 
         // Spawn the mining loop
         tokio::spawn(async move {
-            println!("🎮 Starting automated drops mining (all eligible campaigns)");
+            println!(
+                "🎮 Starting automated drops mining (optimized - finds first available channel)"
+            );
 
             loop {
                 // Check if mining should continue
@@ -1598,228 +2008,439 @@ impl MiningService {
                             (filtered, settings)
                         };
 
-                        // Discover eligible channels for mining
-                        match Self::discover_eligible_channels_internal(
-                            &client, &campaigns, &settings,
-                        )
-                        .await
+                        // OPTIMIZED: Find FIRST available channel quickly instead of gathering all
+                        match Self::find_first_eligible_channel(&client, &campaigns, &settings)
+                            .await
                         {
-                            Ok(channels) => {
-                                // Store the channels first
-                                let mut eligible = eligible_channels.write().await;
-                                *eligible = channels.clone();
-                                drop(eligible); // Release the lock
-
-                                // Select the best channel to watch from the discovered channels
-                                if let Some(best_channel) = Self::select_best_channel(
-                                    &channels, // Use the channels we just discovered, not the reference
-                                    &campaigns, &settings,
-                                ) {
-                                    // Re-acquire the lock to get the eligible channels for status
-                                    let eligible = eligible_channels.read().await;
-                                    // Update mining status
-                                    let mut status = mining_status.write().await;
-                                    status.is_mining = true;
-                                    status.current_channel = Some(best_channel.clone());
-                                    status.eligible_channels = eligible.clone();
-                                    status.last_update = Utc::now();
-                                    drop(eligible); // Release the read lock
-
-                                    // Find the active campaign for this channel
-                                    if let Some(campaign) = Self::get_active_campaign_for_channel(
-                                        &best_channel,
-                                        &campaigns,
-                                    ) {
-                                        status.current_campaign = Some(campaign.name.clone());
-
-                                        // Find the current drop being progressed
-                                        if let Some(drop) = campaign.time_based_drops.first() {
-                                            let drop_progress = drops_service
-                                                .lock()
-                                                .await
-                                                .get_drop_progress()
-                                                .await;
-                                            let current_minutes = drop_progress
-                                                .iter()
-                                                .find(|p| p.drop_id == drop.id)
-                                                .map(|p| p.current_minutes_watched)
-                                                .unwrap_or(0);
-
-                                            let progress_percentage = (current_minutes as f32
-                                                / drop.required_minutes_watched as f32)
-                                                * 100.0;
-
-                                            let estimated_completion = if current_minutes > 0 {
-                                                let remaining_minutes =
-                                                    drop.required_minutes_watched - current_minutes;
-                                                Some(
-                                                    Utc::now()
-                                                        + Duration::minutes(
-                                                            remaining_minutes as i64,
-                                                        ),
-                                                )
-                                            } else {
-                                                None
-                                            };
-
-                                            // Get drop image from benefit_edges
-                                            let drop_image = drop
-                                                .benefit_edges
-                                                .first()
-                                                .map(|b| b.image_url.clone());
-
-                                            status.current_drop = Some(CurrentDropInfo {
-                                                drop_id: drop.id.clone(),
-                                                drop_name: drop.name.clone(),
-                                                drop_image,
-                                                campaign_name: campaign.name.clone(),
-                                                game_name: campaign.game_name.clone(),
-                                                current_minutes,
-                                                required_minutes: drop.required_minutes_watched,
-                                                progress_percentage,
-                                                estimated_completion,
-                                            });
-                                        }
-                                    }
-
-                                    drop(status);
-
-                                    // Emit mining status update
-                                    let current_status = mining_status.read().await.clone();
-                                    let _ =
-                                        app_handle.emit("mining-status-update", &current_status);
-
-                                    // Start monitoring this channel
-                                    drops_service
-                                        .lock()
-                                        .await
-                                        .update_current_channel(
-                                            best_channel.id.clone(),
-                                            best_channel.name.clone(),
-                                        )
-                                        .await;
-
-                                    println!(
-                                        "⛏️ Mining drops on: {} ({})",
-                                        best_channel.name, best_channel.game_name
-                                    );
-
-                                    // Get token and user ID
-                                    let token = match DropsAuthService::get_token().await {
-                                        Ok(t) => t,
-                                        Err(e) => {
-                                            eprintln!("❌ Failed to get token: {}", e);
-                                            continue;
-                                        }
-                                    };
-
-                                    let user_id = match Self::get_user_id(&client, &token).await {
-                                        Ok(id) => id,
-                                        Err(e) => {
-                                            eprintln!("❌ Failed to get user ID: {}", e);
-                                            continue;
-                                        }
-                                    };
-
-                                    // Connect WebSocket for real-time drops updates
-                                    println!("🔌 Connecting WebSocket for drops updates...");
-                                    let websocket_service = Arc::new(tokio::sync::Mutex::new(
-                                        DropsWebSocketService::new(),
-                                    ));
-                                    let mut ws_service = websocket_service.lock().await;
-                                    if let Err(e) = ws_service
-                                        .connect(&user_id, &token, app_handle.clone())
-                                        .await
-                                    {
-                                        eprintln!("❌ Failed to connect WebSocket: {}", e);
-                                    }
-                                    drop(ws_service);
-
-                                    // Get the actual stream/broadcast ID for this channel
-                                    let broadcast_id = match Self::get_broadcast_id(
-                                        &client,
-                                        &best_channel.id,
-                                        &token,
-                                    )
-                                    .await
-                                    {
-                                        Ok(Some(id)) => {
-                                            println!("📺 Got broadcast ID: {}", id);
-                                            id
-                                        }
-                                        Ok(None) => {
-                                            println!(
-                                                "⚠️ Channel {} is not live, using channel ID as fallback",
-                                                best_channel.name
-                                            );
-                                            best_channel.id.clone()
-                                        }
-                                        Err(e) => {
-                                            eprintln!("❌ Failed to get broadcast ID: {}", e);
-                                            best_channel.id.clone()
-                                        }
-                                    };
-
-                                    // Start watch payload loop
-                                    let client_clone = client.clone();
-                                    let best_channel_clone = best_channel.clone();
-                                    let broadcast_id_clone = broadcast_id.clone();
-                                    let token_clone = token.clone();
-                                    let is_running_clone = is_running.clone();
-                                    let cached_user_id_clone = cached_user_id.clone();
-                                    let cached_spade_url_clone = cached_spade_url.clone();
-
-                                    tokio::spawn(async move {
-                                        let mut interval = tokio::time::interval(
-                                            tokio::time::Duration::from_secs(60),
-                                        );
-                                        loop {
-                                            // Check if still running
-                                            if !*is_running_clone.read().await {
-                                                println!("🛑 Stopping watch payload loop");
-                                                break;
-                                            }
-
-                                            // Send watch payload
-                                            println!("📡 Sending watch payload...");
-                                            match Self::send_watch_payload(
-                                                &client_clone,
-                                                &best_channel_clone,
-                                                &broadcast_id_clone,
-                                                &token_clone,
-                                                &cached_user_id_clone,
-                                                &cached_spade_url_clone,
-                                            )
-                                            .await
-                                            {
-                                                Ok(true) => {
-                                                    println!("✅ Watch payload sent successfully")
-                                                }
-                                                Ok(false) => println!("⚠️ Watch payload failed"),
-                                                Err(e) => eprintln!(
-                                                    "❌ Failed to send watch payload: {}",
-                                                    e
-                                                ),
-                                            }
-
-                                            // Wait for next interval
-                                            interval.tick().await;
-                                        }
-                                    });
-
-                                    // WebSocket provides all real-time progress updates
-                                    // No need for any additional campaign polling
-                                } else {
-                                    println!("⚠️ No eligible channels found for mining");
-                                    let mut status = mining_status.write().await;
-                                    status.is_mining = false;
-                                    status.current_channel = None;
-                                    status.current_campaign = None;
-                                    status.current_drop = None;
+                            Ok(Some((best_channel, campaign))) => {
+                                // Store just this channel as the eligible one
+                                {
+                                    let mut eligible = eligible_channels.write().await;
+                                    *eligible = vec![best_channel.clone()];
                                 }
+
+                                // Update mining status
+                                let mut status = mining_status.write().await;
+                                status.is_mining = true;
+                                status.current_channel = Some(best_channel.clone());
+                                status.eligible_channels = vec![best_channel.clone()];
+                                status.last_update = Utc::now();
+                                status.current_campaign = Some(campaign.name.clone());
+
+                                // Find the current drop being progressed
+                                if let Some(drop) = campaign.time_based_drops.first() {
+                                    let drop_progress =
+                                        drops_service.lock().await.get_drop_progress().await;
+                                    let current_minutes = drop_progress
+                                        .iter()
+                                        .find(|p| p.drop_id == drop.id)
+                                        .map(|p| p.current_minutes_watched)
+                                        .unwrap_or(0);
+
+                                    let progress_percentage = (current_minutes as f32
+                                        / drop.required_minutes_watched as f32)
+                                        * 100.0;
+
+                                    let estimated_completion = if current_minutes > 0 {
+                                        let remaining_minutes =
+                                            drop.required_minutes_watched - current_minutes;
+                                        Some(
+                                            Utc::now()
+                                                + Duration::minutes(remaining_minutes as i64),
+                                        )
+                                    } else {
+                                        None
+                                    };
+
+                                    // Get drop image from benefit_edges
+                                    let drop_image =
+                                        drop.benefit_edges.first().map(|b| b.image_url.clone());
+
+                                    status.current_drop = Some(CurrentDropInfo {
+                                        drop_id: drop.id.clone(),
+                                        drop_name: drop.name.clone(),
+                                        drop_image,
+                                        campaign_name: campaign.name.clone(),
+                                        game_name: campaign.game_name.clone(),
+                                        current_minutes,
+                                        required_minutes: drop.required_minutes_watched,
+                                        progress_percentage,
+                                        estimated_completion,
+                                    });
+                                }
+
+                                drop(status);
+
+                                // Emit mining status update
+                                let current_status = mining_status.read().await.clone();
+                                let _ = app_handle.emit("mining-status-update", &current_status);
+
+                                // Start monitoring this channel
+                                drops_service
+                                    .lock()
+                                    .await
+                                    .update_current_channel(
+                                        best_channel.id.clone(),
+                                        best_channel.name.clone(),
+                                    )
+                                    .await;
+
+                                println!(
+                                    "⛏️ Mining drops on: {} ({}) - Campaign: {}",
+                                    best_channel.name, best_channel.game_name, campaign.name
+                                );
+
+                                // Get token and user ID
+                                let token = match DropsAuthService::get_token().await {
+                                    Ok(t) => t,
+                                    Err(e) => {
+                                        eprintln!("❌ Failed to get token: {}", e);
+                                        continue;
+                                    }
+                                };
+
+                                let user_id = match Self::get_user_id(&client, &token).await {
+                                    Ok(id) => id,
+                                    Err(e) => {
+                                        eprintln!("❌ Failed to get user ID: {}", e);
+                                        continue;
+                                    }
+                                };
+
+                                // Connect WebSocket for real-time drops updates
+                                println!("🔌 Connecting WebSocket for drops updates...");
+                                let websocket_service =
+                                    Arc::new(tokio::sync::Mutex::new(DropsWebSocketService::new()));
+                                let mut ws_service = websocket_service.lock().await;
+                                if let Err(e) = ws_service
+                                    .connect(&user_id, &token, app_handle.clone())
+                                    .await
+                                {
+                                    eprintln!("❌ Failed to connect WebSocket: {}", e);
+                                }
+                                drop(ws_service);
+
+                                // Get the actual stream/broadcast ID for this channel
+                                let broadcast_id = match Self::get_broadcast_id(
+                                    &client,
+                                    &best_channel.id,
+                                    &token,
+                                )
+                                .await
+                                {
+                                    Ok(Some(id)) => {
+                                        println!("📺 Got broadcast ID: {}", id);
+                                        id
+                                    }
+                                    Ok(None) => {
+                                        println!(
+                                            "⚠️ Channel {} is not live, using channel ID as fallback",
+                                            best_channel.name
+                                        );
+                                        best_channel.id.clone()
+                                    }
+                                    Err(e) => {
+                                        eprintln!("❌ Failed to get broadcast ID: {}", e);
+                                        best_channel.id.clone()
+                                    }
+                                };
+
+                                // Start watch payload loop
+                                let client_clone = client.clone();
+                                let best_channel_clone = best_channel.clone();
+                                let broadcast_id_clone = broadcast_id.clone();
+                                let token_clone = token.clone();
+                                let is_running_clone = is_running.clone();
+                                let cached_user_id_clone = cached_user_id.clone();
+                                let cached_spade_url_clone = cached_spade_url.clone();
+
+                                tokio::spawn(async move {
+                                    let mut interval =
+                                        tokio::time::interval(tokio::time::Duration::from_secs(60));
+                                    loop {
+                                        // Check if still running
+                                        if !*is_running_clone.read().await {
+                                            println!("🛑 Stopping watch payload loop");
+                                            break;
+                                        }
+
+                                        // Send watch payload
+                                        println!("📡 Sending watch payload...");
+                                        match Self::send_watch_payload(
+                                            &client_clone,
+                                            &best_channel_clone,
+                                            &broadcast_id_clone,
+                                            &token_clone,
+                                            &cached_user_id_clone,
+                                            &cached_spade_url_clone,
+                                        )
+                                        .await
+                                        {
+                                            Ok(true) => {
+                                                println!("✅ Watch payload sent successfully")
+                                            }
+                                            Ok(false) => println!("⚠️ Watch payload failed"),
+                                            Err(e) => {
+                                                eprintln!("❌ Failed to send watch payload: {}", e)
+                                            }
+                                        }
+
+                                        // Wait for next interval
+                                        interval.tick().await;
+                                    }
+                                });
+
+                                // Start periodic inventory polling for automated mining (fallback since WebSocket drops progress is unreliable)
+                                let drops_service_poll = drops_service.clone();
+                                let mining_status_poll = mining_status.clone();
+                                let app_handle_poll = app_handle.clone();
+                                let is_running_poll = is_running.clone();
+                                let game_name_poll = campaign.game_name.clone();
+                                let campaign_name_poll = campaign.name.clone();
+                                let game_name_session = game_name_poll.clone();
+                                let campaign_name_session = campaign_name_poll.clone();
+
+                                tokio::spawn(async move {
+                                    let mut poll_interval =
+                                        tokio::time::interval(tokio::time::Duration::from_secs(60)); // Poll every minute
+                                    poll_interval.tick().await; // Skip first immediate tick
+
+                                    loop {
+                                        if !*is_running_poll.read().await {
+                                            println!("🛑 Stopping inventory polling loop for auto-mining {} (mining stopped)", game_name_session);
+                                            break;
+                                        }
+
+                                        // Check if we're still mining the same game
+                                        {
+                                            let status = mining_status_poll.read().await;
+                                            if let Some(ref channel) = status.current_channel {
+                                                if channel.game_name != game_name_session {
+                                                    println!("🛑 Stopping inventory polling loop for {} (auto-mining switched to {})", 
+                                                        game_name_session, channel.game_name);
+                                                    break;
+                                                }
+                                            }
+                                        }
+
+                                        println!(
+                                            "📊 [Auto-Mining] Polling inventory for drops progress (campaign: {}, game: {})...",
+                                            campaign_name_poll, game_name_poll
+                                        );
+                                        match drops_service_poll
+                                            .lock()
+                                            .await
+                                            .fetch_inventory()
+                                            .await
+                                        {
+                                            Ok(inventory) => {
+                                                let mut all_drops_with_progress: Vec<(
+                                                    String,
+                                                    String,
+                                                    String,
+                                                    String,
+                                                    String,
+                                                    i32,
+                                                    i32,
+                                                    f32,
+                                                )> = Vec::new();
+
+                                                for item in &inventory.items {
+                                                    // For auto-mining, filter by current game
+                                                    if item.campaign.game_name != game_name_poll {
+                                                        continue;
+                                                    }
+
+                                                    println!(
+                                                        "📊 [Auto-Mining] Found campaign for {}: {}",
+                                                        item.campaign.game_name, item.campaign.name
+                                                    );
+
+                                                    for time_drop in &item.campaign.time_based_drops
+                                                    {
+                                                        if let Some(progress) = &time_drop.progress
+                                                        {
+                                                            let current_minutes =
+                                                                progress.current_minutes_watched;
+                                                            let required_minutes =
+                                                                time_drop.required_minutes_watched;
+
+                                                            if current_minutes >= required_minutes {
+                                                                continue;
+                                                            }
+
+                                                            let (drop_name, drop_image) =
+                                                                if let Some(benefit) =
+                                                                    time_drop.benefit_edges.first()
+                                                                {
+                                                                    (
+                                                                        benefit.name.clone(),
+                                                                        benefit.image_url.clone(),
+                                                                    )
+                                                                } else {
+                                                                    (
+                                                                        time_drop.name.clone(),
+                                                                        String::new(),
+                                                                    )
+                                                                };
+
+                                                            let progress_percentage =
+                                                                if required_minutes > 0 {
+                                                                    (current_minutes as f32
+                                                                        / required_minutes as f32)
+                                                                        * 100.0
+                                                                } else {
+                                                                    0.0
+                                                                };
+
+                                                            println!("📊 [Auto-Mining] Inventory poll: {}/{} minutes for {} ({}) [{:.1}%]", 
+                                                                current_minutes, required_minutes, drop_name, time_drop.id, progress_percentage);
+
+                                                            all_drops_with_progress.push((
+                                                                time_drop.id.clone(),
+                                                                drop_name,
+                                                                drop_image,
+                                                                item.campaign.name.clone(),
+                                                                item.campaign.game_name.clone(),
+                                                                current_minutes,
+                                                                required_minutes,
+                                                                progress_percentage,
+                                                            ));
+                                                        }
+                                                    }
+                                                }
+
+                                                all_drops_with_progress.sort_by(|a, b| {
+                                                    b.7.partial_cmp(&a.7)
+                                                        .unwrap_or(std::cmp::Ordering::Equal)
+                                                });
+
+                                                if let Some((
+                                                    drop_id,
+                                                    drop_name,
+                                                    drop_image,
+                                                    campaign_name,
+                                                    game_name,
+                                                    current_minutes,
+                                                    required_minutes,
+                                                    progress_percentage,
+                                                )) = all_drops_with_progress.first()
+                                                {
+                                                    let mut status =
+                                                        mining_status_poll.write().await;
+
+                                                    let should_update =
+                                                        if let Some(ref current_drop) =
+                                                            status.current_drop
+                                                        {
+                                                            current_drop.drop_id != *drop_id
+                                                                || current_drop.current_minutes
+                                                                    != *current_minutes
+                                                        } else {
+                                                            true
+                                                        };
+
+                                                    if should_update {
+                                                        let estimated_completion =
+                                                            if *current_minutes > 0
+                                                                && *current_minutes
+                                                                    < *required_minutes
+                                                            {
+                                                                let remaining = *required_minutes
+                                                                    - *current_minutes;
+                                                                Some(
+                                                                    chrono::Utc::now()
+                                                                        + chrono::Duration::minutes(
+                                                                            remaining as i64,
+                                                                        ),
+                                                                )
+                                                            } else {
+                                                                None
+                                                            };
+
+                                                        let drop_image_opt =
+                                                            if drop_image.is_empty() {
+                                                                None
+                                                            } else {
+                                                                Some(drop_image.clone())
+                                                            };
+
+                                                        status.current_drop =
+                                                            Some(CurrentDropInfo {
+                                                                drop_id: drop_id.clone(),
+                                                                drop_name: drop_name.clone(),
+                                                                drop_image: drop_image_opt,
+                                                                campaign_name: campaign_name
+                                                                    .clone(),
+                                                                game_name: game_name.clone(),
+                                                                current_minutes: *current_minutes,
+                                                                required_minutes: *required_minutes,
+                                                                progress_percentage:
+                                                                    *progress_percentage,
+                                                                estimated_completion,
+                                                            });
+                                                        status.last_update = chrono::Utc::now();
+
+                                                        println!("✅ [Auto-Mining] Set current_drop to HIGHEST progress: {} ({}/{} = {:.1}%)", 
+                                                            drop_name, current_minutes, required_minutes, progress_percentage);
+
+                                                        let current_status = status.clone();
+                                                        std::mem::drop(status);
+                                                        let _ = app_handle_poll.emit(
+                                                            "mining-status-update",
+                                                            &current_status,
+                                                        );
+                                                    } else {
+                                                        std::mem::drop(status);
+                                                    }
+                                                }
+
+                                                // Emit progress update events for ALL drops
+                                                for (
+                                                    drop_id,
+                                                    drop_name,
+                                                    drop_image,
+                                                    campaign_name,
+                                                    game_name,
+                                                    current_minutes,
+                                                    required_minutes,
+                                                    _,
+                                                ) in &all_drops_with_progress
+                                                {
+                                                    let _ = app_handle_poll.emit("drops-progress-update", serde_json::json!({
+                                                        "drop_id": drop_id,
+                                                        "drop_name": drop_name,
+                                                        "drop_image": drop_image,
+                                                        "campaign_name": campaign_name,
+                                                        "game_name": game_name,
+                                                        "current_minutes": current_minutes,
+                                                        "required_minutes": required_minutes,
+                                                        "timestamp": chrono::Utc::now().to_rfc3339()
+                                                    }));
+                                                }
+                                            }
+                                            Err(e) => {
+                                                eprintln!(
+                                                    "⚠️ [Auto-Mining] Failed to poll inventory: {}",
+                                                    e
+                                                );
+                                            }
+                                        }
+
+                                        poll_interval.tick().await;
+                                    }
+                                });
+                            }
+                            Ok(None) => {
+                                println!("⚠️ No eligible channels found for mining");
+                                let mut status = mining_status.write().await;
+                                status.is_mining = false;
+                                status.current_channel = None;
+                                status.current_campaign = None;
+                                status.current_drop = None;
                             }
                             Err(e) => {
-                                eprintln!("❌ Failed to discover eligible channels: {}", e);
+                                eprintln!("❌ Failed to find eligible channel: {}", e);
                             }
                         }
                     }
@@ -1883,7 +2504,202 @@ impl MiningService {
         let _ = app_handle.emit("mining-status-update", &current_status);
     }
 
-    /// Discover channels eligible for drops mining
+    /// OPTIMIZED: Find the FIRST live channel for auto-mining
+    /// Returns as soon as a live channel is found - much more efficient than gathering all channels
+    /// Returns the channel and its associated campaign
+    async fn find_first_eligible_channel(
+        client: &Client,
+        campaigns: &[DropCampaign],
+        settings: &DropsSettings,
+    ) -> Result<Option<(MiningChannel, DropCampaign)>> {
+        let token = DropsAuthService::get_token().await?;
+        let now = Utc::now();
+
+        println!(
+            "🚀 Fast channel discovery: finding FIRST live channel from {} campaigns",
+            campaigns.len()
+        );
+
+        // Sort campaigns by priority if applicable
+        let mut sorted_campaigns = campaigns.to_vec();
+        if !settings.priority_games.is_empty() {
+            sorted_campaigns.sort_by(|a, b| {
+                let a_priority = settings
+                    .priority_games
+                    .iter()
+                    .position(|g| g == &a.game_name);
+                let b_priority = settings
+                    .priority_games
+                    .iter()
+                    .position(|g| g == &b.game_name);
+                match (a_priority, b_priority) {
+                    (Some(a_idx), Some(b_idx)) => a_idx.cmp(&b_idx),
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (None, None) => std::cmp::Ordering::Equal,
+                }
+            });
+        }
+
+        for campaign in &sorted_campaigns {
+            // Skip excluded games
+            if settings.excluded_games.contains(&campaign.game_name) {
+                continue;
+            }
+
+            // Skip if priority mode is PriorityOnly and game is not in priority list
+            if settings.priority_mode == PriorityMode::PriorityOnly
+                && !settings.priority_games.is_empty()
+                && !settings.priority_games.contains(&campaign.game_name)
+            {
+                continue;
+            }
+
+            // Check if campaign is active
+            if campaign.start_at > now || campaign.end_at < now {
+                continue;
+            }
+
+            println!(
+                "  🔍 Checking campaign: {} ({})",
+                campaign.name, campaign.game_name
+            );
+
+            // If campaign has ACL channels, check those first (they're required for drops)
+            if campaign.is_acl_based && !campaign.allowed_channels.is_empty() {
+                println!(
+                    "    🔒 ACL campaign - checking {} allowed channels",
+                    campaign.allowed_channels.len()
+                );
+
+                for allowed_channel in &campaign.allowed_channels {
+                    match Self::check_channel_status(client, &allowed_channel.id, &token).await {
+                        Ok(Some(channel_info)) => {
+                            println!(
+                                "    ✅ Found live ACL channel: {} ({} viewers)",
+                                allowed_channel.name, channel_info.viewers
+                            );
+                            return Ok(Some((
+                                MiningChannel {
+                                    id: allowed_channel.id.clone(),
+                                    name: allowed_channel.name.clone(),
+                                    game_id: campaign.game_id.clone(),
+                                    game_name: campaign.game_name.clone(),
+                                    viewers: channel_info.viewers,
+                                    drops_enabled: channel_info.drops_enabled,
+                                    is_online: channel_info.is_online,
+                                    is_acl_based: true,
+                                },
+                                campaign.clone(),
+                            )));
+                        }
+                        Ok(None) => {
+                            // Offline - continue checking
+                        }
+                        Err(_) => {
+                            // Error - continue checking
+                        }
+                    }
+                }
+            } else {
+                // Non-ACL campaign - fetch ONE stream from the game with drops enabled
+                println!("    🌐 Non-ACL campaign - fetching live stream");
+                match Self::fetch_first_live_stream_for_game(
+                    client,
+                    &campaign.game_id,
+                    &campaign.game_name,
+                    &token,
+                )
+                .await
+                {
+                    Ok(Some(channel)) => {
+                        println!(
+                            "    ✅ Found live channel: {} ({} viewers)",
+                            channel.name, channel.viewers
+                        );
+                        return Ok(Some((channel, campaign.clone())));
+                    }
+                    Ok(None) => {
+                        println!("    ⚫ No live drops-enabled streams for this game");
+                    }
+                    Err(e) => {
+                        eprintln!("    ❌ Error fetching streams: {}", e);
+                    }
+                }
+            }
+        }
+
+        println!("  ❌ No live channels found in any campaign");
+        Ok(None)
+    }
+
+    /// Fetch just ONE live stream for a game (optimized for quick discovery)
+    async fn fetch_first_live_stream_for_game(
+        client: &Client,
+        game_id: &str,
+        game_name: &str,
+        token: &str,
+    ) -> Result<Option<MiningChannel>> {
+        let query = r#"
+        query GameStreams($gameID: ID!, $first: Int!) {
+            game(id: $gameID) {
+                streams(first: $first, options: {systemFilters: [DROPS_ENABLED]}) {
+                    edges {
+                        node {
+                            id
+                            broadcaster {
+                                id
+                                login
+                                displayName
+                            }
+                            viewersCount
+                        }
+                    }
+                }
+            }
+        }
+        "#;
+
+        let response = client
+            .post("https://gql.twitch.tv/gql")
+            .header("Client-Id", CLIENT_ID)
+            .header("Authorization", format!("Bearer {}", token))
+            .json(&serde_json::json!({
+                "query": query,
+                "variables": {
+                    "gameID": game_id,
+                    "first": 1  // Only fetch 1 stream - we just need to know if any are live
+                }
+            }))
+            .send()
+            .await?;
+
+        let result: serde_json::Value = response.json().await?;
+
+        if let Some(edges) = result["data"]["game"]["streams"]["edges"].as_array() {
+            if let Some(edge) = edges.first() {
+                if let Some(node) = edge["node"].as_object() {
+                    if let Some(broadcaster) = node["broadcaster"].as_object() {
+                        return Ok(Some(MiningChannel {
+                            id: broadcaster["id"].as_str().unwrap_or("").to_string(),
+                            name: broadcaster["login"].as_str().unwrap_or("").to_string(),
+                            game_id: game_id.to_string(),
+                            game_name: game_name.to_string(),
+                            viewers: node["viewersCount"].as_i64().unwrap_or(0) as i32,
+                            drops_enabled: true,
+                            is_online: true,
+                            is_acl_based: false,
+                        }));
+                    }
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    /// Discover channels eligible for drops mining (collects multiple channels for fallback)
+    /// Use `find_first_eligible_channel` for auto-mining where you just need ONE channel quickly
     async fn discover_eligible_channels_internal(
         client: &Client,
         campaigns: &[DropCampaign],
@@ -1891,6 +2707,9 @@ impl MiningService {
     ) -> Result<Vec<MiningChannel>> {
         let mut eligible_channels = Vec::new();
         let token = DropsAuthService::get_token().await?;
+
+        // Maximum number of live channels we need per campaign
+        const MAX_LIVE_CHANNELS_PER_CAMPAIGN: usize = 10;
 
         println!(
             "🔍 Discovering eligible channels from {} campaigns",
@@ -1938,16 +2757,29 @@ impl MiningService {
             // If campaign has ACL channels, use those
             if campaign.is_acl_based && !campaign.allowed_channels.is_empty() {
                 println!(
-                    "  🔒 Campaign has {} ACL-restricted channels",
-                    campaign.allowed_channels.len()
+                    "  🔒 Campaign has {} ACL-restricted channels (checking until we find {} live)",
+                    campaign.allowed_channels.len(),
+                    MAX_LIVE_CHANNELS_PER_CAMPAIGN
                 );
+
+                // Track how many live channels we've found for this campaign
+                let mut live_channels_found = 0;
+
                 for allowed_channel in &campaign.allowed_channels {
-                    println!("    Checking ACL channel: {}", allowed_channel.name);
+                    // Stop once we have enough live channels for this campaign
+                    if live_channels_found >= MAX_LIVE_CHANNELS_PER_CAMPAIGN {
+                        println!(
+                            "    ✅ Found {} live channels, stopping ACL check for this campaign",
+                            live_channels_found
+                        );
+                        break;
+                    }
+
                     match Self::check_channel_status(client, &allowed_channel.id, &token).await {
                         Ok(Some(channel_info)) => {
                             println!(
-                                "      ✅ Channel is online with {} viewers",
-                                channel_info.viewers
+                                "    ✅ {} is online with {} viewers",
+                                allowed_channel.name, channel_info.viewers
                             );
                             eligible_channels.push(MiningChannel {
                                 id: allowed_channel.id.clone(),
@@ -1959,9 +2791,10 @@ impl MiningService {
                                 is_online: channel_info.is_online,
                                 is_acl_based: true,
                             });
+                            live_channels_found += 1;
                         }
                         Ok(None) => {
-                            println!("      ⚫ Channel is offline");
+                            // Channel is offline - don't log each one to reduce noise
                         }
                         Err(e) => {
                             eprintln!(
@@ -1970,6 +2803,12 @@ impl MiningService {
                             );
                         }
                     }
+                }
+
+                if live_channels_found == 0 {
+                    println!("    ⚫ No live channels found among ACL channels");
+                } else {
+                    println!("    ✅ Found {} live ACL channels", live_channels_found);
                 }
             } else {
                 // Fetch live streams for this game with drops enabled
@@ -2310,7 +3149,7 @@ impl MiningService {
             Ok(response) => {
                 let status = response.status();
                 if status.as_u16() == 204 {
-                    println!("✅ Watch payload sent successfully to {}", channel.name);
+                    // Success - caller will print the message
                     Ok(true)
                 } else {
                     // Log detailed status info

@@ -33,16 +33,39 @@ pub struct AllowedChannel {
 pub struct TimeBasedDrop {
     pub id: String,
     pub name: String,
+    /// Watch time required in minutes. Twitch API returns as "requiredMinutesWatched" (camelCase)
+    #[serde(alias = "requiredMinutesWatched", default)]
     pub required_minutes_watched: i32,
+    /// Benefit info. Twitch API returns as "benefitEdges" (camelCase)
+    #[serde(alias = "benefitEdges", default)]
     pub benefit_edges: Vec<DropBenefit>,
     /// Progress data for this drop - NOT renamed to "self" so frontend can access as "progress"
+    #[serde(default)]
     pub progress: Option<DropProgress>,
+    /// Whether this drop can be auto-mined (time-based drops with required_minutes > 0)
+    /// Drops with required_minutes_watched == 0 are event-based, badge-based, or require
+    /// special actions (subscriptions, purchases, etc.) and cannot be auto-mined
+    #[serde(default = "default_mineable")]
+    pub is_mineable: bool,
+}
+
+fn default_mineable() -> bool {
+    true
+}
+
+impl TimeBasedDrop {
+    /// Calculate if this drop is mineable based on required minutes
+    pub fn calculate_is_mineable(&self) -> bool {
+        self.required_minutes_watched > 0
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DropBenefit {
     pub id: String,
     pub name: String,
+    /// Image URL for the benefit. Twitch API returns as "imageAssetURL" (camelCase)
+    #[serde(alias = "imageAssetURL", default)]
     pub image_url: String,
 }
 
@@ -600,6 +623,7 @@ pub struct InventoryResponse {
     pub active_campaigns: i32,
     pub upcoming_campaigns: i32,
     pub expired_campaigns: i32,
+    pub completed_drops: Vec<CompletedDrop>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -607,4 +631,17 @@ pub struct InventoryResponse {
 pub struct GameEventDrop {
     pub id: String,
     pub last_awarded_at: DateTime<Utc>,
+}
+
+/// Represents a completed/claimed drop from the user's permanent inventory
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompletedDrop {
+    pub id: String,
+    pub name: String,
+    pub image_url: String,
+    pub game_name: Option<String>,
+    pub is_connected: bool,
+    pub required_account_link: Option<String>,
+    pub last_awarded_at: DateTime<Utc>,
+    pub total_count: i32,
 }

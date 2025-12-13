@@ -11,6 +11,7 @@ import { incrementStat } from '../services/supabaseService';
 import ChatMessage from './ChatMessage';
 import UserProfileCard from './UserProfileCard';
 import ErrorBoundary from './ErrorBoundary';
+import PredictionOverlay from './PredictionOverlay';
 import { fetchAllEmotes, Emote, EmoteSet, preloadChannelEmotes, queueEmoteForCaching } from '../services/emoteService';
 import { preloadThirdPartyBadgeDatabases } from '../services/thirdPartyBadges';
 import { initializeBadges, getBadgeInfo } from '../services/twitchBadges';
@@ -1151,6 +1152,12 @@ const ChatWidget = () => {
   return (
     <>
       <div className="h-full bg-secondary backdrop-blur-md overflow-hidden flex flex-col relative">
+        {/* Prediction Overlay - floating at top of chat */}
+        <PredictionOverlay
+          channelId={currentStream?.user_id}
+          channelLogin={currentStream?.user_login}
+        />
+
         {/* Chat header - absolute positioned at top */}
         <div className={`absolute top-0 left-0 right-0 px-3 py-2 border-b backdrop-blur-ultra z-10 pointer-events-none shadow-lg ${isSharedChat ? 'iridescent-border' : 'border-borderSubtle'}`} style={{ backgroundColor: 'rgba(12, 12, 13, 0.9)' }}>
           <div className="flex items-center gap-2">

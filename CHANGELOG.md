@@ -1,3 +1,15 @@
+## [5.1.0] - 2025-12-12
+### ✨ Features
+- **Predictions**: You can now participate in Twitch channel predictions directly in StreamNook! See active predictions in a floating overlay, make your bets with channel points, and track the results.
+- **Automated Drop Mining Improvements**: StreamNook now utilizes inventory polling and a new stream selection algorithm to ensure drops mining is highly optimized. Experience improved stability and speed for drops mining.
+- **Completed Drops Display**: Completed drops are now displayed in the inventory tab.  
+
+### 🐛 Bug Fixes
+- Auto-selecting in home is fixed.
+
+### ⚡ Performance
+- The app switches more quickly and reliably to the best stream for drops mining.
+
 ## [5.0.4] - 2025-12-11
 ### ✨ Features
 - **Badge Collection**: Introducing a new Twitch Global Badge collection system! Track your collected badges, earn ranks, and show off your achievements.
@@ -746,6 +758,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 

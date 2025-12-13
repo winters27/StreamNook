@@ -28,8 +28,8 @@
 
 use commands::{
     app::*, automation::*, badge_metadata::*, badges::*, cache::*, chat::*, components::*,
-    cosmetics_cache::*, discord::*, drops::*, layout::*, settings::*, streaming::*, twitch::*,
-    universal_cache::*, whisper_storage::*,
+    cosmetics_cache::*, discord::*, drops::*, layout::*, settings::*, seventv::*, streaming::*,
+    twitch::*, universal_cache::*, whisper_storage::*,
 };
 use models::settings::{AppState, Settings};
 use services::background_service::BackgroundService;
@@ -390,6 +390,9 @@ fn main() {
             is_drops_authenticated,
             validate_drops_token,
             open_drop_details,
+            // Prediction commands
+            place_prediction,
+            get_channel_points_for_channel,
             // Component commands
             check_components_installed,
             get_bundled_streamlink_path,
@@ -401,6 +404,8 @@ fn main() {
             download_and_install_bundle,
             // Layout commands
             update_layout_config,
+            // 7TV commands
+            seventv_graphql,
             // Automation commands
             automate_connection,
             scrape_whispers,
