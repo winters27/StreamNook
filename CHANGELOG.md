@@ -1,3 +1,12 @@
+## [5.1.1] - 2025-12-12
+### ✨ Features
+- **Channel Points Display**: You can now see your current channel points balance in the chat widget.
+- **Prediction Overlay**: Participate in live predictions directly from StreamNook!  View active predictions, place bets, and see the results in real-time. This includes automatic bet input validation and enhanced resolution states (win/loss/refund).
+
+### 🐛 Bug Fixes
+- Resolved edge cases where prediction events would not display winning outcome correctly.
+- Fixed an issue where the stream would freeze when switching channels.
+
 ## [5.1.0] - 2025-12-12
 ### ✨ Features
 - **Predictions**: You can now participate in Twitch channel predictions directly in StreamNook! See active predictions in a floating overlay, make your bets with channel points, and track the results.
@@ -758,6 +767,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 

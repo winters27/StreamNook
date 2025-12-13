@@ -11,6 +11,7 @@ scripts/release_manager.ps1
 scripts/generate_emoji_map.js
 scripts/generate_emoji_categories.js
 scripts/inspect-drops-api.js
+scripts/inspect-predictions.js
 
 # Drops folder (local mining tool) - only root level, not src/components/drops
 /drops/
