@@ -221,19 +221,23 @@ const cleanQuery = (query: string): string => {
   return query.replace(/\n/g, '').replace(/\s+/g, ' ');
 };
 
-// Request GraphQL API with retry logic
+// GraphQL response type from Rust backend
+interface GraphQLResponse {
+  data?: any;
+  errors?: any[];
+  message?: string;
+}
+
+// Request GraphQL API with retry logic via Tauri backend (bypasses CORS)
 const requestGql = async ({ query }: { query: string }): Promise<any> => {
   let retryCount = 0;
   while (retryCount <= 5) {
     try {
-      const response = await fetch('https://7tv.io/v4/gql', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: cleanQuery(query) })
-      });
+      const response = await invoke('seventv_graphql', { query: cleanQuery(query) }) as GraphQLResponse;
 
-      if (!response.ok) {
+      if (response.errors || response.message) {
         if (retryCount === 5) {
+          console.error('[7TV] Error fetching user cosmetics:', response.errors || response.message);
           return undefined;
         }
         await new Promise((r) => setTimeout(r, 500));
@@ -241,18 +245,7 @@ const requestGql = async ({ query }: { query: string }): Promise<any> => {
         continue;
       }
 
-      const data = await response.json();
-      if (data.errors || data.message) {
-        if (retryCount === 5) {
-          console.error('[7TV] Error fetching user cosmetics:', data.errors || data.message);
-          return undefined;
-        }
-        await new Promise((r) => setTimeout(r, 500));
-        retryCount++;
-        continue;
-      }
-
-      return data;
+      return response;
     } catch (error) {
       if (retryCount === 5) {
         console.error('[7TV] Network error:', error);

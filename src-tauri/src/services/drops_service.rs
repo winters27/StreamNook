@@ -146,6 +146,7 @@ pub struct DropsService {
     current_channel: Arc<RwLock<Option<(String, String)>>>, // (channel_id, channel_name)
     cached_active_campaigns_count: Arc<RwLock<i32>>, // Cache campaign count to avoid repeated API calls
     cached_campaigns: Arc<RwLock<Option<(Vec<DropCampaign>, DateTime<Utc>)>>>, // Cache campaigns with timestamp
+    attempted_claims: Arc<RwLock<std::collections::HashSet<String>>>, // Track drops we've already attempted to claim
     device_id: String,
     session_id: String,
 }
@@ -167,6 +168,7 @@ impl DropsService {
             current_channel: Arc::new(RwLock::new(None)),
             cached_active_campaigns_count: Arc::new(RwLock::new(0)),
             cached_campaigns: Arc::new(RwLock::new(None)),
+            attempted_claims: Arc::new(RwLock::new(std::collections::HashSet::new())),
             device_id,
             session_id,
         }
@@ -459,6 +461,8 @@ impl DropsService {
                         required_minutes_watched: required_minutes,
                         benefit_edges,
                         progress,
+                        // Drops with 0 required minutes are event-based/badge drops that cannot be auto-mined
+                        is_mineable: required_minutes > 0,
                     });
                 }
             }
@@ -509,12 +513,47 @@ impl DropsService {
             total_campaigns, active_count, upcoming_count, expired_count
         );
 
+        // Parse completed drops from gameEventDrops array
+        let mut completed_drops = Vec::new();
+        for event in game_event_drops {
+            if let (Some(id), Some(name), Some(image_url), Some(last_awarded)) = (
+                event["id"].as_str(),
+                event["name"].as_str(),
+                event["imageURL"].as_str(),
+                event["lastAwardedAt"].as_str(),
+            ) {
+                if let Ok(dt) = DateTime::parse_from_rfc3339(last_awarded) {
+                    completed_drops.push(CompletedDrop {
+                        id: id.to_string(),
+                        name: name.to_string(),
+                        image_url: image_url.to_string(),
+                        game_name: event["game"]["name"].as_str().map(|s| s.to_string()),
+                        is_connected: event["isConnected"].as_bool().unwrap_or(false),
+                        required_account_link: event["requiredAccountLink"]
+                            .as_str()
+                            .map(|s| s.to_string()),
+                        last_awarded_at: dt.with_timezone(&Utc),
+                        total_count: event["totalCount"].as_i64().unwrap_or(1) as i32,
+                    });
+                }
+            }
+        }
+
+        // Sort completed drops by most recent first
+        completed_drops.sort_by(|a, b| b.last_awarded_at.cmp(&a.last_awarded_at));
+
+        println!(
+            "🎁 Found {} completed drops in user's permanent inventory",
+            completed_drops.len()
+        );
+
         Ok(InventoryResponse {
             items,
             total_campaigns,
             active_campaigns: active_count,
             upcoming_campaigns: upcoming_count,
             expired_campaigns: expired_count,
+            completed_drops,
         })
     }
 
@@ -548,11 +587,12 @@ impl DropsService {
         println!("🔄 Fetching fresh campaigns from API");
         let campaigns = self.fetch_all_active_campaigns_from_api().await?;
 
-        // Update cache
-        {
-            let mut cache = self.cached_campaigns.write().await;
-            *cache = Some((campaigns.clone(), Utc::now()));
-        }
+        // IMPORTANT:
+        // Keep the internal drop_progress map in sync with what the UI receives.
+        // The UI calls `get_drop_progress` separately from `get_active_drop_campaigns`,
+        // so if we don't update the progress map here, the frontend will see 0 minutes
+        // watched for every campaign until a mining websocket event happens.
+        self.update_campaigns_and_progress(&campaigns).await;
 
         Ok(campaigns)
     }
@@ -578,21 +618,66 @@ impl DropsService {
 
         println!("🔍 Fetching drops campaigns using Android app client ID...");
 
-        // Use GQL exactly like TwitchDropsMiner does
-        let response = self.client
+        // Use a full GraphQL query that includes timeBasedDrops with requiredMinutesWatched
+        // The ViewerDropsDashboard persisted query doesn't include these fields
+        let query = r#"
+        query DropCampaigns {
+            currentUser {
+                id
+                dropCampaigns {
+                    id
+                    name
+                    owner { id name }
+                    game {
+                        id
+                        displayName
+                        boxArtURL
+                    }
+                    status
+                    startAt
+                    endAt
+                    description
+                    detailsURL
+                    accountLinkURL
+                    self {
+                        isAccountConnected
+                    }
+                    allow {
+                        isEnabled
+                        channels {
+                            id
+                            name
+                        }
+                    }
+                    timeBasedDrops {
+                        id
+                        name
+                        requiredMinutesWatched
+                        benefitEdges {
+                            benefit {
+                                id
+                                name
+                                imageAssetURL
+                            }
+                        }
+                        self {
+                            currentMinutesWatched
+                            isClaimed
+                            dropInstanceID
+                        }
+                    }
+                }
+            }
+        }
+        "#;
+
+        let response = self
+            .client
             .post("https://gql.twitch.tv/gql")
             .headers(self.create_gql_headers(&token))
             .json(&serde_json::json!({
-                "operationName": "ViewerDropsDashboard",
-                "variables": {
-                    "fetchRewardCampaigns": false
-                },
-                "extensions": {
-                    "persistedQuery": {
-                        "version": 1,
-                        "sha256Hash": "5a4da2ab3d5b47c9f9ce864e727b2cb346af1e3ea8b897fe8f704a97ff017619"
-                    }
-                }
+                "query": query,
+                "variables": {}
             }))
             .send()
             .await?;
@@ -642,7 +727,8 @@ impl DropsService {
 
         let mut result = Vec::new();
 
-        // The response structure is different for the persisted query
+        // Parse campaigns from DropCampaignDetails response
+        // This query returns ALL campaigns with full details including timeBasedDrops
         let campaigns_array = response_json["data"]["currentUser"]["dropCampaigns"]
             .as_array()
             .unwrap_or(&Vec::new())
@@ -683,47 +769,112 @@ impl DropsService {
                 }
 
                 // Parse allowed channels (ACL)
+                // If allow.channels exists and is not empty, this is an ACL-restricted campaign
+                // The isEnabled field may or may not be present - we check channels directly
                 let mut allowed_channels = Vec::new();
                 let mut is_acl_based = false;
 
                 if let Some(allow) = campaign_json["allow"].as_object() {
-                    if allow
-                        .get("isEnabled")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false)
-                    {
-                        if let Some(channels) = allow["channels"].as_array() {
-                            is_acl_based = !channels.is_empty();
-                            for channel in channels {
-                                if let (Some(id), Some(name)) =
-                                    (channel["id"].as_str(), channel["name"].as_str())
-                                {
-                                    allowed_channels.push(AllowedChannel {
-                                        id: id.to_string(),
-                                        name: name.to_string(),
-                                    });
+                    // Check if channels array exists and is not empty
+                    if let Some(channels) = allow.get("channels").and_then(|v| v.as_array()) {
+                        if !channels.is_empty() {
+                            // If isEnabled exists and is explicitly false, skip ACL
+                            // Otherwise (isEnabled is true or not present), use the channels
+                            let is_enabled = allow
+                                .get("isEnabled")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(true); // Default to true if not present
+
+                            if is_enabled {
+                                is_acl_based = true;
+                                for channel in channels {
+                                    if let (Some(id), Some(name)) =
+                                        (channel["id"].as_str(), channel["name"].as_str())
+                                    {
+                                        allowed_channels.push(AllowedChannel {
+                                            id: id.to_string(),
+                                            name: name.to_string(),
+                                        });
+                                    }
                                 }
+                                println!(
+                                    "  🔒 ACL campaign: {} allowed channels for {}",
+                                    allowed_channels.len(),
+                                    campaign_json["name"].as_str().unwrap_or("unknown")
+                                );
                             }
                         }
                     }
                 }
 
-                // Parse time-based drops
+                // Parse time-based drops - manually parse to handle camelCase field names
                 let mut time_based_drops: Vec<TimeBasedDrop> = Vec::new();
                 if let Some(drops) = campaign_json["timeBasedDrops"].as_array() {
                     for drop_json in drops {
-                        if let Ok(mut drop) =
-                            serde_json::from_value::<TimeBasedDrop>(drop_json.clone())
-                        {
-                            if let Some(progress_json) = drop_json.get("self") {
-                                if let Ok(progress) =
-                                    serde_json::from_value::<DropProgress>(progress_json.clone())
-                                {
-                                    drop.progress = Some(progress);
+                        let drop_id = drop_json["id"].as_str().unwrap_or("").to_string();
+                        let drop_name = drop_json["name"].as_str().unwrap_or("").to_string();
+                        let required_minutes =
+                            drop_json["requiredMinutesWatched"].as_i64().unwrap_or(0) as i32;
+
+                        // Parse benefit edges manually (nested structure)
+                        let mut benefit_edges = Vec::new();
+                        if let Some(edges) = drop_json["benefitEdges"].as_array() {
+                            for edge in edges {
+                                if let Some(benefit) = edge.get("benefit") {
+                                    benefit_edges.push(DropBenefit {
+                                        id: benefit["id"].as_str().unwrap_or("").to_string(),
+                                        name: benefit["name"].as_str().unwrap_or("").to_string(),
+                                        image_url: benefit["imageAssetURL"]
+                                            .as_str()
+                                            .unwrap_or("")
+                                            .to_string(),
+                                    });
                                 }
                             }
-                            time_based_drops.push(drop);
                         }
+
+                        // Parse progress from "self" field if present
+                        let progress = if let Some(self_data) = drop_json.get("self") {
+                            if !self_data.is_null() {
+                                let drop_instance_id =
+                                    self_data["dropInstanceID"].as_str().map(|s| s.to_string());
+                                Some(DropProgress {
+                                    campaign_id: campaign_json["id"]
+                                        .as_str()
+                                        .unwrap_or("")
+                                        .to_string(),
+                                    drop_id: drop_id.clone(),
+                                    current_minutes_watched: self_data["currentMinutesWatched"]
+                                        .as_i64()
+                                        .unwrap_or(0)
+                                        as i32,
+                                    required_minutes_watched: required_minutes,
+                                    is_claimed: self_data["isClaimed"].as_bool().unwrap_or(false),
+                                    last_updated: Utc::now(),
+                                    drop_instance_id,
+                                })
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        };
+
+                        // Determine if drop is mineable (has watch time requirement)
+                        // Drops with 0 required minutes are event-based/badge drops that cannot be auto-mined
+                        let is_mineable = required_minutes > 0;
+
+                        println!("📋 [fetch_all_active_campaigns] Drop '{}': required_minutes={}, is_mineable={}", 
+                            drop_name, required_minutes, is_mineable);
+
+                        time_based_drops.push(TimeBasedDrop {
+                            id: drop_id,
+                            name: drop_name,
+                            required_minutes_watched: required_minutes,
+                            benefit_edges,
+                            progress,
+                            is_mineable,
+                        });
                     }
                 }
 
@@ -1232,6 +1383,7 @@ impl DropsService {
         let channel_points_balances = self.channel_points_balances.clone();
         let monitoring_active = self.monitoring_active.clone();
         let current_channel = self.current_channel.clone();
+        let attempted_claims = self.attempted_claims.clone();
         let client = self.client.clone();
 
         // Spawn background monitoring task
@@ -1303,13 +1455,17 @@ impl DropsService {
                     }
 
                     // Check for claimable drops (progress is updated via WebSocket, no need to fetch campaigns)
+                    // Filter out drops we've already attempted to claim to prevent spam
                     let claimable_drops: Vec<DropProgress> = {
                         let progress_map = drop_progress.read().await;
+                        let attempted = attempted_claims.read().await;
                         progress_map
                             .values()
                             .filter(|p| {
                                 !p.is_claimed
                                     && p.current_minutes_watched >= p.required_minutes_watched
+                                    && p.required_minutes_watched > 0 // Only mineable drops
+                                    && !attempted.contains(&p.drop_id) // Skip already-attempted
                             })
                             .cloned()
                             .collect()
@@ -1323,6 +1479,16 @@ impl DropsService {
 
                         // Auto-claim if enabled
                         if current_settings.auto_claim_drops {
+                            // Mark as attempted BEFORE trying to claim (prevents retry on failure)
+                            {
+                                let mut attempted = attempted_claims.write().await;
+                                attempted.insert(progress.drop_id.clone());
+                                println!(
+                                    "📝 [Auto] Marking drop {} as attempted (won't retry)",
+                                    progress.drop_id
+                                );
+                            }
+
                             match Self::claim_drop_internal(
                                 &client,
                                 &progress.drop_id,
@@ -1353,7 +1519,7 @@ impl DropsService {
                                     }
                                 }
                                 Err(e) => {
-                                    eprintln!("❌ Failed to auto-claim drop: {}", e);
+                                    eprintln!("❌ Failed to auto-claim drop (won't retry): {}", e);
                                 }
                             }
                         }
@@ -1701,6 +1867,7 @@ impl DropsService {
                             })
                             .collect(),
                         progress: None,
+                        is_mineable: drop.required_minutes_watched > 0,
                     }
                 })
                 .collect();

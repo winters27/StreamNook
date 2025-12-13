@@ -10,6 +10,7 @@ pub mod discord;
 pub mod drops;
 pub mod layout;
 pub mod settings;
+pub mod seventv;
 pub mod streaming;
 pub mod twitch;
 pub mod universal_cache;

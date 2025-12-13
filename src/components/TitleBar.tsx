@@ -1,5 +1,5 @@
 import { Window } from '@tauri-apps/api/window';
-import { Home, Gift, User, Settings, Proportions, Palette, Check, MessageCircle } from 'lucide-react';
+import { Home, Gift, User, Settings, Proportions, Palette, Check, MessageCircle, Pickaxe, Clock, Tv } from 'lucide-react';
 import { Minus, X, CornersOut, CornersIn, Medal } from 'phosphor-react';
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { useAppStore } from '../stores/AppStore';
@@ -8,7 +8,9 @@ import AboutWidget from './AboutWidget';
 import DynamicIsland from './DynamicIsland';
 import ErrorBoundary from './ErrorBoundary';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { themes, themeCategories, getThemeById, applyTheme, Theme } from '../themes';
+import type { MiningStatus } from '../types';
 
 const TitleBar = () => {
   const store = useAppStore();
@@ -20,6 +22,12 @@ const TitleBar = () => {
   const [isMaximized, setIsMaximized] = useState(false);
   const prevMiningActive = useRef(isMiningActive);
   const themePickerRef = useRef<HTMLDivElement>(null);
+  
+  // Mining status state for progress badge and hover preview
+  const [miningStatus, setMiningStatus] = useState<MiningStatus | null>(null);
+  const [showDropsPreview, setShowDropsPreview] = useState(false);
+  const dropsButtonRef = useRef<HTMLDivElement>(null);
+  const previewTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // Safely get current theme with fallback
   const currentThemeId = settings?.theme || 'winters-glass';
@@ -109,6 +117,115 @@ const TitleBar = () => {
     return () => clearInterval(interval);
   }, []);
 
+  // Load and subscribe to mining status updates for progress badge
+  useEffect(() => {
+    let unlistenStatus: (() => void) | undefined;
+    let unlistenProgress: (() => void) | undefined;
+
+    const loadMiningStatus = async () => {
+      try {
+        const status = await invoke<MiningStatus>('get_mining_status');
+        setMiningStatus(status);
+      } catch (err) {
+        // Silently fail - not critical for title bar
+      }
+    };
+
+    const setupListeners = async () => {
+      // Listen for mining status updates
+      unlistenStatus = await listen<MiningStatus>('mining-status-update', (event) => {
+        setMiningStatus(event.payload);
+      });
+
+      // Listen for progress updates (more frequent)
+      unlistenProgress = await listen<any>('drops-progress-update', (event) => {
+        setMiningStatus((prev) => {
+          if (!prev || !prev.is_mining) return prev;
+          
+          const dropId = event.payload.drop_id;
+          const currentMinutes = event.payload.current_minutes;
+          const requiredMinutes = event.payload.required_minutes;
+          
+          // Update current_drop if it matches
+          if (prev.current_drop && prev.current_drop.drop_id === dropId) {
+            return {
+              ...prev,
+              current_drop: {
+                ...prev.current_drop,
+                current_minutes: currentMinutes,
+                required_minutes: requiredMinutes
+              }
+            };
+          }
+          
+          // If current_drop doesn't exist or is different, update with new drop info
+          return {
+            ...prev,
+            current_drop: {
+              campaign_id: event.payload.campaign_id || prev.current_drop?.campaign_id || '',
+              campaign_name: prev.current_drop?.campaign_name || prev.current_campaign || 'Campaign',
+              drop_id: dropId,
+              drop_name: event.payload.drop_name || prev.current_drop?.drop_name || 'Drop',
+              required_minutes: requiredMinutes,
+              current_minutes: currentMinutes,
+              game_name: prev.current_channel?.game_name || prev.current_drop?.game_name || 'Game'
+            }
+          };
+        });
+      });
+    };
+
+    loadMiningStatus();
+    setupListeners();
+
+    // Poll periodically as backup
+    const interval = setInterval(loadMiningStatus, 10000);
+
+    return () => {
+      if (unlistenStatus) unlistenStatus();
+      if (unlistenProgress) unlistenProgress();
+      clearInterval(interval);
+    };
+  }, []);
+
+  // Clean up preview timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (previewTimeoutRef.current) {
+        clearTimeout(previewTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  // Calculate progress percentage
+  const progressPercent = useMemo(() => {
+    if (!miningStatus?.is_mining || !miningStatus?.current_drop) return 0;
+    const { current_minutes, required_minutes } = miningStatus.current_drop;
+    if (required_minutes <= 0) return 0;
+    return Math.min(100, Math.round((current_minutes / required_minutes) * 100));
+  }, [miningStatus]);
+
+  // Handle hover preview show/hide with delay
+  const handleDropsMouseEnter = () => {
+    if (previewTimeoutRef.current) {
+      clearTimeout(previewTimeoutRef.current);
+    }
+    previewTimeoutRef.current = setTimeout(() => {
+      if (isMiningActive && miningStatus?.current_drop) {
+        setShowDropsPreview(true);
+      }
+    }, 300); // 300ms delay before showing preview
+  };
+
+  const handleDropsMouseLeave = () => {
+    if (previewTimeoutRef.current) {
+      clearTimeout(previewTimeoutRef.current);
+    }
+    previewTimeoutRef.current = setTimeout(() => {
+      setShowDropsPreview(false);
+    }, 150); // Small delay before hiding
+  };
+
   useEffect(() => {
     // Detect when mining stops
     if (prevMiningActive.current && !isMiningActive) {
@@ -162,11 +279,17 @@ const TitleBar = () => {
             </button>
           )}
 
-          {/* Drops Button */}
-          <div className="relative">
+          {/* Drops Button with Inline Progress Badge */}
+          <div 
+            className="relative"
+            ref={dropsButtonRef}
+            onMouseEnter={handleDropsMouseEnter}
+            onMouseLeave={handleDropsMouseLeave}
+          >
             {(() => {
               const isChannelPointsMining = dropsSettings?.auto_claim_channel_points ?? false;
               const isBothActive = isMiningActive && isChannelPointsMining;
+              const showProgressBadge = isMiningActive && progressPercent > 0;
 
               // Determine gift box color/shimmer class
               // Silver = channel points only, Gold = drops only, Iridescent = both
@@ -178,7 +301,7 @@ const TitleBar = () => {
                 title = 'Drops & Points (Both Active)';
               } else if (isMiningActive) {
                 giftClass = 'gift-shimmer-gold';
-                title = 'Drops & Points (Drops Mining Active)';
+                title = `Drops Mining: ${progressPercent}%`;
               } else if (isChannelPointsMining) {
                 giftClass = 'gift-shimmer-silver';
                 title = 'Drops & Points (Channel Points Active)';
@@ -189,13 +312,90 @@ const TitleBar = () => {
               return (
                 <button
                   onClick={() => setShowDropsOverlay(true)}
-                  className="p-1.5 text-textSecondary hover:text-textPrimary hover:bg-glass rounded transition-all duration-200"
+                  className={`p-1.5 text-textSecondary hover:text-textPrimary hover:bg-glass rounded transition-all duration-200 ${showProgressBadge ? 'flex items-center gap-1' : ''}`}
                   title={title}
                 >
-                  <Gift size={16} className={isAnyMiningActive ? giftClass : ''} />
+                  {showProgressBadge ? (
+                    // Replace icon with inline progress percentage badge when mining
+                    <span className="drops-progress-inline">
+                      {progressPercent}%
+                    </span>
+                  ) : (
+                    // Normal Gift icon when not mining drops
+                    <Gift size={16} className={isAnyMiningActive ? giftClass : ''} />
+                  )}
                 </button>
               );
             })()}
+
+            {/* Hover Preview Card - positioned to the right with top-left arrow */}
+            {showDropsPreview && isMiningActive && miningStatus?.current_drop && (
+              <div 
+                className="drops-preview-card-right"
+                onMouseEnter={() => {
+                  if (previewTimeoutRef.current) clearTimeout(previewTimeoutRef.current);
+                }}
+                onMouseLeave={handleDropsMouseLeave}
+              >
+                {/* Header */}
+                <div className="flex items-center gap-2 mb-2">
+                  <div className="p-1.5 rounded-md bg-accent/20">
+                    <Pickaxe size={14} className="text-accent" />
+                  </div>
+                  <span className="text-xs font-semibold text-textPrimary">Mining Drop</span>
+                </div>
+
+                {/* Game & Drop Info */}
+                <div className="space-y-1.5">
+                  <div className="flex items-center gap-2 text-xs">
+                    <span className="text-textMuted">Game:</span>
+                    <span className="text-textPrimary font-medium truncate max-w-[140px]">
+                      {miningStatus.current_drop.game_name}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 text-xs">
+                    <span className="text-textMuted">Drop:</span>
+                    <span className="text-textPrimary font-medium truncate max-w-[140px]">
+                      {miningStatus.current_drop.drop_name}
+                    </span>
+                  </div>
+                  {miningStatus.current_channel && (
+                    <div className="flex items-center gap-2 text-xs">
+                      <Tv size={10} className="text-textMuted" />
+                      <span className="text-textSecondary truncate max-w-[160px]">
+                        {miningStatus.current_channel.display_name}
+                      </span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Progress Bar */}
+                <div className="mt-3">
+                  <div className="flex items-center justify-between text-xs mb-1">
+                    <span className="text-textMuted flex items-center gap-1">
+                      <Clock size={10} />
+                      Progress
+                    </span>
+                    <span className="text-accent font-semibold">{progressPercent}%</span>
+                  </div>
+                  <div className="h-1.5 bg-surface rounded-full overflow-hidden">
+                    <div 
+                      className="h-full rounded-full mining-progress-bar transition-all duration-500"
+                      style={{ width: `${progressPercent}%` }}
+                    />
+                  </div>
+                  <div className="flex items-center justify-between text-[10px] text-textMuted mt-1">
+                    <span>{miningStatus.current_drop.current_minutes} min</span>
+                    <span>{miningStatus.current_drop.required_minutes} min</span>
+                  </div>
+                </div>
+
+                {/* Click hint */}
+                <div className="mt-2 pt-2 border-t border-borderSubtle">
+                  <span className="text-[10px] text-textMuted">Click to view all drops</span>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Badges Button */}

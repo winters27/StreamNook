@@ -1760,3 +1760,100 @@ body {
     opacity: 1;
   }
 }
+
+/* ============================================
+   Drops Progress Badge - Inline Theme-Aware Style
+   ============================================ */
+
+/* Inline progress percentage that replaces the icon when mining */
+.drops-progress-inline {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 16px;
+  padding: 0 4px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+  /* Use theme background color for text - provides good contrast against accent */
+  color: var(--color-background);
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.15);
+  background: linear-gradient(
+    135deg,
+    var(--color-accent) 0%,
+    var(--color-accent-hover) 50%,
+    var(--color-accent) 100%
+  );
+  border-radius: 4px;
+  box-shadow: 
+    0 1px 3px rgba(0, 0, 0, 0.2),
+    0 0 8px color-mix(in srgb, var(--color-accent) 40%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.2);
+  animation: inline-badge-pulse 2s ease-in-out infinite;
+  white-space: nowrap;
+}
+
+@keyframes inline-badge-pulse {
+  0%, 100% {
+    box-shadow: 
+      0 1px 3px rgba(0, 0, 0, 0.2),
+      0 0 8px color-mix(in srgb, var(--color-accent) 40%, transparent),
+      inset 0 1px 0 rgba(255, 255, 255, 0.2);
+  }
+  50% {
+    box-shadow: 
+      0 1px 4px rgba(0, 0, 0, 0.3),
+      0 0 12px color-mix(in srgb, var(--color-accent) 60%, transparent),
+      inset 0 1px 0 rgba(255, 255, 255, 0.3);
+  }
+}
+
+/* ============================================
+   Drops Hover Preview Card - Right Positioned
+   ============================================ */
+
+/* Preview card positioned to the right with top-left arrow */
+.drops-preview-card-right {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  width: 220px;
+  padding: 12px;
+  background: rgba(20, 20, 22, 0.95);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--color-border-light);
+  border-radius: 12px;
+  box-shadow: 
+    0 4px 20px rgba(0, 0, 0, 0.4),
+    0 0 1px rgba(255, 255, 255, 0.1);
+  z-index: 9999;
+  animation: preview-slide-in-right 0.2s ease-out;
+}
+
+/* Arrow pointing up - positioned to top-left */
+.drops-preview-card-right::before {
+  content: '';
+  position: absolute;
+  top: -6px;
+  left: 12px;
+  width: 12px;
+  height: 12px;
+  background: rgba(20, 20, 22, 0.95);
+  border-left: 1px solid var(--color-border-light);
+  border-top: 1px solid var(--color-border-light);
+  transform: rotate(45deg);
+}
+
+@keyframes preview-slide-in-right {
+  0% {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

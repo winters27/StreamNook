@@ -6,7 +6,7 @@ import { listen } from '@tauri-apps/api/event';
 import { Search, Gift, MonitorPlay, BarChart3, Settings as SettingsIcon, Package } from 'lucide-react';
 import {
     UnifiedGame, DropCampaign, DropProgress, DropsStatistics,
-    MiningStatus, DropsDeviceCodeInfo, InventoryResponse, InventoryItem
+    MiningStatus, DropsDeviceCodeInfo, InventoryResponse, InventoryItem, CompletedDrop
 } from '../types';
 import LoadingWidget from './LoadingWidget';
 import GameCard from './drops/GameCard';
@@ -43,6 +43,7 @@ export default function DropsCenter() {
     // Data State
     const [unifiedGames, setUnifiedGames] = useState<UnifiedGame[]>([]);
     const [inventoryItems, setInventoryItems] = useState<InventoryItem[]>([]);
+    const [completedDrops, setCompletedDrops] = useState<CompletedDrop[]>([]);
     const [statistics, setStatistics] = useState<DropsStatistics | null>(null);
     const [progress, setProgress] = useState<DropProgress[]>([]);
     const [isLoading, setIsLoading] = useState(true);
@@ -60,6 +61,7 @@ export default function DropsCenter() {
     const [activeTab, setActiveTab] = useState<Tab>('games');
     const [searchTerm, setSearchTerm] = useState('');
     const [selectedGame, setSelectedGame] = useState<UnifiedGame | null>(null);
+    const [isLoadingGameDetail, setIsLoadingGameDetail] = useState(false);
     const { addToast, setShowDropsOverlay } = useAppStore();
 
     // Channel Picker State
@@ -81,6 +83,12 @@ export default function DropsCenter() {
 
     // Track the previously mining game to detect when mining starts
     const prevMiningGameRef = useRef<string | null>(null);
+    
+    // Ref for Mine All queue to access current value in event listeners (avoids stale closure)
+    const mineAllQueueRef = useRef(mineAllQueue);
+    useEffect(() => {
+        mineAllQueueRef.current = mineAllQueue;
+    }, [mineAllQueue]);
 
     // Derived state for filtering
     const filteredGames = useMemo(() => {
@@ -320,6 +328,118 @@ export default function DropsCenter() {
     const handleStreamClick = (channelName: string) => {
         setShowDropsOverlay(false);
         window.dispatchEvent(new CustomEvent('start-stream', { detail: { channel: channelName } }));
+    };
+
+    // Handle game selection - polls inventory for fresh progress data
+    const handleGameSelect = async (game: UnifiedGame | null) => {
+        // If deselecting (clicking same game), just close
+        if (game === null || (selectedGame && selectedGame.id === game.id)) {
+            setSelectedGame(null);
+            return;
+        }
+
+        // Set loading state and selected game
+        setIsLoadingGameDetail(true);
+        setSelectedGame(game);
+
+        try {
+            console.log('[DropsCenter] Fetching fresh inventory for game:', game.name);
+            
+            // Poll inventory to get the latest progress data
+            const inventoryData = await invoke<InventoryResponse>('get_drops_inventory');
+            
+            if (inventoryData?.items) {
+                console.log('[DropsCenter] Got fresh inventory with', inventoryData.items.length, 'items');
+                
+                // Update global inventory items state
+                setInventoryItems(inventoryData.items);
+                
+                // Extract progress data from inventory and merge into progress state
+                const progressFromInventory: DropProgress[] = [];
+                
+                inventoryData.items.forEach(item => {
+                    item.campaign.time_based_drops.forEach(drop => {
+                        if (drop.progress) {
+                            progressFromInventory.push({
+                                campaign_id: item.campaign.id,
+                                drop_id: drop.id,
+                                current_minutes_watched: drop.progress.current_minutes_watched,
+                                required_minutes_watched: drop.progress.required_minutes_watched,
+                                is_claimed: drop.progress.is_claimed,
+                                last_updated: drop.progress.last_updated,
+                                drop_instance_id: drop.progress.drop_instance_id,
+                            });
+                        }
+                    });
+                });
+                
+                console.log('[DropsCenter] Extracted', progressFromInventory.length, 'progress entries from inventory');
+                
+                // Merge inventory progress with existing progress (inventory takes priority for matching drops)
+                setProgress(prevProgress => {
+                    const mergedProgress = [...prevProgress];
+                    
+                    progressFromInventory.forEach(inventoryProg => {
+                        const existingIndex = mergedProgress.findIndex(p => p.drop_id === inventoryProg.drop_id);
+                        
+                        if (existingIndex >= 0) {
+                            // Update existing entry with inventory data (inventory is authoritative)
+                            mergedProgress[existingIndex] = {
+                                ...mergedProgress[existingIndex],
+                                ...inventoryProg,
+                            };
+                        } else {
+                            // Add new entry from inventory
+                            mergedProgress.push(inventoryProg);
+                        }
+                    });
+                    
+                    console.log('[DropsCenter] Merged progress now has', mergedProgress.length, 'entries');
+                    return mergedProgress;
+                });
+                
+                // Update the selected game with fresh inventory items
+                const freshInventoryForGame = inventoryData.items.filter(item => {
+                    // Match by game name (case-insensitive) or game_id
+                    const itemGameName = item.campaign.game_name?.toLowerCase() || '';
+                    const gameNameLower = game.name.toLowerCase();
+                    return itemGameName === gameNameLower || item.campaign.game_id === game.id;
+                });
+                
+                if (freshInventoryForGame.length > 0) {
+                    console.log('[DropsCenter] Found', freshInventoryForGame.length, 'inventory items for game:', game.name);
+                    
+                    // Update the selected game with fresh inventory
+                    setSelectedGame(prevGame => {
+                        if (!prevGame) return null;
+                        return {
+                            ...prevGame,
+                            inventory_items: freshInventoryForGame,
+                            total_claimed: freshInventoryForGame.reduce((sum, item) => sum + item.claimed_drops, 0),
+                        };
+                    });
+                    
+                    // Also update this game in the unifiedGames array
+                    setUnifiedGames(prevGames => {
+                        return prevGames.map(g => {
+                            if (g.id === game.id) {
+                                return {
+                                    ...g,
+                                    inventory_items: freshInventoryForGame,
+                                    total_claimed: freshInventoryForGame.reduce((sum, item) => sum + item.claimed_drops, 0),
+                                };
+                            }
+                            return g;
+                        });
+                    });
+                }
+            }
+        } catch (err) {
+            console.error('[DropsCenter] Failed to fetch inventory for game:', err);
+            // Don't show error toast - we still show the panel with cached data
+        } finally {
+            setIsLoadingGameDetail(false);
+        }
     };
 
     // Mine All Game - starts mining all campaigns for a game sequentially
@@ -576,14 +696,21 @@ export default function DropsCenter() {
             setIsLoading(true);
             setError(null);
 
-            // Fetch mining status along with other data to ensure proper sorting on initial load
-            const [campaignsData, progressData, statsData, inventoryData, currentMiningStatus] = await Promise.all([
+            // IMPORTANT:
+            // `get_active_drop_campaigns` is responsible for refreshing the backend's internal
+            // drop progress map (via `DropsService::update_campaigns_and_progress`).
+            // If we fetch `get_drop_progress` in parallel, it can race and return an empty
+            // list, which makes the UI show 0 minutes for everything.
+            //
+            // So: fetch campaigns first, then fetch progress.
+            const [campaignsData, statsData, inventoryData, currentMiningStatus] = await Promise.all([
                 invoke<DropCampaign[]>('get_active_drop_campaigns').catch(() => [] as DropCampaign[]),
-                invoke<DropProgress[]>('get_drop_progress').catch(() => [] as DropProgress[]),
                 invoke<DropsStatistics>('get_drops_statistics').catch(() => null),
                 invoke<InventoryResponse>('get_drops_inventory').catch(() => null),
                 invoke<MiningStatus>('get_mining_status').catch(() => null),
             ]);
+
+            const progressData = await invoke<DropProgress[]>('get_drop_progress').catch(() => [] as DropProgress[]);
 
             // Update mining status state if we got a fresh one
             if (currentMiningStatus) {
@@ -593,6 +720,10 @@ export default function DropsCenter() {
             if (progressData) setProgress(progressData);
             if (statsData) setStatistics(statsData);
             if (inventoryData?.items) setInventoryItems(inventoryData.items);
+            if (inventoryData?.completed_drops) {
+                console.log(`[DropsCenter] Found ${inventoryData.completed_drops.length} completed drops`);
+                setCompletedDrops(inventoryData.completed_drops);
+            }
 
             // Merge data into unified games
             const gamesMap = new Map<string, UnifiedGame>();
@@ -618,15 +749,49 @@ export default function DropsCenter() {
                 return game;
             };
 
-            // Process Active Campaigns
+            // Process Active Campaigns and merge progress data from inventory
             if (campaignsData) {
                 campaignsData.forEach(campaign => {
                     const game = getOrCreateGame(campaign.game_id, campaign.game_name, campaign.image_url);
-                    game.active_campaigns.push(campaign);
+                    
+                    // IMPORTANT: Merge progress data into each drop BEFORE adding to game
+                    // This ensures the campaign's time_based_drops have accurate progress
+                    const campaignWithProgress = {
+                        ...campaign,
+                        time_based_drops: campaign.time_based_drops.map(drop => {
+                            // Find progress from progressData (real-time updates)
+                            const prog = progressData?.find(p => p.drop_id === drop.id);
+                            
+                            // If no progress in progressData, check inventory items
+                            let inventoryProgress = null;
+                            if (!prog && inventoryData?.items) {
+                                // Find matching inventory item for this campaign
+                                const inventoryItem = inventoryData.items.find(item => 
+                                    item.campaign.id === campaign.id ||
+                                    item.campaign.name === campaign.name
+                                );
+                                if (inventoryItem) {
+                                    const inventoryDrop = inventoryItem.campaign.time_based_drops.find(d => d.id === drop.id);
+                                    inventoryProgress = inventoryDrop?.progress;
+                                }
+                            }
+                            
+                            // Use whichever progress source is available
+                            const progressToUse = prog || inventoryProgress;
+                            
+                            return {
+                                ...drop,
+                                progress: progressToUse || drop.progress // Keep existing or use merged
+                            };
+                        })
+                    };
+                    
+                    game.active_campaigns.push(campaignWithProgress);
                     game.total_active_drops += campaign.time_based_drops.length;
 
-                    campaign.time_based_drops.forEach(drop => {
-                        const prog = progressData?.find(p => p.drop_id === drop.id);
+                    // Update game stats based on merged progress
+                    campaignWithProgress.time_based_drops.forEach(drop => {
+                        const prog = progressData?.find(p => p.drop_id === drop.id) || drop.progress;
                         if (prog && !prog.is_claimed && prog.current_minutes_watched >= prog.required_minutes_watched) {
                             game.has_claimable = true;
                         }
@@ -676,7 +841,11 @@ export default function DropsCenter() {
                         });
                     });
 
-                    // All drops claimed if we have drops and all are claimed
+                    // All drops claimed if we have drops and all are claimed.
+                    // Prefer embedded per-drop progress (campaign.time_based_drops[].progress) as a fallback,
+                    // because `progressData` can be empty before the backend progress map is populated.
+                    // Prefer progressData, but also fall back to embedded drop.progress (from CampaignDetails)
+                    // to avoid false negatives when progressData isn't populated yet.
                     game.all_drops_claimed = totalDropsInCampaigns > 0 && claimedDropsCount === totalDropsInCampaigns;
                 }
             });
@@ -726,11 +895,64 @@ export default function DropsCenter() {
         // Listeners
         let unlistenStatus: (() => void) | undefined;
         let unlistenProgress: (() => void) | undefined;
+        let unlistenComplete: (() => void) | undefined;
 
         const setupListeners = async () => {
             unlistenStatus = await listen<MiningStatus>('mining-status-update', (event) => {
                 console.log('[DropsCenter] Mining status update:', event.payload);
                 setMiningStatus(event.payload);
+                
+                // Update AppStore's isMiningActive based on the status
+                useAppStore.getState().setMiningActive(event.payload.is_mining);
+            });
+            
+            // Listen for mining complete events (drop reached 100%)
+            // This handles all 3 mining modes:
+            // 1. Single Campaign Mining - stop completely
+            // 2. Mine All Game - check if there are more campaigns in queue, start next if so
+            // 3. Auto-Mining - handled by backend's start_mining (doesn't use this event)
+            unlistenComplete = await listen<{ game_name: string; reason: string }>('mining-complete', async (event) => {
+                console.log('[DropsCenter] Mining complete:', event.payload);
+                
+                // Check if we're in a Mine All queue (use ref to get current value, not stale closure)
+                const currentQueue = mineAllQueueRef.current;
+                
+                if (currentQueue) {
+                    // Mine All Game mode - check if there are more campaigns
+                    const nextIndex = currentQueue.currentIndex + 1;
+                    
+                    if (nextIndex < currentQueue.campaignIds.length) {
+                        // More campaigns to mine - start the next one
+                        console.log(`[DropsCenter] Mine All: Starting campaign ${nextIndex + 1}/${currentQueue.campaignIds.length}`);
+                        
+                        // Update queue index
+                        setMineAllQueue(prev => prev ? { ...prev, currentIndex: nextIndex } : null);
+                        
+                        try {
+                            await invoke('start_campaign_mining', { campaignId: currentQueue.campaignIds[nextIndex] });
+                            addToast(`✅ Campaign complete! Mining ${nextIndex + 1} of ${currentQueue.campaignIds.length}...`, 'info');
+                        } catch (err) {
+                            console.error('[DropsCenter] Failed to start next campaign:', err);
+                            addToast('Failed to start next campaign', 'error');
+                            setMineAllQueue(null);
+                            useAppStore.getState().setMiningActive(false);
+                        }
+                    } else {
+                        // All campaigns in queue complete - Mine All Game is done
+                        console.log(`[DropsCenter] Mine All complete for ${currentQueue.gameName}`);
+                        addToast(`🎉 All campaigns for ${event.payload.game_name} complete!`, 'success');
+                        setMineAllQueue(null);
+                        useAppStore.getState().setMiningActive(false);
+                    }
+                } else {
+                    // Single Campaign Mining mode - stop completely
+                    console.log('[DropsCenter] Single campaign complete - stopping');
+                    addToast(`✅ Drops complete for ${event.payload.game_name}!`, 'success');
+                    useAppStore.getState().setMiningActive(false);
+                }
+                
+                // Refresh data to show updated progress
+                loadDropsData();
             });
 
             unlistenProgress = await listen<any>('drops-progress-update', (event) => {
@@ -848,6 +1070,7 @@ export default function DropsCenter() {
         return () => {
             if (unlistenStatus) unlistenStatus();
             if (unlistenProgress) unlistenProgress();
+            if (unlistenComplete) unlistenComplete();
         };
     }, []);
 
@@ -1169,7 +1392,7 @@ export default function DropsCenter() {
                                         progress={progress}
                                         miningStatus={miningStatus}
                                         isSelected={selectedGame?.id === game.id}
-                                        onClick={() => setSelectedGame(selectedGame?.id === game.id ? null : game)}
+                                        onClick={() => handleGameSelect(selectedGame?.id === game.id ? null : game)}
                                         onStopMining={handleStopMining}
                                         onMineAllGame={handleMineAllGame}
                                     />
@@ -1183,6 +1406,7 @@ export default function DropsCenter() {
                                 game={selectedGame}
                                 allGames={unifiedGames}
                                 progress={progress}
+                                completedDrops={completedDrops}
                                 miningStatus={miningStatus}
                                 isOpen={!!selectedGame}
                                 onClose={() => setSelectedGame(null)}
@@ -1212,6 +1436,7 @@ export default function DropsCenter() {
                 {!isLoading && activeTab === 'inventory' && (
                     <DropsInventoryTab
                         inventoryItems={inventoryItems}
+                        completedDrops={completedDrops}
                         progress={progress}
                         onClaimDrop={handleClaimDrop}
                     />

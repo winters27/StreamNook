@@ -276,3 +276,145 @@ pub async fn open_drop_details(app_handle: AppHandle, url: String) -> Result<(),
         .open_url(url, None::<String>)
         .map_err(|e| format!("Failed to open drops details: {}", e))
 }
+
+// Prediction commands
+#[tauri::command]
+pub async fn place_prediction(
+    event_id: String,
+    outcome_id: String,
+    points: i32,
+    channel_id: String,
+) -> Result<serde_json::Value, String> {
+    use crate::services::drops_auth_service::DropsAuthService;
+    use reqwest::Client;
+    use serde_json::json;
+
+    // Use the mobile/Android client ID for GQL queries
+    const CLIENT_ID: &str = "kd1unb4b3q4t58fwlpcbzcbnm76a8fp";
+
+    let token = DropsAuthService::get_token()
+        .await
+        .map_err(|e| format!("Failed to get token: {}", e))?;
+
+    let client = Client::new();
+
+    // Use the MakePrediction GQL mutation
+    let mutation = r#"
+    mutation MakePrediction($input: MakePredictionInput!) {
+        makePrediction(input: $input) {
+            prediction {
+                id
+                points
+            }
+            error {
+                code
+            }
+        }
+    }
+    "#;
+
+    let response = client
+        .post("https://gql.twitch.tv/gql")
+        .header("Client-Id", CLIENT_ID)
+        .header("Authorization", format!("OAuth {}", token))
+        .json(&json!({
+            "operationName": "MakePrediction",
+            "query": mutation,
+            "variables": {
+                "input": {
+                    "eventID": event_id,
+                    "outcomeID": outcome_id,
+                    "points": points,
+                    "transactionID": uuid::Uuid::new_v4().to_string()
+                }
+            }
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("Failed to send prediction request: {}", e))?;
+
+    let result: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse prediction response: {}", e))?;
+
+    // Check for errors in the response
+    if let Some(error) = result["data"]["makePrediction"]["error"].as_object() {
+        let error_code = error
+            .get("code")
+            .and_then(|v| v.as_str())
+            .unwrap_or("UNKNOWN");
+        return Err(format!("Prediction failed: {}", error_code));
+    }
+
+    // Log successful prediction
+    if let Some(prediction) = result["data"]["makePrediction"]["prediction"].as_object() {
+        let pred_id = prediction.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        let pred_points = prediction
+            .get("points")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        println!(
+            "🔮 Prediction placed successfully! ID: {}, Points: {}",
+            pred_id, pred_points
+        );
+    }
+
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn get_channel_points_for_channel(
+    channel_login: String,
+) -> Result<serde_json::Value, String> {
+    use crate::services::drops_auth_service::DropsAuthService;
+    use reqwest::Client;
+    use serde_json::json;
+
+    const CLIENT_ID: &str = "kd1unb4b3q4t58fwlpcbzcbnm76a8fp";
+
+    let token = DropsAuthService::get_token()
+        .await
+        .map_err(|e| format!("Failed to get token: {}", e))?;
+
+    let client = Client::new();
+
+    let query = r#"
+    query ChannelPointsContext($channelLogin: String!) {
+        community {
+            channel(name: $channelLogin) {
+                self {
+                    communityPoints {
+                        balance
+                        availableClaim {
+                            id
+                        }
+                    }
+                }
+            }
+        }
+    }
+    "#;
+
+    let response = client
+        .post("https://gql.twitch.tv/gql")
+        .header("Client-Id", CLIENT_ID)
+        .header("Authorization", format!("OAuth {}", token))
+        .json(&json!({
+            "operationName": "ChannelPointsContext",
+            "query": query,
+            "variables": {
+                "channelLogin": channel_login.to_lowercase()
+            }
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch channel points: {}", e))?;
+
+    let result: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse channel points response: {}", e))?;
+
+    Ok(result)
+}
