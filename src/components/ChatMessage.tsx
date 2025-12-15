@@ -1,12 +1,20 @@
 import React, { useMemo, useState, useEffect, memo } from 'react';
-import { parseMessage } from '../services/twitchChat';
-import { parseEmotesWithThirdParty, EmoteSegment } from '../services/emoteParser';
-import { EmoteSet, queueEmoteForCaching } from '../services/emoteService';
+import { parseMessage, MessageSegment } from '../services/twitchChat';
+import { queueEmoteForCaching } from '../services/emoteService';
 import { computePaintStyle, getBadgeImageUrl, queueCosmeticForCaching } from '../services/seventvService';
-import { getCosmeticsWithFallback, getThirdPartyBadgesWithFallback, getCosmeticsFromMemoryCache, getThirdPartyBadgesFromMemoryCache } from '../services/cosmeticsCache';
+import { getCosmeticsWithFallback, getThirdPartyBadgesFromMemoryCache, getCosmeticsFromMemoryCache, getTwitchBadgesWithFallback } from '../services/cosmeticsCache';
 import { ThirdPartyBadge } from '../services/thirdPartyBadges';
 import { SevenTVBadge, SevenTVPaint } from '../types';
 import { useAppStore } from '../stores/AppStore';
+
+// EmoteSegment type definition (migrated from emoteParser.ts)
+interface EmoteSegment {
+  type: 'text' | 'emote' | 'emoji';
+  content: string;
+  emoteId?: string;
+  emoteUrl?: string;
+  emojiUrl?: string;
+}
 
 // Global cache for channel names and profile images to prevent re-fetching and flashing
 const channelNameCache = new Map<string, string>();
@@ -16,7 +24,6 @@ import { BackendChatMessage } from '../services/twitchChat';
 
 interface ChatMessageProps {
   message: string | BackendChatMessage; // Raw IRC message or Backend Message Object
-  emoteSet?: EmoteSet | null;
   messageIndex?: number; // For alternating backgrounds
   onUsernameClick?: (
     userId: string,
@@ -49,8 +56,6 @@ const chatMessageAreEqual = (prevProps: ChatMessageProps, nextProps: ChatMessage
   if (prevProps.messageIndex !== nextProps.messageIndex) return false;
   if (prevProps.isHighlighted !== nextProps.isHighlighted) return false;
   if (prevProps.isDeleted !== nextProps.isDeleted) return false;
-  // EmoteSet reference may change but content is the same - do deep comparison by checking if it's null/undefined
-  if ((prevProps.emoteSet === null) !== (nextProps.emoteSet === null)) return false;
 
   // All other props (callbacks) can be ignored for re-render decisions
   // since they don't affect the visual output of the message
@@ -59,8 +64,8 @@ const chatMessageAreEqual = (prevProps: ChatMessageProps, nextProps: ChatMessage
 
 // Memoized ChatMessage component to prevent unnecessary re-renders
 // This is critical for preventing animation restarts when new messages arrive
-const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageIndex = 0, onUsernameClick, onReplyClick, isHighlighted = false, isDeleted = false, onEmoteRightClick, onUsernameRightClick, onBadgeClick }: ChatMessageProps) {
-  const { settings, currentUser } = useAppStore();
+const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, onUsernameClick, onReplyClick, isHighlighted = false, isDeleted = false, onEmoteRightClick, onUsernameRightClick, onBadgeClick }: ChatMessageProps) {
+  const { settings, currentUser, currentStream } = useAppStore();
   const chatDesign = settings.chat_design;
   const parsed = useMemo(() => {
     // Extract channel ID from the message tags if available
@@ -86,10 +91,47 @@ const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageI
   }, [message]);
 
   const isAction = parsed.isAction || false;
-  const contentWithEmotes = useMemo(
-    () => parseEmotesWithThirdParty(parsed.content, parsed.emotes, emoteSet || undefined),
-    [parsed, emoteSet]
-  );
+  const [contentWithEmotes, setContentWithEmotes] = useState<EmoteSegment[]>([]);
+
+  // PHASE 3.1 - THE ENDGAME: Use pre-parsed segments from Rust
+  // All parsing happens in Rust - zero regex, zero Map lookups on main thread!
+  useEffect(() => {
+    // Convert Rust MessageSegment to EmoteSegment format for rendering
+    if (parsed.segments && parsed.segments.length > 0) {
+      const convertedSegments: EmoteSegment[] = parsed.segments.map((seg) => {
+        if (seg.type === 'emote') {
+          return {
+            type: 'emote' as const,
+            content: seg.content,
+            emoteId: seg.emote_id,
+            emoteUrl: seg.emote_url,
+          };
+        } else if (seg.type === 'emoji') {
+          return {
+            type: 'emoji' as const,
+            content: seg.content,
+            emojiUrl: seg.emoji_url,
+          };
+        } else if (seg.type === 'link') {
+          // Links are handled in parseTextWithLinks
+          return {
+            type: 'text' as const,
+            content: seg.content,
+          };
+        } else {
+          return {
+            type: 'text' as const,
+            content: seg.content,
+          };
+        }
+      });
+      
+      setContentWithEmotes(convertedSegments);
+    } else {
+      // No segments (USERNOTICE, etc.) - render as plain text
+      setContentWithEmotes([{ type: 'text', content: parsed.content }]);
+    }
+  }, [parsed.segments]);
 
   // Extract userId once to prevent re-renders
   const userId = useMemo(() => parsed.tags.get('user-id'), [message]);
@@ -105,7 +147,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageI
     const cached = getCosmeticsFromMemoryCache(userId);
     return cached?.paints.find((p: any) => p.selected) || null;
   });
-  const [thirdPartyBadges, setThirdPartyBadges] = useState<ThirdPartyBadge[]>(() => {
+  const [thirdPartyBadges, setThirdPartyBadges] = useState<any[]>(() => {
     if (!userId) return [];
     return getThirdPartyBadgesFromMemoryCache(userId) || [];
   });
@@ -113,13 +155,30 @@ const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageI
   const [isMentioned, setIsMentioned] = useState(false);
   const [isReplyToMe, setIsReplyToMe] = useState(false);
 
-  // Check if this message mentions the current user or is a reply to them
+  // PHASE 3.1d - OPTIMIZED: Check if this message mentions the current user or is a reply to them
+  // NO REGEX - simple case-insensitive string check is much faster
   useEffect(() => {
     if (!currentUser) return;
 
-    // Check for @ mentions in the message content
-    const mentionPattern = new RegExp(`@${currentUser.username}\\b`, 'i');
-    const mentioned = mentionPattern.test(parsed.content);
+    // Optimized: Use case-insensitive indexOf instead of RegExp creation
+    // This avoids creating a new RegExp object for every message
+    const mentionTarget = `@${currentUser.username.toLowerCase()}`;
+    const contentLower = parsed.content.toLowerCase();
+    const mentionIndex = contentLower.indexOf(mentionTarget);
+    
+    // Check for word boundary after mention (space, punctuation, or end of string)
+    let mentioned = false;
+    if (mentionIndex !== -1) {
+      const afterIndex = mentionIndex + mentionTarget.length;
+      if (afterIndex >= contentLower.length) {
+        // Mention at end of string
+        mentioned = true;
+      } else {
+        const charAfter = contentLower[afterIndex];
+        // Word boundary: space, punctuation, or non-alphanumeric
+        mentioned = /[\s.,!?:;'")\]}>]/.test(charAfter) || !/[a-z0-9_]/.test(charAfter);
+      }
+    }
     setIsMentioned(mentioned);
 
     // Check if this is a reply to the current user
@@ -157,12 +216,27 @@ const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageI
       });
     }
 
-    // Only fetch third-party badges if we don't already have data from initial cache
+    // Third-party badges are populated as part of the unified Rust badge call.
+    // We trigger that call here (only if needed) to ensure these badges show
+    // consistently in chat.
     const cachedThirdParty = getThirdPartyBadgesFromMemoryCache(userId);
     if (!cachedThirdParty) {
-      getThirdPartyBadgesWithFallback(userId).then((badges) => {
+      const effectiveChannelId =
+        parsed.tags.get('source-room-id') ||
+        parsed.tags.get('room-id') ||
+        currentStream?.user_id ||
+        '';
+
+      const effectiveChannelName =
+        currentStream?.user_login ||
+        currentStream?.user_name ||
+        parsed.tags.get('room') ||
+        '';
+
+      // This call also populates the third-party badge in-memory cache.
+      getTwitchBadgesWithFallback(userId, parsed.username, effectiveChannelId, effectiveChannelName).then(() => {
         if (cancelled) return;
-        setThirdPartyBadges(badges);
+        setThirdPartyBadges(getThirdPartyBadgesFromMemoryCache(userId) || []);
       });
     }
 
@@ -174,10 +248,10 @@ const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageI
   // Reactive caching for 7TV cosmetics
   useEffect(() => {
     // Cache 7TV Badge
-    if (seventvBadge && !seventvBadge.localUrl) {
+    if (seventvBadge?.badge_info && !seventvBadge.localUrl) {
       const badgeUrl = getBadgeImageUrl(seventvBadge);
       if (badgeUrl && !badgeUrl.startsWith('asset') && !badgeUrl.includes('localhost')) {
-        queueCosmeticForCaching(seventvBadge.id, badgeUrl);
+        queueCosmeticForCaching(seventvBadge.badge_info.id, badgeUrl);
       }
     }
 
@@ -450,21 +524,25 @@ const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageI
 
       return (
         <span className="inline-flex items-center gap-1 mr-1">
-          {parsed.badges.map((badge, idx) => (
-            <img
-              key={`bits-badge-${badge.key}-${idx}`}
-              src={badge.info.localUrl || badge.info.image_url_1x}
-              srcSet={badge.info.localUrl ? undefined : `${badge.info.image_url_1x} 1x, ${badge.info.image_url_2x} 2x, ${badge.info.image_url_4x} 4x`}
-              alt={badge.info.title}
-              title={badge.info.title}
-              className="w-4 h-4 inline-block cursor-pointer hover:scale-110 transition-transform"
-              onClick={() => onBadgeClick?.(badge.key, badge.info)}
-              onError={(e) => {
-                console.warn('[Badge] Failed to load badge:', badge.key, badge.info.image_url_1x);
-                e.currentTarget.style.display = 'none';
-              }}
-            />
-          ))}
+          {parsed.badges.map((badge, idx) => {
+            // Handle both old format (key/info) and new format (name/version)
+            if (!badge.info) return null;
+            return (
+              <img
+                key={`bits-badge-${badge.key}-${idx}`}
+                src={badge.info.localUrl || badge.info.image_url_1x}
+                srcSet={badge.info.localUrl ? undefined : `${badge.info.image_url_1x} 1x, ${badge.info.image_url_2x} 2x, ${badge.info.image_url_4x} 4x`}
+                alt={badge.info.title}
+                title={badge.info.title}
+                className="w-4 h-4 inline-block cursor-pointer hover:scale-110 transition-transform"
+                onClick={() => onBadgeClick?.(badge.key, badge.info)}
+                onError={(e) => {
+                  console.warn('[Badge] Failed to load badge:', badge.key, badge.info.image_url_1x);
+                  e.currentTarget.style.display = 'none';
+                }}
+              />
+            );
+          })}
           {seventvBadge && (
             <img
               src={getBadgeImageUrl(seventvBadge)}
@@ -476,10 +554,10 @@ const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageI
               }}
             />
           )}
-          {thirdPartyBadges.map((badge, idx) => (
+          {thirdPartyBadges.filter(badge => badge && badge.imageUrl).map((badge, idx) => (
             <img
               key={`bits-tp-badge-${badge.id}-${idx}`}
-              src={badge.localUrl || badge.imageUrl}
+              src={badge.imageUrl}
               alt={badge.title}
               title={`${badge.title} (${badge.provider.toUpperCase()})`}
               className="w-4 h-4 inline-block"
@@ -576,21 +654,24 @@ const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageI
 
       return (
         <span className="inline-flex items-center gap-1 mr-1">
-          {parsed.badges.map((badge, idx) => (
-            <img
-              key={`donation-badge-${badge.key}-${idx}`}
-              src={badge.info.localUrl || badge.info.image_url_1x}
-              srcSet={badge.info.localUrl ? undefined : `${badge.info.image_url_1x} 1x, ${badge.info.image_url_2x} 2x, ${badge.info.image_url_4x} 4x`}
-              alt={badge.info.title}
-              title={badge.info.title}
-              className="w-4 h-4 inline-block cursor-pointer hover:scale-110 transition-transform"
-              onClick={() => onBadgeClick?.(badge.key, badge.info)}
-              onError={(e) => {
-                console.warn('[Badge] Failed to load badge:', badge.key, badge.info.image_url_1x);
-                e.currentTarget.style.display = 'none';
-              }}
-            />
-          ))}
+          {parsed.badges.map((badge, idx) => {
+            if (!badge.info) return null;
+            return (
+              <img
+                key={`donation-badge-${badge.key}-${idx}`}
+                src={badge.info.localUrl || badge.info.image_url_1x}
+                srcSet={badge.info.localUrl ? undefined : `${badge.info.image_url_1x} 1x, ${badge.info.image_url_2x} 2x, ${badge.info.image_url_4x} 4x`}
+                alt={badge.info.title}
+                title={badge.info.title}
+                className="w-4 h-4 inline-block cursor-pointer hover:scale-110 transition-transform"
+                onClick={() => onBadgeClick?.(badge.key, badge.info)}
+                onError={(e) => {
+                  console.warn('[Badge] Failed to load badge:', badge.key, badge.info.image_url_1x);
+                  e.currentTarget.style.display = 'none';
+                }}
+              />
+            );
+          })}
           {seventvBadge && (
             <img
               src={getBadgeImageUrl(seventvBadge)}
@@ -602,10 +683,10 @@ const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageI
               }}
             />
           )}
-          {thirdPartyBadges.map((badge, idx) => (
+          {thirdPartyBadges.filter(badge => badge && badge.imageUrl).map((badge, idx) => (
             <img
               key={`donation-tp-badge-${badge.id}-${idx}`}
-              src={badge.localUrl || badge.imageUrl}
+              src={badge.imageUrl}
               alt={badge.title}
               title={`${badge.title} (${badge.provider.toUpperCase()})`}
               className="w-4 h-4 inline-block"
@@ -718,21 +799,24 @@ const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageI
 
       return (
         <span className="inline-flex items-center gap-1 mr-1">
-          {parsed.badges.map((badge, idx) => (
-            <img
-              key={`watchstreak-badge-${badge.key}-${idx}`}
-              src={badge.info.localUrl || badge.info.image_url_1x}
-              srcSet={badge.info.localUrl ? undefined : `${badge.info.image_url_1x} 1x, ${badge.info.image_url_2x} 2x, ${badge.info.image_url_4x} 4x`}
-              alt={badge.info.title}
-              title={badge.info.title}
-              className="w-4 h-4 inline-block cursor-pointer hover:scale-110 transition-transform"
-              onClick={() => onBadgeClick?.(badge.key, badge.info)}
-              onError={(e) => {
-                console.warn('[Badge] Failed to load badge:', badge.key, badge.info.image_url_1x);
-                e.currentTarget.style.display = 'none';
-              }}
-            />
-          ))}
+          {parsed.badges.map((badge, idx) => {
+            if (!badge.info) return null;
+            return (
+              <img
+                key={`watchstreak-badge-${badge.key}-${idx}`}
+                src={badge.info.localUrl || badge.info.image_url_1x}
+                srcSet={badge.info.localUrl ? undefined : `${badge.info.image_url_1x} 1x, ${badge.info.image_url_2x} 2x, ${badge.info.image_url_4x} 4x`}
+                alt={badge.info.title}
+                title={badge.info.title}
+                className="w-4 h-4 inline-block cursor-pointer hover:scale-110 transition-transform"
+                onClick={() => onBadgeClick?.(badge.key, badge.info)}
+                onError={(e) => {
+                  console.warn('[Badge] Failed to load badge:', badge.key, badge.info.image_url_1x);
+                  e.currentTarget.style.display = 'none';
+                }}
+              />
+            );
+          })}
           {seventvBadge && (
             <img
               src={getBadgeImageUrl(seventvBadge)}
@@ -744,10 +828,10 @@ const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageI
               }}
             />
           )}
-          {thirdPartyBadges.map((badge, idx) => (
+          {thirdPartyBadges.filter(badge => badge && badge.imageUrl).map((badge, idx) => (
             <img
               key={`watchstreak-tp-badge-${badge.id}-${idx}`}
-              src={badge.localUrl || badge.imageUrl}
+              src={badge.imageUrl}
               alt={badge.title}
               title={`${badge.title} (${badge.provider.toUpperCase()})`}
               className="w-4 h-4 inline-block"
@@ -847,21 +931,24 @@ const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageI
 
       return (
         <span className="inline-flex items-center gap-1 mr-1">
-          {parsed.badges.map((badge, idx) => (
-            <img
-              key={`sub-badge-${badge.key}-${idx}`}
-              src={badge.info.localUrl || badge.info.image_url_1x}
-              srcSet={badge.info.localUrl ? undefined : `${badge.info.image_url_1x} 1x, ${badge.info.image_url_2x} 2x, ${badge.info.image_url_4x} 4x`}
-              alt={badge.info.title}
-              title={badge.info.title}
-              className="w-4 h-4 inline-block cursor-pointer hover:scale-110 transition-transform"
-              onClick={() => onBadgeClick?.(badge.key, badge.info)}
-              onError={(e) => {
-                console.warn('[Badge] Failed to load badge:', badge.key, badge.info.image_url_1x);
-                e.currentTarget.style.display = 'none';
-              }}
-            />
-          ))}
+          {parsed.badges.map((badge, idx) => {
+            if (!badge.info) return null;
+            return (
+              <img
+                key={`sub-badge-${badge.key}-${idx}`}
+                src={badge.info.localUrl || badge.info.image_url_1x}
+                srcSet={badge.info.localUrl ? undefined : `${badge.info.image_url_1x} 1x, ${badge.info.image_url_2x} 2x, ${badge.info.image_url_4x} 4x`}
+                alt={badge.info.title}
+                title={badge.info.title}
+                className="w-4 h-4 inline-block cursor-pointer hover:scale-110 transition-transform"
+                onClick={() => onBadgeClick?.(badge.key, badge.info)}
+                onError={(e) => {
+                  console.warn('[Badge] Failed to load badge:', badge.key, badge.info.image_url_1x);
+                  e.currentTarget.style.display = 'none';
+                }}
+              />
+            );
+          })}
           {seventvBadge && (
             <img
               src={getBadgeImageUrl(seventvBadge)}
@@ -873,10 +960,10 @@ const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageI
               }}
             />
           )}
-          {thirdPartyBadges.map((badge, idx) => (
+          {thirdPartyBadges.filter(badge => badge && badge.imageUrl).map((badge, idx) => (
             <img
               key={`sub-tp-badge-${badge.id}-${idx}`}
-              src={badge.localUrl || badge.imageUrl}
+              src={badge.imageUrl}
               alt={badge.title}
               title={`${badge.title} (${badge.provider.toUpperCase()})`}
               className="w-4 h-4 inline-block"
@@ -1136,18 +1223,24 @@ const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageI
     );
   }
 
-  // Format timestamp for display - localized with optional seconds
+  // PHASE 3.1 - THE ENDGAME: Use pre-formatted timestamps from Rust
+  // Zero Date parsing on main thread!
   const formattedTimestamp = useMemo(() => {
     if (!chatDesign?.show_timestamps) return null;
 
-    // Get timestamp from IRC message tags (tmi-sent-ts is Unix timestamp in milliseconds)
+    // Use pre-computed timestamps from Rust metadata
+    if (parsed.metadata) {
+      return chatDesign?.show_timestamp_seconds
+        ? parsed.metadata.formatted_timestamp_with_seconds
+        : parsed.metadata.formatted_timestamp;
+    }
+
+    // Fallback: compute locally if metadata not available (legacy messages)
     const tmiSentTs = parsed.tags.get('tmi-sent-ts');
     if (!tmiSentTs) return null;
 
     try {
       const date = new Date(parseInt(tmiSentTs, 10));
-      // Use navigator.language for proper localization
-      // Include seconds only if the setting is enabled
       const options: Intl.DateTimeFormatOptions = {
         hour: 'numeric',
         minute: '2-digit',
@@ -1159,12 +1252,14 @@ const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageI
     } catch {
       return null;
     }
-  }, [chatDesign?.show_timestamps, chatDesign?.show_timestamp_seconds, parsed.tags]);
+  }, [chatDesign?.show_timestamps, chatDesign?.show_timestamp_seconds, parsed.metadata, parsed.tags]);
 
   // Build dynamic styles based on chat design settings
+  // Use consistent padding on container - spacing between messages is handled via py classes
+  const messageSpacing = chatDesign?.message_spacing ?? 8;
   const messageStyle: React.CSSProperties = {
-    paddingTop: `${(chatDesign?.message_spacing ?? 2) / 2}px`,
-    paddingBottom: `${(chatDesign?.message_spacing ?? 2) / 2}px`,
+    paddingTop: `${Math.max(4, messageSpacing / 2)}px`,
+    paddingBottom: `${Math.max(4, messageSpacing / 2)}px`,
   };
 
   // Determine animation class and border color
@@ -1237,7 +1332,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageI
         <div className="flex flex-wrap items-start gap-2 flex-1 min-w-0">
           {/* Badges */}
           {(isFromSharedChat && channelProfileImage) || parsed.badges.length > 0 || seventvBadge || thirdPartyBadges.length > 0 ? (
-            <div className="flex items-center gap-1 flex-shrink-0 mt-0.5">
+            <div className="flex items-center gap-1 flex-shrink-0 mt-[3px]">
               {/* Shared chat channel profile image badge */}
               {isFromSharedChat && channelProfileImage && (
                 <img
@@ -1261,22 +1356,25 @@ const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageI
                   }}
                 />
               )}
-              {parsed.badges.map((badge, idx) => (
-                <img
-                  key={`${badge.key}-${idx}`}
-                  src={badge.info.localUrl || badge.info.image_url_1x}
-                  srcSet={badge.info.localUrl ? undefined : `${badge.info.image_url_1x} 1x, ${badge.info.image_url_2x} 2x, ${badge.info.image_url_4x} 4x`}
-                  alt={badge.info.title}
-                  title={badge.info.title}
-                  className="w-4 h-4 cursor-pointer hover:scale-110 transition-transform"
-                  onClick={() => onBadgeClick?.(badge.key, badge.info)}
-                  onError={(e) => {
-                    // Hide broken badge images
-                    console.warn('[Badge] Failed to load badge:', badge.key, badge.info.image_url_1x);
-                    e.currentTarget.style.display = 'none';
-                  }}
-                />
-              ))}
+              {parsed.badges.map((badge, idx) => {
+                if (!badge.info) return null;
+                return (
+                  <img
+                    key={`${badge.key}-${idx}`}
+                    src={badge.info.localUrl || badge.info.image_url_1x}
+                    srcSet={badge.info.localUrl ? undefined : `${badge.info.image_url_1x} 1x, ${badge.info.image_url_2x} 2x, ${badge.info.image_url_4x} 4x`}
+                    alt={badge.info.title}
+                    title={badge.info.title}
+                    className="w-4 h-4 cursor-pointer hover:scale-110 transition-transform"
+                    onClick={() => onBadgeClick?.(badge.key, badge.info)}
+                    onError={(e) => {
+                      // Hide broken badge images
+                      console.warn('[Badge] Failed to load badge:', badge.key, badge.info.image_url_1x);
+                      e.currentTarget.style.display = 'none';
+                    }}
+                  />
+                );
+              })}
               {seventvBadge && (
                 <img
                   src={getBadgeImageUrl(seventvBadge)}
@@ -1289,10 +1387,10 @@ const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageI
                 />
               )}
               {/* Third-party badges (FFZ, Chatterino, Homies) */}
-              {thirdPartyBadges.map((badge, idx) => (
+              {thirdPartyBadges.filter(badge => badge && badge.imageUrl).map((badge, idx) => (
                 <img
                   key={`tp-badge-${badge.id}-${idx}`}
-                  src={badge.localUrl || badge.imageUrl}
+                  src={badge.imageUrl}
                   alt={badge.title}
                   title={`${badge.title} (${badge.provider.toUpperCase()})`}
                   className="w-4 h-4"
@@ -1306,7 +1404,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, emoteSet, messageI
 
           {/* Message content */}
           <div
-            className="flex-1 min-w-0 leading-tight"
+            className="flex-1 min-w-0 leading-relaxed pb-1"
             style={{
               fontSize: `${chatDesign?.font_size ?? 14}px`,
               fontWeight: chatDesign?.font_weight ?? 400,

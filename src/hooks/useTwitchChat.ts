@@ -65,7 +65,10 @@ export const useTwitchChat = () => {
   }, [isConnected]);
 
   // Cleanup function to properly close WebSocket and clear handlers
-  const cleanupWebSocket = useCallback(() => {
+  // Note: We do NOT call stop_chat here because the Rust backend handles its own
+  // cleanup at the start of start_chat. Calling stop_chat from here causes a race
+  // condition where channels get cleared during reconnection attempts (e.g., after PIP mode).
+  const cleanupWebSocket = useCallback((stopBackend: boolean = false) => {
     // Clear any pending reconnect
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current);
@@ -95,6 +98,15 @@ export const useTwitchChat = () => {
 
       wsRef.current = null;
     }
+
+    // Only stop the backend IRC service when explicitly requested (e.g., channel switch or app cleanup)
+    // The Rust start_chat already calls stop() at its beginning, so we don't need to call it
+    // during normal reconnection flows.
+    if (stopBackend) {
+      invoke('stop_chat').catch(err => {
+        console.warn('[Chat] Failed to stop backend chat service:', err);
+      });
+    }
   }, []);
 
   const connectChat = useCallback(async (channel: string, roomId?: string) => {
@@ -120,21 +132,71 @@ export const useTwitchChat = () => {
     setMessages([]);
     seenMessageIdsRef.current = new Set();
 
-    // Fetch recent messages from IVR API if roomId is provided
+  // Fetch recent messages from IVR API if roomId is provided
+    // Route through Rust backend for proper parsing and layout calculation
     if (roomId) {
       try {
         console.log('[Chat] Fetching recent messages from IVR API for:', channel);
-        const recentMessages = await fetchRecentMessagesAsIRC(channel, roomId);
-        if (recentMessages.length > 0) {
-          console.log(`[Chat] Prepending ${recentMessages.length} recent messages`);
-          // Add message IDs to seen set
-          recentMessages.forEach(msg => {
-            const idMatch = msg.match(/(?:^|;)id=([^;]+)/);
-            if (idMatch) {
-              seenMessageIdsRef.current.add(idMatch[1]);
+        const recentMessagesRaw = await fetchRecentMessagesAsIRC(channel, roomId);
+        if (recentMessagesRaw.length > 0) {
+          console.log(`[Chat] Parsing ${recentMessagesRaw.length} recent messages through Rust backend`);
+          
+          // Parse historical messages through Rust for proper layout calculation
+          // This ensures historical messages get the same accurate heights as live messages
+          // Add retry logic to handle Tauri IPC initialization timing issues
+          let parsedMessages: any[] | null = null;
+          let parseAttempts = 0;
+          const maxParseAttempts = 3;
+          
+          while (parseAttempts < maxParseAttempts && !parsedMessages) {
+            try {
+              // Small delay on retries to allow Tauri IPC to initialize
+              if (parseAttempts > 0) {
+                await new Promise(resolve => setTimeout(resolve, 200 * parseAttempts));
+                console.log(`[Chat] Retrying parse_historical_messages (attempt ${parseAttempts + 1}/${maxParseAttempts})`);
+              }
+              
+              parsedMessages = await invoke<any[]>('parse_historical_messages', { 
+                messages: recentMessagesRaw 
+              });
+            } catch (parseErr: any) {
+              parseAttempts++;
+              // Check if it's an IPC connection error (Tauri not ready)
+              const isIpcError = parseErr?.message?.includes('Failed to fetch') || 
+                                 parseErr?.message?.includes('ERR_CONNECTION_REFUSED') ||
+                                 parseErr?.toString?.().includes('Failed to fetch');
+              
+              if (isIpcError && parseAttempts < maxParseAttempts) {
+                console.warn(`[Chat] Tauri IPC not ready, will retry (attempt ${parseAttempts}/${maxParseAttempts})`);
+                continue;
+              }
+              
+              // Final attempt failed or non-IPC error
+              console.warn('[Chat] Rust parsing failed, falling back to raw IRC strings:', parseErr);
+              break;
             }
-          });
-          setMessages(recentMessages);
+          }
+          
+          if (parsedMessages && parsedMessages.length > 0) {
+            console.log(`[Chat] Received ${parsedMessages.length} parsed messages from Rust backend`);
+            // Add message IDs to seen set
+            parsedMessages.forEach(msg => {
+              if (msg.id) {
+                seenMessageIdsRef.current.add(msg.id);
+              }
+            });
+            setMessages(parsedMessages);
+          } else {
+            // Fallback to raw IRC strings if Rust parsing failed
+            console.log('[Chat] Using raw IRC strings as fallback');
+            recentMessagesRaw.forEach(msg => {
+              const idMatch = msg.match(/(?:^|;)id=([^;]+)/);
+              if (idMatch) {
+                seenMessageIdsRef.current.add(idMatch[1]);
+              }
+            });
+            setMessages(recentMessagesRaw);
+          }
         }
       } catch (err) {
         console.error('[Chat] Failed to fetch recent messages:', err);
@@ -152,6 +214,13 @@ export const useTwitchChat = () => {
     isIntentionalDisconnectRef.current = false;
 
     try {
+      // Initialize badge cache for this channel BEFORE starting the WS.
+      // This avoids the race where messages arrive before caches are warm,
+      // causing badges to render as missing.
+      console.log('[Chat] Initializing badge cache');
+      const { initializeBadgeCache } = await import('../services/twitchBadges');
+      await initializeBadgeCache(roomId);
+
       console.log('[Chat] Invoking start_chat command');
       const port = await invoke<number>('start_chat', { channel });
       console.log(`[Chat] Received port: ${port}`);
@@ -322,9 +391,13 @@ export const useTwitchChat = () => {
 
               // Check if we can replace an optimistic message
               if (parsed.user_id === currentUserIdRef.current) {
-                // Update cached badges for future optimistic messages
-                if (parsed.badges) {
-                  userBadgesFromIrcRef.current = parsed.badges;
+                // Update cached badges for future optimistic messages.
+                // `userBadgesFromIrcRef` is a STRING in IRC tag format.
+                // JSON messages provide badges as an array.
+                if (Array.isArray(parsed.badges)) {
+                  userBadgesFromIrcRef.current = parsed.badges
+                    .map((b: any) => `${b.name}/${b.version}`)
+                    .join(',');
                 }
 
                 setMessages(prevMessages => {
@@ -747,12 +820,12 @@ export const useTwitchChat = () => {
     };
   }, [connectChat]);
 
-  // Cleanup on unmount
+  // Cleanup on unmount - pass true to also stop the backend IRC service
   useEffect(() => {
     return () => {
       console.log('[Chat] Cleanup: unmounting');
       isIntentionalDisconnectRef.current = true;
-      cleanupWebSocket();
+      cleanupWebSocket(true); // Stop backend when component unmounts
     };
   }, [cleanupWebSocket]);
 

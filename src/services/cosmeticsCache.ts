@@ -96,7 +96,8 @@ export async function getCosmeticsWithFallback(userId: string): Promise<CachedCo
 
 /**
  * Get third-party badges for a user - memory cache -> API fetch
- * Badge images are cached to disk separately by thirdPartyBadges service
+ * Third-party badges (FFZ, Chatterino, Homies) come from the unified Rust badge service
+ * Note: This requires channelId/channelName context, so we use a simpler approach
  */
 export async function getThirdPartyBadgesWithFallback(userId: string): Promise<any[]> {
   // 1. Try in-memory cache first (instant, synchronous)
@@ -105,30 +106,10 @@ export async function getThirdPartyBadgesWithFallback(userId: string): Promise<a
     return memoryCached;
   }
 
-  // 2. Check if there's already a pending request for this user (dedupe)
-  const pendingRequest = pendingThirdPartyBadgesRequests.get(userId);
-  if (pendingRequest) {
-    return pendingRequest;
-  }
-
-  // 3. Create a new request and track it
-  const request = (async (): Promise<any[]> => {
-    try {
-      // Fetch from API (fresh data) - thirdPartyBadges service handles image caching
-      const { getAllThirdPartyBadges } = await import('./thirdPartyBadges');
-      const badges = await getAllThirdPartyBadges(userId);
-
-      // Store in memory cache for this session
-      inMemoryThirdPartyBadgesCache.set(userId, badges);
-
-      return badges;
-    } finally {
-      pendingThirdPartyBadgesRequests.delete(userId);
-    }
-  })();
-
-  pendingThirdPartyBadgesRequests.set(userId, request);
-  return request;
+  // Third-party badges are now fetched as part of the unified badge service
+  // They'll be populated when getTwitchBadgesWithFallback is called
+  // Return empty for now - the full profile fetch will populate this
+  return [];
 }
 
 /**
@@ -171,18 +152,20 @@ export async function getTwitchBadgesWithFallback(
       const uniqueBadges = new Map<string, any>();
 
       // Add display badges first
-      badgeData.displayBadges.forEach(badge => {
+      badgeData.displayBadges.forEach((badge: any) => {
         uniqueBadges.set(badge.id, badge);
       });
 
       // Add earned badges that aren't already displayed
-      badgeData.earnedBadges.forEach(badge => {
+      badgeData.earnedBadges.forEach((badge: any) => {
         if (!uniqueBadges.has(badge.id)) {
           uniqueBadges.set(badge.id, badge);
         }
       });
 
       const result = Array.from(uniqueBadges.values());
+
+      console.log(`[cosmeticsCache] Resolved ${result.length} total Twitch badges for ${username}`);
 
       // Store in memory cache for this session
       inMemoryTwitchBadgesCache.set(cacheKey, result);
@@ -233,12 +216,27 @@ export async function getFullProfileWithFallback(
       const effectiveChannelId = channelId || userId;
       const effectiveChannelName = channelName || username;
 
-      // Fetch all badge types in parallel
-      const [twitchBadges, seventvCosmetics, thirdPartyBadges] = await Promise.all([
-        getTwitchBadgesWithFallback(userId, username, effectiveChannelId, effectiveChannelName),
-        getCosmeticsWithFallback(userId),
-        getThirdPartyBadgesWithFallback(userId)
+      // Fetch badge data from unified service and 7TV cosmetics in parallel
+      // Use getAllUserBadgesWithEarned for profile overlays to get full earned badge collection
+      const { getAllUserBadgesWithEarned } = await import('./badgeService');
+      const [badgeData, seventvCosmetics] = await Promise.all([
+        getAllUserBadgesWithEarned(userId, username, effectiveChannelId, effectiveChannelName),
+        getCosmeticsWithFallback(userId)
       ]);
+
+      // Merge display and earned Twitch badges
+      const uniqueTwitchBadges = new Map<string, any>();
+      badgeData.displayBadges.forEach((badge: any) => uniqueTwitchBadges.set(badge.id, badge));
+      badgeData.earnedBadges.forEach((badge: any) => {
+        if (!uniqueTwitchBadges.has(badge.id)) uniqueTwitchBadges.set(badge.id, badge);
+      });
+      const twitchBadges = Array.from(uniqueTwitchBadges.values());
+
+      // Third-party badges come from the unified service (FFZ, Chatterino, Homies)
+      // They're already in the correct format with imageUrl from badgeService.ts
+      const thirdPartyBadges = badgeData.thirdPartyBadges || [];
+
+      console.log(`[cosmeticsCache] Fetched ${twitchBadges.length} Twitch badges and ${thirdPartyBadges.length} third-party badges for ${username}`);
 
       const profile: CachedProfile = {
         userId,
@@ -250,6 +248,11 @@ export async function getFullProfileWithFallback(
         thirdPartyBadges,
         lastUpdated: Date.now()
       };
+
+      // Also cache individual components
+      const twitchCacheKey = `${userId}-${effectiveChannelId}`;
+      inMemoryTwitchBadgesCache.set(twitchCacheKey, twitchBadges);
+      inMemoryThirdPartyBadgesCache.set(userId, thirdPartyBadges);
 
       // Store in memory cache for this session
       inMemoryProfileCache.set(userId, profile);
@@ -281,37 +284,51 @@ export async function refreshProfileInBackground(
   console.log('[CosmeticsCache] Refreshing profile in background for:', username);
 
   try {
-    // Fetch all badge types in parallel
-    const [twitchBadgesResult, seventvCosmeticsResult, thirdPartyBadgesResult] = await Promise.allSettled([
-      (async () => {
-        const { getAllUserBadges } = await import('./badgeService');
-        const badgeData = await getAllUserBadges(userId, username, effectiveChannelId, effectiveChannelName);
-        const uniqueBadges = new Map<string, any>();
-        badgeData.displayBadges.forEach(badge => uniqueBadges.set(badge.id, badge));
-        badgeData.earnedBadges.forEach(badge => {
-          if (!uniqueBadges.has(badge.id)) uniqueBadges.set(badge.id, badge);
-        });
-        return Array.from(uniqueBadges.values());
-      })(),
+    // Fetch badge data from unified service and 7TV cosmetics in parallel
+    // Use getAllUserBadgesWithEarned for profile overlays to get full earned badge collection
+    const { getAllUserBadgesWithEarned } = await import('./badgeService');
+    const [badgeDataResult, seventvCosmeticsResult] = await Promise.allSettled([
+      getAllUserBadgesWithEarned(userId, username, effectiveChannelId, effectiveChannelName),
       (async () => {
         const { getUserCosmetics } = await import('./seventvService');
         return await getUserCosmetics(userId) || { paints: [], badges: [] };
-      })(),
-      (async () => {
-        const { getAllThirdPartyBadges } = await import('./thirdPartyBadges');
-        return await getAllThirdPartyBadges(userId);
       })()
     ]);
 
+    // Process badge data if successful
+    let twitchBadges: any[] = [];
+    let thirdPartyBadges: any[] = [];
+    
+    if (badgeDataResult.status === 'fulfilled') {
+      const badgeData = badgeDataResult.value;
+      
+      // Merge display and earned badges
+      const uniqueBadges = new Map<string, any>();
+      badgeData.displayBadges.forEach((badge: any) => uniqueBadges.set(badge.id, badge));
+      badgeData.earnedBadges.forEach((badge: any) => {
+        if (!uniqueBadges.has(badge.id)) uniqueBadges.set(badge.id, badge);
+      });
+      twitchBadges = Array.from(uniqueBadges.values());
+
+      // Transform third-party badges
+      thirdPartyBadges = (badgeData.thirdPartyBadges || []).map((b: any) => ({
+        id: b.id,
+        title: b.title,
+        imageUrl: b.imageUrl,
+        provider: b.provider,
+        link: b.link
+      }));
+    }
+
     // Update individual caches with fresh data
-    if (twitchBadgesResult.status === 'fulfilled') {
-      inMemoryTwitchBadgesCache.set(twitchCacheKey, twitchBadgesResult.value);
+    if (twitchBadges.length > 0) {
+      inMemoryTwitchBadgesCache.set(twitchCacheKey, twitchBadges);
     }
     if (seventvCosmeticsResult.status === 'fulfilled') {
       inMemoryCosmeticsCache.set(userId, seventvCosmeticsResult.value);
     }
-    if (thirdPartyBadgesResult.status === 'fulfilled') {
-      inMemoryThirdPartyBadgesCache.set(userId, thirdPartyBadgesResult.value);
+    if (thirdPartyBadges.length > 0) {
+      inMemoryThirdPartyBadgesCache.set(userId, thirdPartyBadges);
     }
 
     // Update full profile cache
@@ -320,14 +337,14 @@ export async function refreshProfileInBackground(
       username,
       channelId: effectiveChannelId,
       channelName: effectiveChannelName,
-      twitchBadges: twitchBadgesResult.status === 'fulfilled' ? twitchBadgesResult.value : inMemoryTwitchBadgesCache.get(twitchCacheKey) || [],
+      twitchBadges: twitchBadges.length > 0 ? twitchBadges : inMemoryTwitchBadgesCache.get(twitchCacheKey) || [],
       seventvCosmetics: seventvCosmeticsResult.status === 'fulfilled' ? seventvCosmeticsResult.value : inMemoryCosmeticsCache.get(userId) || { paints: [], badges: [] },
-      thirdPartyBadges: thirdPartyBadgesResult.status === 'fulfilled' ? thirdPartyBadgesResult.value : inMemoryThirdPartyBadgesCache.get(userId) || [],
+      thirdPartyBadges: thirdPartyBadges.length > 0 ? thirdPartyBadges : inMemoryThirdPartyBadgesCache.get(userId) || [],
       lastUpdated: Date.now()
     };
 
     inMemoryProfileCache.set(userId, profile);
-    console.log('[CosmeticsCache] Profile refreshed for:', username);
+    console.log('[CosmeticsCache] Profile refreshed for:', username, `(${twitchBadges.length} Twitch, ${thirdPartyBadges.length} third-party badges)`);
   } catch (error) {
     console.error('[CosmeticsCache] Failed to refresh profile:', error);
   }

@@ -1,3 +1,25 @@
+## [6.0.0] - 2025-12-14
+### ✨ Features
+- **Unified User Profile Service**: StreamNook now fetches and caches comprehensive user profiles (including 7TV cosmetics, all earned Twitch badges, and third-party badges from FFZ/Chatterino/Homies) directly from the Rust backend. This significantly improves performance and reliability.
+- **7TV Cosmetics Support**: Display user 7TV paints and selected badges in profile views.
+- **Enhanced Chat Rendering**: Chat messages now utilize pre-parsed segments and metadata computed in Rust, ensuring pixel-perfect layout prediction and smoother rendering.
+- **Twitch EventSub Integration**: Real-time notifications for channel updates (title, category), stream online/offline status, and raids are now handled directly by the Rust backend.
+- **Improved Emoji Handling**: Emoji shortcode conversion is now offloaded to the Rust backend, reducing frontend JavaScript load.
+- **Activity Tracking & Logging**: Comprehensive logging system with error buffering, automatic batching, and Discord webhook integration (via Rust) for improved error reporting.
+- **Badge Polling & Notifications**: Background polling for new and available Twitch badges is now managed by the Rust backend, triggering desktop notifications.
+
+### 🐛 Bug Fixes
+- **UI Layout Stability**: Addressed various layout calculation issues, particularly with messages containing replies, first-time messages, and complex formatting, ensuring accurate heights and preventing overlaps.
+- **Reconnect Logic**: Improved reliability of WebSocket connections for chat and EventSub.
+- **Emote Rendering**: Correctly prioritizes 7TV emotes over Twitch emotes when both are available.
+- **Historical Message Parsing**: Ensures messages fetched from the IVR API are parsed and laid out correctly, matching live message appearance.
+- **Third-Party Badge Display**: Resolved issues with loading and displaying badges from FFZ, Chatterino, and Homies.
+
+### 🔧 Maintenance
+- **Rust Backend Enhancements**: Significant portion of data fetching, parsing, and caching logic has been moved to the Rust backend for performance and reliability gains.
+- **Dependency Updates**: Added `phf` crate for efficient static maps (e.g., emoji conversion).
+- **Code Cleanup**: Removed deprecated services and internal data structures (e.g., `emojiMap.ts`, `badgePollingService.ts`, `twitchBadges.ts`, `cosmeticsCache.ts` helpers) in favor of the unified Rust backend calls.
+
 ## [5.1.1] - 2025-12-12
 ### ✨ Features
 - **Channel Points Display**: You can now see your current channel points balance in the chat widget.
@@ -767,6 +789,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 

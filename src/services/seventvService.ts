@@ -592,8 +592,23 @@ export const getBadgeImageUrl = (badge: BadgeV4): string => {
   if (badge.localUrl) {
     return badge.localUrl;
   }
-  // For v4 API, badges are served from the CDN
-  return `https://cdn.7tv.app/badge/${badge.id}/3x`;
+  // For v4 API, badges are served from the CDN - use highest quality (4x)
+  return `https://cdn.7tv.app/badge/${badge.id}/4x`;
+};
+
+// Get all resolution URLs for a 7TV badge (for srcSet)
+export const getBadgeImageUrls = (badge: BadgeV4): { url1x: string; url2x: string; url3x: string; url4x: string } => {
+  if (badge.localUrl) {
+    // If we have a local URL, use it for all resolutions
+    return { url1x: badge.localUrl, url2x: badge.localUrl, url3x: badge.localUrl, url4x: badge.localUrl };
+  }
+  const baseUrl = `https://cdn.7tv.app/badge/${badge.id}`;
+  return {
+    url1x: `${baseUrl}/1x`,
+    url2x: `${baseUrl}/2x`,
+    url3x: `${baseUrl}/3x`,
+    url4x: `${baseUrl}/4x`,
+  };
 };
 
 // Get badge image URL for any provider

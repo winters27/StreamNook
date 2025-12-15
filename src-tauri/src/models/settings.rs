@@ -1,10 +1,11 @@
 use crate::services::background_service::BackgroundService;
 use crate::services::drops_service::DropsService;
+use crate::services::emote_service::EmoteService;
 use crate::services::layout_service::LayoutService;
 use crate::services::mining_service::MiningService;
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
-use tokio::sync::Mutex as TokioMutex;
+use tokio::sync::{Mutex as TokioMutex, RwLock};
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct VideoPlayerSettings {
@@ -312,4 +313,5 @@ pub struct AppState {
     pub mining_service: Arc<TokioMutex<MiningService>>,
     pub background_service: Arc<TokioMutex<BackgroundService>>,
     pub layout_service: Arc<LayoutService>,
+    pub emote_service: Arc<RwLock<EmoteService>>,
 }

@@ -7,7 +7,6 @@ import { invoke } from '@tauri-apps/api/core';
 import { Loader2 } from 'lucide-react';
 import { Heart, HeartBreak } from 'phosphor-react';
 import { useAppStore } from '../stores/AppStore';
-import { getBadgeInfo, fetchChannelBadges } from '../services/twitchBadges';
 
 const VideoPlayer = () => {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -15,7 +14,7 @@ const VideoPlayer = () => {
   const hlsRef = useRef<Hls | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const progressUpdateIntervalRef = useRef<number | null>(null);
-  const { streamUrl, settings, getAvailableQualities, changeStreamQuality, handleStreamOffline, isAutoSwitching, currentStream, currentUser } = useAppStore();
+  const { streamUrl, settings, getAvailableQualities, changeStreamQuality, handleStreamOffline, isAutoSwitching, currentStream, currentUser, stopStream } = useAppStore();
   const playerSettings = settings.video_player;
   // Store settings in a ref so createPlayer doesn't need to depend on them
   // This prevents player recreation when volume/muted settings change
@@ -25,8 +24,6 @@ const VideoPlayer = () => {
   const userInitiatedPauseRef = useRef<boolean>(false);
   const hasJumpedToLiveRef = useRef<boolean>(false);
   const [availableQualities, setAvailableQualities] = useState<string[]>([]);
-  const [subscriberBadgeUrl, setSubscriberBadgeUrl] = useState<string | null>(null);
-
   // Overlay visibility state (works in both normal and fullscreen modes)
   const [showOverlay, setShowOverlay] = useState(false);
   const overlayTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -792,91 +789,6 @@ const VideoPlayer = () => {
     }
   }, [availableQualities, updateQualityMenu]);
 
-  // Fetch subscriber badge when channel changes
-  // Uses retry logic since badges may be loaded asynchronously by ChatWidget
-  // Falls back to direct API fetch if cache doesn't have the badge (fixes release build timing issue)
-  useEffect(() => {
-    if (!currentStream?.user_id) {
-      setSubscriberBadgeUrl(null);
-      return;
-    }
-
-    let isCancelled = false;
-
-    const tryGetBadge = () => {
-      const badge = getBadgeInfo('subscriber/0', currentStream.user_id);
-      if (badge?.image_url_2x) {
-        setSubscriberBadgeUrl(badge.image_url_2x);
-        return true;
-      }
-      return false;
-    };
-
-    // Direct fetch fallback - fetches channel badges directly from Twitch API
-    // This handles the case where ChatWidget hasn't loaded badges yet (common in release builds)
-    const fetchBadgeDirectly = async () => {
-      if (isCancelled) return;
-
-      console.log('[VideoPlayer] Fetching subscriber badge directly from API...');
-      try {
-        const [clientId, token] = await invoke<[string, string]>('get_twitch_credentials');
-
-        // Fetch channel badges directly - this also populates the cache for ChatWidget
-        await fetchChannelBadges(currentStream.user_id, clientId, token);
-
-        // Now try to get the badge from the populated cache
-        if (!isCancelled && tryGetBadge()) {
-          console.log('[VideoPlayer] Found subscriber badge after direct fetch');
-        } else if (!isCancelled) {
-          console.log('[VideoPlayer] Channel may not have a subscriber badge');
-        }
-      } catch (err) {
-        console.error('[VideoPlayer] Failed to fetch subscriber badge directly:', err);
-      }
-    };
-
-    // Try immediately from cache
-    if (tryGetBadge()) {
-      return;
-    }
-
-    // Set up retries since badges are loaded asynchronously by ChatWidget
-    const retryIntervals = [500, 1000, 2000, 3000]; // Retry at these intervals
-    let retryIndex = 0;
-    let timeoutId: NodeJS.Timeout;
-
-    const retry = () => {
-      if (isCancelled) return;
-
-      if (retryIndex >= retryIntervals.length) {
-        // All retries exhausted - fetch directly from API as fallback
-        console.log('[VideoPlayer] Cache retries exhausted, fetching badge directly...');
-        fetchBadgeDirectly();
-        return;
-      }
-
-      timeoutId = setTimeout(() => {
-        if (isCancelled) return;
-
-        if (tryGetBadge()) {
-          console.log('[VideoPlayer] Found subscriber badge on retry', retryIndex + 1);
-        } else {
-          retryIndex++;
-          retry();
-        }
-      }, retryIntervals[retryIndex]);
-    };
-
-    retry();
-
-    return () => {
-      isCancelled = true;
-      if (timeoutId) {
-        clearTimeout(timeoutId);
-      }
-    };
-  }, [currentStream?.user_id]);
-
   // Clear overlay timer helper - use ref to avoid dependency issues
   const clearOverlayTimer = useCallback(() => {
     if (overlayTimerRef.current) {
@@ -1075,6 +987,9 @@ const VideoPlayer = () => {
     };
   }, [currentUser?.login]);
 
+  // NOTE: PIP exit handling is done in App.tsx, not here
+  // App.tsx correctly differentiates between "Back to tab" (returns to stream view)
+  // and "X" button (stops stream) by checking if video is paused
   // Handle subscribe button click
   const handleSubscribeClick = useCallback(() => {
     if (currentStream?.user_login) {
@@ -1192,20 +1107,9 @@ const VideoPlayer = () => {
             title={`Subscribe to ${currentStream.user_name}`}
           >
             <span>Subscribe</span>
-            {subscriberBadgeUrl ? (
-              <img
-                src={subscriberBadgeUrl}
-                alt="Subscriber badge"
-                className="w-5 h-5"
-                onError={(e) => {
-                  e.currentTarget.style.display = 'none';
-                }}
-              />
-            ) : (
-              <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
-                <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
-              </svg>
-            )}
+            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+              <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
+            </svg>
           </button>
         </div>
       )}

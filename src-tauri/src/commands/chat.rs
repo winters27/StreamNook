@@ -1,5 +1,7 @@
+use crate::models::chat_layout::ChatMessage;
 use crate::models::settings::AppState;
 use crate::services::chat_service::ChatService;
+use crate::services::irc_service::IrcService;
 use anyhow::Result;
 use tauri::State;
 
@@ -37,4 +39,15 @@ pub async fn leave_chat_channel(channel: String) -> Result<(), String> {
     ChatService::leave_channel(&channel)
         .await
         .map_err(|e| e.to_string())
+}
+
+/// Parse historical IRC messages (from IVR API) through the Rust backend
+/// This ensures they get proper layout calculation just like live messages
+#[tauri::command]
+pub async fn parse_historical_messages(
+    messages: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<Vec<ChatMessage>, String> {
+    let layout_service = state.layout_service.clone();
+    Ok(IrcService::parse_historical_messages(messages, &layout_service).await)
 }

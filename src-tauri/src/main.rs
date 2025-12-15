@@ -27,12 +27,14 @@
 #![allow(clippy::collapsible_match)]
 
 use commands::{
-    app::*, automation::*, badge_metadata::*, badges::*, cache::*, chat::*, components::*,
-    cosmetics_cache::*, discord::*, drops::*, layout::*, settings::*, seventv::*, streaming::*,
-    twitch::*, universal_cache::*, whisper_storage::*,
+    app::*, automation::*, badge_metadata::*, badge_service::*, badges::*, cache::*, chat::*,
+    components::*, cosmetics_cache::*, discord::*, drops::*, emoji::*, emotes::*, eventsub::*,
+    layout::*, logs::*, profile_cache::*, settings::*, seventv::*, streaming::*, twitch::*,
+    universal_cache::*, user_profile::*, whisper_storage::*,
 };
 use models::settings::{AppState, Settings};
 use services::background_service::BackgroundService;
+use services::badge_polling_service::BadgePollingService;
 use services::cache_service;
 use services::drops_service::DropsService;
 use services::live_notification_service::LiveNotificationService;
@@ -106,6 +108,18 @@ fn main() {
     // Initialize layout service
     let layout_service = Arc::new(services::layout_service::LayoutService::new());
 
+    // Initialize emote service
+    let emote_service = Arc::new(tokio::sync::RwLock::new(
+        services::emote_service::EmoteService::new(),
+    ));
+    let emote_service_state = commands::emotes::EmoteServiceState(emote_service.clone());
+
+    // Initialize EventSub service
+    let eventsub_service = Arc::new(tokio::sync::RwLock::new(
+        services::eventsub_service::EventSubService::new(),
+    ));
+    let eventsub_service_state = commands::eventsub::EventSubServiceState(eventsub_service.clone());
+
     Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
@@ -113,6 +127,8 @@ fn main() {
         .manage(live_notification_service.clone())
         .manage(whisper_service.clone())
         .manage(layout_service.clone())
+        .manage(emote_service_state)
+        .manage(eventsub_service_state)
         .setup(move |app| {
             let app_handle = app.handle().clone();
             let live_notif_service = live_notification_service.clone();
@@ -130,6 +146,7 @@ fn main() {
                 mining_service,
                 background_service: background_service.clone(),
                 layout_service: layout_service.clone(),
+                emote_service: emote_service.clone(),
             };
 
             // Clone the app_state before managing it
@@ -145,10 +162,18 @@ fn main() {
 
             // Start live notification service
             let live_app_handle = app_handle.clone();
+            let app_state_for_live_notif_clone = app_state_for_live_notif.clone();
             tauri::async_runtime::spawn(async move {
-                if let Err(e) = live_notif_service.start(live_app_handle, app_state_for_live_notif).await {
+                if let Err(e) = live_notif_service.start(live_app_handle, app_state_for_live_notif_clone).await {
                     eprintln!("Failed to start live notification service: {}", e);
                 }
+            });
+
+            // Start badge polling service
+            let badge_polling_service = Arc::new(BadgePollingService::new());
+            let badge_app_handle = app_handle.clone();
+            tauri::async_runtime::spawn(async move {
+                badge_polling_service.start(badge_app_handle, app_state_for_live_notif).await;
             });
 
             // Verify token health on startup and auto-start dashboard for admins
@@ -227,6 +252,18 @@ fn main() {
                 }
             });
 
+            // Initialize unified badge service
+            tauri::async_runtime::spawn(async move {
+                use commands::badge_service::initialize_badge_service;
+
+                println!("[Main] Initializing unified badge service...");
+
+                // Wait a moment for token to be available
+                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+
+                initialize_badge_service().await;
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -290,6 +327,7 @@ fn main() {
             start_chat,
             stop_chat,
             send_chat_message,
+            parse_historical_messages,
             // Discord commands
             connect_discord,
             disconnect_discord,
@@ -323,6 +361,15 @@ fn main() {
             fetch_channel_badges,
             get_twitch_credentials,
             get_user_badges,
+            // Unified Badge Service commands
+            get_user_badges_unified,
+            get_user_badges_with_earned_unified,
+            parse_badge_string,
+            prefetch_global_badges_unified,
+            prefetch_channel_badges_unified,
+            prefetch_third_party_badges,
+            clear_badge_cache_unified,
+            clear_channel_badge_cache_unified,
             // Badge Metadata commands
             fetch_badge_metadata,
             // Cache commands
@@ -358,6 +405,15 @@ fn main() {
             cache_third_party_badges,
             get_cached_third_party_badges,
             prefetch_user_cosmetics,
+            // Profile Cache commands
+            get_user_profile,
+            refresh_user_profile,
+            clear_profile_cache,
+            preload_badge_databases,
+            // User Profile commands (unified aggregation)
+            get_user_profile_complete,
+            clear_user_profile_cache,
+            clear_user_profile_cache_for_user,
             // Drops commands
             get_drops_settings,
             update_drops_settings,
@@ -405,6 +461,18 @@ fn main() {
             download_and_install_bundle,
             // Layout commands
             update_layout_config,
+            update_layout_config_extended,
+            update_layout_width,
+            get_user_message_history,
+            get_user_message_history_limited,
+            clear_user_message_history,
+            get_user_history_count,
+            // Emoji commands
+            convert_emoji_shortcodes,
+            // Emote commands
+            fetch_channel_emotes,
+            get_emote_by_name,
+            clear_emote_cache,
             // 7TV commands
             seventv_graphql,
             // Automation commands
@@ -420,6 +488,18 @@ fn main() {
             delete_whisper_conversation,
             get_whisper_storage_path,
             migrate_whispers_from_localstorage,
+            // Log commands
+            log_message,
+            track_activity,
+            get_recent_logs,
+            get_logs_by_level,
+            get_recent_activity,
+            clear_logs,
+            // EventSub commands
+            connect_eventsub,
+            disconnect_eventsub,
+            is_eventsub_connected,
+            get_eventsub_session_id,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

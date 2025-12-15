@@ -5,7 +5,6 @@ import { X, SpeakerHigh, SpeakerSlash } from 'phosphor-react';
 import { listen, emit } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../stores/AppStore';
-import { badgePollingService, type BadgeNotification } from '../services/badgePollingService';
 import type {
     DynamicIslandNotification,
     LiveNotificationData,
@@ -776,23 +775,27 @@ const DynamicIsland = () => {
         };
     }, [notificationsEnabled, showChannelPointsNotifications, flushChannelPointsCluster]);
 
-    // Start badge polling and listen for badge notifications
+    // Listen for badge notifications from Rust backend
     useEffect(() => {
         if (!notificationsEnabled || !showBadgeNotifications) {
             return;
         }
 
-        // Start the badge polling service
-        badgePollingService.start();
+        // Listen for badge-notification events from Rust
+        const unlisten = listen<Array<{
+            badge_name: string;
+            badge_set_id: string;
+            badge_version: string;
+            badge_image_url: string;
+            badge_description?: string;
+            status: 'new' | 'available' | 'coming_soon';
+            date_info?: string;
+        }>>('badge-notification', (event) => {
+            const badges = event.payload;
 
-        // Subscribe to badge notifications
-        const unsubscribe = badgePollingService.subscribe((badges: BadgeNotification[]) => {
             badges.forEach((badge) => {
                 // Add to Dynamic Island if enabled
                 if (useDynamicIsland) {
-                    const statusText = badge.status === 'new' ? 'New Badge' :
-                        badge.status === 'available' ? 'Now Available' : 'Coming Soon';
-
                     const notification: DynamicIslandNotification = {
                         id: `badge-${badge.badge_set_id}-${badge.badge_version}-${Date.now()}`,
                         type: 'badge',
@@ -844,8 +847,7 @@ const DynamicIsland = () => {
         });
 
         return () => {
-            unsubscribe();
-            badgePollingService.stop();
+            unlisten.then((fn) => fn());
         };
     }, [notificationsEnabled, showBadgeNotifications, useDynamicIsland, useToast, addNotification, addToast, soundEnabled, playNotificationSound, setShowBadgesOverlay, sendNativeNotification]);
 

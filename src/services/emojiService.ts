@@ -1,8 +1,8 @@
 /**
  * Emoji Service - Converts Unicode emojis to iOS-style emoji images
  * Uses Tauri proxy to fetch CDN-hosted Apple emoji images (bypasses tracking prevention)
+ * Emoji shortcode conversion is now handled by Rust backend for zero JS heap allocation
  */
-import { SHORTCODE_TO_UNICODE } from './emojiMap';
 import { invoke } from '@tauri-apps/api/core';
 
 // Cache for proxied emoji URLs (codepoint -> data URL)
@@ -59,24 +59,18 @@ export function containsEmoji(text: string): boolean {
 /**
  * Replaces emoji shortcodes in text with their unicode equivalents
  * Only matches shortcodes wrapped in colons like :smiley: or :heart:
+ * Now offloaded to Rust backend for zero JS heap allocation
  */
-function replaceShortcodes(text: string): string {
+async function replaceShortcodes(text: string): Promise<string> {
     if (!text) return text;
 
-    // Only match shortcodes that are wrapped in colons like :smiley:
-    // This regex matches :word_with_underscores: or :word-with-dashes: or :word123:
-    return text.replace(/:([a-zA-Z0-9_-]+):/g, (match, shortcode) => {
-        // First try the full match with colons
-        if (SHORTCODE_TO_UNICODE[match]) {
-            return SHORTCODE_TO_UNICODE[match];
-        }
-        // Then try just the shortcode without colons
-        if (SHORTCODE_TO_UNICODE[shortcode]) {
-            return SHORTCODE_TO_UNICODE[shortcode];
-        }
-        // Return original if no match
-        return match;
-    });
+    try {
+        // Call Rust backend for emoji shortcode conversion
+        return await invoke<string>('convert_emoji_shortcodes', { text });
+    } catch (error) {
+        console.warn('Failed to convert emoji shortcodes via Rust, returning original text:', error);
+        return text;
+    }
 }
 
 /**
@@ -89,13 +83,13 @@ export interface EmojiSegment {
     emojiUrl?: string;
 }
 
-export function parseEmojis(text: string): EmojiSegment[] {
+export async function parseEmojis(text: string): Promise<EmojiSegment[]> {
     if (!text) {
         return [];
     }
 
     // First replace any shortcodes with actual unicode emojis
-    const processedText = replaceShortcodes(text);
+    const processedText = await replaceShortcodes(text);
 
     // Reset regex lastIndex
     EMOJI_REGEX.lastIndex = 0;
@@ -204,7 +198,7 @@ export async function parseEmojisProxied(text: string): Promise<EmojiSegment[]> 
     }
 
     // First replace any shortcodes with actual unicode emojis
-    const processedText = replaceShortcodes(text);
+    const processedText = await replaceShortcodes(text);
 
     // Reset regex lastIndex
     EMOJI_REGEX.lastIndex = 0;

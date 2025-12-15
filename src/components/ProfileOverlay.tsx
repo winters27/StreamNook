@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useAppStore } from '../stores/AppStore';
 import { X, User, ExternalLink } from 'lucide-react';
-import { computePaintStyle, getBadgeImageUrl } from '../services/seventvService';
+import { computePaintStyle, getBadgeImageUrl, getBadgeImageUrls } from '../services/seventvService';
 import { TwitchBadge } from '../services/badgeService';
 import { ThirdPartyBadge } from '../services/thirdPartyBadges';
 import { SevenTVBadge, SevenTVPaint } from '../types';
@@ -277,18 +277,18 @@ const ProfileOverlay = ({ isOpen, onClose, anchorPosition }: ProfileOverlayProps
               </div>
 
               {/* Badges Section - Filter out broadcaster and subscriber badges as they're irrelevant in profile context */}
-              {(twitchBadges.filter(b => b.setID !== 'broadcaster' && b.setID !== 'subscriber').length > 0 || seventvBadges.length > 0 || thirdPartyBadges.length > 0) && (
+              {(twitchBadges.filter(b => (b as any).setID !== 'broadcaster' && (b as any).setID !== 'subscriber').length > 0 || seventvBadges.length > 0 || thirdPartyBadges.length > 0) && (
                 <div className="space-y-3">
                   {/* Twitch Badges */}
-                  {twitchBadges.filter(b => b.setID !== 'broadcaster' && b.setID !== 'subscriber').length > 0 && (
+                  {twitchBadges.filter(b => (b as any).setID !== 'broadcaster' && (b as any).setID !== 'subscriber').length > 0 && (
                     <div>
                       <p className="text-[10px] text-textSecondary mb-1.5 font-semibold uppercase tracking-wide">Twitch Badges</p>
                       <div className="flex items-center gap-1.5 flex-wrap p-2 glass-panel rounded-lg">
-                        {twitchBadges.filter(b => b.setID !== 'broadcaster' && b.setID !== 'subscriber').map((badge, idx) => (
+                        {twitchBadges.filter(b => (b as any).setID !== 'broadcaster' && (b as any).setID !== 'subscriber').map((badge, idx) => (
                           <img
                             key={`twitch-${badge.id}-${idx}`}
-                            src={badge.image1x}
-                            srcSet={`${badge.image1x} 1x, ${badge.image2x} 2x, ${badge.image4x} 4x`}
+                            src={(badge as any).image4x || (badge as any).image1x}
+                            srcSet={`${(badge as any).image1x} 1x, ${(badge as any).image2x} 2x, ${(badge as any).image4x} 4x`}
                             alt={badge.title}
                             title={badge.title}
                             className="w-5 h-5 cursor-pointer hover:scale-110 transition-transform"
@@ -307,11 +307,12 @@ const ProfileOverlay = ({ isOpen, onClose, anchorPosition }: ProfileOverlayProps
                       <p className="text-[10px] text-textSecondary mb-1.5 font-semibold uppercase tracking-wide">7TV Badges</p>
                       <div className="flex items-center gap-1.5 flex-wrap p-2 glass-panel rounded-lg">
                         {seventvBadges.map((badge, idx) => {
-                          const badgeUrl = getBadgeImageUrl(badge as any);
-                          return badgeUrl ? (
+                          const urls = getBadgeImageUrls(badge as any);
+                          return urls.url4x ? (
                             <img
                               key={`7tv-${badge.id}-${idx}`}
-                              src={badgeUrl}
+                              src={urls.url4x}
+                              srcSet={`${urls.url1x} 1x, ${urls.url2x} 2x, ${urls.url4x} 4x`}
                               alt={badge.tooltip || badge.name}
                               title={badge.tooltip || badge.name}
                               className="w-5 h-5 cursor-pointer hover:scale-110 transition-transform"
@@ -338,10 +339,13 @@ const ProfileOverlay = ({ isOpen, onClose, anchorPosition }: ProfileOverlayProps
                     <div>
                       <p className="text-[10px] text-textSecondary mb-1.5 font-semibold uppercase tracking-wide">Other Badges</p>
                       <div className="flex items-center gap-1.5 flex-wrap p-2 glass-panel rounded-lg">
-                        {thirdPartyBadges.map((badge, idx) => (
+                        {thirdPartyBadges.map((badge: any, idx) => (
                           <img
                             key={`${badge.provider}-${badge.id}-${idx}`}
-                            src={badge.imageUrl}
+                            src={badge.image4x || badge.imageUrl}
+                            srcSet={badge.image1x && badge.image2x && badge.image4x 
+                              ? `${badge.image1x} 1x, ${badge.image2x} 2x, ${badge.image4x} 4x`
+                              : undefined}
                             alt={badge.title}
                             title={`${badge.title} (${badge.provider.toUpperCase()})`}
                             className="w-5 h-5 cursor-pointer hover:scale-110 transition-transform"

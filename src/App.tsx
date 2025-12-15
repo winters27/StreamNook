@@ -189,6 +189,11 @@ function App() {
       await loadSettings();
       await checkAuthStatus();
 
+      // Clean up orphaned localStorage from migrated services (one-time cleanup)
+      // Badge polling service moved to Rust - remove old localStorage keys
+      localStorage.removeItem('streamnook_known_badges');
+      localStorage.removeItem('streamnook_notified_available_badges');
+
       // Load active drops cache on startup (cached for 1 hour)
       loadActiveDropsCache();
 
