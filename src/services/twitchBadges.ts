@@ -1,387 +1,204 @@
-// Service for fetching and caching Twitch badges using Helix API
-import { invoke } from '@tauri-apps/api/core';
-
-interface BadgeVersion {
-  id: string;
-  image_url_1x: string;
-  image_url_2x: string;
-  image_url_4x: string;
-  title: string;
-  description: string;
-  click_action: string | null;
-  click_url: string | null;
-  localUrl?: string;
-}
-
-interface BadgeSet {
-  set_id: string;
-  versions: BadgeVersion[];
-}
-
-interface HelixBadgesResponse {
-  data: BadgeSet[];
-}
-
-// Cache for badge data
-const globalBadgesCache: Map<string, BadgeVersion> = new Map();
-const channelBadgesCache: Map<string, Map<string, BadgeVersion>> = new Map();
-let globalBadgesFetched = false;
-
-// Track which badges we've already warned about to avoid spam
-const warnedBadges = new Set<string>();
-
-
-
 /**
- * Fetch global Twitch badges (moderator, staff, partner, etc.)
- * Using Tauri backend command with Helix API
+ * DEPRECATED: This service has been replaced by the unified Rust badge service
+ * 
+ * All badge functionality is now handled in Rust for maximum performance.
+ * Please use `badgeService.ts` instead:
+ * 
+ * ```typescript
+ * import { getAllUserBadges, prefetchChannelBadges } from './badgeService';
+ * ```
+ * 
+ * The Rust backend handles:
+ * - Twitch Helix API (global + channel badges)
+ * - Twitch GQL (user display/earned badges)
+ * - Third-party providers (FFZ, Chatterino, Homies)
+ * - LRU caching with automatic eviction
+ * - Background pre-fetching
  */
-export async function fetchGlobalBadges(clientId: string, token: string): Promise<void> {
-  if (globalBadgesFetched) {
-    return;
-  }
 
-  // Try to load from disk cache if enabled
-  try {
-    const { invoke } = await import('@tauri-apps/api/core');
-    const settings = await invoke('load_settings') as any;
+// Re-export from unified service for backwards compatibility
+export {
+  getAllUserBadges,
+  parseBadgeString,
+  prefetchGlobalBadges,
+  prefetchChannelBadges,
+  clearBadgeCache,
+  clearChannelBadgeCache,
+  type BadgeInfo,
+  type UserBadge,
+  type UserBadgesResponse,
+  type TwitchBadge,
+} from './badgeService';
 
-    if (settings.cache?.enabled) {
-      const cachedData = await invoke('load_badges_from_cache', {
-        cacheType: 'global',
-        channelId: null
-      }) as string | null;
+// Legacy function names for backwards compatibility
+export { prefetchGlobalBadges as fetchGlobalBadges } from './badgeService';
 
-      if (cachedData) {
-        const badgeData = JSON.parse(cachedData) as Array<[string, BadgeVersion]>;
-        badgeData.forEach(([key, version]) => {
-          globalBadgesCache.set(key, version);
-        });
-        globalBadgesFetched = true;
-        console.log(`[TwitchBadges] Loaded ${globalBadgesCache.size} global badge versions from cache`);
-        return;
-      }
-    }
-  } catch (e) {
-    console.warn('[TwitchBadges] Failed to load global badges from cache:', e);
-  }
-
-  console.log('[TwitchBadges] Fetching global badges...');
-  try {
-    const { invoke } = await import('@tauri-apps/api/core');
-    const response = await invoke<HelixBadgesResponse>('fetch_global_badges', {
-      clientId,
-      token,
-    });
-
-    // Parse badge sets from Helix API response
-    if (response.data) {
-      // Get cached files first
-      let cachedFiles: Record<string, string> = {};
-      try {
-        cachedFiles = await invoke('get_cached_files', { cacheType: 'badge' });
-      } catch (e) {
-        console.warn('[TwitchBadges] Failed to get cached badge files:', e);
-      }
-
-      const { convertFileSrc } = await import('@tauri-apps/api/core');
-      const itemsToCache: Array<{ id: string; url: string; localUrl?: string }> = [];
-
-      response.data.forEach((badgeSet) => {
-        badgeSet.versions.forEach((version) => {
-          const key = `${badgeSet.set_id}/${version.id}`;
-
-          // Use twitch-global- prefix to prevent collision with channel-specific badges
-          const cacheId = `twitch-global-${badgeSet.set_id}-${version.id}`;
-          const localPath = cachedFiles[cacheId];
-
-          if (localPath) {
-            version.localUrl = convertFileSrc(localPath);
-          }
-
-          globalBadgesCache.set(key, version);
-          itemsToCache.push({
-            id: cacheId,
-            url: version.image_url_4x,
-            localUrl: version.localUrl
-          });
-        });
-      });
-
-      // Trigger background caching with properly prefixed IDs
-      cacheBadgeImages(itemsToCache);
-    }
-
-    globalBadgesFetched = true;
-    console.log(`[TwitchBadges] Loaded ${globalBadgesCache.size} global badge versions`);
-
-    // Save to disk cache if enabled
-    try {
-      const settings = await invoke('load_settings') as any;
-
-      if (settings.cache?.enabled) {
-        const expiryDays = settings.cache?.expiry_days || 7;
-        const badgeData = Array.from(globalBadgesCache.entries());
-        await invoke('save_badges_to_cache', {
-          cacheType: 'global',
-          channelId: null,
-          data: JSON.stringify(badgeData),
-          expiryDays
-        });
-      }
-    } catch (e) {
-      console.warn('[TwitchBadges] Failed to save global badges to cache:', e);
-    }
-  } catch (error) {
-    console.error('[TwitchBadges] Error fetching global badges:', error);
-    globalBadgesFetched = true;
-  }
+// Older callsites expect a 3-arg `fetchChannelBadges(channelId, clientId, token)`.
+// Keep that signature but ignore extra args.
+export async function fetchChannelBadges(channelId: string, _clientId?: string, _token?: string): Promise<void> {
+  const { prefetchChannelBadges } = await import('./badgeService');
+  await prefetchChannelBadges(channelId);
 }
 
 /**
- * Fetch channel-specific badges (subscriber badges, bits badges, etc.)
- * Using Tauri backend command with Helix API
+ * @deprecated Badge info is now included in the UserBadgesResponse from getAllUserBadges()
+ * This stub returns null to maintain backwards compatibility
  */
-export async function fetchChannelBadges(
-  channelId: string,
-  clientId: string,
-  token: string
-): Promise<void> {
-  if (channelBadgesCache.has(channelId)) {
-    return;
-  }
-
-  // Try to load from disk cache if enabled
-  try {
-    const { invoke } = await import('@tauri-apps/api/core');
-    const settings = await invoke('load_settings') as any;
-
-    if (settings.cache?.enabled) {
-      const cachedData = await invoke('load_badges_from_cache', {
-        cacheType: 'channel',
-        channelId
-      }) as string | null;
-
-      if (cachedData) {
-        const badgeData = JSON.parse(cachedData) as Array<[string, BadgeVersion]>;
-        const channelCache = new Map<string, BadgeVersion>();
-        badgeData.forEach(([key, version]) => {
-          channelCache.set(key, version);
-        });
-        channelBadgesCache.set(channelId, channelCache);
-        console.log(`[TwitchBadges] Loaded ${channelCache.size} channel badge versions from cache for ${channelId}`);
-        return;
-      }
-    }
-  } catch (e) {
-    console.warn(`[TwitchBadges] Failed to load channel badges from cache for ${channelId}:`, e);
-  }
-
-  console.log(`[TwitchBadges] Fetching channel badges for ${channelId}...`);
-  try {
-    const { invoke } = await import('@tauri-apps/api/core');
-    const response = await invoke<HelixBadgesResponse>('fetch_channel_badges', {
-      channelId,
-      clientId,
-      token,
-    });
-
-    const channelCache = new Map<string, BadgeVersion>();
-
-    // Parse badge sets from Helix API response
-    if (response.data) {
-      // Get cached files first
-      let cachedFiles: Record<string, string> = {};
-      try {
-        cachedFiles = await invoke('get_cached_files', { cacheType: 'badge' });
-      } catch (e) {
-        console.warn('[TwitchBadges] Failed to get cached badge files:', e);
-      }
-
-      const { convertFileSrc } = await import('@tauri-apps/api/core');
-      const itemsToCache: Array<{ id: string; url: string; localUrl?: string }> = [];
-
-      response.data.forEach((badgeSet) => {
-        badgeSet.versions.forEach((version) => {
-          const key = `${badgeSet.set_id}/${version.id}`;
-
-          // Use twitch-${channelId}- prefix to prevent collision between channels
-          const cacheId = `twitch-${channelId}-${badgeSet.set_id}-${version.id}`;
-          const localPath = cachedFiles[cacheId];
-
-          if (localPath) {
-            version.localUrl = convertFileSrc(localPath);
-          }
-
-          channelCache.set(key, version);
-          itemsToCache.push({
-            id: cacheId,
-            url: version.image_url_4x,
-            localUrl: version.localUrl
-          });
-        });
-      });
-
-      // Trigger background caching with channel-prefixed IDs
-      cacheBadgeImages(itemsToCache);
-    }
-
-    channelBadgesCache.set(channelId, channelCache);
-
-    // Log subscriber badges specifically for debugging
-    const subscriberKeys = Array.from(channelCache.keys()).filter(k => k.startsWith('subscriber'));
-    console.log(`[TwitchBadges] Loaded ${channelCache.size} channel badge versions for ${channelId}`);
-    console.log(`[TwitchBadges] Channel ${channelId} subscriber badge versions:`, subscriberKeys);
-
-    // Log sample subscriber badge details
-    if (subscriberKeys.length > 0) {
-      const sampleKey = subscriberKeys[0];
-      const sampleBadge = channelCache.get(sampleKey);
-      console.log(`[TwitchBadges] Sample subscriber badge (${sampleKey}):`, {
-        title: sampleBadge?.title,
-        image_url_1x: sampleBadge?.image_url_1x,
-        image_url_4x: sampleBadge?.image_url_4x
-      });
-    }
-
-    // Save to disk cache if enabled
-    try {
-      const settings = await invoke('load_settings') as any;
-
-      if (settings.cache?.enabled) {
-        const expiryDays = settings.cache?.expiry_days || 7;
-        const badgeData = Array.from(channelCache.entries());
-        await invoke('save_badges_to_cache', {
-          cacheType: 'channel',
-          channelId,
-          data: JSON.stringify(badgeData),
-          expiryDays
-        });
-      }
-    } catch (e) {
-      console.warn(`[TwitchBadges] Failed to save channel badges to cache for ${channelId}:`, e);
-    }
-  } catch (error) {
-    console.error(`[TwitchBadges] Error fetching channel badges for ${channelId}:`, error);
-    channelBadgesCache.set(channelId, new Map());
-  }
-}
-
-/**
- * Get badge information for a specific badge
- */
-export function getBadgeInfo(badgeKey: string, channelId?: string): BadgeVersion | null {
-  // Check channel-specific badges first
-  if (channelId) {
-    const channelCache = channelBadgesCache.get(channelId);
-    if (channelCache?.has(badgeKey)) {
-      return channelCache.get(badgeKey)!;
-    }
-  }
-
-  // Fall back to global badges
-  if (globalBadgesCache.has(badgeKey)) {
-    return globalBadgesCache.get(badgeKey)!;
-  }
-
+export function getBadgeInfo(_badgeKey: string, _channelId?: string): any | null {
+  console.warn('[twitchBadges] getBadgeInfo() is deprecated. Use getAllUserBadges() instead');
   return null;
 }
 
 /**
- * Parse badge string from IRC tags and return badge information
+ * @deprecated Badge initialization is now automatic
  */
-export function parseBadges(badgeString: string, channelId?: string): Array<{ key: string; info: BadgeVersion }> {
+export async function initializeBadges(_clientId: string, _token: string, channelId?: string): Promise<void> {
+  console.warn('[twitchBadges] initializeBadges() is deprecated. Badges initialize automatically');
+  // Pre-fetch channel badges if provided
+  if (channelId) {
+    const { prefetchChannelBadges } = await import('./badgeService');
+    await prefetchChannelBadges(channelId);
+  }
+}
+
+// In-memory cache for badge metadata
+// Global badges come from `commands/badges.rs` (universal cache)
+let globalBadgesCache: any = null;
+
+// Channel badges are per-room-id and must be fetched separately.
+// IMPORTANT: Many chat-visible badges (subscriber, bits, etc.) are channel-scoped.
+const channelBadgesCache = new Map<string, any>();
+
+/**
+ * Initialize badge cache from Rust.
+ *
+ * This must complete BEFORE we start consuming chat messages, otherwise
+ * `parseBadges()` will return `{info:null}` and ChatMessage won't render them.
+ */
+export async function initializeBadgeCache(channelId?: string): Promise<void> {
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+
+    // ------------------------------------------------------------
+    // Global badges (cached on disk via universal cache)
+    // ------------------------------------------------------------
+    let globalBadges = await invoke('get_cached_global_badges');
+
+    if (!globalBadges) {
+      // Not cached, fetch+cache via the non-unified badge command.
+      // (The unified badge service caches in memory only, and won't populate
+      // `get_cached_global_badges`.)
+      console.log('[BadgeCache] Global badges not cached, prefetching...');
+      await invoke('prefetch_global_badges');
+      globalBadges = await invoke('get_cached_global_badges');
+    }
+
+    if (globalBadges) {
+      globalBadgesCache = globalBadges;
+      console.log('[BadgeCache] Loaded global badges into memory cache');
+    } else {
+      console.warn('[BadgeCache] Failed to load global badges even after prefetch');
+    }
+
+    // ------------------------------------------------------------
+    // Channel badges (not stored in universal cache in this codepath)
+    // ------------------------------------------------------------
+    if (channelId) {
+      try {
+        // Fetch credentials + channel badges in one shot.
+        const [clientId, token] = await invoke<[string, string]>('get_twitch_credentials');
+        const channelBadges = await invoke<any>('fetch_channel_badges', {
+          channelId,
+          clientId,
+          token,
+        });
+
+        channelBadgesCache.set(channelId, channelBadges);
+        console.log('[BadgeCache] Loaded channel badges into memory cache for:', channelId);
+      } catch (e) {
+        console.warn('[BadgeCache] Failed to fetch channel badges:', e);
+      }
+
+      // Still prefetch in unified service so other codepaths (profile lookups)
+      // can take advantage of the warmed in-memory cache.
+      try {
+        await invoke('prefetch_channel_badges_unified', { channelId });
+      } catch {
+        // ignore
+      }
+    }
+  } catch (error) {
+    console.warn('[BadgeCache] Failed to initialize badge cache:', error);
+  }
+}
+
+/**
+ * Legacy function for parsing badge strings
+ * Enriches badges with metadata from in-memory cache
+ */
+export function parseBadges(badgeString: string, channelId?: string): Array<{ key: string; info: any }> {
   if (!badgeString) return [];
 
-  const badges: Array<{ key: string; info: BadgeVersion }> = [];
-
-  badgeString.split(',').forEach(badge => {
+  return badgeString.split(',').map((badge) => {
     const [name, version] = badge.split('/');
-    if (name && version) {
-      const key = `${name}/${version}`;
-      const info = getBadgeInfo(key, channelId);
+    const key = `${name}/${version}`;
 
-      if (info) {
-        badges.push({ key, info });
-      } else {
-        // Only warn once per unique badge key to avoid spam
-        const warnKey = `${channelId || 'global'}-${key}`;
-        if (!warnedBadges.has(warnKey)) {
-          warnedBadges.add(warnKey);
-          const channelCache = channelId ? channelBadgesCache.get(channelId) : null;
-          console.warn(`[TwitchBadges] Badge NOT FOUND: "${key}" (channel: ${channelId || 'none'})`);
-          console.log(`[TwitchBadges] Channel cache has subscriber keys:`, channelCache ? Array.from(channelCache.keys()).filter(k => k.startsWith('subscriber')).slice(0, 15) : 'no cache');
+    // Look up badge info from in-memory cache (channel first, then global)
+    const info = getBadgeInfoFromCache(name, version, channelId);
+
+    return {
+      key,
+      info,
+    };
+  });
+}
+
+/**
+ * Get badge info from in-memory cache (synchronous)
+ */
+function getBadgeInfoFromCache(setId: string, versionId: string, channelId?: string): any | null {
+  // 1) Channel badges first (subscriber, bits, etc.)
+  if (channelId) {
+    const channelBadges = channelBadgesCache.get(channelId);
+    if (channelBadges?.data) {
+      for (const badgeSet of channelBadges.data) {
+        if (badgeSet.set_id === setId) {
+          const badgeVersion = badgeSet.versions.find((v: any) => v.id === versionId);
+          if (badgeVersion) {
+            return {
+              image_url_1x: badgeVersion.image_url_1x,
+              image_url_2x: badgeVersion.image_url_2x,
+              image_url_4x: badgeVersion.image_url_4x,
+              title: badgeVersion.title,
+              description: badgeVersion.description,
+              click_action: badgeVersion.click_action,
+              click_url: badgeVersion.click_url,
+            };
+          }
         }
       }
     }
-  });
-
-  return badges;
-}
-
-/**
- * Initialize badge caches
- * Requires Twitch Client ID and access token for authentication
- */
-export async function initializeBadges(
-  clientId: string,
-  token: string,
-  channelId?: string
-): Promise<void> {
-  await fetchGlobalBadges(clientId, token);
-  if (channelId) {
-    await fetchChannelBadges(channelId, clientId, token);
-  }
-}
-
-/**
- * Clear all badge caches
- */
-export function clearBadgeCache(): void {
-  globalBadgesCache.clear();
-  channelBadgesCache.clear();
-  globalBadgesFetched = false;
-  warnedBadges.clear();
-}
-
-/**
- * Helper to cache badge images with proper IDs
- * @param items - Array of items to cache with id and url
- */
-async function cacheBadgeImages(items: Array<{ id: string; url: string; localUrl?: string }>) {
-  const { invoke } = await import('@tauri-apps/api/core');
-
-  // Load settings to check if caching is enabled and get expiry
-  let expiryDays = 0; // Default to never expire for badges if settings fail
-  try {
-    const settings = await invoke('load_settings') as any;
-    if (settings.cache?.enabled === false) {
-      return; // Caching disabled
-    }
-    // Use configured expiry or default to 0 (permanent) for badges if not specified
-    expiryDays = settings.cache?.expiry_days ?? 0;
-  } catch (e) {
-    console.warn('[TwitchBadges] Failed to load settings for cache config:', e);
   }
 
-  // Process in chunks
-  const CHUNK_SIZE = 10;
-  for (let i = 0; i < items.length; i += CHUNK_SIZE) {
-    const chunk = items.slice(i, i + CHUNK_SIZE);
-    await Promise.allSettled(chunk.map(async (item) => {
-      try {
-        if (item.localUrl) return;
+  // 2) Global badges fallback
+  if (!globalBadgesCache || !globalBadgesCache.data) return null;
 
-        await invoke('download_and_cache_file', {
-          cacheType: 'badge',
-          id: item.id,
-          url: item.url,
-          expiryDays
-        });
-      } catch (e) {
-        // Silently ignore cache errors
+  for (const badgeSet of globalBadgesCache.data) {
+    if (badgeSet.set_id === setId) {
+      const badgeVersion = badgeSet.versions.find((v: any) => v.id === versionId);
+      if (badgeVersion) {
+        return {
+          image_url_1x: badgeVersion.image_url_1x,
+          image_url_2x: badgeVersion.image_url_2x,
+          image_url_4x: badgeVersion.image_url_4x,
+          title: badgeVersion.title,
+          description: badgeVersion.description,
+          click_action: badgeVersion.click_action,
+          click_url: badgeVersion.click_url,
+        };
       }
-    }));
-    await new Promise(resolve => setTimeout(resolve, 100));
+    }
   }
+
+  return null;
 }

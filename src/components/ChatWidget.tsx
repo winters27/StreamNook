@@ -54,7 +54,6 @@ interface ChatMessageRowProps {
   message: string | BackendChatMessage;
   messageIndex: number;
   messageId: string | null;
-  emoteSet: EmoteSet | null;
   onUsernameClick: (
     userId: string,
     username: string,
@@ -76,7 +75,6 @@ const ChatMessageRow = memo(({
   message,
   messageIndex,
   messageId,
-  emoteSet,
   onUsernameClick,
   onReplyClick,
   isHighlighted,
@@ -87,108 +85,53 @@ const ChatMessageRow = memo(({
   setItemSize,
 }: ChatMessageRowProps) => {
   const rowRef = useRef<HTMLDivElement>(null);
-  const observerRef = useRef<ResizeObserver | null>(null);
-  const lastHeightRef = useRef<number>(0);
-  const heightStableRef = useRef<boolean>(false);
-  const measureTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const measureCountRef = useRef<number>(0);
+  // Track if we've reported the height for this specific message+deleted state combo
+  const reportedStateRef = useRef<string>('');
 
-  // Check if this message has a reply (which adds significant height)
-  const hasReply = useMemo(() => {
-    if (typeof message !== 'string') {
-      return !!(message.tags?.['reply-parent-msg-id']);
-    }
-    return message.includes('reply-parent-msg-id=');
-  }, [message]);
-
+  // REFACTORED: Simplified height reporting strategy
+  // - Backend messages: Use pre-calculated height immediately, no DOM measurement
+  // - Legacy IRC strings: Measure DOM once per message
+  // - Deleted state changes: Only re-measure for legacy strings (backend heights don't change)
   useLayoutEffect(() => {
+    const isBackendMessage = typeof message !== 'string';
+    const stateKey = `${messageId || messageIndex}-${isDeleted}`;
+    
+    // Skip if we've already reported for this exact state
+    if (reportedStateRef.current === stateKey) return;
+    
+    if (isBackendMessage) {
+      // Backend messages have pre-calculated heights from Rust
+      // These are accurate for the current layout width - trust them completely
+      const preCalculatedHeight = (message as BackendChatMessage).layout?.height || 0;
+      if (preCalculatedHeight > 0) {
+        // For deleted messages, add a small buffer for the "[deleted]" indicator
+        // This is ~20px (text + margin), but we keep it simple
+        const adjustedHeight = isDeleted ? preCalculatedHeight + 22 : preCalculatedHeight;
+        setItemSize(messageIndex, adjustedHeight, messageId, false);
+        reportedStateRef.current = stateKey;
+        return;
+      }
+    }
+
+    // Legacy IRC strings need DOM measurement (only happens for historical messages before Rust parsing)
     const element = rowRef.current;
     if (!element) return;
 
-    // For backend messages, we use the pre-calculated height as initial value
-    // but still allow ResizeObserver to correct it if needed
-    const isBackendMessage = typeof message !== 'string';
-
-    // Initialize lastHeightRef with backend height if available
-    if (isBackendMessage && lastHeightRef.current === 0) {
-      lastHeightRef.current = (message as any).layout?.height || 0;
-    }
-
-    // Reset measure count on mount
-    measureCountRef.current = 0;
-
-    const measureHeight = (force: boolean = false) => {
-      if (element) {
-        const height = element.getBoundingClientRect().height;
-        measureCountRef.current++;
-        // Always correct if off by more than 0.5px to prevent any overlap (more aggressive)
-        // For messages with replies, be even more aggressive
-        const threshold = hasReply ? 0.5 : 1;
-        if (force || Math.abs(height - lastHeightRef.current) > threshold) {
-          lastHeightRef.current = height;
-          setItemSize(messageIndex, height, messageId, hasReply);
-        }
-      }
-    };
-
-    // Measure immediately
-    measureHeight(true);
-
-    // Measure again after images/emotes load (they affect height)
-    const rafId1 = requestAnimationFrame(() => {
-      measureHeight();
-    });
-
-    // For messages with replies, do more aggressive re-measurement
-    const measureIntervals = hasReply
-      ? [10, 30, 50, 100, 150, 200, 300, 500, 800] // More frequent measurements for reply messages
-      : [50, 150, 300, 500, 1000]; // Standard measurements
-
-    const timeoutIds = measureIntervals.map((delay) =>
-      setTimeout(() => {
-        measureHeight();
-        if (delay === measureIntervals[measureIntervals.length - 1]) {
-          heightStableRef.current = true;
-        }
-      }, delay)
-    );
-
-    observerRef.current = new ResizeObserver((entries) => {
-      for (const entry of entries) {
-        const height = entry.contentRect.height;
-        const computedStyle = getComputedStyle(entry.target);
-        const paddingTop = parseFloat(computedStyle.paddingTop) || 0;
-        const paddingBottom = parseFloat(computedStyle.paddingBottom) || 0;
-        const totalHeight = height + paddingTop + paddingBottom;
-        // Always update if different by more than threshold
-        const threshold = hasReply ? 0.5 : 1;
-        if (Math.abs(totalHeight - lastHeightRef.current) > threshold) {
-          lastHeightRef.current = totalHeight;
-          setItemSize(messageIndex, totalHeight, messageId, hasReply);
-        }
+    // Use a single RAF to batch measurements
+    requestAnimationFrame(() => {
+      if (reportedStateRef.current === stateKey) return; // Double-check
+      const height = element.getBoundingClientRect().height;
+      if (height > 0) {
+        setItemSize(messageIndex, height, messageId, false);
+        reportedStateRef.current = stateKey;
       }
     });
-
-    observerRef.current.observe(element);
-
-    return () => {
-      if (observerRef.current) {
-        observerRef.current.disconnect();
-        observerRef.current = null;
-      }
-      cancelAnimationFrame(rafId1);
-      timeoutIds.forEach(clearTimeout);
-      if (measureTimeoutRef.current) {
-        clearTimeout(measureTimeoutRef.current);
-      }
-    };
-  }, [messageIndex, messageId, setItemSize, message, hasReply]);
+  }, [messageIndex, messageId, setItemSize, message, isDeleted]);
 
   return (
     <div ref={rowRef}>
       <ChatMessage
         message={message}
-        emoteSet={emoteSet}
         messageIndex={messageIndex}
         onUsernameClick={onUsernameClick}
         onReplyClick={onReplyClick}
@@ -204,18 +147,42 @@ const ChatMessageRow = memo(({
 
 ChatMessageRow.displayName = 'ChatMessageRow';
 
-const LayoutUpdater = memo(({ width, fontSize }: { width: number, fontSize: number }) => {
+// LayoutUpdater: Syncs container width with backend layout service.
+// REFACTORED: Immediate sync on mount + smart debouncing for resize operations
+// The goal is to ensure backend always knows the current width before calculating heights
+const LayoutUpdater = memo(({ width, onWidthSynced }: { width: number; onWidthSynced?: (width: number) => void }) => {
+  const lastSyncedWidthRef = useRef<number>(0);
+  const isFirstSyncRef = useRef<boolean>(true);
+  
   useEffect(() => {
-    // Debounce updates to avoid spamming the backend during resize
+    // Account for message padding (px-3 = 12px * 2 = 24px horizontal padding)
+    const contentWidth = Math.max(width - 24, 100);
+    
+    // Skip if width hasn't meaningfully changed (within 2px tolerance)
+    if (Math.abs(lastSyncedWidthRef.current - contentWidth) < 2 && !isFirstSyncRef.current) {
+      return;
+    }
+    
+    // First sync is immediate - critical for initial load
+    // Subsequent syncs are debounced to avoid spam during resize
+    const delay = isFirstSyncRef.current ? 0 : 100;
+    
     const timeout = setTimeout(() => {
-      // Account for message padding (px-3 = 12px * 2 = 24px horizontal padding)
-      // We pass the actual content width to the backend for accurate text wrapping
-      const contentWidth = Math.max(width - 24, 100);
-      invoke('update_layout_config', { width: contentWidth, fontSize: fontSize as number })
-        .catch(err => console.error('[LayoutUpdater] Failed to update config:', err));
-    }, 200);
+      invoke('update_layout_width', { width: contentWidth })
+        .then(() => {
+          lastSyncedWidthRef.current = contentWidth;
+          if (isFirstSyncRef.current) {
+            isFirstSyncRef.current = false;
+          }
+          // Notify parent that width is synced (for initial load coordination)
+          onWidthSynced?.(contentWidth);
+        })
+        .catch(err => console.error('[LayoutUpdater] Failed to update width:', err));
+    }, delay);
+    
     return () => clearTimeout(timeout);
-  }, [width, fontSize]);
+  }, [width, onWidthSynced]);
+  
   return null;
 });
 LayoutUpdater.displayName = 'LayoutUpdater';
@@ -229,6 +196,7 @@ const ChatWidget = () => {
   const rowHeights = useRef<{ [key: number]: number }>({});
   const messageRefs = useRef<{ [key: number]: HTMLDivElement | null }>({});
   const containerHeightRef = useRef<number>(0);
+  const containerWidthRef = useRef<number>(0);
   const prevMessageCountRef = useRef<number>(0);
   const prevFirstMessageIdRef = useRef<string | null>(null);
   const [messageInput, setMessageInput] = useState('');
@@ -396,6 +364,10 @@ const ChatWidget = () => {
       connectChat(currentStream.user_login, currentStream.user_id);
       loadEmotes(currentStream.user_login, currentStream.user_id);
       userMessageHistory.current.clear();
+      // PHASE 3: Clear Rust user message history when switching channels
+      invoke('clear_user_message_history').catch(err => 
+        console.warn('[ChatWidget] Failed to clear Rust user history:', err)
+      );
       // Reset channel points when switching channels
       setChannelPoints(null);
     }
@@ -706,6 +678,86 @@ const ChatWidget = () => {
     }
   }, [messages, isPaused, getMessageId]);
 
+  // Helper function to estimate height for raw IRC string messages (historical messages)
+  // This provides a better initial estimate than a fixed value to reduce layout jumping
+  // Uses actual widget width and font size settings for accurate line estimation
+  const estimateStringMessageHeight = useCallback((message: string): number => {
+    // Get actual dimensions and settings
+    const fontSize = settings.chat_design?.font_size || 14;
+    const messageSpacing = settings.chat_design?.message_spacing ?? 8;
+    const showTimestamps = settings.chat_design?.show_timestamps || false;
+    
+    // Calculate line height based on font size (1.625 line-height ratio)
+    const lineHeight = Math.ceil(fontSize * 1.625);
+    
+    // Get content width - account for padding (24px) and badges (~60px estimate)
+    // If containerWidthRef is not set yet, use a conservative default
+    const containerWidth = containerWidthRef.current || 300;
+    const contentWidth = Math.max(containerWidth - 24 - 60, 100);
+    
+    // Account for timestamp width if enabled (~55px)
+    const effectiveWidth = showTimestamps ? contentWidth - 55 : contentWidth;
+    
+    // Estimate average character width based on font size
+    // Satoshi font at 14px has roughly 7px average char width
+    // Scale proportionally for different font sizes
+    const avgCharWidth = fontSize * 0.5;
+    
+    // Calculate characters per line
+    const charsPerLine = Math.floor(effectiveWidth / avgCharWidth);
+    
+    // Base height includes message spacing
+    const baseHeight = messageSpacing + lineHeight;
+    
+    // Extract content after PRIVMSG
+    const contentMatch = message.match(/PRIVMSG #\w+ :(.+)$/);
+    const content = contentMatch ? contentMatch[1] : '';
+    
+    // Check for special message types that need extra height
+    const hasReply = message.includes('reply-parent-msg-id=');
+    const isFirstMessage = message.includes('first-msg=1');
+    
+    // Count emotes in message - each emote takes ~4 characters width worth of space (24px emote / ~6px char)
+    const emoteMatches = message.match(/emotes=([^;]+)/);
+    let emoteCount = 0;
+    if (emoteMatches && emoteMatches[1].length > 0) {
+      // Count emote entries (format: id:start-end,start-end/id:start-end)
+      const emoteEntries = emoteMatches[1].split('/').filter(e => e.length > 0);
+      emoteEntries.forEach(entry => {
+        const [, positions] = entry.split(':');
+        if (positions) {
+          emoteCount += positions.split(',').length;
+        }
+      });
+    }
+    
+    // Adjust content length: replace emote codes with 4-char placeholders
+    // This approximates that emotes (24px) take more space than their text codes
+    const adjustedLength = content.length + (emoteCount * 2); // Add 2 extra chars per emote for width estimation
+    
+    // Count approximate number of lines based on adjusted content length and actual chars per line
+    const estimatedLines = Math.max(1, Math.ceil(adjustedLength / Math.max(charsPerLine, 20)));
+    
+    // Calculate estimated height
+    let height = baseHeight + (estimatedLines - 1) * lineHeight;
+    
+    // Add extra height for replies (~28px)
+    if (hasReply) height += 28;
+    
+    // Add extra height for first message indicator (~32px)
+    if (isFirstMessage) height += 32;
+    
+    // Add buffer for emotes that are taller than text (emotes are 24px, might push line height)
+    if (emoteCount > 0 && lineHeight < 24) {
+      height += (24 - lineHeight);
+    }
+    
+    // Add safety buffer for rendering variance
+    height += 8;
+    
+    return Math.ceil(height);
+  }, [settings.chat_design?.font_size, settings.chat_design?.message_spacing, settings.chat_design?.show_timestamps]);
+
   const getItemSize = useCallback((index: number) => {
     // ALWAYS check the live cache first. This ensures that if a row measures itself
     // and calls setItemSize, we actually use that new size immediately - even when paused.
@@ -725,6 +777,9 @@ const ChatWidget = () => {
 
         const msgId = getMessageId(msg);
         if (msgId && messageHeightsById.current.has(msgId)) return messageHeightsById.current.get(msgId)!;
+        
+        // Better estimate for string messages
+        return estimateStringMessageHeight(msg);
       }
       return 60;
     }
@@ -746,72 +801,47 @@ const ChatWidget = () => {
         rowHeights.current[index] = height;
         return height;
       }
+      
+      // Use content-aware estimate for string messages (historical messages from IVR)
+      return estimateStringMessageHeight(message);
     }
     return 60;
-  }, [messages, getMessageId, isPaused]);
+  }, [messages, getMessageId, isPaused, estimateStringMessageHeight]);
 
   const setItemSize = useCallback((index: number, size: number, messageId?: string | null, hasReply?: boolean) => {
     const currentSize = rowHeights.current[index] || 0;
     const sizeDiff = Math.abs(currentSize - size);
-    // For messages with replies, use a smaller threshold to catch more updates
-    const threshold = hasReply ? 0.5 : 1;
-    if (sizeDiff > threshold) {
-      rowHeights.current[index] = size;
-      if (messageId) messageHeightsById.current.set(messageId, size);
-      if (listRef.current) {
+    
+    // REFACTORED: Higher threshold to reduce unnecessary resets
+    // Most backend heights are accurate, so only update on meaningful differences
+    const threshold = 2; // 2px tolerance
+    if (sizeDiff <= threshold) return;
+    
+    // Update the caches
+    rowHeights.current[index] = size;
+    if (messageId) messageHeightsById.current.set(messageId, size);
+    
+    if (!listRef.current) return;
+    
+    // Track the minimum index that needs resetting
+    minResetIndexRef.current = Math.min(minResetIndexRef.current, index);
 
-        // Track the minimum index that needs resetting
-        minResetIndexRef.current = Math.min(minResetIndexRef.current, index);
+    // REFACTORED: Single batched RAF for all height updates
+    // This prevents the cascading reset problem
+    if (resetRafIdRef.current === null) {
+      resetRafIdRef.current = requestAnimationFrame(() => {
+        if (listRef.current && minResetIndexRef.current !== Infinity) {
+          // Single reset from the earliest changed index
+          listRef.current.resetAfterIndex(minResetIndexRef.current, false);
 
-        // Batch updates using requestAnimationFrame to avoid layout thrashing and freezing
-        if (resetRafIdRef.current === null) {
-          resetRafIdRef.current = requestAnimationFrame(() => {
-            if (listRef.current && minResetIndexRef.current !== Infinity) {
-              listRef.current.resetAfterIndex(minResetIndexRef.current, false);
-
-              // If we should auto-scroll (at bottom, not paused), scroll to bottom after reset
-              // This fixes the glitch where messages appear under the input bar
-              if (shouldAutoScrollRef.current && !isPaused && messages.length > 0) {
-                // Check if this is a recent message (within last 5 messages)
-                const isRecentMessage = minResetIndexRef.current >= messages.length - 5;
-                if (isRecentMessage) {
-                  // Multi-stage scroll correction to handle async height updates
-                  // Stage 1: Immediate scroll after RAF
-                  if (listRef.current && shouldAutoScrollRef.current && !isPaused) {
-                    listRef.current.scrollToItem(messages.length - 1, 'end');
-                  }
-
-                  // Stage 2: After a microtask to let react-window recalculate
-                  queueMicrotask(() => {
-                    if (listRef.current && shouldAutoScrollRef.current && !isPaused) {
-                      listRef.current.scrollToItem(messages.length - 1, 'end');
-                    }
-                  });
-
-                  // Stage 3: After another RAF to catch any remaining layout shifts
-                  requestAnimationFrame(() => {
-                    if (listRef.current && shouldAutoScrollRef.current && !isPaused) {
-                      listRef.current.scrollToItem(messages.length - 1, 'end');
-                    }
-                  });
-                }
-              }
-            }
-            minResetIndexRef.current = Infinity;
-            resetRafIdRef.current = null;
-          });
+          // Simple auto-scroll: if we're at bottom and not paused, scroll to end
+          if (shouldAutoScrollRef.current && !isPaused && messages.length > 0) {
+            listRef.current.scrollToItem(messages.length - 1, 'end');
+          }
         }
-
-        // For reply messages with significant height changes, be more aggressive
-        // Reset from the current index to ensure all subsequent messages recalculate
-        if (hasReply && sizeDiff > 5) {
-          // Force a full reset from this index to ensure proper positioning
-          listRef.current.resetAfterIndex(index, true);
-          // Schedule additional resets to catch any delayed rendering
-          setTimeout(() => listRef.current?.resetAfterIndex(index, false), 10);
-          setTimeout(() => listRef.current?.resetAfterIndex(index, false), 50);
-        }
-      }
+        minResetIndexRef.current = Infinity;
+        resetRafIdRef.current = null;
+      });
     }
   }, [isPaused, messages.length]);
 
@@ -1217,7 +1247,17 @@ const ChatWidget = () => {
       let y = mainPosition.y;
       if (x < 0) x = mainPosition.x + mainSize.width + gap;
       const windowLabel = `profile-${userId}-${Date.now()}`;
-      const messageHistory = userMessageHistory.current.get(userId) || [];
+      
+      // PHASE 3: Fetch message history from Rust LRU cache instead of frontend Map
+      // This eliminates frontend memory overhead and provides more reliable history
+      let messageHistory: any[] = [];
+      try {
+        messageHistory = await invoke<any[]>('get_user_message_history', { userId });
+      } catch (err) {
+        console.warn('[ChatWidget] Failed to fetch user history from Rust, using frontend cache:', err);
+        messageHistory = userMessageHistory.current.get(userId) || [];
+      }
+      
       const params = new URLSearchParams({
         userId, username, displayName, color,
         badges: JSON.stringify(badges),
@@ -1283,10 +1323,11 @@ const ChatWidget = () => {
             <AutoSizer>
               {({ height, width }) => (
                 <>
-                  <LayoutUpdater width={width} fontSize={settings.chat_design?.font_size || 13} />
+                  <LayoutUpdater width={width} />
                   <ErrorBoundary componentName="ChatWidgetList" reportToLogService={true}>
                     {(() => {
                       containerHeightRef.current = height;
+                      containerWidthRef.current = width;
                       const displayMessages = messages; // Always show all messages, even when paused
                       const totalHeight = Object.values(rowHeights.current).reduce((sum, height) => sum + height, 0);
                       const needsPadding = totalHeight < height;
@@ -1321,7 +1362,7 @@ const ChatWidget = () => {
                             return (
                               <div style={style}>
                                 <ChatMessageRow message={currentMessage} messageIndex={messageIndex} messageId={currentMsgId}
-                                  emoteSet={emotes} onUsernameClick={handleUsernameClick} onReplyClick={handleReplyClick}
+                                  onUsernameClick={handleUsernameClick} onReplyClick={handleReplyClick}
                                   isHighlighted={highlightedMessageId !== null && currentMsgId === highlightedMessageId}
                                   isDeleted={isMessageDeleted}
                                   onEmoteRightClick={handleEmoteRightClick} onUsernameRightClick={handleUsernameRightClick}

@@ -16,6 +16,7 @@ tauri-build = { version = "2.5.2", features = [] }
 lazy_static = "1.5.0"
 regex = "1.12.2"
 strsim = "0.11.1"
+phf_codegen = "0.11"
 
 [dependencies]
 tauri = { version = "2.9.4", features = ["protocol-asset", "tray-icon", "image-png"] }
@@ -55,6 +56,8 @@ cosmic-text = "0.15.0"
 scopeguard = "1.2"
 rust-embed = "8.7"
 mime_guess = "2.0"
+phf = "0.11"
+lru = "0.12"
 
 
 [features]

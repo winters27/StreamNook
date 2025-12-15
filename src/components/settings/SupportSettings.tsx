@@ -63,8 +63,8 @@ const SupportSettings = () => {
 
     // Refresh logs periodically
     useEffect(() => {
-        const updateLogs = () => {
-            setLogs(getLogs());
+        const updateLogs = async () => {
+            setLogs(await getLogs());
         };
 
         updateLogs();
@@ -98,8 +98,8 @@ const SupportSettings = () => {
         addToast('Logs cleared', 'info');
     };
 
-    const handleRefresh = () => {
-        setLogs(getLogs());
+    const handleRefresh = async () => {
+        setLogs(await getLogs());
     };
 
     const getLevelIcon = (level: string) => {

@@ -2,11 +2,8 @@ import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { MessageCircle, UserPlus, UserMinus, Loader2 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../stores/AppStore';
-import { getUserCosmetics, computePaintStyle, getBadgeImageUrl } from '../services/seventvService';
-import { getAllUserBadges, TwitchBadge } from '../services/badgeService';
-import { getAllThirdPartyBadges, ThirdPartyBadge } from '../services/thirdPartyBadges';
-import { fetchIVRUserData, fetchIVRSubage, fetchIVRModVip, formatIVRDate, formatSubTenure } from '../services/ivrService';
-import { SevenTVBadge, SevenTVPaint } from '../types';
+import { computePaintStyle } from '../services/seventvService';
+import { formatIVRDate, formatSubTenure } from '../services/ivrService';
 
 interface ParsedMessage {
   username: string;
@@ -31,6 +28,13 @@ interface UserProfileCardProps {
   onStartWhisper?: (user: { id: string; login: string; display_name: string; profile_image_url?: string }) => void;
 }
 
+interface UserProfileComplete {
+  twitch_profile: TwitchUserProfile | null;
+  badges: BadgeData;
+  seventv_cosmetics: SevenTVCosmetics | null;
+  ivr_data: IVRData;
+}
+
 interface TwitchUserProfile {
   id: string;
   login: string;
@@ -44,19 +48,108 @@ interface TwitchUserProfile {
   created_at: string;
 }
 
+interface BadgeData {
+  display_badges: Badge[];
+  earned_badges: Badge[];
+  third_party_badges: ThirdPartyBadge[];
+}
+
+interface Badge {
+  id: string;
+  setID: string;
+  version: string;
+  title: string;
+  description: string;
+  image1x: string;
+  image2x: string;
+  image4x: string;
+}
+
+interface ThirdPartyBadge {
+  id: string;
+  provider: string;
+  title: string;
+  imageUrl: string;
+  image1x: string | null;
+  image2x: string | null;
+  image4x: string | null;
+}
+
+interface SevenTVCosmetics {
+  paints: SevenTVPaint[];
+  badges: SevenTVBadge[];
+}
+
+// v4 API Paint structure with layers
+interface SevenTVPaint {
+  id: string;
+  name: string;
+  description: string | null;
+  selected: boolean;
+  data: {
+    layers: SevenTVPaintLayer[];
+    shadows: SevenTVPaintShadow[];
+  };
+}
+
+interface SevenTVPaintLayer {
+  id: string;
+  ty: {
+    __typename: string;
+    angle?: number;
+    repeating?: boolean;
+    shape?: string;
+    stops?: Array<{ at: number; color: SevenTVColor }>;
+    color?: SevenTVColor;
+    images?: SevenTVImage[];
+  };
+  opacity: number;
+}
+
+interface SevenTVColor {
+  hex: string;
+  r: number;
+  g: number;
+  b: number;
+  a: number;
+}
+
+interface SevenTVImage {
+  url: string;
+  mime: string | null;
+  size: number | null;
+  scale: number | null;
+  width: number | null;
+  height: number | null;
+  frameCount: number | null;
+}
+
+interface SevenTVPaintShadow {
+  offsetX: number;
+  offsetY: number;
+  blur: number;
+  color: SevenTVColor;
+}
+
+interface SevenTVBadge {
+  id: string;
+  name: string;
+  description: string | null;
+  selected: boolean;
+}
+
 interface IVRData {
-  createdAt: string | null;
-  followingSince: string | null;
-  statusHidden: boolean;
-  isSubscribed: boolean;
-  subStreak: number | null;
-  subCumulative: number | null;
-  isFounder: boolean;
-  isMod: boolean;
-  modSince: string | null;
-  isVip: boolean;
-  vipSince: string | null;
-  isLoading: boolean;
+  created_at: string | null;
+  following_since: string | null;
+  status_hidden: boolean;
+  is_subscribed: boolean;
+  sub_streak: number | null;
+  sub_cumulative: number | null;
+  is_founder: boolean;
+  is_mod: boolean;
+  mod_since: string | null;
+  is_vip: boolean;
+  vip_since: string | null;
   error: string | null;
 }
 
@@ -72,19 +165,10 @@ const UserProfileCard = ({
   channelName: propChannelName,
   onStartWhisper
 }: UserProfileCardProps) => {
-  const [twitchProfile, setTwitchProfile] = useState<TwitchUserProfile | null>(null);
-  const [twitchBadges, setTwitchBadges] = useState<TwitchBadge[]>([]);
-  const [thirdPartyBadges, setThirdPartyBadges] = useState<ThirdPartyBadge[]>([]);
-  const [seventvBadge, setSeventvBadge] = useState<SevenTVBadge | null>(null);
-  const [seventvBadges, setSeventvBadges] = useState<SevenTVBadge[]>([]);
-  const [seventvPaint, setSeventvPaint] = useState<SevenTVPaint | null>(null);
+  const [profileData, setProfileData] = useState<UserProfileComplete | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [showMessages, setShowMessages] = useState(false);
-  const [ivrData, setIvrData] = useState<IVRData>({
-    createdAt: null, followingSince: null, statusHidden: false, isSubscribed: false,
-    subStreak: null, subCumulative: null, isFounder: false, isMod: false,
-    modSince: null, isVip: false, vipSince: null, isLoading: true, error: null
-  });
+  const [showAllBadges, setShowAllBadges] = useState(false);
 
   const [isDragging, setIsDragging] = useState(false);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
@@ -100,65 +184,46 @@ const UserProfileCard = ({
     const fetchUserData = async () => {
       setIsLoading(true);
       try {
-        const { invoke } = await import('@tauri-apps/api/core');
-        const [clientId, token] = await invoke<[string, string]>('get_twitch_credentials');
-        const twitchResponse = await fetch(`https://api.twitch.tv/helix/users?id=${userId}`, {
-          headers: { 'Client-ID': clientId, 'Authorization': `Bearer ${token}` }
-        });
-        if (twitchResponse.ok) {
-          const twitchData = await twitchResponse.json();
-          if (twitchData.data?.[0]) setTwitchProfile(twitchData.data[0]);
-        }
-
         let channelId: string, channelName: string;
         if (propChannelId && propChannelName) {
-          channelId = propChannelId; channelName = propChannelName;
+          channelId = propChannelId;
+          channelName = propChannelName;
         } else {
-          const { useAppStore } = await import('../stores/AppStore');
           const currentStream = useAppStore.getState().currentStream;
           channelId = currentStream?.user_id || userId;
           channelName = currentStream?.user_login || username;
         }
 
-        try {
-          const badgeData = await getAllUserBadges(userId, username, channelId, channelName);
-          const uniqueBadges = new Map<string, TwitchBadge>();
-          badgeData.displayBadges.forEach(b => uniqueBadges.set(b.id, b));
-          badgeData.earnedBadges.forEach(b => { if (!uniqueBadges.has(b.id)) uniqueBadges.set(b.id, b); });
-          setTwitchBadges(Array.from(uniqueBadges.values()).filter(b => !(b.setID === 'broadcaster' && userId !== channelId)));
-        } catch { setTwitchBadges([]); }
+        console.log('[UserProfileCard] Fetching complete profile via Rust:', { userId, username, channelId, channelName });
 
-        const cosmetics = await getUserCosmetics(userId);
-        if (cosmetics) {
-          const selectedPaint = cosmetics.paints.find(p => p.selected);
-          if (selectedPaint) setSeventvPaint(selectedPaint as any);
-          const selectedBadge = cosmetics.badges.find(b => b.selected);
-          if (selectedBadge) setSeventvBadge(selectedBadge as any);
-          setSeventvBadges(cosmetics.badges as any);
-        }
+        // Single unified call to Rust backend - replaces 5 separate API calls!
+        const profile = await invoke<UserProfileComplete>('get_user_profile_complete', {
+          userId,
+          username,
+          channelId,
+          channelName,
+        });
 
-        try { setThirdPartyBadges(await getAllThirdPartyBadges(userId)); } catch { setThirdPartyBadges([]); }
-
-        try {
-          const [ivrUserData, ivrSubageData, ivrModVipData] = await Promise.all([
-            fetchIVRUserData(username), fetchIVRSubage(username, channelName), fetchIVRModVip(username, channelName)
-          ]);
-          setIvrData({
-            createdAt: ivrUserData?.createdAt || null, followingSince: ivrSubageData?.followedAt || null,
-            statusHidden: ivrSubageData?.statusHidden || false, isSubscribed: ivrSubageData?.subscriber || false,
-            subStreak: ivrSubageData?.streak?.months ?? null, subCumulative: ivrSubageData?.cumulative?.months ?? null,
-            isFounder: ivrSubageData?.founder || false, isMod: ivrModVipData?.isMod || false,
-            modSince: ivrModVipData?.modGrantedAt || null, isVip: ivrModVipData?.isVip || false,
-            vipSince: ivrModVipData?.vipGrantedAt || null, isLoading: false, error: null
-          });
-        } catch { setIvrData(prev => ({ ...prev, isLoading: false, error: 'Failed to fetch additional data' })); }
-      } catch (error) { console.error('Failed to fetch user profile:', error); }
-      finally { setIsLoading(false); }
+        console.log('[UserProfileCard] Profile data received:', profile);
+        setProfileData(profile);
+      } catch (error) {
+        console.error('Failed to fetch user profile:', error);
+      } finally {
+        setIsLoading(false);
+      }
     };
     fetchUserData();
-  }, [userId]);
+  }, [userId, username, propChannelId, propChannelName]);
 
-  const usernameStyle = useMemo(() => seventvPaint ? computePaintStyle(seventvPaint as any, color) : { color }, [seventvPaint, color]);
+  const selectedPaint = useMemo(() => {
+    return profileData?.seventv_cosmetics?.paints.find(p => p.selected) || null;
+  }, [profileData?.seventv_cosmetics]);
+
+  const usernameStyle = useMemo(() => 
+    selectedPaint ? computePaintStyle(selectedPaint as any, color) : { color }, 
+    [selectedPaint, color]
+  );
+
   const formatDate = (ds: string) => new Date(ds).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
 
   useEffect(() => {
@@ -189,8 +254,14 @@ const UserProfileCard = ({
       });
     };
     const handleMouseUp = () => setIsDragging(false);
-    if (isDragging) { document.addEventListener('mousemove', handleMouseMove); document.addEventListener('mouseup', handleMouseUp); }
-    return () => { document.removeEventListener('mousemove', handleMouseMove); document.removeEventListener('mouseup', handleMouseUp); };
+    if (isDragging) {
+      document.addEventListener('mousemove', handleMouseMove);
+      document.addEventListener('mouseup', handleMouseUp);
+    }
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
   }, [isDragging, dragOffset]);
 
   const cardStyle = useMemo(() => ({
@@ -220,13 +291,11 @@ const UserProfileCard = ({
       console.log('[UserProfileCard] Automation result:', result);
 
       if (result.success) {
-        // Toggle the follow state
         setIsFollowing(prev => !prev);
         console.log(`[UserProfileCard] Successfully ${action}ed ${username}`);
       } else {
         setFollowError(result.message);
         console.error(`[UserProfileCard] ${action} failed:`, result.message);
-        // Show helpful toast message
         useAppStore.getState().addToast(
           `Follow/Unfollow failed. Try logging out and back in via Settings to re-authenticate.`,
           'error'
@@ -235,7 +304,6 @@ const UserProfileCard = ({
     } catch (err: any) {
       console.error(`[UserProfileCard] ${action} error:`, err);
       setFollowError(err?.message || `Failed to ${action}`);
-      // Show helpful error message
       useAppStore.getState().addToast(
         `Follow/Unfollow failed. Try logging out and back in via Settings to re-authenticate.`,
         'error'
@@ -247,25 +315,50 @@ const UserProfileCard = ({
 
   // Combine all badges into one array for display
   const allBadges = useMemo(() => {
+    if (!profileData) return [];
+    
     const badges: Array<{ id: string; src: string; srcSet?: string; title: string; type: string }> = [];
-    twitchBadges.forEach(b => {
+    
+    profileData.badges.display_badges.forEach((b) => {
       badges.push({
         id: `t-${b.id}`,
-        src: b.localUrl || b.image1x,
-        srcSet: b.localUrl ? undefined : `${b.image1x} 1x, ${b.image2x} 2x, ${b.image4x} 4x`,
+        src: b.image4x || b.image1x,
+        srcSet: `${b.image1x} 1x, ${b.image2x} 2x, ${b.image4x} 4x`,
         title: b.title,
         type: 'twitch'
       });
     });
-    seventvBadges.forEach(b => {
-      const url = getBadgeImageUrl(b as any);
-      if (url) badges.push({ id: `7-${b.id}`, src: url, title: b.tooltip || b.name, type: '7tv' });
+    
+    profileData.seventv_cosmetics?.badges.forEach(b => {
+      // 7TV v4 badges use CDN URLs: https://cdn.7tv.app/badge/{id}/{size}
+      const baseUrl = `https://cdn.7tv.app/badge/${b.id}`;
+      badges.push({
+        id: `7-${b.id}`,
+        src: `${baseUrl}/4x`,
+        srcSet: `${baseUrl}/1x 1x, ${baseUrl}/2x 2x, ${baseUrl}/4x 4x`,
+        title: b.description || b.name,
+        type: '7tv'
+      });
     });
-    thirdPartyBadges.forEach(b => {
-      badges.push({ id: `3-${b.id}`, src: b.localUrl || b.imageUrl, title: `${b.title} (${b.provider})`, type: b.provider });
+    
+    profileData.badges.third_party_badges.forEach((b) => {
+      const srcSet = b.image1x && b.image2x && b.image4x 
+        ? `${b.image1x} 1x, ${b.image2x} 2x, ${b.image4x} 4x`
+        : undefined;
+      badges.push({ 
+        id: `3-${b.id}`, 
+        src: b.image4x || b.imageUrl, 
+        srcSet,
+        title: `${b.title} (${b.provider})`, 
+        type: b.provider 
+      });
     });
+    
     return badges;
-  }, [twitchBadges, seventvBadges, thirdPartyBadges]);
+  }, [profileData]);
+
+  const twitchProfile = profileData?.twitch_profile;
+  const ivrData = profileData?.ivr_data;
 
   return (
     <>
@@ -321,25 +414,25 @@ const UserProfileCard = ({
                 </svg>
               </div>
             )}
-            {seventvPaint && (
+            {selectedPaint && (
               <div
                 className="px-1.5 py-px rounded text-[9px] font-bold inline-block relative overflow-hidden"
                 style={{
-                  ...computePaintStyle(seventvPaint as any, color),
+                  ...computePaintStyle(selectedPaint as any, color),
                   WebkitBackgroundClip: 'padding-box',
                   backgroundClip: 'padding-box',
                 }}
-                title={`7TV Paint: ${seventvPaint.name}`}
+                title={`7TV Paint: ${selectedPaint.name}`}
               >
                 <span
                   style={{
-                    ...computePaintStyle(seventvPaint as any, color),
+                    ...computePaintStyle(selectedPaint as any, color),
                     filter: 'invert(1) contrast(1.5)',
                     WebkitBackgroundClip: 'text',
                     backgroundClip: 'text',
                   }}
                 >
-                  🎨 {seventvPaint.name}
+                  🎨 {selectedPaint.name}
                 </span>
               </div>
             )}
@@ -351,35 +444,68 @@ const UserProfileCard = ({
             <p className="text-sm text-textSecondary mb-3 line-clamp-2">{twitchProfile.description}</p>
           )}
 
-          {/* All Badges in one row */}
+          {/* Active Badges Row */}
           {allBadges.length > 0 && (
-            <div className="flex items-center gap-1.5 flex-wrap mb-3">
-              {allBadges.map((b, i) => (
-                <img
-                  key={`${b.id}-${i}`}
-                  src={b.src}
-                  srcSet={b.srcSet}
-                  alt={b.title}
-                  title={b.title}
-                  className="w-5 h-5 cursor-pointer hover:scale-110 transition-transform"
-                  onError={e => { e.currentTarget.style.display = 'none'; }}
-                />
-              ))}
+            <div className="mb-3">
+              <div className="flex items-center gap-2 mb-1.5">
+                <p className="text-[10px] text-textSecondary uppercase">Active Badges</p>
+                {profileData?.badges.earned_badges && profileData.badges.earned_badges.length > 0 && (
+                  <button
+                    onClick={() => setShowAllBadges(!showAllBadges)}
+                    className="text-[10px] text-accent hover:text-accent/80 transition-colors"
+                  >
+                    {showAllBadges ? 'Hide' : 'Show'} All ({profileData.badges.earned_badges.length})
+                  </button>
+                )}
+              </div>
+              <div className="flex items-center gap-1.5 flex-wrap">
+                {allBadges.map((b, i) => (
+                  <img
+                    key={`${b.id}-${i}`}
+                    src={b.src}
+                    srcSet={b.srcSet}
+                    alt={b.title}
+                    title={b.title}
+                    className="w-5 h-5 cursor-pointer hover:scale-110 transition-transform"
+                    onError={e => { e.currentTarget.style.display = 'none'; }}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* All Earned Badges (Expandable) */}
+          {showAllBadges && profileData?.badges.earned_badges && profileData.badges.earned_badges.length > 0 && (
+            <div className="mb-3 glass-panel rounded p-2">
+              <p className="text-[10px] text-textSecondary uppercase mb-1.5">All Earned Badges</p>
+              <div className="flex items-center gap-1.5 flex-wrap max-h-[120px] overflow-y-auto scrollbar-thin">
+                {profileData.badges.earned_badges.map((b, i) => (
+                  <img
+                    key={`earned-${b.id}-${i}`}
+                    src={b.image4x || b.image1x}
+                    srcSet={`${b.image1x} 1x, ${b.image2x} 2x, ${b.image4x} 4x`}
+                    alt={b.title}
+                    title={`${b.title}\n${b.description}`}
+                    className="w-5 h-5 cursor-pointer hover:scale-110 transition-transform"
+                    onError={e => { e.currentTarget.style.display = 'none'; }}
+                  />
+                ))}
+              </div>
             </div>
           )}
 
           {/* Stats Grid */}
           <div className="grid grid-cols-2 gap-2 mb-3">
-            {(ivrData.followingSince || ivrData.statusHidden) ? (
+            {ivrData && (ivrData.following_since || ivrData.status_hidden) ? (
               <div className="glass-panel rounded p-2">
                 <p className="text-[10px] text-textSecondary uppercase">Following Since</p>
-                {ivrData.statusHidden ? (
+                {ivrData.status_hidden ? (
                   <p className="text-sm font-bold text-textSecondary italic">Hidden</p>
                 ) : (
-                  <p className="text-sm font-bold text-textPrimary">{formatIVRDate(ivrData.followingSince!)}</p>
+                  <p className="text-sm font-bold text-textPrimary">{formatIVRDate(ivrData.following_since!)}</p>
                 )}
               </div>
-            ) : !ivrData.isLoading && (
+            ) : ivrData && !isLoading && (
               <div className="glass-panel rounded p-2">
                 <p className="text-[10px] text-textSecondary uppercase">Following</p>
                 <p className="text-sm font-bold text-textSecondary">Not following</p>
@@ -394,27 +520,29 @@ const UserProfileCard = ({
           </div>
 
           {/* IVR Info - compact inline display */}
-          <div className="space-y-1 text-xs mb-3">
-            {ivrData.isSubscribed && (
-              <div className="flex items-center gap-2">
-                <span className="text-textSecondary">Subbed:</span>
-                <span className="text-purple-400">{formatSubTenure(ivrData.subStreak, ivrData.subCumulative)}</span>
-                {ivrData.isFounder && <span className="px-1 py-0.5 bg-purple-500/20 text-purple-400 rounded text-[9px] font-semibold">FOUNDER</span>}
-              </div>
-            )}
-            {ivrData.isMod && (
-              <div className="flex items-center gap-2">
-                <span className="text-textSecondary">Mod:</span>
-                <span className="text-green-400">{ivrData.modSince ? formatIVRDate(ivrData.modSince) : 'Yes'}</span>
-              </div>
-            )}
-            {ivrData.isVip && (
-              <div className="flex items-center gap-2">
-                <span className="text-textSecondary">VIP:</span>
-                <span className="text-pink-400">{ivrData.vipSince ? formatIVRDate(ivrData.vipSince) : 'Yes'}</span>
-              </div>
-            )}
-          </div>
+          {ivrData && (
+            <div className="space-y-1 text-xs mb-3">
+              {ivrData.is_subscribed && (
+                <div className="flex items-center gap-2">
+                  <span className="text-textSecondary">Subbed:</span>
+                  <span className="text-purple-400">{formatSubTenure(ivrData.sub_streak, ivrData.sub_cumulative)}</span>
+                  {ivrData.is_founder && <span className="px-1 py-0.5 bg-purple-500/20 text-purple-400 rounded text-[9px] font-semibold">FOUNDER</span>}
+                </div>
+              )}
+              {ivrData.is_mod && (
+                <div className="flex items-center gap-2">
+                  <span className="text-textSecondary">Mod:</span>
+                  <span className="text-green-400">{ivrData.mod_since ? formatIVRDate(ivrData.mod_since) : 'Yes'}</span>
+                </div>
+              )}
+              {ivrData.is_vip && (
+                <div className="flex items-center gap-2">
+                  <span className="text-textSecondary">VIP:</span>
+                  <span className="text-pink-400">{ivrData.vip_since ? formatIVRDate(ivrData.vip_since) : 'Yes'}</span>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Action Buttons */}
           <div className="flex gap-2 flex-wrap">
@@ -461,11 +589,9 @@ const UserProfileCard = ({
                 if (onStartWhisper) {
                   onStartWhisper(user);
                 } else if (isStandaloneWindow) {
-                  // For standalone profile windows, emit a Tauri event to the main window
                   try {
                     const { emit } = await import('@tauri-apps/api/event');
                     await emit('start-whisper', user);
-                    // Close this profile window
                     const { getCurrentWindow } = await import('@tauri-apps/api/window');
                     const currentWindow = getCurrentWindow();
                     await currentWindow.close();
@@ -473,7 +599,6 @@ const UserProfileCard = ({
                     console.error('Failed to emit whisper event:', err);
                   }
                 } else {
-                  // Fallback: use AppStore directly
                   useAppStore.getState().openWhisperWithUser(user);
                 }
                 onClose();

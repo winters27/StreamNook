@@ -1,15 +1,15 @@
+use crate::services::twitch_service::TwitchService;
 use anyhow::Result;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tauri::{AppHandle, Emitter};
+use tokio::sync::{mpsc, RwLock};
 use tokio::time::{interval, Duration};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
-use crate::services::twitch_service::TwitchService;
-use tauri::{AppHandle, Emitter};
 
 const EVENTSUB_URL: &str = "wss://eventsub.wss.twitch.tv/ws";
-const KEEPALIVE_TIMEOUT: u64 = 10; // Default keepalive timeout in seconds
+const SUBSCRIPTION_DELAY_MS: u64 = 500; // Delay between subscription requests
 
 #[derive(Debug, Deserialize)]
 struct EventSubMessage {
@@ -68,6 +68,72 @@ struct Transport {
     session_id: String,
 }
 
+// Response types for subscription list
+#[derive(Debug, Deserialize)]
+struct SubscriptionListResponse {
+    data: Vec<SubscriptionInfo>,
+    total: i32,
+    total_cost: i32,
+    max_total_cost: i32,
+}
+
+#[derive(Debug, Deserialize)]
+struct SubscriptionInfo {
+    id: String,
+    #[serde(rename = "type")]
+    subscription_type: String,
+    status: String,
+    transport: TransportInfo,
+}
+
+#[derive(Debug, Deserialize)]
+struct TransportInfo {
+    method: String,
+    session_id: Option<String>,
+}
+
+// Event structures
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RaidEvent {
+    pub from_broadcaster_user_id: String,
+    pub from_broadcaster_user_login: String,
+    pub from_broadcaster_user_name: String,
+    pub to_broadcaster_user_id: String,
+    pub to_broadcaster_user_login: String,
+    pub to_broadcaster_user_name: String,
+    pub viewers: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamOfflineEvent {
+    pub broadcaster_user_id: String,
+    pub broadcaster_user_login: String,
+    pub broadcaster_user_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamOnlineEvent {
+    pub id: String,
+    pub broadcaster_user_id: String,
+    pub broadcaster_user_login: String,
+    pub broadcaster_user_name: String,
+    #[serde(rename = "type")]
+    pub stream_type: String,
+    pub started_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChannelUpdateEvent {
+    pub broadcaster_user_id: String,
+    pub broadcaster_user_login: String,
+    pub broadcaster_user_name: String,
+    pub title: String,
+    pub language: String,
+    pub category_id: String,
+    pub category_name: String,
+    pub content_classification_labels: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelPointsRedemptionEvent {
     pub id: String,
@@ -110,6 +176,8 @@ pub struct EventSubService {
     connected: Arc<RwLock<bool>>,
     session_id: Arc<RwLock<Option<String>>>,
     subscriptions: Arc<RwLock<Vec<String>>>,
+    // Shutdown signal sender - when dropped or sent, the background task will stop
+    shutdown_tx: Arc<RwLock<Option<mpsc::Sender<()>>>>,
 }
 
 impl EventSubService {
@@ -118,6 +186,7 @@ impl EventSubService {
             connected: Arc::new(RwLock::new(false)),
             session_id: Arc::new(RwLock::new(None)),
             subscriptions: Arc::new(RwLock::new(Vec::new())),
+            shutdown_tx: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -129,40 +198,149 @@ impl EventSubService {
         self.session_id.read().await.clone()
     }
 
-    pub async fn connect_and_listen(&self, broadcaster_id: String, app_handle: AppHandle) -> Result<()> {
+    /// Clean up any existing WebSocket subscriptions from Twitch API
+    async fn cleanup_existing_subscriptions() {
+        println!("🧹 Cleaning up existing EventSub subscriptions...");
+
+        let token = match TwitchService::get_token().await {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("❌ Failed to get token for cleanup: {}", e);
+                return;
+            }
+        };
+
+        let client_id = "1qgws7yzcp21g5ledlzffw3lmqdvie";
+        let client = reqwest::Client::new();
+
+        // Get all existing subscriptions
+        let response = match client
+            .get("https://api.twitch.tv/helix/eventsub/subscriptions")
+            .header("Client-ID", client_id)
+            .header("Authorization", format!("Bearer {}", token))
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("❌ Failed to list subscriptions: {}", e);
+                return;
+            }
+        };
+
+        if !response.status().is_success() {
+            eprintln!("❌ Failed to list subscriptions: {}", response.status());
+            return;
+        }
+
+        let subscriptions: SubscriptionListResponse = match response.json().await {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("❌ Failed to parse subscription list: {}", e);
+                return;
+            }
+        };
+
+        println!(
+            "📋 Found {} existing subscriptions (cost: {}/{})",
+            subscriptions.total, subscriptions.total_cost, subscriptions.max_total_cost
+        );
+
+        // Delete ALL WebSocket-based subscriptions to prevent "Too Many Requests" errors
+        // This ensures we start fresh with each connection
+        let mut deleted = 0;
+        for sub in subscriptions.data {
+            // Only clean up websocket subscriptions
+            if sub.transport.method != "websocket" {
+                continue;
+            }
+
+            // Delete ALL websocket subscriptions to ensure clean slate
+            // This prevents "number of websocket transports limit exceeded" errors
+            {
+                if let Err(e) = client
+                    .delete(format!(
+                        "https://api.twitch.tv/helix/eventsub/subscriptions?id={}",
+                        sub.id
+                    ))
+                    .header("Client-ID", client_id)
+                    .header("Authorization", format!("Bearer {}", token))
+                    .send()
+                    .await
+                {
+                    eprintln!("❌ Failed to delete subscription {}: {}", sub.id, e);
+                } else {
+                    deleted += 1;
+                }
+
+                // Small delay between deletions to avoid rate limits
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+
+        if deleted > 0 {
+            println!("🗑️  Deleted {} orphaned subscriptions", deleted);
+        }
+    }
+
+    pub async fn connect_and_listen(
+        &self,
+        broadcaster_id: String,
+        app_handle: AppHandle,
+    ) -> Result<()> {
+        // First, stop any existing connection
+        self.disconnect().await;
+
+        // Clean up orphaned subscriptions from previous sessions
+        Self::cleanup_existing_subscriptions().await;
+
         let connected = self.connected.clone();
         let session_id = self.session_id.clone();
         let subscriptions = self.subscriptions.clone();
 
+        // Create a shutdown channel
+        let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
+
+        // Store the sender so we can signal shutdown later
+        {
+            let mut tx = self.shutdown_tx.write().await;
+            *tx = Some(shutdown_tx);
+        }
+
         tokio::spawn(async move {
-            loop {
-                match Self::run_connection(
+            // Run once - no automatic reconnection loop
+            // The frontend will handle reconnection when needed
+            tokio::select! {
+                _ = shutdown_rx.recv() => {
+                    println!("🛑 EventSub shutdown signal received");
+                }
+                result = Self::run_connection(
                     broadcaster_id.clone(),
                     app_handle.clone(),
                     connected.clone(),
                     session_id.clone(),
                     subscriptions.clone(),
-                ).await {
-                    Ok(_) => {
-                        println!("🔌 EventSub connection closed normally");
-                    }
-                    Err(e) => {
-                        eprintln!("❌ EventSub connection error: {}", e);
+                ) => {
+                    match result {
+                        Ok(_) => {
+                            println!("🔌 EventSub connection closed normally");
+                        }
+                        Err(e) => {
+                            eprintln!("❌ EventSub connection error: {}", e);
+                        }
                     }
                 }
-
-                // Mark as disconnected
-                {
-                    let mut conn = connected.write().await;
-                    *conn = false;
-                    let mut sess = session_id.write().await;
-                    *sess = None;
-                }
-
-                // Wait before reconnecting
-                println!("🔄 Reconnecting to EventSub in 30 seconds...");
-                tokio::time::sleep(Duration::from_secs(30)).await;
             }
+
+            // Mark as disconnected
+            {
+                let mut conn = connected.write().await;
+                *conn = false;
+                let mut sess = session_id.write().await;
+                *sess = None;
+            }
+
+            println!("🔌 EventSub task ended");
         });
 
         Ok(())
@@ -183,41 +361,46 @@ impl EventSubService {
         println!("✅ Connected to Twitch EventSub, waiting for welcome message...");
 
         // Wait for welcome message
-        let welcome_msg = read.next().await
+        let welcome_msg = read
+            .next()
+            .await
             .ok_or_else(|| anyhow::anyhow!("Connection closed before welcome message"))??;
 
         // Handle different message types and extract text
         let welcome_text = match &welcome_msg {
             Message::Text(text) => {
-                println!("📝 Received text message: {}", text);
-                text.clone()
-            },
+                println!("📝 Received text message");
+                text.to_string()
+            }
             Message::Binary(data) => {
-                let text = String::from_utf8(data.clone())
+                let text = String::from_utf8(data.to_vec())
                     .map_err(|e| anyhow::anyhow!("Failed to decode binary message: {}", e))?;
-                println!("📝 Received binary message (decoded): {}", text);
+                println!("📝 Received binary message (decoded)");
                 text
-            },
+            }
             Message::Close(frame) => {
                 println!("🔌 Received close frame: {:?}", frame);
                 return Err(anyhow::anyhow!("Connection closed by server"));
-            },
+            }
             Message::Ping(_) | Message::Pong(_) => {
                 println!("📝 Received ping/pong, waiting for welcome message...");
-                // If we get a ping/pong, wait for the next message
-                let next_msg = read.next().await
+                let next_msg = read
+                    .next()
+                    .await
                     .ok_or_else(|| anyhow::anyhow!("Connection closed after ping/pong"))??;
                 match &next_msg {
-                    Message::Text(text) => text.clone(),
+                    Message::Text(text) => text.to_string(),
                     _ => return Err(anyhow::anyhow!("Unexpected message type after ping/pong")),
                 }
-            },
+            }
             Message::Frame(_) => {
-                return Err(anyhow::anyhow!("Received raw frame instead of welcome message"));
+                return Err(anyhow::anyhow!(
+                    "Received raw frame instead of welcome message"
+                ));
             }
         };
 
-        // Parse the welcome message - handle potential empty or malformed messages
+        // Parse the welcome message
         let welcome: EventSubMessage = match serde_json::from_str(&welcome_text) {
             Ok(msg) => msg,
             Err(e) => {
@@ -228,9 +411,14 @@ impl EventSubService {
         };
 
         if welcome.metadata.message_type != "session_welcome" {
-            eprintln!("❌ Expected session_welcome, got: {}", welcome.metadata.message_type);
-            eprintln!("📝 Full message: {:?}", welcome);
-            return Err(anyhow::anyhow!("Expected session_welcome message, got: {}", welcome.metadata.message_type));
+            eprintln!(
+                "❌ Expected session_welcome, got: {}",
+                welcome.metadata.message_type
+            );
+            return Err(anyhow::anyhow!(
+                "Expected session_welcome message, got: {}",
+                welcome.metadata.message_type
+            ));
         }
 
         let session_payload: SessionPayload = serde_json::from_value(welcome.payload)?;
@@ -257,7 +445,7 @@ impl EventSubService {
         tokio::spawn(async move {
             // Wait a moment for the connection to stabilize
             tokio::time::sleep(Duration::from_secs(1)).await;
-            
+
             if let Err(e) = Self::subscribe_to_events(&broadcaster_id, &sess_id).await {
                 eprintln!("❌ Failed to subscribe to EventSub events: {}", e);
             }
@@ -267,15 +455,23 @@ impl EventSubService {
         let last_message_time = Arc::new(RwLock::new(std::time::Instant::now()));
         let last_message_clone = last_message_time.clone();
         let connected_clone = connected.clone();
-        
+
         tokio::spawn(async move {
             let mut check_interval = interval(Duration::from_secs(1));
             loop {
                 check_interval.tick().await;
-                
+
+                // Check if we should stop
+                if !*connected_clone.read().await {
+                    break;
+                }
+
                 let elapsed = last_message_clone.read().await.elapsed();
                 if elapsed > Duration::from_secs(keepalive_timeout + 5) {
-                    eprintln!("❌ No message received for {} seconds, connection may be dead", elapsed.as_secs());
+                    eprintln!(
+                        "❌ No message received for {} seconds, connection may be dead",
+                        elapsed.as_secs()
+                    );
                     let mut conn = connected_clone.write().await;
                     *conn = false;
                     break;
@@ -285,6 +481,12 @@ impl EventSubService {
 
         // Listen for messages
         while let Some(msg) = read.next().await {
+            // Check if we should stop
+            if !*connected.read().await {
+                println!("🛑 Connection marked as disconnected, stopping listener");
+                break;
+            }
+
             match msg {
                 Ok(Message::Text(text)) => {
                     // Update last message time
@@ -315,6 +517,9 @@ impl EventSubService {
                 _ => {}
             }
         }
+
+        // Send close frame to properly close the connection
+        let _ = write.send(Message::Close(None)).await;
 
         Ok(())
     }
@@ -367,32 +572,89 @@ impl EventSubService {
         Ok(())
     }
 
-    async fn handle_notification(notification: NotificationPayload, app_handle: &AppHandle) -> Result<()> {
-        println!("📬 Received notification: {}", notification.subscription.subscription_type);
+    async fn handle_notification(
+        notification: NotificationPayload,
+        app_handle: &AppHandle,
+    ) -> Result<()> {
+        println!(
+            "📬 Received notification: {}",
+            notification.subscription.subscription_type
+        );
 
         match notification.subscription.subscription_type.as_str() {
+            "channel.raid" => {
+                // Handle raid events
+                if let Ok(raid_event) =
+                    serde_json::from_value::<RaidEvent>(notification.event.clone())
+                {
+                    println!(
+                        "🎉 Raid: {} -> {} ({} viewers)",
+                        raid_event.from_broadcaster_user_name,
+                        raid_event.to_broadcaster_user_name,
+                        raid_event.viewers
+                    );
+                    let _ = app_handle.emit("eventsub://raid", &raid_event);
+                }
+            }
+            "stream.offline" => {
+                // Handle stream offline events
+                if let Ok(offline_event) =
+                    serde_json::from_value::<StreamOfflineEvent>(notification.event.clone())
+                {
+                    println!("📴 Stream offline: {}", offline_event.broadcaster_user_name);
+                    let _ = app_handle.emit("eventsub://offline", &offline_event);
+                }
+            }
+            "stream.online" => {
+                // Handle stream online events
+                if let Ok(online_event) =
+                    serde_json::from_value::<StreamOnlineEvent>(notification.event.clone())
+                {
+                    println!("📡 Stream online: {}", online_event.broadcaster_user_name);
+                    let _ = app_handle.emit("eventsub://online", &online_event);
+                }
+            }
+            "channel.update" => {
+                // Handle channel update events
+                if let Ok(update_event) =
+                    serde_json::from_value::<ChannelUpdateEvent>(notification.event.clone())
+                {
+                    println!(
+                        "📝 Channel updated: \"{}\" - {}",
+                        update_event.title, update_event.category_name
+                    );
+                    let _ = app_handle.emit("eventsub://channel-update", &update_event);
+                }
+            }
             "channel.channel_points_automatic_reward_redemption.add" => {
-                // Handle automatic channel points rewards (like highlighted messages)
+                // Handle automatic channel points rewards
                 println!("🎁 Automatic channel points reward redeemed");
                 let _ = app_handle.emit("channel-points-automatic-reward", &notification.event);
             }
             "channel.channel_points_custom_reward_redemption.add" => {
                 // Handle custom channel points reward redemptions
-                if let Ok(redemption) = serde_json::from_value::<ChannelPointsRedemptionEvent>(notification.event.clone()) {
-                    println!("🎁 Custom reward redeemed: {} by {}", redemption.reward.title, redemption.user_name);
+                if let Ok(redemption) = serde_json::from_value::<ChannelPointsRedemptionEvent>(
+                    notification.event.clone(),
+                ) {
+                    println!(
+                        "🎁 Custom reward redeemed: {} by {}",
+                        redemption.reward.title, redemption.user_name
+                    );
                     let _ = app_handle.emit("channel-points-redemption", &redemption);
                 }
             }
             "user.whisper.message" => {
                 // Handle incoming whisper messages
-                if let Ok(whisper_event) = serde_json::from_value::<WhisperReceivedEvent>(notification.event.clone()) {
-                    println!("💬 Whisper received from {} (@{}): {}", 
-                        whisper_event.from_user_name, 
+                if let Ok(whisper_event) =
+                    serde_json::from_value::<WhisperReceivedEvent>(notification.event.clone())
+                {
+                    println!(
+                        "💬 Whisper received from {} (@{}): {}",
+                        whisper_event.from_user_name,
                         whisper_event.from_user_login,
                         whisper_event.whisper.text
                     );
-                    
-                    // Emit to frontend for Dynamic Island notification
+
                     let whisper_data = serde_json::json!({
                         "from_user_id": whisper_event.from_user_id,
                         "from_user_login": whisper_event.from_user_login,
@@ -403,12 +665,15 @@ impl EventSubService {
                         "whisper_id": whisper_event.whisper_id,
                         "text": whisper_event.whisper.text
                     });
-                    
+
                     let _ = app_handle.emit("whisper-received", &whisper_data);
                 }
             }
             _ => {
-                println!("📨 Unhandled subscription type: {}", notification.subscription.subscription_type);
+                println!(
+                    "📨 Unhandled subscription type: {}",
+                    notification.subscription.subscription_type
+                );
             }
         }
 
@@ -417,12 +682,10 @@ impl EventSubService {
 
     async fn subscribe_to_events(broadcaster_id: &str, session_id: &str) -> Result<()> {
         let token = TwitchService::get_token().await?;
-        // Use the same client ID as TwitchService for consistency
         let client_id = "1qgws7yzcp21g5ledlzffw3lmqdvie";
-
         let client = reqwest::Client::new();
 
-        // Get the current user's ID for user-specific subscriptions (like whispers)
+        // Get the current user's ID for user-specific subscriptions
         let current_user_id = match TwitchService::get_user_info().await {
             Ok(user) => user.id,
             Err(e) => {
@@ -431,67 +694,81 @@ impl EventSubService {
             }
         };
 
-        // Subscribe to automatic channel points rewards (v2)
-        let subscription_body = serde_json::json!({
-            "type": "channel.channel_points_automatic_reward_redemption.add",
-            "version": "2",
-            "condition": {
-                "broadcaster_user_id": broadcaster_id
-            },
-            "transport": {
-                "method": "websocket",
-                "session_id": session_id
+        // List of subscriptions to create
+        #[allow(clippy::useless_vec)]
+        let subscriptions = vec![
+            // Raid events (when streamer raids OUT to another channel)
+            (
+                "channel.raid",
+                "1",
+                serde_json::json!({
+                    "from_broadcaster_user_id": broadcaster_id
+                }),
+            ),
+            // Stream offline events
+            (
+                "stream.offline",
+                "1",
+                serde_json::json!({
+                    "broadcaster_user_id": broadcaster_id
+                }),
+            ),
+            // Stream online events
+            (
+                "stream.online",
+                "1",
+                serde_json::json!({
+                    "broadcaster_user_id": broadcaster_id
+                }),
+            ),
+            // Channel update events (title, category changes)
+            (
+                "channel.update",
+                "2",
+                serde_json::json!({
+                    "broadcaster_user_id": broadcaster_id
+                }),
+            ),
+        ];
+
+        // Subscribe to each event with delays
+        for (i, (event_type, version, condition)) in subscriptions.iter().enumerate() {
+            let subscription_body = serde_json::json!({
+                "type": event_type,
+                "version": version,
+                "condition": condition,
+                "transport": {
+                    "method": "websocket",
+                    "session_id": session_id
+                }
+            });
+
+            let response = client
+                .post("https://api.twitch.tv/helix/eventsub/subscriptions")
+                .header("Client-ID", client_id)
+                .header("Authorization", format!("Bearer {}", token))
+                .header("Content-Type", "application/json")
+                .json(&subscription_body)
+                .send()
+                .await?;
+
+            if response.status().is_success() {
+                println!("✅ Subscribed to {}", event_type);
+            } else {
+                let error_text = response.text().await?;
+                eprintln!("❌ Failed to subscribe to {}: {}", event_type, error_text);
             }
-        });
 
-        let response = client
-            .post("https://api.twitch.tv/helix/eventsub/subscriptions")
-            .header("Client-ID", client_id)
-            .header("Authorization", format!("Bearer {}", token))
-            .header("Content-Type", "application/json")
-            .json(&subscription_body)
-            .send()
-            .await?;
-
-        if response.status().is_success() {
-            println!("✅ Subscribed to automatic channel points rewards");
-        } else {
-            let error_text = response.text().await?;
-            eprintln!("❌ Failed to subscribe to automatic rewards: {}", error_text);
+            // Add delay between subscriptions (except after the last one)
+            if i < subscriptions.len() - 1 {
+                tokio::time::sleep(Duration::from_millis(SUBSCRIPTION_DELAY_MS)).await;
+            }
         }
 
-        // Subscribe to custom channel points rewards
-        let custom_subscription_body = serde_json::json!({
-            "type": "channel.channel_points_custom_reward_redemption.add",
-            "version": "1",
-            "condition": {
-                "broadcaster_user_id": broadcaster_id
-            },
-            "transport": {
-                "method": "websocket",
-                "session_id": session_id
-            }
-        });
-
-        let response = client
-            .post("https://api.twitch.tv/helix/eventsub/subscriptions")
-            .header("Client-ID", client_id)
-            .header("Authorization", format!("Bearer {}", token))
-            .header("Content-Type", "application/json")
-            .json(&custom_subscription_body)
-            .send()
-            .await?;
-
-        if response.status().is_success() {
-            println!("✅ Subscribed to custom channel points rewards");
-        } else {
-            let error_text = response.text().await?;
-            eprintln!("❌ Failed to subscribe to custom rewards: {}", error_text);
-        }
-
-        // Subscribe to whisper messages (requires user:read:whispers or user:manage:whispers scope)
-        // This subscription is for the current logged-in user, not the broadcaster
+        // Subscribe to whisper messages if we have a user ID
         if !current_user_id.is_empty() {
+            tokio::time::sleep(Duration::from_millis(SUBSCRIPTION_DELAY_MS)).await;
+
             let whisper_subscription_body = serde_json::json!({
                 "type": "user.whisper.message",
                 "version": "1",
@@ -514,28 +791,50 @@ impl EventSubService {
                 .await?;
 
             if response.status().is_success() {
-                println!("✅ Subscribed to whisper messages for user {}", current_user_id);
+                println!(
+                    "✅ Subscribed to whisper messages for user {}",
+                    current_user_id
+                );
             } else {
                 let error_text = response.text().await?;
                 eprintln!("❌ Failed to subscribe to whispers: {}", error_text);
             }
-        } else {
-            eprintln!("⚠️ Skipping whisper subscription - no user ID available");
         }
 
         Ok(())
     }
 
     pub async fn disconnect(&self) {
-        let mut conn = self.connected.write().await;
-        *conn = false;
-        
-        let mut sess = self.session_id.write().await;
-        *sess = None;
-        
-        let mut subs = self.subscriptions.write().await;
-        subs.clear();
-        
+        println!("🔌 Disconnecting EventSub...");
+
+        // Mark as disconnected first to stop all loops
+        {
+            let mut conn = self.connected.write().await;
+            *conn = false;
+        }
+
+        // Send shutdown signal to the background task
+        {
+            let mut tx = self.shutdown_tx.write().await;
+            if let Some(sender) = tx.take() {
+                let _ = sender.send(()).await;
+            }
+        }
+
+        // Clear session and subscriptions
+        {
+            let mut sess = self.session_id.write().await;
+            *sess = None;
+        }
+
+        {
+            let mut subs = self.subscriptions.write().await;
+            subs.clear();
+        }
+
+        // Give the task a moment to clean up
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
         println!("🔌 EventSub disconnected");
     }
 }

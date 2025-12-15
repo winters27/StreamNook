@@ -47,6 +47,24 @@
   font-display: swap;
 }
 
+/* Font-weight 600 (semi-bold) - Used by chat usernames */
+/* Maps to Satoshi-Regular to ensure exact match with backend measurement */
+@font-face {
+  font-family: 'Satoshi';
+  src: url('../assets/fonts/Satoshi-Regular.otf') format('opentype');
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Satoshi';
+  src: url('../assets/fonts/Satoshi-Italic.otf') format('opentype');
+  font-weight: 600;
+  font-style: italic;
+  font-display: swap;
+}
+
 @font-face {
   font-family: 'Satoshi';
   src: url('../assets/fonts/Satoshi-Regular.otf') format('opentype');

@@ -1,9 +1,9 @@
 import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import type { Settings, TwitchUser, TwitchStream, UserInfo, TwitchCategory } from '../types';
 import { trackActivity, isStreamlinkError, sendStreamlinkDiagnostics } from '../services/logService';
 import { upsertUser } from '../services/supabaseService';
-import { eventSubService } from '../services/eventSub';
 
 export interface Toast {
   id: number;
@@ -171,6 +171,9 @@ interface AppState {
 
 // Flags to ensure we only show session toasts once per app session
 let hasShownWelcomeBackToast = false;
+
+// Store EventSub listener cleanup functions at module level
+let eventSubListenerCleanup: (() => void)[] = [];
 
 // Helper to save user context to localStorage for error reporting
 const saveUserContextToLocalStorage = (currentUser: TwitchUser | null, currentStream: TwitchStream | null) => {
@@ -600,10 +603,17 @@ export const useAppStore = create<AppState>((set, get) => ({
         console.warn('Could not stop drops monitoring:', e);
       }
 
-      // Disconnect EventSub raid subscription
+      // Clean up EventSub listeners
+      console.log('[EventSub] Cleaning up listeners on stop...');
+      for (const cleanup of eventSubListenerCleanup) {
+        cleanup();
+      }
+      eventSubListenerCleanup = [];
+
+      // Disconnect EventSub
       try {
-        eventSubService.disconnect();
-        console.log('🛑 Disconnected EventSub raid subscription');
+        await invoke('disconnect_eventsub');
+        console.log('🛑 Disconnected EventSub');
       } catch (e) {
         console.warn('Could not disconnect EventSub:', e);
       }
@@ -788,51 +798,66 @@ export const useAppStore = create<AppState>((set, get) => ({
 
       if (channelId && get().isAuthenticated) {
         try {
+          // Clean up any existing event listeners first
+          console.log('[EventSub] Cleaning up existing listeners...');
+          for (const cleanup of eventSubListenerCleanup) {
+            cleanup();
+          }
+          eventSubListenerCleanup = [];
+
           // Disconnect any existing connection first
-          eventSubService.disconnect();
+          await invoke('disconnect_eventsub');
 
-          // Connect with callbacks for all events
-          await eventSubService.connect(channelId, {
-            // Raid callback - redirect to raided channel
-            onRaid: autoRedirectOnRaid ? async (targetLogin: string, viewerCount: number) => {
-              console.log(`[EventSub] Raid detected! Redirecting to ${targetLogin} (${viewerCount} viewers)`);
+          // Connect to Rust EventSub service
+          await invoke('connect_eventsub', { broadcasterId: channelId });
 
-              // Mark that a raid redirect is happening - this prevents auto-switch from overriding
-              set({ lastRaidRedirectTime: Date.now() });
+          // Set up event listeners for Rust-emitted events
+          // Listen for raid events
+          const unlistenRaid = await listen('eventsub://raid', async (event: any) => {
+            if (!autoRedirectOnRaid) return;
+            
+            const raidData = event.payload;
+            console.log(`[EventSub] Raid detected! Redirecting to ${raidData.to_broadcaster_user_login} (${raidData.viewers} viewers)`);
 
-              // Show notification toast
-              get().addToast(`🎉 Raid starting! Joining ${targetLogin}...`, 'info');
+            // Mark that a raid redirect is happening - this prevents auto-switch from overriding
+            set({ lastRaidRedirectTime: Date.now() });
 
-              // Small delay to let user see the notification
-              await new Promise(resolve => setTimeout(resolve, 1500));
+            // Show notification toast
+            get().addToast(`🎉 Raid starting! Joining ${raidData.to_broadcaster_user_login}...`, 'info');
 
-              // Start the new stream (this will also set up new EventSub subscription)
-              await get().startStream(targetLogin);
-            } : undefined,
+            // Small delay to let user see the notification
+            await new Promise(resolve => setTimeout(resolve, 1500));
 
-            // Stream offline callback - trigger auto-switch
-            onStreamOffline: () => {
-              console.log('[EventSub] Stream went offline via EventSub notification');
-              // Use the existing handleStreamOffline which has all the auto-switch logic
-              get().handleStreamOffline();
-            },
-
-            // Channel update callback - update current stream info in real-time
-            onChannelUpdate: (title: string, categoryName: string, categoryId: string) => {
-              const currentStream = get().currentStream;
-              if (currentStream) {
-                console.log(`[EventSub] Channel updated: "${title}" - ${categoryName}`);
-                set({
-                  currentStream: {
-                    ...currentStream,
-                    title,
-                    game_name: categoryName,
-                    game_id: categoryId,
-                  }
-                });
-              }
-            },
+            // Start the new stream (this will also set up new EventSub subscription)
+            await get().startStream(raidData.to_broadcaster_user_login);
           });
+          eventSubListenerCleanup.push(unlistenRaid);
+
+          // Listen for stream offline events
+          const unlistenOffline = await listen('eventsub://offline', () => {
+            console.log('[EventSub] Stream went offline via EventSub notification');
+            // Use the existing handleStreamOffline which has all the auto-switch logic
+            get().handleStreamOffline();
+          });
+          eventSubListenerCleanup.push(unlistenOffline);
+
+          // Listen for channel update events
+          const unlistenUpdate = await listen('eventsub://channel-update', (event: any) => {
+            const updateData = event.payload;
+            const currentStream = get().currentStream;
+            if (currentStream) {
+              console.log(`[EventSub] Channel updated: "${updateData.title}" - ${updateData.category_name}`);
+              set({
+                currentStream: {
+                  ...currentStream,
+                  title: updateData.title,
+                  game_name: updateData.category_name,
+                  game_id: updateData.category_id,
+                }
+              });
+            }
+          });
+          eventSubListenerCleanup.push(unlistenUpdate);
 
           console.log(`🔔 Connected to EventSub (channel: ${info.user_name})`);
         } catch (e) {

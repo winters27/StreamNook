@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { X, ArrowUpDown, RefreshCw, Check, Trophy, Award, ChevronUp } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../stores/AppStore';
-import { getFullProfileWithFallback, getProfileFromMemoryCache } from '../services/cosmeticsCache';
+import { getAllUserBadgesWithEarned } from '../services/badgeService';
 
 interface BadgeVersion {
   id: string;
@@ -70,39 +70,42 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
     }
   }, [isAuthenticated, currentUser]);
 
-  // Load user's badges from profile cache or API
+  // Load user's badges using unified badge service
   const loadUserBadges = async () => {
     if (!currentUser) return;
     
     setLoadingUserBadges(true);
     try {
-      // Try to get from memory cache first
-      let profile = getProfileFromMemoryCache(currentUser.user_id);
+      const channelId = currentStream?.user_id || currentUser.user_id;
+      const channelName = currentStream?.user_login || currentUser.login || currentUser.username;
       
-      if (!profile) {
-        // Fetch if not cached
-        const channelId = currentStream?.user_id || currentUser.user_id;
-        const channelName = currentStream?.user_login || currentUser.login || currentUser.username;
-        profile = await getFullProfileWithFallback(
-          currentUser.user_id,
-          currentUser.login || currentUser.username,
-          channelId,
-          channelName
-        );
-      }
+      // Use unified badge service with full earned badge collection
+      const badgeData = await getAllUserBadgesWithEarned(
+        currentUser.user_id,
+        currentUser.login || currentUser.username,
+        channelId,
+        channelName
+      );
       
-      if (profile?.twitchBadges) {
-        // Create a Set of badge keys the user owns
-        const keys = new Set<string>();
-        profile.twitchBadges.forEach((badge: any) => {
-          // User badges have setID and version
-          if (badge.setID && badge.version) {
-            keys.add(`${badge.setID}_${badge.version}`);
-          }
-        });
-        setCollectedBadgeKeys(keys);
-        console.log(`[BadgesOverlay] User has ${keys.size} collected badges`);
-      }
+      // Create a Set of badge keys the user owns (display badges + earned badges)
+      const keys = new Set<string>();
+      
+      // Add display badges
+      badgeData.displayBadges?.forEach((badge: any) => {
+        if (badge && badge.setID && badge.version) {
+          keys.add(`${badge.setID}_${badge.version}`);
+        }
+      });
+      
+      // Add earned badges
+      badgeData.earnedBadges?.forEach((badge: any) => {
+        if (badge && badge.setID && badge.version) {
+          keys.add(`${badge.setID}_${badge.version}`);
+        }
+      });
+      
+      setCollectedBadgeKeys(keys);
+      console.log(`[BadgesOverlay] User has ${keys.size} collected badges`);
     } catch (err) {
       console.error('[BadgesOverlay] Failed to load user badges:', err);
     } finally {

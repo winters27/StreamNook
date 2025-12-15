@@ -1,7 +1,12 @@
 import { invoke } from '@tauri-apps/api/core';
-import { convertFileSrc } from '@tauri-apps/api/core';
 
-// Comprehensive badge service using IVR API and Twitch GQL
+/**
+ * Unified Badge Service - Lightweight wrapper for Rust backend
+ * All heavy lifting (API calls, caching, parsing) is done in Rust
+ * This service transforms Rust responses to match the expected frontend format
+ */
+
+// Frontend-expected format (camelCase, flat structure)
 export interface TwitchBadge {
   id: string;
   setID: string;
@@ -11,241 +16,78 @@ export interface TwitchBadge {
   image1x: string;
   image2x: string;
   image4x: string;
+  clickAction?: string;
+  clickUrl?: string;
   localUrl?: string;
+}
+
+export interface ThirdPartyBadge {
+  id: string;
+  title: string;
+  imageUrl: string;
+  image1x: string;
+  image2x: string;
+  image4x: string;
+  provider: string;
+  link?: string;
 }
 
 export interface UserBadgesResponse {
   displayBadges: TwitchBadge[];
   earnedBadges: TwitchBadge[];
+  thirdPartyBadges: ThirdPartyBadge[];
   ivrBadges: any[];
 }
 
-// Get global Twitch badges from IVR
-export async function getGlobalBadges(): Promise<any[]> {
-  try {
-    const response = await fetch('https://api.ivr.fi/v2/twitch/badges/global');
-    if (!response.ok) {
-      return [];
-    }
-    return await response.json();
-  } catch (error) {
-    console.error('[Badges] Failed to fetch global badges:', error);
-    return [];
-  }
+// Rust backend response format (snake_case, nested structure)
+interface RustBadgeInfo {
+  id: string;
+  set_id: string;
+  version: string;
+  title: string;
+  description: string;
+  image_1x: string;
+  image_2x: string;
+  image_4x: string;
+  click_action?: string;
+  click_url?: string;
 }
 
-// Helper to cache badges in background
-async function cacheBadges(badges: TwitchBadge[]) {
-  // Process in chunks to avoid overwhelming the network/backend
-  const CHUNK_SIZE = 10;
-  for (let i = 0; i < badges.length; i += CHUNK_SIZE) {
-    const chunk = badges.slice(i, i + CHUNK_SIZE);
-    await Promise.allSettled(chunk.map(async (badge) => {
-      try {
-        // Only cache if not already cached
-        if (badge.localUrl) return;
-
-        // Cache the 4x image (highest quality)
-        if (badge.image4x) {
-          await invoke('download_and_cache_file', {
-            cacheType: 'badge',
-            id: badge.id,
-            url: badge.image4x,
-            expiryDays: 0 // Never expire badges
-          });
-        }
-      } catch (e) {
-        console.warn(`Failed to cache badge ${badge.title}:`, e);
-      }
-    }));
-    // Small delay between chunks
-    await new Promise(resolve => setTimeout(resolve, 100));
-  }
+interface RustUserBadge {
+  badge_info: RustBadgeInfo;
+  provider: 'twitch' | 'ffz' | 'chatterino' | 'homies';
 }
 
-// Get channel-specific badges from IVR
-export async function getChannelBadges(channelName: string): Promise<any[]> {
-  try {
-    const response = await fetch(`https://api.ivr.fi/v2/twitch/badges/channel?login=${channelName}`);
-    if (!response.ok) {
-      return [];
-    }
-    return await response.json();
-  } catch (error) {
-    console.error('[Badges] Failed to fetch channel badges:', error);
-    return [];
-  }
+interface RustUserBadgesResponse {
+  display_badges: RustUserBadge[];
+  earned_badges: RustUserBadge[];
+  third_party_badges: RustUserBadge[];
 }
 
-// Get user data from IVR
-export async function getUserData(userName: string): Promise<any | null> {
-  try {
-    const response = await fetch(`https://api.ivr.fi/v2/twitch/user?login=${userName}`);
-    if (!response.ok) {
-      return null;
-    }
-    return await response.json();
-  } catch (error) {
-    console.error('[Badges] Failed to fetch user data:', error);
-    return null;
-  }
+/**
+ * Transform a Rust badge to frontend format
+ */
+function transformBadge(rustBadge: RustUserBadge): TwitchBadge {
+  const info = rustBadge.badge_info;
+  return {
+    id: info.id,
+    setID: info.set_id,
+    version: info.version,
+    title: info.title,
+    description: info.description,
+    image1x: info.image_1x,
+    image2x: info.image_2x,
+    image4x: info.image_4x,
+    clickAction: info.click_action,
+    clickUrl: info.click_url,
+  };
 }
 
-// Get user's displayed and earned badges from Twitch GQL
-export async function getUserBadgesFromGQL(
-  channelID: string,
-  channelLogin: string,
-  userName: string
-): Promise<{ displayBadges: any[]; earnedBadges: any[] }> {
-  try {
-    // First, try to get the user's ID from IVR API
-    const userData = await getUserData(userName);
-    const targetUserID = userData?.[0]?.id;
-
-    const response = await fetch('https://gql.twitch.tv/gql', {
-      method: 'POST',
-      headers: {
-        'Accept-Language': 'en-US',
-        'Client-ID': 'kimne78kx3ncx6brgo4mv6wki5h1ko',
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify([
-        {
-          operationName: 'ViewerCard',
-          variables: {
-            channelID: channelID,
-            channelLogin: channelLogin,
-            hasChannelID: true,
-            targetUserID: targetUserID || undefined,
-            targetLogin: userName,
-            giftRecipientLogin: userName,
-            isViewerBadgeCollectionEnabled: true,
-            withStandardGifting: true,
-            badgeSourceChannelID: channelID,
-            badgeSourceChannelLogin: channelLogin
-          },
-          extensions: {
-            persistedQuery: {
-              version: 1,
-              sha256Hash: '80c53fe04c79a6414484104ea573c28d6a8436e031a235fc6908de63f51c74fd'
-            }
-          }
-        }
-      ])
-    });
-
-    if (!response.ok) {
-      console.error('[Badges] GQL response not ok:', response.status, response.statusText);
-      return { displayBadges: [], earnedBadges: [] };
-    }
-
-    const data = await response.json();
-    const badgesData = data[0]?.data;
-
-    console.log('[Badges] GQL response data:', badgesData);
-
-    const displayBadges = badgesData?.targetUser?.displayBadges || [];
-    const earnedBadges = badgesData?.channelViewer?.earnedBadges || [];
-
-    return { displayBadges, earnedBadges };
-  } catch (error) {
-    console.error('[Badges] Failed to fetch user badges from GQL:', error);
-    return { displayBadges: [], earnedBadges: [] };
-  }
-}
-
-// Filtered badge categories to show
-export const filteredBadgeCategories = [
-  'artist-badge',
-  'broadcaster',
-  'subscriber',
-  'sub-gifter',
-  'hype-train',
-  'moderator',
-  'founder',
-  'moments',
-  'bits',
-  'vip',
-  'partner',
-  'premium',
-  'staff',
-  'admin',
-  'global_mod',
-  'turbo',
-  'predictions',
-  'sub-gift-leader',
-  'clip-champ'
-];
-
-// Parse badge data to create consistent format
-function parseBadgeData(badge: any, globalBadges: any[], channelBadges: any[]): TwitchBadge | null {
-  try {
-    const setID = badge.setID;
-    const version = badge.version || '1';
-
-    // Try to find badge info from global badges
-    let badgeInfo = globalBadges.find((b) => b.setID === setID);
-
-    // If not found, try channel badges
-    if (!badgeInfo) {
-      badgeInfo = channelBadges.find((b) => b.setID === setID);
-    }
-
-    if (!badgeInfo) {
-      console.warn(`[Badges] Badge info not found for setID: ${setID}, trying direct image URLs`);
-      // If we can't find badge info, but we have direct image URLs from GQL, use those
-      if (badge.image1x || badge.image2x || badge.image4x) {
-        return {
-          id: `${setID}_${version}`,
-          setID: setID,
-          version: version,
-          title: badge.title || setID,
-          description: badge.description || '',
-          image1x: badge.image1x || '',
-          image2x: badge.image2x || '',
-          image4x: badge.image4x || ''
-        };
-      }
-      return null;
-    }
-
-    // Find the specific version
-    const versionInfo = badgeInfo.versions?.find((v: any) => v.id === version) || badgeInfo.versions?.[0];
-
-    if (!versionInfo) {
-      // If we can't find version info, but we have direct image URLs from GQL, use those
-      if (badge.image1x || badge.image2x || badge.image4x) {
-        return {
-          id: `${setID}_${version}`,
-          setID: setID,
-          version: version,
-          title: badge.title || badgeInfo.title || setID,
-          description: badge.description || badgeInfo.description || '',
-          image1x: badge.image1x || '',
-          image2x: badge.image2x || '',
-          image4x: badge.image4x || ''
-        };
-      }
-      return null;
-    }
-
-    return {
-      id: `${setID}_${version}`,
-      setID: setID,
-      version: version,
-      title: versionInfo.title || badgeInfo.title || setID,
-      description: versionInfo.description || badgeInfo.description || '',
-      image1x: versionInfo.image_url_1x || badge.image1x || '',
-      image2x: versionInfo.image_url_2x || badge.image2x || '',
-      image4x: versionInfo.image_url_4x || badge.image4x || ''
-    };
-  } catch (error) {
-    console.error('[Badges] Failed to parse badge:', error);
-    return null;
-  }
-}
-
-// Get all badges for a user (comprehensive)
+/**
+ * Get all badges for a user (Twitch + Third-Party)
+ * This version is optimized for chat - only fetches display badges
+ * For profile overlays with full earned badge collection, use getAllUserBadgesWithEarned()
+ */
 export async function getAllUserBadges(
   userId: string,
   username: string,
@@ -253,75 +95,149 @@ export async function getAllUserBadges(
   channelName: string
 ): Promise<UserBadgesResponse> {
   try {
-    console.log('[Badges] Fetching all badges for:', { userId, username, channelId, channelName });
+    const rustResponse: RustUserBadgesResponse = await invoke('get_user_badges_unified', {
+      userId,
+      username,
+      channelId,
+      channelName,
+    });
 
-    // Fetch all badge data in parallel
-    const [globalBadges, channelBadges, gqlBadges] = await Promise.all([
-      getGlobalBadges(),
-      getChannelBadges(channelName),
-      getUserBadgesFromGQL(channelId, channelName, username)
-    ]);
-
-    // Fetch cached files map
-    let cachedFiles: Record<string, string> = {};
-    try {
-      cachedFiles = await invoke('get_cached_files', { cacheType: 'badge' });
-    } catch (e) {
-      console.warn('Failed to get cached badge files:', e);
-    }
-
-    console.log('[Badges] Raw GQL badges:', gqlBadges);
-    console.log('[Badges] Global badges count:', globalBadges.length);
-    console.log('[Badges] Channel badges count:', channelBadges.length);
-
-    // Parse displayed badges
-    const displayBadges: TwitchBadge[] = gqlBadges.displayBadges
-      .map((badge) => parseBadgeData(badge, globalBadges, channelBadges))
-      .filter((badge): badge is TwitchBadge => badge !== null)
-      .map(badge => {
-        const localPath = cachedFiles[badge.id];
-        return {
-          ...badge,
-          localUrl: localPath ? convertFileSrc(localPath) : undefined
-        };
-      });
-
-    // Parse earned badges and filter by category
-    const earnedBadges: TwitchBadge[] = gqlBadges.earnedBadges
-      .map((badge) => parseBadgeData(badge, globalBadges, channelBadges))
-      .filter((badge): badge is TwitchBadge => badge !== null)
-      .map(badge => {
-        const localPath = cachedFiles[badge.id];
-        return {
-          ...badge,
-          localUrl: localPath ? convertFileSrc(localPath) : undefined
-        };
-      });
-
-    console.log('[Badges] Parsed display badges:', displayBadges);
-    console.log('[Badges] Parsed earned badges:', earnedBadges);
+    // Transform to frontend format
+    const displayBadges = (rustResponse.display_badges || []).map(transformBadge);
+    const earnedBadges = (rustResponse.earned_badges || []).map(transformBadge);
+    
+    // Transform third-party badges (FFZ, Chatterino, Homies)
+    const thirdPartyBadges: ThirdPartyBadge[] = (rustResponse.third_party_badges || []).map((b: RustUserBadge) => {
+      // Use highest resolution available as default imageUrl
+      const imageUrl = b.badge_info.image_4x || b.badge_info.image_2x || b.badge_info.image_1x;
+      return {
+        id: b.badge_info.id,
+        title: b.badge_info.title,
+        imageUrl,
+        image1x: b.badge_info.image_1x || imageUrl,
+        image2x: b.badge_info.image_2x || imageUrl,
+        image4x: b.badge_info.image_4x || imageUrl,
+        provider: b.provider,
+        link: b.badge_info.click_url,
+      };
+    });
 
     return {
       displayBadges,
       earnedBadges,
-      ivrBadges: [...globalBadges, ...channelBadges]
-    };
-
-    // Trigger background caching
-    const allBadges = [...displayBadges, ...earnedBadges];
-    cacheBadges(allBadges).catch(e => console.error('Background badge caching failed:', e));
-
-    return {
-      displayBadges,
-      earnedBadges,
-      ivrBadges: [...globalBadges, ...channelBadges]
+      thirdPartyBadges,
+      ivrBadges: [], // Legacy field, not used anymore
     };
   } catch (error) {
-    console.error('[Badges] Failed to fetch all user badges:', error);
+    console.error('[badgeService] Failed to get user badges:', error);
     return {
       displayBadges: [],
       earnedBadges: [],
-      ivrBadges: []
+      thirdPartyBadges: [],
+      ivrBadges: [],
     };
   }
 }
+
+/**
+ * Get all badges for a user with FULL earned badge collection (for profile overlays)
+ * This makes additional GQL queries to fetch ALL earned badges (including global badge collection)
+ * Use this for profile overlays where you need to show all badges the user has earned
+ */
+export async function getAllUserBadgesWithEarned(
+  userId: string,
+  username: string,
+  channelId: string,
+  channelName: string
+): Promise<UserBadgesResponse> {
+  try {
+    const rustResponse: RustUserBadgesResponse = await invoke('get_user_badges_with_earned_unified', {
+      userId,
+      username,
+      channelId,
+      channelName,
+    });
+
+    // Transform to frontend format
+    const displayBadges = (rustResponse.display_badges || []).map(transformBadge);
+    const earnedBadges = (rustResponse.earned_badges || []).map(transformBadge);
+    
+    // Transform third-party badges (FFZ, Chatterino, Homies)
+    const thirdPartyBadges: ThirdPartyBadge[] = (rustResponse.third_party_badges || []).map((b: RustUserBadge) => {
+      // Use highest resolution available as default imageUrl
+      const imageUrl = b.badge_info.image_4x || b.badge_info.image_2x || b.badge_info.image_1x;
+      return {
+        id: b.badge_info.id,
+        title: b.badge_info.title,
+        imageUrl,
+        image1x: b.badge_info.image_1x || imageUrl,
+        image2x: b.badge_info.image_2x || imageUrl,
+        image4x: b.badge_info.image_4x || imageUrl,
+        provider: b.provider,
+        link: b.badge_info.click_url,
+      };
+    });
+
+    return {
+      displayBadges,
+      earnedBadges,
+      thirdPartyBadges,
+      ivrBadges: [], // Legacy field, not used anymore
+    };
+  } catch (error) {
+    console.error('[badgeService] Failed to get user badges with earned:', error);
+    return {
+      displayBadges: [],
+      earnedBadges: [],
+      thirdPartyBadges: [],
+      ivrBadges: [],
+    };
+  }
+}
+
+/**
+ * Parse a badge string from IRC (e.g., "subscriber/12,premium/1")
+ * Returns array of badge IDs
+ */
+export async function parseBadgeString(badgeString: string): Promise<string[]> {
+  return await invoke('parse_badge_string', { badgeString });
+}
+
+/**
+ * Pre-fetch global badges (optional, done automatically on startup)
+ */
+export async function prefetchGlobalBadges(): Promise<void> {
+  await invoke('prefetch_global_badges_unified');
+}
+
+/**
+ * Pre-fetch channel-specific badges
+ */
+export async function prefetchChannelBadges(channelId: string): Promise<void> {
+  await invoke('prefetch_channel_badges_unified', { channelId });
+}
+
+/**
+ * Pre-fetch third-party badge databases (FFZ, Chatterino, Homies)
+ */
+export async function prefetchThirdPartyBadges(): Promise<void> {
+  await invoke('prefetch_third_party_badges');
+}
+
+/**
+ * Clear all badge caches
+ */
+export async function clearBadgeCache(): Promise<void> {
+  await invoke('clear_badge_cache_unified');
+}
+
+/**
+ * Clear badge cache for a specific channel
+ */
+export async function clearChannelBadgeCache(channelId: string): Promise<void> {
+  await invoke('clear_channel_badge_cache_unified', { channelId });
+}
+
+// Legacy type aliases for backwards compatibility
+export type BadgeInfo = TwitchBadge;
+export type UserBadge = TwitchBadge;
