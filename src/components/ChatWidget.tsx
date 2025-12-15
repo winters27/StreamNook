@@ -808,7 +808,7 @@ const ChatWidget = () => {
     return 60;
   }, [messages, getMessageId, isPaused, estimateStringMessageHeight]);
 
-  const setItemSize = useCallback((index: number, size: number, messageId?: string | null, hasReply?: boolean) => {
+  const setItemSize = useCallback((index: number, size: number, messageId?: string | null, _hasReply?: boolean) => {
     const currentSize = rowHeights.current[index] || 0;
     const sizeDiff = Math.abs(currentSize - size);
     

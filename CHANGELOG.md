@@ -1,3 +1,7 @@
+## [6.0.1] - 2025-12-14
+### 🐛 Bug Fixes
+- **Chat Performance**: Resolved a performance issue in the chat widget that could lead to incorrect item sizing calculations, improving overall chat rendering stability.
+
 ## [6.0.0] - 2025-12-14
 ### ✨ Features
 - **Unified User Profile Service**: StreamNook now fetches and caches comprehensive user profiles (including 7TV cosmetics, all earned Twitch badges, and third-party badges from FFZ/Chatterino/Homies) directly from the Rust backend. This significantly improves performance and reliability.
@@ -789,6 +793,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
