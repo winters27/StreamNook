@@ -19,7 +19,7 @@ strsim = "0.11.1"
 phf_codegen = "0.11"
 
 [dependencies]
-tauri = { version = "2.9.4", features = ["protocol-asset", "tray-icon", "image-png"] }
+tauri = { version = "2.9.5", features = ["protocol-asset", "tray-icon", "image-png"] }
 tauri-plugin-shell = { git = "https://github.com/tauri-apps/plugins-workspace", branch = "v2" }
 tauri-plugin-opener = { git = "https://github.com/tauri-apps/plugins-workspace", branch = "v2" }
 tauri-plugin-dialog = "2.2.0"
