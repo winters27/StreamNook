@@ -56,7 +56,6 @@ export default function GameCard({
     isFavorite,
     onClick,
     onStopMining,
-    onMineAllGame,
     onToggleFavorite
 }: GameCardProps) {
     const titleRef = useRef<HTMLHeadingElement>(null);
