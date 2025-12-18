@@ -20,6 +20,10 @@ const VideoPlayer = () => {
   // This prevents player recreation when volume/muted settings change
   const playerSettingsRef = useRef(playerSettings);
   playerSettingsRef.current = playerSettings;
+  // Store isAutoSwitching in a ref so createPlayer can access the latest value
+  // without triggering function recreation (which causes black screen/audio glitch)
+  const isAutoSwitchingRef = useRef(isAutoSwitching);
+  isAutoSwitchingRef.current = isAutoSwitching;
   const isLiveRef = useRef<boolean>(true);
   const userInitiatedPauseRef = useRef<boolean>(false);
   const hasJumpedToLiveRef = useRef<boolean>(false);
@@ -437,7 +441,7 @@ const VideoPlayer = () => {
               nonFatalErrorCountRef.current >= maxNonFatalErrorsBeforeOffline &&
               hasPlayedSuccessfully &&
               fragmentsStalled &&
-              !isAutoSwitching;
+              !isAutoSwitchingRef.current;
 
             if (shouldTriggerOffline) {
               console.log('[HLS] Multiple non-fatal errors with stalled fragments detected. Stream appears to have ended.');
@@ -486,7 +490,7 @@ const VideoPlayer = () => {
           console.log(`[HLS] Fatal error count: ${fatalErrorCountRef.current}/${maxFatalErrorsBeforeOffline}`);
 
           // Check if we've exceeded max fatal errors - likely stream is offline
-          if (fatalErrorCountRef.current >= maxFatalErrorsBeforeOffline && !isAutoSwitching) {
+          if (fatalErrorCountRef.current >= maxFatalErrorsBeforeOffline && !isAutoSwitchingRef.current) {
             console.log('[HLS] Max fatal errors reached, stream appears to be offline. Triggering auto-switch...');
 
             // Reset error count
@@ -520,7 +524,7 @@ const VideoPlayer = () => {
                 const shouldTriggerOffline = manifestErrorCountRef.current >= maxManifestErrorsBeforeOffline &&
                   (!hasPlayedSuccessfully || timeSinceStart > minPlayTimeBeforeOfflineMs);
 
-                if (shouldTriggerOffline && !isAutoSwitching) {
+                if (shouldTriggerOffline && !isAutoSwitchingRef.current) {
                   console.log('[HLS] Multiple manifest errors, stream likely offline. Triggering auto-switch...');
                   console.log(`[HLS] Has played: ${hasPlayedSuccessfully}, Time since start: ${timeSinceStart}ms`);
                   manifestErrorCountRef.current = 0;
@@ -539,7 +543,7 @@ const VideoPlayer = () => {
             default:
               console.error('[HLS] Fatal error, cannot recover. Recreating player...');
               setTimeout(() => {
-                if (videoRef.current && isLiveRef.current && !isAutoSwitching) {
+                if (videoRef.current && isLiveRef.current && !isAutoSwitchingRef.current) {
                   createPlayer();
                 }
               }, 2000);
@@ -686,9 +690,9 @@ const VideoPlayer = () => {
     } else {
       console.error('[HLS] HLS is not supported in this browser');
     }
-    // Only depend on streamUrl - settings are read from ref inside the callback
-    // This prevents player recreation when volume/muted settings change
-  }, [streamUrl, syncVolumeToPlayer, handleStreamOffline, isAutoSwitching]);
+    // Only depend on streamUrl - settings and isAutoSwitching are read from refs inside the callback
+    // This prevents player recreation when volume/muted settings change or when isAutoSwitching toggles
+  }, [streamUrl, syncVolumeToPlayer, handleStreamOffline]);
 
   useEffect(() => {
     if (!videoRef.current || !streamUrl) return;

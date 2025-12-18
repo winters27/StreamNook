@@ -28,9 +28,10 @@
 
 use commands::{
     app::*, automation::*, badge_metadata::*, badge_service::*, badges::*, cache::*, chat::*,
-    components::*, cosmetics_cache::*, discord::*, drops::*, emoji::*, emotes::*, eventsub::*,
-    layout::*, logs::*, profile_cache::*, settings::*, seventv::*, streaming::*, twitch::*,
-    universal_cache::*, user_profile::*, whisper_storage::*,
+    chat_identity::*, components::*, cosmetics_cache::*, discord::*, drops::*, emoji::*, emotes::*,
+    eventsub::*, layout::*, logs::*, profile_cache::*, settings::*, seventv::*,
+    seventv_cosmetics::*, streaming::*, twitch::*, universal_cache::*, user_profile::*,
+    whisper_storage::*,
 };
 use models::settings::{AppState, Settings};
 use services::background_service::BackgroundService;
@@ -475,6 +476,16 @@ fn main() {
             clear_emote_cache,
             // 7TV commands
             seventv_graphql,
+            // 7TV Cosmetics commands
+            get_seventv_auth_status,
+            get_seventv_login_url,
+            store_seventv_token,
+            validate_seventv_token,
+            logout_seventv,
+            set_seventv_paint,
+            set_seventv_badge,
+            open_seventv_login_window,
+            receive_seventv_token,
             // Automation commands
             automate_connection,
             scrape_whispers,
@@ -500,6 +511,11 @@ fn main() {
             disconnect_eventsub,
             is_eventsub_connected,
             get_eventsub_session_id,
+            // Chat Identity commands
+            fetch_chat_identity_badges,
+            update_chat_identity,
+            receive_badge_data,
+            receive_update_result,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

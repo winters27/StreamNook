@@ -1,3 +1,18 @@
+## [6.2.0] - 2025-12-18
+### ✨ Features
+- **7TV Cosmetics Integration**: Connect your 7TV account to customize your profile with unique paints and badges, directly from StreamNook!
+- **Global Badge Management**: Easily view and select your Twitch global badges within the application. Access your selected badge and make changes directly.
+- **Enhanced Profile View**: A new dedicated profile modal provides a comprehensive view of your badges and cosmetic items, with improved controls for managing them.
+
+### 🐛 Bug Fixes
+- **Chat Reconnection Stability**: Chat reconnection logic has been refined. It now performs a silent check of the stream status before attempting a full reconnect or stream offline action, preventing unnecessary disruptions when only chat has temporarily stalled.
+- **HLS Player Offline Detection**: The HLS player's offline detection has been made more robust by using a ref for `isAutoSwitching`, ensuring accurate error handling and stream switching even when settings change.
+
+### 🔧 Maintenance
+- **7TV Authentication Flow**: StreamNook now handles 7TV account connections and authentications more smoothly, including improved token management and error handling.
+- **Profile Data Caching**: User profile data, including badges and cosmetics, is now cached more effectively for faster loading and better offline support.
+- **Chat Identity Badge Caching**: Implemented a robust caching system for chat identity badges, ensuring faster UI updates and reducing unnecessary background fetches.
+
 ## [6.1.0] - 2025-12-17
 ### ✨ Features
 
@@ -820,6 +835,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 

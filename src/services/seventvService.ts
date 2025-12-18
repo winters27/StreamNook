@@ -558,8 +558,9 @@ export const computePaintStyle = (paint: PaintV4, userColor?: string): React.CSS
   const backgroundImages = layers.flatMap((l) => (l.image ? [l.image] : []));
   const backgroundColors = layers.flatMap((l) => (l.color ? [l.color] : []));
 
-  // Combine colors and images, with user color as fallback
-  const background = [...backgroundColors, ...backgroundImages, userColor || 'var(--user-color)'].join(', ');
+  // Use longhand properties to avoid React warning about mixing shorthand/longhand
+  const backgroundImage = backgroundImages.length > 0 ? backgroundImages.join(', ') : undefined;
+  const backgroundColor = backgroundColors.length > 0 ? backgroundColors[0] : (userColor || 'var(--user-color)');
 
   const filter = computeDropShadows(paint.data.shadows);
 
@@ -567,7 +568,7 @@ export const computePaintStyle = (paint: PaintV4, userColor?: string): React.CSS
   const minOpacity = opacities.length > 0 ? Math.min(...opacities) : 1;
 
   const style: React.CSSProperties = {
-    background: background,
+    backgroundColor: backgroundColor,
     WebkitBackgroundClip: 'text',
     backgroundClip: 'text',
     backgroundSize: 'cover',
@@ -575,6 +576,11 @@ export const computePaintStyle = (paint: PaintV4, userColor?: string): React.CSS
     backgroundRepeat: 'no-repeat',
     color: 'transparent',
   };
+
+  // Only add backgroundImage if we have gradient/image layers
+  if (backgroundImage) {
+    style.backgroundImage = backgroundImage;
+  }
 
   if (filter) {
     style.filter = filter;
