@@ -4,11 +4,11 @@ on:
   push:
     branches: [dev]
     paths:
-      - 'src-tauri/Cargo.toml'  # Triggered by version bump
+      - "src-tauri/Cargo.toml" # Triggered by version bump
   workflow_dispatch:
     inputs:
       skip_build:
-        description: 'Skip build and use exe from previous release (for dependency-only updates)'
+        description: "Skip build and use exe from previous release (for dependency-only updates)"
         required: false
         default: false
         type: boolean
@@ -36,13 +36,13 @@ jobs:
           git checkout main
           git merge origin/dev --no-ff -m "Merge dev to main for release"
           git push origin main
-          
+
   build:
     needs: merge-to-main
     runs-on: windows-latest
     permissions:
       contents: write
-    
+
     steps:
       - name: Checkout main branch
         uses: actions/checkout@v4
@@ -85,8 +85,8 @@ jobs:
         if: steps.check_release.outputs.RELEASE_EXISTS == 'false'
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
-          cache: 'npm'
+          node-version: "20"
+          cache: "npm"
 
       - name: Setup Rust
         if: steps.check_release.outputs.RELEASE_EXISTS == 'false'
@@ -96,9 +96,9 @@ jobs:
         if: steps.check_release.outputs.RELEASE_EXISTS == 'false'
         uses: swatinem/rust-cache@v2
         with:
-          workspaces: './src-tauri -> target'
+          workspaces: "./src-tauri -> target"
           cache-on-failure: true
-          shared-key: 'rust-build'
+          shared-key: "rust-build"
 
       - name: Install dependencies
         if: steps.check_release.outputs.RELEASE_EXISTS == 'false'
@@ -131,6 +131,61 @@ jobs:
             npm install @tauri-apps/cli
           }
 
+      - name: Pre-install WiX Toolset
+        if: steps.check_release.outputs.RELEASE_EXISTS == 'false'
+        shell: pwsh
+        run: |
+          # Pre-download WiX to avoid timeout during Tauri build
+          $wixDir = "$env:LOCALAPPDATA\tauri\WixTools"
+
+          if (Test-Path $wixDir) {
+            echo "WiX Toolset already cached"
+          } else {
+            echo "Downloading WiX Toolset..."
+            New-Item -ItemType Directory -Force -Path $wixDir | Out-Null
+            
+            # Download with retry and increased timeout
+            $wixUrl = "https://github.com/wixtoolset/wix3/releases/download/wix3141rtm/wix314-binaries.zip"
+            $wixZip = "$env:TEMP\wix314-binaries.zip"
+            
+            $webClient = New-Object System.Net.WebClient
+            $retries = 3
+            $success = $false
+            
+            for ($i = 1; $i -le $retries; $i++) {
+              try {
+                echo "Download attempt $i of $retries..."
+                $webClient.DownloadFile($wixUrl, $wixZip)
+                $success = $true
+                break
+              } catch {
+                echo "Attempt $i failed: $_"
+                if ($i -lt $retries) {
+                  Start-Sleep -Seconds 5
+                }
+              }
+            }
+            
+            if (-not $success) {
+              echo "Failed to download WiX after $retries attempts"
+              exit 1
+            }
+            
+            echo "Extracting WiX Toolset..."
+            Expand-Archive -Path $wixZip -DestinationPath $wixDir -Force
+            Remove-Item $wixZip -Force
+            
+            echo "WiX Toolset installed to: $wixDir"
+          }
+
+          # Verify WiX installation
+          if (Test-Path "$wixDir\candle.exe") {
+            echo "WiX Toolset verified successfully"
+          } else {
+            echo "WiX Toolset verification failed"
+            exit 1
+          }
+
       - name: Build Tauri app
         if: steps.check_release.outputs.RELEASE_EXISTS == 'false' && inputs.skip_build != 'true'
         shell: pwsh
@@ -147,7 +202,7 @@ jobs:
           # Get the latest release
           $latestRelease = gh release view --json assets,tagName | ConvertFrom-Json
           echo "Latest release: $($latestRelease.tagName)"
-          
+
           # Find the exe or bundle
           $exeAsset = $latestRelease.assets | Where-Object { $_.name -like "*.exe" -or $_.name -eq "StreamNook.7z" }
           if ($exeAsset) {
@@ -170,7 +225,7 @@ jobs:
           $version = $release.tag_name
           echo "STREAMLINK_VERSION=$version" >> $env:GITHUB_OUTPUT
           echo "Latest Streamlink version: $version"
-          
+
           # Find the zip asset (the portable distribution)
           # Try to find x86_64 zip first, then fallback to any zip
           $asset = $release.assets | Where-Object { $_.name -like "*x86_64.zip" } | Select-Object -First 1
@@ -178,7 +233,7 @@ jobs:
             # Fallback to any zip that's not an installer
             $asset = $release.assets | Where-Object { $_.name -like "*.zip" -and $_.name -notlike "*installer*" } | Select-Object -First 1
           }
-          
+
           if ($asset) {
             echo "STREAMLINK_URL=$($asset.browser_download_url)" >> $env:GITHUB_OUTPUT
             echo "STREAMLINK_ASSET=$($asset.name)" >> $env:GITHUB_OUTPUT
@@ -200,7 +255,7 @@ jobs:
           $version = $release.tag_name
           echo "TTVLOL_VERSION=$version" >> $env:GITHUB_OUTPUT
           echo "Latest TTV LOL version: $version"
-          
+
           # Find twitch.py asset
           $asset = $release.assets | Where-Object { $_.name -eq "twitch.py" }
           if ($asset) {
@@ -220,10 +275,10 @@ jobs:
           $outFile = "./streamlink-portable.zip"
           echo "Downloading: $url"
           Invoke-WebRequest -Uri $url -OutFile $outFile
-          
+
           # Extract
           Expand-Archive -Path $outFile -DestinationPath ./bundle/streamlink-temp -Force
-          
+
           # Move contents (handle nested folder structure)
           $extracted = Get-ChildItem ./bundle/streamlink-temp -Directory | Select-Object -First 1
           if ($extracted) {
@@ -231,13 +286,13 @@ jobs:
           } else {
             Move-Item ./bundle/streamlink-temp/* ./bundle/streamlink/ -Force
           }
-          
+
           Remove-Item ./bundle/streamlink-temp -Recurse -Force
           Remove-Item $outFile -Force
-          
+
           # Create plugins directory
           New-Item -ItemType Directory -Force -Path ./bundle/streamlink/plugins
-          
+
           echo "Streamlink extracted to ./bundle/streamlink"
 
       - name: Download TTV LOL plugin
@@ -289,7 +344,7 @@ jobs:
           $streamlinkVersion = "${{ steps.streamlink.outputs.STREAMLINK_VERSION }}"
           $ttvlolVersion = "${{ steps.ttvlol.outputs.TTVLOL_VERSION }}"
           $buildDate = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
-          
+
           $components = @{
             schema_version = 1
             streamnook = @{
@@ -307,7 +362,7 @@ jobs:
               }
             }
           }
-          
+
           $json = $components | ConvertTo-Json -Depth 10
           $json | Out-File -FilePath ./bundle/components.json -Encoding utf8
           echo "components.json created:"
@@ -318,15 +373,15 @@ jobs:
         shell: pwsh
         run: |
           $bundleName = "StreamNook.7z"
-          
+
           # Create 7z archive with maximum compression
           cd bundle
           7z a -t7z -mx=9 "../$bundleName" *
           cd ..
-          
+
           echo "BUNDLE_NAME=$bundleName" >> $env:GITHUB_OUTPUT
           echo "Created: $bundleName"
-          
+
           # Show bundle size
           $size = (Get-Item $bundleName).Length / 1MB
           echo "Bundle size: $([math]::Round($size, 2)) MB"
@@ -349,7 +404,7 @@ jobs:
         run: |
           $version = "${{ steps.version.outputs.VERSION }}"
           $changelog = Get-Content CHANGELOG.md -Raw
-          
+
           # Try to extract section for this version
           $pattern = "(?s)## \[?$version\]?.*?(?=## \[|\z)"
           if ($changelog -match $pattern) {
@@ -370,10 +425,10 @@ jobs:
           $bundleName = "${{ steps.bundle.outputs.BUNDLE_NAME }}"
           $streamlinkVersion = "${{ steps.streamlink.outputs.STREAMLINK_VERSION }}"
           $ttvlolVersion = "${{ steps.ttvlol.outputs.TTVLOL_VERSION }}"
-          
+
           # Read changelog section from temp file
           $changelogSection = Get-Content ./changelog_section.md -Raw
-          
+
           # Build component info section using simple string array
           $lines = @()
           $lines += ""
@@ -389,15 +444,15 @@ jobs:
           $lines += "2. Extract the .7z file"
           $lines += "3. Run ``StreamNook.exe``"
           $lines += "4. The app will automatically set up Streamlink and TTV LOL on first run"
-          
+
           $componentInfo = $lines -join "`n"
           $notes = $changelogSection + $componentInfo
-          
+
           # Write to file for gh release
           $notes | Out-File -FilePath ./release_notes.md -Encoding utf8
-          
+
           gh release create "v$version" --title "StreamNook v$version" --notes-file ./release_notes.md "$bundleName" "bundle/components.json" "checksums.txt"
-          
+
           echo "Release v$version created!"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
