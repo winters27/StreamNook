@@ -90,15 +90,43 @@ export default function DropsCenter() {
         mineAllQueueRef.current = mineAllQueue;
     }, [mineAllQueue]);
 
-    // Derived state for filtering
+    // Track previous campaign IDs for notification detection
+    const prevCampaignIdsRef = useRef<Set<string>>(new Set());
+
+    // Derived state for filtering AND sorting (favorites first)
     const filteredGames = useMemo(() => {
-        if (!searchTerm) return unifiedGames;
-        const lowerSearch = searchTerm.toLowerCase();
-        return unifiedGames.filter(game =>
-            game.name.toLowerCase().includes(lowerSearch) ||
-            game.active_campaigns.some(c => c.name.toLowerCase().includes(lowerSearch))
-        );
-    }, [unifiedGames, searchTerm]);
+        const priorityGames = dropsSettings?.priority_games || [];
+        let games = unifiedGames;
+        
+        // Apply search filter
+        if (searchTerm) {
+            const lowerSearch = searchTerm.toLowerCase();
+            games = games.filter(game =>
+                game.name.toLowerCase().includes(lowerSearch) ||
+                game.active_campaigns.some(c => c.name.toLowerCase().includes(lowerSearch))
+            );
+        }
+        
+        // Sort: favorites first, then by existing sort order
+        return [...games].sort((a, b) => {
+            const aIsFavorite = priorityGames.some(pg => pg.toLowerCase() === a.name.toLowerCase());
+            const bIsFavorite = priorityGames.some(pg => pg.toLowerCase() === b.name.toLowerCase());
+            
+            // Favorites first
+            if (aIsFavorite !== bIsFavorite) return aIsFavorite ? -1 : 1;
+            // Mining games next
+            if (a.is_mining !== b.is_mining) return a.is_mining ? -1 : 1;
+            // Completed games (all drops claimed) go to bottom
+            if (a.all_drops_claimed !== b.all_drops_claimed) return a.all_drops_claimed ? 1 : -1;
+            // Games with claimable drops next
+            if (a.has_claimable !== b.has_claimable) return a.has_claimable ? -1 : 1;
+            // Then by number of active campaigns
+            if (a.active_campaigns.length !== b.active_campaigns.length) {
+                return b.active_campaigns.length - a.active_campaigns.length;
+            }
+            return a.name.localeCompare(b.name);
+        });
+    }, [unifiedGames, searchTerm, dropsSettings?.priority_games]);
 
     // ---- Authentication Logic ----
     const checkAuthentication = async () => {
@@ -328,6 +356,31 @@ export default function DropsCenter() {
     const handleStreamClick = (channelName: string) => {
         setShowDropsOverlay(false);
         window.dispatchEvent(new CustomEvent('start-stream', { detail: { channel: channelName } }));
+    };
+
+    // Toggle favorite (add/remove from priority_games)
+    const handleToggleFavorite = async (gameName: string) => {
+        if (!dropsSettings) return;
+        
+        const currentPriority = dropsSettings.priority_games || [];
+        const isCurrentlyFavorite = currentPriority.some(
+            pg => pg.toLowerCase() === gameName.toLowerCase()
+        );
+        
+        let newPriorityGames: string[];
+        if (isCurrentlyFavorite) {
+            // Remove from favorites
+            newPriorityGames = currentPriority.filter(
+                pg => pg.toLowerCase() !== gameName.toLowerCase()
+            );
+            addToast(`Removed ${gameName} from favorites`, 'info');
+        } else {
+            // Add to favorites
+            newPriorityGames = [...currentPriority, gameName];
+            addToast(`Added ${gameName} to favorites ❤️`, 'success');
+        }
+        
+        await updateDropsSettings({ priority_games: newPriorityGames });
     };
 
     // Handle game selection - polls inventory for fresh progress data
@@ -1174,6 +1227,50 @@ export default function DropsCenter() {
         });
     }, [miningStatus]);
 
+    // Notification effect: Detect new campaigns from favorite games
+    useEffect(() => {
+        if (!dropsSettings || unifiedGames.length === 0) return;
+        
+        const priorityGames = dropsSettings.priority_games || [];
+        if (priorityGames.length === 0) return; // No favorites, skip
+        
+        // Build current campaign IDs set
+        const currentCampaignIds = new Set<string>();
+        const newFavoriteCampaigns: { gameName: string; campaignName: string }[] = [];
+        
+        unifiedGames.forEach(game => {
+            const isFavorite = priorityGames.some(
+                pg => pg.toLowerCase() === game.name.toLowerCase()
+            );
+            
+            game.active_campaigns.forEach(campaign => {
+                currentCampaignIds.add(campaign.id);
+                
+                // Check if this is a NEW campaign from a favorite game
+                if (isFavorite && !prevCampaignIdsRef.current.has(campaign.id)) {
+                    // Only notify if we have previous data (not first load)
+                    if (prevCampaignIdsRef.current.size > 0) {
+                        newFavoriteCampaigns.push({
+                            gameName: game.name,
+                            campaignName: campaign.name
+                        });
+                    }
+                }
+            });
+        });
+        
+        // Send notifications for new favorite campaigns
+        if (newFavoriteCampaigns.length > 0 && dropsSettings.notify_on_drop_available) {
+            newFavoriteCampaigns.forEach(({ gameName, campaignName }) => {
+                addToast(`🎁 New drop for ${gameName}: ${campaignName}`, 'success');
+                console.log(`[DropsCenter] New favorite campaign notification: ${gameName} - ${campaignName}`);
+            });
+        }
+        
+        // Update the ref for next comparison
+        prevCampaignIdsRef.current = currentCampaignIds;
+    }, [unifiedGames, dropsSettings, addToast]);
+
     // ---- Render: Authentication Screen ----
     if (!isAuthenticated) {
         return (
@@ -1392,9 +1489,13 @@ export default function DropsCenter() {
                                         progress={progress}
                                         miningStatus={miningStatus}
                                         isSelected={selectedGame?.id === game.id}
+                                        isFavorite={(dropsSettings?.priority_games || []).some(
+                                            pg => pg.toLowerCase() === game.name.toLowerCase()
+                                        )}
                                         onClick={() => handleGameSelect(selectedGame?.id === game.id ? null : game)}
                                         onStopMining={handleStopMining}
                                         onMineAllGame={handleMineAllGame}
+                                        onToggleFavorite={handleToggleFavorite}
                                     />
                                 ))}
                             </div>

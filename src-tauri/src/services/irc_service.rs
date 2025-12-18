@@ -279,7 +279,7 @@ impl IrcService {
             }
             drop(queue);
 
-            // Start ping task to keep connection alive
+            // Start ping task to keep IRC connection alive (every 240s = 4 min)
             let writer_clone = writer.clone();
             let ping_handle = tokio::spawn(async move {
                 let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(240));
@@ -287,6 +287,20 @@ impl IrcService {
                     interval.tick().await;
                     let mut w = writer_clone.lock().await;
                     if w.write_all(b"PING :tmi.twitch.tv\r\n").await.is_err() {
+                        break;
+                    }
+                }
+            });
+
+            // Start heartbeat task to notify frontend that connection is alive (every 30s)
+            // This prevents false "stale connection" warnings when chat is quiet
+            let tx_heartbeat = tx.clone();
+            let heartbeat_handle = tokio::spawn(async move {
+                let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
+                loop {
+                    interval.tick().await;
+                    if tx_heartbeat.send("HEARTBEAT".to_string()).is_err() {
+                        // No receivers, stop heartbeat
                         break;
                     }
                 }
@@ -316,6 +330,7 @@ impl IrcService {
 
                 if should_reconnect {
                     ping_handle.abort();
+                    heartbeat_handle.abort();
                     println!("[IRC Chat] Reconnecting in 5 seconds...");
                     let _ = tx.send("IRC_RECONNECTING".to_string());
                     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;

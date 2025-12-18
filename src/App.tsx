@@ -584,87 +584,6 @@ function App() {
     };
   }, [streamUrl]);
 
-  // Auto-trigger native PIP when navigating to Home while stream is playing
-  useEffect(() => {
-    const triggerPip = async () => {
-      // Only trigger when going TO home (isHomeActive becomes true) and stream is playing
-      if (isHomeActive && streamUrl) {
-        // Find the video element inside the video player container
-        const videoElement = document.querySelector('.video-player-container video') as HTMLVideoElement;
-
-        if (videoElement && document.pictureInPictureEnabled && !document.pictureInPictureElement) {
-          try {
-            console.log('[PIP] Entering Picture-in-Picture mode');
-            await videoElement.requestPictureInPicture();
-          } catch (error) {
-            console.warn('[PIP] Failed to enter Picture-in-Picture:', error);
-            // PIP might fail due to browser restrictions, user gesture requirements, etc.
-            // The stream will still play in the background, just not visible
-          }
-        }
-      }
-    };
-
-    triggerPip();
-  }, [isHomeActive, streamUrl]);
-
-  // Exit PIP when returning from Home to stream view
-  useEffect(() => {
-    const exitPip = async () => {
-      // Only exit when leaving home (isHomeActive becomes false) and we're in PIP
-      if (!isHomeActive && document.pictureInPictureElement) {
-        try {
-          console.log('[PIP] Exiting Picture-in-Picture mode');
-          await document.exitPictureInPicture();
-        } catch (error) {
-          console.warn('[PIP] Failed to exit Picture-in-Picture:', error);
-        }
-      }
-    };
-
-    exitPip();
-  }, [isHomeActive]);
-
-  // Listen for PIP exit (e.g., user clicks "back to tab" or "X" in PIP window)
-  useEffect(() => {
-    const handleLeavePip = async (event: Event) => {
-      // If we're in Home view and PIP was exited, check why
-      if (isHomeActive && streamUrl) {
-        const videoElement = event.target as HTMLVideoElement;
-
-        // If video is paused/ended, user clicked X to close PIP - stop the stream
-        // If video is still playing, user clicked "back to tab" - return to stream view
-        if (videoElement && videoElement.paused) {
-          console.log('[PIP] User closed PIP via X button, stopping stream');
-          stopStream();
-          // Also exit home mode since there's no stream anymore
-          toggleHome();
-        } else {
-          console.log('[PIP] User exited PIP via back to tab, returning to stream view');
-          // Focus the app window so user doesn't have to click on it
-          try {
-            const window = getCurrentWindow();
-            await window.setFocus();
-          } catch (error) {
-            console.warn('[PIP] Failed to focus window:', error);
-          }
-          toggleHome();
-        }
-      }
-    };
-
-    // Listen for the leavepictureinpicture event on all video elements
-    const videoElement = document.querySelector('.video-player-container video') as HTMLVideoElement;
-    if (videoElement) {
-      videoElement.addEventListener('leavepictureinpicture', handleLeavePip);
-    }
-
-    return () => {
-      if (videoElement) {
-        videoElement.removeEventListener('leavepictureinpicture', handleLeavePip);
-      }
-    };
-  }, [isHomeActive, streamUrl, toggleHome, stopStream]);
 
   // Handle aspect ratio locking when setting changes or chat is resized
   useEffect(() => {
@@ -930,7 +849,7 @@ function App() {
         <div className="flex-1 relative overflow-hidden">
           {/* Home View - shown when isHomeActive or no stream */}
           {(isHomeActive || (!streamUrl && !isLoading)) && (
-            <div className="absolute inset-0 z-10 bg-background">
+            <div className="absolute inset-0 z-10 bg-background/95 backdrop-blur-sm">
               <Home />
             </div>
           )}
@@ -942,11 +861,11 @@ function App() {
             </div>
           )}
 
-          {/* Stream/Chat View - hidden when Home is active but kept mounted to preserve session */}
+          {/* Stream/Chat View - blurred when Home is active but kept mounted to preserve session */}
           {streamUrl && (
             <div
               ref={containerRef}
-              className={`flex flex-1 h-full ${chatPlacement === 'bottom' ? 'flex-col' : 'flex-row'} ${isHomeActive ? 'invisible absolute inset-0 -z-10' : ''}`}
+              className={`flex flex-1 h-full ${chatPlacement === 'bottom' ? 'flex-col' : 'flex-row'} ${isHomeActive ? 'absolute inset-0 z-0 blur-xl opacity-30 pointer-events-none' : ''}`}
             >
               <div className="flex-1 relative overflow-hidden">
                 <div className="w-full h-full">

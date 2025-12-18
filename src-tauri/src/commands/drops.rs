@@ -497,7 +497,8 @@ pub async fn get_channel_points_for_channel(
     use reqwest::Client;
     use serde_json::json;
 
-    const CLIENT_ID: &str = "kd1unb4b3q4t58fwlpcbzcbnm76a8fp";
+    // Use web client ID for this query (matches the working channel_points_service)
+    const CLIENT_ID: &str = "kimne78kx3ncx6brgo4mv6wki5h1ko";
 
     let token = DropsAuthService::get_token()
         .await
@@ -505,10 +506,15 @@ pub async fn get_channel_points_for_channel(
 
     let client = Client::new();
 
+    // Use the same query structure as channel_points_service which works correctly
     let query = r#"
     query ChannelPointsContext($channelLogin: String!) {
-        community {
-            channel(name: $channelLogin) {
+        user(login: $channelLogin) {
+            id
+            login
+            displayName
+            channel {
+                id
                 self {
                     communityPoints {
                         balance

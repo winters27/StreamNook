@@ -1,5 +1,5 @@
 import { useRef, useEffect, useState } from 'react';
-import { Check, Clock, Package, Square, Play } from 'lucide-react';
+import { Check, Clock, Package, Square, Play, Heart, DollarSign } from 'lucide-react';
 import type { UnifiedGame, DropProgress, MiningStatus, DropCampaign } from '../../types';
 
 // Helper to check if a campaign is mineable (has time-based drops that require watching)
@@ -29,9 +29,11 @@ interface GameCardProps {
     progress: DropProgress[];
     miningStatus: MiningStatus | null;
     isSelected: boolean;
+    isFavorite: boolean;
     onClick: () => void;
     onStopMining?: () => void;
     onMineAllGame?: (gameName: string, campaignIds: string[]) => void;
+    onToggleFavorite?: (gameName: string) => void;
 }
 
 // Helper to format time remaining
@@ -51,9 +53,11 @@ export default function GameCard({
     progress,
     miningStatus,
     isSelected,
+    isFavorite,
     onClick,
     onStopMining,
-    onMineAllGame
+    onMineAllGame,
+    onToggleFavorite
 }: GameCardProps) {
     const titleRef = useRef<HTMLHeadingElement>(null);
     const containerRef = useRef<HTMLDivElement>(null);
@@ -233,10 +237,21 @@ export default function GameCard({
         ? Math.max(0, miningProgress.required - miningProgress.current)
         : 0;
 
-    // Count total active drops
-    const totalActiveDrops = game.active_campaigns.reduce(
-        (sum, c) => sum + c.time_based_drops.length, 0
-    );
+    // Count total active drops and categorize by type
+    let timeBasedDropCount = 0;
+    let paidDropCount = 0;
+    game.active_campaigns.forEach(campaign => {
+        campaign.time_based_drops.forEach(drop => {
+            const required = drop.required_minutes_watched || 0;
+            if (required > 0) {
+                timeBasedDropCount++;
+            } else {
+                // Drops with 0 required minutes are subscription/paid drops
+                paidDropCount++;
+            }
+        });
+    });
+    const totalActiveDrops = timeBasedDropCount + paidDropCount;
 
     // Count campaigns
     const campaignCount = game.active_campaigns.length;
@@ -292,14 +307,34 @@ export default function GameCard({
                     )}
                 </div>
 
-                {/* Top-Right: Inventory badge */}
-                {game.inventory_items.length > 0 && (
-                    <div className="absolute top-2 right-2 z-10">
+                {/* Top-Right: Favorite heart + Inventory badge */}
+                <div className="absolute top-2 right-2 z-10 flex flex-col gap-1.5">
+                    {/* Favorite heart button */}
+                    <button
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            if (onToggleFavorite) onToggleFavorite(game.name);
+                        }}
+                        className={`w-7 h-7 rounded-full glass-panel flex items-center justify-center border transition-all ${
+                            isFavorite 
+                                ? 'border-red-500/70 bg-red-500/30 hover:bg-red-500/50' 
+                                : 'border-borderLight/40 bg-glass hover:bg-glass-hover hover:border-red-500/40'
+                        }`}
+                        title={isFavorite ? 'Remove from favorites' : 'Add to favorites'}
+                    >
+                        <Heart 
+                            size={14} 
+                            className={isFavorite ? 'text-red-400' : 'text-textSecondary'} 
+                            fill={isFavorite ? 'currentColor' : 'none'}
+                        />
+                    </button>
+                    {/* Inventory badge */}
+                    {game.inventory_items.length > 0 && (
                         <div className="w-7 h-7 rounded-full glass-panel flex items-center justify-center border border-purple-500/40 bg-purple-500/30">
                             <Package size={14} className="text-purple-200" />
                         </div>
-                    </div>
-                )}
+                    )}
+                </div>
             </div>
 
             {/* Chin Section */}
@@ -385,11 +420,27 @@ export default function GameCard({
                                 <span>{totalActiveDrops} drop{totalActiveDrops !== 1 ? 's' : ''}</span>
                             )}
 
-                            {/* In Progress indicator */}
+                            {/* In Progress indicator (time-based drops with progress) */}
                             {inProgressCount > 0 && (
-                                <span className="flex items-center gap-0.5 text-yellow-400">
+                                <span className="flex items-center gap-0.5 text-yellow-400" title="Drops in progress">
                                     <Clock size={10} />
                                     {inProgressCount}
+                                </span>
+                            )}
+
+                            {/* Time-based drops indicator (only show if not showing in-progress) */}
+                            {inProgressCount === 0 && timeBasedDropCount > 0 && (
+                                <span className="flex items-center gap-0.5 text-blue-400" title={`${timeBasedDropCount} time-based drop${timeBasedDropCount !== 1 ? 's' : ''}`}>
+                                    <Clock size={10} />
+                                    {timeBasedDropCount}
+                                </span>
+                            )}
+
+                            {/* Paid/subscription drops indicator */}
+                            {paidDropCount > 0 && (
+                                <span className="flex items-center gap-0.5 text-green-400" title={`${paidDropCount} subscription/paid drop${paidDropCount !== 1 ? 's' : ''}`}>
+                                    <DollarSign size={10} />
+                                    {paidDropCount}
                                 </span>
                             )}
 
@@ -401,30 +452,7 @@ export default function GameCard({
                             )}
                         </div>
 
-                        {/* Mine All Button - only shows when no mining is happening AND there are mineable campaigns */}
-                        {(() => {
-                            // Filter to only mineable campaigns (those with time-based drops requiring watch time)
-                            const mineableCampaigns = game.active_campaigns.filter(isCampaignMineable);
-                            const mineableCount = mineableCampaigns.length;
-                            
-                            if (mineableCount > 0 && onMineAllGame && !miningStatus?.is_mining) {
-                                return (
-                                    <button
-                                        onClick={(e) => {
-                                            e.stopPropagation();
-                                            const mineableCampaignIds = mineableCampaigns.map(c => c.id);
-                                            onMineAllGame(game.name, mineableCampaignIds);
-                                        }}
-                                        className="flex items-center gap-1 px-2 py-1 rounded-md bg-accent/20 hover:bg-accent/40 active:bg-accent/50 text-accent border border-accent/40 hover:border-accent/70 shadow-sm hover:shadow-md hover:shadow-accent/20 transform hover:scale-105 active:scale-95 transition-all duration-150 shrink-0"
-                                        title={`Mine ${mineableCount} campaign${mineableCount !== 1 ? 's' : ''} for ${game.name}`}
-                                    >
-                                        <Play size={10} fill="currentColor" />
-                                        <span className="text-[10px] font-semibold">Mine</span>
-                                    </button>
-                                );
-                            }
-                            return null;
-                        })()}
+                        {/* Mine All button removed - users can click into game details to start mining specific campaigns */}
                     </div>
                 )}
             </div>

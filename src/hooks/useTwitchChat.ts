@@ -342,6 +342,29 @@ export const useTwitchChat = () => {
           return;
         }
 
+        // Handle HEARTBEAT message from backend - just proves connection is alive
+        // Don't add to messages, just update health check timestamp
+        if (message === 'HEARTBEAT') {
+          // lastMessageTimeRef is already updated at top of onmessage
+          // Clear any stale connection errors since we just received proof of life
+          setError(null);
+          return;
+        }
+
+        // Handle IRC_CONNECTED and IRC_RECONNECTING status messages
+        if (message === 'IRC_CONNECTED') {
+          console.log('[Chat] IRC connection established');
+          setIsConnected(true);
+          setError(null);
+          return;
+        }
+
+        if (message === 'IRC_RECONNECTING') {
+          console.log('[Chat] IRC reconnecting...');
+          setError('Reconnecting to chat...');
+          return;
+        }
+
         // Check if message is JSON (new format with layout, or deletion events)
         if (message.startsWith('{')) {
           try {
@@ -651,24 +674,27 @@ export const useTwitchChat = () => {
 
       healthCheckIntervalRef.current = setInterval(() => {
         const timeSinceLastMessage = Date.now() - lastMessageTimeRef.current;
+        // With heartbeats every 30s, 2 minutes means ~4 missed heartbeats = real issue
+        const twoMinutes = 2 * 60 * 1000;
+        // 3 minutes without any signal (including heartbeats) = connection is dead
         const threeMinutes = 3 * 60 * 1000;
-        const fiveMinutes = 5 * 60 * 1000;
 
         // Use ref for current connected state
         if (!isConnectedRef.current) {
           return; // Skip health check if not connected
         }
 
-        // If no messages for 3 minutes, show warning
-        if (timeSinceLastMessage > threeMinutes && timeSinceLastMessage <= fiveMinutes) {
-          console.warn('[Chat] No messages received for 3 minutes, connection may be stale');
-          setError(`No activity for ${Math.floor(timeSinceLastMessage / 1000)}s - connection may be stale`);
+        // If no messages (including heartbeats) for 2 minutes, show warning
+        // This should only happen if the WebSocket connection is actually broken
+        if (timeSinceLastMessage > twoMinutes && timeSinceLastMessage <= threeMinutes) {
+          console.warn('[Chat] No messages/heartbeats received for 2 minutes, connection may be stale');
+          setError(`Connection may be stale - no data for ${Math.floor(timeSinceLastMessage / 1000)}s`);
         }
 
-        // If no messages for 5 minutes, the stream might be offline
-        // Trigger the auto-switch check which will verify via Twitch API
-        if (timeSinceLastMessage > fiveMinutes) {
-          console.log('[Chat] No messages for 5+ minutes, triggering stream offline check');
+        // If no messages (including heartbeats) for 3 minutes, the WebSocket is likely dead
+        // Trigger a reconnection attempt via handleStreamOffline which verifies stream status
+        if (timeSinceLastMessage > threeMinutes) {
+          console.log('[Chat] No messages/heartbeats for 3+ minutes, connection appears dead');
 
           // Get the handleStreamOffline function from AppStore
           // This will verify if the stream is actually offline via Twitch API
@@ -677,7 +703,7 @@ export const useTwitchChat = () => {
 
           // Only trigger if we have a current stream and aren't already switching
           if (currentStream && !isAutoSwitching) {
-            console.log('[Chat] Triggering handleStreamOffline from chat inactivity detection');
+            console.log('[Chat] Triggering handleStreamOffline from connection dead detection');
             handleStreamOffline();
 
             // Reset last message time to prevent repeated triggers
