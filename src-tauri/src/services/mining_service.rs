@@ -409,22 +409,15 @@ impl MiningService {
 
             match campaigns_result {
                 Ok(all_campaigns) => {
+                    // For manual mining, we bypass priority/exclusion filters
+                    // The user explicitly chose this campaign, so we should respect that
                     let (target_campaign, settings) = {
                         let service = drops_service.lock().await;
                         service.update_campaigns_and_progress(&all_campaigns).await;
                         let settings = service.get_settings().await;
 
-                        let filtered_campaigns = all_campaigns
-                            .into_iter()
-                            .filter(|c| {
-                                !settings.excluded_games.contains(&c.game_name)
-                                    && (settings.priority_mode != PriorityMode::PriorityOnly
-                                        || settings.priority_games.is_empty()
-                                        || settings.priority_games.contains(&c.game_name))
-                            })
-                            .collect::<Vec<_>>();
-
-                        let target = filtered_campaigns
+                        // Find the target campaign directly by ID (no exclusion filters for manual mining)
+                        let target = all_campaigns
                             .into_iter()
                             .filter(|c| c.id == campaign_id)
                             .collect::<Vec<_>>();
@@ -1121,24 +1114,15 @@ impl MiningService {
 
             match campaigns_result {
                 Ok(all_campaigns) => {
-                    // Now, lock the service to update progress and get filtered campaigns
+                    // For manual mining, we bypass priority/exclusion filters
+                    // The user explicitly chose this campaign, so we should respect that
                     let (target_campaign, settings) = {
                         let service = drops_service.lock().await;
                         service.update_campaigns_and_progress(&all_campaigns).await;
                         let settings = service.get_settings().await;
 
-                        // Apply filters and find the target campaign
-                        let filtered_campaigns = all_campaigns
-                            .into_iter()
-                            .filter(|c| {
-                                !settings.excluded_games.contains(&c.game_name)
-                                    && (settings.priority_mode != PriorityMode::PriorityOnly
-                                        || settings.priority_games.is_empty()
-                                        || settings.priority_games.contains(&c.game_name))
-                            })
-                            .collect::<Vec<_>>();
-
-                        let target = filtered_campaigns
+                        // Find the target campaign directly by ID (no exclusion filters for manual mining)
+                        let target = all_campaigns
                             .into_iter()
                             .filter(|c| c.id == campaign_id)
                             .collect::<Vec<_>>();

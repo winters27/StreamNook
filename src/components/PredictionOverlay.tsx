@@ -152,7 +152,8 @@ const PredictionOverlay = ({ channelId, channelLogin }: PredictionOverlayProps) 
         
         console.log('[Prediction] Channel points result:', JSON.stringify(result, null, 2));
         
-        const balance = result?.data?.community?.channel?.self?.communityPoints?.balance;
+        // Use the correct path: data.user.channel.self.communityPoints.balance
+        const balance = result?.data?.user?.channel?.self?.communityPoints?.balance;
         if (typeof balance === 'number') {
           console.log('[Prediction] ✅ Setting channel points to:', balance);
           setChannelPoints(balance);

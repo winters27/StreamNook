@@ -376,50 +376,74 @@ const ChatWidget = () => {
     };
   }, [currentStream?.user_login, currentStream?.user_id]);
 
-  // Fetch channel points for current channel from cached balances
+  // Fetch channel points for current channel using direct GQL query with retry logic
   const fetchChannelPoints = useCallback(async () => {
-    if (!currentStream?.user_id) return;
+    if (!currentStream?.user_login) return;
     
-    console.log('[ChatWidget] fetchChannelPoints - looking for channel:', currentStream.user_id);
+    const maxRetries = 3;
+    const retryDelayMs = 1000;
     
-    try {
-      // Get all cached channel points balances from background service
-      const balances = await invoke<Array<{ channel_id: string; balance: number }>>('get_all_channel_points_balances');
-      
-      console.log('[ChatWidget] All balances:', balances);
-      
-      // Find balance for current channel
-      const channelBalance = balances?.find(b => b.channel_id === currentStream.user_id);
-      
-      if (channelBalance && typeof channelBalance.balance === 'number') {
-        console.log('[ChatWidget] ✅ Found cached balance:', channelBalance.balance);
-        setChannelPoints(channelBalance.balance);
-        return;
-      }
-      
-      // If no cached balance, try direct query (may fail with outdated GQL schema)
-      console.log('[ChatWidget] No cached balance, trying direct query...');
-      
+    console.log('[ChatWidget] fetchChannelPoints - fetching for channel:', currentStream.user_login);
+    
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
-        const result = await invoke<any>('get_channel_points_balance', {
-          channelId: currentStream.user_id
+        // Use the direct GQL query command which fetches fresh data
+        const result = await invoke<any>('get_channel_points_for_channel', {
+          channelLogin: currentStream.user_login
         });
         
-        const balance = result?.balance || result?.points;
+        console.log('[ChatWidget] Raw GQL response:', JSON.stringify(result).substring(0, 500));
+        
+        // Try multiple possible paths since the backend GQL query uses "community.channel" structure
+        // Path 1: data.community.channel.self.communityPoints.balance
+        let balance = result?.data?.community?.channel?.self?.communityPoints?.balance;
+        
+        // Path 2: data.user.channel.self.communityPoints.balance (alternative structure)
+        if (balance === undefined) {
+          balance = result?.data?.user?.channel?.self?.communityPoints?.balance;
+        }
+        
+        // Path 3: Direct balance if returned differently
+        if (balance === undefined && result?.balance !== undefined) {
+          balance = result.balance;
+        }
+        
         if (typeof balance === 'number') {
-          console.log('[ChatWidget] ✅ Got balance from direct query:', balance);
+          console.log('[ChatWidget] ✅ Got channel points balance:', balance);
           setChannelPoints(balance);
           return;
         }
+        
+        // Check if communityPoints is explicitly null (channel points not enabled)
+        const communityPoints = result?.data?.community?.channel?.self?.communityPoints 
+          ?? result?.data?.user?.channel?.self?.communityPoints;
+        if (communityPoints === null) {
+          console.log('[ChatWidget] Channel points not enabled or user not eligible for this channel');
+          setChannelPoints(null);
+          return;
+        }
+        
+        console.warn(`[ChatWidget] Attempt ${attempt}/${maxRetries}: Could not parse balance from response`);
       } catch (err) {
-        console.warn('[ChatWidget] Direct query failed (expected if GQL outdated):', err);
+        console.warn(`[ChatWidget] Attempt ${attempt}/${maxRetries} failed:`, err);
       }
       
-      console.log('[ChatWidget] No channel points available yet - will update via events');
-    } catch (err) {
-      console.error('[ChatWidget] Failed to fetch channel points:', err);
+      // Wait before retrying (except on last attempt)
+      if (attempt < maxRetries) {
+        await new Promise(resolve => setTimeout(resolve, retryDelayMs));
+      }
     }
-  }, [currentStream?.user_id]);
+    
+    console.log('[ChatWidget] All retries exhausted - will update via events');
+  }, [currentStream?.user_login]);
+
+  // Automatically fetch channel points when entering a new channel
+  useEffect(() => {
+    if (currentStream?.user_login) {
+      setIsLoadingChannelPoints(true);
+      fetchChannelPoints().finally(() => setIsLoadingChannelPoints(false));
+    }
+  }, [currentStream?.user_login, fetchChannelPoints]);
 
   // Listen for channel points updates from backend events
   useEffect(() => {
@@ -1517,20 +1541,14 @@ const ChatWidget = () => {
                 <button onClick={() => setShowEmotePicker(!showEmotePicker)} className="flex-shrink-0 p-2 text-textSecondary hover:text-textPrimary hover:bg-glass rounded transition-all" title="Emotes">
                   <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM7 9a1 1 0 100-2 1 1 0 000 2zm7-1a1 1 0 11-2 0 1 1 0 012 0zm-.464 5.535a1 1 0 10-1.415-1.414 3 3 0 01-4.242 0 1 1 0 00-1.415 1.414 5 5 0 007.072 0z" clipRule="evenodd" /></svg>
                 </button>
-                {/* Channel Points button - shows tooltip on hover */}
+                {/* Channel Points button - shows balance in tooltip on hover */}
                 <div 
-                  className="relative flex-shrink-0 group"
-                  onMouseEnter={() => {
-                    setChannelPointsHovered(true);
-                    if (channelPoints === null && !isLoadingChannelPoints) {
-                      setIsLoadingChannelPoints(true);
-                      fetchChannelPoints().finally(() => setIsLoadingChannelPoints(false));
-                    }
-                  }}
+                  className="relative flex-shrink-0"
+                  onMouseEnter={() => setChannelPointsHovered(true)}
                   onMouseLeave={() => setChannelPointsHovered(false)}
                 >
                   <button
-                    className="p-2 rounded transition-all text-textSecondary hover:text-orange-400 hover:bg-glass group-hover:text-orange-400"
+                    className={`p-2 rounded transition-all hover:bg-glass ${channelPoints !== null ? 'text-accent-neon' : 'text-textSecondary hover:text-accent-neon'}`}
                     title="Channel Points"
                   >
                     <ChannelPointsIcon size={18} />
@@ -1539,11 +1557,11 @@ const ChatWidget = () => {
                   {channelPointsHovered && (
                     <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-black/95 border border-border rounded-lg shadow-lg whitespace-nowrap z-50">
                       <div className="flex items-center gap-1.5">
-                        <ChannelPointsIcon size={14} className="text-orange-400" />
+                        <ChannelPointsIcon size={14} className="text-accent-neon" />
                         {isLoadingChannelPoints ? (
                           <span className="text-sm text-textSecondary">Loading...</span>
                         ) : channelPoints !== null ? (
-                          <span className="text-sm font-bold text-orange-400">{channelPoints.toLocaleString()}</span>
+                          <span className="text-sm font-bold text-accent-neon">{channelPoints.toLocaleString()}</span>
                         ) : (
                           <span className="text-sm text-textSecondary">--</span>
                         )}
@@ -1558,9 +1576,9 @@ const ChatWidget = () => {
                   <button
                     onClick={handleToggleMining}
                     disabled={isLoadingDrops}
-                    className={`flex-shrink-0 p-2 rounded transition-all ${isMining
-                      ? 'text-green-400 bg-glass hover:bg-glass-hover hover:text-red-400'
-                      : 'text-accent bg-glass hover:bg-glass-hover hover:text-accent'
+                    className={`flex-shrink-0 p-2 rounded transition-all hover:bg-glass ${isMining
+                      ? 'text-green-400 hover:text-red-400'
+                      : 'text-textSecondary hover:text-accent'
                       }`}
                     title={isMining ? `Stop mining drops for ${dropsCampaign.game_name}` : `Start mining drops for ${dropsCampaign.game_name}`}
                   >

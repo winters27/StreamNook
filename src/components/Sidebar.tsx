@@ -199,6 +199,18 @@ const Sidebar = () => {
         loadRecommendedStreams();
     }, [isAuthenticated, loadFollowedStreams, loadRecommendedStreams]);
 
+    // Auto-refresh streams when sidebar is hovered/opened/expanded
+    useEffect(() => {
+        // Only refresh when sidebar becomes visible/expanded
+        if (isHovered || isEdgeHovered || isManuallyExpanded) {
+            console.log('[Sidebar] Refreshing streams on sidebar interaction');
+            if (isAuthenticated) {
+                loadFollowedStreams();
+            }
+            loadRecommendedStreams();
+        }
+    }, [isHovered, isEdgeHovered, isManuallyExpanded, isAuthenticated, loadFollowedStreams, loadRecommendedStreams]);
+
     // Infinite scroll for recommended streams
     useEffect(() => {
         const scrollContainer = scrollContainerRef.current;
@@ -558,9 +570,6 @@ const Sidebar = () => {
                     backgroundColor: showExpanded ? 'rgba(26, 26, 27, 0.75)' : undefined,
                 }}
                 onMouseEnter={() => {
-                    // Skip hover tracking in expanded mode - it's always expanded
-                    if (sidebarMode === 'expanded') return;
-
                     // Cancel any pending close timeout
                     if (closeTimeoutRef.current) {
                         clearTimeout(closeTimeoutRef.current);
@@ -569,9 +578,6 @@ const Sidebar = () => {
                     setIsHovered(true);
                 }}
                 onMouseLeave={() => {
-                    // Skip hover tracking in expanded mode - it's always expanded
-                    if (sidebarMode === 'expanded') return;
-
                     // Don't close while resizing
                     if (isResizing) return;
 

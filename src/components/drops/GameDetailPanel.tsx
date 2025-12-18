@@ -152,8 +152,11 @@ export default function GameDetailPanel({
         mergeProgressFromInventory(campaign, game.inventory_items, progress)
     );
     // Check if mining this game
-    const isMiningThisGame = miningStatus?.is_mining &&
-        miningStatus.current_drop?.game_name === game.name;
+    // Use current_drop.game_name OR current_channel.game_name as fallback (current_drop may not be set immediately)
+    const isMiningThisGame = miningStatus?.is_mining && (
+        miningStatus.current_drop?.game_name?.toLowerCase() === game.name?.toLowerCase() ||
+        miningStatus.current_channel?.game_name?.toLowerCase() === game.name?.toLowerCase()
+    );
 
     // Transform box art URL to higher resolution
     // GQL API returns URLs with fixed dimensions (e.g., "52x72"), not placeholders

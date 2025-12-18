@@ -1,3 +1,30 @@
+## [6.1.0] - 2025-12-17
+### ✨ Features
+
+- **Chat Heartbeat & Stability**: The chat system now includes background heartbeats to ensure a stable connection, automatically reconnecting if issues arise. You'll see clearer connection status and fewer stale warnings.
+- **Drops Favorites**: You can now mark your favorite games in the Drops Center! These will appear at the top, and you'll receive notifications when new drops become available for them.
+- **Improved Drops UI**: Games in the Drops Center are now better sorted, with favorites first. We've also refined the display of drop types (time-based, subscription, etc.) for easier understanding.
+- **Optimized User Profile Loading**: User profile cards now load significantly faster by instantly displaying cached data while fetching fresh information in the background. Badge and cosmetic rendering is also more performant.
+- **Sidebar Auto-Refresh**: Your followed and recommended streams in the sidebar will now automatically refresh when you interact with or expand the sidebar, ensuring you always see the latest status.
+
+### 🐛 Bug Fixes
+
+- Fixed an issue where manually selected drops in the mining service were not bypassing game filters.
+- Resolved a bug preventing the correct fetching of channel points balance in the Chat widget and Prediction overlay due to an incorrect GraphQL query path.
+- Corrected the Twitch Client ID used for certain channel points queries in the backend.
+- Improved the detection of the currently mining game in the Drops detail panel.
+- Removed unused Picture-in-Picture (PIP) logic from the main App component.
+
+### 🔧 Maintenance
+
+- Enhanced the internal health check for the chat WebSocket, making it more resilient to temporary network fluctuations and correctly triggering reconnection logic.
+- Refined the styling of the Home screen background for better contrast when overlays are present.
+- Consolidated and optimized badge rendering logic within the user profile card.
+
+### ⚡ Performance
+
+- Initial loading of user profile cards is now much faster due to improved caching and background refresh strategies.
+
 ## [6.0.1] - 2025-12-14
 ### 🐛 Bug Fixes
 - **Chat Performance**: Resolved a performance issue in the chat widget that could lead to incorrect item sizing calculations, improving overall chat rendering stability.
@@ -793,6 +820,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 

@@ -589,7 +589,7 @@ const Home = () => {
                 : searchResults;
 
     return (
-        <div className="flex flex-col h-full bg-background">
+        <div className="flex flex-col h-full">
             {/* Compact Header */}
             <div className="flex items-center justify-center gap-3 px-4 py-2.5 border-b border-borderSubtle relative min-h-[48px]">
                 {/* Category back button and name - absolute left with proper spacing */}
