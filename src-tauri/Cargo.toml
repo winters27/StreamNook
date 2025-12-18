@@ -1,6 +1,6 @@
 [package]
 name = "StreamNook"
-version = "6.1.0"
+version = "6.2.0"
 description = "Stream Nook"
 authors = ["Brandon Winters"]
 license = ""
