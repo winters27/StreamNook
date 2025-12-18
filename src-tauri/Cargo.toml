@@ -56,7 +56,7 @@ cosmic-text = "0.15.0"
 scopeguard = "1.2"
 rust-embed = "8.7"
 mime_guess = "2.0"
-phf = "0.11"
+phf = "0.13"
 lru = "0.16"
 
 
