@@ -5169,7 +5169,7 @@ dependencies = [
 [[package]]
 name = "tauri-plugin-opener"
 version = "2.5.2"
-source = "git+https://github.com/tauri-apps/plugins-workspace?branch=v2#521cd8b372c862d96b1637775710e4d7cf2443e2"
+source = "git+https://github.com/tauri-apps/plugins-workspace?branch=v2#3d0d2e041bbad9766aebecaeba291a28d8d7bf5c"
 dependencies = [
  "dunce",
  "glob",
@@ -5190,7 +5190,7 @@ dependencies = [
 [[package]]
 name = "tauri-plugin-shell"
 version = "2.3.3"
-source = "git+https://github.com/tauri-apps/plugins-workspace?branch=v2#521cd8b372c862d96b1637775710e4d7cf2443e2"
+source = "git+https://github.com/tauri-apps/plugins-workspace?branch=v2#3d0d2e041bbad9766aebecaeba291a28d8d7bf5c"
 dependencies = [
  "encoding_rs",
  "log",
