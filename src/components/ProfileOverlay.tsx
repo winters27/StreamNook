@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useAppStore } from '../stores/AppStore';
-import { X, User, ExternalLink } from 'lucide-react';
+import { X, User, ExternalLink, Link, Unlink, Maximize2 } from 'lucide-react';
+import ProfileModal from './ProfileModal';
 import { computePaintStyle, getBadgeImageUrl, getBadgeImageUrls } from '../services/seventvService';
 import { TwitchBadge } from '../services/badgeService';
 import { ThirdPartyBadge } from '../services/thirdPartyBadges';
@@ -11,6 +12,7 @@ import {
   refreshProfileInBackground,
   CachedProfile
 } from '../services/cosmeticsCache';
+import { invoke } from '@tauri-apps/api/core';
 
 interface ProfileOverlayProps {
   isOpen: boolean;
@@ -18,18 +20,141 @@ interface ProfileOverlayProps {
   anchorPosition: { x: number; y: number };
 }
 
+// Simple memory cache for chat identity badges
+interface ChatIdentityCache {
+  badges: ChatIdentityBadge[];
+  lastFetched: number;
+  userId: string;
+}
+
+interface ChatIdentityBadge {
+  id: string;
+  version: string;
+  title: string;
+  image_url: string;
+  is_selected: boolean;
+}
+
+// Exported for sharing with ProfileModal
+export let chatIdentityCache: ChatIdentityCache | null = null;
+export const CHAT_IDENTITY_CACHE_TTL = 10 * 60 * 1000; // 10 minutes - badges rarely change
+export const CHAT_IDENTITY_BACKGROUND_REFRESH_TTL = 2 * 60 * 1000; // 2 minutes before background refresh
+
+export const setChatIdentityCache = (cache: ChatIdentityCache | null) => {
+  chatIdentityCache = cache;
+};
+
 const ProfileOverlay = ({ isOpen, onClose, anchorPosition }: ProfileOverlayProps) => {
   const { isAuthenticated, currentUser, loginToTwitch, logoutFromTwitch, isLoading, currentStream } = useAppStore();
+  const [showProfileModal, setShowProfileModal] = useState(false);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const [twitchBadges, setTwitchBadges] = useState<TwitchBadge[]>([]);
   const [thirdPartyBadges, setThirdPartyBadges] = useState<ThirdPartyBadge[]>([]);
   const [seventvBadges, setSeventvBadges] = useState<SevenTVBadge[]>([]);
   const [seventvPaint, setSeventvPaint] = useState<SevenTVPaint | null>(null);
+  const [allSeventvPaints, setAllSeventvPaints] = useState<SevenTVPaint[]>([]);
   const [seventvUserId, setSeventvUserId] = useState<string | null>(null);
   const [has7TVAccountChecked, setHas7TVAccountChecked] = useState(false);
   const [isLoadingBadges, setIsLoadingBadges] = useState(false);
+  const [seventvAuthConnected, setSeventvAuthConnected] = useState(false);
+  const [updatingSeventvPaintId, setUpdatingSeventvPaintId] = useState<string | null>(null);
+  const [updatingSeventvBadgeId, setUpdatingSeventvBadgeId] = useState<string | null>(null);
+  const [showSeventvTokenInput, setShowSeventvTokenInput] = useState(false);
+  const [seventvTokenInput, setSeventvTokenInput] = useState('');
+  const [isConnecting7TV, setIsConnecting7TV] = useState(false);
   const hasInitializedRef = useRef(false);
   const lastUserIdRef = useRef<string | null>(null);
+
+  // Chat Identity State
+  interface ChatIdentityBadge {
+    id: string;
+    version: string;
+    title: string;
+    image_url: string;
+    is_selected: boolean;
+  }
+
+  const [chatIdentityBadges, setChatIdentityBadges] = useState<ChatIdentityBadge[]>([]);
+  const [isFetchingIdentity, setIsFetchingIdentity] = useState(false);
+  const [updatingBadgeId, setUpdatingBadgeId] = useState<string | null>(null);
+
+  useEffect(() => {
+    let unlistenFound: (() => void) | undefined;
+    let unlistenUpdate: (() => void) | undefined;
+
+    const setupListeners = async () => {
+      const { listen } = await import('@tauri-apps/api/event');
+      
+      unlistenFound = await listen('chat-identity-badges-found', (event: any) => {
+        const result = event.payload;
+        if (result.success && currentUser?.user_id) {
+          setChatIdentityBadges(result.badges);
+          // Update cache
+          chatIdentityCache = {
+            badges: result.badges,
+            lastFetched: Date.now(),
+            userId: currentUser.user_id
+          };
+          console.log('[ProfileOverlay] Chat identity badges cached:', result.badges.length);
+        }
+        setIsFetchingIdentity(false);
+      });
+
+      unlistenUpdate = await listen('chat-identity-update-result', (event: any) => {
+        const result = event.payload;
+        if (result.success) {
+          // Update local state to reflect change
+          setChatIdentityBadges(prev => {
+            const updated = prev.map(b => ({
+              ...b,
+              is_selected: b.id === result.badge_id
+            }));
+            // Also update cache
+            if (chatIdentityCache) {
+              chatIdentityCache.badges = updated;
+            }
+            return updated;
+          });
+        }
+        setUpdatingBadgeId(null);
+      });
+    };
+
+    setupListeners();
+
+    return () => {
+      if (unlistenFound) unlistenFound();
+      if (unlistenUpdate) unlistenUpdate();
+    };
+  }, [currentUser?.user_id]);
+
+  const fetchChatIdentity = async () => {
+    if (!currentUser?.login) return;
+    setIsFetchingIdentity(true);
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('fetch_chat_identity_badges', { channelName: currentUser.login });
+    } catch (e) {
+      console.error('Failed to fetch identity:', e);
+      setIsFetchingIdentity(false);
+    }
+  };
+
+  const updateChatIdentity = async (badge: ChatIdentityBadge) => {
+    if (!currentUser?.login || updatingBadgeId) return;
+    setUpdatingBadgeId(badge.id);
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('update_chat_identity', { 
+        channelName: currentUser.login,
+        badgeId: badge.id,
+        badgeVersion: badge.version
+      });
+    } catch (e) {
+      console.error('Failed to update identity:', e);
+      setUpdatingBadgeId(null);
+    }
+  };
 
   // Load cached profile data immediately when user changes or on initial mount
   useEffect(() => {
@@ -77,9 +202,106 @@ const ProfileOverlay = ({ isOpen, onClose, anchorPosition }: ProfileOverlayProps
     setSeventvUserId(profile.seventvCosmetics.seventvUserId || null);
     setHas7TVAccountChecked(true);
 
+    // Store all paints
+    setAllSeventvPaints(profile.seventvCosmetics.paints as SevenTVPaint[]);
+
     const selectedPaint = profile.seventvCosmetics.paints.find((p: any) => p.selected);
     if (selectedPaint) {
       setSeventvPaint(selectedPaint as SevenTVPaint);
+    }
+  };
+
+  // Check 7TV auth status on mount and listen for connection events
+  useEffect(() => {
+    const check7TVAuth = async () => {
+      try {
+        const status = await invoke('get_seventv_auth_status') as { is_authenticated: boolean; user_id?: string };
+        console.log('[ProfileOverlay] 7TV auth status:', status);
+        setSeventvAuthConnected(status.is_authenticated);
+      } catch (e) {
+        console.log('[ProfileOverlay] 7TV auth check failed (expected if not connected):', e);
+        setSeventvAuthConnected(false);
+      }
+    };
+    if (isOpen && isAuthenticated) {
+      check7TVAuth();
+    }
+
+    // Listen for 7TV connection success event
+    let unlisten: (() => void) | undefined;
+    const setupListener = async () => {
+      const { listen } = await import('@tauri-apps/api/event');
+      unlisten = await listen('seventv-connected', () => {
+        console.log('[ProfileOverlay] 7TV connected event received!');
+        setSeventvAuthConnected(true);
+        setIsConnecting7TV(false);
+      });
+    };
+    setupListener();
+
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, [isOpen, isAuthenticated]);
+
+  // Handle 7TV paint selection
+  const handleSelectSeventvPaint = async (paint: SevenTVPaint | null) => {
+    if (!seventvUserId || updatingSeventvPaintId) return;
+    
+    const paintId = paint?.id || null;
+    setUpdatingSeventvPaintId(paintId || 'none');
+    
+    try {
+      const result = await invoke('set_seventv_paint', { 
+        userId: seventvUserId,
+        paintId 
+      }) as { success: boolean; error?: string };
+      
+      if (result.success) {
+        // Update local state
+        setSeventvPaint(paint);
+        setAllSeventvPaints(prev => prev.map(p => ({
+          ...p,
+          selected: p.id === paintId
+        })));
+        console.log('[ProfileOverlay] 7TV paint updated successfully');
+      } else {
+        console.error('[ProfileOverlay] Failed to update 7TV paint:', result.error);
+      }
+    } catch (e) {
+      console.error('[ProfileOverlay] Failed to update 7TV paint:', e);
+    } finally {
+      setUpdatingSeventvPaintId(null);
+    }
+  };
+
+  // Handle 7TV badge selection
+  const handleSelectSeventvBadge = async (badge: SevenTVBadge | null) => {
+    if (!seventvUserId || updatingSeventvBadgeId) return;
+    
+    const badgeId = badge?.id || null;
+    setUpdatingSeventvBadgeId(badgeId || 'none');
+    
+    try {
+      const result = await invoke('set_seventv_badge', { 
+        userId: seventvUserId,
+        badgeId 
+      }) as { success: boolean; error?: string };
+      
+      if (result.success) {
+        // Update local state
+        setSeventvBadges(prev => prev.map(b => ({
+          ...b,
+          selected: b.id === badgeId
+        })));
+        console.log('[ProfileOverlay] 7TV badge updated successfully');
+      } else {
+        console.error('[ProfileOverlay] Failed to update 7TV badge:', result.error);
+      }
+    } catch (e) {
+      console.error('[ProfileOverlay] Failed to update 7TV badge:', e);
+    } finally {
+      setUpdatingSeventvBadgeId(null);
     }
   };
 
@@ -163,9 +385,66 @@ const ProfileOverlay = ({ isOpen, onClose, anchorPosition }: ProfileOverlayProps
         });
       }
     }
+
+    // Chat Identity Badge Caching Logic - Always show cache first, fetch in background
+    if (chatIdentityCache && 
+        chatIdentityCache.userId === currentUser.user_id &&
+        chatIdentityCache.badges.length > 0) {
+      
+      // Always apply cached data immediately (even if state already has badges)
+      console.log('[ProfileOverlay] Loading chat identity badges from cache:', chatIdentityCache.badges.length);
+      setChatIdentityBadges(chatIdentityCache.badges);
+      
+      const cacheAge = Date.now() - chatIdentityCache.lastFetched;
+      
+      // If cache is fresh enough, don't fetch at all
+      if (cacheAge < CHAT_IDENTITY_BACKGROUND_REFRESH_TTL) {
+        console.log('[ProfileOverlay] Cache is fresh, no fetch needed');
+        return;
+      }
+      
+      // If cache is slightly stale but within TTL, do a silent background refresh
+      if (cacheAge < CHAT_IDENTITY_CACHE_TTL && !isFetchingIdentity) {
+        console.log('[ProfileOverlay] Cache slightly stale, silent background refresh');
+        // Don't show loading spinner - badges are already visible
+        const silentFetch = async () => {
+          try {
+            await invoke('fetch_chat_identity_badges', { channelName: currentUser.login });
+          } catch (e) {
+            // Silent fail - we already have cached badges
+          }
+        };
+        silentFetch();
+        return;
+      }
+      
+      // Cache is too old, still show cached but fetch fresh
+      if (!isFetchingIdentity) {
+        console.log('[ProfileOverlay] Cache too old, fetching fresh data');
+        fetchChatIdentity();
+      }
+      return;
+    }
+    
+    // No cache - need to fetch (this will show loading spinner)
+    if (!isFetchingIdentity) {
+      console.log('[ProfileOverlay] No cache, fetching chat identity badges');
+      fetchChatIdentity();
+    }
   }, [isOpen, isAuthenticated, currentUser, currentStream]);
 
-  if (!isOpen) return null;
+  // Show ProfileModal even when dropdown is closed
+  if (!isOpen && !showProfileModal) return null;
+  
+  // If modal is open, only render the modal
+  if (showProfileModal) {
+    return (
+      <ProfileModal
+        isOpen={showProfileModal}
+        onClose={() => setShowProfileModal(false)}
+      />
+    );
+  }
 
   const handleLogin = async () => {
     await loginToTwitch();
@@ -201,12 +480,26 @@ const ProfileOverlay = ({ isOpen, onClose, anchorPosition }: ProfileOverlayProps
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-borderSubtle">
           <h3 className="text-textPrimary font-semibold">Profile</h3>
-          <button
-            onClick={onClose}
-            className="p-1 text-textSecondary hover:text-textPrimary hover:bg-glass rounded transition-all"
-          >
-            <X size={18} />
-          </button>
+          <div className="flex items-center gap-1">
+            {isAuthenticated && (
+              <button
+                onClick={() => {
+                  setShowProfileModal(true);
+                  onClose();
+                }}
+                className="p-1 text-textSecondary hover:text-accent hover:bg-glass rounded transition-all"
+                title="Expand to full view"
+              >
+                <Maximize2 size={16} />
+              </button>
+            )}
+            <button
+              onClick={onClose}
+              className="p-1 text-textSecondary hover:text-textPrimary hover:bg-glass rounded transition-all"
+            >
+              <X size={18} />
+            </button>
+          </div>
         </div>
 
         {/* Content */}
@@ -227,7 +520,33 @@ const ProfileOverlay = ({ isOpen, onClose, anchorPosition }: ProfileOverlayProps
                   )}
                 </div>
                 <div className="flex-1 min-w-0" style={{ isolation: 'isolate' }}>
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    {/* Currently selected Twitch global badge */}
+                    {chatIdentityBadges.find(b => b.is_selected) && (
+                      <img
+                        src={chatIdentityBadges.find(b => b.is_selected)?.image_url}
+                        alt={chatIdentityBadges.find(b => b.is_selected)?.title}
+                        title={`Twitch: ${chatIdentityBadges.find(b => b.is_selected)?.title}`}
+                        className="w-5 h-5 flex-shrink-0"
+                      />
+                    )}
+                    {/* Currently selected 7TV badge */}
+                    {(() => {
+                      const selected7TVBadge = seventvBadges.find((b: any) => b.selected);
+                      if (selected7TVBadge) {
+                        const urls = getBadgeImageUrls(selected7TVBadge as any);
+                        return urls.url4x ? (
+                          <img
+                            src={urls.url4x}
+                            srcSet={`${urls.url1x} 1x, ${urls.url2x} 2x, ${urls.url4x} 4x`}
+                            alt={selected7TVBadge.tooltip || selected7TVBadge.name}
+                            title={`7TV: ${selected7TVBadge.tooltip || selected7TVBadge.name}`}
+                            className="w-5 h-5 flex-shrink-0"
+                          />
+                        ) : null;
+                      }
+                      return null;
+                    })()}
                     <span
                       className="text-textSecondary text-sm truncate inline-block"
                       style={seventvPaint ? { ...computePaintStyle(seventvPaint as any, '#9146FF'), isolation: 'isolate' } : undefined}
@@ -246,7 +565,7 @@ const ProfileOverlay = ({ isOpen, onClose, anchorPosition }: ProfileOverlayProps
                       </div>
                     )}
                   </div>
-                  {/* Current 7TV Paint Badge */}
+                  {/* Current 7TV Paint indicator */}
                   {seventvPaint && (
                     <div
                       className="mt-1 px-1.5 py-px rounded text-[9px] font-bold inline-block cursor-pointer hover:scale-105 transition-transform relative overflow-hidden"
@@ -276,58 +595,181 @@ const ProfileOverlay = ({ isOpen, onClose, anchorPosition }: ProfileOverlayProps
                 </div>
               </div>
 
-              {/* Badges Section - Filter out broadcaster and subscriber badges as they're irrelevant in profile context */}
-              {(twitchBadges.filter(b => (b as any).setID !== 'broadcaster' && (b as any).setID !== 'subscriber').length > 0 || seventvBadges.length > 0 || thirdPartyBadges.length > 0) && (
-                <div className="space-y-3">
-                  {/* Twitch Badges */}
-                  {twitchBadges.filter(b => (b as any).setID !== 'broadcaster' && (b as any).setID !== 'subscriber').length > 0 && (
-                    <div>
-                      <p className="text-[10px] text-textSecondary mb-1.5 font-semibold uppercase tracking-wide">Twitch Badges</p>
-                      <div className="flex items-center gap-1.5 flex-wrap p-2 glass-panel rounded-lg">
-                        {twitchBadges.filter(b => (b as any).setID !== 'broadcaster' && (b as any).setID !== 'subscriber').map((badge, idx) => (
-                          <img
-                            key={`twitch-${badge.id}-${idx}`}
-                            src={(badge as any).image4x || (badge as any).image1x}
-                            srcSet={`${(badge as any).image1x} 1x, ${(badge as any).image2x} 2x, ${(badge as any).image4x} 4x`}
+              {/* Badges Section */}
+              <div className="space-y-3">
+                {/* Twitch Global Badges (Combined: Display + Select) */}
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <p className="text-[10px] text-textSecondary font-semibold uppercase tracking-wide flex items-center gap-1">
+                      <svg fill="currentColor" viewBox="0 0 512 512" className="w-3 h-3 text-[#9146FF]"><path d="M80,32,48,112V416h96v64h64l64-64h80L464,304V32ZM416,288l-64,64H256l-64,64V352H112V80H416Z" /><rect x="320" y="143" width="48" height="129" /><rect x="208" y="143" width="48" height="129" /></svg>
+                      Global Badges
+                    </p>
+                    <button 
+                      onClick={() => fetchChatIdentity()}
+                      disabled={isFetchingIdentity}
+                      className="p-1 text-textSecondary hover:text-accent hover:bg-glass rounded transition-all"
+                      title="Refresh Available Badges"
+                    >
+                      <svg 
+                        xmlns="http://www.w3.org/2000/svg" 
+                        width="14" 
+                        height="14" 
+                        viewBox="0 0 24 24" 
+                        fill="none" 
+                        stroke="currentColor" 
+                        strokeWidth="2" 
+                        strokeLinecap="round" 
+                        strokeLinejoin="round"
+                        className={isFetchingIdentity ? "animate-spin" : ""}
+                      >
+                        <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+                        <path d="M3 3v5h5" />
+                        <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16" />
+                        <path d="M16 21h5v-5" />
+                      </svg>
+                    </button>
+                  </div>
+                  
+                  {isFetchingIdentity && chatIdentityBadges.length === 0 ? (
+                    <div className="flex items-center justify-center py-3 glass-panel rounded-lg">
+                      <div className="w-4 h-4 border-2 border-accent border-t-transparent rounded-full animate-spin" />
+                      <span className="ml-2 text-xs text-textSecondary">Loading badges...</span>
+                    </div>
+                  ) : chatIdentityBadges.length > 0 ? (
+                    <div className="flex items-center gap-1.5 flex-wrap p-2 glass-panel rounded-lg max-h-44 overflow-y-auto custom-scrollbar">
+                      {chatIdentityBadges.map((badge) => (
+                        <div 
+                          key={`${badge.id}-${badge.version}`}
+                          className={`
+                            relative p-1 rounded cursor-pointer transition-all border-2
+                            ${badge.is_selected ? 'border-accent bg-accent/20 ring-1 ring-accent/30' : 'border-transparent hover:bg-glass hover:border-borderLight'}
+                            ${updatingBadgeId === badge.id ? 'opacity-50 cursor-wait' : ''}
+                          `}
+                          onClick={() => !updatingBadgeId && updateChatIdentity(badge)}
+                          title={`${badge.title}${badge.is_selected ? ' (Active)' : ' - Click to select'}`}
+                        >
+                          <img 
+                            src={badge.image_url} 
                             alt={badge.title}
-                            title={badge.title}
-                            className="w-5 h-5 cursor-pointer hover:scale-110 transition-transform"
-                            onError={(e) => {
-                              e.currentTarget.style.display = 'none';
-                            }}
+                            className="w-5 h-5" 
                           />
-                        ))}
+                          {updatingBadgeId === badge.id && (
+                            <div className="absolute inset-0 flex items-center justify-center bg-black/30 rounded">
+                              <div className="w-3 h-3 border-2 border-accent border-t-transparent rounded-full animate-spin" />
+                            </div>
+                          )}
+                          {badge.is_selected && (
+                            <div className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-accent rounded-full border border-background" />
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-center py-3 glass-panel rounded-lg text-xs text-textSecondary">
+                      <span className="italic">No badges loaded</span>
+                    </div>
+                  )}
+                </div>
+
+                  {/* 7TV Paints - Selectable if connected */}
+                  {allSeventvPaints.length > 0 && (
+                    <div>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <p className="text-[10px] text-textSecondary font-semibold uppercase tracking-wide flex items-center gap-1">
+                          <svg className="w-3 h-3 text-[#29b6f6]" viewBox="0 0 28 21" fill="currentColor"><path d="M20.7465 5.48825L21.9799 3.33745L22.646 2.20024L21.4125 0.0494437V0H14.8259L17.2928 4.3016L17.9836 5.48825H20.7465Z" /><path d="M7.15395 19.9258L14.5546 7.02104L15.4673 5.43884L13.0004 1.13724L12.3097 0.0247596H1.8995L0.666057 2.17556L0 3.31276L1.23344 5.46356V5.51301H9.12745L2.96025 16.267L2.09685 17.7998L3.33029 19.9506V20H7.15395" /><path d="M17.4655 19.9257H21.2398L26.1736 11.3225L27.037 9.83924L25.8036 7.68844V7.63899H22.0046L19.5377 11.9406L19.365 12.262L16.8981 7.96038L16.7255 7.63899L14.2586 11.9406L13.5679 13.1272L17.2682 19.5796L17.4655 19.9257Z" /></svg>
+                          Paints {seventvAuthConnected && <span className="text-green-400">(Connected)</span>}
+                        </p>
+                        {!seventvAuthConnected && (
+                          <span className="text-[9px] text-yellow-500/70 italic">View only</span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-1.5 flex-wrap p-2 glass-panel rounded-lg max-h-32 overflow-y-auto custom-scrollbar">
+                        {allSeventvPaints.map((paint) => {
+                          const isSelected = seventvPaint?.id === paint.id;
+                          const isUpdating = updatingSeventvPaintId === paint.id;
+                          return (
+                            <div 
+                              key={`7tv-paint-${paint.id}`}
+                              className={`
+                                relative px-2 py-1 rounded cursor-pointer transition-all border-2 text-[10px] font-bold
+                                ${isSelected ? 'border-[#29b6f6] bg-glass/50 ring-1 ring-[#29b6f6]/30' : 'border-transparent hover:bg-glass hover:border-borderLight'}
+                                ${isUpdating ? 'opacity-50 cursor-wait' : ''}
+                                ${!seventvAuthConnected ? 'cursor-default' : ''}
+                              `}
+                              onClick={() => seventvAuthConnected && !isUpdating && handleSelectSeventvPaint(isSelected ? null : paint)}
+                              title={seventvAuthConnected 
+                                ? `${paint.name}${isSelected ? ' (Active) - Click to unequip' : ' - Click to equip'}` 
+                                : `${paint.name} - Connect 7TV to change`
+                              }
+                            >
+                              <span style={computePaintStyle(paint as any, '#29b6f6')}>
+                                {paint.name}
+                              </span>
+                              {isUpdating && (
+                                <div className="absolute inset-0 flex items-center justify-center bg-black/30 rounded">
+                                  <div className="w-3 h-3 border-2 border-[#29b6f6] border-t-transparent rounded-full animate-spin" />
+                                </div>
+                              )}
+                              {isSelected && (
+                                <div className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-[#29b6f6] rounded-full border border-background" />
+                              )}
+                            </div>
+                          );
+                        })}
                       </div>
                     </div>
                   )}
 
-                  {/* 7TV Badges */}
+                  {/* 7TV Badges - Selectable if connected */}
                   {seventvBadges.length > 0 && (
                     <div>
-                      <p className="text-[10px] text-textSecondary mb-1.5 font-semibold uppercase tracking-wide">7TV Badges</p>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <p className="text-[10px] text-textSecondary font-semibold uppercase tracking-wide flex items-center gap-1">
+                          <svg className="w-3 h-3 text-[#29b6f6]" viewBox="0 0 28 21" fill="currentColor"><path d="M20.7465 5.48825L21.9799 3.33745L22.646 2.20024L21.4125 0.0494437V0H14.8259L17.2928 4.3016L17.9836 5.48825H20.7465Z" /><path d="M7.15395 19.9258L14.5546 7.02104L15.4673 5.43884L13.0004 1.13724L12.3097 0.0247596H1.8995L0.666057 2.17556L0 3.31276L1.23344 5.46356V5.51301H9.12745L2.96025 16.267L2.09685 17.7998L3.33029 19.9506V20H7.15395" /><path d="M17.4655 19.9257H21.2398L26.1736 11.3225L27.037 9.83924L25.8036 7.68844V7.63899H22.0046L19.5377 11.9406L19.365 12.262L16.8981 7.96038L16.7255 7.63899L14.2586 11.9406L13.5679 13.1272L17.2682 19.5796L17.4655 19.9257Z" /></svg>
+                          Badges {seventvAuthConnected && <span className="text-green-400">(Connected)</span>}
+                        </p>
+                        {!seventvAuthConnected && (
+                          <span className="text-[9px] text-yellow-500/70 italic">View only</span>
+                        )}
+                      </div>
                       <div className="flex items-center gap-1.5 flex-wrap p-2 glass-panel rounded-lg">
                         {seventvBadges.map((badge, idx) => {
                           const urls = getBadgeImageUrls(badge as any);
+                          const isSelected = (badge as any).selected;
+                          const isUpdating = updatingSeventvBadgeId === badge.id;
                           return urls.url4x ? (
-                            <img
+                            <div
                               key={`7tv-${badge.id}-${idx}`}
-                              src={urls.url4x}
-                              srcSet={`${urls.url1x} 1x, ${urls.url2x} 2x, ${urls.url4x} 4x`}
-                              alt={badge.tooltip || badge.name}
-                              title={badge.tooltip || badge.name}
-                              className="w-5 h-5 cursor-pointer hover:scale-110 transition-transform"
-                              onClick={async () => {
-                                try {
-                                  const { open } = await import('@tauri-apps/plugin-shell');
-                                  await open(`https://7tv.app/badges/${badge.id}`);
-                                } catch (err) {
-                                  console.error('Failed to open URL:', err);
-                                }
-                              }}
-                              onError={(e) => {
-                                e.currentTarget.style.display = 'none';
-                              }}
-                            />
+                              className={`
+                                relative p-1 rounded cursor-pointer transition-all border-2
+                                ${isSelected ? 'border-[#29b6f6] bg-[#29b6f6]/20 ring-1 ring-[#29b6f6]/30' : 'border-transparent hover:bg-glass hover:border-borderLight'}
+                                ${isUpdating ? 'opacity-50 cursor-wait' : ''}
+                                ${!seventvAuthConnected ? 'cursor-default' : ''}
+                              `}
+                              onClick={() => seventvAuthConnected && !isUpdating && handleSelectSeventvBadge(isSelected ? null : badge)}
+                              title={seventvAuthConnected 
+                                ? `${badge.tooltip || badge.name}${isSelected ? ' (Active) - Click to unequip' : ' - Click to equip'}` 
+                                : `${badge.tooltip || badge.name} - Connect 7TV to change`
+                              }
+                            >
+                              <img
+                                src={urls.url4x}
+                                srcSet={`${urls.url1x} 1x, ${urls.url2x} 2x, ${urls.url4x} 4x`}
+                                alt={badge.tooltip || badge.name}
+                                className="w-5 h-5"
+                                onError={(e) => {
+                                  e.currentTarget.style.display = 'none';
+                                }}
+                              />
+                              {isUpdating && (
+                                <div className="absolute inset-0 flex items-center justify-center bg-black/30 rounded">
+                                  <div className="w-3 h-3 border-2 border-[#29b6f6] border-t-transparent rounded-full animate-spin" />
+                                </div>
+                              )}
+                              {isSelected && (
+                                <div className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-[#29b6f6] rounded-full border border-background" />
+                              )}
+                            </div>
                           ) : null;
                         })}
                       </div>
@@ -368,7 +810,6 @@ const ProfileOverlay = ({ isOpen, onClose, anchorPosition }: ProfileOverlayProps
                     </div>
                   )}
                 </div>
-              )}
 
               {/* Loading indicator for initial fetch */}
               {isLoadingBadges && twitchBadges.length === 0 && seventvBadges.length === 0 && thirdPartyBadges.length === 0 && (
@@ -378,44 +819,92 @@ const ProfileOverlay = ({ isOpen, onClose, anchorPosition }: ProfileOverlayProps
                 </div>
               )}
 
-              {/* 7TV Button - Edit Cosmetics or Create Account */}
-              {has7TVAccountChecked && (
-                seventvUserId ? (
+              {/* 7TV Buttons */}
+              {has7TVAccountChecked && seventvUserId && (
+                <div className="space-y-2">
+                  {/* Connect/Disconnect 7TV button */}
+                  {seventvAuthConnected ? (
+                    <button
+                      onClick={async () => {
+                        try {
+                          await invoke('logout_seventv');
+                          setSeventvAuthConnected(false);
+                          console.log('[ProfileOverlay] Disconnected from 7TV');
+                        } catch (e) {
+                          console.error('[ProfileOverlay] Failed to disconnect from 7TV:', e);
+                        }
+                      }}
+                      className="w-full flex items-center justify-center gap-2 px-4 py-2.5 glass-button text-red-400 font-medium group hover:bg-red-500/10"
+                    >
+                      <svg className="w-4 h-4" viewBox="0 0 28 21" fill="currentColor"><path d="M20.7465 5.48825L21.9799 3.33745L22.646 2.20024L21.4125 0.0494437V0H14.8259L17.2928 4.3016L17.9836 5.48825H20.7465Z" /><path d="M7.15395 19.9258L14.5546 7.02104L15.4673 5.43884L13.0004 1.13724L12.3097 0.0247596H1.8995L0.666057 2.17556L0 3.31276L1.23344 5.46356V5.51301H9.12745L2.96025 16.267L2.09685 17.7998L3.33029 19.9506V20H7.15395" /><path d="M17.4655 19.9257H21.2398L26.1736 11.3225L27.037 9.83924L25.8036 7.68844V7.63899H22.0046L19.5377 11.9406L19.365 12.262L16.8981 7.96038L16.7255 7.63899L14.2586 11.9406L13.5679 13.1272L17.2682 19.5796L17.4655 19.9257Z" /></svg>
+                      <span>Disconnect</span>
+                      <Unlink size={14} className="opacity-60" />
+                    </button>
+                  ) : (
+                    <button
+                      onClick={async () => {
+                        try {
+                          setIsConnecting7TV(true);
+                          await invoke('open_seventv_login_window');
+                          console.log('[ProfileOverlay] Opening 7TV login window. After logging in, the token will be captured automatically.');
+                        } catch (e) {
+                          console.error('[ProfileOverlay] Failed to open 7TV login window:', e);
+                          setIsConnecting7TV(false);
+                        }
+                      }}
+                      disabled={isConnecting7TV}
+                      className={`w-full flex items-center justify-center gap-2 px-4 py-2.5 glass-button text-[#29b6f6] font-medium group hover:bg-[#29b6f6]/10 ${isConnecting7TV ? 'opacity-70 cursor-wait' : ''}`}
+                    >
+                      {/* 7TV Logo */}
+                      <svg
+                        className="w-4 h-4 text-[#29b6f6] group-hover:scale-110 transition-transform"
+                        viewBox="0 0 28 21"
+                        fill="currentColor"
+                      >
+                        <path d="M20.7465 5.48825L21.9799 3.33745L22.646 2.20024L21.4125 0.0494437V0H14.8259L17.2928 4.3016L17.9836 5.48825H20.7465Z" />
+                        <path d="M7.15395 19.9258L14.5546 7.02104L15.4673 5.43884L13.0004 1.13724L12.3097 0.0247596H1.8995L0.666057 2.17556L0 3.31276L1.23344 5.46356V5.51301H9.12745L2.96025 16.267L2.09685 17.7998L3.33029 19.9506V20H7.15395" />
+                        <path d="M17.4655 19.9257H21.2398L26.1736 11.3225L27.037 9.83924L25.8036 7.68844V7.63899H22.0046L19.5377 11.9406L19.365 12.262L16.8981 7.96038L16.7255 7.63899L14.2586 11.9406L13.5679 13.1272L17.2682 19.5796L17.4655 19.9257Z" />
+                      </svg>
+                      <span>{isConnecting7TV ? 'Connecting...' : 'Connect'}</span>
+                      {isConnecting7TV ? (
+                        <div className="w-3.5 h-3.5 border-2 border-[#29b6f6] border-t-transparent rounded-full animate-spin" />
+                      ) : (
+                        <Link size={14} className="opacity-60" />
+                      )}
+                    </button>
+                  )}
+                  
+                  {/* Edit cosmetics on website button */}
                   <button
                     onClick={handleOpen7TVCosmetics}
-                    className="w-full flex items-center justify-center gap-2 px-4 py-2.5 glass-button text-textPrimary font-medium group"
+                    className="w-full flex items-center justify-center gap-2 px-4 py-2 glass-button text-textSecondary text-sm font-medium group hover:text-textPrimary"
                   >
-                    {/* 7TV Logo */}
-                    <svg
-                      className="w-4 h-4 text-[#29b6f6] group-hover:scale-110 transition-transform"
-                      viewBox="0 0 28 21"
-                      fill="currentColor"
-                    >
-                      <path d="M20.7465 5.48825L21.9799 3.33745L22.646 2.20024L21.4125 0.0494437V0H14.8259L17.2928 4.3016L17.9836 5.48825H20.7465Z" />
-                      <path d="M7.15395 19.9258L14.5546 7.02104L15.4673 5.43884L13.0004 1.13724L12.3097 0.0247596H1.8995L0.666057 2.17556L0 3.31276L1.23344 5.46356V5.51301H9.12745L2.96025 16.267L2.09685 17.7998L3.33029 19.9506V20H7.15395" />
-                      <path d="M17.4655 19.9257H21.2398L26.1736 11.3225L27.037 9.83924L25.8036 7.68844V7.63899H22.0046L19.5377 11.9406L19.365 12.262L16.8981 7.96038L16.7255 7.63899L14.2586 11.9406L13.5679 13.1272L17.2682 19.5796L17.4655 19.9257Z" />
-                    </svg>
-                    <span>Edit 7TV Cosmetics</span>
+                    <svg className="w-3.5 h-3.5 text-[#29b6f6]" viewBox="0 0 28 21" fill="currentColor"><path d="M20.7465 5.48825L21.9799 3.33745L22.646 2.20024L21.4125 0.0494437V0H14.8259L17.2928 4.3016L17.9836 5.48825H20.7465Z" /><path d="M7.15395 19.9258L14.5546 7.02104L15.4673 5.43884L13.0004 1.13724L12.3097 0.0247596H1.8995L0.666057 2.17556L0 3.31276L1.23344 5.46356V5.51301H9.12745L2.96025 16.267L2.09685 17.7998L3.33029 19.9506V20H7.15395" /><path d="M17.4655 19.9257H21.2398L26.1736 11.3225L27.037 9.83924L25.8036 7.68844V7.63899H22.0046L19.5377 11.9406L19.365 12.262L16.8981 7.96038L16.7255 7.63899L14.2586 11.9406L13.5679 13.1272L17.2682 19.5796L17.4655 19.9257Z" /></svg>
+                    <span>Edit on Website</span>
+                    <ExternalLink size={12} className="opacity-60" />
                   </button>
-                ) : (
-                  <button
-                    onClick={handleCreate7TVAccount}
-                    className="w-full flex items-center justify-center gap-2 px-4 py-2.5 glass-button text-textPrimary font-medium group"
+                </div>
+              )}
+
+              {/* No 7TV account - Create account button */}
+              {has7TVAccountChecked && !seventvUserId && (
+                <button
+                  onClick={handleCreate7TVAccount}
+                  className="w-full flex items-center justify-center gap-2 px-4 py-2.5 glass-button text-textPrimary font-medium group"
+                >
+                  {/* 7TV Logo */}
+                  <svg
+                    className="w-4 h-4 text-[#29b6f6] group-hover:scale-110 transition-transform"
+                    viewBox="0 0 28 21"
+                    fill="currentColor"
                   >
-                    {/* 7TV Logo */}
-                    <svg
-                      className="w-4 h-4 text-[#29b6f6] group-hover:scale-110 transition-transform"
-                      viewBox="0 0 28 21"
-                      fill="currentColor"
-                    >
-                      <path d="M20.7465 5.48825L21.9799 3.33745L22.646 2.20024L21.4125 0.0494437V0H14.8259L17.2928 4.3016L17.9836 5.48825H20.7465Z" />
-                      <path d="M7.15395 19.9258L14.5546 7.02104L15.4673 5.43884L13.0004 1.13724L12.3097 0.0247596H1.8995L0.666057 2.17556L0 3.31276L1.23344 5.46356V5.51301H9.12745L2.96025 16.267L2.09685 17.7998L3.33029 19.9506V20H7.15395" />
-                      <path d="M17.4655 19.9257H21.2398L26.1736 11.3225L27.037 9.83924L25.8036 7.68844V7.63899H22.0046L19.5377 11.9406L19.365 12.262L16.8981 7.96038L16.7255 7.63899L14.2586 11.9406L13.5679 13.1272L17.2682 19.5796L17.4655 19.9257Z" />
-                    </svg>
-                    <span>Create 7TV Account</span>
-                    <ExternalLink size={14} className="opacity-60" />
-                  </button>
-                )
+                    <path d="M20.7465 5.48825L21.9799 3.33745L22.646 2.20024L21.4125 0.0494437V0H14.8259L17.2928 4.3016L17.9836 5.48825H20.7465Z" />
+                    <path d="M7.15395 19.9258L14.5546 7.02104L15.4673 5.43884L13.0004 1.13724L12.3097 0.0247596H1.8995L0.666057 2.17556L0 3.31276L1.23344 5.46356V5.51301H9.12745L2.96025 16.267L2.09685 17.7998L3.33029 19.9506V20H7.15395" />
+                    <path d="M17.4655 19.9257H21.2398L26.1736 11.3225L27.037 9.83924L25.8036 7.68844V7.63899H22.0046L19.5377 11.9406L19.365 12.262L16.8981 7.96038L16.7255 7.63899L14.2586 11.9406L13.5679 13.1272L17.2682 19.5796L17.4655 19.9257Z" />
+                  </svg>
+                  <span>Create Account</span>
+                  <ExternalLink size={14} className="opacity-60" />
+                </button>
               )}
 
               {/* Logout Button */}
@@ -435,7 +924,7 @@ const ProfileOverlay = ({ isOpen, onClose, anchorPosition }: ProfileOverlayProps
                     <rect x="320" y="143" width="48" height="129" />
                     <rect x="208" y="143" width="48" height="129" />
                   </svg>
-                  <span>Logout from Twitch</span>
+                  <span>Logout</span>
                 </button>
               ) : (
                 <div className="space-y-2">
@@ -489,7 +978,7 @@ const ProfileOverlay = ({ isOpen, onClose, anchorPosition }: ProfileOverlayProps
                   <rect x="320" y="143" width="48" height="129" />
                   <rect x="208" y="143" width="48" height="129" />
                 </svg>
-                <span>{isLoading ? 'Logging in...' : 'Login to Twitch'}</span>
+                <span>{isLoading ? 'Logging in...' : 'Login'}</span>
               </button>
             </div>
           )}

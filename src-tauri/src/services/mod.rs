@@ -20,6 +20,7 @@ pub mod live_notification_service;
 pub mod log_service;
 pub mod mining_service;
 pub mod profile_cache_service;
+pub mod seventv_auth_service;
 pub mod stream_server;
 pub mod streamlink_manager;
 pub mod twitch_service;

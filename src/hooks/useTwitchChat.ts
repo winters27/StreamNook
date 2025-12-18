@@ -692,23 +692,48 @@ export const useTwitchChat = () => {
         }
 
         // If no messages (including heartbeats) for 3 minutes, the WebSocket is likely dead
-        // Trigger a reconnection attempt via handleStreamOffline which verifies stream status
+        // Perform a silent stream check before deciding whether to reconnect chat or trigger offline
         if (timeSinceLastMessage > threeMinutes) {
           console.log('[Chat] No messages/heartbeats for 3+ minutes, connection appears dead');
 
-          // Get the handleStreamOffline function from AppStore
-          // This will verify if the stream is actually offline via Twitch API
-          // and trigger auto-switch if enabled
           const { handleStreamOffline, currentStream, isAutoSwitching } = useAppStore.getState();
 
-          // Only trigger if we have a current stream and aren't already switching
+          // Only proceed if we have a current stream and aren't already switching
           if (currentStream && !isAutoSwitching) {
-            console.log('[Chat] Triggering handleStreamOffline from connection dead detection');
-            handleStreamOffline();
-
-            // Reset last message time to prevent repeated triggers
-            // The handleStreamOffline will verify and handle appropriately
+            // Reset last message time to prevent repeated triggers during this check
             lastMessageTimeRef.current = Date.now();
+
+            // Perform a silent check to see if the stream is actually online
+            // This prevents the "nuclear" option of tearing down the stream when only chat has stalled
+            // Use IIFE to handle async code inside setInterval callback
+            (async () => {
+              try {
+                console.log('[Chat] Performing silent stream online check before triggering offline...');
+                const isOnline = await invoke<boolean>('check_stream_online', { 
+                  channel: currentStream.user_login 
+                });
+
+                if (isOnline) {
+                  // Stream is still online - this is just a chat connection issue
+                  // Reconnect only the chat, don't trigger the full handleStreamOffline flow
+                  console.log('[Chat] Stream is still online but chat is dead. Reconnecting chat only...');
+                  
+                  // Reset connecting flag and reconnect to the same channel
+                  isConnectingRef.current = false;
+                  connectChat(currentStream.user_login, currentStream.user_id);
+                } else {
+                  // Stream is actually offline - trigger the full offline handling
+                  console.log('[Chat] Stream confirmed offline. Triggering handleStreamOffline...');
+                  handleStreamOffline();
+                }
+              } catch (err) {
+                // If the check fails, fall back to reconnecting chat as a safe default
+                // This is better than potentially tearing down a working stream
+                console.warn('[Chat] Failed to check stream status, attempting chat reconnect:', err);
+                isConnectingRef.current = false;
+                connectChat(currentStream.user_login, currentStream.user_id);
+              }
+            })();
           }
         }
       }, 30000); // Check every 30 seconds
