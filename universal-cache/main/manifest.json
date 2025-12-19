@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "last_sync": 1766038816,
+  "last_sync": 1766125197,
   "entries": {
     "global_badges": {
       "id": "global_badges",
@@ -4285,10 +4285,10 @@
             }
           ]
         },
-        "cached_at": 1766038816
+        "cached_at": 1766125192
       },
       "metadata": {
-        "timestamp": 1766038816,
+        "timestamp": 1766125192,
         "expiry_days": 7,
         "source": "twitch",
         "version": 1
@@ -9295,7 +9295,7 @@
         "more_info": "The Frog Lantern badge is a limited-time global chat badge dedicated to new season of the game. To earn it, viewers needed to subscribe or gift a subscription (Prime subs excluded) 3 times to any streamer in the Sea of Thieves category during the event period. Important: the description says that you need to subscribe or gift a subscription 3 times! This is the first such case among paid badges. Event time: 2025-12-15T10:00:00Z &#8211; 2026-01-02T09:59:00Z The badge is distributed via Twitch Drops and granted automatically after the requirement is met."
       },
       "metadata": {
-        "timestamp": 1765434062,
+        "timestamp": 1766125193,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -9311,7 +9311,7 @@
         "more_info": "The Hunt Crosses badge &#8211; a limited-time global chat badge awarded during the special event &#8211; &#8220;Post Malone’s Murder Circus Encore&#8221;. To earn it, you needed to subscribe or gift a subscription (Prime subs doesn’t count) to streamer in the Hunt: Showdown 1896 category. Event duration: 2025-12-12T09:00:00Z &#8211; 2025-12-24T23:58:00Z The badge is distributed via Twitch Drops and granted automatically after the requirement is met."
       },
       "metadata": {
-        "timestamp": 1765434063,
+        "timestamp": 1766125195,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -9327,7 +9327,7 @@
         "more_info": "The Raider badge is a limited-time global chat badge dedicated to new Cold Snap update. To earn it, viewers needed to subscribe or gift a subscription (Prime subs excluded) to any streamer in the ARC Raiders category during the event period. Event time: 2025-12-16T09:00:00Z &#8211; 2026-01-13T11:57:00Z The badge is distributed via Twitch Drops and granted automatically after the requirement is met."
       },
       "metadata": {
-        "timestamp": 1765434064,
+        "timestamp": 1766125195,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -9343,7 +9343,7 @@
         "more_info": "The Support a Streamer HO&#8217;26 Badge badge is a limited-time global chat badge awarded during the Holiday Ops 26 campaign. To earn it, viewers needed to subscribe or gift a subscription (Prime subs excluded) to any streamer in the World of Tanks category during the event period. Event time: 2025-12-15T09:00:00Z &#8211; 2025-12-22T23:58:00Z The badge is distributed via Twitch Drops and granted automatically after the requirement is met."
       },
       "metadata": {
-        "timestamp": 1765434065,
+        "timestamp": 1766125196,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -9356,10 +9356,10 @@
       "data": {
         "date_added": "10 December 2025",
         "usage_stats": null,
-        "more_info": "The TFT Paris Open badge is a limited-time global chat badge dedicated to the 2025 TFT Paris Open event. To earn it, viewers needed to subscribe or gift a subscription (Prime subs excluded) 2 times during the event period. So, it is 2 paid subs to get this badge. The list of participating channels and event time are to be confirmed. The badge is distributed via Twitch Drops and granted automatically after the requirement is met."
+        "more_info": "The TFT Paris Open badge is a limited-time global chat badge dedicated to the 2025 TFT Paris Open event. To earn it, viewers needed to subscribe or gift a subscription (Prime subs excluded) 2 times in the Teamfight Tactics category. So, it is 2 paid subs to get this badge. Event duration: 2025-12-11T18:00:00Z &#8211; 2025-12-15T17:59:00Z The badge is distributed via Twitch Drops and granted automatically after the requirement is met."
       },
       "metadata": {
-        "timestamp": 1765434066,
+        "timestamp": 1766125197,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
