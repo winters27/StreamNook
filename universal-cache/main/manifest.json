@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "last_sync": 1766125197,
+  "last_sync": 1766211559,
   "entries": {
     "global_badges": {
       "id": "global_badges",
@@ -4285,10 +4285,10 @@
             }
           ]
         },
-        "cached_at": 1766125192
+        "cached_at": 1766211554
       },
       "metadata": {
-        "timestamp": 1766125192,
+        "timestamp": 1766211554,
         "expiry_days": 7,
         "source": "twitch",
         "version": 1
@@ -9375,7 +9375,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1765606671,
+        "timestamp": 1766211557,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -9391,7 +9391,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1765606672,
+        "timestamp": 1766211558,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -9407,7 +9407,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1765606673,
+        "timestamp": 1766211559,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -9423,7 +9423,7 @@
         "more_info": "The Diana badge &#8211; a limited-time global chat badge celebrating early hands-on access to Pragmata via the Sketchbook demo, ahead of its April 24, 2026 release. To earn it, you needed to subscribe or gift a subscription (Prime subs doesn’t count) to streamer in the Pragmata category. Event time: 2025-12-12T18:10:00Z &#8211; 2025-12-24T03:59:00Z The badge is distributed via Twitch Drops and granted automatically after the requirement is met."
       },
       "metadata": {
-        "timestamp": 1765606674,
+        "timestamp": 1766211559,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
