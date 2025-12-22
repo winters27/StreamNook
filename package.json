@@ -14,7 +14,7 @@
     "update-deps:auto": "powershell -ExecutionPolicy Bypass -File ./scripts/update-dependencies.ps1 -Auto"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.87.1",
+    "@supabase/supabase-js": "^2.89.0",
     "@tauri-apps/api": "^2.9.0",
     "@tauri-apps/plugin-dialog": "^2.2.0",
     "@tauri-apps/plugin-notification": "^2.3.3",
@@ -22,7 +22,7 @@
     "autoprefixer": "^10.4.23",
     "framer-motion": "^12.23.26",
     "hls.js": "^1.5.17",
-    "lucide-react": "^0.561.0",
+    "lucide-react": "^0.562.0",
     "phosphor-react": "^1.4.1",
     "plyr": "^3.7.8",
     "postcss": "^8.5.6",
