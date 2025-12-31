@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "last_sync": 1767075626,
+  "last_sync": 1767162042,
   "entries": {
     "global_badges": {
       "id": "global_badges",
@@ -4285,10 +4285,10 @@
             }
           ]
         },
-        "cached_at": 1767075626
+        "cached_at": 1767162037
       },
       "metadata": {
-        "timestamp": 1767075626,
+        "timestamp": 1767162037,
         "expiry_days": 7,
         "source": "twitch",
         "version": 1
@@ -4303,7 +4303,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1766557234,
+        "timestamp": 1767162039,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -4319,7 +4319,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1766557235,
+        "timestamp": 1767162041,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -4335,7 +4335,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1766557236,
+        "timestamp": 1767162041,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -9439,7 +9439,7 @@
         "more_info": "The Fallout Season 2 Ghoul badge &#8211; a limited-time global chat badge celebrating launch of Burning Springs and Fallout Season 2. To earn it, you needed to subscribe or gift a subscription (Prime subs doesn’t count) to streamer in the Fallout 76 category. Event time: 2025-12-17T16:00:00Z &#8211; 2026-01-01T07:58:00Z The badge is distributed via Twitch Drops and granted automatically after the requirement is met."
       },
       "metadata": {
-        "timestamp": 1766470841,
+        "timestamp": 1767162042,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
