@@ -5,6 +5,8 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use tokio::sync::RwLock;
 
+const CLIENT_ID: &str = "1qgws7yzcp21g5ledlzffw3lmqdvie";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Emote {
     pub id: String,
@@ -15,6 +17,12 @@ pub struct Emote {
     pub is_zero_width: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub local_url: Option<String>,
+    /// Type of emote: "globals", "subscriptions", "bitstier", "follower", "channelpoints", etc.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub emote_type: Option<String>,
+    /// Owner/broadcaster ID for subscription emotes
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -85,6 +93,7 @@ impl EmoteService {
         &self,
         channel_name: Option<String>,
         channel_id: Option<String>,
+        access_token: Option<String>,
     ) -> Result<EmoteSet> {
         let cache_key = channel_id.clone().unwrap_or_else(|| "global".to_string());
 
@@ -107,10 +116,12 @@ impl EmoteService {
         );
 
         // Fetch all emote providers concurrently using tokio::join!
-        let (bttv_result, seven_tv_result, ffz_result) = tokio::join!(
+        // Include Twitch user emotes if we have an access token
+        let (bttv_result, seven_tv_result, ffz_result, twitch_result) = tokio::join!(
             self.fetch_bttv_emotes(channel_name.clone(), channel_id.clone()),
             self.fetch_7tv_emotes(channel_name.clone(), channel_id.clone()),
-            self.fetch_ffz_emotes(channel_name.clone())
+            self.fetch_ffz_emotes(channel_name.clone()),
+            self.fetch_user_twitch_emotes(access_token.as_deref(), channel_id.as_deref())
         );
 
         // Collect results (log errors but continue with available emotes)
@@ -138,9 +149,18 @@ impl EmoteService {
             }
         };
 
+        let twitch_emotes = match twitch_result {
+            Ok(emotes) => emotes,
+            Err(e) => {
+                eprintln!("[EmoteService] Twitch user emotes fetch error: {}", e);
+                // Fallback to hardcoded global emotes
+                Self::get_global_twitch_emotes()
+            }
+        };
+
         // Build emote set
         let emote_set = EmoteSet {
-            twitch: Self::get_global_twitch_emotes(),
+            twitch: twitch_emotes,
             bttv: bttv_emotes,
             seven_tv: seven_tv_emotes,
             ffz: ffz_emotes,
@@ -212,6 +232,137 @@ impl EmoteService {
         println!("[EmoteService] Memory cache cleared");
     }
 
+    /// Fetch user-specific Twitch emotes using the Helix API
+    /// Returns all emotes the user has access to: globals, subscriptions, drops, bits, etc.
+    async fn fetch_user_twitch_emotes(
+        &self,
+        access_token: Option<&str>,
+        broadcaster_id: Option<&str>,
+    ) -> Result<Vec<Emote>> {
+        let token = match access_token {
+            Some(t) if !t.is_empty() => t,
+            _ => {
+                println!("[EmoteService] No access token provided, using global emotes fallback");
+                return Ok(Self::get_global_twitch_emotes());
+            }
+        };
+
+        // First, get the user ID from the token validation endpoint
+        let validate_response = self
+            .client
+            .get("https://id.twitch.tv/oauth2/validate")
+            .header("Authorization", format!("OAuth {}", token))
+            .send()
+            .await?;
+
+        if !validate_response.status().is_success() {
+            return Err(anyhow::anyhow!("Token validation failed"));
+        }
+
+        let validate_data: serde_json::Value = validate_response.json().await?;
+        let user_id = validate_data["user_id"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("No user_id in token validation response"))?;
+
+        println!(
+            "[EmoteService] Fetching Twitch emotes for user_id: {}",
+            user_id
+        );
+
+        // Build the API URL with pagination support
+        let mut all_emotes: Vec<Emote> = Vec::new();
+        let mut cursor: Option<String> = None;
+
+        loop {
+            let mut url = format!(
+                "https://api.twitch.tv/helix/chat/emotes/user?user_id={}",
+                user_id
+            );
+
+            // Include broadcaster_id for follower emotes if provided
+            if let Some(bid) = broadcaster_id {
+                url.push_str(&format!("&broadcaster_id={}", bid));
+            }
+
+            // Add pagination cursor if we have one
+            if let Some(ref c) = cursor {
+                url.push_str(&format!("&after={}", c));
+            }
+
+            let response = self
+                .client
+                .get(&url)
+                .header("Authorization", format!("Bearer {}", token))
+                .header("Client-Id", CLIENT_ID)
+                .send()
+                .await?;
+
+            if !response.status().is_success() {
+                let status = response.status();
+                let error_text = response.text().await.unwrap_or_default();
+                eprintln!(
+                    "[EmoteService] Twitch emotes API error {}: {}",
+                    status, error_text
+                );
+
+                // Return fallback on error
+                if all_emotes.is_empty() {
+                    return Ok(Self::get_global_twitch_emotes());
+                } else {
+                    break;
+                }
+            }
+
+            let data: serde_json::Value = response.json().await?;
+
+            // Parse emotes from response
+            if let Some(emotes_array) = data["data"].as_array() {
+                for emote_data in emotes_array {
+                    if let (Some(id), Some(name)) =
+                        (emote_data["id"].as_str(), emote_data["name"].as_str())
+                    {
+                        // Capture emote type and owner for categorization
+                        let emote_type = emote_data["emote_type"].as_str().map(|s| s.to_string());
+                        let owner_id = emote_data["owner_id"].as_str().map(|s| s.to_string());
+
+                        all_emotes.push(Emote {
+                            id: id.to_string(),
+                            name: name.to_string(),
+                            url: format!(
+                                "https://static-cdn.jtvnw.net/emoticons/v2/{}/default/dark/1.0",
+                                id
+                            ),
+                            provider: EmoteProvider::Twitch,
+                            is_zero_width: None,
+                            local_url: None,
+                            emote_type,
+                            owner_id,
+                        });
+                    }
+                }
+            }
+
+            // Check for pagination cursor
+            cursor = data["pagination"]["cursor"].as_str().map(|s| s.to_string());
+
+            if cursor.is_none() {
+                break;
+            }
+        }
+
+        println!(
+            "[EmoteService] Fetched {} Twitch user emotes",
+            all_emotes.len()
+        );
+
+        // If we got no emotes (e.g., new account), return hardcoded globals
+        if all_emotes.is_empty() {
+            return Ok(Self::get_global_twitch_emotes());
+        }
+
+        Ok(all_emotes)
+    }
+
     // Private helper methods for fetching from each provider
 
     async fn fetch_bttv_emotes(
@@ -244,6 +395,8 @@ impl EmoteService {
                                     provider: EmoteProvider::BTTV,
                                     is_zero_width: Some(image_type == Some("gif")),
                                     local_url: None,
+                                    emote_type: None,
+                                    owner_id: None,
                                 });
                             }
                         }
@@ -284,6 +437,8 @@ impl EmoteService {
                                         provider: EmoteProvider::BTTV,
                                         is_zero_width: Some(image_type == Some("gif")),
                                         local_url: None,
+                                        emote_type: None,
+                                        owner_id: None,
                                     });
                                 }
                             }
@@ -305,6 +460,8 @@ impl EmoteService {
                                         provider: EmoteProvider::BTTV,
                                         is_zero_width: Some(image_type == Some("gif")),
                                         local_url: None,
+                                        emote_type: None,
+                                        owner_id: None,
                                     });
                                 }
                             }
@@ -401,6 +558,8 @@ impl EmoteService {
                                     provider: EmoteProvider::SevenTV,
                                     is_zero_width: Some(flags == 256),
                                     local_url: None,
+                                    emote_type: None,
+                                    owner_id: None,
                                 });
                             }
                         }
@@ -434,6 +593,8 @@ impl EmoteService {
                                     provider: EmoteProvider::SevenTV,
                                     is_zero_width: Some(flags == 256),
                                     local_url: None,
+                                    emote_type: None,
+                                    owner_id: None,
                                 });
                             }
                         }
@@ -477,6 +638,8 @@ impl EmoteService {
                                         provider: EmoteProvider::SevenTV,
                                         is_zero_width: Some((flags & 256) == 256),
                                         local_url: None,
+                                        emote_type: None,
+                                        owner_id: None,
                                     });
                                 }
                             }
@@ -531,6 +694,8 @@ impl EmoteService {
                                             provider: EmoteProvider::FFZ,
                                             is_zero_width: None,
                                             local_url: None,
+                                            emote_type: None,
+                                            owner_id: None,
                                         });
                                     }
                                 }
@@ -582,6 +747,8 @@ impl EmoteService {
                                                 provider: EmoteProvider::FFZ,
                                                 is_zero_width: None,
                                                 local_url: None,
+                                                emote_type: None,
+                                                owner_id: None,
                                             });
                                         }
                                     }
@@ -607,6 +774,8 @@ impl EmoteService {
                 provider: EmoteProvider::Twitch,
                 is_zero_width: None,
                 local_url: None,
+                emote_type: None,
+                owner_id: None,
             },
             Emote {
                 id: "354".to_string(),
@@ -615,6 +784,8 @@ impl EmoteService {
                 provider: EmoteProvider::Twitch,
                 is_zero_width: None,
                 local_url: None,
+                emote_type: None,
+                owner_id: None,
             },
             Emote {
                 id: "425618".to_string(),
@@ -624,6 +795,8 @@ impl EmoteService {
                 provider: EmoteProvider::Twitch,
                 is_zero_width: None,
                 local_url: None,
+                emote_type: None,
+                owner_id: None,
             },
             Emote {
                 id: "305954156".to_string(),
@@ -633,6 +806,8 @@ impl EmoteService {
                 provider: EmoteProvider::Twitch,
                 is_zero_width: None,
                 local_url: None,
+                emote_type: None,
+                owner_id: None,
             },
             Emote {
                 id: "88".to_string(),
@@ -641,6 +816,8 @@ impl EmoteService {
                 provider: EmoteProvider::Twitch,
                 is_zero_width: None,
                 local_url: None,
+                emote_type: None,
+                owner_id: None,
             },
             Emote {
                 id: "81273".to_string(),
@@ -649,6 +826,8 @@ impl EmoteService {
                 provider: EmoteProvider::Twitch,
                 is_zero_width: None,
                 local_url: None,
+                emote_type: None,
+                owner_id: None,
             },
             Emote {
                 id: "81248".to_string(),
@@ -657,6 +836,8 @@ impl EmoteService {
                 provider: EmoteProvider::Twitch,
                 is_zero_width: None,
                 local_url: None,
+                emote_type: None,
+                owner_id: None,
             },
             Emote {
                 id: "81249".to_string(),
@@ -665,6 +846,8 @@ impl EmoteService {
                 provider: EmoteProvider::Twitch,
                 is_zero_width: None,
                 local_url: None,
+                emote_type: None,
+                owner_id: None,
             },
             Emote {
                 id: "81274".to_string(),
@@ -673,6 +856,8 @@ impl EmoteService {
                 provider: EmoteProvider::Twitch,
                 is_zero_width: None,
                 local_url: None,
+                emote_type: None,
+                owner_id: None,
             },
             Emote {
                 id: "81997".to_string(),
@@ -681,6 +866,8 @@ impl EmoteService {
                 provider: EmoteProvider::Twitch,
                 is_zero_width: None,
                 local_url: None,
+                emote_type: None,
+                owner_id: None,
             },
             Emote {
                 id: "166266".to_string(),
@@ -690,6 +877,8 @@ impl EmoteService {
                 provider: EmoteProvider::Twitch,
                 is_zero_width: None,
                 local_url: None,
+                emote_type: None,
+                owner_id: None,
             },
             Emote {
                 id: "191762".to_string(),
@@ -699,6 +888,8 @@ impl EmoteService {
                 provider: EmoteProvider::Twitch,
                 is_zero_width: None,
                 local_url: None,
+                emote_type: None,
+                owner_id: None,
             },
             Emote {
                 id: "196892".to_string(),
@@ -708,6 +899,8 @@ impl EmoteService {
                 provider: EmoteProvider::Twitch,
                 is_zero_width: None,
                 local_url: None,
+                emote_type: None,
+                owner_id: None,
             },
             Emote {
                 id: "245".to_string(),
@@ -716,6 +909,8 @@ impl EmoteService {
                 provider: EmoteProvider::Twitch,
                 is_zero_width: None,
                 local_url: None,
+                emote_type: None,
+                owner_id: None,
             },
             Emote {
                 id: "1902".to_string(),
@@ -724,6 +919,8 @@ impl EmoteService {
                 provider: EmoteProvider::Twitch,
                 is_zero_width: None,
                 local_url: None,
+                emote_type: None,
+                owner_id: None,
             },
         ]
     }

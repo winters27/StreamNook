@@ -9,7 +9,8 @@ import DynamicIsland from './DynamicIsland';
 import ErrorBoundary from './ErrorBoundary';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { themes, themeCategories, getThemeById, applyTheme, Theme } from '../themes';
+import { themes, themeCategories, getThemeById, applyTheme, Theme, getThemeByIdWithCustom, customThemeToTheme } from '../themes';
+import { getSelectedCompactViewPreset } from '../constants/compactViewPresets';
 import type { MiningStatus } from '../types';
 
 const TitleBar = () => {
@@ -31,14 +32,15 @@ const TitleBar = () => {
 
   // Safely get current theme with fallback
   const currentThemeId = settings?.theme || 'winters-glass';
+  const customThemes = settings?.custom_themes || [];
   const currentTheme = useMemo(() => {
     try {
-      return getThemeById(currentThemeId) || getThemeById('winters-glass') || themes[0];
+      return getThemeByIdWithCustom(currentThemeId, customThemes) || getThemeById('winters-glass') || themes[0];
     } catch (error) {
       console.error('[TitleBar] Error getting theme:', error);
       return themes[0]; // Return first theme as ultimate fallback
     }
-  }, [currentThemeId]);
+  }, [currentThemeId, customThemes]);
 
   // Track window maximize state
   useEffect(() => {
@@ -92,7 +94,7 @@ const TitleBar = () => {
 
   const handleThemeChange = (themeId: string) => {
     if (!settings) return;
-    const theme = getThemeById(themeId);
+    const theme = getThemeByIdWithCustom(themeId, customThemes);
     if (theme) {
       applyTheme(theme);
       updateSettings({ ...settings, theme: themeId });
@@ -434,6 +436,48 @@ const TitleBar = () => {
                   <div className="text-xs font-semibold text-textMuted uppercase tracking-wider px-2 py-1 mb-1">
                     Themes
                   </div>
+                  {/* Custom Themes */}
+                  {customThemes.length > 0 && (
+                    <div className="mb-2">
+                      <div className="text-xs text-textMuted px-2 py-1 flex items-center gap-1">
+                        Your Themes
+                        <span className="text-[10px] text-accent">✨</span>
+                      </div>
+                      {customThemes.map((custom) => {
+                        const theme = customThemeToTheme(custom);
+                        return (
+                          <button
+                            key={theme.id}
+                            onClick={() => handleThemeChange(theme.id)}
+                            className={`w-full flex items-center gap-2 px-2 py-1.5 rounded text-left text-sm transition-colors ${currentThemeId === theme.id
+                              ? 'bg-accent/20 text-accent'
+                              : 'text-textPrimary hover:bg-glass'
+                              }`}
+                          >
+                            <div className="flex gap-0.5">
+                              <div
+                                className="w-2.5 h-2.5 rounded-full"
+                                style={{ backgroundColor: theme.palette.accent }}
+                              />
+                              <div
+                                className="w-2.5 h-2.5 rounded-full"
+                                style={{ backgroundColor: theme.palette.highlight.purple }}
+                              />
+                              <div
+                                className="w-2.5 h-2.5 rounded-full"
+                                style={{ backgroundColor: theme.palette.highlight.green }}
+                              />
+                            </div>
+                            <span className="flex-1 truncate">{theme.name}</span>
+                            {currentThemeId === theme.id && (
+                              <Check size={14} className="text-accent" />
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                  {/* Built-in Themes */}
                   {themeCategories.map((category) => {
                     const categoryThemes = themes.filter((t) => t.category === category.id);
                     if (categoryThemes.length === 0) return null;
@@ -530,7 +574,7 @@ const TitleBar = () => {
               onClick={toggleTheaterMode}
               className={`p-1.5 hover:bg-glass rounded transition-all duration-200 ${isTheaterMode ? 'text-accent' : 'text-textSecondary hover:text-textPrimary'
                 }`}
-              title={isTheaterMode ? 'Exit Compact View' : 'Compact View (1080x608)'}
+              title={isTheaterMode ? 'Exit Compact View' : `Compact View (${getSelectedCompactViewPreset(settings?.compact_view?.selectedPresetId, settings?.compact_view?.customPresets).name})`}
             >
               <Proportions size={16} />
             </button>

@@ -744,6 +744,11 @@ impl MiningService {
                                     .unwrap_or_default();
                                 let game_name_session = game_name_poll.clone();
                                 let campaign_name_session = campaign_name_poll.clone();
+                                // Clone target campaign drops as fallback when inventory doesn't contain the campaign yet
+                                let target_campaign_drops = target_campaign
+                                    .first()
+                                    .map(|c| c.time_based_drops.clone())
+                                    .unwrap_or_default();
 
                                 tokio::spawn(async move {
                                     let mut poll_interval =
@@ -810,55 +815,105 @@ impl MiningService {
 
                                                     for time_drop in &item.campaign.time_based_drops
                                                     {
-                                                        if let Some(progress) = &time_drop.progress
+                                                        // Get progress data, defaulting to 0 if not present
+                                                        // Drops without progress are NOT complete - they just haven't been watched yet
+                                                        let current_minutes = time_drop
+                                                            .progress
+                                                            .as_ref()
+                                                            .map(|p| p.current_minutes_watched)
+                                                            .unwrap_or(0);
+                                                        let required_minutes =
+                                                            time_drop.required_minutes_watched;
+
+                                                        // Skip drops that are already complete (100%+)
+                                                        // Only skip if required_minutes > 0 to avoid division issues
+                                                        if required_minutes > 0
+                                                            && current_minutes >= required_minutes
                                                         {
-                                                            let current_minutes =
-                                                                progress.current_minutes_watched;
-                                                            let required_minutes =
-                                                                time_drop.required_minutes_watched;
-
-                                                            if current_minutes >= required_minutes {
-                                                                continue;
-                                                            }
-
-                                                            let (drop_name, drop_image) =
-                                                                if let Some(benefit) =
-                                                                    time_drop.benefit_edges.first()
-                                                                {
-                                                                    (
-                                                                        benefit.name.clone(),
-                                                                        benefit.image_url.clone(),
-                                                                    )
-                                                                } else {
-                                                                    (
-                                                                        time_drop.name.clone(),
-                                                                        String::new(),
-                                                                    )
-                                                                };
-
-                                                            let progress_percentage =
-                                                                if required_minutes > 0 {
-                                                                    (current_minutes as f32
-                                                                        / required_minutes as f32)
-                                                                        * 100.0
-                                                                } else {
-                                                                    0.0
-                                                                };
-
-                                                            println!("📊 Inventory poll: {}/{} minutes for {} ({}) [{:.1}%]", 
-                                                                current_minutes, required_minutes, drop_name, time_drop.id, progress_percentage);
-
-                                                            all_drops_with_progress.push((
-                                                                time_drop.id.clone(),
-                                                                drop_name,
-                                                                drop_image,
-                                                                item.campaign.name.clone(),
-                                                                item.campaign.game_name.clone(),
-                                                                current_minutes,
-                                                                required_minutes,
-                                                                progress_percentage,
-                                                            ));
+                                                            println!("📊 Skipping completed drop: {} ({}/{} minutes)", 
+                                                                time_drop.name, current_minutes, required_minutes);
+                                                            continue;
                                                         }
+
+                                                        let (drop_name, drop_image) =
+                                                            if let Some(benefit) =
+                                                                time_drop.benefit_edges.first()
+                                                            {
+                                                                (
+                                                                    benefit.name.clone(),
+                                                                    benefit.image_url.clone(),
+                                                                )
+                                                            } else {
+                                                                (
+                                                                    time_drop.name.clone(),
+                                                                    String::new(),
+                                                                )
+                                                            };
+
+                                                        let progress_percentage =
+                                                            if required_minutes > 0 {
+                                                                (current_minutes as f32
+                                                                    / required_minutes as f32)
+                                                                    * 100.0
+                                                            } else {
+                                                                0.0
+                                                            };
+
+                                                        println!("📊 Inventory poll: {}/{} minutes for {} ({}) [{:.1}%]", 
+                                                            current_minutes, required_minutes, drop_name, time_drop.id, progress_percentage);
+
+                                                        all_drops_with_progress.push((
+                                                            time_drop.id.clone(),
+                                                            drop_name,
+                                                            drop_image,
+                                                            item.campaign.name.clone(),
+                                                            item.campaign.game_name.clone(),
+                                                            current_minutes,
+                                                            required_minutes,
+                                                            progress_percentage,
+                                                        ));
+                                                    }
+                                                }
+
+                                                // FALLBACK: If inventory didn't contain our campaign (0 progress case),
+                                                // use the target_campaign_drops we cached from the API
+                                                if all_drops_with_progress.is_empty()
+                                                    && !target_campaign_drops.is_empty()
+                                                {
+                                                    println!("📊 Campaign not in inventory yet (0 progress), using cached campaign drops as fallback");
+                                                    for time_drop in &target_campaign_drops {
+                                                        let required_minutes =
+                                                            time_drop.required_minutes_watched;
+
+                                                        // All drops with 0 progress are incomplete
+                                                        let (drop_name, drop_image) =
+                                                            if let Some(benefit) =
+                                                                time_drop.benefit_edges.first()
+                                                            {
+                                                                (
+                                                                    benefit.name.clone(),
+                                                                    benefit.image_url.clone(),
+                                                                )
+                                                            } else {
+                                                                (
+                                                                    time_drop.name.clone(),
+                                                                    String::new(),
+                                                                )
+                                                            };
+
+                                                        println!("📊 [Fallback] Including drop with 0 progress: {} (0/{} minutes)", 
+                                                            drop_name, required_minutes);
+
+                                                        all_drops_with_progress.push((
+                                                            time_drop.id.clone(),
+                                                            drop_name,
+                                                            drop_image,
+                                                            campaign_name_poll.clone(),
+                                                            game_name_poll.clone(),
+                                                            0, // 0 current minutes
+                                                            required_minutes,
+                                                            0.0, // 0% progress
+                                                        ));
                                                     }
                                                 }
 
@@ -1553,6 +1608,11 @@ impl MiningService {
                                     .unwrap_or_default();
                                 let game_name_session = game_name_poll.clone(); // Track this session's game
                                 let campaign_name_session = campaign_name_poll.clone(); // Track this session's specific campaign
+                                                                                        // Clone target campaign drops as fallback when inventory doesn't contain the campaign yet
+                                let target_campaign_drops = target_campaign
+                                    .first()
+                                    .map(|c| c.time_based_drops.clone())
+                                    .unwrap_or_default();
 
                                 // Get auto_mining_enabled setting to decide if we should continue after completion
                                 let auto_mining_enabled_poll = settings.auto_mining_enabled;
@@ -1628,59 +1688,106 @@ impl MiningService {
 
                                                     for time_drop in &item.campaign.time_based_drops
                                                     {
-                                                        if let Some(progress) = &time_drop.progress
+                                                        // Get progress data, defaulting to 0 if not present
+                                                        // Drops without progress are NOT complete - they just haven't been watched yet
+                                                        let current_minutes = time_drop
+                                                            .progress
+                                                            .as_ref()
+                                                            .map(|p| p.current_minutes_watched)
+                                                            .unwrap_or(0);
+                                                        let required_minutes =
+                                                            time_drop.required_minutes_watched;
+
+                                                        // Skip drops that are already complete (100%+)
+                                                        // Only skip if required_minutes > 0 to avoid division issues
+                                                        if required_minutes > 0
+                                                            && current_minutes >= required_minutes
                                                         {
-                                                            let current_minutes =
-                                                                progress.current_minutes_watched;
-                                                            let required_minutes =
-                                                                time_drop.required_minutes_watched;
-
-                                                            // Skip drops that are already complete (100%+)
-                                                            if current_minutes >= required_minutes {
-                                                                continue;
-                                                            }
-
-                                                            // Get drop name and image from benefit_edges
-                                                            let (drop_name, drop_image) =
-                                                                if let Some(benefit) =
-                                                                    time_drop.benefit_edges.first()
-                                                                {
-                                                                    println!("  🖼️ Found benefit: {} with image: {}", benefit.name, if benefit.image_url.is_empty() { "(empty)" } else { &benefit.image_url });
-                                                                    (
-                                                                        benefit.name.clone(),
-                                                                        benefit.image_url.clone(),
-                                                                    )
-                                                                } else {
-                                                                    println!("  ⚠️ No benefit_edges for drop {}, using drop.name: {}", time_drop.id, time_drop.name);
-                                                                    (
-                                                                        time_drop.name.clone(),
-                                                                        String::new(),
-                                                                    )
-                                                                };
-
-                                                            let progress_percentage =
-                                                                if required_minutes > 0 {
-                                                                    (current_minutes as f32
-                                                                        / required_minutes as f32)
-                                                                        * 100.0
-                                                                } else {
-                                                                    0.0
-                                                                };
-
-                                                            println!("📊 Inventory poll: {}/{} minutes for {} ({}) [{:.1}%]", 
-                                                                current_minutes, required_minutes, drop_name, time_drop.id, progress_percentage);
-
-                                                            all_drops_with_progress.push((
-                                                                time_drop.id.clone(),
-                                                                drop_name,
-                                                                drop_image,
-                                                                item.campaign.name.clone(),
-                                                                item.campaign.game_name.clone(),
-                                                                current_minutes,
-                                                                required_minutes,
-                                                                progress_percentage,
-                                                            ));
+                                                            println!("📊 Skipping completed drop: {} ({}/{} minutes)", 
+                                                                time_drop.name, current_minutes, required_minutes);
+                                                            continue;
                                                         }
+
+                                                        // Get drop name and image from benefit_edges
+                                                        let (drop_name, drop_image) = if let Some(
+                                                            benefit,
+                                                        ) =
+                                                            time_drop.benefit_edges.first()
+                                                        {
+                                                            println!("  🖼️ Found benefit: {} with image: {}", benefit.name, if benefit.image_url.is_empty() { "(empty)" } else { &benefit.image_url });
+                                                            (
+                                                                benefit.name.clone(),
+                                                                benefit.image_url.clone(),
+                                                            )
+                                                        } else {
+                                                            println!("  ⚠️ No benefit_edges for drop {}, using drop.name: {}", time_drop.id, time_drop.name);
+                                                            (time_drop.name.clone(), String::new())
+                                                        };
+
+                                                        let progress_percentage =
+                                                            if required_minutes > 0 {
+                                                                (current_minutes as f32
+                                                                    / required_minutes as f32)
+                                                                    * 100.0
+                                                            } else {
+                                                                0.0
+                                                            };
+
+                                                        println!("📊 Inventory poll: {}/{} minutes for {} ({}) [{:.1}%]", 
+                                                            current_minutes, required_minutes, drop_name, time_drop.id, progress_percentage);
+
+                                                        all_drops_with_progress.push((
+                                                            time_drop.id.clone(),
+                                                            drop_name,
+                                                            drop_image,
+                                                            item.campaign.name.clone(),
+                                                            item.campaign.game_name.clone(),
+                                                            current_minutes,
+                                                            required_minutes,
+                                                            progress_percentage,
+                                                        ));
+                                                    }
+                                                }
+
+                                                // FALLBACK: If inventory didn't contain our campaign (0 progress case),
+                                                // use the target_campaign_drops we cached from the API
+                                                if all_drops_with_progress.is_empty()
+                                                    && !target_campaign_drops.is_empty()
+                                                {
+                                                    println!("📊 Campaign not in inventory yet (0 progress), using cached campaign drops as fallback");
+                                                    for time_drop in &target_campaign_drops {
+                                                        let required_minutes =
+                                                            time_drop.required_minutes_watched;
+
+                                                        // All drops with 0 progress are incomplete
+                                                        let (drop_name, drop_image) =
+                                                            if let Some(benefit) =
+                                                                time_drop.benefit_edges.first()
+                                                            {
+                                                                (
+                                                                    benefit.name.clone(),
+                                                                    benefit.image_url.clone(),
+                                                                )
+                                                            } else {
+                                                                (
+                                                                    time_drop.name.clone(),
+                                                                    String::new(),
+                                                                )
+                                                            };
+
+                                                        println!("📊 [Fallback] Including drop with 0 progress: {} (0/{} minutes)", 
+                                                            drop_name, required_minutes);
+
+                                                        all_drops_with_progress.push((
+                                                            time_drop.id.clone(),
+                                                            drop_name,
+                                                            drop_image,
+                                                            campaign_name_poll.clone(),
+                                                            game_name_poll.clone(),
+                                                            0, // 0 current minutes
+                                                            required_minutes,
+                                                            0.0, // 0% progress
+                                                        ));
                                                     }
                                                 }
 

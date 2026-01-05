@@ -120,6 +120,7 @@ export interface LiveNotificationSettings {
   show_whisper_notifications?: boolean;
   show_update_notifications?: boolean;
   show_drops_notifications?: boolean;
+  show_favorite_drops_notifications?: boolean; // Notify on startup when favorited categories have new drops
   show_channel_points_notifications?: boolean;
   show_badge_notifications?: boolean;
   // Notification method toggles (Dynamic Island vs Toast)
@@ -139,6 +140,88 @@ export interface AutoSwitchSettings {
   mode: AutoSwitchMode;         // 'same_category' = switch to stream in same game, 'followed_streams' = switch to a followed streamer
   show_notification: boolean;   // Show toast when auto-switching
   auto_redirect_on_raid?: boolean; // Automatically follow raids to the target channel
+}
+
+// Compact View Presets
+export interface CompactViewPreset {
+  id: string;              // Unique identifier (e.g., 'preset-1080x608' or 'custom-1')
+  name: string;            // Display name (e.g., "1080p Second Monitor")
+  width: number;           // Window width in pixels
+  height: number;          // Window height in pixels (excluding title bar)
+  isBuiltIn: boolean;      // true for built-in presets, false for custom
+}
+
+export interface CompactViewSettings {
+  selectedPresetId: string;           // Currently selected preset ID
+  customPresets: CompactViewPreset[]; // User-defined custom presets
+}
+
+// Custom Theme Types
+export interface CustomThemeColor {
+  value: string;      // hex (#rrggbb) format
+  opacity: number;    // 0-100 for colors that support opacity
+}
+
+export interface CustomThemePalette {
+  // Core colors
+  background: CustomThemeColor;
+  backgroundSecondary: CustomThemeColor;
+  backgroundTertiary: CustomThemeColor;
+  
+  // Surface colors
+  surface: CustomThemeColor;
+  surfaceHover: CustomThemeColor;
+  surfaceActive: CustomThemeColor;
+  
+  // Text colors
+  textPrimary: CustomThemeColor;
+  textSecondary: CustomThemeColor;
+  textMuted: CustomThemeColor;
+  
+  // Accent colors
+  accent: CustomThemeColor;
+  accentHover: CustomThemeColor;
+  accentMuted: CustomThemeColor;
+  
+  // Border colors
+  border: CustomThemeColor;
+  borderLight: CustomThemeColor;
+  borderSubtle: CustomThemeColor;
+  
+  // Semantic colors
+  success: CustomThemeColor;
+  warning: CustomThemeColor;
+  error: CustomThemeColor;
+  info: CustomThemeColor;
+  
+  // Special colors
+  scrollbarThumb: CustomThemeColor;
+  scrollbarTrack: CustomThemeColor;
+  
+  // Glass effect opacities (stored as decimal string, e.g., "0.15")
+  glassOpacity: string;
+  glassHoverOpacity: string;
+  glassActiveOpacity: string;
+  
+  // Highlight colors
+  highlight: {
+    pink: CustomThemeColor;
+    purple: CustomThemeColor;
+    blue: CustomThemeColor;
+    cyan: CustomThemeColor;
+    green: CustomThemeColor;
+    yellow: CustomThemeColor;
+    orange: CustomThemeColor;
+    red: CustomThemeColor;
+  };
+}
+
+export interface CustomTheme {
+  id: string;         // unique identifier (e.g., 'custom-1704567890')
+  name: string;       // user-defined name
+  createdAt: number;  // timestamp
+  updatedAt: number;  // timestamp
+  palette: CustomThemePalette;
 }
 
 export interface Settings {
@@ -164,6 +247,8 @@ export interface Settings {
   error_reporting_enabled?: boolean; // Opt-in error reporting (default: true)
   setup_complete?: boolean; // Whether the first-time setup wizard has been completed
   auto_update_on_start?: boolean; // Automatically update when app starts if update available
+  compact_view?: CompactViewSettings; // Compact view preset settings
+  custom_themes?: CustomTheme[]; // User-created custom themes
 }
 
 export interface ReleaseNotes {

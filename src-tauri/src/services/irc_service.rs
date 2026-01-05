@@ -409,7 +409,7 @@ impl IrcService {
                 // Use extended layout calculation with all context for precise height
                 // PHASE 3.2: Pass display_name and is_action to account for username width on first line
                 let is_action = chat_msg.metadata.is_action;
-                let layout = layout_service.layout_message_extended(
+                let mut layout = layout_service.layout_message_extended(
                     &chat_msg.content,
                     config.width,
                     config.font_size,
@@ -423,6 +423,35 @@ impl IrcService {
                     &chat_msg.display_name,
                     is_action,
                 );
+
+                // Check for bits cheer - these have special layouts with icons and tier styling
+                // Bits messages use py-2 (16px total), icon column, and bits-gradient background
+                let bits_amount = Self::extract_tag_value(&enhanced_message, "bits")
+                    .and_then(|s| s.parse::<u32>().ok())
+                    .unwrap_or(0);
+
+                if bits_amount > 0 {
+                    // Bits cheers have a different layout:
+                    // - py-2 padding (16px total vs configurable message_spacing)
+                    // - Icon on left (w-5 h-5 = 20px)
+                    // - "cheered X bits" text line
+                    // - Optional user message content
+                    let bits_line_height = config.font_size * 1.625;
+
+                    // Replace the calculated height with bits-specific height
+                    let mut bits_height = 16.0; // py-2 padding
+                    bits_height += bits_line_height; // "Username cheered X bits" line
+
+                    // Add user message content height if present
+                    if !chat_msg.content.is_empty() {
+                        bits_height += 4.0; // mt-1 spacing
+                        bits_height += layout.height - 16.0; // Content height (subtract its own padding)
+                    }
+
+                    bits_height += 4.0; // Safety buffer
+                    layout.height = bits_height;
+                }
+
                 chat_msg.layout = layout;
 
                 // Store message in user history LRU cache for profile cards
@@ -897,7 +926,11 @@ impl IrcService {
             Ok(user) => {
                 let emote_svc = emote_service.read().await;
                 match emote_svc
-                    .fetch_channel_emotes(Some(channel_name.to_string()), Some(user.id.clone()))
+                    .fetch_channel_emotes(
+                        Some(channel_name.to_string()),
+                        Some(user.id.clone()),
+                        None,
+                    )
                     .await
                 {
                     Ok(emote_set) => {

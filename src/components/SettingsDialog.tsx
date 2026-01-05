@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import InterfaceSettings from './settings/InterfaceSettings';
 import PlayerSettings from './settings/PlayerSettings';
 import ChatSettings from './settings/ChatSettings';
+import ThemeSettings from './settings/ThemeSettings';
 import IntegrationsSettings from './settings/IntegrationsSettings';
 import CacheSettings from './settings/CacheSettings';
 import NotificationsSettings from './settings/NotificationsSettings';
@@ -18,7 +19,7 @@ const SettingsDialog = () => {
   const isAdmin = useIsAdmin();
 
   // Standard tabs available to everyone
-  const standardTabs: SettingsTab[] = ['Interface', 'Player', 'Chat', 'Integrations', 'Notifications', 'Cache', 'Support', 'Updates'];
+  const standardTabs: SettingsTab[] = ['Interface', 'Player', 'Chat', 'Theme', 'Integrations', 'Notifications', 'Cache', 'Support', 'Updates'];
 
   // Add Analytics tab only for admin users
   const availableTabs = isAdmin ? [...standardTabs, 'Analytics' as SettingsTab] : standardTabs;
@@ -40,7 +41,7 @@ const SettingsDialog = () => {
   if (!isSettingsOpen) return null;
 
   // Determine dialog size based on active tab
-  const isWideTab = activeTab === 'Analytics';
+  const isWideTab = activeTab === 'Analytics' || activeTab === 'Theme';
 
   return (
     <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50">
@@ -81,6 +82,7 @@ const SettingsDialog = () => {
             {activeTab === 'Interface' && <InterfaceSettings />}
             {activeTab === 'Player' && <PlayerSettings />}
             {activeTab === 'Chat' && <ChatSettings />}
+            {activeTab === 'Theme' && <ThemeSettings />}
             {activeTab === 'Integrations' && <IntegrationsSettings />}
             {activeTab === 'Notifications' && <NotificationsSettings />}
             {activeTab === 'Cache' && <CacheSettings />}

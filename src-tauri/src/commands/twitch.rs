@@ -297,6 +297,13 @@ pub async fn force_refresh_token() -> Result<String, String> {
         .map_err(|e| e.to_string())
 }
 
+/// Get the current access token for authenticated API calls
+/// Returns None (as error) if user is not logged in
+#[tauri::command]
+pub async fn get_twitch_token() -> Result<String, String> {
+    TwitchService::get_token().await.map_err(|e| e.to_string())
+}
+
 /// Check if a specific stream is currently online by user login
 /// Returns the stream data if online, None if offline
 #[tauri::command]

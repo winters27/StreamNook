@@ -51,11 +51,7 @@ const forwardToRust = async (level: LogLevel, args: unknown[]): Promise<void> =>
 // Forwards logs to Rust backend for storage and Discord webhook handling
 export const initLogCapture = (): void => {
     console.log = (...args: unknown[]) => {
-        // Store specific info logs that are useful for debugging
-        const firstArg = String(args[0] || '');
-        if (firstArg.startsWith('[EmoteService]') || firstArg.startsWith('[UniversalCache]')) {
-            forwardToRust('info', args);
-        }
+        // Don't forward regular logs to backend - only WARN and ERROR are meaningful for debugging
         originalConsole.log(...args);
     };
 

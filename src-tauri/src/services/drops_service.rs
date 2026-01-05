@@ -153,13 +153,19 @@ pub struct DropsService {
 
 impl DropsService {
     pub fn new() -> Self {
+        Self::new_with_settings(DropsSettings::default())
+    }
+
+    /// Create a new DropsService with the given initial settings
+    /// Use this to restore persisted settings on app startup
+    pub fn new_with_settings(initial_settings: DropsSettings) -> Self {
         // Generate persistent device ID and session ID (like TwitchDropsMiner does)
         let device_id = Uuid::new_v4().to_string().replace("-", "");
         let session_id = Uuid::new_v4().to_string().replace("-", "");
 
         Self {
             client: Client::new(),
-            settings: Arc::new(RwLock::new(DropsSettings::default())),
+            settings: Arc::new(RwLock::new(initial_settings)),
             drop_progress: Arc::new(RwLock::new(HashMap::new())),
             claimed_drops: Arc::new(RwLock::new(Vec::new())),
             channel_points_history: Arc::new(RwLock::new(Vec::new())),

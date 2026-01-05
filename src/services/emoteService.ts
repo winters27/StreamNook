@@ -9,6 +9,10 @@ export interface Emote {
   provider: 'twitch' | 'bttv' | '7tv' | 'ffz';
   isZeroWidth?: boolean;
   localUrl?: string;
+  /** Type of emote: "globals", "subscriptions", "bitstier", "follower", "channelpoints", etc. */
+  emote_type?: string;
+  /** Owner/broadcaster ID for subscription emotes */
+  owner_id?: string;
 }
 
 export interface EmoteSet {
@@ -189,6 +193,7 @@ function preloadImagesIntoMemory(urls: string[]) {
 /**
  * Fetch all emotes for a channel using the high-performance Rust backend
  * This performs concurrent fetching from BTTV, 7TV, and FFZ with serde JSON parsing
+ * Also fetches user-specific Twitch emotes (subscriptions, drops, etc.) if authenticated
  */
 export async function fetchAllEmotes(channelName?: string, channelId?: string): Promise<EmoteSet> {
   await ensureEmoteFileCache();
@@ -196,10 +201,20 @@ export async function fetchAllEmotes(channelName?: string, channelId?: string): 
   console.log('[EmoteService] Fetching emotes via Rust backend for channel:', channelName, 'ID:', channelId);
 
   try {
+    // Try to get the auth token for user-specific Twitch emotes
+    let accessToken: string | null = null;
+    try {
+      accessToken = await invoke<string>('get_twitch_token');
+      console.log('[EmoteService] Auth token available, will fetch user-specific Twitch emotes');
+    } catch {
+      console.log('[EmoteService] No auth token available, Twitch emotes will be limited to globals');
+    }
+
     // Call the Rust backend which does concurrent fetching with tokio::join!
     const emoteSet = await invoke<EmoteSet>('fetch_channel_emotes', {
       channelName: channelName || null,
       channelId: channelId || null,
+      accessToken,
     });
 
     // Enhance with local URLs if available

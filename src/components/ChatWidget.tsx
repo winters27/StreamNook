@@ -69,6 +69,7 @@ interface ChatMessageRowProps {
   onUsernameRightClick: (messageId: string, username: string) => void;
   onBadgeClick: (badgeKey: string, badgeInfo: any) => void;
   setItemSize: (index: number, size: number, messageId?: string | null, hasReply?: boolean) => void;
+  emotes: EmoteSet | null;
 }
 
 const ChatMessageRow = memo(({
@@ -83,6 +84,7 @@ const ChatMessageRow = memo(({
   onUsernameRightClick,
   onBadgeClick,
   setItemSize,
+  emotes,
 }: ChatMessageRowProps) => {
   const rowRef = useRef<HTMLDivElement>(null);
   // Track if we've reported the height for this specific message+deleted state combo
@@ -140,6 +142,7 @@ const ChatMessageRow = memo(({
         onEmoteRightClick={onEmoteRightClick}
         onUsernameRightClick={onUsernameRightClick}
         onBadgeClick={onBadgeClick}
+        emotes={emotes}
       />
     </div>
   );
@@ -247,6 +250,9 @@ const ChatWidget = () => {
   const [channelPoints, setChannelPoints] = useState<number | null>(null);
   const [channelPointsHovered, setChannelPointsHovered] = useState(false);
   const [isLoadingChannelPoints, setIsLoadingChannelPoints] = useState(false);
+
+  // Cache for channel names (broadcaster ID -> display name) used in emote picker grouping
+  const [channelNameCache, setChannelNameCache] = useState<Map<string, string>>(new Map());
 
   // Refs for batching list resets to prevent UI freezing during resizing
   const resetRafIdRef = useRef<number | null>(null);
@@ -771,6 +777,11 @@ const ChatWidget = () => {
     // Add extra height for first message indicator (~32px)
     if (isFirstMessage) height += 32;
     
+    // Add extra height for links (matching backend's half-line buffer)
+    // URLs can cause unpredictable wrapping behavior
+    const hasLinks = /https?:\/\/[^\s]+|www\.[^\s]+/.test(content);
+    if (hasLinks) height += lineHeight * 0.5;
+    
     // Add buffer for emotes that are taller than text (emotes are 24px, might push line height)
     if (emoteCount > 0 && lineHeight < 24) {
       height += (24 - lineHeight);
@@ -1067,6 +1078,39 @@ const ChatWidget = () => {
       const emoteSet = await fetchAllEmotes(channelName, channelId);
       setEmotes(emoteSet);
 
+      // Fetch channel names for Twitch emote owners (for grouped display)
+      if (emoteSet?.twitch) {
+        const ownerIds = new Set<string>();
+        for (const emote of emoteSet.twitch) {
+          if (emote.owner_id && emote.emote_type === 'subscriptions') {
+            ownerIds.add(emote.owner_id);
+          }
+        }
+        
+        // Fetch display names for all unique owner IDs (in parallel)
+        if (ownerIds.size > 0) {
+          const newCache = new Map(channelNameCache);
+          const idsToFetch = Array.from(ownerIds).filter(id => !newCache.has(id));
+          
+          if (idsToFetch.length > 0) {
+            console.log(`[ChatWidget] Fetching ${idsToFetch.length} channel names for emote groups`);
+            const results = await Promise.allSettled(
+              idsToFetch.map(async (id) => {
+                const user = await invoke<{ display_name: string }>('get_user_by_id', { userId: id });
+                return { id, name: user.display_name };
+              })
+            );
+            
+            for (const result of results) {
+              if (result.status === 'fulfilled') {
+                newCache.set(result.value.id, result.value.name);
+              }
+            }
+            setChannelNameCache(newCache);
+          }
+        }
+      }
+
       // Preload channel-specific emotes with high priority for fast emote picker
       if (emoteSet) {
         // Prioritize channel emotes (7TV and BTTV channel emotes are most used)
@@ -1221,6 +1265,67 @@ const ChatWidget = () => {
     return providerEmotes.filter((emote: Emote) => emote.name.toLowerCase().includes(query));
   };
 
+  // Group Twitch emotes by their source/owner for categorized display
+  const getGroupedTwitchEmotes = (): Map<string, { name: string; emotes: Emote[] }> => {
+    const filtered = getFilteredEmotes();
+    const groups = new Map<string, { name: string; emotes: Emote[] }>();
+    
+    for (const emote of filtered) {
+      const type = emote.emote_type || 'globals';
+      const ownerId = emote.owner_id || 'twitch';
+      
+      // Create a unique key for each group
+      let groupKey: string;
+      let groupName: string;
+      
+      if (type === 'globals' || !emote.owner_id) {
+        groupKey = 'globals';
+        groupName = 'Global Emotes';
+      } else if (type === 'subscriptions') {
+        groupKey = `sub-${ownerId}`;
+        // Use cached channel name if available, otherwise show ID
+        const cachedName = channelNameCache.get(ownerId);
+        groupName = cachedName || `Channel ${ownerId}`;
+      } else if (type === 'bitstier') {
+        groupKey = 'bits';
+        groupName = 'Bits Emotes';
+      } else if (type === 'follower') {
+        groupKey = `follower-${ownerId}`;
+        groupName = 'Follower Emotes';
+      } else if (type === 'channelpoints') {
+        groupKey = `points-${ownerId}`;
+        groupName = 'Channel Points Emotes';
+      } else {
+        groupKey = type;
+        groupName = type.charAt(0).toUpperCase() + type.slice(1);
+      }
+      
+      if (!groups.has(groupKey)) {
+        groups.set(groupKey, { name: groupName, emotes: [] });
+      }
+      groups.get(groupKey)!.emotes.push(emote);
+    }
+    
+    // Sort: globals first, then subscriptions alphabetically by name, then others
+    const sortedGroups = new Map<string, { name: string; emotes: Emote[] }>();
+    const keys = Array.from(groups.keys()).sort((a, b) => {
+      if (a === 'globals') return -1;
+      if (b === 'globals') return 1;
+      if (a.startsWith('sub-') && !b.startsWith('sub-')) return -1;
+      if (!a.startsWith('sub-') && b.startsWith('sub-')) return 1;
+      // Sort subscription groups by display name
+      const nameA = groups.get(a)?.name || a;
+      const nameB = groups.get(b)?.name || b;
+      return nameA.localeCompare(nameB);
+    });
+    
+    for (const key of keys) {
+      sortedGroups.set(key, groups.get(key)!);
+    }
+    
+    return sortedGroups;
+  };
+
   const getFilteredEmojis = () => {
     if (!searchQuery) return allEmojis;
     const query = searchQuery.toLowerCase();
@@ -1347,7 +1452,15 @@ const ChatWidget = () => {
             <AutoSizer>
               {({ height, width }) => (
                 <>
-                  <LayoutUpdater width={width} />
+                  <LayoutUpdater width={width} onWidthSynced={() => {
+                    // Force re-measurement of all items after width is synced
+                    // This fixes heights for historical messages loaded before sync
+                    if (listRef.current) {
+                      rowHeights.current = {};
+                      messageHeightsById.current.clear();
+                      listRef.current.resetAfterIndex(0, true);
+                    }
+                  }} />
                   <ErrorBoundary componentName="ChatWidgetList" reportToLogService={true}>
                     {(() => {
                       containerHeightRef.current = height;
@@ -1390,7 +1503,8 @@ const ChatWidget = () => {
                                   isHighlighted={highlightedMessageId !== null && currentMsgId === highlightedMessageId}
                                   isDeleted={isMessageDeleted}
                                   onEmoteRightClick={handleEmoteRightClick} onUsernameRightClick={handleUsernameRightClick}
-                                  onBadgeClick={handleBadgeClick} setItemSize={setItemSize} />
+                                  onBadgeClick={handleBadgeClick} setItemSize={setItemSize} 
+                                  emotes={emotes} />
                               </div>
                             );
                           }}
@@ -1475,7 +1589,64 @@ const ChatWidget = () => {
                       <div className="flex items-center justify-center h-32"><p className="text-xs text-textSecondary">Loading emotes...</p></div>
                     ) : filteredEmotes.length === 0 ? (
                       <div className="flex items-center justify-center h-32"><p className="text-xs text-textSecondary">No emotes found</p></div>
+                    ) : selectedProvider === 'twitch' ? (
+                      // Grouped Twitch emotes by channel
+                      <div className="space-y-4">
+                        {Array.from(getGroupedTwitchEmotes().entries()).map(([groupKey, group]) => (
+                          <div key={groupKey}>
+                            <h3 className="text-xs text-textPrimary font-semibold mb-2 px-2 sticky top-0 py-1.5 border-b border-borderSubtle z-10 backdrop-blur-ultra" style={{ backgroundColor: 'rgba(12, 12, 13, 0.95)' }}>
+                              {group.name} ({group.emotes.length})
+                            </h3>
+                            <div className="grid grid-cols-7 gap-2">
+                              {group.emotes.map((emote) => {
+                                const isFavorited = isFavoriteEmote(emote.id);
+                                return (
+                                  <div key={`${emote.provider}-${emote.id}`} className="relative group">
+                                    <button onClick={() => insertEmote(emote.name)} className="flex flex-col items-center gap-1 p-1.5 hover:bg-glass rounded transition-colors w-full" title={emote.name}>
+                                      <img
+                                        src={emote.localUrl || emote.url}
+                                        alt={emote.name}
+                                        className="w-8 h-8 object-contain"
+                                        onLoad={() => {
+                                          if (!emote.localUrl) {
+                                            queueEmoteForCaching(emote.id, emote.url);
+                                          }
+                                        }}
+                                        onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                                      />
+                                      <span className="text-xs text-textSecondary truncate w-full text-center">{emote.name}</span>
+                                    </button>
+                                    <button onClick={async (e) => {
+                                      e.stopPropagation();
+                                      try {
+                                        if (isFavorited) {
+                                          await removeFavoriteEmote(emote.id);
+                                          useAppStore.getState().addToast(`Removed ${emote.name} from favorites`, 'success');
+                                        } else {
+                                          await addFavoriteEmote(emote);
+                                          if (emotes) {
+                                            const allEmotes = [...emotes.twitch, ...emotes.bttv, ...emotes['7tv'], ...emotes.ffz];
+                                            const availableFavorites = getAvailableFavorites(allEmotes);
+                                            setFavoriteEmotes(availableFavorites);
+                                          }
+                                          useAppStore.getState().addToast(`Added ${emote.name} to favorites`, 'success');
+                                        }
+                                      } catch (err) {
+                                        console.error('Failed to toggle favorite:', err);
+                                        useAppStore.getState().addToast('Failed to update favorites', 'error');
+                                      }
+                                    }} className={`absolute top-0 right-0 p-1 rounded-bl transition-all ${isFavorited ? 'text-yellow-400 opacity-100' : 'text-textSecondary opacity-0 group-hover:opacity-100'} hover:text-yellow-400 hover:bg-glass`} title={isFavorited ? 'Remove from favorites' : 'Add to favorites'}>
+                                      <svg className="w-3 h-3" fill={isFavorited ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth={2} viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" /></svg>
+                                    </button>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
                     ) : (
+                      // Flat grid for other providers (BTTV, 7TV, FFZ, Favorites)
                       <div className="grid grid-cols-7 gap-2">
                         {filteredEmotes.map((emote) => {
                           const isFavorited = isFavoriteEmote(emote.id);

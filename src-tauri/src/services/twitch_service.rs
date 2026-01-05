@@ -20,7 +20,7 @@ const CLIENT_SECRET: &str = "b0lftwt9jvyhlg50cxtrnijd06grn0";
 const KEYRING_SERVICE: &str = "streamnook_twitch_token";
 const KEYRING_USERNAME: &str = "user"; // Standardized username
 const REDIRECT_URI: &str = "http://localhost:3000/callback";
-const SCOPES: &str = "user:read:follows user:read:email chat:read chat:edit channel:read:redemptions channel:manage:redemptions moderator:read:followers openid user:manage:whispers user:read:whispers";
+const SCOPES: &str = "user:read:follows user:read:email chat:read chat:edit channel:read:redemptions channel:manage:redemptions moderator:read:followers openid user:manage:whispers user:read:whispers user:read:emotes";
 const TOKEN_FILE_NAME: &str = ".twitch_token";
 
 /// Get the app data directory (works consistently in dev and release)

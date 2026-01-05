@@ -21,7 +21,8 @@ import ErrorBoundary from './components/ErrorBoundary';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
-import { getThemeById, applyTheme, DEFAULT_THEME_ID } from './themes';
+import { getThemeById, applyTheme, DEFAULT_THEME_ID, getThemeByIdWithCustom } from './themes';
+import { getSelectedCompactViewPreset } from './constants/compactViewPresets';
 
 interface BadgeVersion {
   id: string;
@@ -53,7 +54,17 @@ function App() {
   const [isResizing, setIsResizing] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const [selectedBadge, setSelectedBadge] = useState<{ badge: BadgeVersion; setId: string } | null>(null);
-  const [savedWindowSize, setSavedWindowSize] = useState<{ width: number; height: number } | null>(null);
+  
+  // Persist savedWindowSize to localStorage so it survives app restarts
+  const [savedWindowSize, setSavedWindowSize] = useState<{ width: number; height: number } | null>(() => {
+    try {
+      const stored = localStorage.getItem('streamnook-compact-saved-size');
+      return stored ? JSON.parse(stored) : null;
+    } catch {
+      return null;
+    }
+  });
+  
   const [showChangelog, setShowChangelog] = useState(false);
   const [changelogVersion, setChangelogVersion] = useState<string | null>(null);
   const [showSetupWizard, setShowSetupWizard] = useState(false);
@@ -87,11 +98,20 @@ function App() {
       chatSizeRef.current = newSize;
 
       // Only resize window if aspect ratio lock is enabled and stream is playing
+      // IMPORTANT: Use the reactive isTheaterMode value, not the ref, to avoid stale state
+      // when entering/exiting theater mode (where chat placement changes simultaneously)
       const lockEnabled = aspectRatioLockEnabledRef.current;
       const currentStreamUrl = streamUrlRef.current;
-      const theaterMode = isTheaterModeRef.current;
 
-      if (lockEnabled && currentStreamUrl && !theaterMode) {
+      // Skip if in theater mode - compact view handles its own sizing
+      if (isTheaterMode) {
+        console.log('[ChatSize] Skipping resize - theater/compact mode is active');
+        prevChatPlacementRef.current = chatPlacement;
+        prevChatSizeRef.current = newSize;
+        return;
+      }
+
+      if (lockEnabled && currentStreamUrl) {
         try {
           const window = getCurrentWindow();
 
@@ -136,7 +156,7 @@ function App() {
     };
 
     handlePlacementChange();
-  }, [chatPlacement]);
+  }, [chatPlacement, isTheaterMode]); // Added isTheaterMode to deps so the check is always current
 
   // Listen for badge detail events from chat
   useEffect(() => {
@@ -196,6 +216,12 @@ function App() {
 
       // Load active drops cache on startup (cached for 1 hour)
       loadActiveDropsCache();
+
+      // Auto-sync universal cache if stale (>24 hours since last sync)
+      // This downloads the latest badge manifest from GitHub in the background
+      import('./services/universalCacheService').then(({ autoSyncUniversalCacheIfStale }) => {
+        autoSyncUniversalCacheIfStale();
+      });
 
       // Pre-fetch cosmetics for current user
       const { currentUser, isAuthenticated } = useAppStore.getState();
@@ -339,12 +365,13 @@ function App() {
   // Apply theme when settings are loaded or theme changes
   useEffect(() => {
     const themeId = settings.theme || DEFAULT_THEME_ID;
-    const theme = getThemeById(themeId);
+    const customThemes = settings.custom_themes || [];
+    const theme = getThemeByIdWithCustom(themeId, customThemes) || getThemeById(DEFAULT_THEME_ID);
     if (theme) {
       console.log('[App] Applying theme:', theme.name);
       applyTheme(theme);
     }
-  }, [settings.theme]);
+  }, [settings.theme, settings.custom_themes]);
 
   // Check if we need to show the first-time setup wizard
   useEffect(() => {
@@ -499,7 +526,7 @@ function App() {
     }
   };
 
-  // Handle theater mode - resize window to 16:9 (1920x1080)
+  // Handle theater mode - resize window to user's selected compact view preset
   useEffect(() => {
     const handleTheaterMode = async () => {
       if (!streamUrl) return; // Only apply when a stream is playing
@@ -508,34 +535,72 @@ function App() {
         const window = getCurrentWindow();
 
         if (isTheaterMode) {
-          // Entering theater mode - save current size and resize to 16:9
+          // Entering theater mode - save current size and resize to selected preset
           if (!savedWindowSize) {
             const currentSize = await window.innerSize();
-            setSavedWindowSize({ width: currentSize.width, height: currentSize.height });
+            const sizeToSave = { width: currentSize.width, height: currentSize.height };
+            setSavedWindowSize(sizeToSave);
+            // Persist to localStorage so it survives app restart
+            localStorage.setItem('streamnook-compact-saved-size', JSON.stringify(sizeToSave));
           }
 
-          // Title bar height is approximately 32px
-          const titleBarHeight = 32;
-          const targetWidth = 1080;
-          // Calculate 16:9 height: 1080 / 16 * 9 = 607.5, rounded to 608
-          const targetHeight = Math.round(targetWidth / 16 * 9) + titleBarHeight;
+          // Get the selected compact view preset
+          const preset = getSelectedCompactViewPreset(
+            settings.compact_view?.selectedPresetId,
+            settings.compact_view?.customPresets
+          );
 
-          console.log('Entering theater mode - resizing to:', targetWidth, 'x', targetHeight);
+          // Title bar height is approximately 32px, window borders are 1px each side
+          const titleBarHeight = 32;
+          const windowBorderWidth = 2; // 1px border on each side
+          // Subtract borders so total window width matches the preset exactly
+          const targetWidth = preset.width - windowBorderWidth;
+          // Recalculate height to maintain 16:9 aspect ratio based on adjusted width
+          const videoHeight = Math.round(targetWidth / 16 * 9);
+          const targetHeight = videoHeight + titleBarHeight;
+
+          console.log(`Entering compact view - resizing to: ${targetWidth}x${targetHeight} (${preset.name}, video: ${targetWidth}x${videoHeight})`);
           await window.setSize(new LogicalSize(targetWidth, targetHeight));
         } else if (savedWindowSize) {
           // Exiting theater mode - restore previous size
-          console.log('Exiting theater mode - restoring to:', savedWindowSize.width, 'x', savedWindowSize.height);
+          console.log('Exiting compact view - restoring to:', savedWindowSize.width, 'x', savedWindowSize.height);
           await window.setSize(new LogicalSize(savedWindowSize.width, savedWindowSize.height));
           setSavedWindowSize(null);
+          // Clear from localStorage
+          localStorage.removeItem('streamnook-compact-saved-size');
         }
       } catch (error) {
-        console.error('Failed to resize window for theater mode:', error);
+        console.error('Failed to resize window for compact view:', error);
       }
     };
 
     handleTheaterMode();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isTheaterMode, streamUrl]); // Remove savedWindowSize from deps to avoid infinite loop
+  }, [isTheaterMode, streamUrl, settings.compact_view?.selectedPresetId]); // Re-run if preset changes while in compact view
+
+  // On app startup, if we have a saved window size from a previous session where the app
+  // closed while in compact view, restore it now (if not currently in theater mode)
+  useEffect(() => {
+    const restoreSavedWindowSize = async () => {
+      // Only restore if we have a saved size AND we're not in theater mode
+      if (savedWindowSize && !isTheaterMode) {
+        try {
+          const window = getCurrentWindow();
+          console.log('Restoring window size from previous session:', savedWindowSize.width, 'x', savedWindowSize.height);
+          await window.setSize(new LogicalSize(savedWindowSize.width, savedWindowSize.height));
+          setSavedWindowSize(null);
+          localStorage.removeItem('streamnook-compact-saved-size');
+        } catch (error) {
+          console.error('Failed to restore window size:', error);
+        }
+      }
+    };
+
+    // Only run once on mount, with a small delay to ensure app is ready
+    const timeout = setTimeout(restoreSavedWindowSize, 500);
+    return () => clearTimeout(timeout);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Run only on mount
 
   // Keep refs in sync with current values for use in resize listener
   useEffect(() => {

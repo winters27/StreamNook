@@ -795,6 +795,22 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
         }
       }
 
+      // Try to match "Month YYYY" format (e.g., "May 2016", "November 2025")
+      // This handles older badges that don't have a day component
+      const monthYearMatch = dateStr.match(/^(\w+)\s+(\d{4})$/);
+      if (monthYearMatch) {
+        const monthName = monthYearMatch[1];
+        const year = parseInt(monthYearMatch[2], 10);
+
+        if (months.hasOwnProperty(monthName)) {
+          // Use the 1st day of the month for sorting (earliest possible date in that month)
+          const date = new Date(year, months[monthName], 1);
+          if (!isNaN(date.getTime())) {
+            return date.getTime();
+          }
+        }
+      }
+
       // Fallback: try parsing the date string directly
       const parsed = new Date(dateStr);
       if (!isNaN(parsed.getTime())) {

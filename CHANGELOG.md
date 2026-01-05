@@ -1,3 +1,24 @@
+## [6.3.0] - 2026-01-04
+ATTENTION: ALL USERS LOG OUT OF TWITCH THEN LOG BACK IN FOR SOME CHANGES OT TAKE EFFECT <3
+
+### ✨ Features
+- **Custom Themes**: Unleash your creativity with a new theme editor! Design and save your own unique color schemes to personalize StreamNook.
+- **Compact View Presets**: Easily resize your window to predefined sizes optimized for multitasking or second monitors. Choose from various aspect ratios, including 16:9, and create your own custom presets.
+- **Favorite Drops Notifications**: Get notified on startup if new drops become available in your favorited game categories.
+- **Enhanced Twitch Emotes**: View a richer set of emotes, including your subscription, bits, and follower emotes, directly in chat when authenticated.
+- **Bits Cheer Styling**: Messages containing Twitch bits cheers now have distinct styling with dedicated layouts and icons.
+- **Universal Cache Auto-Sync**: The app now automatically downloads the latest badge and emote data in the background, ensuring you always have the most up-to-date assets without manual intervention.
+
+### 🐛 Bug Fixes
+- Fixed an issue where the stream player could freeze when switching channels.
+- Resolved an issue where older badge metadata dates might not parse correctly.
+- Improved the accuracy of chat message height calculations to prevent clipping or extra spacing.
+
+### 🔧 Maintenance
+- Updated dependencies and Rust backend components for improved stability and performance.
+- Refined logging to provide clearer debugging information, especially for HLS streaming errors.
+- Optimized emote loading and caching mechanisms for faster chat initialization.
+
 ## [6.2.0] - 2025-12-18
 ### ✨ Features
 - **7TV Cosmetics Integration**: Connect your 7TV account to customize your profile with unique paints and badges, directly from StreamNook!
@@ -835,6 +856,7 @@
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 

@@ -1,10 +1,11 @@
 use crate::services::universal_cache_service::{
-    assign_badge_metadata_positions, cache_file, cache_item, cleanup_expired_entries,
-    clear_universal_cache, export_manifest_for_github, get_all_cached_items_by_type,
-    get_cached_file_path, get_cached_files_list, get_cached_item, get_cached_items_batch,
-    get_universal_cache_stats, sync_universal_cache, CacheType, UniversalCacheEntry,
-    UniversalCacheStats,
+    assign_badge_metadata_positions, auto_sync_if_stale, cache_file, cache_item,
+    cleanup_expired_entries, clear_universal_cache, export_manifest_for_github,
+    get_all_cached_items_by_type, get_cached_file_path, get_cached_files_list, get_cached_item,
+    get_cached_items_batch, get_universal_cache_stats, sync_universal_cache, CacheType,
+    UniversalCacheEntry, UniversalCacheStats,
 };
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tauri::command;
@@ -175,4 +176,11 @@ pub fn get_universal_cached_items_batch(
     };
 
     get_cached_items_batch(cache_type_enum, &ids).map_err(|e| e.to_string())
+}
+
+/// Auto-sync universal cache if stale (>24 hours since last sync)
+/// Returns true if sync was triggered, false if cache was fresh
+#[command]
+pub async fn auto_sync_universal_cache_if_stale() -> Result<bool, String> {
+    auto_sync_if_stale().await.map_err(|e| e.to_string())
 }

@@ -1260,6 +1260,158 @@ export const getThemesByCategory = (category: Theme['category']): Theme[] => {
     return themes.filter((theme) => theme.category === category);
 };
 
+// ============================================
+// CUSTOM THEME UTILITIES
+// ============================================
+
+import type { CustomTheme, CustomThemeColor, CustomThemePalette } from '../types';
+
+// Resolve a CustomThemeColor to a CSS-compatible string
+const resolveColor = (c: CustomThemeColor): string => {
+    if (c.opacity < 100) {
+        // Convert hex to rgba with opacity
+        const hex = c.value.replace('#', '');
+        const r = parseInt(hex.slice(0, 2), 16);
+        const g = parseInt(hex.slice(2, 4), 16);
+        const b = parseInt(hex.slice(4, 6), 16);
+        return `rgba(${r}, ${g}, ${b}, ${c.opacity / 100})`;
+    }
+    return c.value;
+};
+
+// Convert CustomTheme to runtime Theme format
+export const customThemeToTheme = (custom: CustomTheme): Theme => {
+    const p = custom.palette;
+    return {
+        id: custom.id,
+        name: custom.name,
+        description: `Custom theme created ${new Date(custom.createdAt).toLocaleDateString()}`,
+        category: 'signature', // Custom themes appear in signature category
+        palette: {
+            background: resolveColor(p.background),
+            backgroundSecondary: resolveColor(p.backgroundSecondary),
+            backgroundTertiary: resolveColor(p.backgroundTertiary),
+            surface: resolveColor(p.surface),
+            surfaceHover: resolveColor(p.surfaceHover),
+            surfaceActive: resolveColor(p.surfaceActive),
+            textPrimary: resolveColor(p.textPrimary),
+            textSecondary: resolveColor(p.textSecondary),
+            textMuted: resolveColor(p.textMuted),
+            accent: resolveColor(p.accent),
+            accentHover: resolveColor(p.accentHover),
+            accentMuted: resolveColor(p.accentMuted),
+            border: resolveColor(p.border),
+            borderLight: resolveColor(p.borderLight),
+            borderSubtle: resolveColor(p.borderSubtle),
+            success: resolveColor(p.success),
+            warning: resolveColor(p.warning),
+            error: resolveColor(p.error),
+            info: resolveColor(p.info),
+            scrollbarThumb: resolveColor(p.scrollbarThumb),
+            scrollbarTrack: resolveColor(p.scrollbarTrack),
+            glassOpacity: p.glassOpacity,
+            glassHoverOpacity: p.glassHoverOpacity,
+            glassActiveOpacity: p.glassActiveOpacity,
+            highlight: {
+                pink: resolveColor(p.highlight.pink),
+                purple: resolveColor(p.highlight.purple),
+                blue: resolveColor(p.highlight.blue),
+                cyan: resolveColor(p.highlight.cyan),
+                green: resolveColor(p.highlight.green),
+                yellow: resolveColor(p.highlight.yellow),
+                orange: resolveColor(p.highlight.orange),
+                red: resolveColor(p.highlight.red),
+            },
+        },
+    };
+};
+
+// Parse color to extract hex value (handles rgba, rgb, and hex formats)
+const parseColorToHex = (color: string): string => {
+    if (color.startsWith('#')) {
+        return color.length === 4
+            ? `#${color[1]}${color[1]}${color[2]}${color[2]}${color[3]}${color[3]}`
+            : color;
+    }
+    if (color.startsWith('rgba') || color.startsWith('rgb')) {
+        const match = color.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+        if (match) {
+            const r = parseInt(match[1]).toString(16).padStart(2, '0');
+            const g = parseInt(match[2]).toString(16).padStart(2, '0');
+            const b = parseInt(match[3]).toString(16).padStart(2, '0');
+            return `#${r}${g}${b}`;
+        }
+    }
+    return '#000000';
+};
+
+// Parse color to extract opacity (0-100)
+const parseColorOpacity = (color: string): number => {
+    if (color.startsWith('rgba')) {
+        const match = color.match(/rgba\([^,]+,[^,]+,[^,]+,\s*([0-9.]+)\)/);
+        if (match) {
+            return Math.round(parseFloat(match[1]) * 100);
+        }
+    }
+    return 100;
+};
+
+// Create default custom theme palette based on an existing theme
+export const createDefaultCustomPalette = (baseTheme: Theme): CustomThemePalette => {
+    const makeColor = (value: string): CustomThemeColor => ({
+        value: parseColorToHex(value),
+        opacity: parseColorOpacity(value),
+    });
+    const p = baseTheme.palette;
+
+    return {
+        background: makeColor(p.background),
+        backgroundSecondary: makeColor(p.backgroundSecondary),
+        backgroundTertiary: makeColor(p.backgroundTertiary),
+        surface: makeColor(p.surface),
+        surfaceHover: makeColor(p.surfaceHover),
+        surfaceActive: makeColor(p.surfaceActive),
+        textPrimary: makeColor(p.textPrimary),
+        textSecondary: makeColor(p.textSecondary),
+        textMuted: makeColor(p.textMuted),
+        accent: makeColor(p.accent),
+        accentHover: makeColor(p.accentHover),
+        accentMuted: makeColor(p.accentMuted),
+        border: makeColor(p.border),
+        borderLight: makeColor(p.borderLight),
+        borderSubtle: makeColor(p.borderSubtle),
+        success: makeColor(p.success),
+        warning: makeColor(p.warning),
+        error: makeColor(p.error),
+        info: makeColor(p.info),
+        scrollbarThumb: makeColor(p.scrollbarThumb),
+        scrollbarTrack: makeColor(p.scrollbarTrack),
+        glassOpacity: p.glassOpacity,
+        glassHoverOpacity: p.glassHoverOpacity,
+        glassActiveOpacity: p.glassActiveOpacity,
+        highlight: {
+            pink: makeColor(p.highlight.pink),
+            purple: makeColor(p.highlight.purple),
+            blue: makeColor(p.highlight.blue),
+            cyan: makeColor(p.highlight.cyan),
+            green: makeColor(p.highlight.green),
+            yellow: makeColor(p.highlight.yellow),
+            orange: makeColor(p.highlight.orange),
+            red: makeColor(p.highlight.red),
+        },
+    };
+};
+
+// Get theme by ID, checking custom themes first
+export const getThemeByIdWithCustom = (id: string, customThemes?: CustomTheme[]): Theme | undefined => {
+    // Check custom themes first
+    const custom = customThemes?.find((t) => t.id === id);
+    if (custom) return customThemeToTheme(custom);
+    
+    // Fall back to built-in themes
+    return themes.find((theme) => theme.id === id);
+};
+
 export const DEFAULT_THEME_ID = 'winters-glass';
 
 // Helper function to lighten a hex color for neon effect
