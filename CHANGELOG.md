@@ -1,3 +1,7 @@
+## [6.3.1] - 2026-01-04
+### 🐛 Bug Fixes
+- **Date Parsing Accuracy**: Resolved an issue where certain badge acquisition dates were parsed incorrectly, ensuring historical data is displayed accurately.
+
 ## [6.3.0] - 2026-01-04
 ATTENTION: ALL USERS LOG OUT OF TWITCH THEN LOG BACK IN FOR SOME CHANGES OT TAKE EFFECT <3
 
@@ -856,6 +860,7 @@ ATTENTION: ALL USERS LOG OUT OF TWITCH THEN LOG BACK IN FOR SOME CHANGES OT TAKE
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
