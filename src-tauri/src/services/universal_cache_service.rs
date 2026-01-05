@@ -837,3 +837,47 @@ pub async fn get_cached_files_list(cache_type: CacheType) -> Result<HashMap<Stri
     // );
     Ok(files)
 }
+
+/// Auto-sync universal cache if stale (>24 hours since last sync)
+/// Returns true if sync was triggered, false if cache was fresh
+pub async fn auto_sync_if_stale() -> Result<bool> {
+    const STALE_THRESHOLD_SECONDS: u64 = 24 * 60 * 60; // 24 hours
+
+    let manifest = load_manifest()?;
+
+    let should_sync = match manifest.last_sync {
+        None => {
+            println!("[UniversalCache] No last_sync timestamp found, triggering auto-sync");
+            true
+        }
+        Some(last_sync) => {
+            let current_time = get_current_timestamp();
+            let age_seconds = current_time.saturating_sub(last_sync);
+            let is_stale = age_seconds > STALE_THRESHOLD_SECONDS;
+
+            if is_stale {
+                let age_hours = age_seconds / 3600;
+                println!(
+                    "[UniversalCache] Cache is stale ({}h old), triggering auto-sync",
+                    age_hours
+                );
+            }
+
+            is_stale
+        }
+    };
+
+    if should_sync {
+        // Fire-and-forget: spawn download in background so we don't block startup
+        tokio::spawn(async {
+            match download_universal_manifest().await {
+                Ok(true) => println!("[UniversalCache] Auto-sync completed successfully"),
+                Ok(false) => println!("[UniversalCache] Auto-sync skipped (already in progress)"),
+                Err(e) => println!("[UniversalCache] Auto-sync failed: {}", e),
+            }
+        });
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}

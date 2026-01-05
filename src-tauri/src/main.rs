@@ -92,8 +92,10 @@ fn main() {
     // Load settings from our custom location in the same directory as cache
     let settings = load_settings_from_file().unwrap_or_else(|_| Settings::default());
 
-    // Initialize drops service
-    let drops_service = Arc::new(TokioMutex::new(DropsService::new()));
+    // Initialize drops service with persisted settings (including priority_games for favorites)
+    let drops_service = Arc::new(TokioMutex::new(DropsService::new_with_settings(
+        settings.drops.clone(),
+    )));
 
     // Initialize mining service with drops service reference
     let mining_service = Arc::new(TokioMutex::new(MiningService::new(drops_service.clone())));
@@ -310,6 +312,7 @@ fn main() {
             check_following_status,
             verify_token_health,
             force_refresh_token,
+            get_twitch_token,
             check_stream_online,
             get_streams_by_game_name,
             send_whisper,
@@ -400,6 +403,8 @@ fn main() {
             get_cached_files,
             get_all_universal_cached_items,
             get_universal_cached_items_batch,
+            auto_sync_universal_cache_if_stale,
+
             // Cosmetics Cache commands
             cache_user_cosmetics,
             get_cached_user_cosmetics,

@@ -41,7 +41,7 @@ impl LayoutService {
             config: Mutex::new(LayoutConfig {
                 width: 300.0,
                 font_size: 13.0,
-                message_spacing: 2.0,
+                message_spacing: 8.0,
                 show_timestamps: false,
             }),
         }

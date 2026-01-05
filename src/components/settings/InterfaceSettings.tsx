@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Layout, Eye, EyeOff, Columns, X } from 'lucide-react';
+import CompactViewSettings from './CompactViewSettings';
 
 // Sidebar mode types
 export type SidebarMode = 'expanded' | 'compact' | 'hidden' | 'disabled';
@@ -180,8 +181,12 @@ const InterfaceSettings = () => {
                     </p>
                 </div>
             </div>
+
+            {/* Compact View Settings */}
+            <CompactViewSettings />
         </div>
     );
 };
 
 export default InterfaceSettings;
+

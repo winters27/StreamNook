@@ -183,21 +183,33 @@ impl LogService {
     /// Check if error should be ignored (benign/noise errors)
     fn should_ignore_error(entry: &LogEntry) -> bool {
         let ignored_patterns = [
+            // App lifecycle / React errors
             "Couldn't find callback id",
             "This might happen when the app is reloaded",
             "ResizeObserver loop",
             "Non-Error promise rejection",
             "Failed to load resource.*favicon",
             "ERR_FILE_NOT_FOUND.*blob:",
+            "Error caught and handled by boundary",
+            "The above error occurred in the <TitleBar> component",
+            "The above error occurred in the <DynamicIsland> component",
+            // External resource / CDN errors
             "Tracking Prevention blocked",
             "cdn.jsdelivr.net",
             "emoji-datasource",
-            "Error caught and handled by boundary",
+            // Service-specific noise
             "BadgePolling.*invoke",
-            "The above error occurred in the <TitleBar> component",
-            "The above error occurred in the <DynamicIsland> component",
-            "bufferStalledError.*fatal.*false",
             "Badge NOT FOUND",
+            // HLS streaming non-fatal errors (expected during live streaming)
+            "bufferStalledError",
+            "bufferNudgeOnStall",
+            "fragParsingError",
+            "fragLoadError",
+            "levelLoadError",
+            "[HLS] Buffer stalled",
+            "[HLS] Non-fatal error",
+            "[HLS] Error.*fatal.*false",
+            "manifestLoadError.*fatal.*false",
         ];
 
         let full_message = format!(
@@ -242,11 +254,12 @@ impl LogService {
                     state.last_webhook_send = now;
 
                     // Get recent logs and activity for context
+                    // Fetch more logs since we filter to WARN/ERROR only for breadcrumbs
                     let recent_logs: Vec<LogEntry> = state
                         .logs
                         .iter()
                         .rev()
-                        .take(15)
+                        .take(50)
                         .cloned()
                         .collect::<Vec<_>>()
                         .into_iter()
@@ -308,9 +321,10 @@ impl LogService {
             &error_details[..error_details.len().min(1500)]
         );
 
-        // Build breadcrumbs
+        // Build breadcrumbs - only include WARN and ERROR level logs for signal clarity
         let breadcrumbs = recent_logs
             .iter()
+            .filter(|l| matches!(l.level, LogLevel::Warn | LogLevel::Error))
             .map(|l| {
                 let time = l.timestamp.split('T').nth(1).unwrap_or("");
                 let time_short = time.split('.').next().unwrap_or("");
@@ -341,7 +355,7 @@ impl LogService {
         let mut fields = vec![
             serde_json::json!({
                 "name": "App Version",
-                "value": "`Unknown`", // TODO: Get from app state
+                "value": format!("`{}`", env!("CARGO_PKG_VERSION")),
                 "inline": true
             }),
             serde_json::json!({

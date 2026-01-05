@@ -1,6 +1,6 @@
 import React, { useMemo, useState, useEffect, memo } from 'react';
 import { parseMessage, MessageSegment } from '../services/twitchChat';
-import { queueEmoteForCaching } from '../services/emoteService';
+import { queueEmoteForCaching, EmoteSet, Emote } from '../services/emoteService';
 import { computePaintStyle, getBadgeImageUrl, queueCosmeticForCaching } from '../services/seventvService';
 import { getCosmeticsWithFallback, getThirdPartyBadgesFromMemoryCache, getCosmeticsFromMemoryCache, getTwitchBadgesWithFallback } from '../services/cosmeticsCache';
 import { ThirdPartyBadge } from '../services/thirdPartyBadges';
@@ -39,6 +39,7 @@ interface ChatMessageProps {
   onEmoteRightClick?: (emoteName: string) => void;
   onUsernameRightClick?: (messageId: string, username: string) => void;
   onBadgeClick?: (badgeKey: string, badgeInfo: any) => void;
+  emotes?: EmoteSet | null;
 }
 
 // Custom comparison function for React.memo
@@ -64,7 +65,7 @@ const chatMessageAreEqual = (prevProps: ChatMessageProps, nextProps: ChatMessage
 
 // Memoized ChatMessage component to prevent unnecessary re-renders
 // This is critical for preventing animation restarts when new messages arrive
-const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, onUsernameClick, onReplyClick, isHighlighted = false, isDeleted = false, onEmoteRightClick, onUsernameRightClick, onBadgeClick }: ChatMessageProps) {
+const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, onUsernameClick, onReplyClick, isHighlighted = false, isDeleted = false, onEmoteRightClick, onUsernameRightClick, onBadgeClick, emotes }: ChatMessageProps) {
   const { settings, currentUser, currentStream } = useAppStore();
   const chatDesign = settings.chat_design;
   const parsed = useMemo(() => {
@@ -94,7 +95,6 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
   const [contentWithEmotes, setContentWithEmotes] = useState<EmoteSegment[]>([]);
 
   // PHASE 3.1 - THE ENDGAME: Use pre-parsed segments from Rust
-  // All parsing happens in Rust - zero regex, zero Map lookups on main thread!
   useEffect(() => {
     // Convert Rust MessageSegment to EmoteSegment format for rendering
     if (parsed.segments && parsed.segments.length > 0) {
@@ -127,11 +127,47 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
       });
       
       setContentWithEmotes(convertedSegments);
+    } else if (emotes) {
+       // Fallback for local messages (no segments from Rust yet): Parse text using the provided emotes prop
+       const words = parsed.content.split(' ');
+       const newSegments: EmoteSegment[] = [];
+
+       words.forEach((word, i) => {
+           // Check providers for exact match
+           const emote = emotes['7tv'].find((e: Emote) => e.name === word) ||
+                         emotes.bttv.find((e: Emote) => e.name === word) ||
+                         emotes.ffz.find((e: Emote) => e.name === word) ||
+                         emotes.twitch.find((e: Emote) => e.name === word);
+
+           if (i > 0) newSegments.push({ type: 'text', content: ' ' });
+
+           if (emote) {
+               newSegments.push({
+                   type: 'emote',
+                   content: emote.name,
+                   emoteId: emote.id,
+                   emoteUrl: emote.url, // The emote object from ChatWidget already has localUrl merged if available
+               });
+           } else {
+               newSegments.push({ type: 'text', content: word });
+           }
+       });
+
+       // Coalesce adjacent text segments
+       const coalesced: EmoteSegment[] = [];
+       newSegments.forEach(seg => {
+           if (coalesced.length > 0 && coalesced[coalesced.length-1].type === 'text' && seg.type === 'text') {
+               coalesced[coalesced.length-1].content += seg.content;
+           } else {
+               coalesced.push(seg);
+           }
+       });
+       setContentWithEmotes(coalesced);
     } else {
-      // No segments (USERNOTICE, etc.) - render as plain text
+      // No segments and no emotes loaded - render as plain text
       setContentWithEmotes([{ type: 'text', content: parsed.content }]);
     }
-  }, [parsed.segments]);
+  }, [parsed.segments, parsed.content, emotes]);
 
   // Extract userId once to prevent re-renders
   const userId = useMemo(() => parsed.tags.get('user-id'), [message]);

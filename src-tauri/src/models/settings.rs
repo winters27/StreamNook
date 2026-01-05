@@ -144,6 +144,8 @@ pub struct LiveNotificationSettings {
     #[serde(default = "default_true")]
     pub show_drops_notifications: bool,
     #[serde(default = "default_true")]
+    pub show_favorite_drops_notifications: bool,
+    #[serde(default = "default_true")]
     pub show_channel_points_notifications: bool,
     #[serde(default = "default_true")]
     pub show_badge_notifications: bool,
@@ -176,6 +178,7 @@ impl Default for LiveNotificationSettings {
             show_whisper_notifications: true,
             show_update_notifications: true,
             show_drops_notifications: true,
+            show_favorite_drops_notifications: true,
             show_channel_points_notifications: true,
             show_badge_notifications: true,
             use_dynamic_island: true,
@@ -187,28 +190,9 @@ impl Default for LiveNotificationSettings {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone)]
-pub struct DropsSettings {
-    pub auto_claim_drops: bool,
-    pub auto_claim_channel_points: bool,
-    pub notify_on_drop_available: bool,
-    pub notify_on_drop_claimed: bool,
-    pub notify_on_points_claimed: bool,
-    pub check_interval_seconds: u32,
-}
-
-impl Default for DropsSettings {
-    fn default() -> Self {
-        Self {
-            auto_claim_drops: true,
-            auto_claim_channel_points: false,
-            notify_on_drop_available: true,
-            notify_on_drop_claimed: true,
-            notify_on_points_claimed: false,
-            check_interval_seconds: 60,
-        }
-    }
-}
+// Re-export DropsSettings from the drops module to avoid duplication
+// The drops module has the complete struct with mining fields (priority_games, etc.)
+pub use crate::models::drops::DropsSettings;
 
 #[derive(Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "snake_case")]
@@ -237,6 +221,24 @@ impl Default for AutoSwitchSettings {
             auto_redirect_on_raid: true, // Enabled by default
         }
     }
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct CompactViewPreset {
+    pub id: String,
+    pub name: String,
+    pub width: u32,
+    pub height: u32,
+    #[serde(rename = "isBuiltIn")]
+    pub is_built_in: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+pub struct CompactViewSettings {
+    #[serde(rename = "selectedPresetId")]
+    pub selected_preset_id: String,
+    #[serde(rename = "customPresets", default)]
+    pub custom_presets: Vec<CompactViewPreset>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -270,6 +272,8 @@ pub struct Settings {
     pub theme: String,
     #[serde(default)]
     pub setup_complete: bool,
+    #[serde(default)]
+    pub compact_view: Option<CompactViewSettings>,
 }
 
 fn default_theme() -> String {
@@ -302,6 +306,7 @@ impl Default for Settings {
             auto_switch: AutoSwitchSettings::default(),
             theme: default_theme(),
             setup_complete: false, // New users need to complete setup
+            compact_view: None,
         }
     }
 }

@@ -14,8 +14,32 @@ pub async fn update_drops_settings(
     settings: DropsSettings,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    // Update the in-memory drops service settings
     let drops_service = state.drops_service.lock().await;
-    drops_service.update_settings(settings).await;
+    drops_service.update_settings(settings.clone()).await;
+    drop(drops_service); // Release the lock before accessing main settings
+
+    // Also persist to the main settings file so changes survive app restart
+    {
+        let mut app_settings = state.settings.lock().map_err(|e| e.to_string())?;
+        app_settings.drops = settings;
+    }
+
+    // Save to disk
+    let settings_to_save = {
+        let app_settings = state.settings.lock().map_err(|e| e.to_string())?;
+        app_settings.clone()
+    };
+
+    // Use the save_settings logic to persist to file
+    let app_dir = crate::services::cache_service::get_app_data_dir()
+        .map_err(|e| format!("Failed to get app data directory: {}", e))?;
+    let settings_path = app_dir.join("settings.json");
+    let json = serde_json::to_string_pretty(&settings_to_save)
+        .map_err(|e| format!("Failed to serialize settings: {}", e))?;
+    std::fs::write(&settings_path, json)
+        .map_err(|e| format!("Failed to write settings file: {}", e))?;
+
     Ok(())
 }
 

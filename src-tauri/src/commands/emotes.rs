@@ -9,11 +9,12 @@ pub struct EmoteServiceState(pub Arc<RwLock<EmoteService>>);
 pub async fn fetch_channel_emotes(
     channel_name: Option<String>,
     channel_id: Option<String>,
+    access_token: Option<String>,
     state: State<'_, EmoteServiceState>,
 ) -> Result<EmoteSet, String> {
     let service = state.0.read().await;
     service
-        .fetch_channel_emotes(channel_name, channel_id)
+        .fetch_channel_emotes(channel_name, channel_id, access_token)
         .await
         .map_err(|e| e.to_string())
 }

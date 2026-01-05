@@ -147,6 +147,7 @@ const DynamicIsland = () => {
     const showWhisperNotifications = settings.live_notifications?.show_whisper_notifications ?? true;
     const showUpdateNotifications = settings.live_notifications?.show_update_notifications ?? true;
     const showDropsNotifications = settings.live_notifications?.show_drops_notifications ?? true;
+    const showFavoriteDropsNotifications = settings.live_notifications?.show_favorite_drops_notifications ?? true;
     const showChannelPointsNotifications = settings.live_notifications?.show_channel_points_notifications ?? true;
     const showBadgeNotifications = settings.live_notifications?.show_badge_notifications ?? true;
     const useDynamicIsland = settings.live_notifications?.use_dynamic_island ?? true;
@@ -850,6 +851,72 @@ const DynamicIsland = () => {
             unlisten.then((fn) => fn());
         };
     }, [notificationsEnabled, showBadgeNotifications, useDynamicIsland, useToast, addNotification, addToast, soundEnabled, playNotificationSound, setShowBadgesOverlay, sendNativeNotification]);
+
+    // Listen for new drops in favorited categories (on app startup)
+    useEffect(() => {
+        if (!notificationsEnabled || !showFavoriteDropsNotifications) return;
+
+        const unlisten = listen<{
+            game_name: string;
+            game_image: string;
+            new_count: number;
+            campaign_names: string[];
+        }>('new-favorite-drops', (event) => {
+            const data = event.payload;
+            console.log('[DynamicIsland] New drops in favorite category:', data);
+
+            // Add to Dynamic Island if enabled
+            if (useDynamicIsland) {
+                const notification: DynamicIslandNotification = {
+                    id: `drops-new-${Date.now()}-${data.game_name}`,
+                    type: 'drops',
+                    timestamp: Date.now(),
+                    read: false,
+                    data: {
+                        drop_name: data.campaign_names[0] || 'New drops available',
+                        game_name: data.game_name,
+                        benefit_name: data.new_count > 1 
+                            ? `${data.new_count} new campaigns` 
+                            : data.campaign_names[0],
+                        benefit_image_url: data.game_image,
+                    },
+                };
+
+                addNotification(notification);
+            }
+
+            // Show toast notification
+            if (useToast) {
+                const countText = data.new_count === 1 
+                    ? '1 new campaign' 
+                    : `${data.new_count} new campaigns`;
+                addToast(
+                    `🎁 ${data.game_name}: ${countText} available!`,
+                    'info',
+                    {
+                        label: 'View',
+                        onClick: () => setShowDropsOverlay(true),
+                    }
+                );
+            }
+
+            // Send native notification
+            sendNativeNotification(
+                `New drops for ${data.game_name}!`,
+                data.new_count === 1 
+                    ? data.campaign_names[0] 
+                    : `${data.new_count} new campaigns available`
+            );
+
+            if (soundEnabled) {
+                playNotificationSound();
+            }
+        });
+
+        return () => {
+            unlisten.then((fn) => fn());
+        };
+    }, [notificationsEnabled, showFavoriteDropsNotifications, useDynamicIsland, useToast, addNotification, addToast, soundEnabled, playNotificationSound, setShowDropsOverlay, sendNativeNotification]);
 
     // Click outside to close
     useEffect(() => {

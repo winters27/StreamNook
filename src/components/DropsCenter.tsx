@@ -2,7 +2,7 @@ import { useEffect, useState, useMemo, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { useAppStore } from '../stores/AppStore';
-import { listen } from '@tauri-apps/api/event';
+import { listen, emit } from '@tauri-apps/api/event';
 import { Search, Gift, MonitorPlay, BarChart3, Settings as SettingsIcon, Package } from 'lucide-react';
 import {
     UnifiedGame, DropCampaign, DropProgress, DropsStatistics,
@@ -925,6 +925,102 @@ export default function DropsCenter() {
         }
     };
 
+    // ---- Favorite Drops Notification Logic ----
+    // Check if any favorited categories have new drops since last session
+    const FAVORITE_CAMPAIGNS_CACHE_KEY = 'streamnook_favorite_campaigns_cache';
+    
+    const checkForNewFavoriteDrops = () => {
+        // Get app settings to check if notification is enabled
+        const appSettings = useAppStore.getState().settings;
+        if (!appSettings.live_notifications?.show_favorite_drops_notifications) {
+            console.log('[DropsCenter] Favorite drops notifications disabled');
+            return;
+        }
+        
+        // Get current priority games (favorited categories)
+        const priorityGames = dropsSettings?.priority_games || [];
+        if (priorityGames.length === 0) {
+            console.log('[DropsCenter] No favorited games, skipping new drops check');
+            return;
+        }
+        
+        console.log('[DropsCenter] Checking for new drops in favorited games:', priorityGames);
+        
+        // Get previously cached campaign data
+        let cachedData: Record<string, string[]> = {};
+        try {
+            const cached = localStorage.getItem(FAVORITE_CAMPAIGNS_CACHE_KEY);
+            if (cached) {
+                cachedData = JSON.parse(cached);
+            }
+        } catch (e) {
+            console.warn('[DropsCenter] Failed to parse cached campaign data:', e);
+        }
+        
+        // Build current campaign map for favorited games
+        const currentCampaignMap: Record<string, { campaignIds: string[]; gameName: string; boxArt: string }> = {};
+        
+        unifiedGames.forEach(game => {
+            const isFavorite = priorityGames.some(
+                pg => pg.toLowerCase() === game.name.toLowerCase()
+            );
+            if (!isFavorite) return;
+            
+            currentCampaignMap[game.name.toLowerCase()] = {
+                campaignIds: game.active_campaigns.map(c => c.id),
+                gameName: game.name,
+                boxArt: game.box_art_url
+            };
+        });
+        
+        // Find new campaigns in favorited games
+        const newDropNotifications: { gameName: string; boxArt: string; newCount: number; campaignNames: string[] }[] = [];
+        
+        Object.entries(currentCampaignMap).forEach(([gameKey, data]) => {
+            const previousCampaignIds = cachedData[gameKey] || [];
+            const newCampaignIds = data.campaignIds.filter(id => !previousCampaignIds.includes(id));
+            
+            if (newCampaignIds.length > 0) {
+                // Find campaign names for the new campaigns
+                const game = unifiedGames.find(g => g.name.toLowerCase() === gameKey);
+                const campaignNames = game?.active_campaigns
+                    .filter(c => newCampaignIds.includes(c.id))
+                    .map(c => c.name) || [];
+                
+                newDropNotifications.push({
+                    gameName: data.gameName,
+                    boxArt: data.boxArt,
+                    newCount: newCampaignIds.length,
+                    campaignNames
+                });
+            }
+        });
+        
+        // Emit notifications for each game with new drops
+        newDropNotifications.forEach(({ gameName, boxArt, newCount, campaignNames }) => {
+            console.log(`[DropsCenter] New drops available for ${gameName}:`, campaignNames);
+            
+            emit('new-favorite-drops', {
+                game_name: gameName,
+                game_image: boxArt,
+                new_count: newCount,
+                campaign_names: campaignNames
+            });
+        });
+        
+        // Update cache with current campaign IDs
+        const newCacheData: Record<string, string[]> = {};
+        Object.entries(currentCampaignMap).forEach(([gameKey, data]) => {
+            newCacheData[gameKey] = data.campaignIds;
+        });
+        
+        try {
+            localStorage.setItem(FAVORITE_CAMPAIGNS_CACHE_KEY, JSON.stringify(newCacheData));
+        } catch (e) {
+            console.warn('[DropsCenter] Failed to save campaign cache:', e);
+        }
+    };
+
     // ---- Effects ----
     useEffect(() => {
         const init = async () => {
@@ -939,6 +1035,9 @@ export default function DropsCenter() {
                     console.error(e);
                 }
                 await loadDropsData();
+                
+                // Check for new drops in favorited categories on startup
+                checkForNewFavoriteDrops();
             } else {
                 setIsLoading(false);
             }

@@ -14,6 +14,7 @@ const NotificationsSettings = () => {
     show_whisper_notifications: true,
     show_update_notifications: true,
     show_drops_notifications: true,
+    show_favorite_drops_notifications: true,
     show_channel_points_notifications: true,
     show_badge_notifications: true,
     use_dynamic_island: true,
@@ -255,6 +256,31 @@ const NotificationsSettings = () => {
                     })}
                   />
                 </div>
+
+                {/* Favorite Drops Notifications (shown when drops notifications are enabled) */}
+                {(liveNotifications.show_drops_notifications ?? true) && (
+                  <div className="flex items-center justify-between gap-4 p-3 bg-glass/30 rounded-lg ml-4 border-l-2 border-green-500/30">
+                    <div className="flex items-center gap-3 flex-1">
+                      <div className="w-8 h-8 rounded-lg bg-green-500/10 flex items-center justify-center flex-shrink-0">
+                        <Gift size={16} className="text-green-400" />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-textPrimary">
+                          Favorite Category Drops
+                        </label>
+                        <p className="text-xs text-textSecondary mt-0.5">
+                          Notify when favorited categories have new drops on startup
+                        </p>
+                      </div>
+                    </div>
+                    <Toggle
+                      enabled={liveNotifications.show_favorite_drops_notifications ?? true}
+                      onChange={() => updateLiveNotifications({
+                        show_favorite_drops_notifications: !(liveNotifications.show_favorite_drops_notifications ?? true)
+                      })}
+                    />
+                  </div>
+                )}
 
                 {/* Channel Points Notifications */}
                 <div className="flex items-center justify-between gap-4 p-3 bg-glass/30 rounded-lg">

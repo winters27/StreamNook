@@ -764,9 +764,9 @@ export const useTwitchChat = () => {
     // Create an optimistic message in IRC format
     const timestamp = Date.now();
     const color = userInfo.color || '#8A2BE2';
-    // Prefer IRC badges from previous messages, fall back to provided badges
-    const badges = userBadgesFromIrcRef.current || userInfo.badges || '';
-    console.log('[Chat] Using badges for optimistic message:', badges, '(from IRC:', !!userBadgesFromIrcRef.current, ')');
+    // Prefer provided badges (from fresh user info), fall back to IRC badges
+    const badges = userInfo.badges || userBadgesFromIrcRef.current || '';
+    console.log('[Chat] Using badges for optimistic message:', badges, '(is fresh:', !!userInfo.badges, ')');
 
     // Build reply tags if replying
     let replyTags = '';
