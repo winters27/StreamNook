@@ -780,6 +780,22 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
         }
       }
 
+      // Try to match "Month YYYY" format (e.g., "May 2016", "November 2025")
+      // IMPORTANT: Must come BEFORE "Mon D" to prevent "2016" being parsed as day 20
+      const monthYearMatch = dateStr.match(/^(\w+)\s+(\d{4})$/);
+      if (monthYearMatch) {
+        const monthName = monthYearMatch[1];
+        const year = parseInt(monthYearMatch[2], 10);
+
+        if (months.hasOwnProperty(monthName)) {
+          // Use the 1st day of the month for sorting (earliest possible date in that month)
+          const date = new Date(year, months[monthName], 1);
+          if (!isNaN(date.getTime())) {
+            return date.getTime();
+          }
+        }
+      }
+
       // Try to match "Mon D" format (e.g., "Dec 1")
       const singleDayMatch = dateStr.match(/(\w{3})\s+(\d{1,2})(?!\s*-)/);
       if (singleDayMatch) {
@@ -789,22 +805,6 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
 
         if (months.hasOwnProperty(monthAbbrev)) {
           const date = new Date(currentYear, months[monthAbbrev], day);
-          if (!isNaN(date.getTime())) {
-            return date.getTime();
-          }
-        }
-      }
-
-      // Try to match "Month YYYY" format (e.g., "May 2016", "November 2025")
-      // This handles older badges that don't have a day component
-      const monthYearMatch = dateStr.match(/^(\w+)\s+(\d{4})$/);
-      if (monthYearMatch) {
-        const monthName = monthYearMatch[1];
-        const year = parseInt(monthYearMatch[2], 10);
-
-        if (months.hasOwnProperty(monthName)) {
-          // Use the 1st day of the month for sorting (earliest possible date in that month)
-          const date = new Date(year, months[monthName], 1);
           if (!isNaN(date.getTime())) {
             return date.getTime();
           }
