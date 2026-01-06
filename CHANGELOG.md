@@ -1,13 +1,13 @@
 ## [6.4.0] - 2026-01-05
+### 🔧 Maintenance
+- **Release Process Update**: Streamlined the release workflow to ensure `main` accurately reflects the `dev` branch before builds.
+
 ### ✨ Features
 - **Enhanced Drops Mining Resilience**: The Drops mining feature is now more robust. If all streams for a campaign go offline, StreamNook will intelligently attempt to switch to the next campaign in your "Mine All" queue or notify you if no streams are available.
 
 ### 🐛 Bug Fixes
 - Fixed an issue where the stream would freeze when switching channels.
 - Correctly handle reserved streams going offline, returning the watch token to the general rotation pool and notifying the user.
-
-### 🔧 Maintenance
-- Updated internal dependencies to improve build performance and compatibility.
 ## [6.3.1] - 2026-01-04
 ### 🐛 Bug Fixes
 - **Date Parsing Accuracy**: Resolved an issue where certain badge acquisition dates were parsed incorrectly, ensuring historical data is displayed accurately.
