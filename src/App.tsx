@@ -334,6 +334,12 @@ function App() {
         }
       );
 
+      // Listen for reserved stream going offline (watch token allocation feature)
+      const unlistenReservedOffline = await listen('reserved-stream-offline', () => {
+        console.log('[App] Reserved stream went offline, clearing reservation');
+        addToast('Reserved stream went offline - token returned to rotation', 'info');
+      });
+
       // Set up periodic auth check to detect session expiry while watching
       // Check every 5 minutes
       const authCheckInterval = setInterval(async () => {
@@ -355,6 +361,7 @@ function App() {
         unlistenMiningStatus();
         unlistenWhisperProgress();
         unlistenWhisperComplete();
+        unlistenReservedOffline();
         clearInterval(authCheckInterval);
       };
     };

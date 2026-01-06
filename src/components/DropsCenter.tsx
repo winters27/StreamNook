@@ -37,6 +37,10 @@ interface DropsSettings {
     excluded_games: string[];
     priority_mode: 'PriorityOnly' | 'EndingSoonest' | 'LowAvailFirst';
     watch_interval_seconds: number;
+    favorite_games: string[];  // UI-only, for sorting/tracking - doesn't affect mining
+    // Watch token allocation settings
+    reserve_token_for_current_stream?: boolean;
+    auto_reserve_on_watch?: boolean;
 }
 
 export default function DropsCenter() {
@@ -95,7 +99,7 @@ export default function DropsCenter() {
 
     // Derived state for filtering AND sorting (favorites first)
     const filteredGames = useMemo(() => {
-        const priorityGames = dropsSettings?.priority_games || [];
+        const favoriteGames = dropsSettings?.favorite_games || [];
         let games = unifiedGames;
         
         // Apply search filter
@@ -109,8 +113,8 @@ export default function DropsCenter() {
         
         // Sort: favorites first, then by existing sort order
         return [...games].sort((a, b) => {
-            const aIsFavorite = priorityGames.some(pg => pg.toLowerCase() === a.name.toLowerCase());
-            const bIsFavorite = priorityGames.some(pg => pg.toLowerCase() === b.name.toLowerCase());
+            const aIsFavorite = favoriteGames.some(pg => pg.toLowerCase() === a.name.toLowerCase());
+            const bIsFavorite = favoriteGames.some(pg => pg.toLowerCase() === b.name.toLowerCase());
             
             // Favorites first
             if (aIsFavorite !== bIsFavorite) return aIsFavorite ? -1 : 1;
@@ -126,7 +130,7 @@ export default function DropsCenter() {
             }
             return a.name.localeCompare(b.name);
         });
-    }, [unifiedGames, searchTerm, dropsSettings?.priority_games]);
+    }, [unifiedGames, searchTerm, dropsSettings?.favorite_games]);
 
     // ---- Authentication Logic ----
     const checkAuthentication = async () => {
@@ -335,8 +339,9 @@ export default function DropsCenter() {
                 auto_mining_enabled: false,
                 priority_games: [],
                 excluded_games: [],
-                priority_mode: 'PriorityOnly',
+                priority_mode: 'PriorityOnly' as const,
                 watch_interval_seconds: 20,
+                favorite_games: [],
             };
             const updatedSettings = { ...current, ...newSettings };
 
@@ -358,29 +363,29 @@ export default function DropsCenter() {
         window.dispatchEvent(new CustomEvent('start-stream', { detail: { channel: channelName } }));
     };
 
-    // Toggle favorite (add/remove from priority_games)
+    // Toggle favorite (add/remove from favorite_games - visual only, doesn't affect mining)
     const handleToggleFavorite = async (gameName: string) => {
         if (!dropsSettings) return;
         
-        const currentPriority = dropsSettings.priority_games || [];
-        const isCurrentlyFavorite = currentPriority.some(
+        const currentFavorites = dropsSettings.favorite_games || [];
+        const isCurrentlyFavorite = currentFavorites.some(
             pg => pg.toLowerCase() === gameName.toLowerCase()
         );
         
-        let newPriorityGames: string[];
+        let newFavoriteGames: string[];
         if (isCurrentlyFavorite) {
             // Remove from favorites
-            newPriorityGames = currentPriority.filter(
+            newFavoriteGames = currentFavorites.filter(
                 pg => pg.toLowerCase() !== gameName.toLowerCase()
             );
             addToast(`Removed ${gameName} from favorites`, 'info');
         } else {
             // Add to favorites
-            newPriorityGames = [...currentPriority, gameName];
+            newFavoriteGames = [...currentFavorites, gameName];
             addToast(`Added ${gameName} to favorites ❤️`, 'success');
         }
         
-        await updateDropsSettings({ priority_games: newPriorityGames });
+        await updateDropsSettings({ favorite_games: newFavoriteGames });
     };
 
     // Handle game selection - polls inventory for fresh progress data
@@ -937,14 +942,14 @@ export default function DropsCenter() {
             return;
         }
         
-        // Get current priority games (favorited categories)
-        const priorityGames = dropsSettings?.priority_games || [];
-        if (priorityGames.length === 0) {
+        // Get current favorite games
+        const favoriteGames = dropsSettings?.favorite_games || [];
+        if (favoriteGames.length === 0) {
             console.log('[DropsCenter] No favorited games, skipping new drops check');
             return;
         }
         
-        console.log('[DropsCenter] Checking for new drops in favorited games:', priorityGames);
+        console.log('[DropsCenter] Checking for new drops in favorited games:', favoriteGames);
         
         // Get previously cached campaign data
         let cachedData: Record<string, string[]> = {};
@@ -961,7 +966,7 @@ export default function DropsCenter() {
         const currentCampaignMap: Record<string, { campaignIds: string[]; gameName: string; boxArt: string }> = {};
         
         unifiedGames.forEach(game => {
-            const isFavorite = priorityGames.some(
+            const isFavorite = favoriteGames.some(
                 pg => pg.toLowerCase() === game.name.toLowerCase()
             );
             if (!isFavorite) return;
@@ -1330,15 +1335,15 @@ export default function DropsCenter() {
     useEffect(() => {
         if (!dropsSettings || unifiedGames.length === 0) return;
         
-        const priorityGames = dropsSettings.priority_games || [];
-        if (priorityGames.length === 0) return; // No favorites, skip
+        const favoriteGames = dropsSettings.favorite_games || [];
+        if (favoriteGames.length === 0) return; // No favorites, skip
         
         // Build current campaign IDs set
         const currentCampaignIds = new Set<string>();
         const newFavoriteCampaigns: { gameName: string; campaignName: string }[] = [];
         
         unifiedGames.forEach(game => {
-            const isFavorite = priorityGames.some(
+            const isFavorite = favoriteGames.some(
                 pg => pg.toLowerCase() === game.name.toLowerCase()
             );
             
@@ -1588,7 +1593,7 @@ export default function DropsCenter() {
                                         progress={progress}
                                         miningStatus={miningStatus}
                                         isSelected={selectedGame?.id === game.id}
-                                        isFavorite={(dropsSettings?.priority_games || []).some(
+                                        isFavorite={(dropsSettings?.favorite_games || []).some(
                                             pg => pg.toLowerCase() === game.name.toLowerCase()
                                         )}
                                         onClick={() => handleGameSelect(selectedGame?.id === game.id ? null : game)}

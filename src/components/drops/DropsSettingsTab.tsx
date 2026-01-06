@@ -26,6 +26,9 @@ interface DropsSettings {
     priority_mode: 'PriorityOnly' | 'EndingSoonest' | 'LowAvailFirst';
     watch_interval_seconds: number;
     recovery_settings?: RecoverySettings;
+    // Watch token allocation settings
+    reserve_token_for_current_stream?: boolean;
+    auto_reserve_on_watch?: boolean;
 }
 
 interface DropsSettingsTabProps {
@@ -138,6 +141,43 @@ export default function DropsSettingsTab({
                             onChange={handleAutoMiningToggle}
                             highlight
                         />
+                    </div>
+                </div>
+
+                {/* Watch Token Allocation Card */}
+                <div className="glass-panel p-6">
+                    <h3 className="text-lg font-bold text-textPrimary mb-2 flex items-center gap-2">
+                        <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-accent">
+                            <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+                            <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+                        </svg>
+                        Watch Token Allocation
+                    </h3>
+                    <p className="text-xs text-textSecondary mb-4">
+                        Twitch allows earning channel points on up to 2 concurrent streams. Reserving one token for your current stream
+                        increases your chance of receiving gifted subs by maintaining consistent presence. Power users can disable this for more aggressive farming.
+                    </p>
+
+                    <div className="space-y-1">
+                        {/* Reserve Token for Current Stream */}
+                        <ToggleSetting
+                            label="Reserve Token for Current Stream"
+                            description="Keep one token on the stream you're watching (matches Twitch behavior)"
+                            checked={settings.reserve_token_for_current_stream ?? true}
+                            onChange={(checked) => onUpdateSettings({ reserve_token_for_current_stream: checked })}
+                        />
+
+                        <div className="h-px bg-borderLight mx-2" />
+
+                        {/* Auto-reserve on Watch */}
+                        <div className={`${!(settings.reserve_token_for_current_stream ?? true) ? 'opacity-50 pointer-events-none' : ''}`}>
+                            <ToggleSetting
+                                label="Auto-reserve When Starting Stream"
+                                description="Automatically reserve token when you start watching"
+                                checked={settings.auto_reserve_on_watch ?? true}
+                                onChange={(checked) => onUpdateSettings({ auto_reserve_on_watch: checked })}
+                            />
+                        </div>
                     </div>
                 </div>
 

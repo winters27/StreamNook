@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use tauri::{AppHandle, Listener, Manager};
+use tauri::{AppHandle, Emitter, Listener, Manager};
 use tokio::sync::{Mutex, RwLock};
 use tokio::time::{interval, Duration};
 
-use crate::models::drops::{ChannelPointsClaim, ChannelPointsClaimType};
+use crate::models::drops::{ChannelPointsClaim, ChannelPointsClaimType, ReservedStreamSlot};
 use crate::models::settings::Settings;
 use crate::services::channel_points_service::ChannelPointsService;
 use crate::services::channel_points_websocket_service::ChannelPointsWebSocketService;
@@ -20,6 +20,8 @@ pub struct BackgroundService {
     drops_service: Arc<Mutex<DropsService>>,
     settings: Arc<RwLock<Settings>>,
     app_handle: AppHandle,
+    /// Reserved watch slot for the current stream (ensures presence in chat for gifted subs)
+    reserved_slot: Arc<RwLock<ReservedStreamSlot>>,
 }
 
 impl BackgroundService {
@@ -35,6 +37,7 @@ impl BackgroundService {
             drops_service,
             settings,
             app_handle,
+            reserved_slot: Arc::new(RwLock::new(ReservedStreamSlot::default())),
         }
     }
 
@@ -238,6 +241,7 @@ impl BackgroundService {
         let settings_watch = settings.clone();
         let cps_watch = channel_points_service.clone();
         let app_handle_watch = app_handle.clone();
+        let reserved_slot_watch = self.reserved_slot.clone();
 
         tokio::spawn(async move {
             let mut watch_interval = interval(Duration::from_secs(60)); // Send watch payload every minute
@@ -256,9 +260,12 @@ impl BackgroundService {
                 watch_interval.tick().await;
                 minutes_since_rotation += 1;
 
-                let auto_claim_enabled = {
+                let (auto_claim_enabled, reserve_token_enabled) = {
                     let s = settings_watch.read().await;
-                    s.drops.auto_claim_channel_points
+                    (
+                        s.drops.auto_claim_channel_points,
+                        s.drops.reserve_token_for_current_stream,
+                    )
                 };
 
                 println!(
@@ -330,10 +337,44 @@ impl BackgroundService {
                     // This ensures we cycle through ALL streams, not just top 2
                     let mut streams_to_watch: Vec<_> = Vec::new();
 
-                    // Sort streams by when they were last watched (oldest first)
+                    // Check for reserved slot first (if token reservation is enabled)
+                    let reserved = reserved_slot_watch.read().await;
+                    let mut reserved_stream_id: Option<String> = None;
+
+                    if reserve_token_enabled {
+                        if let Some(ref reserved_id) = reserved.channel_id {
+                            // Find the reserved stream in live_streams
+                            if let Some(reserved_stream) =
+                                live_streams.iter().find(|s| s.user_id == *reserved_id)
+                            {
+                                streams_to_watch.push(reserved_stream);
+                                reserved_stream_id = Some(reserved_id.clone());
+                                println!(
+                                    "  🔒 Reserved slot: {} (for gifted sub eligibility)",
+                                    reserved_stream.user_name
+                                );
+                            } else {
+                                // Reserved stream went offline - emit event to frontend
+                                println!("  ⚠️ Reserved stream went offline, clearing reservation");
+                                let _ = app_handle_watch.emit("reserved-stream-offline", ());
+                            }
+                        }
+                    }
+                    drop(reserved); // Release read lock
+
+                    // Calculate how many slots are available for rotation
+                    let rotation_slots = MAX_CONCURRENT_STREAMS - streams_to_watch.len();
+
+                    // Sort remaining streams by when they were last watched (oldest first)
                     // Streams that have never been watched get priority
                     let mut stream_priority: Vec<_> = live_streams
                         .iter()
+                        .filter(|s| {
+                            // Exclude the reserved stream from rotation pool
+                            reserved_stream_id
+                                .as_ref()
+                                .is_none_or(|rid| s.user_id != *rid)
+                        })
                         .map(|s| {
                             let last_watched = stream_watch_history
                                 .get(&s.user_id)
@@ -346,10 +387,8 @@ impl BackgroundService {
                     // Sort by last watched time (oldest/never watched first)
                     stream_priority.sort_by(|a, b| a.1.cmp(&b.1));
 
-                    // Take the streams that were watched longest ago (or never)
-                    for (stream, last_watched) in
-                        stream_priority.iter().take(MAX_CONCURRENT_STREAMS)
-                    {
+                    // Take the streams that were watched longest ago (or never) for remaining slots
+                    for (stream, last_watched) in stream_priority.iter().take(rotation_slots) {
                         streams_to_watch.push(*stream);
                         let time_since = if *last_watched == DateTime::<Utc>::MIN_UTC {
                             "never watched".to_string()
@@ -358,7 +397,7 @@ impl BackgroundService {
                             format!("{} min ago", duration.num_minutes())
                         };
                         println!(
-                            "  📌 Selected {} (last watched: {})",
+                            "  📌 Rotation slot: {} (last watched: {})",
                             stream.user_name, time_since
                         );
                     }
@@ -447,5 +486,29 @@ impl BackgroundService {
     ) -> Vec<crate::models::drops::ChannelPointsBalance> {
         let cps = self.channel_points_service.lock().await;
         cps.get_all_balances().await
+    }
+
+    /// Reserve a watch slot for a specific channel
+    /// This ensures the channel always gets one of the 2 concurrent watch slots
+    pub async fn reserve_channel(&self, channel_id: String, channel_login: String) {
+        let mut reserved = self.reserved_slot.write().await;
+        reserved.channel_id = Some(channel_id);
+        reserved.channel_login = Some(channel_login.clone());
+        reserved.reserved_at = Some(Utc::now());
+        println!("🔒 Reserved watch slot for: {}", channel_login);
+    }
+
+    /// Clear the reserved slot, returning it to the rotation pool
+    pub async fn clear_reservation(&self) {
+        let mut reserved = self.reserved_slot.write().await;
+        if let Some(login) = &reserved.channel_login {
+            println!("🔓 Cleared reservation for: {}", login);
+        }
+        *reserved = ReservedStreamSlot::default();
+    }
+
+    /// Get current reservation status
+    pub async fn get_reservation(&self) -> ReservedStreamSlot {
+        self.reserved_slot.read().await.clone()
     }
 }

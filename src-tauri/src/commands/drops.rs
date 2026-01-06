@@ -574,3 +574,40 @@ pub async fn get_channel_points_for_channel(
 
     Ok(result)
 }
+
+// Watch token allocation commands
+#[tauri::command]
+pub async fn set_reserved_channel(
+    state: State<'_, AppState>,
+    channel_id: Option<String>,
+    channel_login: Option<String>,
+) -> Result<(), String> {
+    let bg_service = state.background_service.lock().await;
+
+    match (channel_id, channel_login) {
+        (Some(id), Some(login)) => {
+            bg_service.reserve_channel(id, login).await;
+        }
+        (None, None) => {
+            bg_service.clear_reservation().await;
+        }
+        _ => return Err("Must provide both channel_id and channel_login, or neither".into()),
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn get_reserved_channel(
+    state: State<'_, AppState>,
+) -> Result<Option<ReservedStreamSlot>, String> {
+    let bg_service = state.background_service.lock().await;
+    let reservation = bg_service.get_reservation().await;
+
+    // Return the reservation if it has a channel_id, otherwise None
+    if reservation.channel_id.is_some() {
+        Ok(Some(reservation))
+    } else {
+        Ok(None)
+    }
+}

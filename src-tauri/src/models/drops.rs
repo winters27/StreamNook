@@ -132,6 +132,15 @@ pub struct DropsStatistics {
     pub channel_points_history: Vec<ChannelPointsClaim>,
 }
 
+/// Represents a reserved watch slot for the current stream (in-memory, not persisted)
+/// Used to ensure one watch token always goes to the stream the user is actively watching
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ReservedStreamSlot {
+    pub channel_id: Option<String>,
+    pub channel_login: Option<String>,
+    pub reserved_at: Option<DateTime<Utc>>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DropsSettings {
     pub auto_claim_drops: bool,
@@ -146,9 +155,28 @@ pub struct DropsSettings {
     pub excluded_games: HashSet<String>,
     pub priority_mode: PriorityMode,
     pub watch_interval_seconds: u64,
+    // UI-only settings (not used for mining logic)
+    /// Games the user has favorited for visual tracking - sorts them to top of list
+    /// This is separate from priority_games which affects auto-mining behavior
+    #[serde(default)]
+    pub favorite_games: Vec<String>,
+    // Watch token allocation settings
+    /// When TRUE (default), one watch token is always reserved for the currently-watched stream
+    /// This ensures presence in chat for gifted sub eligibility
+    /// Power users can set this FALSE to reclaim the token for more efficient channel points mining
+    #[serde(default = "default_true")]
+    pub reserve_token_for_current_stream: bool,
+    /// When TRUE (default), automatically reserves token when user starts watching a stream
+    /// When FALSE, user must manually trigger reservation
+    #[serde(default = "default_true")]
+    pub auto_reserve_on_watch: bool,
     // Recovery settings
     #[serde(default)]
     pub recovery_settings: RecoverySettings,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -173,6 +201,11 @@ impl Default for DropsSettings {
             excluded_games: HashSet::new(),
             priority_mode: PriorityMode::PriorityOnly,
             watch_interval_seconds: 20,
+            // UI defaults
+            favorite_games: Vec::new(),
+            // Watch token allocation defaults (ON by default - matches Twitch native behavior)
+            reserve_token_for_current_stream: true,
+            auto_reserve_on_watch: true,
             // Recovery defaults
             recovery_settings: RecoverySettings::default(),
         }

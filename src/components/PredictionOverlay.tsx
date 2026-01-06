@@ -100,7 +100,8 @@ const PredictionOverlay = ({ channelId, channelLogin }: PredictionOverlayProps) 
             setIsLocked(result.status === 'LOCKED');
             setIsExpanded(true);
             setResolutionState('none');
-            setSelectedOutcome(null);
+            // Auto-select first outcome if prediction is still active (not locked)
+            setSelectedOutcome(result.status === 'ACTIVE' && result.outcomes?.length > 0 ? result.outcomes[0].id : null);
             setHasPlacedBet(false);
             
             // Calculate remaining time if prediction is still ACTIVE
@@ -232,7 +233,8 @@ const PredictionOverlay = ({ channelId, channelLogin }: PredictionOverlayProps) 
         setActivePrediction(prediction);
         setTimeRemaining(prediction.prediction_window_seconds);
         setIsLocked(false);
-        setSelectedOutcome(null);
+        // Auto-select first outcome for immediate betting
+        setSelectedOutcome(prediction.outcomes?.length > 0 ? prediction.outcomes[0].id : null);
         setHasPlacedBet(false);
         setIsExpanded(true);
         fetchChannelPoints();
@@ -257,7 +259,8 @@ const PredictionOverlay = ({ channelId, channelLogin }: PredictionOverlayProps) 
           setActivePrediction(prediction);
           setTimeRemaining(prediction.prediction_window_seconds || 60);
           setIsLocked(prediction.status === 'LOCKED');
-          setSelectedOutcome(null);
+          // Auto-select first outcome if not locked
+          setSelectedOutcome(prediction.status === 'ACTIVE' && prediction.outcomes?.length > 0 ? prediction.outcomes[0].id : null);
           setHasPlacedBet(false);
           setIsExpanded(true);
           setResolutionState('none');
@@ -529,7 +532,7 @@ const PredictionOverlay = ({ channelId, channelLogin }: PredictionOverlayProps) 
                     
                     <div className="relative flex items-center justify-between">
                       <div className="flex items-center gap-2">
-                        {isSelected && (
+                        {isSelected && (!isLocked || hasPlacedBet) && (
                           <div className="w-4 h-4 rounded-full bg-white/30 flex items-center justify-center">
                             <div className="w-2.5 h-2.5 rounded-full bg-white" />
                           </div>

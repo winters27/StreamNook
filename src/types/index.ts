@@ -56,6 +56,9 @@ export interface DropsSettings {
   excluded_games?: string[];
   priority_mode?: 'PriorityOnly' | 'EndingSoonest' | 'LowAvailFirst';
   watch_interval_seconds?: number;
+  // Watch token allocation settings
+  reserve_token_for_current_stream?: boolean; // Reserve one watch token for current stream (default: true)
+  auto_reserve_on_watch?: boolean; // Automatically reserve token when starting a stream (default: true)
   // Recovery settings
   recovery_settings?: RecoverySettings;
 }

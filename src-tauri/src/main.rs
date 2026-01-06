@@ -456,6 +456,9 @@ fn main() {
             place_prediction,
             get_active_prediction,
             get_channel_points_for_channel,
+            // Watch token allocation commands
+            set_reserved_channel,
+            get_reserved_channel,
             // Component commands
             check_components_installed,
             get_bundled_streamlink_path,

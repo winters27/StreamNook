@@ -109,6 +109,9 @@ const DropsSettings = () => {
         excluded_games: settings.drops?.excluded_games ?? [],
         priority_mode: settings.drops?.priority_mode ?? 'PriorityOnly',
         watch_interval_seconds: settings.drops?.watch_interval_seconds ?? 20,
+        // Watch token allocation settings (default ON)
+        reserve_token_for_current_stream: settings.drops?.reserve_token_for_current_stream ?? true,
+        auto_reserve_on_watch: settings.drops?.auto_reserve_on_watch ?? true,
         ...newSettings,
       };
       await invoke('update_drops_settings', { settings: updatedSettings });
@@ -578,6 +581,52 @@ const DropsSettings = () => {
               onChange={async () => {
                 await updateDropsSettings({ auto_claim_channel_points: !(settings.drops?.auto_claim_channel_points ?? true) });
               }}
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* Watch Token Allocation Section (Advanced) */}
+      <div className="border-b border-border pb-6">
+        <h3 className="text-lg font-semibold text-textPrimary mb-2">Watch Token Allocation</h3>
+        <p className="text-xs text-textSecondary mb-4">
+          Twitch allows earning channel points on up to 2 concurrent streams. Reserving one token for your current stream
+          increases your chance of receiving gifted subs by maintaining consistent presence. Power users can disable this for more aggressive farming.
+        </p>
+
+        {/* Reserve Token for Current Stream */}
+        <div className="mb-4">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <span className="text-sm font-medium text-textPrimary">Reserve Token for Current Stream</span>
+              <p className="text-xs text-textSecondary">
+                Keep one token on the stream you're watching (matches Twitch behavior)
+              </p>
+            </div>
+            <Toggle
+              enabled={settings.drops?.reserve_token_for_current_stream ?? true}
+              onChange={async () => {
+                await updateDropsSettings({ reserve_token_for_current_stream: !(settings.drops?.reserve_token_for_current_stream ?? true) });
+              }}
+            />
+          </div>
+        </div>
+
+        {/* Auto-reserve on Watch */}
+        <div className="mb-4">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <span className="text-sm font-medium text-textPrimary">Auto-reserve When Starting Stream</span>
+              <p className="text-xs text-textSecondary">
+                Automatically reserve token when you start watching
+              </p>
+            </div>
+            <Toggle
+              enabled={settings.drops?.auto_reserve_on_watch ?? true}
+              onChange={async () => {
+                await updateDropsSettings({ auto_reserve_on_watch: !(settings.drops?.auto_reserve_on_watch ?? true) });
+              }}
+              disabled={!(settings.drops?.reserve_token_for_current_stream ?? true)}
             />
           </div>
         </div>

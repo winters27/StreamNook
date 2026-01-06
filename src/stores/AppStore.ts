@@ -761,6 +761,22 @@ export const useAppStore = create<AppState>((set, get) => ({
             channelName
           });
           console.log('🎮 Started drops monitoring for', channelName);
+
+          // Auto-reserve watch token for this stream (if enabled in settings)
+          // This ensures the user is "present" in chat for gifted sub eligibility
+          try {
+            const dropsSettings = await invoke('get_drops_settings') as any;
+            if (dropsSettings?.reserve_token_for_current_stream && dropsSettings?.auto_reserve_on_watch) {
+              await invoke('set_reserved_channel', {
+                channelId,
+                channelLogin: channelName
+              });
+              console.log('🔒 Auto-reserved watch token for', channelName);
+            }
+          } catch (reserveError) {
+            console.warn('Could not auto-reserve watch token:', reserveError);
+            // Non-critical, stream can still work
+          }
         }
       } catch (e) {
         console.warn('Could not start drops monitoring:', e);
