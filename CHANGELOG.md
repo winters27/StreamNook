@@ -1,3 +1,13 @@
+## [6.4.0] - 2026-01-05
+### ✨ Features
+- **Watch Token Allocation**: Introducing enhanced control over how StreamNook manages your Twitch channel point earning. You can now choose to reserve one of your two concurrent watch slots for the stream you're actively watching. This feature helps maintain consistent presence, crucial for eligibility for gifted subscriptions. For advanced users, this can be disabled to allow for more aggressive channel point farming across multiple streams.
+- **Favorite Games in Drops Center**: Quickly identify and track your favorite games within the Drops Center. Games you mark as favorites will now appear at the top of your lists, making it easier to manage your drops campaigns.
+- **Prediction Overlay Improvements**: Predictions in chat now automatically select the first available outcome when a new prediction starts, allowing you to place your bets faster.
+
+### 🐛 Bug Fixes
+- Fixed an issue where the stream would freeze when switching channels.
+- Correctly handle reserved streams going offline, returning the watch token to the general rotation pool and notifying the user.
+
 ## [6.3.1] - 2026-01-04
 ### 🐛 Bug Fixes
 - **Date Parsing Accuracy**: Resolved an issue where certain badge acquisition dates were parsed incorrectly, ensuring historical data is displayed accurately.
@@ -860,6 +870,7 @@ ATTENTION: ALL USERS LOG OUT OF TWITCH THEN LOG BACK IN FOR SOME CHANGES OT TAKE
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
