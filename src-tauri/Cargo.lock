@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "StreamNook"
-version = "6.3.1"
+version = "6.4.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -3991,6 +3991,7 @@ dependencies = [
  "js-sys",
  "log",
  "mime",
+ "mime_guess",
  "native-tls",
  "percent-encoding",
  "pin-project-lite",

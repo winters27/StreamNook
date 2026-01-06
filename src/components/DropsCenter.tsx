@@ -1053,6 +1053,7 @@ export default function DropsCenter() {
         let unlistenStatus: (() => void) | undefined;
         let unlistenProgress: (() => void) | undefined;
         let unlistenComplete: (() => void) | undefined;
+        let unlistenNoChannels: (() => void) | undefined;
 
         const setupListeners = async () => {
             unlistenStatus = await listen<MiningStatus>('mining-status-update', (event) => {
@@ -1109,6 +1110,50 @@ export default function DropsCenter() {
                 }
                 
                 // Refresh data to show updated progress
+                loadDropsData();
+            });
+
+            // Listen for mining stopped due to no channels available (all streams offline)
+            unlistenNoChannels = await listen<{ reason: string }>('mining-stopped-no-channels', async (event) => {
+                console.log('[DropsCenter] Mining stopped - no channels:', event.payload);
+                
+                // Check if we're in a Mine All queue
+                const currentQueue = mineAllQueueRef.current;
+                
+                if (currentQueue) {
+                    // Try to advance to next campaign in queue
+                    const nextIndex = currentQueue.currentIndex + 1;
+                    
+                    if (nextIndex < currentQueue.campaignIds.length) {
+                        console.log(`[DropsCenter] Channels offline - trying next campaign ${nextIndex + 1}/${currentQueue.campaignIds.length}`);
+                        addToast(`⚠️ All streams offline - trying next campaign...`, 'warning');
+                        
+                        setMineAllQueue(prev => prev ? { ...prev, currentIndex: nextIndex } : null);
+                        
+                        // Start the next campaign after a brief delay
+                        setTimeout(async () => {
+                            try {
+                                await invoke('start_campaign_mining', { campaignId: currentQueue.campaignIds[nextIndex] });
+                            } catch (err) {
+                                console.error('[DropsCenter] Failed to start next campaign:', err);
+                                addToast('Failed to start next campaign', 'error');
+                                setMineAllQueue(null);
+                                useAppStore.getState().setMiningActive(false);
+                            }
+                        }, 2000);
+                    } else {
+                        // All campaigns tried - queue exhausted
+                        addToast('⚠️ All campaigns have no available streams', 'warning');
+                        setMineAllQueue(null);
+                        useAppStore.getState().setMiningActive(false);
+                    }
+                } else {
+                    // Single campaign mode - just notify and stop
+                    addToast(`⚠️ ${event.payload.reason || 'All streams offline - mining stopped'}`, 'warning');
+                    useAppStore.getState().setMiningActive(false);
+                }
+                
+                // Refresh data
                 loadDropsData();
             });
 
@@ -1228,6 +1273,7 @@ export default function DropsCenter() {
             if (unlistenStatus) unlistenStatus();
             if (unlistenProgress) unlistenProgress();
             if (unlistenComplete) unlistenComplete();
+            if (unlistenNoChannels) unlistenNoChannels();
         };
     }, []);
 
