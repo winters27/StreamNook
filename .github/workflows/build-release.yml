@@ -33,9 +33,8 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git fetch origin
-          git checkout main
-          git merge origin/dev --no-ff -m "Merge dev to main for release"
-          git push origin main
+          # Force-push dev to main (dev is source of truth)
+          git push origin origin/dev:main --force
 
   build:
     needs: merge-to-main
