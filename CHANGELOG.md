@@ -1,3 +1,27 @@
+## [6.5.0] - 2026-01-08
+### ✨ Features
+
+- **Custom Channel Points Display**: StreamNook now supports displaying custom channel points names (like "Kisses" instead of "Points") and their unique icons directly in chat, predictions, and channel point widgets. This brings a more personalized experience to your favorite streamers' communities.
+
+- **Native Chat Virtualization**: The chat display has been rebuilt to leverage the browser's built-in `content-visibility` CSS property. This significantly improves performance by allowing the browser to skip rendering off-screen messages entirely, leading to smoother scrolling and reduced CPU usage, especially in busy chats.
+
+
+- **Improved Scroll-to-Message**: The functionality to jump to a specific message has been rewritten for greater reliability. It now uses native DOM scrolling and ensures chat remains paused during navigation, preventing interference and ensuring you land precisely where you intend.
+
+### 🐛 Bug Fixes
+
+- **Chat Height Calculation**: Resolved inconsistencies in chat message height calculations, particularly for historical messages and during fast scrolling, by adopting a DOM-first measurement approach.
+
+### 🔧 Maintenance
+
+- **Backend Chat Parsing Simplification**: Streamlined the backend parsing of historical chat messages, offloading layout calculations to the frontend for a more efficient architecture.
+
+- **Layout Command Cleanup**: Removed unused backend commands related to chat layout configuration, simplifying the backend API.
+
+### ⚡ Performance
+
+- **Chat Performance Boost**: Significant performance improvements in chat rendering due to native CSS virtualization and optimized message handling, making the chat experience much smoother.
+
 ## [6.4.0] - 2026-01-05
 ### 🔧 Maintenance
 - **Release Process Update**: Streamlined the release workflow to ensure `main` accurately reflects the `dev` branch before builds.
@@ -870,4 +894,5 @@ ATTENTION: ALL USERS LOG OUT OF TWITCH THEN LOG BACK IN FOR SOME CHANGES OT TAKE
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
