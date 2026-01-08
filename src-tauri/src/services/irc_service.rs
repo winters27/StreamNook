@@ -385,74 +385,15 @@ impl IrcService {
                     chat_msg.segments.len()
                 );
 
-                // PHASE 3 OPTIMIZATION: Use extended layout config for precise height pre-calculation
-                // This eliminates the need for ResizeObserver in the frontend
-                let config = layout_service.get_current_config_extended();
-
-                // Check if this is a reply message
-                let has_reply = chat_msg.metadata.reply_info.is_some();
-
-                // Check if this is a first message
-                let is_first_message = chat_msg.metadata.is_first_message;
-
-                // Count badges and emotes for layout calculation
-                let badge_count = chat_msg.badges.len();
-                let emote_count = chat_msg
-                    .segments
-                    .iter()
-                    .filter(|s| matches!(s, MessageSegment::Emote { .. }))
-                    .count();
-
-                // Check for shared chat
-                let is_shared_chat = chat_msg.metadata.is_from_shared_chat;
-
-                // Use extended layout calculation with all context for precise height
-                // PHASE 3.2: Pass display_name and is_action to account for username width on first line
-                let is_action = chat_msg.metadata.is_action;
-                let mut layout = layout_service.layout_message_extended(
-                    &chat_msg.content,
-                    config.width,
-                    config.font_size,
-                    has_reply,
-                    is_first_message,
-                    badge_count,
-                    emote_count,
-                    config.show_timestamps,
-                    is_shared_chat,
-                    &chat_msg.segments,
-                    &chat_msg.display_name,
-                    is_action,
-                );
-
-                // Check for bits cheer - these have special layouts with icons and tier styling
-                // Bits messages use py-2 (16px total), icon column, and bits-gradient background
-                let bits_amount = Self::extract_tag_value(&enhanced_message, "bits")
-                    .and_then(|s| s.parse::<u32>().ok())
-                    .unwrap_or(0);
-
-                if bits_amount > 0 {
-                    // Bits cheers have a different layout:
-                    // - py-2 padding (16px total vs configurable message_spacing)
-                    // - Icon on left (w-5 h-5 = 20px)
-                    // - "cheered X bits" text line
-                    // - Optional user message content
-                    let bits_line_height = config.font_size * 1.625;
-
-                    // Replace the calculated height with bits-specific height
-                    let mut bits_height = 16.0; // py-2 padding
-                    bits_height += bits_line_height; // "Username cheered X bits" line
-
-                    // Add user message content height if present
-                    if !chat_msg.content.is_empty() {
-                        bits_height += 4.0; // mt-1 spacing
-                        bits_height += layout.height - 16.0; // Content height (subtract its own padding)
-                    }
-
-                    bits_height += 4.0; // Safety buffer
-                    layout.height = bits_height;
-                }
-
-                chat_msg.layout = layout;
+                // DOM-FIRST ARCHITECTURE: Frontend measures heights via ResizeObserver
+                // Backend only provides message data, not layout calculations
+                // Set a placeholder height - frontend will measure and set the real value
+                chat_msg.layout = LayoutResult {
+                    height: 60.0, // Placeholder - frontend DOM measurement is authoritative
+                    width: 0.0,   // Not used anymore
+                    has_reply: chat_msg.metadata.reply_info.is_some(),
+                    is_first_message: chat_msg.metadata.is_first_message,
+                };
 
                 // Store message in user history LRU cache for profile cards
                 if !chat_msg.user_id.is_empty() {
@@ -489,89 +430,21 @@ impl IrcService {
             }
         } else if trimmed.contains("USERNOTICE") {
             // Subscription, resub, gift sub, etc.
-            // Parse USERNOTICE messages to calculate proper layout height
-            // This is critical for subscription messages with attached user messages
+            // Parse USERNOTICE messages - layout will be measured by frontend
             if let Some(mut chat_msg) = Self::parse_usernotice(trimmed) {
-                // Calculate layout using extended config
-                let config = layout_service.get_current_config_extended();
-
-                // Check if this is from shared chat
-                let is_shared_chat = chat_msg.metadata.is_from_shared_chat;
-
-                // Count badges and emotes for layout calculation
-                let badge_count = chat_msg.badges.len();
-                let emote_count = chat_msg
-                    .segments
-                    .iter()
-                    .filter(|s| matches!(s, MessageSegment::Emote { .. }))
-                    .count();
-
-                // Calculate layout for the user message content (if present)
-                let mut layout = layout_service.layout_message_extended(
-                    &chat_msg.content,
-                    config.width,
-                    config.font_size,
-                    false, // no reply for subscription messages
-                    false, // not a first message indicator
-                    badge_count,
-                    emote_count,
-                    config.show_timestamps,
-                    is_shared_chat,
-                    &chat_msg.segments,
-                    &chat_msg.display_name,
-                    false, // not an action message
-                );
-
-                // Add extra height for subscription-specific UI elements:
-                // - System message line (text-sm = 14px, leading-relaxed = 1.625)
-                let system_msg_line_height = 14.0 * 1.625;
-
-                // - Icon column (w-5 h-5 = 20px) + gap-2.5 (10px) - already accounted for in width
-                // - px-3 py-2 padding = 12px horizontal, 8px vertical
-                let subscription_padding = 16.0; // py-2 top + bottom = 8px * 2
-
-                // - System message height (estimate based on length, wrapping at ~40 chars per line)
-                let system_msg = chat_msg.metadata.system_message.as_deref().unwrap_or("");
-                let system_msg_chars = system_msg.len();
-                // Approximate characters per line at standard width
-                let chars_per_line = 45;
-                let system_msg_lines =
-                    ((system_msg_chars as f32 / chars_per_line as f32).ceil() as usize).max(1);
-                let system_msg_height = system_msg_lines as f32 * system_msg_line_height;
-
-                // - If there's user content, add mt-1 (4px) spacing between system msg and content
-                let content_spacing = if !chat_msg.content.is_empty() {
-                    4.0
-                } else {
-                    0.0
+                // DOM-FIRST ARCHITECTURE: Frontend measures heights via ResizeObserver
+                // Backend only provides message data, not layout calculations
+                chat_msg.layout = LayoutResult {
+                    height: 100.0, // Larger placeholder for subscription messages
+                    width: 0.0,
+                    has_reply: false,
+                    is_first_message: false,
                 };
-
-                // - If shared chat indicator is present, add its height (~28px for indicator + border)
-                let shared_chat_indicator_height = if is_shared_chat { 32.0 } else { 0.0 };
-
-                // Calculate total height
-                // If there's no user message content, the layout height is just for the empty message
-                let user_message_height = if chat_msg.content.is_empty() {
-                    0.0
-                } else {
-                    layout.height
-                };
-
-                layout.height = subscription_padding
-                    + shared_chat_indicator_height
-                    + system_msg_height
-                    + content_spacing
-                    + user_message_height
-                    + 4.0; // safety buffer
-
-                chat_msg.layout = layout;
 
                 println!(
-                    "[IRC Chat] Parsed USERNOTICE: type={:?}, system_msg_lines={}, user_content_len={}, total_height={}",
+                    "[IRC Chat] Parsed USERNOTICE: type={:?}, user_content_len={}",
                     chat_msg.metadata.msg_type,
-                    system_msg_lines,
-                    chat_msg.content.len(),
-                    chat_msg.layout.height
+                    chat_msg.content.len()
                 );
 
                 if let Ok(json_msg) = serde_json::to_string(&chat_msg) {
@@ -971,27 +844,66 @@ impl IrcService {
             return segments;
         }
 
-        let content_len = content.len();
+        // CRITICAL: Twitch sends emote positions as CHARACTER indices, not byte indices!
+        // Rust strings are byte-indexed, so we need to convert.
+        // Build a mapping from character index to byte index for safe slicing.
+        let char_to_byte: Vec<usize> = content
+            .char_indices()
+            .map(|(byte_idx, _)| byte_idx)
+            .collect();
+        let char_count = char_to_byte.len();
+
+        // Helper to safely convert char index to byte index
+        let char_to_byte_idx = |char_idx: usize| -> Option<usize> {
+            if char_idx < char_count {
+                Some(char_to_byte[char_idx])
+            } else if char_idx == char_count {
+                // One past the last character = end of string
+                Some(content.len())
+            } else {
+                None
+            }
+        };
 
         // First, split by Twitch native emotes
-        let mut last_index = 0;
+        let mut last_char_index = 0;
         let mut sorted_emotes = twitch_emotes.to_vec();
         sorted_emotes.sort_by_key(|e| e.start);
 
+        // Acquire emote set lock ONCE before the loop to avoid repeated lock acquisition
+        // which can cause deadlocks when called inside block_in_place + block_on
+        let emote_set_lock = get_channel_emotes().lock().await;
+        let seventv_emotes: Vec<_> = if let Some(emote_set) = emote_set_lock.as_ref() {
+            emote_set.seven_tv.clone()
+        } else {
+            Vec::new()
+        };
+        drop(emote_set_lock); // Release lock before loop
+
         for emote in &sorted_emotes {
-            // Validate emote bounds to prevent panics
-            if emote.start >= content_len || emote.end >= content_len || emote.start > emote.end {
+            // Validate emote bounds (character indices)
+            if emote.start >= char_count || emote.end >= char_count || emote.start > emote.end {
                 eprintln!(
-                    "[IRC Chat] Skipping invalid emote position: start={}, end={}, content_len={}",
-                    emote.start, emote.end, content_len
+                    "[IRC Chat] Skipping invalid emote position: start={}, end={}, char_count={}",
+                    emote.start, emote.end, char_count
                 );
                 continue;
             }
 
+            // Convert character indices to byte indices
+            let Some(start_byte) = char_to_byte_idx(emote.start) else {
+                continue;
+            };
+            let Some(end_byte_exclusive) = char_to_byte_idx(emote.end + 1) else {
+                continue;
+            };
+            let Some(last_byte) = char_to_byte_idx(last_char_index) else {
+                continue;
+            };
+
             // Add text before emote
-            if emote.start > last_index && last_index < content_len {
-                let safe_end = emote.start.min(content_len);
-                let text = &content[last_index..safe_end];
+            if emote.start > last_char_index {
+                let text = &content[last_byte..start_byte];
                 if !text.is_empty() {
                     // Parse text for third-party emotes, emojis, and links
                     segments.extend(Self::parse_text_segment(text).await);
@@ -999,20 +911,13 @@ impl IrcService {
             }
 
             // Add Twitch emote (check for 7TV override) - bounds already validated above
-            let emote_name = &content[emote.start..=emote.end];
+            let emote_name = &content[start_byte..end_byte_exclusive];
 
             // Check if 7TV has an emote with the same name (7TV takes priority)
-            let emote_set_lock = get_channel_emotes().lock().await;
-            let seventv_override = if let Some(emote_set) = emote_set_lock.as_ref() {
-                emote_set
-                    .seven_tv
-                    .iter()
-                    .find(|e| e.name == emote_name)
-                    .cloned()
-            } else {
-                None
-            };
-            drop(emote_set_lock);
+            let seventv_override = seventv_emotes
+                .iter()
+                .find(|e| e.name == emote_name)
+                .cloned();
 
             if let Some(seventv_emote) = &seventv_override {
                 // Use 7TV version instead of Twitch
@@ -1032,14 +937,16 @@ impl IrcService {
                 });
             }
 
-            last_index = emote.end + 1;
+            last_char_index = emote.end + 1;
         }
 
         // Add remaining text
-        if last_index < content.len() {
-            let text = &content[last_index..];
-            if !text.is_empty() {
-                segments.extend(Self::parse_text_segment(text).await);
+        if last_char_index < char_count {
+            if let Some(last_byte) = char_to_byte_idx(last_char_index) {
+                let text = &content[last_byte..];
+                if !text.is_empty() {
+                    segments.extend(Self::parse_text_segment(text).await);
+                }
             }
         }
 
@@ -1587,45 +1494,20 @@ impl IrcService {
         (None, None)
     }
 
-    /// Parse historical IRC messages through the same pipeline as live messages
-    /// This ensures historical messages (from IVR API) get proper layout calculation
-    pub async fn parse_historical_messages(
-        raw_messages: Vec<String>,
-        layout_service: &LayoutService,
-    ) -> Vec<ChatMessage> {
+    /// Parse multiple IRC messages (historical messages from IVR API)
+    /// Layout height is set to 0.0 - the browser handles all layout via CSS content-visibility
+    pub async fn parse_historical_messages(raw_messages: Vec<String>) -> Vec<ChatMessage> {
         let mut results = Vec::with_capacity(raw_messages.len());
 
         for raw in raw_messages {
             if let Some(mut chat_msg) = Self::parse_privmsg(&raw) {
-                // Calculate layout using the same logic as live messages
-                let config = layout_service.get_current_config_extended();
-
-                let has_reply = chat_msg.metadata.reply_info.is_some();
-                let is_first_message = chat_msg.metadata.is_first_message;
-                let badge_count = chat_msg.badges.len();
-                let emote_count = chat_msg
-                    .segments
-                    .iter()
-                    .filter(|s| matches!(s, MessageSegment::Emote { .. }))
-                    .count();
-                let is_shared_chat = chat_msg.metadata.is_from_shared_chat;
-                let is_action = chat_msg.metadata.is_action;
-
-                let layout = layout_service.layout_message_extended(
-                    &chat_msg.content,
-                    config.width,
-                    config.font_size,
-                    has_reply,
-                    is_first_message,
-                    badge_count,
-                    emote_count,
-                    config.show_timestamps,
-                    is_shared_chat,
-                    &chat_msg.segments,
-                    &chat_msg.display_name,
-                    is_action,
-                );
-                chat_msg.layout = layout;
+                // Layout is handled by browser - just use placeholder values
+                chat_msg.layout = LayoutResult {
+                    height: 0.0,
+                    width: 0.0,
+                    has_reply: false,
+                    is_first_message: false,
+                };
 
                 results.push(chat_msg);
             }

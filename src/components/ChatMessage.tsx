@@ -1,6 +1,7 @@
 import React, { useMemo, useState, useEffect, memo } from 'react';
 import { parseMessage, MessageSegment } from '../services/twitchChat';
 import { queueEmoteForCaching, EmoteSet, Emote } from '../services/emoteService';
+import { calculateHalfPadding } from '../utils/chatLayoutUtils';
 import { computePaintStyle, getBadgeImageUrl, queueCosmeticForCaching } from '../services/seventvService';
 import { getCosmeticsWithFallback, getThirdPartyBadgesFromMemoryCache, getCosmeticsFromMemoryCache, getTwitchBadgesWithFallback } from '../services/cosmeticsCache';
 import { ThirdPartyBadge } from '../services/thirdPartyBadges';
@@ -606,8 +607,11 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
       );
     };
 
+    // Use dynamic spacing from user settings
+    const eventPadding = calculateHalfPadding(chatDesign?.message_spacing ?? 8);
+
     return (
-      <div key={messageId} className="px-3 py-2 border-b border-borderSubtle bits-gradient">
+      <div key={messageId} className="px-3 border-b border-borderSubtle bits-gradient" style={{ paddingTop: `${eventPadding}px`, paddingBottom: `${eventPadding}px` }}>
         <div className="flex items-start gap-2.5">
           <div className="flex-shrink-0 mt-0.5">
             {/* Bits/gem icon */}
@@ -735,8 +739,11 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
       );
     };
 
+    // Use dynamic spacing from user settings
+    const eventPadding = calculateHalfPadding(chatDesign?.message_spacing ?? 8);
+
     return (
-      <div key={messageId} className="px-3 py-2 border-b border-borderSubtle donation-gradient">
+      <div key={messageId} className="px-3 border-b border-borderSubtle donation-gradient" style={{ paddingTop: `${eventPadding}px`, paddingBottom: `${eventPadding}px` }}>
         {/* Shared chat indicator */}
         {isFromDifferentChannel && (
           <div className="flex items-center gap-1.5 mb-2 pb-2 border-b border-borderSubtle">
@@ -880,8 +887,11 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
       );
     };
 
+    // Use dynamic spacing from user settings
+    const eventPadding = calculateHalfPadding(chatDesign?.message_spacing ?? 8);
+
     return (
-      <div key={messageId} className="px-3 py-2 border-b border-borderSubtle watchstreak-gradient">
+      <div key={messageId} className="px-3 border-b border-borderSubtle watchstreak-gradient" style={{ paddingTop: `${eventPadding}px`, paddingBottom: `${eventPadding}px` }}>
         <div className="flex items-start gap-2.5">
           <div className="flex-shrink-0 mt-0.5">
             {/* Fire/Watch Streak icon from Twitch */}
@@ -1195,8 +1205,11 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
       }
     }
 
+    // Use dynamic spacing from user settings
+    const eventPadding = calculateHalfPadding(chatDesign?.message_spacing ?? 8);
+
     return (
-      <div key={messageId} className="px-3 py-2 border-b border-borderSubtle subscription-gradient">
+      <div key={messageId} className="px-3 border-b border-borderSubtle subscription-gradient" style={{ paddingTop: `${eventPadding}px`, paddingBottom: `${eventPadding}px` }}>
         {/* Shared chat indicator */}
         {isFromDifferentChannel && (
           <div className="flex items-center gap-1.5 mb-2 pb-2 border-b border-borderSubtle">

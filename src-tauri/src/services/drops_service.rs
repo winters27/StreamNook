@@ -1203,6 +1203,8 @@ impl DropsService {
                             channel_name: channel_name.to_string(),
                             balance: balance_val,
                             last_updated: Utc::now(),
+                            points_name: None, // Not fetched via persisted query
+                            points_icon_url: None,
                         };
 
                         let mut balances = self.channel_points_balances.write().await;
@@ -1659,6 +1661,8 @@ impl DropsService {
                             channel_name: channel_name.to_string(),
                             balance: balance_val,
                             last_updated: Utc::now(),
+                            points_name: None, // Not fetched via persisted query
+                            points_icon_url: None,
                         };
 
                         let mut balances_lock = balances.write().await;

@@ -48,6 +48,8 @@ const PredictionOverlay = ({ channelId, channelLogin }: PredictionOverlayProps) 
   const [hasPlacedBet, setHasPlacedBet] = useState(false);
   const [resolutionState, setResolutionState] = useState<'none' | 'pending' | 'win' | 'loss' | 'refund' | 'announced'>('none');
   const [winningOutcomeId, setWinningOutcomeId] = useState<string | null>(null);
+  // Custom channel points icon URL (e.g., custom lips icon for Hamlinz's "Kisses")
+  const [customPointsIconUrl, setCustomPointsIconUrl] = useState<string | null>(null);
 
   // Refs to track latest values for use in event listeners (avoids stale closures)
   const hasPlacedBetRef = useRef(hasPlacedBet);
@@ -133,6 +135,7 @@ const PredictionOverlay = ({ channelId, channelLogin }: PredictionOverlayProps) 
     setResolutionState('none');
     setWinningOutcomeId(null);
     setChannelPoints(null);
+    setCustomPointsIconUrl(null);
     
     // Fetch active prediction for the new channel
     fetchActivePrediction();
@@ -155,6 +158,16 @@ const PredictionOverlay = ({ channelId, channelLogin }: PredictionOverlayProps) 
         
         // Use the correct path: data.user.channel.self.communityPoints.balance
         const balance = result?.data?.user?.channel?.self?.communityPoints?.balance;
+        
+        // Extract custom points icon URL
+        const customIconUrl = result?.data?.user?.channel?.communityPointsSettings?.image?.url;
+        if (customIconUrl) {
+          console.log('[Prediction] ✅ Got custom points icon:', customIconUrl);
+          setCustomPointsIconUrl(customIconUrl);
+        } else {
+          setCustomPointsIconUrl(null);
+        }
+        
         if (typeof balance === 'number') {
           console.log('[Prediction] ✅ Setting channel points to:', balance);
           setChannelPoints(balance);
@@ -479,7 +492,11 @@ const PredictionOverlay = ({ channelId, channelLogin }: PredictionOverlayProps) 
               {/* Channel Points Badge */}
               {channelPoints !== null && (
                 <div className="flex items-center gap-1 px-1.5 py-1 bg-orange-500/20 border border-orange-500/40 rounded-md">
-                  <ChannelPointsIcon className="text-orange-400" size={12} />
+                  {customPointsIconUrl ? (
+                    <img src={customPointsIconUrl} alt="points" className="w-3 h-3" />
+                  ) : (
+                    <ChannelPointsIcon className="text-orange-400" size={12} />
+                  )}
                   <span className="text-xs font-bold text-orange-400">
                     {channelPoints.toLocaleString()}
                   </span>
@@ -545,7 +562,11 @@ const PredictionOverlay = ({ channelId, channelLogin }: PredictionOverlayProps) 
                           {outcome.total_users}
                         </span>
                         <span className="flex items-center gap-1">
-                          <ChannelPointsIcon size={12} className="text-white/90" />
+                          {customPointsIconUrl ? (
+                            <img src={customPointsIconUrl} alt="points" className="w-3 h-3" />
+                          ) : (
+                            <ChannelPointsIcon size={12} className="text-white/90" />
+                          )}
                           {outcome.total_points.toLocaleString()}
                         </span>
                         <span className="font-bold text-sm">{percentage}%</span>
@@ -733,7 +754,11 @@ const PredictionOverlay = ({ channelId, channelLogin }: PredictionOverlayProps) 
                     {activePrediction.outcomes.reduce((sum, o) => sum + o.total_users, 0).toLocaleString()} voters
                   </span>
                   <span className="flex items-center gap-1">
-                    <ChannelPointsIcon size={12} className="text-textSecondary" />
+                    {customPointsIconUrl ? (
+                      <img src={customPointsIconUrl} alt="points" className="w-3 h-3" />
+                    ) : (
+                      <ChannelPointsIcon size={12} className="text-textSecondary" />
+                    )}
                     {activePrediction.outcomes.reduce((sum, o) => sum + o.total_points, 0).toLocaleString()} points
                   </span>
                 </div>

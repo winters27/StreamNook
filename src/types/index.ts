@@ -470,6 +470,10 @@ export interface ChannelPointsBalance {
   channel_name: string;
   balance: number;
   last_updated: string;
+  /** Custom channel points name (e.g., "Kisses" for Hamlinz). undefined = default */
+  points_name?: string;
+  /** Custom channel points icon URL. undefined = uses default Twitch icon */
+  points_icon_url?: string;
 }
 
 export interface DropsStatistics {

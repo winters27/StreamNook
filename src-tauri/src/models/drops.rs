@@ -101,6 +101,12 @@ pub struct ChannelPointsBalance {
     pub channel_name: String,
     pub balance: i32,
     pub last_updated: DateTime<Utc>,
+    /// Custom channel points name (e.g., "Kisses" for Hamlinz). None = default "Channel Points"
+    #[serde(default)]
+    pub points_name: Option<String>,
+    /// Custom channel points icon URL. None = uses default Twitch icon
+    #[serde(default)]
+    pub points_icon_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

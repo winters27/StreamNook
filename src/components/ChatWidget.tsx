@@ -1,6 +1,5 @@
-import React, { useEffect, useRef, useState, useMemo, useCallback, useLayoutEffect, memo } from 'react';
-import { VariableSizeList as List } from 'react-window';
-import AutoSizer from 'react-virtualized-auto-sizer';
+import React, { useEffect, useRef, useState, useMemo, useCallback, memo } from 'react';
+import ChatMessageList from './ChatMessageList';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
@@ -50,158 +49,12 @@ interface ParsedMessage {
 
 import { EMOJI_CATEGORIES, EMOJI_KEYWORDS } from '../services/emojiCategories';
 
-interface ChatMessageRowProps {
-  message: string | BackendChatMessage;
-  messageIndex: number;
-  messageId: string | null;
-  onUsernameClick: (
-    userId: string,
-    username: string,
-    displayName: string,
-    color: string,
-    badges: Array<{ key: string; info: any }>,
-    event: React.MouseEvent
-  ) => void;
-  onReplyClick: (parentMsgId: string) => void;
-  isHighlighted: boolean;
-  isDeleted: boolean;
-  onEmoteRightClick: (emoteName: string) => void;
-  onUsernameRightClick: (messageId: string, username: string) => void;
-  onBadgeClick: (badgeKey: string, badgeInfo: any) => void;
-  setItemSize: (index: number, size: number, messageId?: string | null, hasReply?: boolean) => void;
-  emotes: EmoteSet | null;
-}
-
-const ChatMessageRow = memo(({
-  message,
-  messageIndex,
-  messageId,
-  onUsernameClick,
-  onReplyClick,
-  isHighlighted,
-  isDeleted,
-  onEmoteRightClick,
-  onUsernameRightClick,
-  onBadgeClick,
-  setItemSize,
-  emotes,
-}: ChatMessageRowProps) => {
-  const rowRef = useRef<HTMLDivElement>(null);
-  // Track if we've reported the height for this specific message+deleted state combo
-  const reportedStateRef = useRef<string>('');
-
-  // REFACTORED: Simplified height reporting strategy
-  // - Backend messages: Use pre-calculated height immediately, no DOM measurement
-  // - Legacy IRC strings: Measure DOM once per message
-  // - Deleted state changes: Only re-measure for legacy strings (backend heights don't change)
-  useLayoutEffect(() => {
-    const isBackendMessage = typeof message !== 'string';
-    const stateKey = `${messageId || messageIndex}-${isDeleted}`;
-    
-    // Skip if we've already reported for this exact state
-    if (reportedStateRef.current === stateKey) return;
-    
-    if (isBackendMessage) {
-      // Backend messages have pre-calculated heights from Rust
-      // These are accurate for the current layout width - trust them completely
-      const preCalculatedHeight = (message as BackendChatMessage).layout?.height || 0;
-      if (preCalculatedHeight > 0) {
-        // For deleted messages, add a small buffer for the "[deleted]" indicator
-        // This is ~20px (text + margin), but we keep it simple
-        const adjustedHeight = isDeleted ? preCalculatedHeight + 22 : preCalculatedHeight;
-        setItemSize(messageIndex, adjustedHeight, messageId, false);
-        reportedStateRef.current = stateKey;
-        return;
-      }
-    }
-
-    // Legacy IRC strings need DOM measurement (only happens for historical messages before Rust parsing)
-    const element = rowRef.current;
-    if (!element) return;
-
-    // Use a single RAF to batch measurements
-    requestAnimationFrame(() => {
-      if (reportedStateRef.current === stateKey) return; // Double-check
-      const height = element.getBoundingClientRect().height;
-      if (height > 0) {
-        setItemSize(messageIndex, height, messageId, false);
-        reportedStateRef.current = stateKey;
-      }
-    });
-  }, [messageIndex, messageId, setItemSize, message, isDeleted]);
-
-  return (
-    <div ref={rowRef}>
-      <ChatMessage
-        message={message}
-        messageIndex={messageIndex}
-        onUsernameClick={onUsernameClick}
-        onReplyClick={onReplyClick}
-        isHighlighted={isHighlighted}
-        isDeleted={isDeleted}
-        onEmoteRightClick={onEmoteRightClick}
-        onUsernameRightClick={onUsernameRightClick}
-        onBadgeClick={onBadgeClick}
-        emotes={emotes}
-      />
-    </div>
-  );
-});
-
-ChatMessageRow.displayName = 'ChatMessageRow';
-
-// LayoutUpdater: Syncs container width with backend layout service.
-// REFACTORED: Immediate sync on mount + smart debouncing for resize operations
-// The goal is to ensure backend always knows the current width before calculating heights
-const LayoutUpdater = memo(({ width, onWidthSynced }: { width: number; onWidthSynced?: (width: number) => void }) => {
-  const lastSyncedWidthRef = useRef<number>(0);
-  const isFirstSyncRef = useRef<boolean>(true);
-  
-  useEffect(() => {
-    // Account for message padding (px-3 = 12px * 2 = 24px horizontal padding)
-    const contentWidth = Math.max(width - 24, 100);
-    
-    // Skip if width hasn't meaningfully changed (within 2px tolerance)
-    if (Math.abs(lastSyncedWidthRef.current - contentWidth) < 2 && !isFirstSyncRef.current) {
-      return;
-    }
-    
-    // First sync is immediate - critical for initial load
-    // Subsequent syncs are debounced to avoid spam during resize
-    const delay = isFirstSyncRef.current ? 0 : 100;
-    
-    const timeout = setTimeout(() => {
-      invoke('update_layout_width', { width: contentWidth })
-        .then(() => {
-          lastSyncedWidthRef.current = contentWidth;
-          if (isFirstSyncRef.current) {
-            isFirstSyncRef.current = false;
-          }
-          // Notify parent that width is synced (for initial load coordination)
-          onWidthSynced?.(contentWidth);
-        })
-        .catch(err => console.error('[LayoutUpdater] Failed to update width:', err));
-    }, delay);
-    
-    return () => clearTimeout(timeout);
-  }, [width, onWidthSynced]);
-  
-  return null;
-});
-LayoutUpdater.displayName = 'LayoutUpdater';
 
 const ChatWidget = () => {
   const { messages, connectChat, sendMessage, isConnected, error, setPaused: setBufferPaused, deletedMessageIds, clearedUserIds } = useTwitchChat();
   const { currentStream, currentUser } = useAppStore();
-  const listRef = useRef<List>(null);
-  const outerRef = useRef<HTMLDivElement>(null);
-  const messageHeightsById = useRef<Map<string, number>>(new Map());
-  const rowHeights = useRef<{ [key: number]: number }>({});
-  const messageRefs = useRef<{ [key: number]: HTMLDivElement | null }>({});
-  const containerHeightRef = useRef<number>(0);
-  const containerWidthRef = useRef<number>(0);
-  const prevMessageCountRef = useRef<number>(0);
-  const prevFirstMessageIdRef = useRef<string | null>(null);
+  
+  // UI state
   const [messageInput, setMessageInput] = useState('');
   const [showEmotePicker, setShowEmotePicker] = useState(false);
   const [emotes, setEmotes] = useState<EmoteSet | null>(null);
@@ -213,15 +66,12 @@ const ChatWidget = () => {
   const [isPaused, setIsPaused] = useState(false);
   const [pausedMessageCount, setPausedMessageCount] = useState(0);
   const isHoveringChatRef = useRef<boolean>(false);
-  const frozenMessagesRef = useRef<(string | BackendChatMessage)[] | null>(null);
-  const frozenRowHeightsRef = useRef<{ [key: number]: number } | null>(null);
-  const lastScrollPositionRef = useRef<number>(0);
   const lastResumeTimeRef = useRef<number>(0);
+  const lastNavigationTimeRef = useRef<number>(0); // Track scrollToMessage navigation
+  const mountTimeRef = useRef<number>(Date.now());
   const [viewerCount, setViewerCount] = useState<number | null>(null);
   const streamUptimeRef = useRef<string>('');
-  const [, forceUpdate] = useState({});
   const { settings } = useAppStore();
-  const prevThemeRef = useRef<string | undefined>(settings.theme);
   const [selectedUser, setSelectedUser] = useState<{
     userId: string;
     username: string;
@@ -237,9 +87,6 @@ const ChatWidget = () => {
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
   const [isSharedChat, setIsSharedChat] = useState<boolean>(false);
   const [replyingTo, setReplyingTo] = useState<{ messageId: string; username: string } | null>(null);
-  const lastMessageCountRef = useRef<number>(0);
-  const isInitialLoadRef = useRef<boolean>(false);
-  const initialLoadTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // Drops mining state
   const [dropsCampaign, setDropsCampaign] = useState<{ id: string; name: string; game_name: string } | null>(null);
@@ -250,19 +97,17 @@ const ChatWidget = () => {
   const [channelPoints, setChannelPoints] = useState<number | null>(null);
   const [channelPointsHovered, setChannelPointsHovered] = useState(false);
   const [isLoadingChannelPoints, setIsLoadingChannelPoints] = useState(false);
+  const [customPointsName, setCustomPointsName] = useState<string | null>(null);
+  const [customPointsIconUrl, setCustomPointsIconUrl] = useState<string | null>(null);
 
   // Cache for channel names (broadcaster ID -> display name) used in emote picker grouping
   const [channelNameCache, setChannelNameCache] = useState<Map<string, string>>(new Map());
 
-  // Refs for batching list resets to prevent UI freezing during resizing
-  const resetRafIdRef = useRef<number | null>(null);
-  const minResetIndexRef = useRef<number>(Infinity);
-
-  // Track if we should auto-scroll to bottom (when user is at bottom)
-  const shouldAutoScrollRef = useRef<boolean>(true);
+  // Messages to render
+  const visibleMessages = messages;
 
 
-
+  // Process new messages for user history tracking
   useEffect(() => {
     const newMessages = messages.slice(lastProcessedCountRef.current);
     newMessages.forEach((message, idx) => {
@@ -353,19 +198,16 @@ const ChatWidget = () => {
     return () => clearInterval(intervalId);
   }, [currentStream?.started_at]);
 
-  useEffect(() => {
-    const currentTheme = settings.theme;
-    if (prevThemeRef.current && prevThemeRef.current !== currentTheme) {
-      rowHeights.current = {};
-      messageHeightsById.current.clear();
-      if (listRef.current) listRef.current.resetAfterIndex(0, true);
-    }
-    prevThemeRef.current = currentTheme;
-  }, [settings.theme]);
+
 
   useEffect(() => {
     if (currentStream?.user_login && connectedChannelRef.current !== currentStream.user_login) {
       connectedChannelRef.current = currentStream.user_login;
+      // Reset pause state when switching channels - ensures chat starts anchored to bottom
+      setIsPaused(false);
+      setPausedMessageCount(0);
+      setBufferPaused(false);
+      mountTimeRef.current = Date.now(); // Reset grace period on channel switch
       // Pass roomId (user_id) to enable fetching recent messages from IVR API
       connectChat(currentStream.user_login, currentStream.user_id);
       loadEmotes(currentStream.user_login, currentStream.user_id);
@@ -376,6 +218,8 @@ const ChatWidget = () => {
       );
       // Reset channel points when switching channels
       setChannelPoints(null);
+      setCustomPointsName(null);
+      setCustomPointsIconUrl(null);
     }
     return () => {
       if (currentStream?.user_login !== connectedChannelRef.current) connectedChannelRef.current = null;
@@ -403,6 +247,7 @@ const ChatWidget = () => {
         // Try multiple possible paths since the backend GQL query uses "community.channel" structure
         // Path 1: data.community.channel.self.communityPoints.balance
         let balance = result?.data?.community?.channel?.self?.communityPoints?.balance;
+        let channel = result?.data?.community?.channel || result?.data?.user?.channel;
         
         // Path 2: data.user.channel.self.communityPoints.balance (alternative structure)
         if (balance === undefined) {
@@ -412,6 +257,19 @@ const ChatWidget = () => {
         // Path 3: Direct balance if returned differently
         if (balance === undefined && result?.balance !== undefined) {
           balance = result.balance;
+        }
+        
+        // Extract custom points settings (name and icon)
+        const communityPointsSettings = channel?.communityPointsSettings;
+        if (communityPointsSettings) {
+          const customName = communityPointsSettings.name;
+          const customIconUrl = communityPointsSettings.image?.url;
+          console.log('[ChatWidget] Custom points settings:', { customName, customIconUrl });
+          setCustomPointsName(customName || null);
+          setCustomPointsIconUrl(customIconUrl || null);
+        } else {
+          setCustomPointsName(null);
+          setCustomPointsIconUrl(null);
         }
         
         if (typeof balance === 'number') {
@@ -599,85 +457,6 @@ const ChatWidget = () => {
     }
   };
 
-  // Force re-measurement of all visible items after programmatic scrolls
-  const triggerRemeasurement = useCallback(() => {
-    if (!listRef.current) return;
-    // Reset the list to force react-window to re-query sizes
-    listRef.current.resetAfterIndex(0, false);
-    // Schedule multiple resets to catch any async rendering
-    // We execute these more thoroughly to ensure the layout is correct on initial load
-    [50, 150, 300, 500, 800, 1200].forEach(delay => {
-      setTimeout(() => listRef.current?.resetAfterIndex(0, false), delay);
-    });
-  }, []);
-
-  // Handle historical messages being loaded (bulk load) vs new messages being appended
-  useEffect(() => {
-    if (!listRef.current || messages.length === 0) return;
-    const lastIndex = messages.length - 1;
-    const prevCount = lastMessageCountRef.current;
-    const countDiff = messages.length - prevCount;
-
-    // Detect if this is a bulk load (many messages at once, likely historical)
-    // vs a normal append (1-2 messages at a time)
-    const isBulkLoad = prevCount === 0 && messages.length > 5;
-
-    if (isBulkLoad) {
-      // Historical messages were loaded - reset all heights and the entire list
-      console.log('[ChatWidget] Bulk load detected, resetting list from index 0');
-      isInitialLoadRef.current = true;
-
-      // Clear any existing timeout
-      if (initialLoadTimeoutRef.current) {
-        clearTimeout(initialLoadTimeoutRef.current);
-      }
-
-      rowHeights.current = {};
-      messageHeightsById.current.clear();
-      listRef.current.resetAfterIndex(0, true);
-
-      // After a brief delay to allow rendering, scroll and trigger re-measurement
-      setTimeout(() => {
-        if (messages.length > 0) {
-          lastResumeTimeRef.current = Date.now();
-          setIsPaused(false);
-          setBufferPaused(false);
-          if (listRef.current) {
-            listRef.current.scrollToItem(messages.length - 1, 'end');
-            // Trigger multiple re-measurements to fix any overlap on initial load
-            triggerRemeasurement();
-          }
-        }
-      }, 100);
-
-      // Keep the initial load flag active for a bit longer to prevent auto-pause
-      initialLoadTimeoutRef.current = setTimeout(() => {
-        isInitialLoadRef.current = false;
-        console.log('[ChatWidget] Initial load complete, auto-pause now enabled');
-        // One final re-measurement sweep after initial load completes
-        triggerRemeasurement();
-      }, 3000);
-    } else if (!isPaused) {
-      // Normal message append
-      listRef.current.resetAfterIndex(Math.max(0, lastIndex - 1));
-      listRef.current.scrollToItem(lastIndex, 'end');
-    }
-
-    lastMessageCountRef.current = messages.length;
-  }, [messages, isPaused, triggerRemeasurement]);
-
-  useEffect(() => {
-    if (isPaused && pausedMessageCount === 0) {
-      setPausedMessageCount(messages.length);
-      frozenMessagesRef.current = [...messages];
-      frozenRowHeightsRef.current = { ...rowHeights.current };
-    } else if (!isPaused) {
-      setPausedMessageCount(0);
-      frozenMessagesRef.current = null;
-      frozenRowHeightsRef.current = null;
-    }
-  }, [isPaused, messages.length]);
-
   const getMessageId = useCallback((message: string | BackendChatMessage): string | null => {
     if (typeof message !== 'string') {
       return message.id;
@@ -686,251 +465,23 @@ const ChatWidget = () => {
     return idMatch ? idMatch[1] : null;
   }, []);
 
+  // Track paused message count for resume button
   useEffect(() => {
-    if (isPaused && frozenMessagesRef.current) return;
-    const newRowHeights: { [key: number]: number } = {};
-    messages.forEach((message, index) => {
-      const msgId = getMessageId(message);
-      if (msgId && messageHeightsById.current.has(msgId)) {
-        newRowHeights[index] = messageHeightsById.current.get(msgId)!;
-      }
-    });
-    rowHeights.current = newRowHeights;
-    const currentFirstId = messages.length > 0 ? getMessageId(messages[0]) : null;
-    prevMessageCountRef.current = messages.length;
-    prevFirstMessageIdRef.current = currentFirstId;
-    const cacheBufferAllowance = 50;
-    if (messageHeightsById.current.size > messages.length + cacheBufferAllowance) {
-      const currentIds = new Set(messages.map(m => getMessageId(m)).filter(Boolean));
-      for (const [id] of messageHeightsById.current) {
-        if (!currentIds.has(id)) messageHeightsById.current.delete(id);
-      }
+    if (isPaused && pausedMessageCount === 0) {
+      setPausedMessageCount(messages.length);
+    } else if (!isPaused) {
+      setPausedMessageCount(0);
     }
-  }, [messages, isPaused, getMessageId]);
+  }, [isPaused, messages.length, pausedMessageCount]);
 
-  // Helper function to estimate height for raw IRC string messages (historical messages)
-  // This provides a better initial estimate than a fixed value to reduce layout jumping
-  // Uses actual widget width and font size settings for accurate line estimation
-  const estimateStringMessageHeight = useCallback((message: string): number => {
-    // Get actual dimensions and settings
-    const fontSize = settings.chat_design?.font_size || 14;
-    const messageSpacing = settings.chat_design?.message_spacing ?? 8;
-    const showTimestamps = settings.chat_design?.show_timestamps || false;
-    
-    // Calculate line height based on font size (1.625 line-height ratio)
-    const lineHeight = Math.ceil(fontSize * 1.625);
-    
-    // Get content width - account for padding (24px) and badges (~60px estimate)
-    // If containerWidthRef is not set yet, use a conservative default
-    const containerWidth = containerWidthRef.current || 300;
-    const contentWidth = Math.max(containerWidth - 24 - 60, 100);
-    
-    // Account for timestamp width if enabled (~55px)
-    const effectiveWidth = showTimestamps ? contentWidth - 55 : contentWidth;
-    
-    // Estimate average character width based on font size
-    // Satoshi font at 14px has roughly 7px average char width
-    // Scale proportionally for different font sizes
-    const avgCharWidth = fontSize * 0.5;
-    
-    // Calculate characters per line
-    const charsPerLine = Math.floor(effectiveWidth / avgCharWidth);
-    
-    // Base height includes message spacing
-    const baseHeight = messageSpacing + lineHeight;
-    
-    // Extract content after PRIVMSG
-    const contentMatch = message.match(/PRIVMSG #\w+ :(.+)$/);
-    const content = contentMatch ? contentMatch[1] : '';
-    
-    // Check for special message types that need extra height
-    const hasReply = message.includes('reply-parent-msg-id=');
-    const isFirstMessage = message.includes('first-msg=1');
-    
-    // Count emotes in message - each emote takes ~4 characters width worth of space (24px emote / ~6px char)
-    const emoteMatches = message.match(/emotes=([^;]+)/);
-    let emoteCount = 0;
-    if (emoteMatches && emoteMatches[1].length > 0) {
-      // Count emote entries (format: id:start-end,start-end/id:start-end)
-      const emoteEntries = emoteMatches[1].split('/').filter(e => e.length > 0);
-      emoteEntries.forEach(entry => {
-        const [, positions] = entry.split(':');
-        if (positions) {
-          emoteCount += positions.split(',').length;
-        }
-      });
-    }
-    
-    // Adjust content length: replace emote codes with 4-char placeholders
-    // This approximates that emotes (24px) take more space than their text codes
-    const adjustedLength = content.length + (emoteCount * 2); // Add 2 extra chars per emote for width estimation
-    
-    // Count approximate number of lines based on adjusted content length and actual chars per line
-    const estimatedLines = Math.max(1, Math.ceil(adjustedLength / Math.max(charsPerLine, 20)));
-    
-    // Calculate estimated height
-    let height = baseHeight + (estimatedLines - 1) * lineHeight;
-    
-    // Add extra height for replies (~28px)
-    if (hasReply) height += 28;
-    
-    // Add extra height for first message indicator (~32px)
-    if (isFirstMessage) height += 32;
-    
-    // Add extra height for links (matching backend's half-line buffer)
-    // URLs can cause unpredictable wrapping behavior
-    const hasLinks = /https?:\/\/[^\s]+|www\.[^\s]+/.test(content);
-    if (hasLinks) height += lineHeight * 0.5;
-    
-    // Add buffer for emotes that are taller than text (emotes are 24px, might push line height)
-    if (emoteCount > 0 && lineHeight < 24) {
-      height += (24 - lineHeight);
-    }
-    
-    // Add safety buffer for rendering variance
-    height += 8;
-    
-    return Math.ceil(height);
-  }, [settings.chat_design?.font_size, settings.chat_design?.message_spacing, settings.chat_design?.show_timestamps]);
-
-  const getItemSize = useCallback((index: number) => {
-    // ALWAYS check the live cache first. This ensures that if a row measures itself
-    // and calls setItemSize, we actually use that new size immediately - even when paused.
-    // This fixes chat message formatting issues when scrolling while paused.
-    if (rowHeights.current[index]) return rowHeights.current[index];
-
-    // Fallbacks for when we don't have a measured height yet
-    if (isPaused && frozenRowHeightsRef.current) {
-      if (frozenRowHeightsRef.current[index]) return frozenRowHeightsRef.current[index];
-      const frozenMessages = frozenMessagesRef.current;
-      if (frozenMessages && frozenMessages[index]) {
-        // If frozen message is backend object, use its layout height fallback
-        const msg = frozenMessages[index];
-        if (typeof msg !== 'string') {
-          return msg.layout.height;
-        }
-
-        const msgId = getMessageId(msg);
-        if (msgId && messageHeightsById.current.has(msgId)) return messageHeightsById.current.get(msgId)!;
-        
-        // Better estimate for string messages
-        return estimateStringMessageHeight(msg);
-      }
-      return 60;
-    }
-
-    const message = messages[index];
-    if (message) {
-      // If backend message, use pre-calculated height
-      if (typeof message !== 'string') {
-        const height = message.layout.height;
-        // Cache it immediately so we don't check type every time?
-        // Actually react-window caches it usually, but we have our own cache.
-        rowHeights.current[index] = height;
-        return height;
-      }
-
-      const msgId = getMessageId(message);
-      if (msgId && messageHeightsById.current.has(msgId)) {
-        const height = messageHeightsById.current.get(msgId)!;
-        rowHeights.current[index] = height;
-        return height;
-      }
-      
-      // Use content-aware estimate for string messages (historical messages from IVR)
-      return estimateStringMessageHeight(message);
-    }
-    return 60;
-  }, [messages, getMessageId, isPaused, estimateStringMessageHeight]);
-
-  const setItemSize = useCallback((index: number, size: number, messageId?: string | null, _hasReply?: boolean) => {
-    const currentSize = rowHeights.current[index] || 0;
-    const sizeDiff = Math.abs(currentSize - size);
-    
-    // REFACTORED: Higher threshold to reduce unnecessary resets
-    // Most backend heights are accurate, so only update on meaningful differences
-    const threshold = 2; // 2px tolerance
-    if (sizeDiff <= threshold) return;
-    
-    // Update the caches
-    rowHeights.current[index] = size;
-    if (messageId) messageHeightsById.current.set(messageId, size);
-    
-    if (!listRef.current) return;
-    
-    // Track the minimum index that needs resetting
-    minResetIndexRef.current = Math.min(minResetIndexRef.current, index);
-
-    // REFACTORED: Single batched RAF for all height updates
-    // This prevents the cascading reset problem
-    if (resetRafIdRef.current === null) {
-      resetRafIdRef.current = requestAnimationFrame(() => {
-        if (listRef.current && minResetIndexRef.current !== Infinity) {
-          // Single reset from the earliest changed index
-          listRef.current.resetAfterIndex(minResetIndexRef.current, false);
-
-          // Simple auto-scroll: if we're at bottom and not paused, scroll to end
-          if (shouldAutoScrollRef.current && !isPaused && messages.length > 0) {
-            listRef.current.scrollToItem(messages.length - 1, 'end');
-          }
-        }
-        minResetIndexRef.current = Infinity;
-        resetRafIdRef.current = null;
-      });
-    }
-  }, [isPaused, messages.length]);
-
-  const handleScroll = useCallback(({ scrollOffset, scrollUpdateWasRequested }: { scrollOffset: number; scrollUpdateWasRequested: boolean }) => {
-    // Skip during grace period after resume to prevent false pauses
-    if (Date.now() - lastResumeTimeRef.current < 500) {
-      lastScrollPositionRef.current = scrollOffset;
-      return;
-    }
-
-    // Skip auto-pause logic during initial load of historical messages
-    if (isInitialLoadRef.current) {
-      lastScrollPositionRef.current = scrollOffset;
-      return;
-    }
-
-    // Calculate distance to bottom using outerRef for accurate measurement
-    // This is more reliable than tracking maxScrollPosition which breaks when content resizes
-    if (outerRef.current) {
-      const { scrollHeight, clientHeight } = outerRef.current;
-      const distanceToBottom = scrollHeight - clientHeight - scrollOffset;
-
-      // Track if we should auto-scroll (within 50px of bottom = "at bottom")
-      // This is used by setItemSize to know when to re-scroll after height updates
-      shouldAutoScrollRef.current = distanceToBottom < 50;
-
-      if (!scrollUpdateWasRequested) {
-        // User is scrolling up (away from bottom) - pause chat
-        // Only pause if they've scrolled more than 100px from the bottom
-        if (distanceToBottom > 100 && scrollOffset < lastScrollPositionRef.current - 10) {
-          if (!isPaused) {
-            shouldAutoScrollRef.current = false;
-            setIsPaused(true);
-            setBufferPaused(true);
-          }
-        }
-        // User scrolled back to bottom while paused - auto-resume
-        else if (isPaused && distanceToBottom < 30) {
-          handleResume();
-        }
-      }
-    }
-
-    lastScrollPositionRef.current = scrollOffset;
-  }, [isPaused, setBufferPaused]);
 
   const handleResume = () => {
     lastResumeTimeRef.current = Date.now();
-    shouldAutoScrollRef.current = true; // Re-enable auto-scroll when resuming
     setIsPaused(false);
     setBufferPaused(false);
-    if (listRef.current && messages.length > 0) {
-      listRef.current.scrollToItem(messages.length - 1, 'end');
-      triggerRemeasurement();
+    // Trigger scroll to bottom via ChatMessageList's exposed function
+    if ((window as any).__chatScrollToBottom) {
+      (window as any).__chatScrollToBottom();
     }
   };
 
@@ -941,105 +492,43 @@ const ChatWidget = () => {
   }, []);
 
   // Helper function to scroll to a specific message by ID
-  // This encapsulates the multi-step scroll logic for reliable positioning
+  // Uses native DOM scrolling instead of react-window
   const scrollToMessage = useCallback((messageId: string, options?: { highlight?: boolean; align?: 'start' | 'center' | 'end' | 'auto' }) => {
     const { highlight = true, align = 'center' } = options || {};
 
-    // Debug: Log search parameters
     console.log('[ChatWidget] scrollToMessage called:', { messageId, highlight, align });
-    console.log('[ChatWidget] Total messages in buffer:', messages.length);
 
     // Find the message index
     const messageIndex = messages.findIndex(msg => getMessageId(msg) === messageId);
-
-    // Debug: Log search result
-    console.log('[ChatWidget] Message search result:', {
-      found: messageIndex !== -1,
-      index: messageIndex,
-      messageIds: messages.slice(0, 5).map(m => getMessageId(m)).join(', ') + '...'
-    });
 
     if (messageIndex === -1) {
       console.warn('[ChatWidget] Message not found in buffer. ID:', messageId);
       return false;
     }
 
-    if (!listRef.current) {
-      console.warn('[ChatWidget] List ref not available');
-      return false;
-    }
-
-    // Calculate if padding is needed (same logic as render)
-    const containerHeight = containerHeightRef.current || 0;
-    const totalHeight = Object.values(rowHeights.current).reduce((sum, h) => sum + h, 0);
-    const needsPadding = totalHeight < containerHeight;
-    const actualIndex = needsPadding ? messageIndex + 1 : messageIndex;
-
-    // Debug: Log scroll parameters
-    console.log('[ChatWidget] Scroll parameters:', {
-      messageIndex,
-      actualIndex,
-      needsPadding,
-      containerHeight,
-      totalHeight,
-      knownHeight: rowHeights.current[messageIndex] || 'unknown'
-    });
-
-    // Step 1: Pause chat to prevent auto-scrolling interference
+    // Pause chat to prevent auto-scrolling interference
     setIsPaused(true);
     setBufferPaused(true);
+    
+    // Mark navigation start time to prevent auto-resume from snapping back to bottom
+    lastNavigationTimeRef.current = Date.now();
 
-    // Step 2: Reset the entire list to force fresh measurements
-    // This is more aggressive but ensures items around the target get properly measured
-    listRef.current.resetAfterIndex(0, false);
-
-    // Step 3: First scroll attempt - brings item into approximate view
-    listRef.current.scrollToItem(actualIndex, align);
-    console.log('[ChatWidget] Step 3: Initial scroll to index', actualIndex);
-
-    // Step 4: Set highlight immediately if requested
+    // Set highlight immediately if requested
     if (highlight) {
       setHighlightedMessageId(messageId);
     }
 
-    // Step 5: Secondary scroll after a microtask to allow browser layout
-    // requestAnimationFrame ensures we wait for the next paint
+    // Use native DOM scrolling to bring element into view
+    // The ChatMessageList renders messages with data attributes
     requestAnimationFrame(() => {
-      if (!listRef.current) return;
-
-      // Reset from the target area to force re-measurement of nearby items
-      listRef.current.resetAfterIndex(Math.max(0, messageIndex - 10), false);
-
-      // Second scroll with updated measurements
-      listRef.current.scrollToItem(actualIndex, align);
-      console.log('[ChatWidget] Step 5: RAF scroll correction');
-
-      // Step 6: Tertiary scroll after a short delay for any async rendering
-      setTimeout(() => {
-        if (listRef.current) {
-          listRef.current.resetAfterIndex(Math.max(0, messageIndex - 10), false);
-          listRef.current.scrollToItem(actualIndex, align);
-          console.log('[ChatWidget] Step 6: Final scroll correction');
-        }
-      }, 100);
-
-      // Step 7: One more correction after longer delay for slow-loading content
-      setTimeout(() => {
-        if (listRef.current) {
-          listRef.current.scrollToItem(actualIndex, align);
-          console.log('[ChatWidget] Step 7: Late scroll correction');
-        }
-      }, 300);
-
-      // Step 8: Full remeasurement sweep after all scroll corrections
-      // This ensures any items that loaded content (emotes, badges) get properly sized
-      setTimeout(() => {
-        if (listRef.current) {
-          // Trigger comprehensive remeasurement from the beginning
-          triggerRemeasurement();
-          console.log('[ChatWidget] Step 8: Full remeasurement triggered');
-        }
-      }, 500);
+      const element = document.querySelector(`[data-message-id="${messageId}"]`);
+      if (element) {
+        const scrollBehavior = align === 'center' ? 'center' : align === 'end' ? 'end' : 'start';
+        element.scrollIntoView({ behavior: 'smooth', block: scrollBehavior as ScrollLogicalPosition });
+        console.log('[ChatWidget] Scrolled to message via DOM');
+      } else {
+        console.warn('[ChatWidget] Could not find DOM element for message:', messageId);
+      }
     });
 
     // Clear highlight after animation completes
@@ -1048,7 +537,7 @@ const ChatWidget = () => {
     }
 
     return true;
-  }, [messages, getMessageId, setBufferPaused, triggerRemeasurement]);
+  }, [messages, getMessageId, setBufferPaused]);
 
   const handleReplyClick = useCallback((parentMsgId: string) => {
     console.log('[ChatWidget] handleReplyClick called for parentMsgId:', parentMsgId);
@@ -1440,81 +929,59 @@ const ChatWidget = () => {
           </div>
         </div>
 
+        {/* Staging area removed - using direct rendering with ResizeObserver */}
+
         {/* Chat messages area - flex-1 to take remaining space */}
         <div className="flex-1 overflow-hidden"
           onMouseEnter={() => { isHoveringChatRef.current = true; }}
           onMouseLeave={() => { isHoveringChatRef.current = false; }}>
-          {messages.length === 0 ? (
+          {visibleMessages.length === 0 ? (
             <div className="h-full flex items-center justify-center">
               <p className="text-textSecondary text-sm">Waiting for messages...</p>
             </div>
           ) : (
-            <AutoSizer>
-              {({ height, width }) => (
-                <>
-                  <LayoutUpdater width={width} onWidthSynced={() => {
-                    // Force re-measurement of all items after width is synced
-                    // This fixes heights for historical messages loaded before sync
-                    if (listRef.current) {
-                      rowHeights.current = {};
-                      messageHeightsById.current.clear();
-                      listRef.current.resetAfterIndex(0, true);
-                    }
-                  }} />
-                  <ErrorBoundary componentName="ChatWidgetList" reportToLogService={true}>
-                    {(() => {
-                      containerHeightRef.current = height;
-                      containerWidthRef.current = width;
-                      const displayMessages = messages; // Always show all messages, even when paused
-                      const totalHeight = Object.values(rowHeights.current).reduce((sum, height) => sum + height, 0);
-                      const needsPadding = totalHeight < height;
-                      const paddingHeight = needsPadding ? height - totalHeight : 0;
-                      return (
-                        <List ref={listRef} outerRef={outerRef} height={height} itemCount={displayMessages.length + (needsPadding ? 1 : 0)}
-                          itemSize={(index) => {
-                            if (needsPadding && index === 0) return paddingHeight;
-                            const messageIndex = needsPadding ? index - 1 : index;
-                            return getItemSize(messageIndex);
-                          }}
-                          width={width} className="scrollbar-thin" onScroll={handleScroll} estimatedItemSize={60}
-                          initialScrollOffset={displayMessages.length > 0 ? 999999 : 0}>
-                          {({ index, style }) => {
-                            if (needsPadding && index === 0) return <div style={style} />;
-                            const messageIndex = needsPadding ? index - 1 : index;
-                            const currentMessage = displayMessages[messageIndex];
-                            const currentMsgId = getMessageId(currentMessage);
-                            // Check if message is deleted (by message ID or user timeout/ban)
-                            let isMessageDeleted = false;
-                            if (currentMsgId && deletedMessageIds.has(currentMsgId)) {
-                              isMessageDeleted = true;
-                            } else {
-                              // Check if user is cleared (timeout/ban)
-                              const userId = typeof currentMessage !== 'string'
-                                ? currentMessage.user_id
-                                : currentMessage.match(/user-id=([^;]+)/)?.[1];
-                              if (userId && clearedUserIds.has(userId)) {
-                                isMessageDeleted = true;
-                              }
-                            }
-                            return (
-                              <div style={style}>
-                                <ChatMessageRow message={currentMessage} messageIndex={messageIndex} messageId={currentMsgId}
-                                  onUsernameClick={handleUsernameClick} onReplyClick={handleReplyClick}
-                                  isHighlighted={highlightedMessageId !== null && currentMsgId === highlightedMessageId}
-                                  isDeleted={isMessageDeleted}
-                                  onEmoteRightClick={handleEmoteRightClick} onUsernameRightClick={handleUsernameRightClick}
-                                  onBadgeClick={handleBadgeClick} setItemSize={setItemSize} 
-                                  emotes={emotes} />
-                              </div>
-                            );
-                          }}
-                        </List>
-                      );
-                    })()}
-                  </ErrorBoundary>
-                </>
-              )}
-            </AutoSizer>
+            <ErrorBoundary componentName="ChatWidgetList" reportToLogService={true}>
+              <ChatMessageList
+                messages={visibleMessages}
+                isPaused={isPaused}
+                onScroll={(distanceToBottom, isUserScroll) => {
+                  // Debug logging - to be removed after verification
+                  if (isUserScroll && distanceToBottom > 150) {
+                     console.log('[ChatWidget] Potential Pause Trigger:', { distanceToBottom, isUserScroll, isPaused });
+                  }
+                  
+                  // Grace Periods:
+                  // 1. Initial Load: Ignore first 2s to allow layout stabilization
+                  // 2. Resume: Ignore first 1s after clicking resume
+                  const now = Date.now();
+                  if (now - mountTimeRef.current < 2000) return;
+                  if (now - lastResumeTimeRef.current < 1000) return;
+                  if (now - lastNavigationTimeRef.current < 1000) return; // Skip during scrollToMessage animation
+                  
+                  // User scrolled up (away from bottom) - pause chat
+                  // STRICT: Only pause if Child component confirms it was a USER interaction (isUserScroll)
+                  if (isUserScroll && distanceToBottom > 150 && !isPaused) {
+                    console.log('[ChatWidget] PAUSING CHAT due to user scroll');
+                    setIsPaused(true);
+                    setBufferPaused(true);
+                  }
+                  // User scrolled back to bottom while paused - auto-resume
+                  else if (isPaused && distanceToBottom < 30) {
+                    handleResume();
+                  }
+                }}
+                onUsernameClick={handleUsernameClick}
+                onReplyClick={handleReplyClick}
+                onEmoteRightClick={handleEmoteRightClick}
+                onUsernameRightClick={handleUsernameRightClick}
+                onBadgeClick={handleBadgeClick}
+                highlightedMessageId={highlightedMessageId}
+                deletedMessageIds={deletedMessageIds}
+                clearedUserIds={clearedUserIds}
+                emotes={emotes}
+                getMessageId={getMessageId}
+              />
+            </ErrorBoundary>
           )}
         </div>
 
@@ -1720,21 +1187,41 @@ const ChatWidget = () => {
                 >
                   <button
                     className={`p-2 rounded transition-all hover:bg-glass ${channelPoints !== null ? 'text-accent-neon' : 'text-textSecondary hover:text-accent-neon'}`}
-                    title="Channel Points"
+                    title={customPointsName || "Channel Points"}
                   >
-                    <ChannelPointsIcon size={18} />
+                    {customPointsIconUrl ? (
+                      <img 
+                        src={customPointsIconUrl} 
+                        alt={customPointsName || "Channel Points"} 
+                        className="w-[18px] h-[18px]"
+                      />
+                    ) : (
+                      <ChannelPointsIcon size={18} />
+                    )}
                   </button>
                   {/* Points tooltip - visible on hover */}
                   {channelPointsHovered && (
-                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-black/95 border border-border rounded-lg shadow-lg whitespace-nowrap z-50">
+                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-black/95 border border-border rounded-lg shadow-lg z-50 min-w-max">
                       <div className="flex items-center gap-1.5">
-                        <ChannelPointsIcon size={14} className="text-accent-neon" />
+                        {customPointsIconUrl ? (
+                          <img 
+                            src={customPointsIconUrl} 
+                            alt={customPointsName || "Channel Points"} 
+                            className="w-[14px] h-[14px] flex-shrink-0"
+                          />
+                        ) : (
+                          <ChannelPointsIcon size={14} className="text-accent-neon flex-shrink-0" />
+                        )}
                         {isLoadingChannelPoints ? (
                           <span className="text-sm text-textSecondary">Loading...</span>
                         ) : channelPoints !== null ? (
                           <span className="text-sm font-bold text-accent-neon">{channelPoints.toLocaleString()}</span>
                         ) : (
                           <span className="text-sm text-textSecondary">--</span>
+                        )}
+                        {/* Show custom points name if available */}
+                        {customPointsName && channelPoints !== null && (
+                          <span className="text-xs text-textSecondary">{customPointsName}</span>
                         )}
                       </div>
                       {/* Arrow pointing down */}

@@ -468,10 +468,7 @@ fn main() {
             extract_bundled_components,
             extract_bundled_components,
             download_and_install_bundle,
-            // Layout commands
-            update_layout_config,
-            update_layout_config_extended,
-            update_layout_width,
+            // Layout commands (message history only - height calculation removed)
             get_user_message_history,
             get_user_message_history_limited,
             clear_user_message_history,

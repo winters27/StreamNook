@@ -531,6 +531,7 @@ pub async fn get_channel_points_for_channel(
     let client = Client::new();
 
     // Use the same query structure as channel_points_service which works correctly
+    // Include communityPointsSettings to get custom points name and icon
     let query = r#"
     query ChannelPointsContext($channelLogin: String!) {
         user(login: $channelLogin) {
@@ -539,6 +540,12 @@ pub async fn get_channel_points_for_channel(
             displayName
             channel {
                 id
+                communityPointsSettings {
+                    name
+                    image {
+                        url
+                    }
+                }
                 self {
                     communityPoints {
                         balance

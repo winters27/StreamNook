@@ -42,12 +42,8 @@ pub async fn leave_chat_channel(channel: String) -> Result<(), String> {
 }
 
 /// Parse historical IRC messages (from IVR API) through the Rust backend
-/// This ensures they get proper layout calculation just like live messages
+/// Layout is handled by the browser - we just parse the message structure
 #[tauri::command]
-pub async fn parse_historical_messages(
-    messages: Vec<String>,
-    state: State<'_, AppState>,
-) -> Result<Vec<ChatMessage>, String> {
-    let layout_service = state.layout_service.clone();
-    Ok(IrcService::parse_historical_messages(messages, &layout_service).await)
+pub async fn parse_historical_messages(messages: Vec<String>) -> Result<Vec<ChatMessage>, String> {
+    Ok(IrcService::parse_historical_messages(messages).await)
 }

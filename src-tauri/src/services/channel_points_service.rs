@@ -54,6 +54,26 @@ impl ChannelPointsService {
         }
     }
 
+    /// Extract custom points name and icon URL from channel's communityPointsSettings
+    fn extract_points_settings(
+        channel: &serde_json::Map<String, serde_json::Value>,
+    ) -> (Option<String>, Option<String>) {
+        let points_name = channel
+            .get("communityPointsSettings")
+            .and_then(|s| s.get("name"))
+            .and_then(|n| n.as_str())
+            .map(|s| s.to_string());
+
+        let points_icon_url = channel
+            .get("communityPointsSettings")
+            .and_then(|s| s.get("image"))
+            .and_then(|i| i.get("url"))
+            .and_then(|u| u.as_str())
+            .map(|s| s.to_string());
+
+        (points_name, points_icon_url)
+    }
+
     /// Get channel points context (balance and claim availability) - FIXED VERSION
     pub async fn get_channel_points_context(
         &self,
@@ -72,6 +92,12 @@ impl ChannelPointsService {
                     displayName
                     channel {
                         id
+                        communityPointsSettings {
+                            name
+                            image {
+                                url
+                            }
+                        }
                         self {
                             communityPoints {
                                 balance
@@ -159,6 +185,8 @@ impl ChannelPointsService {
                     channel_login: channel_login.to_string(),
                     balance: 0,
                     available_claim: None,
+                    points_name: None,
+                    points_icon_url: None,
                 });
             }
 
@@ -172,11 +200,15 @@ impl ChannelPointsService {
                         "⚠️ No self data for channel {} - may not be logged in",
                         channel_login
                     );
+                    // Extract custom points settings even without self data
+                    let (points_name, points_icon_url) = Self::extract_points_settings(channel);
                     return Ok(ChannelPointsContext {
                         channel_id,
                         channel_login: channel_login.to_string(),
                         balance: 0,
                         available_claim: None,
+                        points_name,
+                        points_icon_url,
                     });
                 }
 
@@ -188,11 +220,14 @@ impl ChannelPointsService {
                             "ℹ️ Channel {} doesn't have community points enabled",
                             channel_login
                         );
+                        let (points_name, points_icon_url) = Self::extract_points_settings(channel);
                         return Ok(ChannelPointsContext {
                             channel_id,
                             channel_login: channel_login.to_string(),
                             balance: 0,
                             available_claim: None,
+                            points_name,
+                            points_icon_url,
                         });
                     }
 
@@ -210,6 +245,9 @@ impl ChannelPointsService {
                             None
                         };
 
+                        // Extract custom points settings
+                        let (points_name, points_icon_url) = Self::extract_points_settings(channel);
+
                         // Update our balance tracking
                         let mut balances = self.balances.write().await;
                         balances.insert(
@@ -219,6 +257,8 @@ impl ChannelPointsService {
                                 channel_name: channel_login.to_string(),
                                 balance,
                                 last_updated: Utc::now(),
+                                points_name: points_name.clone(),
+                                points_icon_url: points_icon_url.clone(),
                             },
                         );
 
@@ -227,6 +267,8 @@ impl ChannelPointsService {
                             channel_login: channel_login.to_string(),
                             balance,
                             available_claim: claim_info,
+                            points_name,
+                            points_icon_url,
                         });
                     }
                 }
@@ -743,6 +785,10 @@ pub struct ChannelPointsContext {
     pub channel_login: String,
     pub balance: i32,
     pub available_claim: Option<ClaimInfo>,
+    /// Custom channel points name (e.g., "Kisses" for Hamlinz)
+    pub points_name: Option<String>,
+    /// Custom channel points icon URL
+    pub points_icon_url: Option<String>,
 }
 
 #[derive(Debug, Clone)]
