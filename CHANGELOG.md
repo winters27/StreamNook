@@ -1,3 +1,20 @@
+## [6.6.0] - 2026-01-08
+### ✨ Features
+- **Channel Points Rewards - BETA**: You can now view and redeem channel points rewards directly within the chat interface! This includes features like "Highlight My Message", "Unlock Random Emote", "Modify Emote", and "Choose Emote to Unlock".
+- **Hype Train Integration**: StreamNook now visually displays active Hype Trains directly in the chat header, showing progress, level, and remaining time. It also subscribes to EventSub notifications for Hype Train events.
+- **7TV Emote Improvements**: Emotes from 7TV are now fetched at higher resolution (4x) for better clarity, and animated emotes are handled correctly.
+- **Emoji Rendering**: Improved emoji display using the Apple CDN via a local proxy for better performance and consistency, with support for animated emojis.
+- **Badge Caching**: Implemented a reactive caching system for Twitch badges, ensuring faster loading and offline availability.
+
+### 🐛 Bug Fixes
+- **Badge Rendering**: Fixed issues with badge display, ensuring correct URLs and fallbacks.
+- **Message Parsing**: Improved parsing of chat messages to correctly handle emojis and various message types.
+
+### 🔧 Maintenance
+- **Satoshi Variable Fonts**: Updated font loading to use variable Satoshi fonts, leading to better text rendering performance and consistency across all weights and styles.
+- **Cache Optimizations**: Enhanced the universal file cache to check for existing files before downloading, reducing redundant operations.
+- **EventSub Subscriptions**: Added Hype Train EventSub subscriptions and improved handling for events requiring moderator access.
+
 ## [6.5.0] - 2026-01-08
 ### ✨ Features
 
@@ -894,5 +911,6 @@ ATTENTION: ALL USERS LOG OUT OF TWITCH THEN LOG BACK IN FOR SOME CHANGES OT TAKE
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
