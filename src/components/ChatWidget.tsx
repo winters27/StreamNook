@@ -20,6 +20,7 @@ import ChatMessage from './ChatMessage';
 import UserProfileCard from './UserProfileCard';
 import ErrorBoundary from './ErrorBoundary';
 import PredictionOverlay from './PredictionOverlay';
+import ChannelPointsMenu from './ChannelPointsMenu';
 import { fetchAllEmotes, Emote, EmoteSet, preloadChannelEmotes, queueEmoteForCaching } from '../services/emoteService';
 import { preloadThirdPartyBadgeDatabases } from '../services/thirdPartyBadges';
 import { initializeBadges, getBadgeInfo } from '../services/twitchBadges';
@@ -49,10 +50,22 @@ interface ParsedMessage {
 
 import { EMOJI_CATEGORIES, EMOJI_KEYWORDS } from '../services/emojiCategories';
 
+// Helper function to format time remaining for Hype Train
+const formatHypeTrainTimeRemaining = (expiresAt: string): string => {
+  const now = Date.now();
+  const expiry = new Date(expiresAt).getTime();
+  const diffMs = Math.max(0, expiry - now);
+  const minutes = Math.floor(diffMs / 60000);
+  const seconds = Math.floor((diffMs % 60000) / 1000);
+  if (minutes > 0) {
+    return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+  }
+  return `${seconds}s`;
+};
 
 const ChatWidget = () => {
   const { messages, connectChat, sendMessage, isConnected, error, setPaused: setBufferPaused, deletedMessageIds, clearedUserIds } = useTwitchChat();
-  const { currentStream, currentUser } = useAppStore();
+  const { currentStream, currentUser, currentHypeTrain } = useAppStore();
   
   // UI state
   const [messageInput, setMessageInput] = useState('');
@@ -71,6 +84,8 @@ const ChatWidget = () => {
   const mountTimeRef = useRef<number>(Date.now());
   const [viewerCount, setViewerCount] = useState<number | null>(null);
   const streamUptimeRef = useRef<string>('');
+  const [hypeTrainTimeRemaining, setHypeTrainTimeRemaining] = useState<string>('');
+  const hypeTrainExpiresAtRef = useRef<string | null>(null);
   const { settings } = useAppStore();
   const [selectedUser, setSelectedUser] = useState<{
     userId: string;
@@ -96,6 +111,7 @@ const ChatWidget = () => {
   // Channel points state
   const [channelPoints, setChannelPoints] = useState<number | null>(null);
   const [channelPointsHovered, setChannelPointsHovered] = useState(false);
+  const [showChannelPointsMenu, setShowChannelPointsMenu] = useState(false);
   const [isLoadingChannelPoints, setIsLoadingChannelPoints] = useState(false);
   const [customPointsName, setCustomPointsName] = useState<string | null>(null);
   const [customPointsIconUrl, setCustomPointsIconUrl] = useState<string | null>(null);
@@ -198,6 +214,35 @@ const ChatWidget = () => {
     return () => clearInterval(intervalId);
   }, [currentStream?.started_at]);
 
+  // Smooth Hype Train countdown - updates every second locally
+  useEffect(() => {
+    if (!currentHypeTrain?.expires_at) {
+      setHypeTrainTimeRemaining('');
+      hypeTrainExpiresAtRef.current = null;
+      return;
+    }
+
+    // Update the ref when expires_at changes (new level or new hype train)
+    hypeTrainExpiresAtRef.current = currentHypeTrain.expires_at;
+
+    const updateCountdown = () => {
+      if (!hypeTrainExpiresAtRef.current) return;
+      const now = Date.now();
+      const expiry = new Date(hypeTrainExpiresAtRef.current).getTime();
+      const diffMs = Math.max(0, expiry - now);
+      const minutes = Math.floor(diffMs / 60000);
+      const seconds = Math.floor((diffMs % 60000) / 1000);
+      if (minutes > 0) {
+        setHypeTrainTimeRemaining(`${minutes}:${seconds.toString().padStart(2, '0')}`);
+      } else {
+        setHypeTrainTimeRemaining(`${seconds}s`);
+      }
+    };
+
+    updateCountdown();
+    const countdownInterval = setInterval(updateCountdown, 1000);
+    return () => clearInterval(countdownInterval);
+  }, [currentHypeTrain?.expires_at]);
 
 
   useEffect(() => {
@@ -220,6 +265,7 @@ const ChatWidget = () => {
       setChannelPoints(null);
       setCustomPointsName(null);
       setCustomPointsIconUrl(null);
+      setShowChannelPointsMenu(false);
     }
     return () => {
       if (currentStream?.user_login !== connectedChannelRef.current) connectedChannelRef.current = null;
@@ -795,14 +841,27 @@ const ChatWidget = () => {
       groups.get(groupKey)!.emotes.push(emote);
     }
     
-    // Sort: globals first, then subscriptions alphabetically by name, then others
+    // Sort: current channel subs first, then globals, then channel points, then other subs, then others
+    const currentChannelId = currentStream?.user_id;
     const sortedGroups = new Map<string, { name: string; emotes: Emote[] }>();
     const keys = Array.from(groups.keys()).sort((a, b) => {
+      // Current channel's subscription emotes first (if watching a channel)
+      if (currentChannelId) {
+        const aIsCurrentChannel = a === `sub-${currentChannelId}`;
+        const bIsCurrentChannel = b === `sub-${currentChannelId}`;
+        if (aIsCurrentChannel && !bIsCurrentChannel) return -1;
+        if (!aIsCurrentChannel && bIsCurrentChannel) return 1;
+      }
+      // Globals second
       if (a === 'globals') return -1;
       if (b === 'globals') return 1;
+      // Channel points emotes third
+      if (a.startsWith('points-') && !b.startsWith('points-')) return -1;
+      if (!a.startsWith('points-') && b.startsWith('points-')) return 1;
+      // Other subscription emotes fourth
       if (a.startsWith('sub-') && !b.startsWith('sub-')) return -1;
       if (!a.startsWith('sub-') && b.startsWith('sub-')) return 1;
-      // Sort subscription groups by display name
+      // Sort remaining by display name
       const nameA = groups.get(a)?.name || a;
       const nameB = groups.get(b)?.name || b;
       return nameA.localeCompare(nameB);
@@ -905,28 +964,113 @@ const ChatWidget = () => {
           channelLogin={currentStream?.user_login}
         />
 
-        {/* Chat header - absolute positioned at top */}
-        <div className={`absolute top-0 left-0 right-0 px-3 py-2 border-b backdrop-blur-ultra z-10 pointer-events-none shadow-lg ${isSharedChat ? 'iridescent-border' : 'border-borderSubtle'}`} style={{ backgroundColor: 'rgba(12, 12, 13, 0.9)' }}>
-          <div className="flex items-center gap-2">
-            <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-red-400'}`}></div>
-            <p className={`text-xs font-semibold ${isSharedChat ? 'iridescent-title' : 'text-textPrimary'}`}>
-              {isConnected ? (isSharedChat ? 'SHARED STREAM CHAT' : 'STREAM CHAT') : 'DISCONNECTED'}
-            </p>
-            <div className="flex items-center gap-3 ml-auto">
-              {viewerCount !== null && (
-                <div className="flex items-center gap-1">
-                  <svg className="w-3 h-3 text-textSecondary" fill="currentColor" viewBox="0 0 20 20"><path d="M10 12a2 2 0 100-4 2 2 0 000 4z" /><path fillRule="evenodd" d="M.458 10C1.732 5.943 5.522 3 10 3s8.268 2.943 9.542 7c-1.274 4.057-5.064 7-9.542 7S1.732 14.057.458 10zM14 10a4 4 0 11-8 0 4 4 0 018 0z" clipRule="evenodd" /></svg>
-                  <span className="text-xs text-textSecondary">{viewerCount.toLocaleString()}</span>
-                </div>
-              )}
-              {currentStream?.started_at && (
-                <div className="flex items-center gap-1">
-                  <svg className="w-3 h-3 text-textSecondary" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                  <span id="stream-uptime-display" className="text-xs text-textSecondary">{streamUptimeRef.current}</span>
-                </div>
-              )}
+        {/* Chat header - transforms when Hype Train active */}
+        <div className={`absolute top-0 left-0 right-0 px-3 py-2 border-b backdrop-blur-ultra z-10 pointer-events-none shadow-lg overflow-hidden ${
+          currentHypeTrain ? 'border-purple-500/50' : (isSharedChat ? 'iridescent-border' : 'border-borderSubtle')
+        }`} style={currentHypeTrain ? undefined : { backgroundColor: 'rgba(12, 12, 13, 0.9)' }}>
+          {currentHypeTrain ? (
+            // Hype Train Mode - entire header is the progress bar
+            (() => {
+              const percentage = Math.min(Math.round((currentHypeTrain.progress / currentHypeTrain.goal) * 100), 100);
+              // Remaining = goal - progress (in Hype points)
+              const remaining = currentHypeTrain.goal - currentHypeTrain.progress;
+              // 1 bit = 1 point, 1 Tier1 sub = 500 points
+              const bitsNeeded = remaining;
+              const subsNeeded = Math.ceil(remaining / 500);
+              const isGolden = currentHypeTrain.is_golden_kappa;
+              
+              return (
+                <>
+                  {/* Progress fill background - uses clip-path so animation doesn't reset */}
+                  <div 
+                    className={`absolute inset-0 ${
+                      isGolden ? 'hype-train-progress-golden' : 'hype-train-progress-rainbow'
+                    }`}
+                    style={{ 
+                      clipPath: `inset(0 ${100 - percentage}% 0 0)`,
+                      transition: 'clip-path 0.5s ease-out'
+                    }}
+                  />
+                  {/* Unfilled portion - darker background */}
+                  <div 
+                    className="absolute inset-0 bg-black/70 transition-all duration-500 ease-out"
+                    style={{ 
+                      clipPath: `inset(0 0 0 ${percentage}%)`
+                    }}
+                  />
+                  {/* Absolutely centered percentage */}
+                  <div className="absolute inset-0 flex items-center justify-center z-20 pointer-events-none">
+                    <span className="text-xl font-black text-white drop-shadow-lg tabular-nums">
+                      {percentage}%
+                    </span>
+                  </div>
+                  
+                  {/* Content overlay - left and right aligned */}
+                  <div className="relative flex items-center justify-between z-10">
+                    {/* Left side - train icon and level */}
+                    <div className="flex items-center gap-1.5">
+                      {isGolden ? (
+                        <span className="text-lg">✨</span>
+                      ) : (
+                        <svg className="w-5 h-5 text-white" viewBox="0 0 256 256" fill="none">
+                          <line x1="48" y1="128" x2="208" y2="128" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="16"/>
+                          <line x1="48" y1="72" x2="208" y2="72" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="16"/>
+                          <line x1="96" y1="208" x2="72" y2="240" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="16"/>
+                          <line x1="160" y1="208" x2="184" y2="240" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="16"/>
+                          <rect x="48" y="32" width="160" height="176" rx="24" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="16"/>
+                          <line x1="128" y1="72" x2="128" y2="128" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="16"/>
+                          <circle cx="84" cy="172" r="12" fill="currentColor"/>
+                          <circle cx="172" cy="172" r="12" fill="currentColor"/>
+                        </svg>
+                      )}
+                      <span className="text-sm font-bold text-white drop-shadow-sm">
+                        LVL {currentHypeTrain.level}
+                      </span>
+                    </div>
+                    
+                    {/* Right side - bits/subs remaining and time */}
+                    <div className="flex items-center gap-1">
+                      <span className="text-[10px] text-white/80 drop-shadow-sm">
+                        {remaining > 0 ? (
+                          <>
+                            {bitsNeeded >= 1000 
+                              ? `${(bitsNeeded / 1000).toFixed(1)}K` 
+                              : bitsNeeded} bits / {subsNeeded} subs left
+                          </>
+                        ) : '🎉'}
+                      </span>
+                      <span className="text-[10px] text-white/50">|</span>
+                      <span className="text-[10px] text-white/70 drop-shadow-sm tabular-nums">
+                        {hypeTrainTimeRemaining}
+                      </span>
+                    </div>
+                  </div>
+                </>
+              );
+            })()
+          ) : (
+            // Normal Mode
+            <div className="flex items-center gap-2">
+              <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-red-400'}`}></div>
+              <p className={`text-xs font-semibold ${isSharedChat ? 'iridescent-title' : 'text-textPrimary'}`}>
+                {isConnected ? (isSharedChat ? 'SHARED STREAM CHAT' : 'STREAM CHAT') : 'DISCONNECTED'}
+              </p>
+              <div className="flex items-center gap-3 ml-auto">
+                {viewerCount !== null && (
+                  <div className="flex items-center gap-1">
+                    <svg className="w-3 h-3 text-textSecondary" fill="currentColor" viewBox="0 0 20 20"><path d="M10 12a2 2 0 100-4 2 2 0 000 4z" /><path fillRule="evenodd" d="M.458 10C1.732 5.943 5.522 3 10 3s8.268 2.943 9.542 7c-1.274 4.057-5.064 7-9.542 7S1.732 14.057.458 10zM14 10a4 4 0 11-8 0 4 4 0 018 0z" clipRule="evenodd" /></svg>
+                    <span className="text-xs text-textSecondary">{viewerCount.toLocaleString()}</span>
+                  </div>
+                )}
+                {currentStream?.started_at && (
+                  <div className="flex items-center gap-1">
+                    <svg className="w-3 h-3 text-textSecondary" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                    <span id="stream-uptime-display" className="text-xs text-textSecondary">{streamUptimeRef.current}</span>
+                  </div>
+                )}
+              </div>
             </div>
-          </div>
+          )}
         </div>
 
         {/* Staging area removed - using direct rendering with ResizeObserver */}
@@ -1166,6 +1310,19 @@ const ChatWidget = () => {
                   </div>
                 </div>
               )}
+              {/* Channel Points Menu - renders at full width like emote picker */}
+              {showChannelPointsMenu && currentStream && (
+                <ChannelPointsMenu
+                  channelLogin={currentStream.user_login}
+                  channelId={currentStream.user_id}
+                  currentBalance={channelPoints}
+                  customPointsName={customPointsName}
+                  customPointsIconUrl={customPointsIconUrl}
+                  onClose={() => setShowChannelPointsMenu(false)}
+                  onBalanceUpdate={fetchChannelPoints}
+                  onEmotesChange={() => loadEmotes(currentStream.user_login, currentStream.user_id)}
+                />
+              )}
               {replyingTo && (
                 <div className="mb-2 flex items-center gap-2 px-3 py-2 bg-glass rounded-lg border border-borderSubtle">
                   <svg className="w-4 h-4 text-accent flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" /></svg>
@@ -1179,14 +1336,15 @@ const ChatWidget = () => {
                 <button onClick={() => setShowEmotePicker(!showEmotePicker)} className="flex-shrink-0 p-2 text-textSecondary hover:text-textPrimary hover:bg-glass rounded transition-all" title="Emotes">
                   <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM7 9a1 1 0 100-2 1 1 0 000 2zm7-1a1 1 0 11-2 0 1 1 0 012 0zm-.464 5.535a1 1 0 10-1.415-1.414 3 3 0 01-4.242 0 1 1 0 00-1.415 1.414 5 5 0 007.072 0z" clipRule="evenodd" /></svg>
                 </button>
-                {/* Channel Points button - shows balance in tooltip on hover */}
+                {/* Channel Points button - click to open rewards menu, hover for balance */}
                 <div 
                   className="relative flex-shrink-0"
                   onMouseEnter={() => setChannelPointsHovered(true)}
                   onMouseLeave={() => setChannelPointsHovered(false)}
                 >
                   <button
-                    className={`p-2 rounded transition-all hover:bg-glass ${channelPoints !== null ? 'text-accent-neon' : 'text-textSecondary hover:text-accent-neon'}`}
+                    onClick={() => setShowChannelPointsMenu(!showChannelPointsMenu)}
+                    className={`p-2 rounded transition-all hover:bg-glass ${showChannelPointsMenu ? 'bg-glass text-accent-neon' : channelPoints !== null ? 'text-accent-neon' : 'text-textSecondary hover:text-accent-neon'}`}
                     title={customPointsName || "Channel Points"}
                   >
                     {customPointsIconUrl ? (
@@ -1199,8 +1357,8 @@ const ChatWidget = () => {
                       <ChannelPointsIcon size={18} />
                     )}
                   </button>
-                  {/* Points tooltip - visible on hover */}
-                  {channelPointsHovered && (
+                  {/* Points tooltip - visible on hover when menu is closed */}
+                  {channelPointsHovered && !showChannelPointsMenu && (
                     <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-black/95 border border-border rounded-lg shadow-lg z-50 min-w-max">
                       <div className="flex items-center gap-1.5">
                         {customPointsIconUrl ? (

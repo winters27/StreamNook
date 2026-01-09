@@ -1,12 +1,15 @@
 import React, { useMemo, useState, useEffect, memo } from 'react';
+import { Gift } from 'lucide-react';
 import { parseMessage, MessageSegment } from '../services/twitchChat';
 import { queueEmoteForCaching, EmoteSet, Emote } from '../services/emoteService';
+import { getCachedEmojiUrl, parseEmojisSync } from '../services/emojiService';
 import { calculateHalfPadding } from '../utils/chatLayoutUtils';
 import { computePaintStyle, getBadgeImageUrl, queueCosmeticForCaching } from '../services/seventvService';
 import { getCosmeticsWithFallback, getThirdPartyBadgesFromMemoryCache, getCosmeticsFromMemoryCache, getTwitchBadgesWithFallback } from '../services/cosmeticsCache';
 import { ThirdPartyBadge } from '../services/thirdPartyBadges';
 import { SevenTVBadge, SevenTVPaint } from '../types';
 import { useAppStore } from '../stores/AppStore';
+import { queueBadgeForCaching, getCachedBadgeUrl } from '../services/badgeImageCacheService';
 
 // EmoteSegment type definition (migrated from emoteParser.ts)
 interface EmoteSegment {
@@ -20,6 +23,35 @@ interface EmoteSegment {
 // Global cache for channel names and profile images to prevent re-fetching and flashing
 const channelNameCache = new Map<string, string>();
 const channelProfileImageCache = new Map<string, string>();
+
+/**
+ * Get the best URL for a Twitch badge, with reactive caching.
+ * - If already cached locally, returns the local URL
+ * - If not cached, queues for caching and returns the remote 4x URL
+ */
+function getTwitchBadgeUrl(badgeKey: string, badgeInfo: any): string {
+  // If already has a local URL, use it
+  if (badgeInfo.localUrl) {
+    return badgeInfo.localUrl;
+  }
+
+  // Create a unique cache ID from badge key (set/version)
+  const cacheId = `twitch-${badgeKey}`;
+  
+  // Check if we have a cached version
+  const cachedUrl = getCachedBadgeUrl(cacheId);
+  if (cachedUrl) {
+    return cachedUrl;
+  }
+
+  // Not cached - queue for caching and return remote 4x URL
+  const remoteUrl = badgeInfo.image_url_4x;
+  if (remoteUrl) {
+    queueBadgeForCaching(cacheId, remoteUrl);
+  }
+
+  return remoteUrl || badgeInfo.image_url_1x || '';
+}
 
 import { BackendChatMessage } from '../services/twitchChat';
 
@@ -150,7 +182,19 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
                    emoteUrl: emote.url, // The emote object from ChatWidget already has localUrl merged if available
                });
            } else {
-               newSegments.push({ type: 'text', content: word });
+               // Parse the word for emojis - this enables iOS-style emoji for optimistic messages
+               const emojiParsed = parseEmojisSync(word);
+               emojiParsed.forEach(seg => {
+                   if (seg.type === 'emoji' && seg.emojiUrl) {
+                       newSegments.push({
+                           type: 'emoji' as const,
+                           content: seg.content,
+                           emojiUrl: seg.emojiUrl,
+                       });
+                   } else {
+                       newSegments.push({ type: 'text', content: seg.content });
+                   }
+               });
            }
        });
 
@@ -165,8 +209,19 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
        });
        setContentWithEmotes(coalesced);
     } else {
-      // No segments and no emotes loaded - render as plain text
-      setContentWithEmotes([{ type: 'text', content: parsed.content }]);
+      // No segments and no emotes loaded - parse for emojis at minimum
+      const emojiParsed = parseEmojisSync(parsed.content);
+      const segments: EmoteSegment[] = emojiParsed.map(seg => {
+        if (seg.type === 'emoji' && seg.emojiUrl) {
+          return {
+            type: 'emoji' as const,
+            content: seg.content,
+            emojiUrl: seg.emojiUrl,
+          };
+        }
+        return { type: 'text' as const, content: seg.content };
+      });
+      setContentWithEmotes(segments);
     }
   }, [parsed.segments, parsed.content, emotes]);
 
@@ -323,7 +378,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
     return segments.map((segment, index) => {
       if (segment.type === 'emote') {
         const emoteUrl = segment.emoteUrl ||
-          (segment.emoteId ? `https://static-cdn.jtvnw.net/emoticons/v2/${segment.emoteId}/default/dark/1.0` : '');
+          (segment.emoteId ? `https://static-cdn.jtvnw.net/emoticons/v2/${segment.emoteId}/default/dark/3.0` : '');
 
         // Reactive caching: If we're using a remote URL, queue it for caching
         // We check if it's NOT a local URL (doesn't start with asset:// or http://asset.localhost)
@@ -336,7 +391,8 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
             key={`${segment.emoteId || segment.content}-${index}`}
             src={emoteUrl}
             alt={segment.content}
-            className="inline h-6 align-middle mx-0.5 cursor-pointer hover:scale-110 transition-transform"
+            className="inline h-7 align-middle mx-0.5 cursor-pointer hover:scale-110 transition-transform crisp-image"
+            loading="lazy"
             title={`Right-click to copy: ${segment.content}`}
             onContextMenu={(e) => {
               e.preventDefault();
@@ -354,12 +410,15 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
       }
 
       if (segment.type === 'emoji' && segment.emojiUrl) {
+        // Get cached/proxied URL to bypass tracking prevention
+        const emojiSrc = getCachedEmojiUrl(segment.content, segment.emojiUrl);
         return (
           <img
             key={`emoji-${segment.content}-${index}`}
-            src={segment.emojiUrl}
+            src={emojiSrc}
             alt={segment.content}
-            className="inline h-5 w-5 align-middle mx-0.5"
+            className="inline h-5 w-5 align-middle mx-0.5 crisp-image"
+            loading="lazy"
             title={segment.content}
             onError={(e) => {
               // Fallback to native emoji if image fails to load
@@ -434,6 +493,9 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
   const isViewerMilestone = msgId === 'viewermilestone' || sourceMsgId === 'viewermilestone';
   const milestoneCategory = parsed.tags.get('msg-param-category');
   const isWatchStreak = isViewerMilestone && milestoneCategory === 'watch-streak';
+
+  // Check if this is a highlighted message (channel points redemption)
+  const isHighlightedMessage = msgId === 'highlighted-message' || sourceMsgId === 'highlighted-message';
 
   // Check if this is a bits cheer message
   const bitsAmount = parsed.tags.get('bits');
@@ -567,11 +629,10 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
             return (
               <img
                 key={`bits-badge-${badge.key}-${idx}`}
-                src={badge.info.localUrl || badge.info.image_url_1x}
-                srcSet={badge.info.localUrl ? undefined : `${badge.info.image_url_1x} 1x, ${badge.info.image_url_2x} 2x, ${badge.info.image_url_4x} 4x`}
+                src={getTwitchBadgeUrl(badge.key, badge.info)}
                 alt={badge.info.title}
                 title={badge.info.title}
-                className="w-4 h-4 inline-block cursor-pointer hover:scale-110 transition-transform"
+                className="w-5 h-5 inline-block cursor-pointer hover:scale-110 transition-transform crisp-image"
                 onClick={() => onBadgeClick?.(badge.key, badge.info)}
                 onError={(e) => {
                   console.warn('[Badge] Failed to load badge:', badge.key, badge.info.image_url_1x);
@@ -585,7 +646,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
               src={getBadgeImageUrl(seventvBadge)}
               alt={seventvBadge.description || seventvBadge.name}
               title={seventvBadge.description || seventvBadge.name}
-              className="w-4 h-4 inline-block"
+              className="w-5 h-5 inline-block crisp-image"
               onError={(e) => {
                 e.currentTarget.style.display = 'none';
               }}
@@ -597,7 +658,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
               src={badge.imageUrl}
               alt={badge.title}
               title={`${badge.title} (${badge.provider.toUpperCase()})`}
-              className="w-4 h-4 inline-block"
+              className="w-5 h-5 inline-block crisp-image"
               onError={(e) => {
                 e.currentTarget.style.display = 'none';
               }}
@@ -612,8 +673,8 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
 
     return (
       <div key={messageId} className="px-3 border-b border-borderSubtle bits-gradient" style={{ paddingTop: `${eventPadding}px`, paddingBottom: `${eventPadding}px` }}>
-        <div className="flex items-start gap-2.5">
-          <div className="flex-shrink-0 mt-0.5">
+        <div className="flex items-center gap-2.5">
+          <div className="flex-shrink-0">
             {/* Bits/gem icon */}
             <svg className="w-5 h-5" viewBox="0 0 20 20" fill={bitsTierColor}>
               <path d="M10 2L3 10l7 8 7-8-7-8z" />
@@ -621,7 +682,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
               <path d="M10 18l7-8H3l7 8z" opacity="0.5" />
             </svg>
           </div>
-          <div className="flex-1 min-w-0">
+          <div className="flex-1 min-w-0 flex items-center flex-wrap">
             <p className="text-white font-semibold text-sm leading-relaxed">
               {renderBadges()}
               {renderClickableUsername(parsed.username, parsed.tags.get('display-name') || parsed.username)}
@@ -699,11 +760,10 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
             return (
               <img
                 key={`donation-badge-${badge.key}-${idx}`}
-                src={badge.info.localUrl || badge.info.image_url_1x}
-                srcSet={badge.info.localUrl ? undefined : `${badge.info.image_url_1x} 1x, ${badge.info.image_url_2x} 2x, ${badge.info.image_url_4x} 4x`}
+                src={getTwitchBadgeUrl(badge.key, badge.info)}
                 alt={badge.info.title}
                 title={badge.info.title}
-                className="w-4 h-4 inline-block cursor-pointer hover:scale-110 transition-transform"
+                className="w-5 h-5 inline-block cursor-pointer hover:scale-110 transition-transform crisp-image"
                 onClick={() => onBadgeClick?.(badge.key, badge.info)}
                 onError={(e) => {
                   console.warn('[Badge] Failed to load badge:', badge.key, badge.info.image_url_1x);
@@ -717,7 +777,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
               src={getBadgeImageUrl(seventvBadge)}
               alt={seventvBadge.description || seventvBadge.name}
               title={seventvBadge.description || seventvBadge.name}
-              className="w-4 h-4 inline-block"
+              className="w-5 h-5 inline-block crisp-image"
               onError={(e) => {
                 e.currentTarget.style.display = 'none';
               }}
@@ -729,7 +789,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
               src={badge.imageUrl}
               alt={badge.title}
               title={`${badge.title} (${badge.provider.toUpperCase()})`}
-              className="w-4 h-4 inline-block"
+              className="w-5 h-5 inline-block crisp-image"
               onError={(e) => {
                 e.currentTarget.style.display = 'none';
               }}
@@ -775,14 +835,14 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
           </div>
         )}
 
-        <div className="flex items-start gap-2.5">
-          <div className="flex-shrink-0 mt-0.5">
+        <div className="flex items-center gap-2.5">
+          <div className="flex-shrink-0">
             {/* Heart/Charity icon */}
             <svg className="w-5 h-5 text-green-400" fill="currentColor" viewBox="0 0 20 20">
               <path fillRule="evenodd" d="M3.172 5.172a4 4 0 015.656 0L10 6.343l1.172-1.171a4 4 0 115.656 5.656L10 17.657l-6.828-6.829a4 4 0 010-5.656z" clipRule="evenodd" />
             </svg>
           </div>
-          <div className="flex-1 min-w-0">
+          <div className="flex-1 min-w-0 flex items-center flex-wrap">
             <p className="text-white font-semibold text-sm leading-relaxed">
               {renderBadges()}
               {renderClickableUsername(parsed.username, parsed.tags.get('display-name') || parsed.username)}
@@ -847,11 +907,10 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
             return (
               <img
                 key={`watchstreak-badge-${badge.key}-${idx}`}
-                src={badge.info.localUrl || badge.info.image_url_1x}
-                srcSet={badge.info.localUrl ? undefined : `${badge.info.image_url_1x} 1x, ${badge.info.image_url_2x} 2x, ${badge.info.image_url_4x} 4x`}
+                src={getTwitchBadgeUrl(badge.key, badge.info)}
                 alt={badge.info.title}
                 title={badge.info.title}
-                className="w-4 h-4 inline-block cursor-pointer hover:scale-110 transition-transform"
+                className="w-5 h-5 inline-block cursor-pointer hover:scale-110 transition-transform crisp-image"
                 onClick={() => onBadgeClick?.(badge.key, badge.info)}
                 onError={(e) => {
                   console.warn('[Badge] Failed to load badge:', badge.key, badge.info.image_url_1x);
@@ -865,7 +924,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
               src={getBadgeImageUrl(seventvBadge)}
               alt={seventvBadge.description || seventvBadge.name}
               title={seventvBadge.description || seventvBadge.name}
-              className="w-4 h-4 inline-block"
+              className="w-5 h-5 inline-block crisp-image"
               onError={(e) => {
                 e.currentTarget.style.display = 'none';
               }}
@@ -877,7 +936,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
               src={badge.imageUrl}
               alt={badge.title}
               title={`${badge.title} (${badge.provider.toUpperCase()})`}
-              className="w-4 h-4 inline-block"
+              className="w-5 h-5 inline-block crisp-image"
               onError={(e) => {
                 e.currentTarget.style.display = 'none';
               }}
@@ -892,14 +951,14 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
 
     return (
       <div key={messageId} className="px-3 border-b border-borderSubtle watchstreak-gradient" style={{ paddingTop: `${eventPadding}px`, paddingBottom: `${eventPadding}px` }}>
-        <div className="flex items-start gap-2.5">
-          <div className="flex-shrink-0 mt-0.5">
+        <div className="flex items-center gap-2.5">
+          <div className="flex-shrink-0">
             {/* Fire/Watch Streak icon from Twitch */}
             <svg className="w-5 h-5 text-orange-400" viewBox="0 0 20 20" fill="currentColor">
               <path fillRule="evenodd" d="M11 4.5 9 2 4.8 6.9A7.48 7.48 0 0 0 3 11.77C3 15.2 5.8 18 9.23 18h1.65A6.12 6.12 0 0 0 17 11.88c0-1.86-.65-3.66-1.84-5.1L12 3l-1 1.5ZM6.32 8.2 9 5l2 2.5L12 6l1.62 2.07A5.96 5.96 0 0 1 15 11.88c0 2.08-1.55 3.8-3.56 4.08.36-.47.56-1.05.56-1.66 0-.52-.18-1.02-.5-1.43L10 11l-1.5 1.87c-.32.4-.5.91-.5 1.43 0 .6.2 1.18.54 1.64A4.23 4.23 0 0 1 5 11.77c0-1.31.47-2.58 1.32-3.57Z" clipRule="evenodd" />
             </svg>
           </div>
-          <div className="flex-1 min-w-0">
+          <div className="flex-1 min-w-0 flex items-center flex-wrap">
             <p className="text-white font-semibold text-sm leading-relaxed flex items-center flex-wrap gap-1">
               {renderBadges()}
               {renderClickableUsername(parsed.username, displayName)}
@@ -976,17 +1035,16 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
       if (parsed.badges.length === 0 && !seventvBadge && thirdPartyBadges.length === 0) return null;
 
       return (
-        <span className="inline-flex items-center gap-1 mr-1">
+        <span className="inline-flex items-center align-middle gap-1 mr-1">
           {parsed.badges.map((badge, idx) => {
             if (!badge.info) return null;
             return (
               <img
                 key={`sub-badge-${badge.key}-${idx}`}
-                src={badge.info.localUrl || badge.info.image_url_1x}
-                srcSet={badge.info.localUrl ? undefined : `${badge.info.image_url_1x} 1x, ${badge.info.image_url_2x} 2x, ${badge.info.image_url_4x} 4x`}
+                src={getTwitchBadgeUrl(badge.key, badge.info)}
                 alt={badge.info.title}
                 title={badge.info.title}
-                className="w-4 h-4 inline-block cursor-pointer hover:scale-110 transition-transform"
+                className="w-5 h-5 inline-block cursor-pointer hover:scale-110 transition-transform crisp-image"
                 onClick={() => onBadgeClick?.(badge.key, badge.info)}
                 onError={(e) => {
                   console.warn('[Badge] Failed to load badge:', badge.key, badge.info.image_url_1x);
@@ -1000,7 +1058,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
               src={getBadgeImageUrl(seventvBadge)}
               alt={seventvBadge.description || seventvBadge.name}
               title={seventvBadge.description || seventvBadge.name}
-              className="w-4 h-4 inline-block"
+              className="w-5 h-5 inline-block crisp-image"
               onError={(e) => {
                 e.currentTarget.style.display = 'none';
               }}
@@ -1012,7 +1070,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
               src={badge.imageUrl}
               alt={badge.title}
               title={`${badge.title} (${badge.provider.toUpperCase()})`}
-              className="w-4 h-4 inline-block"
+              className="w-5 h-5 inline-block crisp-image"
               onError={(e) => {
                 e.currentTarget.style.display = 'none';
               }}
@@ -1065,14 +1123,14 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
       }, [userPaint]);
 
       return (
-        <span className="inline-flex items-center">
+        <span className="inline-flex items-center align-middle">
           {userBadge && (
-            <span className="inline-flex items-center gap-1 mr-1">
+            <span className="inline-flex items-center align-middle gap-1 mr-1">
               <img
                 src={getBadgeImageUrl(userBadge)}
                 alt={userBadge.description || userBadge.name}
                 title={userBadge.description || userBadge.name}
-                className="w-4 h-4 inline-block"
+                className="w-5 h-5 inline-block crisp-image"
                 onError={(e) => {
                   e.currentTarget.style.display = 'none';
                 }}
@@ -1137,7 +1195,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
           parts.push(
             <span
               key={`username-${keyIndex++}`}
-              className="inline-flex items-center"
+              className="inline-flex items-center align-middle"
             >
               {renderBadges()}
               <span
@@ -1243,21 +1301,18 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
           </div>
         )}
 
-        <div className="flex items-start gap-2.5">
-          <div className="flex-shrink-0 mt-0.5">
+        <div className="flex items-center gap-2.5">
+          <div className="flex-shrink-0">
             {/* Prime logo for Prime subs, Gift box for other subs */}
             {msgParamSubPlan === 'Prime' ? (
               <svg className="w-5 h-5 text-blue-400" fill="currentColor" viewBox="0 0 20 20">
                 <path fillRule="evenodd" clipRule="evenodd" d="M18 5v8a2 2 0 0 1-2 2H4a2.002 2.002 0 0 1-2-2V5l4 3 4-4 4 4 4-3z" />
               </svg>
             ) : (
-              <svg className="w-5 h-5 text-purple-400" fill="currentColor" viewBox="0 0 20 20">
-                <path d="M4 3a2 2 0 100 4h12a2 2 0 100-4H4z" />
-                <path fillRule="evenodd" d="M3 8h14v7a2 2 0 01-2 2H5a2 2 0 01-2-2V8zm5 3a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1z" clipRule="evenodd" />
-              </svg>
+              <Gift size={20} className="text-purple-400" />
             )}
           </div>
-          <div className="flex-1 min-w-0">
+          <div className="flex-1 min-w-0 flex items-center flex-wrap leading-relaxed">
             <p className="text-white font-semibold text-sm leading-relaxed">
               {parseSystemMessageWithClickableNames(displayMessage)}
             </p>
@@ -1340,6 +1395,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
   return (
     <div
       className={`px-3 hover:bg-glass transition-colors ${borderClass} ${animationClass
+        } ${isHighlightedMessage ? 'highlight-message-gradient' : ''
         } ${isFirstMessage ? 'bg-gradient-to-r from-purple-500/20 via-purple-400/10 to-transparent' : ''} ${isFromSharedChat ? 'border-l-2 border-l-accent/50 bg-accent/5' : ''
         } ${backgroundClass} ${isDeleted ? 'opacity-50' : ''}`}
       style={{
@@ -1351,8 +1407,18 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
 
       {/* First message indicator */}
       {isFirstMessage && (
-        <div className="mt-1.5 flex items-center justify-end gap-1.5">
+        <div className="flex items-center justify-end gap-1.5">
           <span className="text-xs text-purple-400 font-normal opacity-60">First message in chat</span>
+        </div>
+      )}
+      {/* Highlighted message indicator */}
+      {isHighlightedMessage && (
+        <div className="flex items-center justify-end gap-1">
+          <svg className="w-3 h-3 text-cyan-400 opacity-60" viewBox="0 0 20 20" fill="currentColor">
+            <path d="M10 6a4 4 0 014 4h-2a2 2 0 00-2-2V6z" />
+            <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-2 0a6 6 0 11-12 0 6 6 0 0112 0z" clipRule="evenodd" />
+          </svg>
+          <span className="text-xs text-cyan-400 font-normal opacity-60">Redeemed Highlight My Message</span>
         </div>
       )}
       {/* Reply indicator */}
@@ -1372,23 +1438,23 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
         </div>
       )}
 
-      <div className={`flex items-start ${isFirstMessage ? 'mb-3' : ''}`}>
+      <div className="flex items-start">
         {/* Timestamp - displayed first before everything */}
         {formattedTimestamp && (
           <span className="text-textSecondary text-xs mr-1.5 opacity-60 flex-shrink-0 mt-0.5">{formattedTimestamp}</span>
         )}
-        {/* Badges and Message content in a single flex container */}
-        <div className="flex flex-wrap items-start gap-2 flex-1 min-w-0">
+        {/* Badges and Message content - inline flow so wrapped text starts at left edge */}
+        <div className="flex-1 min-w-0">
           {/* Badges */}
           {(isFromSharedChat && channelProfileImage) || parsed.badges.length > 0 || seventvBadge || thirdPartyBadges.length > 0 ? (
-            <div className="flex items-center gap-1 flex-shrink-0 mt-[3px]">
+            <span className="inline-flex items-center gap-1 mr-1.5 align-middle">
               {/* Shared chat channel profile image badge */}
               {isFromSharedChat && channelProfileImage && (
                 <img
                   src={channelProfileImage}
                   alt={`${fetchedChannelName || 'Channel'} profile`}
                   title={`Chatting from ${fetchedChannelName || 'shared channel'}`}
-                  className="w-4 h-4 cursor-pointer hover:scale-110 transition-transform object-cover"
+                  className="w-5 h-5 cursor-pointer hover:scale-110 transition-transform object-cover crisp-image"
                   onClick={async () => {
                     if (fetchedChannelName) {
                       try {
@@ -1410,11 +1476,10 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
                 return (
                   <img
                     key={`${badge.key}-${idx}`}
-                    src={badge.info.localUrl || badge.info.image_url_1x}
-                    srcSet={badge.info.localUrl ? undefined : `${badge.info.image_url_1x} 1x, ${badge.info.image_url_2x} 2x, ${badge.info.image_url_4x} 4x`}
+                    src={getTwitchBadgeUrl(badge.key, badge.info)}
                     alt={badge.info.title}
                     title={badge.info.title}
-                    className="w-4 h-4 cursor-pointer hover:scale-110 transition-transform"
+                    className="w-5 h-5 cursor-pointer hover:scale-110 transition-transform crisp-image"
                     onClick={() => onBadgeClick?.(badge.key, badge.info)}
                     onError={(e) => {
                       // Hide broken badge images
@@ -1429,7 +1494,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
                   src={getBadgeImageUrl(seventvBadge)}
                   alt={seventvBadge.description || seventvBadge.name}
                   title={seventvBadge.description || seventvBadge.name}
-                  className="w-4 h-4"
+                  className="w-5 h-5 crisp-image"
                   onError={(e) => {
                     e.currentTarget.style.display = 'none';
                   }}
@@ -1442,18 +1507,18 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
                   src={badge.imageUrl}
                   alt={badge.title}
                   title={`${badge.title} (${badge.provider.toUpperCase()})`}
-                  className="w-4 h-4"
+                  className="w-5 h-5 crisp-image"
                   onError={(e) => {
                     e.currentTarget.style.display = 'none';
                   }}
                 />
               ))}
-            </div>
+            </span>
           ) : null}
 
           {/* Message content */}
-          <div
-            className="flex-1 min-w-0 leading-relaxed pb-1"
+          <span
+            className="leading-relaxed align-middle"
             style={{
               fontSize: `${chatDesign?.font_size ?? 14}px`,
               fontWeight: chatDesign?.font_weight ?? 400,
@@ -1461,9 +1526,9 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
           >
             {isAction ? (
               // ACTION messages: entire content in username color
-              <span style={{ ...usernameStyle, fontWeight: 400 }} className="break-words italic">
+              <span style={{ ...usernameStyle, fontWeight: 300 }} className="break-words italic">
                 <span
-                  style={{ fontWeight: 600 }}
+                  style={{ fontWeight: 700 }}
                   className="cursor-pointer hover:underline inline-flex items-center gap-1"
                   onClick={(e) => {
                     const userId = parsed.tags.get('user-id');
@@ -1506,7 +1571,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
               // Regular messages: username in color, content in default color
               <>
                 <span
-                  style={{ ...usernameStyle, fontWeight: 600 }}
+                  style={{ ...usernameStyle, fontWeight: 700 }}
                   className="cursor-pointer hover:underline inline-flex items-center gap-1"
                   onClick={(e) => {
                     const userId = parsed.tags.get('user-id');
@@ -1543,13 +1608,13 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
                     </svg>
                   )}
                 </span>
-                <span style={{ fontWeight: 400 }} className="text-textPrimary break-words">
+                <span style={{ fontWeight: 300 }} className="text-textPrimary break-words">
                   {' '}{renderContent(contentWithEmotes)}
                   {isDeleted && <span className="ml-1.5 text-xs text-red-400/70 font-medium">[deleted]</span>}
                 </span>
               </>
             )}
-          </div>
+          </span>
         </div>
       </div>
     </div>

@@ -2943,6 +2943,157 @@ pub fn convert_emoji_shortcodes(text: &str) -> String {
     result
 }
 
+/// Parses text for Unicode emojis and returns MessageSegments
+/// Emojis get MessageSegment::Emoji with Apple CDN URLs
+/// Non-emoji text gets MessageSegment::Text
+/// This replicates the frontend's emojiToCodepoint logic for 1:1 parity
+pub fn parse_emoji_segments(text: &str) -> Vec<crate::models::chat_layout::MessageSegment> {
+    use crate::models::chat_layout::MessageSegment;
+
+    let mut segments = Vec::new();
+    let mut current_text = String::new();
+    let mut chars = text.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if is_emoji_start(c) {
+            // Flush any accumulated text
+            if !current_text.is_empty() {
+                segments.push(MessageSegment::Text {
+                    content: current_text.clone(),
+                });
+                current_text.clear();
+            }
+
+            // Collect the full emoji sequence (including ZWJ sequences, skin tones, etc.)
+            let emoji = collect_emoji_sequence(c, &mut chars);
+            let codepoint = emoji_to_codepoint(&emoji);
+            let emoji_url = format!(
+                "https://cdn.jsdelivr.net/npm/emoji-datasource-apple@15.1.2/img/apple/64/{}.png",
+                codepoint
+            );
+
+            segments.push(MessageSegment::Emoji {
+                content: emoji,
+                emoji_url,
+            });
+        } else {
+            current_text.push(c);
+        }
+    }
+
+    // Flush remaining text
+    if !current_text.is_empty() {
+        segments.push(MessageSegment::Text {
+            content: current_text,
+        });
+    }
+
+    segments
+}
+
+/// Checks if a character is the start of an emoji sequence
+fn is_emoji_start(c: char) -> bool {
+    matches!(c,
+        // Copyright, TM, etc. that can be emoji (before common ranges)
+        '\u{00A9}' |               // ©
+        '\u{00AE}' |               // ®
+        '\u{203C}' |               // ‼
+        '\u{2049}' |               // ⁉
+        '\u{2122}' |               // ™
+        '\u{2139}' |               // ℹ
+        '\u{2194}'..='\u{2199}' |  // Arrows
+        '\u{21A9}'..='\u{21AA}' |  // Arrows
+        '\u{231A}'..='\u{231B}' |  // Watch, Hourglass
+        '\u{23CF}' |               // Eject symbol
+        '\u{23E9}'..='\u{23F3}' |  // Media controls
+        '\u{23F8}'..='\u{23FA}' |  // Media controls
+        '\u{24C2}' |               // Ⓜ️
+        '\u{25AA}'..='\u{25AB}' |  // Squares
+        '\u{25B6}' |               // Play button
+        '\u{25C0}' |               // Reverse button
+        '\u{25FB}'..='\u{25FE}' |  // Squares
+        // Misc symbols (2600-26FF covers all specific symbols in this range)
+        '\u{2600}'..='\u{26FF}' |
+        // Dingbats (2700-27BF covers all specific symbols in this range)
+        '\u{2700}'..='\u{27BF}' |
+        '\u{2934}'..='\u{2935}' |  // Arrows
+        '\u{2B05}'..='\u{2B07}' |  // Arrows
+        '\u{2B1B}'..='\u{2B1C}' |  // Squares
+        '\u{2B50}' |               // Star
+        '\u{2B55}' |               // Circle
+        '\u{3030}' |               // Wavy dash
+        '\u{303D}' |               // Part alternation mark
+        '\u{3297}' |               // Circled Ideograph Congratulation
+        '\u{3299}' |               // Circled Ideograph Secret
+        // Regional flags (pairs of these form flags)
+        '\u{1F1E0}'..='\u{1F1FF}' |
+        // Misc Symbols and Pictographs (covers most emojis)
+        '\u{1F300}'..='\u{1F5FF}' |
+        // Emoticons
+        '\u{1F600}'..='\u{1F64F}' |
+        // Transport and Map
+        '\u{1F680}'..='\u{1F6FF}' |
+        // Colored circles/squares
+        '\u{1F7E0}'..='\u{1F7EB}' |
+        // Supplemental Symbols and Pictographs (covers hand gestures, sports, etc.)
+        '\u{1F900}'..='\u{1F9FF}' |
+        // Symbols and Pictographs Extended-A
+        '\u{1FA00}'..='\u{1FAFF}'
+    )
+}
+
+/// Collects a complete emoji sequence (handling ZWJ, skin tones, variation selectors, etc.)
+/// Only consumes additional base emojis if they follow a ZWJ
+fn collect_emoji_sequence(first: char, chars: &mut std::iter::Peekable<std::str::Chars>) -> String {
+    let mut emoji = String::new();
+    emoji.push(first);
+    let mut just_saw_zwj = false;
+
+    // Keep consuming modifiers and ZWJ sequences
+    while let Some(&next) = chars.peek() {
+        if next == '\u{200D}' {
+            // Zero Width Joiner - consume it and mark that we saw it
+            emoji.push(chars.next().unwrap());
+            just_saw_zwj = true;
+        } else if next == '\u{FE0F}' || next == '\u{FE0E}' {
+            // Variation Selectors - always consume
+            emoji.push(chars.next().unwrap());
+            just_saw_zwj = false;
+        } else if ('\u{1F3FB}'..='\u{1F3FF}').contains(&next) {
+            // Skin tone modifiers - always consume
+            emoji.push(chars.next().unwrap());
+            just_saw_zwj = false;
+        } else if ('\u{1F1E0}'..='\u{1F1FF}').contains(&next) {
+            // Regional indicators (flags) - these come in pairs, consume
+            emoji.push(chars.next().unwrap());
+            just_saw_zwj = false;
+        } else if ('\u{E0020}'..='\u{E007F}').contains(&next) {
+            // Tag characters (for subdivision flags like 🏴󠁧󠁢󠁥󠁮󠁧󠁿) - consume
+            emoji.push(chars.next().unwrap());
+            just_saw_zwj = false;
+        } else if just_saw_zwj && is_emoji_start(next) {
+            // Another emoji ONLY if we just saw a ZWJ (for ZWJ sequences like 👨‍👩‍👧)
+            emoji.push(chars.next().unwrap());
+            just_saw_zwj = false;
+        } else {
+            // Anything else (including consecutive emojis) - stop
+            break;
+        }
+    }
+
+    emoji
+}
+
+/// Converts an emoji to its codepoint representation for CDN URL
+/// This replicates the frontend's emojiToCodepoint logic exactly
+fn emoji_to_codepoint(emoji: &str) -> String {
+    emoji
+        .chars()
+        .filter(|&c| c != '\u{FE0F}') // Skip variation selector-16 (same as frontend)
+        .map(|c| format!("{:x}", c as u32))
+        .collect::<Vec<_>>()
+        .join("-")
+}
 #[cfg(test)]
 mod tests {
     use super::*;

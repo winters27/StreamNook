@@ -329,7 +329,7 @@ impl EmoteService {
                             id: id.to_string(),
                             name: name.to_string(),
                             url: format!(
-                                "https://static-cdn.jtvnw.net/emoticons/v2/{}/default/dark/1.0",
+                                "https://static-cdn.jtvnw.net/emoticons/v2/{}/default/dark/3.0",
                                 id
                             ),
                             provider: EmoteProvider::Twitch,
@@ -554,7 +554,7 @@ impl EmoteService {
                                 emotes.push(Emote {
                                     id: id.to_string(),
                                     name: name.to_string(),
-                                    url: format!("https://cdn.7tv.app/emote/{}/1x.webp", id),
+                                    url: format!("https://cdn.7tv.app/emote/{}/4x.webp", id),
                                     provider: EmoteProvider::SevenTV,
                                     is_zero_width: Some(flags == 256),
                                     local_url: None,
@@ -589,7 +589,7 @@ impl EmoteService {
                                 emotes.push(Emote {
                                     id: id.to_string(),
                                     name: name.to_string(),
-                                    url: format!("https://cdn.7tv.app/emote/{}/1x.webp", id),
+                                    url: format!("https://cdn.7tv.app/emote/{}/4x.webp", id),
                                     provider: EmoteProvider::SevenTV,
                                     is_zero_width: Some(flags == 256),
                                     local_url: None,
@@ -634,7 +634,7 @@ impl EmoteService {
                                     emotes.push(Emote {
                                         id: id.to_string(),
                                         name: name.to_string(),
-                                        url: format!("https://cdn.7tv.app/emote/{}/1x.webp", id),
+                                        url: format!("https://cdn.7tv.app/emote/{}/4x.webp", id),
                                         provider: EmoteProvider::SevenTV,
                                         is_zero_width: Some((flags & 256) == 256),
                                         local_url: None,
@@ -770,7 +770,7 @@ impl EmoteService {
             Emote {
                 id: "25".to_string(),
                 name: "Kappa".to_string(),
-                url: "https://static-cdn.jtvnw.net/emoticons/v2/25/default/dark/1.0".to_string(),
+                url: "https://static-cdn.jtvnw.net/emoticons/v2/25/default/dark/3.0".to_string(),
                 provider: EmoteProvider::Twitch,
                 is_zero_width: None,
                 local_url: None,
@@ -780,7 +780,7 @@ impl EmoteService {
             Emote {
                 id: "354".to_string(),
                 name: "4Head".to_string(),
-                url: "https://static-cdn.jtvnw.net/emoticons/v2/354/default/dark/1.0".to_string(),
+                url: "https://static-cdn.jtvnw.net/emoticons/v2/354/default/dark/3.0".to_string(),
                 provider: EmoteProvider::Twitch,
                 is_zero_width: None,
                 local_url: None,
@@ -790,7 +790,7 @@ impl EmoteService {
             Emote {
                 id: "425618".to_string(),
                 name: "LUL".to_string(),
-                url: "https://static-cdn.jtvnw.net/emoticons/v2/425618/default/dark/1.0"
+                url: "https://static-cdn.jtvnw.net/emoticons/v2/425618/default/dark/3.0"
                     .to_string(),
                 provider: EmoteProvider::Twitch,
                 is_zero_width: None,
@@ -801,7 +801,7 @@ impl EmoteService {
             Emote {
                 id: "305954156".to_string(),
                 name: "Pog".to_string(),
-                url: "https://static-cdn.jtvnw.net/emoticons/v2/305954156/default/dark/1.0"
+                url: "https://static-cdn.jtvnw.net/emoticons/v2/305954156/default/dark/3.0"
                     .to_string(),
                 provider: EmoteProvider::Twitch,
                 is_zero_width: None,
@@ -812,7 +812,7 @@ impl EmoteService {
             Emote {
                 id: "88".to_string(),
                 name: "PogChamp".to_string(),
-                url: "https://static-cdn.jtvnw.net/emoticons/v2/88/default/dark/1.0".to_string(),
+                url: "https://static-cdn.jtvnw.net/emoticons/v2/88/default/dark/3.0".to_string(),
                 provider: EmoteProvider::Twitch,
                 is_zero_width: None,
                 local_url: None,
@@ -822,7 +822,7 @@ impl EmoteService {
             Emote {
                 id: "81273".to_string(),
                 name: "BibleThump".to_string(),
-                url: "https://static-cdn.jtvnw.net/emoticons/v2/81273/default/dark/1.0".to_string(),
+                url: "https://static-cdn.jtvnw.net/emoticons/v2/81273/default/dark/3.0".to_string(),
                 provider: EmoteProvider::Twitch,
                 is_zero_width: None,
                 local_url: None,
@@ -832,7 +832,7 @@ impl EmoteService {
             Emote {
                 id: "81248".to_string(),
                 name: "Kreygasm".to_string(),
-                url: "https://static-cdn.jtvnw.net/emoticons/v2/81248/default/dark/1.0".to_string(),
+                url: "https://static-cdn.jtvnw.net/emoticons/v2/81248/default/dark/3.0".to_string(),
                 provider: EmoteProvider::Twitch,
                 is_zero_width: None,
                 local_url: None,
@@ -842,7 +842,7 @@ impl EmoteService {
             Emote {
                 id: "81249".to_string(),
                 name: "ResidentSleeper".to_string(),
-                url: "https://static-cdn.jtvnw.net/emoticons/v2/81249/default/dark/1.0".to_string(),
+                url: "https://static-cdn.jtvnw.net/emoticons/v2/81249/default/dark/3.0".to_string(),
                 provider: EmoteProvider::Twitch,
                 is_zero_width: None,
                 local_url: None,
@@ -852,7 +852,7 @@ impl EmoteService {
             Emote {
                 id: "81274".to_string(),
                 name: "FailFish".to_string(),
-                url: "https://static-cdn.jtvnw.net/emoticons/v2/81274/default/dark/1.0".to_string(),
+                url: "https://static-cdn.jtvnw.net/emoticons/v2/81274/default/dark/3.0".to_string(),
                 provider: EmoteProvider::Twitch,
                 is_zero_width: None,
                 local_url: None,
@@ -862,7 +862,7 @@ impl EmoteService {
             Emote {
                 id: "81997".to_string(),
                 name: "NotLikeThis".to_string(),
-                url: "https://static-cdn.jtvnw.net/emoticons/v2/81997/default/dark/1.0".to_string(),
+                url: "https://static-cdn.jtvnw.net/emoticons/v2/81997/default/dark/3.0".to_string(),
                 provider: EmoteProvider::Twitch,
                 is_zero_width: None,
                 local_url: None,
@@ -872,7 +872,7 @@ impl EmoteService {
             Emote {
                 id: "166266".to_string(),
                 name: "CoolCat".to_string(),
-                url: "https://static-cdn.jtvnw.net/emoticons/v2/166266/default/dark/1.0"
+                url: "https://static-cdn.jtvnw.net/emoticons/v2/166266/default/dark/3.0"
                     .to_string(),
                 provider: EmoteProvider::Twitch,
                 is_zero_width: None,
@@ -883,7 +883,7 @@ impl EmoteService {
             Emote {
                 id: "191762".to_string(),
                 name: "CoolStoryBob".to_string(),
-                url: "https://static-cdn.jtvnw.net/emoticons/v2/191762/default/dark/1.0"
+                url: "https://static-cdn.jtvnw.net/emoticons/v2/191762/default/dark/3.0"
                     .to_string(),
                 provider: EmoteProvider::Twitch,
                 is_zero_width: None,
@@ -894,7 +894,7 @@ impl EmoteService {
             Emote {
                 id: "196892".to_string(),
                 name: "SeemsGood".to_string(),
-                url: "https://static-cdn.jtvnw.net/emoticons/v2/196892/default/dark/1.0"
+                url: "https://static-cdn.jtvnw.net/emoticons/v2/196892/default/dark/3.0"
                     .to_string(),
                 provider: EmoteProvider::Twitch,
                 is_zero_width: None,
@@ -905,7 +905,7 @@ impl EmoteService {
             Emote {
                 id: "245".to_string(),
                 name: "KappaHD".to_string(),
-                url: "https://static-cdn.jtvnw.net/emoticons/v2/245/default/dark/1.0".to_string(),
+                url: "https://static-cdn.jtvnw.net/emoticons/v2/245/default/dark/3.0".to_string(),
                 provider: EmoteProvider::Twitch,
                 is_zero_width: None,
                 local_url: None,
@@ -915,7 +915,7 @@ impl EmoteService {
             Emote {
                 id: "1902".to_string(),
                 name: "Keepo".to_string(),
-                url: "https://static-cdn.jtvnw.net/emoticons/v2/1902/default/dark/1.0".to_string(),
+                url: "https://static-cdn.jtvnw.net/emoticons/v2/1902/default/dark/3.0".to_string(),
                 provider: EmoteProvider::Twitch,
                 is_zero_width: None,
                 local_url: None,

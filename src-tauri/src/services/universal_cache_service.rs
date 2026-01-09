@@ -679,10 +679,6 @@ pub async fn cache_file(
     url: String,
     expiry_days: u32,
 ) -> Result<String> {
-    println!(
-        "[UniversalCache] Caching file: {} (type: {:?})",
-        id, cache_type
-    );
     let cache_dir = get_universal_cache_dir()?;
     let type_str = match cache_type {
         CacheType::Badge => "badges",
@@ -703,10 +699,47 @@ pub async fn cache_file(
         .and_then(|ext| ext.to_str())
         .unwrap_or("bin");
 
+    // Sanitize ID for filename - replace path separators with underscores
+    let safe_id = id.replace(['/', '\\'], "_");
+
     // Use a prefix for the file ID in the manifest to avoid collision with metadata
-    // But for the filename, we can just use the ID
-    let file_name = format!("{}.{}", id, extension);
+    // But for the filename, we use the sanitized ID
+    let file_name = format!("{}.{}", safe_id, extension);
     let file_path = type_dir.join(&file_name);
+
+    // Check if file already exists on disk - skip download if so
+    if file_path.exists() {
+        let path_str = file_path.to_string_lossy().to_string();
+        // Ensure it's in the manifest (might have been missed on a previous run)
+        let manifest_id = format!("file:{}", id);
+        let manifest = load_manifest()?;
+        if !manifest.entries.contains_key(&manifest_id) {
+            // File exists but not in manifest - add it
+            let entry = UniversalCacheEntry {
+                id: manifest_id,
+                cache_type,
+                data: serde_json::json!({
+                    "local_path": path_str,
+                    "url": url,
+                    "file_name": file_name
+                }),
+                metadata: CacheMetadata {
+                    timestamp: get_current_timestamp(),
+                    expiry_days,
+                    source: "universal_file".to_string(),
+                    version: CACHE_VERSION,
+                },
+                position: None,
+            };
+            save_cached_item(entry).await?;
+        }
+        return Ok(path_str);
+    }
+
+    println!(
+        "[UniversalCache] Downloading and caching file: {} (type: {:?})",
+        id, cache_type
+    );
 
     // Download file
     let client = reqwest::Client::builder()

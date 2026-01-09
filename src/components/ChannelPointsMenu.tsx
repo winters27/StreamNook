@@ -1,0 +1,1107 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { invoke } from '@tauri-apps/api/core';
+import { useAppStore } from '../stores/AppStore';
+import { ChannelReward, RedemptionResult, UnlockedEmote } from '../types';
+
+// Default channel points icon (Twitch style)
+const ChannelPointsIcon = ({ className = "", size = 14 }: { className?: string; size?: number }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" className={className} fill="currentColor">
+    <path d="M12 5v2a5 5 0 0 1 5 5h2a7 7 0 0 0-7-7Z"></path>
+    <path fillRule="evenodd" d="M1 12C1 5.925 5.925 1 12 1s11 4.925 11 11-4.925 11-11 11S1 18.075 1 12Zm11 9a9 9 0 1 1 0-18 9 9 0 0 1 0 18Z" clipRule="evenodd"></path>
+  </svg>
+);
+
+interface ChannelPointsMenuProps {
+  channelLogin: string;  // Username for fetching rewards
+  channelId: string;     // Numeric ID for redemption
+  currentBalance: number | null;
+  customPointsName?: string | null;
+  customPointsIconUrl?: string | null;
+  onClose: () => void;
+  onBalanceUpdate: () => void;
+  onEmotesChange?: () => void; // Callback to refresh emotes after unlocking
+}
+
+const ChannelPointsMenu: React.FC<ChannelPointsMenuProps> = ({
+  channelLogin,
+  channelId,
+  currentBalance,
+  customPointsName,
+  customPointsIconUrl,
+  onClose,
+  onBalanceUpdate,
+  onEmotesChange,
+}) => {
+  const [rewards, setRewards] = useState<ChannelReward[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [redeemingId, setRedeemingId] = useState<string | null>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  // Highlighted message input modal state
+  const [showHighlightModal, setShowHighlightModal] = useState(false);
+  const [highlightMessage, setHighlightMessage] = useState('');
+  const [highlightReward, setHighlightReward] = useState<ChannelReward | null>(null);
+
+  // Emote reveal popup state
+  const [showEmoteReveal, setShowEmoteReveal] = useState(false);
+  const [revealedEmote, setRevealedEmote] = useState<UnlockedEmote | null>(null);
+
+  // Confirmation modal state (for costly redemptions like emote unlocks)
+  const [showConfirmModal, setShowConfirmModal] = useState(false);
+  const [pendingReward, setPendingReward] = useState<ChannelReward | null>(null);
+
+  // Modify emote picker modal state
+  const [showModifyEmoteModal, setShowModifyEmoteModal] = useState(false);
+  const [modifyEmoteReward, setModifyEmoteReward] = useState<ChannelReward | null>(null);
+  const [modifiableEmotes, setModifiableEmotes] = useState<Array<{
+    id: string;
+    token: string;
+    emote_type?: string;
+    modifications: Array<{ id: string; modifier_id: string; token: string }>;
+  }>>([]);
+  const [isLoadingEmotes, setIsLoadingEmotes] = useState(false);
+  const [selectedModifyEmote, setSelectedModifyEmote] = useState<string | null>(null);
+  const [modifyStep, setModifyStep] = useState<'emote' | 'modifier'>('emote');
+  const [selectedModifier, setSelectedModifier] = useState<{ id: string; modifier_id: string; token: string } | null>(null);
+
+  // Choose emote modal state (single-step emote selection)
+  const [showChooseEmoteModal, setShowChooseEmoteModal] = useState(false);
+  const [chooseEmoteReward, setChooseEmoteReward] = useState<ChannelReward | null>(null);
+  const [unlockableEmotes, setUnlockableEmotes] = useState<Array<{ id: string; token: string }>>([]);
+  const [isLoadingUnlockable, setIsLoadingUnlockable] = useState(false);
+  const [selectedUnlockEmote, setSelectedUnlockEmote] = useState<{ id: string; token: string } | null>(null);
+
+  // Modifier display names and descriptions
+  const MODIFIER_INFO: Record<string, { name: string; description: string }> = {
+    'MOD_BW': { name: 'Black & White', description: 'Grayscale version' },
+    'MOD_HF': { name: 'Flipped', description: 'Horizontally mirrored' },
+    'MOD_SG': { name: 'Sunglasses', description: 'Wearing cool shades' },
+    'MOD_SQ': { name: 'Squashed', description: 'Vertically squished' },
+    'MOD_TK': { name: 'Thinking', description: 'With thinking hand' },
+    'MOD_CV': { name: 'Cursed', description: 'Spooky distortion' },
+  };
+
+  // Fetch rewards when menu opens
+  useEffect(() => {
+    const fetchRewards = async () => {
+      setIsLoading(true);
+      setError(null);
+      try {
+        // CommunityPointsRewardRedemptionContext expects channelLogin (username)
+        const result = await invoke<ChannelReward[]>('get_channel_rewards', {
+          channelId: channelLogin  // Backend param is named channelId but expects login
+        });
+        setRewards(result);
+      } catch (err) {
+        console.error('[ChannelPointsMenu] Failed to fetch rewards:', err);
+        setError(typeof err === 'string' ? err : 'Failed to load rewards');
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    fetchRewards();
+  }, [channelLogin]);
+
+  // Close on Escape key
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        onClose();
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [onClose]);
+
+  const handleRedeem = async (reward: ChannelReward) => {
+    if (redeemingId) return; // Already redeeming something
+    if (currentBalance === null || currentBalance < reward.cost) {
+      useAppStore.getState().addToast(`Not enough ${customPointsName || 'points'}`, 'error');
+      return;
+    }
+    if (!reward.is_enabled || reward.is_paused || !reward.is_in_stock) {
+      useAppStore.getState().addToast('This reward is not available', 'error');
+      return;
+    }
+
+    // Handle input-required rewards (Highlight My Message)
+    if (reward.is_user_input_required) {
+      // Check if this is a highlight message type
+      if (reward.title.toLowerCase().includes('highlight')) {
+        setHighlightReward(reward);
+        setHighlightMessage('');
+        setShowHighlightModal(true);
+        return;
+      }
+      // Other input types not yet supported
+      useAppStore.getState().addToast('This reward type is not yet supported', 'info');
+      return;
+    }
+
+    // Handle random emote unlock - show confirmation first
+    const titleLower = reward.title.toLowerCase();
+    if (titleLower.includes('random') && titleLower.includes('emote')) {
+      setPendingReward(reward);
+      setShowConfirmModal(true);
+      return;
+    }
+
+    // Handle modify single emote - show emote picker
+    if (titleLower.includes('modify') && titleLower.includes('emote')) {
+      setModifyEmoteReward(reward);
+      setSelectedModifyEmote(null);
+      setShowModifyEmoteModal(true);
+      // Fetch the list of modifiable emotes
+      setIsLoadingEmotes(true);
+      try {
+        const emotes = await invoke<Array<{
+          id: string;
+          token: string;
+          emote_type?: string;
+          modifications: Array<{ id: string; modifier_id: string; token: string }>;
+        }>>('get_modifiable_emotes', {
+          channelId: channelLogin, // Use login for ChannelPointsContext query
+        });
+        setModifiableEmotes(emotes);
+      } catch (err) {
+        console.error('[ChannelPointsMenu] Failed to fetch modifiable emotes:', err);
+        useAppStore.getState().addToast('Failed to load emotes', 'error');
+      } finally {
+        setIsLoadingEmotes(false);
+      }
+      return;
+    }
+
+    // Handle choose specific emote to unlock - show emote picker
+    if ((titleLower.includes('choose') || titleLower.includes('unlock a sub emote')) && titleLower.includes('emote') && !titleLower.includes('modify') && !titleLower.includes('random')) {
+      setChooseEmoteReward(reward);
+      setSelectedUnlockEmote(null);
+      setShowChooseEmoteModal(true);
+      // Fetch the list of unlockable emotes (same as modifiable but we just need base emotes)
+      setIsLoadingUnlockable(true);
+      try {
+        const emotes = await invoke<Array<{
+          id: string;
+          token: string;
+          emote_type?: string;
+          modifications: Array<{ id: string; modifier_id: string; token: string }>;
+        }>>('get_modifiable_emotes', {
+          channelId: channelLogin,
+        });
+        // Map to simple emote list (just base emotes without modifications)
+        setUnlockableEmotes(emotes.map(e => ({ id: e.id, token: e.token })));
+      } catch (err) {
+        console.error('[ChannelPointsMenu] Failed to fetch unlockable emotes:', err);
+        useAppStore.getState().addToast('Failed to load emotes', 'error');
+      } finally {
+        setIsLoadingUnlockable(false);
+      }
+      return;
+    }
+
+    // Standard redemption
+    setRedeemingId(reward.id);
+    try {
+      const result = await invoke<RedemptionResult>('redeem_channel_reward', {
+        channelId: channelId,
+        rewardId: reward.id,
+        cost: reward.cost,
+      });
+
+      if (result.success) {
+        useAppStore.getState().addToast(`Redeemed: ${reward.title}`, 'success');
+        onBalanceUpdate(); // Refresh balance
+      } else {
+        useAppStore.getState().addToast(result.error_message || 'Redemption failed', 'error');
+      }
+    } catch (err) {
+      console.error('[ChannelPointsMenu] Redemption error:', err);
+      useAppStore.getState().addToast(typeof err === 'string' ? err : 'Redemption failed', 'error');
+    } finally {
+      setRedeemingId(null);
+    }
+  };
+
+  const handleSendHighlightedMessage = async () => {
+    if (!highlightReward || !highlightMessage.trim()) {
+      useAppStore.getState().addToast('Please enter a message', 'error');
+      return;
+    }
+
+    setRedeemingId(highlightReward.id);
+    try {
+      const result = await invoke<RedemptionResult>('send_highlighted_message', {
+        channelId: channelId,
+        message: highlightMessage.trim(),
+        cost: highlightReward.cost,
+      });
+
+      if (result.success) {
+        useAppStore.getState().addToast('Highlighted message sent!', 'success');
+        setShowHighlightModal(false);
+        setHighlightMessage('');
+        setHighlightReward(null);
+        onBalanceUpdate(); // Refresh balance
+      } else {
+        useAppStore.getState().addToast(result.error_message || 'Failed to send', 'error');
+      }
+    } catch (err) {
+      console.error('[ChannelPointsMenu] Highlighted message error:', err);
+      useAppStore.getState().addToast(typeof err === 'string' ? err : 'Failed to send', 'error');
+    } finally {
+      setRedeemingId(null);
+    }
+  };
+
+  const handleConfirmRedemption = async () => {
+    if (!pendingReward) return;
+
+    setShowConfirmModal(false);
+    setRedeemingId(pendingReward.id);
+
+    try {
+      const result = await invoke<RedemptionResult>('unlock_random_emote', {
+        channelId: channelId,
+        cost: pendingReward.cost,
+      });
+
+      if (result.success) {
+        // Show emote reveal popup if we got emote data
+        if (result.unlocked_emote) {
+          setRevealedEmote(result.unlocked_emote);
+          setShowEmoteReveal(true);
+        } else {
+          useAppStore.getState().addToast('🎉 Random emote unlocked!', 'success');
+        }
+        onBalanceUpdate();
+        // Trigger emote refresh so new emote appears in picker
+        if (onEmotesChange) {
+          onEmotesChange();
+        }
+      } else {
+        useAppStore.getState().addToast(result.error_message || 'Failed to unlock emote', 'error');
+      }
+    } catch (err) {
+      console.error('[ChannelPointsMenu] Random emote unlock error:', err);
+      useAppStore.getState().addToast(typeof err === 'string' ? err : 'Failed to unlock', 'error');
+    } finally {
+      setRedeemingId(null);
+      setPendingReward(null);
+    }
+  };
+
+  // Handle confirmation of modified emote unlock
+  const handleModifyEmoteConfirm = async () => {
+    if (!modifyEmoteReward || !selectedModifyEmote || !selectedModifier) {
+      useAppStore.getState().addToast('Please select an emote and modifier', 'error');
+      return;
+    }
+
+    // Use the full modified emote ID from the API (e.g., "1022569_BW")
+    const finalEmoteId = selectedModifier.id;
+
+    setShowModifyEmoteModal(false);
+    setRedeemingId(modifyEmoteReward.id);
+
+    try {
+      const result = await invoke<RedemptionResult>('unlock_modified_emote', {
+        channelId: channelId,
+        emoteId: finalEmoteId,
+        cost: modifyEmoteReward.cost,
+      });
+
+      if (result.success) {
+        // Show emote reveal popup with the token (actual emote name like "hamzDead_BW")
+        // Use the token from selectedModifier since backend doesn't have it
+        const emoteToReveal = {
+          id: selectedModifier.id,
+          name: selectedModifier.token, // Use the actual emote name, not the numeric ID
+          image_url: `https://static-cdn.jtvnw.net/emoticons/v2/${selectedModifier.id}/default/dark/2.0`,
+        };
+        setRevealedEmote(emoteToReveal);
+        setShowEmoteReveal(true);
+        onBalanceUpdate();
+        // Trigger emote refresh
+        if (onEmotesChange) {
+          onEmotesChange();
+        }
+      } else {
+        useAppStore.getState().addToast(result.error_message || 'Failed to modify emote', 'error');
+      }
+    } catch (err) {
+      console.error('[ChannelPointsMenu] Modify emote error:', err);
+      useAppStore.getState().addToast(typeof err === 'string' ? err : 'Failed to modify emote', 'error');
+    } finally {
+      setRedeemingId(null);
+      setModifyEmoteReward(null);
+      setSelectedModifyEmote(null);
+      setSelectedModifier(null);
+      setModifyStep('emote');
+    }
+  };
+
+  // Handle confirmation of chosen emote unlock
+  const handleChooseEmoteConfirm = async () => {
+    if (!chooseEmoteReward || !selectedUnlockEmote) {
+      useAppStore.getState().addToast('Please select an emote', 'error');
+      return;
+    }
+
+    setShowChooseEmoteModal(false);
+    setRedeemingId(chooseEmoteReward.id);
+
+    try {
+      const result = await invoke<RedemptionResult>('unlock_chosen_emote', {
+        channelId: channelId,
+        emoteId: selectedUnlockEmote.id,
+        cost: chooseEmoteReward.cost,
+      });
+
+      if (result.success) {
+        // Show emote reveal popup
+        const emoteToReveal = {
+          id: selectedUnlockEmote.id,
+          name: selectedUnlockEmote.token,
+          image_url: `https://static-cdn.jtvnw.net/emoticons/v2/${selectedUnlockEmote.id}/default/dark/2.0`,
+        };
+        setRevealedEmote(emoteToReveal);
+        setShowEmoteReveal(true);
+        onBalanceUpdate();
+        // Trigger emote refresh
+        if (onEmotesChange) {
+          onEmotesChange();
+        }
+      } else {
+        useAppStore.getState().addToast(result.error_message || 'Failed to unlock emote', 'error');
+      }
+    } catch (err) {
+      console.error('[ChannelPointsMenu] Choose emote error:', err);
+      useAppStore.getState().addToast(typeof err === 'string' ? err : 'Failed to unlock emote', 'error');
+    } finally {
+      setRedeemingId(null);
+      setChooseEmoteReward(null);
+      setSelectedUnlockEmote(null);
+    }
+  };
+
+  const isRewardAvailable = (reward: ChannelReward): boolean => {
+    if (!reward.is_enabled || reward.is_paused || !reward.is_in_stock) return false;
+    if (currentBalance === null || currentBalance < reward.cost) return false;
+    if (reward.cooldown_expires_at) {
+      const cooldownEnd = new Date(reward.cooldown_expires_at);
+      if (cooldownEnd > new Date()) return false;
+    }
+    return true;
+  };
+
+  const getRewardStatusText = (reward: ChannelReward): string | null => {
+    if (!reward.is_enabled) return 'Disabled';
+    if (reward.is_paused) return 'Paused';
+    if (!reward.is_in_stock) return 'Out of stock';
+    if (reward.cooldown_expires_at) {
+      const cooldownEnd = new Date(reward.cooldown_expires_at);
+      if (cooldownEnd > new Date()) {
+        const remaining = Math.ceil((cooldownEnd.getTime() - Date.now()) / 1000);
+        if (remaining > 60) {
+          return `${Math.ceil(remaining / 60)}m cooldown`;
+        }
+        return `${remaining}s cooldown`;
+      }
+    }
+    if (reward.is_user_input_required) return 'Requires input';
+    return null;
+  };
+
+  return (
+    <div
+      ref={menuRef}
+      className="absolute bottom-full left-0 right-0 mb-2 max-h-[400px] border border-border rounded-xl shadow-2xl overflow-hidden z-50"
+      style={{ backgroundColor: 'rgba(12, 12, 13, 0.98)', backdropFilter: 'blur(20px)' }}
+    >
+      {/* Header with balance */}
+      <div className="px-4 py-3 border-b border-border bg-gradient-to-r from-purple-900/30 to-transparent">
+        <div className="flex items-center justify-between">
+          <span className="text-sm font-medium text-textSecondary">
+            {customPointsName || 'Channel Points'}
+          </span>
+          <div className="flex items-center gap-1.5">
+            {customPointsIconUrl ? (
+              <img 
+                src={customPointsIconUrl} 
+                alt="" 
+                className="w-4 h-4"
+              />
+            ) : (
+              <ChannelPointsIcon size={16} className="text-accent-neon" />
+            )}
+            <span className="text-base font-bold text-accent-neon">
+              {currentBalance?.toLocaleString() ?? '--'}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {/* Content */}
+      <div className="overflow-y-auto max-h-[300px] custom-scrollbar">
+        {isLoading ? (
+          <div className="flex items-center justify-center py-8">
+            <div className="animate-spin w-6 h-6 border-2 border-accent border-t-transparent rounded-full" />
+          </div>
+        ) : error ? (
+          <div className="px-4 py-6 text-center">
+            <p className="text-textSecondary text-sm">{error}</p>
+            <button 
+              onClick={() => window.location.reload()}
+              className="mt-2 text-xs text-accent hover:underline"
+            >
+              Try again
+            </button>
+          </div>
+        ) : rewards.length === 0 ? (
+          <div className="px-4 py-6 text-center">
+            <p className="text-textSecondary text-sm">No rewards available</p>
+            <p className="text-textMuted text-xs mt-1">
+              This channel hasn't set up any rewards yet
+            </p>
+          </div>
+        ) : (
+          <div className="p-2 space-y-1">
+            {rewards.map((reward) => {
+              const available = isRewardAvailable(reward);
+              const statusText = getRewardStatusText(reward);
+              const isRedeeming = redeemingId === reward.id;
+              const canAfford = currentBalance !== null && currentBalance >= reward.cost;
+
+              return (
+                <button
+                  key={reward.id}
+                  onClick={() => handleRedeem(reward)}
+                  disabled={!available || isRedeeming}
+                  className={`
+                    w-full flex items-center gap-3 p-2.5 rounded-lg transition-all text-left
+                    ${available 
+                      ? 'hover:bg-glass cursor-pointer active:scale-[0.99]' 
+                      : 'opacity-50 cursor-not-allowed'}
+                    ${isRedeeming ? 'animate-pulse bg-accent/10' : ''}
+                  `}
+                >
+                  {/* Reward image/color */}
+                  <div 
+                    className="w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0 overflow-hidden"
+                    style={{ backgroundColor: reward.background_color || '#9147FF' }}
+                  >
+                    {reward.image_url ? (
+                      <img 
+                        src={reward.image_url} 
+                        alt="" 
+                        className="w-full h-full object-cover"
+                        onError={(e) => {
+                          e.currentTarget.style.display = 'none';
+                        }}
+                      />
+                    ) : (
+                      <ChannelPointsIcon size={18} className="text-white/80" />
+                    )}
+                  </div>
+
+                  {/* Reward info - grows but truncates */}
+                  <div className="flex-1 min-w-0 overflow-hidden">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-medium text-textPrimary truncate">
+                        {reward.title}
+                      </span>
+                    </div>
+                    {reward.prompt && (
+                      <p className="text-xs text-textMuted truncate mt-0.5">
+                        {reward.prompt}
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Status badge if not available */}
+                  {statusText && (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-yellow-500/20 text-yellow-400 flex-shrink-0 whitespace-nowrap">
+                      {statusText}
+                    </span>
+                  )}
+
+                  {/* Cost - always visible */}
+                  <div className={`
+                    flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold flex-shrink-0
+                    ${canAfford 
+                      ? 'bg-accent/20 text-accent' 
+                      : 'bg-red-500/20 text-red-400'}
+                  `}>
+                    {customPointsIconUrl ? (
+                      <img src={customPointsIconUrl} alt="" className="w-3 h-3" />
+                    ) : (
+                      <ChannelPointsIcon size={12} />
+                    )}
+                    {reward.cost >= 1000 
+                      ? `${(reward.cost / 1000).toFixed(reward.cost % 1000 === 0 ? 0 : 1)}k`
+                      : reward.cost.toLocaleString()}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Highlighted Message Input Modal */}
+      {showHighlightModal && highlightReward && (
+        <div className="absolute inset-0 flex flex-col rounded-xl overflow-hidden"
+          style={{ backgroundColor: 'rgba(12, 12, 13, 0.98)', backdropFilter: 'blur(20px)' }}
+        >
+          {/* Modal Header */}
+          <div className="px-4 py-3 border-b border-border bg-gradient-to-r from-yellow-500/20 to-transparent">
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-medium text-yellow-400">
+                ✨ {highlightReward.title}
+              </span>
+              <div className="flex items-center gap-1.5">
+                {customPointsIconUrl ? (
+                  <img src={customPointsIconUrl} alt="" className="w-4 h-4" />
+                ) : (
+                  <ChannelPointsIcon size={16} className="text-accent-neon" />
+                )}
+                <span className="text-base font-bold text-accent-neon">
+                  {highlightReward.cost.toLocaleString()}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Message Input */}
+          <div className="flex-1 p-4 flex flex-col gap-3">
+            <textarea
+              value={highlightMessage}
+              onChange={(e) => setHighlightMessage(e.target.value)}
+              placeholder="Type your highlighted message..."
+              maxLength={500}
+              autoFocus
+              className="flex-1 w-full bg-glass border border-border rounded-lg px-3 py-2 text-sm text-textPrimary placeholder-textMuted resize-none focus:outline-none focus:border-accent/50"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  handleSendHighlightedMessage();
+                }
+                if (e.key === 'Escape') {
+                  setShowHighlightModal(false);
+                }
+              }}
+            />
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-textMuted">
+                {highlightMessage.length}/500
+              </span>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setShowHighlightModal(false)}
+                  className="px-3 py-1.5 text-xs font-medium text-textSecondary hover:text-textPrimary transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleSendHighlightedMessage}
+                  disabled={!highlightMessage.trim() || redeemingId === highlightReward.id}
+                  className={`
+                    px-4 py-1.5 text-xs font-semibold rounded-lg transition-all
+                    ${highlightMessage.trim() && redeemingId !== highlightReward.id
+                      ? 'bg-yellow-500 text-black hover:bg-yellow-400 active:scale-[0.98]'
+                      : 'bg-yellow-500/30 text-yellow-400/50 cursor-not-allowed'}
+                  `}
+                >
+                  {redeemingId === highlightReward.id ? 'Sending...' : 'Send Highlighted'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Emote Reveal Popup */}
+      {showEmoteReveal && revealedEmote && (
+        <div 
+          className="absolute inset-0 flex flex-col items-center justify-center rounded-xl overflow-hidden z-50"
+          style={{ backgroundColor: 'rgba(12, 12, 13, 0.98)', backdropFilter: 'blur(20px)' }}
+          onClick={() => {
+            setShowEmoteReveal(false);
+            setRevealedEmote(null);
+          }}
+        >
+          {/* Sparkle background effect */}
+          <div className="absolute inset-0 overflow-hidden pointer-events-none">
+            <div className="absolute top-1/4 left-1/4 w-2 h-2 bg-yellow-400 rounded-full animate-ping" style={{ animationDelay: '0s' }} />
+            <div className="absolute top-1/3 right-1/4 w-1.5 h-1.5 bg-purple-400 rounded-full animate-ping" style={{ animationDelay: '0.2s' }} />
+            <div className="absolute bottom-1/3 left-1/3 w-2 h-2 bg-cyan-400 rounded-full animate-ping" style={{ animationDelay: '0.4s' }} />
+            <div className="absolute top-1/2 right-1/3 w-1 h-1 bg-pink-400 rounded-full animate-ping" style={{ animationDelay: '0.6s' }} />
+          </div>
+
+          {/* Title */}
+          <div className="text-yellow-400 text-lg font-bold mb-4 animate-pulse">
+            🎉 You unlocked an emote! 🎉
+          </div>
+
+          {/* Emote image */}
+          <div className="relative mb-4">
+            <div 
+              className="absolute inset-0 bg-gradient-to-r from-purple-500 via-pink-500 to-yellow-500 rounded-xl animate-spin-slow opacity-50 blur-xl"
+              style={{ animation: 'spin 3s linear infinite' }}
+            />
+            <img
+              src={revealedEmote.image_url}
+              alt={revealedEmote.name}
+              className="relative w-24 h-24 object-contain rounded-lg bg-glass/50 p-2"
+              style={{ imageRendering: 'pixelated' }}
+            />
+          </div>
+
+          {/* Emote name */}
+          <div className="text-2xl font-bold text-textPrimary mb-2">
+            {revealedEmote.name}
+          </div>
+
+          {/* Tap to dismiss */}
+          <div className="text-xs text-textMuted mt-4">
+            Tap to dismiss
+          </div>
+        </div>
+      )}
+
+      {/* Confirmation Modal */}
+      {showConfirmModal && pendingReward && (
+        <div 
+          className="absolute inset-0 flex flex-col items-center justify-center rounded-xl overflow-hidden z-40"
+          style={{ backgroundColor: 'rgba(12, 12, 13, 0.98)', backdropFilter: 'blur(20px)' }}
+        >
+          {/* Header */}
+          <div className="text-lg font-bold text-textPrimary mb-2">
+            Confirm Redemption
+          </div>
+
+          {/* Reward Image */}
+          {pendingReward.image_url && (
+            <img
+              src={pendingReward.image_url}
+              alt={pendingReward.title}
+              className="w-16 h-16 object-cover rounded-lg mb-3"
+            />
+          )}
+
+          {/* Reward Title */}
+          <div className="text-base font-semibold text-textPrimary mb-1">
+            {pendingReward.title}
+          </div>
+
+          {/* Warning Text */}
+          <div className="text-sm text-textMuted text-center px-6 mb-4">
+            You will receive a random subscriber emote.
+            <br />
+            <span className="text-yellow-400/80">This cannot be undone.</span>
+          </div>
+
+          {/* Cost */}
+          <div className="flex items-center gap-2 mb-6">
+            <div className="flex items-center gap-1.5 px-4 py-2 rounded-full bg-accent/20">
+              {customPointsIconUrl ? (
+                <img src={customPointsIconUrl} alt="" className="w-5 h-5" />
+              ) : (
+                <ChannelPointsIcon size={18} className="text-accent" />
+              )}
+              <span className="text-lg font-bold text-accent">
+                {pendingReward.cost.toLocaleString()}
+              </span>
+            </div>
+          </div>
+
+          {/* Buttons */}
+          <div className="flex gap-3">
+            <button
+              onClick={() => {
+                setShowConfirmModal(false);
+                setPendingReward(null);
+              }}
+              className="px-6 py-2 text-sm font-medium text-textSecondary hover:text-textPrimary transition-colors rounded-lg border border-border hover:border-borderLight"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleConfirmRedemption}
+              disabled={redeemingId !== null}
+              className={`
+                px-6 py-2 text-sm font-semibold rounded-lg transition-all
+                ${redeemingId === null
+                  ? 'bg-accent text-white hover:bg-accent/90 active:scale-[0.98]'
+                  : 'bg-accent/30 text-accent/50 cursor-not-allowed'}
+              `}
+            >
+              {redeemingId !== null ? 'Unlocking...' : 'Confirm'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Modify Emote Picker Modal */}
+      {showModifyEmoteModal && modifyEmoteReward && (
+        <div 
+          className="absolute inset-0 z-50 flex flex-col" 
+          style={{ 
+            backgroundColor: 'rgba(12, 12, 13, 0.98)',
+          }}
+        >
+          {/* Header */}
+          <div className="flex items-center justify-between p-4 border-b border-borderSubtle">
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => {
+                  if (modifyStep === 'modifier') {
+                    // Go back to emote selection
+                    setModifyStep('emote');
+                    setSelectedModifier(null);
+                  } else {
+                    // Close modal
+                    setShowModifyEmoteModal(false);
+                    setModifyEmoteReward(null);
+                    setSelectedModifyEmote(null);
+                    setSelectedModifier(null);
+                    setModifyStep('emote');
+                  }
+                }}
+                className="p-1.5 text-textSecondary hover:text-textPrimary hover:bg-glass rounded-lg transition-all"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  {modifyStep === 'modifier' ? (
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                  ) : (
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  )}
+                </svg>
+              </button>
+              <div>
+                <h3 className="text-base font-semibold text-textPrimary">
+                  {modifyStep === 'emote' ? 'Select an Emote' : 'Choose Modification'}
+                </h3>
+                <p className="text-xs text-textSecondary">{modifyEmoteReward.title}</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-accent/20">
+              {customPointsIconUrl ? (
+                <img src={customPointsIconUrl} alt="" className="w-4 h-4" />
+              ) : (
+                <ChannelPointsIcon size={14} className="text-accent" />
+              )}
+              <span className="text-sm font-bold text-accent">
+                {modifyEmoteReward.cost.toLocaleString()}
+              </span>
+            </div>
+          </div>
+
+          {/* Content */}
+          <div className="flex-1 overflow-y-auto p-4 scrollbar-thin">
+            {modifyStep === 'emote' ? (
+              // Step 1: Emote Selection
+              <>
+                {isLoadingEmotes ? (
+                  <div className="flex items-center justify-center h-32">
+                    <div className="flex flex-col items-center gap-2">
+                      <div className="w-8 h-8 border-2 border-accent border-t-transparent rounded-full animate-spin" />
+                      <span className="text-sm text-textSecondary">Loading emotes...</span>
+                    </div>
+                  </div>
+                ) : modifiableEmotes.length === 0 ? (
+                  <div className="flex items-center justify-center h-32">
+                    <p className="text-sm text-textSecondary">No emotes available to modify</p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-6 gap-1.5">
+                    {modifiableEmotes.map((emote) => {
+                      const baseId = emote.id.split('_')[0];
+                      const imageUrl = `https://static-cdn.jtvnw.net/emoticons/v2/${baseId}/default/dark/2.0`;
+                      const isSelected = selectedModifyEmote === emote.id;
+
+                      return (
+                        <button
+                          key={emote.id}
+                          onClick={() => setSelectedModifyEmote(emote.id)}
+                          className={`
+                            relative flex flex-col items-center gap-1 p-2 rounded-lg transition-all
+                            ${isSelected
+                              ? 'bg-accent/30 border-2 border-accent'
+                              : 'bg-glass hover:bg-glass-hover border-2 border-transparent'
+                            }
+                          `}
+                        >
+                          <img
+                            src={imageUrl}
+                            alt={emote.token}
+                            className="w-8 h-8 object-contain"
+                            onError={(e) => {
+                              e.currentTarget.style.display = 'none';
+                            }}
+                          />
+                          <span className="text-[10px] text-textSecondary truncate w-full text-center">
+                            {emote.token}
+                          </span>
+                          {isSelected && (
+                            <div className="absolute top-1 right-1 w-4 h-4 bg-accent rounded-full flex items-center justify-center">
+                              <svg className="w-2.5 h-2.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                              </svg>
+                            </div>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </>
+            ) : (
+              // Step 2: Modifier Selection
+              <div className="flex flex-col gap-4">
+                {/* Modifier Grid - show modifications for selected emote */}
+                <div className="grid grid-cols-2 gap-2">
+                  {modifiableEmotes.find(e => e.id === selectedModifyEmote)?.modifications.map((modification) => {
+                    const isSelected = selectedModifier?.id === modification.id;
+                    const modInfo = MODIFIER_INFO[modification.modifier_id] || { name: modification.token, description: 'Modified emote' };
+                    const shortCode = modification.id.split('_').pop() || '';
+                    return (
+                      <button
+                        key={modification.id}
+                        onClick={() => setSelectedModifier(modification)}
+                        className={`
+                          flex items-center gap-3 p-3 rounded-lg transition-all text-left
+                          ${isSelected
+                            ? 'bg-accent/30 border-2 border-accent'
+                            : 'bg-glass hover:bg-glass-hover border-2 border-transparent'
+                          }
+                        `}
+                      >
+                        <img
+                          src={`https://static-cdn.jtvnw.net/emoticons/v2/${modification.id}/default/dark/2.0`}
+                          alt={modification.token}
+                          className="w-10 h-10 object-contain rounded-lg"
+                          onError={(e) => {
+                            // Fallback to showing short code if image fails
+                            e.currentTarget.style.display = 'none';
+                          }}
+                        />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium text-textPrimary">{modInfo.name}</p>
+                          <p className="text-[10px] text-textSecondary truncate">{shortCode} - {modInfo.description}</p>
+                        </div>
+                        {isSelected && (
+                          <svg className="w-5 h-5 text-accent flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                          </svg>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Footer */}
+          <div className="flex items-center justify-between p-4 border-t border-borderSubtle">
+            <p className="text-xs text-textSecondary">
+              {modifyStep === 'emote'
+                ? selectedModifyEmote
+                  ? `Selected: ${modifiableEmotes.find(e => e.id === selectedModifyEmote)?.token || 'Unknown'}`
+                  : 'Click an emote to select it'
+                : selectedModifier
+                  ? `Effect: ${MODIFIER_INFO[selectedModifier.modifier_id]?.name || selectedModifier.token}`
+                  : 'Choose a modification effect'
+              }
+            </p>
+            <div className="flex gap-2">
+              <button
+                onClick={() => {
+                  if (modifyStep === 'modifier') {
+                    setModifyStep('emote');
+                    setSelectedModifier(null);
+                  } else {
+                    setShowModifyEmoteModal(false);
+                    setModifyEmoteReward(null);
+                    setSelectedModifyEmote(null);
+                    setSelectedModifier(null);
+                    setModifyStep('emote');
+                  }
+                }}
+                className="px-4 py-2 text-sm font-medium text-textSecondary hover:text-textPrimary transition-colors"
+              >
+                {modifyStep === 'modifier' ? 'Back' : 'Cancel'}
+              </button>
+              {modifyStep === 'emote' ? (
+                <button
+                  onClick={() => setModifyStep('modifier')}
+                  disabled={!selectedModifyEmote}
+                  className={`
+                    px-4 py-2 text-sm font-semibold rounded-lg transition-all
+                    ${selectedModifyEmote
+                      ? 'bg-accent text-white hover:bg-accent/90 active:scale-[0.98]'
+                      : 'bg-glass text-textSecondary cursor-not-allowed'
+                    }
+                  `}
+                >
+                  Next
+                </button>
+              ) : (
+                <button
+                  onClick={handleModifyEmoteConfirm}
+                  disabled={!selectedModifier || redeemingId !== null}
+                  className={`
+                    px-4 py-2 text-sm font-semibold rounded-lg transition-all
+                    ${selectedModifier && redeemingId === null
+                      ? 'bg-accent text-white hover:bg-accent/90 active:scale-[0.98]'
+                      : 'bg-glass text-textSecondary cursor-not-allowed'
+                    }
+                  `}
+                >
+                  {redeemingId !== null ? 'Unlocking...' : 'Confirm'}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Choose Emote Modal - Single step emote picker */}
+      {showChooseEmoteModal && chooseEmoteReward && (
+        <div 
+          className="absolute inset-0 z-50 flex flex-col" 
+          style={{ 
+            backgroundColor: 'rgba(12, 12, 13, 0.98)',
+          }}
+        >
+          {/* Header */}
+          <div className="flex items-center justify-between p-4 border-b border-borderSubtle">
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => {
+                  setShowChooseEmoteModal(false);
+                  setChooseEmoteReward(null);
+                  setSelectedUnlockEmote(null);
+                }}
+                className="p-1.5 text-textSecondary hover:text-textPrimary hover:bg-glass rounded-lg transition-all"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+              <div>
+                <h3 className="text-base font-semibold text-textPrimary">Choose an Emote</h3>
+                <p className="text-xs text-textSecondary">{chooseEmoteReward.title}</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-accent/20">
+              {customPointsIconUrl ? (
+                <img src={customPointsIconUrl} alt="" className="w-4 h-4" />
+              ) : (
+                <ChannelPointsIcon size={14} className="text-accent" />
+              )}
+              <span className="text-sm font-bold text-accent">
+                {chooseEmoteReward.cost.toLocaleString()}
+              </span>
+            </div>
+          </div>
+
+          {/* Content */}
+          <div className="flex-1 overflow-y-auto p-4 scrollbar-thin">
+            {isLoadingUnlockable ? (
+              <div className="flex items-center justify-center h-32">
+                <div className="animate-spin rounded-full h-8 w-8 border-2 border-accent border-t-transparent" />
+              </div>
+            ) : unlockableEmotes.length === 0 ? (
+              <div className="flex items-center justify-center h-32">
+                <p className="text-sm text-textSecondary">No emotes available to unlock</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-6 gap-1.5">
+                {unlockableEmotes.map((emote) => {
+                  const imageUrl = `https://static-cdn.jtvnw.net/emoticons/v2/${emote.id}/default/dark/2.0`;
+                  const isSelected = selectedUnlockEmote?.id === emote.id;
+
+                  return (
+                    <button
+                      key={emote.id}
+                      onClick={() => setSelectedUnlockEmote(emote)}
+                      className={`
+                        relative flex flex-col items-center gap-1 p-2 rounded-lg transition-all
+                        ${isSelected
+                          ? 'bg-accent/30 border-2 border-accent'
+                          : 'bg-glass hover:bg-glass-hover border-2 border-transparent'
+                        }
+                      `}
+                    >
+                      <img
+                        src={imageUrl}
+                        alt={emote.token}
+                        className="w-8 h-8 object-contain"
+                        onError={(e) => {
+                          e.currentTarget.style.display = 'none';
+                        }}
+                      />
+                      <span className="text-[10px] text-textSecondary truncate w-full text-center">
+                        {emote.token}
+                      </span>
+                      {isSelected && (
+                        <div className="absolute top-1 right-1 w-4 h-4 bg-accent rounded-full flex items-center justify-center">
+                          <svg className="w-2.5 h-2.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                          </svg>
+                        </div>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Footer */}
+          <div className="flex items-center justify-between p-4 border-t border-borderSubtle">
+            <p className="text-xs text-textSecondary">
+              {selectedUnlockEmote
+                ? `Selected: ${selectedUnlockEmote.token}`
+                : 'Click an emote to select it'
+              }
+            </p>
+            <div className="flex gap-2">
+              <button
+                onClick={() => {
+                  setShowChooseEmoteModal(false);
+                  setChooseEmoteReward(null);
+                  setSelectedUnlockEmote(null);
+                }}
+                className="px-4 py-2 text-sm font-medium text-textSecondary hover:text-textPrimary hover:bg-glass rounded-lg transition-all"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleChooseEmoteConfirm}
+                disabled={!selectedUnlockEmote || redeemingId !== null}
+                className={`
+                  px-4 py-2 text-sm font-semibold rounded-lg transition-all
+                  ${selectedUnlockEmote && redeemingId === null
+                    ? 'bg-accent text-white hover:bg-accent/90 active:scale-[0.98]'
+                    : 'bg-glass text-textSecondary cursor-not-allowed'
+                  }
+                `}
+              >
+                {redeemingId !== null ? 'Unlocking...' : 'Unlock'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default ChannelPointsMenu;
+

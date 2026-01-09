@@ -618,3 +618,1125 @@ pub async fn get_reserved_channel(
         Ok(None)
     }
 }
+
+// Channel Points Rewards commands
+
+// Persisted query hash for ChannelPointsContext - captured from Twitch's network traffic
+// This should return communityPointsSettings including customRewards
+const CHANNEL_POINTS_CONTEXT_HASH: &str =
+    "374314de591e69925fce3ddc2bcf085796f56ebb8cad67a0daa3165c03adc345";
+
+// Captured GQL hashes for channel points redemptions
+const SEND_HIGHLIGHTED_CHAT_MESSAGE_HASH: &str =
+    "bb187d763156dc5c25c6457e1b32da6c5033cb7504854e6d33a8b876d10444b6";
+const UNLOCK_RANDOM_SUBSCRIBER_EMOTE_HASH: &str =
+    "f548e89966b21d0094f3dc35233232eb6ec76d63e02594c8a494407712a85350";
+// Modify single emote operations
+#[allow(dead_code)]
+const MODIFY_EMOTE_OWNED_EMOTES_HASH: &str =
+    "e882551bf6a6abf14a1ec2deac4fe9a0af22f89f863818f7228da98d6b849cb4";
+#[allow(dead_code)]
+const AVAILABLE_EMOTES_FOR_CHANNEL_HASH: &str =
+    "6c45e0ecaa823cc7db3ecdd1502af2223c775bdcfb0f18a3a0ce9a0b7db8ef6c";
+const EMOTE_PICKER_USER_SUBSCRIPTION_PRODUCTS_HASH: &str =
+    "511bebfb513d0127d24a7fe49aa2b7717306a611e1f4269a93e0cc76e8a65a81";
+const UNLOCK_MODIFIED_EMOTE_HASH: &str =
+    "30e8cc29b1d6d96809f5e35f5e7a550ae8bf5d26966a9637d919477ffd0bfc52";
+// Note: UnlockChosenSubscriberEmote uses inline query (no persisted hash)
+
+/// Parse a custom reward from the GQL response
+fn parse_reward(
+    reward: &serde_json::Value,
+    _is_automatic: bool,
+) -> Option<crate::models::drops::ChannelReward> {
+    let id = reward["id"].as_str()?.to_string();
+    let title = reward["title"].as_str().unwrap_or_default().to_string();
+    let cost = reward["cost"].as_i64().unwrap_or(0) as i32;
+    let prompt = reward["prompt"].as_str().map(|s| s.to_string());
+
+    // Get image URL - prefer custom image, fallback to default
+    let image_url = reward["image"]["url"]
+        .as_str()
+        .or_else(|| reward["defaultImage"]["url"].as_str())
+        .map(|s| s.to_string());
+
+    let background_color = reward["backgroundColor"]
+        .as_str()
+        .unwrap_or("#9147FF")
+        .to_string();
+    let is_enabled = reward["isEnabled"].as_bool().unwrap_or(true);
+    let is_paused = reward["isPaused"].as_bool().unwrap_or(false);
+    let is_in_stock = reward["isInStock"].as_bool().unwrap_or(true);
+    let is_user_input_required = reward["isUserInputRequired"].as_bool().unwrap_or(false);
+    let cooldown_expires_at = reward["cooldownExpiresAt"].as_str().map(|s| s.to_string());
+
+    // Parse max per stream setting
+    let max_per_stream = if reward["maxPerStreamSetting"]["isEnabled"]
+        .as_bool()
+        .unwrap_or(false)
+    {
+        reward["maxPerStreamSetting"]["maxPerStream"]
+            .as_i64()
+            .map(|v| v as i32)
+    } else {
+        None
+    };
+
+    // Parse max per user per stream setting
+    let max_per_user_per_stream = if reward["maxPerUserPerStreamSetting"]["isEnabled"]
+        .as_bool()
+        .unwrap_or(false)
+    {
+        reward["maxPerUserPerStreamSetting"]["maxPerUserPerStream"]
+            .as_i64()
+            .map(|v| v as i32)
+    } else {
+        None
+    };
+
+    // Parse global cooldown setting
+    let global_cooldown_seconds = if reward["globalCooldownSetting"]["isEnabled"]
+        .as_bool()
+        .unwrap_or(false)
+    {
+        reward["globalCooldownSetting"]["globalCooldownSeconds"]
+            .as_i64()
+            .map(|v| v as i32)
+    } else {
+        None
+    };
+
+    Some(crate::models::drops::ChannelReward {
+        id,
+        title,
+        cost,
+        prompt,
+        image_url,
+        background_color,
+        is_enabled,
+        is_paused,
+        is_in_stock,
+        is_user_input_required,
+        cooldown_expires_at,
+        max_per_stream,
+        max_per_user_per_stream,
+        global_cooldown_seconds,
+    })
+}
+
+/// Parse an automatic (built-in) reward from the GQL response
+fn parse_automatic_reward(
+    reward: &serde_json::Value,
+) -> Option<crate::models::drops::ChannelReward> {
+    let id = reward["id"].as_str()?.to_string();
+    let id_fallback = id.clone();
+    let reward_type = reward["type"].as_str().unwrap_or(&id_fallback);
+    let pricing_type = reward["pricingType"].as_str().unwrap_or("CHANNEL_POINTS");
+
+    // Skip Bits-based rewards using the pricingType field
+    if pricing_type == "BITS" {
+        return None;
+    }
+
+    // Convert type to human-readable title for Channel Points rewards only
+    let title = match reward_type {
+        "SEND_HIGHLIGHTED_MESSAGE" => "Highlight My Message".to_string(),
+        "SINGLE_MESSAGE_BYPASS_SUB_MODE" => "Send a Message in Sub-Only Mode".to_string(),
+        "RANDOM_SUB_EMOTE_UNLOCK" => "Unlock a Random Sub Emote".to_string(),
+        "CHOSEN_SUB_EMOTE_UNLOCK" => "Choose an Emote to Unlock".to_string(),
+        "CHOSEN_MODIFIED_SUB_EMOTE_UNLOCK" => "Modify a Single Emote".to_string(),
+        "SEND_GIGANTIFIED_EMOTE" => "Gigantify an Emote".to_string(),
+        _ => reward_type.replace('_', " ").to_string(),
+    };
+
+    // Get cost - prefer streamer's custom cost, fallback to minimumCost
+    // Note: cost field is null if streamer hasn't overridden it
+    let cost = reward["cost"]
+        .as_i64()
+        .or_else(|| reward["minimumCost"].as_i64())
+        .or_else(|| reward["defaultCost"].as_i64())
+        .unwrap_or(0) as i32;
+
+    // Skip rewards with 0 cost (they might be event-based or subscription only)
+    if cost == 0 {
+        return None;
+    }
+
+    let is_enabled = reward["isEnabled"].as_bool().unwrap_or(true);
+
+    // Skip disabled rewards only (don't filter isHiddenForSubs - show them anyway)
+    if !is_enabled {
+        return None;
+    }
+
+    // Get background color - prefer custom, fallback to default
+    let background_color = reward["backgroundColor"]
+        .as_str()
+        .or_else(|| reward["defaultBackgroundColor"].as_str())
+        .unwrap_or("#9147FF")
+        .to_string();
+
+    // Get image URL - prefer custom image, fallback to default (use url2x for better quality)
+    let image_url = reward["image"]["url2x"]
+        .as_str()
+        .or_else(|| reward["image"]["url"].as_str())
+        .or_else(|| reward["defaultImage"]["url2x"].as_str())
+        .or_else(|| reward["defaultImage"]["url"].as_str())
+        .map(|s| s.to_string());
+
+    Some(crate::models::drops::ChannelReward {
+        id,
+        title,
+        cost,
+        prompt: None,
+        image_url,
+        background_color,
+        is_enabled,
+        is_paused: false,
+        is_in_stock: reward["isInStock"].as_bool().unwrap_or(true),
+        is_user_input_required: reward_type == "SEND_HIGHLIGHTED_MESSAGE"
+            || reward_type == "SINGLE_MESSAGE_BYPASS_SUB_MODE",
+        cooldown_expires_at: None,
+        max_per_stream: None,
+        max_per_user_per_stream: None,
+        global_cooldown_seconds: reward["globalCooldownSeconds"].as_i64().map(|v| v as i32),
+    })
+}
+
+#[tauri::command]
+pub async fn get_channel_rewards(
+    channel_id: String, // Actually channel login (username)
+) -> Result<Vec<crate::models::drops::ChannelReward>, String> {
+    use crate::services::drops_auth_service::DropsAuthService;
+    use reqwest::Client;
+    use serde_json::json;
+
+    // Use mobile client ID for persisted queries (same as predictions)
+    const CLIENT_ID: &str = "kd1unb4b3q4t58fwlpcbzcbnm76a8fp";
+
+    let token = DropsAuthService::get_token()
+        .await
+        .map_err(|e| format!("Failed to get token: {}", e))?;
+
+    let client = Client::new();
+
+    // Use ChannelPointsContext with includeGoalTypes (captured from Twitch)
+    let response = client
+        .post("https://gql.twitch.tv/gql")
+        .header("Client-Id", CLIENT_ID)
+        .header("Authorization", format!("OAuth {}", token))
+        .json(&json!({
+            "operationName": "ChannelPointsContext",
+            "variables": {
+                "channelLogin": channel_id.to_lowercase(),
+                "includeGoalTypes": ["CREATOR", "BOOST"]
+            },
+            "extensions": {
+                "persistedQuery": {
+                    "version": 1,
+                    "sha256Hash": CHANNEL_POINTS_CONTEXT_HASH
+                }
+            }
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch channel rewards: {}", e))?;
+
+    let result: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse channel rewards response: {}", e))?;
+
+    println!(
+        "[ChannelRewards] Raw response: {}",
+        serde_json::to_string_pretty(&result).unwrap_or_default()
+    );
+
+    // Parse the response into ChannelReward structs
+    let mut rewards = Vec::new();
+
+    // Get the communityPointsSettings object
+    let settings = result["data"]["community"]["channel"]["communityPointsSettings"]
+        .as_object()
+        .or_else(|| result["data"]["channel"]["communityPointsSettings"].as_object());
+
+    if let Some(settings) = settings {
+        // Parse custom rewards (streamer-defined)
+        if let Some(custom_rewards) = settings.get("customRewards").and_then(|v| v.as_array()) {
+            for reward in custom_rewards {
+                if let Some(parsed) = parse_reward(reward, false) {
+                    rewards.push(parsed);
+                }
+            }
+        }
+
+        // Parse automatic rewards (built-in Twitch rewards like Highlight Message)
+        if let Some(auto_rewards) = settings.get("automaticRewards").and_then(|v| v.as_array()) {
+            for reward in auto_rewards {
+                if let Some(parsed) = parse_automatic_reward(reward) {
+                    rewards.push(parsed);
+                }
+            }
+        }
+    }
+
+    // Sort rewards by cost (cheapest first)
+    rewards.sort_by(|a, b| a.cost.cmp(&b.cost));
+
+    Ok(rewards)
+}
+
+#[tauri::command]
+pub async fn redeem_channel_reward(
+    channel_id: String,
+    reward_id: String,
+    cost: i32,
+) -> Result<crate::models::drops::RedemptionResult, String> {
+    use crate::services::drops_auth_service::DropsAuthService;
+    use reqwest::Client;
+    use serde_json::json;
+
+    // Use mobile client ID for redemption (mutation)
+    const CLIENT_ID: &str = "kd1unb4b3q4t58fwlpcbzcbnm76a8fp";
+
+    let token = DropsAuthService::get_token()
+        .await
+        .map_err(|e| format!("Failed to get token: {}", e))?;
+
+    let client = Client::new();
+
+    // GQL mutation to redeem a channel reward
+    // Note: This mutation may need a persisted query hash
+    let mutation = r#"
+    mutation RedeemCommunityPointsCustomReward($input: RedeemCommunityPointsCustomRewardInput!) {
+        redeemCommunityPointsCustomReward(input: $input) {
+            redemption {
+                id
+                reward {
+                    id
+                    title
+                    cost
+                }
+            }
+            error {
+                code
+            }
+        }
+    }
+    "#;
+
+    let response = client
+        .post("https://gql.twitch.tv/gql")
+        .header("Client-Id", CLIENT_ID)
+        .header("Authorization", format!("OAuth {}", token))
+        .json(&json!({
+            "operationName": "RedeemCommunityPointsCustomReward",
+            "query": mutation,
+            "variables": {
+                "input": {
+                    "channelID": channel_id,
+                    "rewardID": reward_id,
+                    "transactionID": uuid::Uuid::new_v4().to_string()
+                }
+            }
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("Failed to redeem reward: {}", e))?;
+
+    let result: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse redemption response: {}", e))?;
+
+    // Check for errors
+    if let Some(error) = result["data"]["redeemCommunityPointsCustomReward"]["error"].as_object() {
+        let error_code = error
+            .get("code")
+            .and_then(|v| v.as_str())
+            .unwrap_or("UNKNOWN");
+        return Ok(crate::models::drops::RedemptionResult {
+            success: false,
+            error_code: Some(error_code.to_string()),
+            error_message: Some(match error_code {
+                "INSUFFICIENT_POINTS" => "Not enough channel points".to_string(),
+                "NOT_AVAILABLE" => "Reward is not available".to_string(),
+                "MAX_PER_STREAM_EXCEEDED" => "Maximum redemptions per stream reached".to_string(),
+                "MAX_PER_USER_PER_STREAM_EXCEEDED" => {
+                    "You've already redeemed this reward".to_string()
+                }
+                "COOLDOWN" => "Reward is on cooldown".to_string(),
+                _ => format!("Redemption failed: {}", error_code),
+            }),
+            new_balance: None,
+            unlocked_emote: None,
+        });
+    }
+
+    // Check for successful redemption
+    if result["data"]["redeemCommunityPointsCustomReward"]["redemption"].is_object() {
+        println!(
+            "🎁 Successfully redeemed reward {} for {} points on channel {}",
+            reward_id, cost, channel_id
+        );
+
+        return Ok(crate::models::drops::RedemptionResult {
+            success: true,
+            error_code: None,
+            error_message: None,
+            new_balance: None,
+            unlocked_emote: None, // Backend doesn't return new balance, frontend will refetch
+        });
+    }
+
+    // Unexpected response
+    Ok(crate::models::drops::RedemptionResult {
+        success: false,
+        error_code: Some("UNKNOWN".to_string()),
+        error_message: Some("Unexpected response from Twitch".to_string()),
+        new_balance: None,
+        unlocked_emote: None,
+    })
+}
+
+#[tauri::command]
+pub async fn send_highlighted_message(
+    channel_id: String,
+    message: String,
+    cost: i32,
+) -> Result<crate::models::drops::RedemptionResult, String> {
+    use crate::services::drops_auth_service::DropsAuthService;
+    use reqwest::Client;
+    use serde_json::json;
+
+    // Use mobile client ID - less strict integrity requirements than web
+    const CLIENT_ID: &str = "kd1unb4b3q4t58fwlpcbzcbnm76a8fp";
+
+    let token = DropsAuthService::get_token()
+        .await
+        .map_err(|e| format!("Failed to get token: {}", e))?;
+
+    let client = Client::new();
+
+    // Generate transaction ID and device/session IDs (UUID without dashes, lowercase)
+    let transaction_id = uuid::Uuid::new_v4().to_string().replace("-", "");
+    let device_id = uuid::Uuid::new_v4().to_string().replace("-", "");
+    let session_id = uuid::Uuid::new_v4().to_string().replace("-", "")[..16].to_string();
+
+    // Use the captured persisted query hash with required headers
+    let response = client
+        .post("https://gql.twitch.tv/gql")
+        .header("Client-Id", CLIENT_ID)
+        .header("Authorization", format!("OAuth {}", token))
+        .header("X-Device-Id", &device_id)
+        .header("Client-Session-Id", &session_id)
+        .json(&json!({
+            "operationName": "SendHighlightedChatMessage",
+            "variables": {
+                "input": {
+                    "channelID": channel_id,
+                    "cost": cost,
+                    "message": message,
+                    "transactionID": transaction_id
+                }
+            },
+            "extensions": {
+                "persistedQuery": {
+                    "version": 1,
+                    "sha256Hash": SEND_HIGHLIGHTED_CHAT_MESSAGE_HASH
+                }
+            }
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("Failed to send highlighted message: {}", e))?;
+
+    let result: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse response: {}", e))?;
+
+    println!(
+        "[SendHighlightedMessage] Response: {}",
+        serde_json::to_string_pretty(&result).unwrap_or_default()
+    );
+
+    // Check for errors
+    if let Some(errors) = result["errors"].as_array() {
+        if !errors.is_empty() {
+            let error_msg = errors
+                .first()
+                .and_then(|e| e["message"].as_str())
+                .unwrap_or("Unknown error");
+            return Ok(crate::models::drops::RedemptionResult {
+                success: false,
+                error_code: Some("GQL_ERROR".to_string()),
+                error_message: Some(error_msg.to_string()),
+                new_balance: None,
+                unlocked_emote: None,
+            });
+        }
+    }
+
+    // Check for mutation-specific errors
+    if let Some(error) = result["data"]["sendHighlightedChatMessage"]["error"].as_object() {
+        let error_code = error
+            .get("code")
+            .and_then(|v| v.as_str())
+            .unwrap_or("UNKNOWN");
+        return Ok(crate::models::drops::RedemptionResult {
+            success: false,
+            error_code: Some(error_code.to_string()),
+            error_message: Some(match error_code {
+                "INSUFFICIENT_POINTS" => "Not enough channel points".to_string(),
+                "MESSAGE_TOO_LONG" => "Message is too long".to_string(),
+                "RATE_LIMITED" => {
+                    "Please wait before sending another highlighted message".to_string()
+                }
+                _ => format!("Failed to send: {}", error_code),
+            }),
+            new_balance: None,
+            unlocked_emote: None,
+        });
+    }
+
+    // Check for successful send
+    if result["data"]["sendHighlightedChatMessage"].is_object() {
+        println!(
+            "✨ Successfully sent highlighted message to channel {} for {} points",
+            channel_id, cost
+        );
+
+        return Ok(crate::models::drops::RedemptionResult {
+            success: true,
+            error_code: None,
+            error_message: None,
+            new_balance: None,
+            unlocked_emote: None,
+        });
+    }
+
+    // Unexpected response
+    Ok(crate::models::drops::RedemptionResult {
+        success: false,
+        error_code: Some("UNKNOWN".to_string()),
+        error_message: Some("Unexpected response from Twitch".to_string()),
+        new_balance: None,
+        unlocked_emote: None,
+    })
+}
+
+#[tauri::command]
+pub async fn unlock_random_emote(
+    channel_id: String,
+    cost: i32,
+) -> Result<crate::models::drops::RedemptionResult, String> {
+    use crate::services::drops_auth_service::DropsAuthService;
+    use reqwest::Client;
+    use serde_json::json;
+
+    // Use mobile client ID - less strict integrity requirements
+    const CLIENT_ID: &str = "kd1unb4b3q4t58fwlpcbzcbnm76a8fp";
+
+    let token = DropsAuthService::get_token()
+        .await
+        .map_err(|e| format!("Failed to get token: {}", e))?;
+
+    let client = Client::new();
+
+    // Generate IDs
+    let transaction_id = uuid::Uuid::new_v4().to_string().replace("-", "");
+    let device_id = uuid::Uuid::new_v4().to_string().replace("-", "");
+    let session_id = uuid::Uuid::new_v4().to_string().replace("-", "")[..16].to_string();
+
+    // Use the captured persisted query hash
+    let response = client
+        .post("https://gql.twitch.tv/gql")
+        .header("Client-Id", CLIENT_ID)
+        .header("Authorization", format!("OAuth {}", token))
+        .header("X-Device-Id", &device_id)
+        .header("Client-Session-Id", &session_id)
+        .json(&json!({
+            "operationName": "UnlockRandomSubscriberEmote",
+            "variables": {
+                "input": {
+                    "channelID": channel_id,
+                    "cost": cost,
+                    "transactionID": transaction_id
+                }
+            },
+            "extensions": {
+                "persistedQuery": {
+                    "version": 1,
+                    "sha256Hash": UNLOCK_RANDOM_SUBSCRIBER_EMOTE_HASH
+                }
+            }
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("Failed to unlock emote: {}", e))?;
+
+    let result: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse response: {}", e))?;
+
+    println!(
+        "[UnlockRandomEmote] Response: {}",
+        serde_json::to_string_pretty(&result).unwrap_or_default()
+    );
+
+    // Check for errors
+    if let Some(errors) = result["errors"].as_array() {
+        if !errors.is_empty() {
+            let error_msg = errors
+                .first()
+                .and_then(|e| e["message"].as_str())
+                .unwrap_or("Unknown error");
+            return Ok(crate::models::drops::RedemptionResult {
+                success: false,
+                error_code: Some("GQL_ERROR".to_string()),
+                error_message: Some(error_msg.to_string()),
+                new_balance: None,
+                unlocked_emote: None,
+            });
+        }
+    }
+
+    // Check for mutation-specific errors
+    if let Some(error) = result["data"]["unlockRandomSubscriberEmote"]["error"].as_object() {
+        let error_code = error
+            .get("code")
+            .and_then(|v| v.as_str())
+            .unwrap_or("UNKNOWN");
+        return Ok(crate::models::drops::RedemptionResult {
+            success: false,
+            error_code: Some(error_code.to_string()),
+            error_message: Some(match error_code {
+                "INSUFFICIENT_POINTS" => "Not enough channel points".to_string(),
+                "NOT_AVAILABLE" => "Emote unlock not available".to_string(),
+                "ALREADY_UNLOCKED" => "You've already unlocked all emotes".to_string(),
+                _ => format!("Failed to unlock: {}", error_code),
+            }),
+            new_balance: None,
+            unlocked_emote: None,
+        });
+    }
+
+    // Check for successful unlock - parse the emote info for the reveal popup
+    if let Some(unlock_data) = result["data"]["unlockRandomSubscriberEmote"].as_object() {
+        // Try to extract the unlocked emote info
+        let unlocked_emote = unlock_data
+            .get("unlockedEmote")
+            .or_else(|| unlock_data.get("emote"))
+            .and_then(|emote| {
+                let id = emote["id"].as_str()?.to_string();
+                let name = emote["token"]
+                    .as_str()
+                    .or_else(|| emote["name"].as_str())
+                    .unwrap_or("Unknown")
+                    .to_string();
+                // Build emote image URL (Twitch CDN format)
+                let image_url = emote["images"]["url"]
+                    .as_str()
+                    .or_else(|| emote["images"]["url2x"].as_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| {
+                        format!(
+                            "https://static-cdn.jtvnw.net/emoticons/v2/{}/default/dark/2.0",
+                            id
+                        )
+                    });
+                Some(crate::models::drops::UnlockedEmote {
+                    id,
+                    name,
+                    image_url,
+                })
+            });
+
+        println!(
+            "🎉 Successfully unlocked random emote on channel {} for {} points: {:?}",
+            channel_id, cost, unlocked_emote
+        );
+
+        return Ok(crate::models::drops::RedemptionResult {
+            success: true,
+            error_code: None,
+            error_message: None,
+            new_balance: None,
+            unlocked_emote,
+        });
+    }
+
+    Ok(crate::models::drops::RedemptionResult {
+        success: false,
+        error_code: Some("UNKNOWN".to_string()),
+        error_message: Some("Unexpected response from Twitch".to_string()),
+        new_balance: None,
+        unlocked_emote: None,
+    })
+}
+
+/// Represents an available modification for an emote
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct EmoteModification {
+    pub id: String,          // The full modified emote ID (e.g., "1022569_BW")
+    pub modifier_id: String, // The modifier type (e.g., "MOD_BW")
+    pub token: String,       // The modified emote name (e.g., "hamzSleep_BW")
+}
+
+/// Represents an emote that can be modified via channel points
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ModifiableEmote {
+    pub id: String,
+    pub token: String, // The emote name/code
+    pub emote_type: Option<String>,
+    pub modifications: Vec<EmoteModification>, // Available modifications
+}
+
+/// Get the list of emotes that can be modified for a channel
+#[tauri::command]
+pub async fn get_modifiable_emotes(channel_id: String) -> Result<Vec<ModifiableEmote>, String> {
+    use crate::services::drops_auth_service::DropsAuthService;
+    use reqwest::Client;
+    use serde_json::json;
+
+    // Use mobile Android client ID
+    const CLIENT_ID: &str = "kd1unb4b3q4t58fwlpcbzcbnm76a8fp";
+
+    let token = DropsAuthService::get_token()
+        .await
+        .map_err(|e| format!("Failed to get token: {}", e))?;
+
+    let client = Client::new();
+
+    // Generate required headers
+    let device_id = uuid::Uuid::new_v4().to_string().replace("-", "");
+    let session_id = uuid::Uuid::new_v4().to_string().replace("-", "")[..16].to_string();
+
+    // Use ChannelPointsContext to get emote variants with modifications
+    let response = client
+        .post("https://gql.twitch.tv/gql")
+        .header("Client-Id", CLIENT_ID)
+        .header("Authorization", format!("OAuth {}", token))
+        .header("X-Device-Id", &device_id)
+        .header("Client-Session-Id", &session_id)
+        .json(&json!({
+            "operationName": "ChannelPointsContext",
+            "variables": {
+                "channelLogin": channel_id
+            },
+            "extensions": {
+                "persistedQuery": {
+                    "version": 1,
+                    "sha256Hash": CHANNEL_POINTS_CONTEXT_HASH
+                }
+            }
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch modifiable emotes: {}", e))?;
+
+    let result: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse response: {}", e))?;
+
+    println!(
+        "[ChannelPointsContext] Fetching emote variants for channel {}",
+        channel_id
+    );
+
+    // Parse the emotes from the response
+    // Response structure: data.community.channel.communityPointsSettings.emoteVariants[]
+    let mut emotes = Vec::new();
+
+    if let Some(variants) = result
+        .get("data")
+        .and_then(|d| d.get("community"))
+        .and_then(|c| c.get("channel"))
+        .and_then(|ch| ch.get("communityPointsSettings"))
+        .and_then(|s| s.get("emoteVariants"))
+        .and_then(|e| e.as_array())
+    {
+        for variant in variants {
+            // Check if this emote is unlockable
+            let is_unlockable = variant
+                .get("isUnlockable")
+                .and_then(|u| u.as_bool())
+                .unwrap_or(false);
+
+            if !is_unlockable {
+                continue;
+            }
+
+            // Get base emote info
+            let base_emote = variant.get("emote");
+            if base_emote.is_none() {
+                continue;
+            }
+            let base_emote = base_emote.unwrap();
+
+            let id = base_emote.get("id").and_then(|i| i.as_str()).unwrap_or("");
+            let token = base_emote
+                .get("token")
+                .and_then(|t| t.as_str())
+                .unwrap_or(id);
+
+            if id.is_empty() {
+                continue;
+            }
+
+            // Parse modifications
+            let mut modifications = Vec::new();
+            if let Some(mods) = variant.get("modifications").and_then(|m| m.as_array()) {
+                for modification in mods {
+                    let mod_emote = modification.get("emote");
+                    let modifier = modification.get("modifier");
+
+                    if let (Some(mod_emote), Some(modifier)) = (mod_emote, modifier) {
+                        let mod_id = mod_emote.get("id").and_then(|i| i.as_str()).unwrap_or("");
+                        let mod_token = mod_emote
+                            .get("token")
+                            .and_then(|t| t.as_str())
+                            .unwrap_or(mod_id);
+                        let modifier_id = modifier.get("id").and_then(|i| i.as_str()).unwrap_or("");
+
+                        if !mod_id.is_empty() {
+                            modifications.push(EmoteModification {
+                                id: mod_id.to_string(),
+                                modifier_id: modifier_id.to_string(),
+                                token: mod_token.to_string(),
+                            });
+                        }
+                    }
+                }
+            }
+
+            emotes.push(ModifiableEmote {
+                id: id.to_string(),
+                token: token.to_string(),
+                emote_type: Some("SUBSCRIPTION".to_string()),
+                modifications,
+            });
+        }
+    }
+
+    println!(
+        "[ChannelPointsContext] Found {} unlockable emotes for channel {}",
+        emotes.len(),
+        channel_id
+    );
+    Ok(emotes)
+}
+
+/// Unlock/modify a specific emote using channel points
+#[tauri::command]
+pub async fn unlock_modified_emote(
+    channel_id: String,
+    emote_id: String,
+    cost: i32,
+) -> Result<crate::models::drops::RedemptionResult, String> {
+    use crate::services::drops_auth_service::DropsAuthService;
+    use reqwest::Client;
+    use serde_json::json;
+
+    // Use mobile Android client ID
+    const CLIENT_ID: &str = "kd1unb4b3q4t58fwlpcbzcbnm76a8fp";
+
+    let token = DropsAuthService::get_token()
+        .await
+        .map_err(|e| format!("Failed to get token: {}", e))?;
+
+    let client = Client::new();
+
+    // Generate required headers and transaction ID
+    let device_id = uuid::Uuid::new_v4().to_string().replace("-", "");
+    let session_id = uuid::Uuid::new_v4().to_string().replace("-", "")[..16].to_string();
+    let transaction_id = uuid::Uuid::new_v4().to_string().replace("-", "");
+
+    println!(
+        "[UnlockModifiedEmote] Unlocking emote {} on channel {} for {} points (txn: {})",
+        emote_id, channel_id, cost, transaction_id
+    );
+
+    let response = client
+        .post("https://gql.twitch.tv/gql")
+        .header("Client-Id", CLIENT_ID)
+        .header("Authorization", format!("OAuth {}", token))
+        .header("X-Device-Id", &device_id)
+        .header("Client-Session-Id", &session_id)
+        .json(&json!({
+            "operationName": "UnlockModifiedEmote",
+            "variables": {
+                "input": {
+                    "channelID": channel_id,
+                    "emoteID": emote_id,
+                    "cost": cost,
+                    "transactionID": transaction_id
+                }
+            },
+            "extensions": {
+                "persistedQuery": {
+                    "version": 1,
+                    "sha256Hash": UNLOCK_MODIFIED_EMOTE_HASH
+                }
+            }
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("Failed to unlock emote: {}", e))?;
+
+    let result: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse response: {}", e))?;
+
+    println!(
+        "[UnlockModifiedEmote] Response: {}",
+        serde_json::to_string_pretty(&result).unwrap_or_default()
+    );
+
+    // Check for GQL errors
+    if let Some(errors) = result.get("errors").and_then(|e| e.as_array()) {
+        if !errors.is_empty() {
+            let error_msg = errors[0]
+                .get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or("Unknown error");
+            return Ok(crate::models::drops::RedemptionResult {
+                success: false,
+                error_code: Some("GQL_ERROR".to_string()),
+                error_message: Some(error_msg.to_string()),
+                new_balance: None,
+                unlocked_emote: None,
+            });
+        }
+    }
+
+    // Check for mutation-specific errors (response uses unlockChosenModifiedSubscriberEmote)
+    if let Some(error) = result["data"]["unlockChosenModifiedSubscriberEmote"]["error"].as_object()
+    {
+        let error_code = error
+            .get("code")
+            .and_then(|v| v.as_str())
+            .unwrap_or("UNKNOWN");
+        return Ok(crate::models::drops::RedemptionResult {
+            success: error_code == "EMOTE_ALREADY_ENTITLED", // Already owned counts as success
+            error_code: Some(error_code.to_string()),
+            error_message: Some(match error_code {
+                "INSUFFICIENT_POINTS" => "Not enough channel points".to_string(),
+                "NOT_AVAILABLE" => "This reward is not available".to_string(),
+                "COOLDOWN" => "Reward is on cooldown".to_string(),
+                "EMOTE_ALREADY_ENTITLED" => "You already own this modified emote!".to_string(),
+                _ => format!("Failed to modify: {}", error_code),
+            }),
+            new_balance: result["data"]["unlockChosenModifiedSubscriberEmote"]["balance"]
+                .as_i64()
+                .map(|b| b as i32),
+            unlocked_emote: None,
+        });
+    }
+
+    // Check for success - error should be null and balance should be present
+    let payload = &result["data"]["unlockChosenModifiedSubscriberEmote"];
+    if payload.is_object() && payload["error"].is_null() {
+        let new_balance = payload["balance"].as_i64().map(|b| b as i32);
+
+        // Construct the unlocked emote from the emote_id we sent
+        // Token is the emote code (e.g., hamzPoo_SQ)
+        let emote_token = emote_id
+            .replace("_", " ")
+            .split(' ')
+            .next()
+            .unwrap_or(&emote_id);
+        let unlocked_emote = Some(crate::models::drops::UnlockedEmote {
+            id: emote_id.clone(),
+            name: emote_id.clone(), // We don't have the token, use ID
+            image_url: format!(
+                "https://static-cdn.jtvnw.net/emoticons/v2/{}/default/dark/2.0",
+                emote_id
+            ),
+        });
+
+        println!(
+            "🖌️ Successfully modified emote {} on channel {} - New balance: {:?}",
+            emote_id, channel_id, new_balance
+        );
+
+        return Ok(crate::models::drops::RedemptionResult {
+            success: true,
+            error_code: None,
+            error_message: None,
+            new_balance,
+            unlocked_emote,
+        });
+    }
+
+    // Unexpected response
+    Ok(crate::models::drops::RedemptionResult {
+        success: false,
+        error_code: Some("UNKNOWN".to_string()),
+        error_message: Some("Unexpected response from Twitch".to_string()),
+        new_balance: None,
+        unlocked_emote: None,
+    })
+}
+
+/// Unlock a specific chosen emote using channel points (not random)
+#[tauri::command]
+pub async fn unlock_chosen_emote(
+    channel_id: String,
+    emote_id: String,
+    cost: i32,
+) -> Result<crate::models::drops::RedemptionResult, String> {
+    use crate::services::drops_auth_service::DropsAuthService;
+    use reqwest::Client;
+    use serde_json::json;
+
+    // Use mobile Android client ID
+    const CLIENT_ID: &str = "kd1unb4b3q4t58fwlpcbzcbnm76a8fp";
+
+    let token = DropsAuthService::get_token()
+        .await
+        .map_err(|e| format!("Failed to get token: {}", e))?;
+
+    let client = Client::new();
+
+    // Generate required headers and transaction ID
+    let device_id = uuid::Uuid::new_v4().to_string().replace("-", "");
+    let session_id = uuid::Uuid::new_v4().to_string().replace("-", "")[..16].to_string();
+    let transaction_id = uuid::Uuid::new_v4().to_string().replace("-", "");
+
+    println!(
+        "[UnlockChosenEmote] Unlocking emote {} on channel {} for {} points (txn: {})",
+        emote_id, channel_id, cost, transaction_id
+    );
+
+    let payload = json!({
+        "operationName": "UnlockChosenSubscriberEmote",
+        "query": r#"mutation UnlockChosenSubscriberEmote($input: UnlockChosenSubscriberEmoteInput!) {
+  unlockChosenSubscriberEmote(input: $input) {
+    balance
+    error {
+      code
+      __typename
+    }
+    __typename
+  }
+}"#,
+        "variables": {
+            "input": {
+                "channelID": channel_id,
+                "emoteID": emote_id,
+                "cost": cost,
+                "transactionID": transaction_id
+            }
+        }
+    });
+
+    println!(
+        "[UnlockChosenEmote] Sending payload: {}",
+        serde_json::to_string_pretty(&payload).unwrap_or_default()
+    );
+
+    let response = client
+        .post("https://gql.twitch.tv/gql")
+        .header("Client-Id", CLIENT_ID)
+        .header("Authorization", format!("OAuth {}", token))
+        .header("X-Device-Id", &device_id)
+        .header("Client-Session-Id", &session_id)
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to unlock emote: {}", e))?;
+
+    let result: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse response: {}", e))?;
+
+    println!(
+        "[UnlockChosenEmote] Response: {}",
+        serde_json::to_string_pretty(&result).unwrap_or_default()
+    );
+
+    // Check for GQL errors
+    if let Some(errors) = result.get("errors").and_then(|e| e.as_array()) {
+        if !errors.is_empty() {
+            let error_msg = errors[0]
+                .get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or("Unknown error");
+            return Ok(crate::models::drops::RedemptionResult {
+                success: false,
+                error_code: Some("GQL_ERROR".to_string()),
+                error_message: Some(error_msg.to_string()),
+                new_balance: None,
+                unlocked_emote: None,
+            });
+        }
+    }
+
+    // Check for mutation-specific errors
+    if let Some(error) = result["data"]["unlockChosenSubscriberEmote"]["error"].as_object() {
+        let error_code = error
+            .get("code")
+            .and_then(|v| v.as_str())
+            .unwrap_or("UNKNOWN");
+        return Ok(crate::models::drops::RedemptionResult {
+            success: error_code == "EMOTE_ALREADY_ENTITLED", // Already owned counts as success
+            error_code: Some(error_code.to_string()),
+            error_message: Some(match error_code {
+                "INSUFFICIENT_POINTS" => "Not enough channel points".to_string(),
+                "NOT_AVAILABLE" => "This reward is not available".to_string(),
+                "COOLDOWN" => "Reward is on cooldown".to_string(),
+                "EMOTE_ALREADY_ENTITLED" => "You already own this emote!".to_string(),
+                _ => format!("Failed to unlock: {}", error_code),
+            }),
+            new_balance: result["data"]["unlockChosenSubscriberEmote"]["balance"]
+                .as_i64()
+                .map(|b| b as i32),
+            unlocked_emote: None,
+        });
+    }
+
+    // Check for success - error should be null and balance should be present
+    let payload = &result["data"]["unlockChosenSubscriberEmote"];
+    if payload.is_object() && payload["error"].is_null() {
+        let new_balance = payload["balance"].as_i64().map(|b| b as i32);
+
+        // Construct the unlocked emote from the emote_id we sent
+        // (the response doesn't include emote info)
+        let unlocked_emote = Some(crate::models::drops::UnlockedEmote {
+            id: emote_id.clone(),
+            name: emote_id.clone(), // We'll use the token from frontend
+            image_url: format!(
+                "https://static-cdn.jtvnw.net/emoticons/v2/{}/default/dark/2.0",
+                emote_id
+            ),
+        });
+
+        println!(
+            "🎉 Successfully unlocked emote {} on channel {} - New balance: {:?}",
+            emote_id, channel_id, new_balance
+        );
+
+        return Ok(crate::models::drops::RedemptionResult {
+            success: true,
+            error_code: None,
+            error_message: None,
+            new_balance,
+            unlocked_emote,
+        });
+    }
+
+    // Unexpected response
+    Ok(crate::models::drops::RedemptionResult {
+        success: false,
+        error_code: Some("UNKNOWN".to_string()),
+        error_message: Some("Unexpected response from Twitch".to_string()),
+        new_balance: None,
+        unlocked_emote: None,
+    })
+}

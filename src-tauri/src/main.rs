@@ -29,7 +29,7 @@
 use commands::{
     app::*, automation::*, badge_metadata::*, badge_service::*, badges::*, cache::*, chat::*,
     chat_identity::*, components::*, cosmetics_cache::*, discord::*, drops::*, emoji::*, emotes::*,
-    eventsub::*, layout::*, logs::*, profile_cache::*, settings::*, seventv::*,
+    eventsub::*, hype_train::*, layout::*, logs::*, profile_cache::*, settings::*, seventv::*,
     seventv_cosmetics::*, streaming::*, twitch::*, universal_cache::*, user_profile::*,
     whisper_storage::*,
 };
@@ -459,6 +459,14 @@ fn main() {
             // Watch token allocation commands
             set_reserved_channel,
             get_reserved_channel,
+            // Channel Points Rewards commands
+            get_channel_rewards,
+            redeem_channel_reward,
+            send_highlighted_message,
+            unlock_random_emote,
+            get_modifiable_emotes,
+            unlock_modified_emote,
+            unlock_chosen_emote,
             // Component commands
             check_components_installed,
             get_bundled_streamlink_path,
@@ -521,6 +529,8 @@ fn main() {
             update_chat_identity,
             receive_badge_data,
             receive_update_result,
+            // Hype Train commands
+            get_hype_train_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

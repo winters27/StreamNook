@@ -476,6 +476,41 @@ export interface ChannelPointsBalance {
   points_icon_url?: string;
 }
 
+/** A custom channel reward that users can redeem with channel points */
+export interface ChannelReward {
+  id: string;
+  title: string;
+  cost: number;
+  prompt?: string;
+  image_url?: string;
+  background_color: string;
+  is_enabled: boolean;
+  is_paused: boolean;
+  is_in_stock: boolean;
+  is_user_input_required: boolean;
+  cooldown_expires_at?: string;
+  max_per_stream?: number;
+  max_per_user_per_stream?: number;
+  global_cooldown_seconds?: number;
+}
+
+/** Result of attempting to redeem a channel reward */
+export interface RedemptionResult {
+  success: boolean;
+  error_code?: string;
+  error_message?: string;
+  new_balance?: number;
+  /** For emote unlock rewards - contains info about the unlocked emote */
+  unlocked_emote?: UnlockedEmote;
+}
+
+/** Information about an unlocked emote (for random emote unlock rewards) */
+export interface UnlockedEmote {
+  id: string;
+  name: string;
+  image_url: string;
+}
+
 export interface DropsStatistics {
   total_drops_claimed: number;
   total_channel_points_earned: number;
@@ -572,4 +607,28 @@ export interface WhisperConversation {
   messages: Whisper[];
   last_message_timestamp: number;
   unread_count: number;
+}
+
+// Hype Train Types
+export interface HypeTrainContributor {
+  user_id: string;
+  user_login: string;
+  user_name: string;
+  type: 'bits' | 'subscription' | 'other';
+  total: number;
+}
+
+export interface HypeTrainData {
+  id: string;
+  broadcaster_user_id: string;
+  broadcaster_user_login: string;
+  broadcaster_user_name: string;
+  level: number;
+  total: number;
+  progress: number;
+  goal: number;
+  top_contributions: HypeTrainContributor[];
+  started_at: string;
+  expires_at: string;
+  is_golden_kappa?: boolean;
 }

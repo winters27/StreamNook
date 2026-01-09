@@ -172,6 +172,63 @@ pub struct WhisperContent {
     pub text: String,
 }
 
+// Hype Train Event Structures (V2)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HypeTrainContributor {
+    pub user_id: String,
+    pub user_login: String,
+    pub user_name: String,
+    #[serde(rename = "type")]
+    pub contribution_type: String, // "bits" | "subscription" | "other"
+    pub total: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HypeTrainBeginEvent {
+    pub id: String,
+    pub broadcaster_user_id: String,
+    pub broadcaster_user_login: String,
+    pub broadcaster_user_name: String,
+    pub total: i32,
+    pub progress: i32,
+    pub goal: i32,
+    pub top_contributions: Vec<HypeTrainContributor>,
+    pub last_contribution: HypeTrainContributor,
+    pub level: i32,
+    pub started_at: String,
+    pub expires_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HypeTrainProgressEvent {
+    pub id: String,
+    pub broadcaster_user_id: String,
+    pub broadcaster_user_login: String,
+    pub broadcaster_user_name: String,
+    pub level: i32,
+    pub total: i32,
+    pub progress: i32,
+    pub goal: i32,
+    pub top_contributions: Vec<HypeTrainContributor>,
+    pub last_contribution: HypeTrainContributor,
+    pub started_at: String,
+    pub expires_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HypeTrainEndEvent {
+    pub id: String,
+    pub broadcaster_user_id: String,
+    pub broadcaster_user_login: String,
+    pub broadcaster_user_name: String,
+    pub level: i32,
+    pub total: i32,
+    pub top_contributions: Vec<HypeTrainContributor>,
+    pub started_at: String,
+    pub ended_at: String,
+    pub cooldown_ends_at: String,
+}
+
 pub struct EventSubService {
     connected: Arc<RwLock<bool>>,
     session_id: Arc<RwLock<Option<String>>>,
@@ -669,6 +726,36 @@ impl EventSubService {
                     let _ = app_handle.emit("whisper-received", &whisper_data);
                 }
             }
+            "channel.hype_train.begin" => {
+                if let Ok(event) =
+                    serde_json::from_value::<HypeTrainBeginEvent>(notification.event.clone())
+                {
+                    println!(
+                        "🚂 Hype Train started! Level {} - Goal: {}/{}",
+                        event.level, event.progress, event.goal
+                    );
+                    let _ = app_handle.emit("eventsub://hype-train-begin", &event);
+                }
+            }
+            "channel.hype_train.progress" => {
+                if let Ok(event) =
+                    serde_json::from_value::<HypeTrainProgressEvent>(notification.event.clone())
+                {
+                    println!(
+                        "🚂 Hype Train progress: Level {} - {}/{}",
+                        event.level, event.progress, event.goal
+                    );
+                    let _ = app_handle.emit("eventsub://hype-train-progress", &event);
+                }
+            }
+            "channel.hype_train.end" => {
+                if let Ok(event) =
+                    serde_json::from_value::<HypeTrainEndEvent>(notification.event.clone())
+                {
+                    println!("🚂 Hype Train ended at Level {}!", event.level);
+                    let _ = app_handle.emit("eventsub://hype-train-end", &event);
+                }
+            }
             _ => {
                 println!(
                     "📨 Unhandled subscription type: {}",
@@ -729,6 +816,28 @@ impl EventSubService {
                     "broadcaster_user_id": broadcaster_id
                 }),
             ),
+            // Hype Train events (V2)
+            (
+                "channel.hype_train.begin",
+                "2",
+                serde_json::json!({
+                    "broadcaster_user_id": broadcaster_id
+                }),
+            ),
+            (
+                "channel.hype_train.progress",
+                "2",
+                serde_json::json!({
+                    "broadcaster_user_id": broadcaster_id
+                }),
+            ),
+            (
+                "channel.hype_train.end",
+                "2",
+                serde_json::json!({
+                    "broadcaster_user_id": broadcaster_id
+                }),
+            ),
         ];
 
         // Subscribe to each event with delays
@@ -755,8 +864,16 @@ impl EventSubService {
             if response.status().is_success() {
                 println!("✅ Subscribed to {}", event_type);
             } else {
+                let status = response.status();
                 let error_text = response.text().await?;
-                eprintln!("❌ Failed to subscribe to {}: {}", event_type, error_text);
+
+                // Hype Train events require moderator access - silently skip if 403
+                if event_type.starts_with("channel.hype_train") && status.as_u16() == 403 {
+                    // This is expected when not a moderator of the channel
+                    println!("ℹ️ Skipped {} (requires moderator access)", event_type);
+                } else {
+                    eprintln!("❌ Failed to subscribe to {}: {}", event_type, error_text);
+                }
             }
 
             // Add delay between subscriptions (except after the last one)

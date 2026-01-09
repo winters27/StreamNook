@@ -1011,19 +1011,21 @@ impl IrcService {
                     is_zero_width: emote.is_zero_width,
                 });
             } else {
-                // Convert emoji shortcodes
+                // Convert emoji shortcodes first
                 let converted = emoji_service::convert_emoji_shortcodes(word);
 
-                // If conversion happened (text changed), it means we found emojis
-                if converted != *word {
-                    // For now, just add as text since we don't have emoji URLs in this context
-                    // The frontend can handle native emoji rendering
-                    segments.push(MessageSegment::Text { content: converted });
-                } else {
-                    // Regular text
+                // Parse for Unicode emojis (both converted shortcodes and direct emoji input)
+                // This will emit Emoji segments with Apple CDN URLs for iOS-style rendering
+                let emoji_segments = emoji_service::parse_emoji_segments(&converted);
+
+                if emoji_segments.is_empty() {
+                    // No content (shouldn't happen, but safety)
                     segments.push(MessageSegment::Text {
                         content: word.to_string(),
                     });
+                } else {
+                    // Add all parsed segments (text and emoji)
+                    segments.extend(emoji_segments);
                 }
             }
 
@@ -1174,9 +1176,9 @@ impl IrcService {
                             if let (Ok(start), Ok(end)) =
                                 (start_s.parse::<usize>(), end_s.parse::<usize>())
                             {
-                                // url: https://static-cdn.jtvnw.net/emoticons/v2/{id}/default/dark/1.0
+                                // url: https://static-cdn.jtvnw.net/emoticons/v2/{id}/default/dark/3.0
                                 let url = format!(
-                                    "https://static-cdn.jtvnw.net/emoticons/v2/{}/default/dark/1.0",
+                                    "https://static-cdn.jtvnw.net/emoticons/v2/{}/default/dark/3.0",
                                     id
                                 );
                                 emotes.push(EmotePos {
@@ -1392,7 +1394,7 @@ impl IrcService {
                                 (start_s.parse::<usize>(), end_s.parse::<usize>())
                             {
                                 let url = format!(
-                                    "https://static-cdn.jtvnw.net/emoticons/v2/{}/default/dark/1.0",
+                                    "https://static-cdn.jtvnw.net/emoticons/v2/{}/default/dark/3.0",
                                     id
                                 );
                                 emotes.push(EmotePos {

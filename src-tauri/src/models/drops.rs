@@ -128,6 +128,45 @@ pub enum ChannelPointsClaimType {
     Other,
 }
 
+/// A custom channel reward that users can redeem with channel points
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChannelReward {
+    pub id: String,
+    pub title: String,
+    pub cost: i32,
+    pub prompt: Option<String>,
+    pub image_url: Option<String>,
+    pub background_color: String,
+    pub is_enabled: bool,
+    pub is_paused: bool,
+    pub is_in_stock: bool,
+    pub is_user_input_required: bool,
+    pub cooldown_expires_at: Option<String>,
+    pub max_per_stream: Option<i32>,
+    pub max_per_user_per_stream: Option<i32>,
+    pub global_cooldown_seconds: Option<i32>,
+}
+
+/// Result of attempting to redeem a channel reward
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RedemptionResult {
+    pub success: bool,
+    pub error_code: Option<String>,
+    pub error_message: Option<String>,
+    pub new_balance: Option<i32>,
+    /// For emote unlock rewards - contains info about the unlocked emote
+    #[serde(default)]
+    pub unlocked_emote: Option<UnlockedEmote>,
+}
+
+/// Information about an unlocked emote (for random emote unlock rewards)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UnlockedEmote {
+    pub id: String,
+    pub name: String,
+    pub image_url: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DropsStatistics {
     pub total_drops_claimed: i32,

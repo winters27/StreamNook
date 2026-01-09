@@ -8,6 +8,75 @@ import { invoke } from '@tauri-apps/api/core';
 // Cache for proxied emoji URLs (codepoint -> data URL)
 const proxiedEmojiCache = new Map<string, string>();
 
+// Pending emoji fetches (to avoid duplicate requests)
+const pendingEmojiFetches = new Set<string>();
+
+// Queue for batch emoji caching
+let emojiCacheQueue: string[] = [];
+let emojiCacheFlushTimeout: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * Queue an emoji codepoint for background caching via Tauri proxy
+ * This fetches the image through Rust to bypass tracking prevention
+ */
+export function queueEmojiForCaching(codepoint: string) {
+    // Skip if already cached or pending
+    if (proxiedEmojiCache.has(codepoint) || pendingEmojiFetches.has(codepoint)) {
+        return;
+    }
+
+    emojiCacheQueue.push(codepoint);
+    pendingEmojiFetches.add(codepoint);
+
+    // Debounce: flush queue after 50ms of inactivity
+    if (emojiCacheFlushTimeout) {
+        clearTimeout(emojiCacheFlushTimeout);
+    }
+    emojiCacheFlushTimeout = setTimeout(flushEmojiCacheQueue, 50);
+}
+
+/**
+ * Flush the emoji cache queue - fetch all pending emojis via Tauri proxy
+ */
+async function flushEmojiCacheQueue() {
+    const queue = [...emojiCacheQueue];
+    emojiCacheQueue = [];
+    emojiCacheFlushTimeout = null;
+
+    // Fetch in parallel with limited concurrency
+    const batchSize = 10;
+    for (let i = 0; i < queue.length; i += batchSize) {
+        const batch = queue.slice(i, i + batchSize);
+        await Promise.all(batch.map(async (codepoint) => {
+            try {
+                const dataUrl = await invoke<string>('get_emoji_image', { codepoint });
+                proxiedEmojiCache.set(codepoint, dataUrl);
+            } catch (error) {
+                console.warn(`[EmojiService] Failed to cache emoji ${codepoint}:`, error);
+            } finally {
+                pendingEmojiFetches.delete(codepoint);
+            }
+        }));
+    }
+}
+
+/**
+ * Get the cached emoji URL if available, otherwise return the CDN URL
+ * and queue the emoji for background caching
+ */
+export function getCachedEmojiUrl(emoji: string, cdnUrl: string): string {
+    const codepoint = emojiToCodepoint(emoji);
+    
+    // If cached, return the data URL
+    if (proxiedEmojiCache.has(codepoint)) {
+        return proxiedEmojiCache.get(codepoint)!;
+    }
+    
+    // Queue for caching and return CDN URL for now (will be cached for next render)
+    queueEmojiForCaching(codepoint);
+    return cdnUrl;
+}
+
 // Regular expression to match emoji characters
 // This regex covers most common emojis including:
 // - Basic emojis (😀-🙏)
@@ -19,6 +88,7 @@ const EMOJI_REGEX = /(?:\p{Emoji_Presentation}|\p{Emoji}\uFE0F)(?:\p{Emoji_Modif
 
 // CDN URL for Apple emoji images
 // Using jsDelivr CDN with emoji-datasource-apple package
+// 64px is the highest resolution available in the package
 const APPLE_EMOJI_CDN = 'https://cdn.jsdelivr.net/npm/emoji-datasource-apple@15.1.2/img/apple/64';
 
 /**
@@ -54,6 +124,54 @@ export function getAppleEmojiUrl(emoji: string): string {
  */
 export function containsEmoji(text: string): boolean {
     return EMOJI_REGEX.test(text);
+}
+
+/**
+ * Synchronously parses text for Unicode emojis
+ * Returns an array of segments with emojis and text separated
+ * Note: Does NOT convert shortcodes (that's async). For optimistic messages only.
+ */
+export function parseEmojisSync(text: string): EmojiSegment[] {
+    if (!text) {
+        return [];
+    }
+
+    // Reset regex lastIndex
+    EMOJI_REGEX.lastIndex = 0;
+
+    const segments: EmojiSegment[] = [];
+    let lastIndex = 0;
+    let match: RegExpExecArray | null;
+
+    while ((match = EMOJI_REGEX.exec(text)) !== null) {
+        // Add text before the emoji
+        if (match.index > lastIndex) {
+            segments.push({
+                type: 'text',
+                content: text.substring(lastIndex, match.index),
+            });
+        }
+
+        // Add the emoji with Apple CDN URL
+        const emoji = match[0];
+        segments.push({
+            type: 'emoji',
+            content: emoji,
+            emojiUrl: getAppleEmojiUrl(emoji),
+        });
+
+        lastIndex = match.index + emoji.length;
+    }
+
+    // Add remaining text after the last emoji
+    if (lastIndex < text.length) {
+        segments.push({
+            type: 'text',
+            content: text.substring(lastIndex),
+        });
+    }
+
+    return segments.length > 0 ? segments : [{ type: 'text', content: text }];
 }
 
 /**

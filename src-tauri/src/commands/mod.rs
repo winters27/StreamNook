@@ -13,6 +13,7 @@ pub mod drops;
 pub mod emoji;
 pub mod emotes;
 pub mod eventsub;
+pub mod hype_train;
 pub mod layout;
 pub mod logs;
 pub mod profile_cache;

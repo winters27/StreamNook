@@ -126,6 +126,206 @@ async fn try_gql_badge_update(badge_id: &str, badge_version: &str) -> Result<boo
     Ok(false)
 }
 
+// ============================================================================
+// GQL STRUCTS FOR BADGE FETCHING
+// ============================================================================
+
+// Query hash for ChatSettings_Badges - the actual query Twitch uses for the badge picker
+const CHAT_SETTINGS_BADGES_HASH: &str =
+    "f30c0381c916b81bad77302c3cf986094364fa2dfc63a598804cb5ee3743225c";
+
+#[derive(Debug, Serialize)]
+struct BadgeCollectionRequest {
+    #[serde(rename = "operationName")]
+    operation_name: String,
+    variables: BadgeCollectionVariables,
+    extensions: GQLExtensions,
+}
+
+#[derive(Debug, Serialize)]
+struct BadgeCollectionVariables {
+    #[serde(rename = "channelLogin")]
+    channel_login: String,
+}
+
+#[derive(Debug, Serialize)]
+struct GQLExtensions {
+    #[serde(rename = "persistedQuery")]
+    persisted_query: PersistedQuery,
+}
+
+#[derive(Debug, Serialize)]
+struct PersistedQuery {
+    version: i32,
+    #[serde(rename = "sha256Hash")]
+    sha256_hash: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct BadgeCollectionResponse {
+    data: Option<BadgeCollectionData>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BadgeCollectionData {
+    #[serde(rename = "currentUser", default)]
+    current_user: Option<CurrentUserBadges>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CurrentUserBadges {
+    #[serde(rename = "selectedBadge", default)]
+    selected_badge: Option<GQLBadge>,
+    #[serde(rename = "availableBadges", default)]
+    available_badges: Vec<GQLBadge>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct GQLBadge {
+    #[serde(rename = "setID")]
+    set_id: String,
+    version: String,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(rename = "image1x", default)]
+    image_1x: Option<String>,
+    #[serde(rename = "image2x", default)]
+    image_2x: Option<String>,
+    #[serde(rename = "image4x", default)]
+    image_4x: Option<String>,
+}
+
+/// Try to fetch badges via GQL (fast path)
+/// Returns Ok(Some(badges)) if successful, Ok(None) if should fallback
+async fn try_gql_badge_fetch(username: &str) -> Result<Option<Vec<ChatIdentityBadge>>, String> {
+    println!(
+        "[ChatIdentity] 🚀 Attempting fast GQL badge fetch for '{}'",
+        username
+    );
+
+    // Get drops auth token - this is required for GQL to work properly
+    // Falls back to browser if user hasn't enabled drops feature
+    let token = match DropsAuthService::get_token().await {
+        Ok(t) => t,
+        Err(_) => {
+            println!("[ChatIdentity] No drops auth token, will use browser fallback");
+            return Ok(None);
+        }
+    };
+
+    let client = Client::new();
+
+    // ChatSettings_Badges returns both availableBadges AND selectedBadge in one query
+    let (available_badges, selected_badge_id) =
+        match fetch_badge_collection(&client, username, &token).await {
+            Ok(result) => result,
+            Err(e) => {
+                println!(
+                    "[ChatIdentity] Badge fetch failed: {}, will use browser fallback",
+                    e
+                );
+                return Ok(None);
+            }
+        };
+
+    if available_badges.is_empty() {
+        println!("[ChatIdentity] No badges found via GQL, will use browser fallback");
+        return Ok(None);
+    }
+
+    // Convert to ChatIdentityBadge format with selection state
+    let badges: Vec<ChatIdentityBadge> = available_badges
+        .into_iter()
+        .map(|b| {
+            let is_selected = selected_badge_id
+                .as_ref()
+                .is_some_and(|sel| sel == &b.set_id);
+            ChatIdentityBadge {
+                id: b.set_id.clone(),
+                version: b.version,
+                title: b.title.unwrap_or_else(|| b.set_id.clone()),
+                image_url: b.image_4x.or(b.image_2x).or(b.image_1x).unwrap_or_else(|| {
+                    format!("https://static-cdn.jtvnw.net/badges/v1/{}/3", b.set_id)
+                }),
+                is_selected,
+            }
+        })
+        .collect();
+
+    // Sort: selected first, then alphabetically by title
+    let mut sorted_badges = badges;
+    sorted_badges.sort_by(|a, b| {
+        if a.is_selected && !b.is_selected {
+            std::cmp::Ordering::Less
+        } else if !a.is_selected && b.is_selected {
+            std::cmp::Ordering::Greater
+        } else {
+            a.title.to_lowercase().cmp(&b.title.to_lowercase())
+        }
+    });
+
+    println!(
+        "[ChatIdentity] ✅ GQL fetch successful! Found {} badges",
+        sorted_badges.len()
+    );
+    Ok(Some(sorted_badges))
+}
+
+/// Fetch available badges and selected badge via ChatSettings_Badges query
+/// Returns (available_badges, selected_badge_set_id)
+async fn fetch_badge_collection(
+    client: &Client,
+    username: &str,
+    token: &str,
+) -> Result<(Vec<GQLBadge>, Option<String>), String> {
+    let request = BadgeCollectionRequest {
+        operation_name: "ChatSettings_Badges".to_string(),
+        variables: BadgeCollectionVariables {
+            channel_login: username.to_string(),
+        },
+        extensions: GQLExtensions {
+            persisted_query: PersistedQuery {
+                version: 1,
+                sha256_hash: CHAT_SETTINGS_BADGES_HASH.to_string(),
+            },
+        },
+    };
+
+    let response = client
+        .post("https://gql.twitch.tv/gql")
+        .headers(create_gql_headers(token))
+        .json(&vec![request])
+        .send()
+        .await
+        .map_err(|e| format!("Request failed: {}", e))?;
+
+    if !response.status().is_success() {
+        return Err(format!("HTTP {}", response.status()));
+    }
+
+    let response_text = response
+        .text()
+        .await
+        .map_err(|e| format!("Failed to read response: {}", e))?;
+
+    let responses: Vec<BadgeCollectionResponse> =
+        serde_json::from_str(&response_text).map_err(|e| format!("Parse error: {}", e))?;
+
+    let current_user = responses
+        .into_iter()
+        .next()
+        .and_then(|r| r.data)
+        .and_then(|d| d.current_user);
+
+    match current_user {
+        Some(user) => {
+            let selected_id = user.selected_badge.map(|b| b.set_id);
+            Ok((user.available_badges, selected_id))
+        }
+        None => Err("No currentUser in response - user may not be authenticated".to_string()),
+    }
+}
+
 /// Result of a badge scrape action
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BadgeScrapeResult {
@@ -489,7 +689,7 @@ fn generate_badge_update_script(badge_id: &str, badge_version: &str) -> String {
     )
 }
 
-/// Fetch available global badges via hidden chat window automation
+/// Fetch available global badges - tries fast GQL first, falls back to browser scraping
 #[tauri::command]
 pub async fn fetch_chat_identity_badges(
     app: AppHandle,
@@ -499,6 +699,33 @@ pub async fn fetch_chat_identity_badges(
         "[ChatIdentity] Fetching badges using channel: {}",
         channel_name
     );
+
+    // FAST PATH: Try GQL first (no browser window needed)
+    match try_gql_badge_fetch(&channel_name).await {
+        Ok(Some(badges)) => {
+            println!(
+                "[ChatIdentity] ✅ Fast GQL path succeeded with {} badges!",
+                badges.len()
+            );
+            let result = BadgeScrapeResult {
+                success: true,
+                message: format!("Found {} badges via GQL", badges.len()),
+                badges,
+            };
+            // Emit immediately to frontend
+            let _ = app.emit("chat-identity-badges-found", &result);
+            return Ok(result);
+        }
+        Ok(None) => {
+            println!("[ChatIdentity] GQL returned no badges, using browser fallback...");
+        }
+        Err(e) => {
+            println!("[ChatIdentity] GQL error: {}, using browser fallback...", e);
+        }
+    }
+
+    // FALLBACK: Use browser scraping (slower but works when GQL fails)
+    println!("[ChatIdentity] Using browser fallback for badge scraping...");
 
     let window_label = format!("identity-fetch-{}", chrono::Utc::now().timestamp_millis());
     let url = format!("https://www.twitch.tv/popout/{}/chat", channel_name);
@@ -517,7 +744,7 @@ pub async fn fetch_chat_identity_badges(
     println!("[ChatIdentity] Creating hidden window for badge scraping...");
 
     // Create hidden window with initialization script
-    let webview = WebviewWindowBuilder::new(
+    let _webview = WebviewWindowBuilder::new(
         &app,
         &window_label,
         WebviewUrl::External(url.parse().map_err(|e| format!("Invalid URL: {}", e))?),
@@ -538,7 +765,7 @@ pub async fn fetch_chat_identity_badges(
     // Return immediately - the script will call receive_badge_data when done
     Ok(BadgeScrapeResult {
         success: true,
-        message: "Badge fetching started...".to_string(),
+        message: "Badge fetching started (browser fallback)...".to_string(),
         badges: vec![],
     })
 }

@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import type { Settings, TwitchUser, TwitchStream, UserInfo, TwitchCategory } from '../types';
+import type { Settings, TwitchUser, TwitchStream, UserInfo, TwitchCategory, HypeTrainData } from '../types';
 import { trackActivity, isStreamlinkError, sendStreamlinkDiagnostics } from '../services/logService';
 import { upsertUser } from '../services/supabaseService';
 
@@ -124,6 +124,8 @@ interface AppState {
   // Centralized drops cache
   dropsCache: DropsCache | null;
   isLoadingDropsCache: boolean;
+  // Hype Train state
+  currentHypeTrain: HypeTrainData | null;
   handleStreamOffline: () => Promise<void>;
   addToast: (message: string | React.ReactNode, type: 'info' | 'success' | 'warning' | 'error' | 'live', action?: { label: string; onClick: () => void }) => void;
   removeToast: (id: number) => void;
@@ -238,6 +240,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   // Centralized drops cache
   dropsCache: null,
   isLoadingDropsCache: false,
+  // Hype Train state
+  currentHypeTrain: null,
   // Whisper import state
   whisperImportState: {
     isImporting: false,
@@ -618,7 +622,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         console.warn('Could not disconnect EventSub:', e);
       }
 
-      set({ streamUrl: null, currentStream: null });
+      set({ streamUrl: null, currentStream: null, currentHypeTrain: null });
 
       // Update user context for error reporting (stream stopped)
       saveUserContextToLocalStorage(get().currentUser, null);
@@ -874,6 +878,87 @@ export const useAppStore = create<AppState>((set, get) => ({
             }
           });
           eventSubListenerCleanup.push(unlistenUpdate);
+
+          // Start Hype Train GQL polling (works for any channel, no moderator access needed)
+          // Adaptive polling: 15s when idle, 5s when train active
+          let hypeTrainPollingActive = true;
+          let hypeTrainPreviousLevel = 0;
+          let hypeTrainTimeoutId: ReturnType<typeof setTimeout> | null = null;
+          const IDLE_POLL_INTERVAL = 15000;  // 15 seconds when no train
+          const ACTIVE_POLL_INTERVAL = 3000; // 3 seconds when train active
+          
+          const pollHypeTrain = async () => {
+            if (!hypeTrainPollingActive) return;
+            
+            let isActive = false;
+            try {
+              const status = await invoke('get_hype_train_status', { channelId, channelLogin: channel }) as {
+                is_active: boolean;
+                id?: string;
+                level: number;
+                progress: number;
+                goal: number;
+                total: number;
+                started_at?: string;
+                expires_at?: string;
+                is_level_up: boolean;
+                is_golden_kappa: boolean;
+              };
+              
+              isActive = status.is_active;
+              
+              if (status.is_active) {
+                // Check for level up
+                if (status.level > hypeTrainPreviousLevel && hypeTrainPreviousLevel > 0) {
+                  console.log(`[HypeTrain GQL] 🚂 Level UP! ${hypeTrainPreviousLevel} → ${status.level}`);
+                }
+                hypeTrainPreviousLevel = status.level;
+                
+                // Map GQL status to HypeTrainData format
+                const hypeTrainData = {
+                  id: status.id || '',
+                  broadcaster_user_id: channelId,
+                  broadcaster_user_login: channel,
+                  broadcaster_user_name: info.user_name,
+                  level: status.level,
+                  total: status.total,
+                  progress: status.progress,
+                  goal: status.goal,
+                  top_contributions: [],
+                  started_at: status.started_at || '',
+                  expires_at: status.expires_at || '',
+                  is_golden_kappa: status.is_golden_kappa,
+                };
+                set({ currentHypeTrain: hypeTrainData });
+              } else {
+                // Only clear if we previously had a hype train
+                if (get().currentHypeTrain !== null) {
+                  console.log('[HypeTrain GQL] 🚂 Hype Train ended');
+                  hypeTrainPreviousLevel = 0;
+                  set({ currentHypeTrain: null });
+                }
+              }
+            } catch (e) {
+              // Silently fail - GQL polling is non-critical
+            }
+            
+            // Schedule next poll with adaptive interval
+            if (hypeTrainPollingActive) {
+              const nextInterval = isActive ? ACTIVE_POLL_INTERVAL : IDLE_POLL_INTERVAL;
+              hypeTrainTimeoutId = setTimeout(pollHypeTrain, nextInterval);
+            }
+          };
+          
+          // Initial poll
+          pollHypeTrain();
+          
+          // Add cleanup for polling
+          eventSubListenerCleanup.push(() => {
+            hypeTrainPollingActive = false;
+            if (hypeTrainTimeoutId) {
+              clearTimeout(hypeTrainTimeoutId);
+            }
+          });
 
           console.log(`🔔 Connected to EventSub (channel: ${info.user_name})`);
         } catch (e) {

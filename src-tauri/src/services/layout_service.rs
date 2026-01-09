@@ -23,11 +23,11 @@ impl LayoutService {
     pub fn new() -> Self {
         let mut font_system = FontSystem::new();
 
-        // Load bundled Satoshi fonts - Regular and Italic only
-        // These are the only variants needed for chat message layout
+        // Load bundled Satoshi variable fonts - these contain all weights (300-900)
+        // Variable fonts are used for both regular and italic, covering all weight needs
         let fonts = vec![
-            include_bytes!("../../../src/assets/fonts/Satoshi-Regular.otf") as &[u8],
-            include_bytes!("../../../src/assets/fonts/Satoshi-Italic.otf") as &[u8],
+            include_bytes!("../../../src/assets/fonts/Satoshi-Variable.woff2") as &[u8],
+            include_bytes!("../../../src/assets/fonts/Satoshi-VariableItalic.woff2") as &[u8],
         ];
 
         let db = font_system.db_mut();
@@ -54,12 +54,12 @@ impl LayoutService {
         segments: &[MessageSegment],
         font_size: f32,
     ) -> (String, bool) {
-        // Emote is rendered as h-6 (24px) image in frontend
-        // Emoji is rendered as h-5 (20px) image in frontend
+        // Emote is rendered as h-7 (28px) image in frontend
+        // Emoji is rendered as h-5 (20px) image in frontend - sized to align with text
         // We approximate their widths with space characters
         // At 13px font size, each space is roughly ~4px wide
-        // So 24px emote ≈ 6 spaces, 20px emoji ≈ 5 spaces
-        let emote_placeholder = "      "; // 6 spaces ≈ 24px
+        // So 28px emote ≈ 7 spaces, 20px emoji ≈ 5 spaces
+        let emote_placeholder = "       "; // 7 spaces ≈ 28px
         let emoji_placeholder = "     "; // 5 spaces ≈ 20px
 
         let mut text = String::new();
@@ -160,10 +160,10 @@ impl LayoutService {
         // ChatMessage.tsx uses: className="flex-1 min-w-0 leading-relaxed pb-1"
         let line_height = font_size * 1.625;
 
-        // Emote height is fixed at h-6 (24px) in ChatMessage.tsx
-        let emote_height = 24.0_f32;
+        // Emote height is fixed at h-7 (28px) in ChatMessage.tsx
+        let emote_height = 28.0_f32;
 
-        // Emoji height is h-5 (20px)
+        // Emoji height is h-5 (20px) - sized to align with text
         let emoji_height = 20.0_f32;
 
         // Badge width/height is w-4 h-4 (16px)
