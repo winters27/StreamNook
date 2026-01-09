@@ -1,3 +1,19 @@
+## [6.6.1] - 2026-01-09
+### ✨ Features
+- **Hype Train Enhancements**: Experience more engaging Hype Trains with animated level-up celebrations, confetti, and special "HYPE" messages! See Hype Train status directly on stream cards in the Home feed and Sidebar. Golden Kappa trains now have a distinct visual flair.
+- **Improved Chat Scrolling**: Chat now scrolls smoothly to specific messages, respecting the container boundaries to prevent unexpected document scrolling. Auto-scrolling to new messages is also more robust.
+- **7TV Badge Fallbacks**: 7TV badges now utilize a fallback system, ensuring they load reliably even if the primary resolution fails.
+- **Stream Card Badges**: A new Hype Train indicator badge has been added to stream cards in the Home feed and Sidebar, showing the current level and if it's a Golden Kappa train.
+
+### 🐛 Bug Fixes
+- **Badge Loading**: Addressed issues with loading badges in chat messages and user profiles by pre-initializing caches and implementing a fallback image component.
+- **Chat History Loading**: Ensured chat history (IVR messages) loads with fully populated badges by initializing caches before fetching.
+- **Hype Train Timer**: Fixed an issue where the Hype Train timer could expire unexpectedly.
+
+### 🔧 Maintenance
+- **Badge Caching**: Improved the logic for caching and displaying Twitch badges, preventing cross-channel pollution.
+- **Chat Message Limit**: Increased the default chat message history limit to 100 for a more complete view.
+
 ## [6.6.0] - 2026-01-08
 ### ✨ Features
 - **Channel Points Rewards - BETA**: You can now view and redeem channel points rewards directly within the chat interface! This includes features like "Highlight My Message", "Unlock Random Emote", "Modify Emote", and "Choose Emote to Unlock".
@@ -911,6 +927,7 @@ ATTENTION: ALL USERS LOG OUT OF TWITCH THEN LOG BACK IN FOR SOME CHANGES OT TAKE
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
