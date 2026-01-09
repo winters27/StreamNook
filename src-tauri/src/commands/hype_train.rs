@@ -106,9 +106,9 @@ struct HypeTrainExecution {
 #[derive(Debug, Deserialize)]
 struct HypeTrainProgress {
     level: Option<HypeTrainLevel>,
-    value: Option<i32>, // current progress value
-    goal: Option<i32>,  // goal for current level
-    total: Option<i32>, // total contributions
+    progression: Option<i32>, // current progress within level (this is the key field!)
+    goal: Option<i32>,        // total points needed for current level
+    total: Option<i32>,       // total contributions across all levels
 }
 
 #[derive(Debug, Deserialize)]
@@ -150,6 +150,97 @@ impl Default for HypeTrainStatus {
             is_golden_kappa: false,
         }
     }
+}
+
+/// Lightweight status for bulk queries (badge display)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HypeTrainBulkStatus {
+    pub channel_id: String,
+    pub is_active: bool,
+    pub level: i32,
+    pub is_golden_kappa: bool,
+}
+
+/// Fetch Hype Train status for multiple channels in a single GQL request
+/// Used for badge display on stream cards in Home and Sidebar
+#[tauri::command]
+pub async fn get_bulk_hype_train_status(
+    channel_ids: Vec<String>,
+) -> Result<Vec<HypeTrainBulkStatus>, String> {
+    if channel_ids.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let client = Client::new();
+
+    // BulkAllActiveHypeTrainStatusesQuery accepts an array of channel IDs
+    let bulk_request = serde_json::json!({
+        "operationName": "BulkAllActiveHypeTrainStatusesQuery",
+        "variables": {
+            "channelIDs": channel_ids
+        },
+        "extensions": {
+            "persistedQuery": {
+                "version": 1,
+                "sha256Hash": BULK_HYPE_TRAIN_HASH
+            }
+        }
+    });
+
+    let bulk_response = client
+        .post(GQL_URL)
+        .headers(create_gql_headers())
+        .json(&bulk_request)
+        .send()
+        .await
+        .map_err(|e| format!("Request failed: {}", e))?;
+
+    if !bulk_response.status().is_success() {
+        return Err(format!("HTTP {}", bulk_response.status()));
+    }
+
+    let bulk_text = bulk_response
+        .text()
+        .await
+        .map_err(|e| format!("Read error: {}", e))?;
+    let bulk_data: BulkHypeTrainResponse =
+        serde_json::from_str(&bulk_text).map_err(|e| format!("Parse error: {}", e))?;
+
+    // Extract active trains from response
+    let active_trains = bulk_data
+        .data
+        .and_then(|d| d.all_active_hype_train_statuses)
+        .unwrap_or_default();
+
+    // Create a map of channel_id -> train status for quick lookup
+    let active_map: std::collections::HashMap<String, &ActiveHypeTrainStatus> = active_trains
+        .iter()
+        .map(|t| (t.channel.id.clone(), t))
+        .collect();
+
+    // Build result for all requested channel IDs
+    let results: Vec<HypeTrainBulkStatus> = channel_ids
+        .iter()
+        .map(|channel_id| {
+            if let Some(train) = active_map.get(channel_id) {
+                HypeTrainBulkStatus {
+                    channel_id: channel_id.clone(),
+                    is_active: true,
+                    level: train.level,
+                    is_golden_kappa: train.is_golden_kappa_train.unwrap_or(false),
+                }
+            } else {
+                HypeTrainBulkStatus {
+                    channel_id: channel_id.clone(),
+                    is_active: false,
+                    level: 0,
+                    is_golden_kappa: false,
+                }
+            }
+        })
+        .collect();
+
+    Ok(results)
 }
 
 /// Fetch current Hype Train status for a channel via GQL
@@ -244,16 +335,14 @@ pub async fn get_hype_train_status(
 
                             if let Some(exec) = execution {
                                 if let Some(prog) = exec.progress {
-                                    // Progress structure:
-                                    // - prog.goal = points REMAINING to complete the level
-                                    // - prog.total = total points earned overall
-                                    // - prog.level.goal = total goal for current level
-                                    // Current progress within level = level.goal - remaining
-                                    let level_goal =
-                                        prog.level.as_ref().map(|l| l.goal).unwrap_or(0);
-                                    let remaining = prog.goal.unwrap_or(0);
-                                    let current_progress = level_goal - remaining;
+                                    // Progress structure (from GQL capture):
+                                    // - prog.progression = current points earned within this level
+                                    // - prog.goal = total points needed to complete this level
+                                    // - prog.total = total contributions across all levels
+                                    let current_progress = prog.progression.unwrap_or(0);
+                                    let level_goal = prog.goal.unwrap_or(0);
                                     let prog_total = prog.total.unwrap_or(0);
+                                    let remaining = level_goal - current_progress;
 
                                     println!(
                                         "[HypeTrain] 🚂 Level {} - Progress: {}/{} (remaining: {}) on {}",

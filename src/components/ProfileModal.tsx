@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
 import { useAppStore } from '../stores/AppStore';
 import { X, User, ExternalLink, Link, Unlink, Maximize2, Settings, Crown } from 'lucide-react';
-import { computePaintStyle, getBadgeImageUrls } from '../services/seventvService';
+import { computePaintStyle, getBadgeImageUrls, getBadgeFallbackUrls } from '../services/seventvService';
+import { FallbackImage } from './FallbackImage';
 import { TwitchBadge } from '../services/badgeService';
 import { ThirdPartyBadge } from '../services/thirdPartyBadges';
 import { SevenTVBadge, SevenTVPaint } from '../types';
@@ -330,8 +331,9 @@ const ProfileModal = ({ isOpen, onClose }: ProfileModalProps) => {
                       {selected7TVBadge && (() => {
                         const urls = getBadgeImageUrls(selected7TVBadge as any);
                         return urls.url4x ? (
-                          <img
+                          <FallbackImage
                             src={urls.url4x}
+                            fallbackUrls={getBadgeFallbackUrls(selected7TVBadge.id).slice(1)}
                             alt={selected7TVBadge.tooltip || selected7TVBadge.name}
                             title={`7TV: ${selected7TVBadge.tooltip || selected7TVBadge.name}`}
                             className="w-6 h-6"
@@ -536,7 +538,12 @@ const ProfileModal = ({ isOpen, onClose }: ProfileModalProps) => {
                                 onClick={() => seventvAuthConnected && !isUpdating && handleSelectSeventvBadge(isSelected ? null : badge)}
                                 title={badge.tooltip || badge.name}
                               >
-                                <img src={urls.url4x} alt={badge.tooltip || badge.name} className="w-8 h-8" />
+                              <FallbackImage
+                                src={urls.url4x}
+                                fallbackUrls={getBadgeFallbackUrls(badge.id).slice(1)}
+                                alt={badge.tooltip || badge.name}
+                                className="w-8 h-8"
+                              />
                                 {isSelected && (
                                   <div className="absolute -top-1 -right-1 w-3 h-3 bg-[#29b6f6] rounded-full border-2 border-background" />
                                 )}

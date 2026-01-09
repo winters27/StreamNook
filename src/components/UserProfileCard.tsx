@@ -2,7 +2,8 @@ import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { MessageCircle, UserPlus, UserMinus, Loader2, ChevronDown, ChevronUp } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../stores/AppStore';
-import { computePaintStyle, getBadgeImageUrls } from '../services/seventvService';
+import { computePaintStyle, getBadgeImageUrls, getBadgeFallbackUrls } from '../services/seventvService';
+import { FallbackImage } from './FallbackImage';
 import { formatIVRDate, formatSubTenure } from '../services/ivrService';
 import {
   getProfileFromMemoryCache,
@@ -380,6 +381,7 @@ const UserProfileCard = ({
       return {
         id: b.id,
         src: urls.url4x || `https://cdn.7tv.app/badge/${b.id}/4x`,
+        fallbackUrls: getBadgeFallbackUrls(b.id).slice(1),
         srcSet: urls.url1x ? `${urls.url1x} 1x, ${urls.url2x} 2x, ${urls.url4x} 4x` : undefined,
         title: b.tooltip || b.description || b.name,
         name: b.name
@@ -543,10 +545,10 @@ const UserProfileCard = ({
                     <p className="text-[9px] text-textSecondary uppercase mb-1.5 font-medium">7TV</p>
                     <div className="flex items-center gap-1.5 flex-wrap">
                       {seventvBadges.map((b: any, i: number) => (
-                        <img
+                        <FallbackImage
                           key={`7tv-${b.id}-${i}`}
                           src={b.src}
-                          srcSet={b.srcSet}
+                          fallbackUrls={b.fallbackUrls}
                           alt={b.title}
                           title={b.title}
                           className="w-5 h-5 cursor-pointer hover:scale-110 transition-transform"
@@ -558,7 +560,6 @@ const UserProfileCard = ({
                               console.error('Failed to open URL:', err);
                             }
                           }}
-                          onError={e => { e.currentTarget.style.display = 'none'; }}
                         />
                       ))}
                     </div>

@@ -55,6 +55,9 @@ const Sidebar = () => {
         toggleFavoriteStreamer,
         isHomeActive,
         toggleHome,
+        // Hype Train status for stream badges
+        activeHypeTrainChannels,
+        refreshHypeTrainStatuses,
     } = useAppStore();
 
     // Sidebar mode from settings
@@ -113,6 +116,30 @@ const Sidebar = () => {
         const interval = setInterval(loadActiveDrops, 5 * 60 * 1000);
         return () => clearInterval(interval);
     }, []);
+
+    // Refresh Hype Train status for sidebar streams periodically
+    useEffect(() => {
+        const channelIds = new Set<string>();
+        followedStreams.forEach(s => channelIds.add(s.user_id));
+        recommendedStreams.forEach(s => channelIds.add(s.user_id));
+        
+        if (channelIds.size > 0) {
+            // Initial refresh
+            refreshHypeTrainStatuses(Array.from(channelIds));
+            
+            // Refresh every 30 seconds for sidebar
+            const interval = setInterval(() => {
+                const ids = new Set<string>();
+                followedStreams.forEach(s => ids.add(s.user_id));
+                recommendedStreams.forEach(s => ids.add(s.user_id));
+                if (ids.size > 0) {
+                    refreshHypeTrainStatuses(Array.from(ids));
+                }
+            }, 30000);
+            
+            return () => clearInterval(interval);
+        }
+    }, [followedStreams, recommendedStreams, refreshHypeTrainStatuses]);
 
     // Listen for settings changes from InterfaceSettings
     useEffect(() => {
@@ -199,11 +226,18 @@ const Sidebar = () => {
         loadRecommendedStreams();
     }, [isAuthenticated, loadFollowedStreams, loadRecommendedStreams]);
 
-    // Auto-refresh streams when sidebar is hovered/opened/expanded
+    // Track previous "sidebar visible" state to detect rising edge (opening)
+    const prevSidebarVisibleRef = useRef(false);
+
+    // Refresh streams exactly once when sidebar opens, not while it's open
     useEffect(() => {
-        // Only refresh when sidebar becomes visible/expanded
-        if (isHovered || isEdgeHovered || isManuallyExpanded) {
-            console.log('[Sidebar] Refreshing streams on sidebar interaction');
+        const isSidebarVisible = isHovered || isEdgeHovered || isManuallyExpanded;
+        const wasVisible = prevSidebarVisibleRef.current;
+        prevSidebarVisibleRef.current = isSidebarVisible;
+
+        // Only refresh on rising edge (sidebar just opened)
+        if (isSidebarVisible && !wasVisible) {
+            console.log('[Sidebar] Refreshing streams on sidebar open');
             if (isAuthenticated) {
                 loadFollowedStreams();
             }
@@ -433,6 +467,7 @@ const Sidebar = () => {
         const isCurrentStream = currentStream?.user_login === stream.user_login;
         const isFavorite = isFavoriteStreamer(stream.user_id);
         const hasDrops = stream.game_name ? dropsGameNames.has(stream.game_name.toLowerCase()) : false;
+        const hypeTrainStatus = activeHypeTrainChannels.get(stream.user_id);
 
         return (
             <div
@@ -464,6 +499,14 @@ const Sidebar = () => {
                             <Gift size={10} className="text-white" />
                         </div>
                     )}
+                    {/* Hype Train indicator on avatar - only show in compact mode when no drops */}
+                    {hypeTrainStatus && !showExpanded && !hasDrops && (
+                        <div className={`absolute -top-1 -right-1 w-4 h-4 rounded-full flex items-center justify-center border border-background ${hypeTrainStatus.isGolden ? 'bg-yellow-500' : 'bg-purple-600'}`} title={`Hype Train LVL ${hypeTrainStatus.level}`}>
+                            <svg className="w-2.5 h-2.5 text-white" viewBox="0 0 15 13" fill="none">
+                                <path fillRule="evenodd" clipRule="evenodd" d="M4.10001 0.549988H2.40001V4.79999H0.700012V10.75H1.55001C1.55001 11.6889 2.31113 12.45 3.25001 12.45C4.1889 12.45 4.95001 11.6889 4.95001 10.75H5.80001C5.80001 11.6889 6.56113 12.45 7.50001 12.45C8.4389 12.45 9.20001 11.6889 9.20001 10.75H10.05C10.05 11.6889 10.8111 12.45 11.75 12.45C12.6889 12.45 13.45 11.6889 13.45 10.75H14.3V0.549988H6.65001V2.24999H7.50001V4.79999H4.10001V0.549988ZM12.6 9.04999V6.49999H2.40001V9.04999H12.6ZM9.20001 4.79999H12.6V2.24999H9.20001V4.79999Z" fill="currentColor" />
+                            </svg>
+                        </div>
+                    )}
                 </div>
 
                 {/* Stream info - only show when expanded */}
@@ -485,6 +528,14 @@ const Sidebar = () => {
                             {hasDrops && (
                                 <span title="Drops enabled">
                                     <Gift size={10} className="text-accent flex-shrink-0" />
+                                </span>
+                            )}
+                            {/* Hype Train indicator - show next to game name */}
+                            {hypeTrainStatus && (
+                                <span title={`Hype Train LVL ${hypeTrainStatus.level}`} className={`flex items-center gap-0.5 ${hypeTrainStatus.isGolden ? 'text-yellow-400' : 'text-purple-400'} flex-shrink-0`}>
+                                    <svg className="w-2.5 h-2.5" viewBox="0 0 15 13" fill="none">
+                                        <path fillRule="evenodd" clipRule="evenodd" d="M4.10001 0.549988H2.40001V4.79999H0.700012V10.75H1.55001C1.55001 11.6889 2.31113 12.45 3.25001 12.45C4.1889 12.45 4.95001 11.6889 4.95001 10.75H5.80001C5.80001 11.6889 6.56113 12.45 7.50001 12.45C8.4389 12.45 9.20001 11.6889 9.20001 10.75H10.05C10.05 11.6889 10.8111 12.45 11.75 12.45C12.6889 12.45 13.45 11.6889 13.45 10.75H14.3V0.549988H6.65001V2.24999H7.50001V4.79999H4.10001V0.549988ZM12.6 9.04999V6.49999H2.40001V9.04999H12.6ZM9.20001 4.79999H12.6V2.24999H9.20001V4.79999Z" fill="currentColor" />
+                                    </svg>
                                 </span>
                             )}
                         </div>

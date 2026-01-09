@@ -55,20 +55,47 @@ const ChatMessageList = memo(function ChatMessageList({
   const containerRef = useRef<HTMLDivElement>(null);
   const isScrollingProgrammatically = useRef(false);
   const wasAtBottomRef = useRef(true); // Track if we were at bottom BEFORE new messages
-  const lastScrollTop = useRef(0);
   const prevMessageCountRef = useRef(0); // Track previous message count for channel switch detection
   
-  // User Interaction Guard
-  // Tracks the timestamp of the last *actual* user interaction (wheel, touch, click, key)
-  // We only count a scroll as "User Scroll" if it happened shortly after an interaction.
-  const lastInteractionTime = useRef<number>(0);
+  // Track if user explicitly scrolled UP via wheel (negative deltaY = scroll up)
+  // This is the ONLY reliable way to detect user scroll intent
+  // Flag persists until user scrolls DOWN or reaches bottom
+  const userScrolledUpRef = useRef(false);
+  const lastTouchY = useRef(0);
 
-  const handleInteraction = useCallback(() => {
-    lastInteractionTime.current = Date.now();
+  // Handle wheel events - detect scroll-up intent directly from deltaY
+  const handleWheel = useCallback((e: React.WheelEvent) => {
+    if (e.deltaY < 0) {
+      // Scrolling UP (away from bottom)
+      console.log('[ChatMessageList] 🔼 WHEEL UP detected, setting userScrolledUpRef=true');
+      userScrolledUpRef.current = true;
+    } else if (e.deltaY > 0) {
+      // Scrolling DOWN (toward bottom) - clear the flag
+      userScrolledUpRef.current = false;
+    }
+  }, []);
+
+  // Handle touch scrolling - track direction via Y position change
+  const handleTouchStart = useCallback((e: React.TouchEvent) => {
+    lastTouchY.current = e.touches[0].clientY;
+  }, []);
+
+  const handleTouchMove = useCallback((e: React.TouchEvent) => {
+    const currentY = e.touches[0].clientY;
+    const deltaY = lastTouchY.current - currentY; // positive = scrolling up
+    lastTouchY.current = currentY;
+    
+    if (deltaY > 0) {
+      // Swiping up (scrolling up, away from bottom)
+      userScrolledUpRef.current = true;
+    } else if (deltaY < 0) {
+      // Swiping down (scrolling down, toward bottom) - clear the flag
+      userScrolledUpRef.current = false;
+    }
   }, []);
 
   // Auto-scroll to bottom when new messages arrive
-  // Key: Use wasAtBottomRef which was set BEFORE new messages rendered
+  // SIMPLE RULE: If not paused, always scroll to bottom
   const lastMessageId = messages.length > 0 ? getMessageId(messages[messages.length - 1]) : null;
 
   useEffect(() => {
@@ -78,48 +105,50 @@ const ChatMessageList = memo(function ChatMessageList({
     const currentCount = messages.length;
     
     // Detect channel switch: messages went from 0 to N (bulk load from IVR history)
-    // In this case, always scroll to bottom regardless of wasAtBottomRef or isPaused
     const isChannelLoad = prevCount === 0 && currentCount > 0;
     
     // Update ref for next render
     prevMessageCountRef.current = currentCount;
     
-    // For normal message flow, respect isPaused
+    // If paused (and not a channel load), don't auto-scroll
     if (!isChannelLoad && isPaused) return;
     
-    // Scroll to bottom if:
-    // 1. This is a fresh channel load (messages went 0 -> N) - ALWAYS scroll, OR
-    // 2. We were already at bottom (normal message flow)
-    if (isChannelLoad || wasAtBottomRef.current) {
-      // Use RAF to ensure DOM has painted new content
-      requestAnimationFrame(() => {
-        if (!containerRef.current) return;
-        isScrollingProgrammatically.current = true;
-        
-        // Force overflow-anchor to auto during programmatic scrolls to let browser help
-        containerRef.current.style.overflowAnchor = 'auto';
-        
-        containerRef.current.scrollTop = containerRef.current.scrollHeight;
-        wasAtBottomRef.current = true;
-        
-        // Extend lock to 150ms to swallow any layout-shift scroll events
-        setTimeout(() => {
-          isScrollingProgrammatically.current = false;
-        }, 150);
-      });
+    // NOT PAUSED: Always scroll to bottom
+    // Use double-scroll pattern to ensure we catch the final height after content-visibility resolves
+    
+    // First scroll: immediate RAF to catch initial render
+    requestAnimationFrame(() => {
+      if (!containerRef.current) return;
+      isScrollingProgrammatically.current = true;
+      containerRef.current.scrollTop = containerRef.current.scrollHeight;
+      wasAtBottomRef.current = true;
+    });
+    
+    // Second scroll: short delay to catch content-visibility final height calculation
+    // This fixes the issue where new messages appear partially behind the input box
+    setTimeout(() => {
+      if (!containerRef.current || isPaused) return;
+      isScrollingProgrammatically.current = true;
+      containerRef.current.scrollTop = containerRef.current.scrollHeight;
+      wasAtBottomRef.current = true;
       
-      // For channel loads, do a second scroll after content-visibility has resolved
-      if (isChannelLoad) {
-        setTimeout(() => {
-          if (containerRef.current) {
-            isScrollingProgrammatically.current = true;
-            containerRef.current.scrollTop = containerRef.current.scrollHeight;
-            setTimeout(() => {
-              isScrollingProgrammatically.current = false;
-            }, 150);
-          }
-        }, 100);
-      }
+      // Extend lock to 150ms to swallow any layout-shift scroll events
+      setTimeout(() => {
+        isScrollingProgrammatically.current = false;
+      }, 150);
+    }, 50);
+    
+    // For channel loads, do a third scroll after longer delay
+    if (isChannelLoad) {
+      setTimeout(() => {
+        if (containerRef.current) {
+          isScrollingProgrammatically.current = true;
+          containerRef.current.scrollTop = containerRef.current.scrollHeight;
+          setTimeout(() => {
+            isScrollingProgrammatically.current = false;
+          }, 150);
+        }
+      }, 150);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lastMessageId, isPaused, messages.length]); // Track lastMessageId to handle buffer trimming updates
@@ -134,24 +163,24 @@ const ChatMessageList = memo(function ChatMessageList({
     // Update "was at bottom" state (used by the NEXT render's auto-scroll check)
     // Only update if this wasn't a programmatic scroll
     if (!isScrollingProgrammatically.current) {
-      wasAtBottomRef.current = distanceToBottom < 100;
+      const atBottom = distanceToBottom < 100;
+      wasAtBottomRef.current = atBottom;
       
-      // Determine if this was a user scroll (scrolling up)
-      // STRICT CHECK: Only consider it a user scroll if:
-      // 1. The user actually performed a WHEEL or TOUCH interaction within 500ms
-      // 2. AND they are scrolling UP (scrollTop < lastScrollTop) - this ignores layout expansions
-      const timeSinceInteraction = Date.now() - lastInteractionTime.current;
-      const hasRecentInteraction = timeSinceInteraction < 500;
+      // Only report as user scroll if:
+      // 1. User explicitly scrolled UP via wheel/touch (userScrolledUpRef is true)
+      // 2. AND we're actually away from bottom now
+      const isUserScroll = userScrolledUpRef.current && distanceToBottom > 50;
       
-      const isUserScroll = hasRecentInteraction && (scrollTop < lastScrollTop.current - 2);
-      
-      lastScrollTop.current = scrollTop;
+      // Clear flag only when reaching bottom (user scrolled back down)
+      if (atBottom) {
+        userScrolledUpRef.current = false;
+      }
       
       onScroll(distanceToBottom, isUserScroll);
     } else {
       // For programmatic scrolls, we ARE at bottom
       wasAtBottomRef.current = true;
-      lastScrollTop.current = scrollTop;
+      userScrolledUpRef.current = false; // Clear any stale flag
     }
   }, [onScroll]);
 
@@ -180,8 +209,9 @@ const ChatMessageList = memo(function ChatMessageList({
       ref={containerRef}
       className="h-full overflow-y-auto overflow-x-hidden scrollbar-thin"
       onScroll={handleScroll}
-      onWheel={handleInteraction}
-      onTouchStart={handleInteraction}
+      onWheel={handleWheel}
+      onTouchStart={handleTouchStart}
+      onTouchMove={handleTouchMove}
       style={{ overflowAnchor: 'auto' }} // Ensure browser helps anchor to bottom
     >
       {/* Messages container with native virtualization - pt-10 for header */}

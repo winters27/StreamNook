@@ -531,6 +531,7 @@ fn main() {
             receive_update_result,
             // Hype Train commands
             get_hype_train_status,
+            get_bulk_hype_train_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

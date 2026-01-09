@@ -3,8 +3,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../stores/AppStore';
 import { fetchRecentMessagesAsIRC } from '../services/ivrService';
 
-// Hardcoded message limit for optimal performance and stability (Twitch-style: 50 visible messages)
-const CHAT_HISTORY_MAX = 50;
+// Hardcoded message limit for optimal performance and stability
+const CHAT_HISTORY_MAX = 100;
 // Buffer size to allow when chat is paused (scrolled up)
 const CHAT_BUFFER_SIZE = 150;
 // Total max including buffer
@@ -132,7 +132,20 @@ export const useTwitchChat = () => {
     setMessages([]);
     seenMessageIdsRef.current = new Set();
 
-  // Fetch recent messages from IVR API if roomId is provided
+    // Initialize badge cache BEFORE fetching IVR messages
+    // This ensures historical messages have badges populated correctly
+    if (roomId) {
+      try {
+        console.log('[Chat] Initializing badge cache before fetching recent messages');
+        const { initializeBadgeCache } = await import('../services/twitchBadges');
+        await initializeBadgeCache(roomId);
+      } catch (err) {
+        console.warn('[Chat] Failed to initialize badge cache:', err);
+        // Continue anyway - badges may not display but chat will still work
+      }
+    }
+
+    // Fetch recent messages from IVR API if roomId is provided
     // Route through Rust backend for proper parsing and layout calculation
     if (roomId) {
       try {
@@ -214,13 +227,6 @@ export const useTwitchChat = () => {
     isIntentionalDisconnectRef.current = false;
 
     try {
-      // Initialize badge cache for this channel BEFORE starting the WS.
-      // This avoids the race where messages arrive before caches are warm,
-      // causing badges to render as missing.
-      console.log('[Chat] Initializing badge cache');
-      const { initializeBadgeCache } = await import('../services/twitchBadges');
-      await initializeBadgeCache(roomId);
-
       console.log('[Chat] Invoking start_chat command');
       const port = await invoke<number>('start_chat', { channel });
       console.log(`[Chat] Received port: ${port}`);

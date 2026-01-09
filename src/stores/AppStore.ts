@@ -126,6 +126,10 @@ interface AppState {
   isLoadingDropsCache: boolean;
   // Hype Train state
   currentHypeTrain: HypeTrainData | null;
+  setCurrentHypeTrain: (train: HypeTrainData | null) => void;
+  // Hype Train status for stream badges (channel_id -> { level, isGolden })
+  activeHypeTrainChannels: Map<string, { level: number; isGolden: boolean }>;
+  refreshHypeTrainStatuses: (channelIds: string[]) => Promise<void>;
   handleStreamOffline: () => Promise<void>;
   addToast: (message: string | React.ReactNode, type: 'info' | 'success' | 'warning' | 'error' | 'live', action?: { label: string; onClick: () => void }) => void;
   removeToast: (id: number) => void;
@@ -242,6 +246,30 @@ export const useAppStore = create<AppState>((set, get) => ({
   isLoadingDropsCache: false,
   // Hype Train state
   currentHypeTrain: null,
+  setCurrentHypeTrain: (train) => set({ currentHypeTrain: train }),
+  // Hype Train status for stream badges
+  activeHypeTrainChannels: new Map(),
+  refreshHypeTrainStatuses: async (channelIds: string[]) => {
+    if (channelIds.length === 0) return;
+    try {
+      const results = await invoke('get_bulk_hype_train_status', { channelIds }) as Array<{
+        channel_id: string;
+        is_active: boolean;
+        level: number;
+        is_golden_kappa: boolean;
+      }>;
+      const newMap = new Map<string, { level: number; isGolden: boolean }>();
+      for (const result of results) {
+        if (result.is_active) {
+          newMap.set(result.channel_id, { level: result.level, isGolden: result.is_golden_kappa });
+        }
+      }
+      set({ activeHypeTrainChannels: newMap });
+    } catch (e) {
+      // Silently fail - Hype Train badges are non-critical
+      console.warn('[HypeTrain] Failed to refresh bulk status:', e);
+    }
+  },
   // Whisper import state
   whisperImportState: {
     isImporting: false,

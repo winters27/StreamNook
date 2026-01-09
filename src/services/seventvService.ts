@@ -617,6 +617,18 @@ export const getBadgeImageUrls = (badge: BadgeV4): { url1x: string; url2x: strin
   };
 };
 
+// Get badge URLs with fallback priority (highest to lowest resolution)
+// Used when 4x may 404 - tries 3x, 2x, 1x as fallbacks
+export const getBadgeFallbackUrls = (badgeId: string): string[] => {
+  const baseUrl = `https://cdn.7tv.app/badge/${badgeId}`;
+  return [
+    `${baseUrl}/4x`,
+    `${baseUrl}/3x`,
+    `${baseUrl}/2x`,
+    `${baseUrl}/1x`,
+  ];
+};
+
 // Get badge image URL for any provider
 export const getBadgeImageUrlForProvider = (badge: any, provider: '7tv' | 'ffz'): string => {
   if (provider === '7tv') {

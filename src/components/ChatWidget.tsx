@@ -63,6 +63,70 @@ const formatHypeTrainTimeRemaining = (expiresAt: string): string => {
   return `${seconds}s`;
 };
 
+// Unhinged celebration messages for level-up (module-level constant to avoid re-renders)
+const HYPE_MESSAGES = [
+  // Classic hype
+  'HYYYYPE! 🚂',
+  'CHOO CHOO MOTHERFUCKERS! 🚂💨',
+  'ALL ABOARD THE HYPE TRAIN LET\'S FUCKING GOOO 🎉',
+  'WE EATING GOOD TONIGHT BOYS 🍽️🔥',
+  'POGGERS IN CHAT 🐸',
+  'TRAIN HAS LEFT THE STATION AND IT\'S ON FIRE 🚂🔥',
+  'LET\'S FUCKING GOOOOOOOOOOOOO 🔥',
+  'CHAT POPPIN OFF RN 📈',
+  'THIS IS THE ENERGY WE CAME FOR 🙌',
+  // Edgy / unfiltered
+  'INJECT THE HYPE STRAIGHT INTO MY FUCKING VEINS 💉',
+  'I\'M HARD AS FUCK RIGHT NOW 🍆🚂',
+  'CHAT\'S ON THAT COCAINUM ENERGY TONIGHT 🤍💊',
+  'MY BLOOD PRESSURE IS IN THE STRATOSPHERE 😤',
+  'MOMMY? SORRY. MOMMY? 🚂',
+  'I\'M GONNA NUT IF THIS KEEPS UP 🤤💦',
+  'CHAT IS 100% GOONING RIGHT NOW 👁️👄👁️',
+  'THIS IS ILLEGALLY HYPE 🚨🔥',
+  // Unhinged / nuclear
+  'I\'M FOAMING AT THE MOUTH RN 🤪💀',
+  'CRYING SCREAMING PISSING SHITTING THROWING UP 🤮💩😭',
+  'MY EYEBALLS ARE CUMMING FROM THIS PEAK 👀💦',
+  'I JUST SHATTERED MY PELVIS FROM HYPE 🚑🦴💥',
+  'I\'M LEGALLY BRAINDEAD FROM THIS ENERGY 🧠💨',
+  'CHAT IS ONE BAD MOMENT AWAY FROM A MELTDOWN 💀🔥',
+  'I\'M GONNA FUCK THE HYPE TRAIN ITSELF 🚂🍑',
+  'MY THERAPIST IS GONNA QUIT AFTER THIS STREAM 😭💀',
+  'SOMEONE SEDATE ME BEFORE I BECOME A WAR CRIME 💉🔥',
+  'MY SPINE IS LIQUID AND MY SOUL IS GONE ✨💀',
+  'I AM BECOME HYPE, DESTROYER OF CHILL ☢️🚂',
+  // StreamNook-branded hype
+  'CHOO CHOO MOTHERFUCKERS! 🚂💨',
+  'ALL ABOARD THE STREAMNOOK HYPE TRAIN! 🎉',
+  'STREAMNOOK FAM LET\'S FUCKING GOOO 🔥',
+  'POGGERS IN THE NOOK 🐸🏠',
+  'TRAIN HAS LEFT THE STATION AND STREAMNOOK IS DRIVING 🚂🌪️',
+  'CHAT POPPIN OFF IN STREAMNOOK RN 📈',
+  'STREAMNOOK ENERGY IS UNMATCHED 🙌',
+  'WE\'RE COZY AS FUCK IN THE NOOK TONIGHT 🛋️🚂',
+  // Edgy StreamNook
+  'INJECT THE STREAMNOOK HYPE STRAIGHT INTO MY VEINS 💉',
+  'I\'M HARD AS FUCK FOR THIS STREAMNOOK CLUTCH 🍆🚂',
+  'CHAT\'S ON THAT STREAMNOOK COCAINUM ENERGY 🤍🐍',
+  'MY BLOOD PRESSURE JUST SPIKED IN THE NOOK 😤',
+  'MOMMY? SORRY. STREAMNOOK MOMMY? 😏🚂',
+  'I\'M GONNA NUT IF STREAMNOOK KEEPS THIS UP 🤤💦',
+  'STREAMNOOK CHAT IS 100% GOONING RIGHT NOW 👁️👄👁️',
+  'THIS STREAMNOOK MOMENT IS ILLEGALLY HYPE 🫡🚨',
+  // Unhinged StreamNook
+  'I\'M FOAMING AT THE MOUTH AND MY DICK IS OUT 🍆🤪',
+  'MY EYEBALLS ARE CUMMING FROM THIS PEAK 👀💦',
+  'I JUST SHATTERED MY PELVIS FROM HYPE 🚑🦴💥',
+  'I\'M LEGALLY RETARDED FROM THIS ENERGY 🧠💨',
+  'CHAT IS ONE BAD MOMENT AWAY FROM A MASS SUICIDE PACT 💀🔗',
+  'I\'M GONNA FUCK THE HYPE TRAIN ITSELF 🚂🍑',
+  'MY THERAPIST IS GONNA QUIT AFTER THIS STREAM 😭🛋️',
+  'SOMEONE SEDATE ME BEFORE I BECOME A WAR CRIME 🩸💉',
+  'MY SPINE IS LIQUID AND MY SOUL IS GONE ✨🪦',
+  'I AM BECOME HYPE, DESTROYER OF CHILL ☢️🚂',
+];
+
 const ChatWidget = () => {
   const { messages, connectChat, sendMessage, isConnected, error, setPaused: setBufferPaused, deletedMessageIds, clearedUserIds } = useTwitchChat();
   const { currentStream, currentUser, currentHypeTrain } = useAppStore();
@@ -86,6 +150,12 @@ const ChatWidget = () => {
   const streamUptimeRef = useRef<string>('');
   const [hypeTrainTimeRemaining, setHypeTrainTimeRemaining] = useState<string>('');
   const hypeTrainExpiresAtRef = useRef<string | null>(null);
+  const [isLevelUpCelebration, setIsLevelUpCelebration] = useState(false);
+  const previousHypeTrainLevelRef = useRef<number>(0);
+  const [displayedLevel, setDisplayedLevel] = useState<number>(0);
+  const [celebrationMessage, setCelebrationMessage] = useState<string>('');
+  
+
   const { settings } = useAppStore();
   const [selectedUser, setSelectedUser] = useState<{
     userId: string;
@@ -230,6 +300,14 @@ const ChatWidget = () => {
       const now = Date.now();
       const expiry = new Date(hypeTrainExpiresAtRef.current).getTime();
       const diffMs = Math.max(0, expiry - now);
+      
+      // Timer expired - clear hype train immediately (don't wait for poll)
+      if (diffMs === 0) {
+        console.log('[HypeTrain] Timer expired - clearing immediately');
+        useAppStore.getState().setCurrentHypeTrain(null);
+        return;
+      }
+      
       const minutes = Math.floor(diffMs / 60000);
       const seconds = Math.floor((diffMs % 60000) / 1000);
       if (minutes > 0) {
@@ -243,6 +321,67 @@ const ChatWidget = () => {
     const countdownInterval = setInterval(updateCountdown, 1000);
     return () => clearInterval(countdownInterval);
   }, [currentHypeTrain?.expires_at]);
+
+  // Level-up celebration detection - SYNCHRONOUS during render
+  // Detect level changes during render phase (before paint) for immediate response
+  const pendingLevelUpRef = useRef<{ from: number; to: number } | null>(null);
+  
+  // Synchronous check during render - happens BEFORE paint
+  if (currentHypeTrain && !isLevelUpCelebration) {
+    const currentLevel = currentHypeTrain.level;
+    const previousLevel = previousHypeTrainLevelRef.current;
+    
+    // Detect level-up (previous must be > 0 to avoid initial load trigger)
+    if (currentLevel > previousLevel && previousLevel > 0) {
+      pendingLevelUpRef.current = { from: previousLevel, to: currentLevel };
+    }
+  }
+
+  // Effect to handle the detected level-up (sets state, starts timer)
+  useEffect(() => {
+    if (!currentHypeTrain) {
+      previousHypeTrainLevelRef.current = 0;
+      setDisplayedLevel(0);
+      pendingLevelUpRef.current = null;
+      return;
+    }
+
+    if (pendingLevelUpRef.current) {
+      const { from, to } = pendingLevelUpRef.current;
+      console.log(`[HypeTrain] 🎉 LEVEL UP! ${from} → ${to}`);
+      
+      const randomMessage = HYPE_MESSAGES[Math.floor(Math.random() * HYPE_MESSAGES.length)];
+      setCelebrationMessage(randomMessage);
+      setIsLevelUpCelebration(true);
+      pendingLevelUpRef.current = null;
+      
+      // Clear celebration after 8s (matches slower 7s scroll + buffer)
+      const celebrationTimeout = setTimeout(() => {
+        setIsLevelUpCelebration(false);
+        setDisplayedLevel(to);
+        previousHypeTrainLevelRef.current = to;
+      }, 8000);
+      
+      return () => clearTimeout(celebrationTimeout);
+    } else {
+      // Normal update (no level-up in progress) - only update if not celebrating
+      if (!isLevelUpCelebration) {
+        setDisplayedLevel(currentHypeTrain.level);
+        previousHypeTrainLevelRef.current = currentHypeTrain.level;
+      }
+    }
+  }, [currentHypeTrain?.level]); // Removed isLevelUpCelebration from deps to avoid re-trigger
+
+  // Memoized confetti configuration to avoid regenerating random positions on re-render
+  const confettiParticles = useMemo(() => {
+    return [...Array(20)].map((_, i) => ({
+      id: i,
+      left: `${Math.random() * 100}%`,
+      color: ['#ff6b6b', '#ffd93d', '#6bcb77', '#4d96ff', '#9b59b6', '#e74c3c'][i % 6],
+      delay: `${Math.random() * 0.5}s`,
+      duration: `${1 + Math.random() * 0.5}s`
+    }));
+  }, [isLevelUpCelebration]); // Regenerate only when celebration starts
 
 
   useEffect(() => {
@@ -538,7 +677,8 @@ const ChatWidget = () => {
   }, []);
 
   // Helper function to scroll to a specific message by ID
-  // Uses native DOM scrolling instead of react-window
+  // Uses container-aware scrolling to avoid scrolling the entire document
+  // which can cause the title bar to disappear in Tauri apps with custom decorations
   const scrollToMessage = useCallback((messageId: string, options?: { highlight?: boolean; align?: 'start' | 'center' | 'end' | 'auto' }) => {
     const { highlight = true, align = 'center' } = options || {};
 
@@ -564,14 +704,62 @@ const ChatWidget = () => {
       setHighlightedMessageId(messageId);
     }
 
-    // Use native DOM scrolling to bring element into view
-    // The ChatMessageList renders messages with data attributes
+    // Use container-aware scrolling instead of scrollIntoView
+    // scrollIntoView can cause the entire document to scroll in WebViews,
+    // which makes the title bar disappear in Tauri apps with custom decorations
     requestAnimationFrame(() => {
-      const element = document.querySelector(`[data-message-id="${messageId}"]`);
+      const element = document.querySelector(`[data-message-id="${messageId}"]`) as HTMLElement | null;
       if (element) {
-        const scrollBehavior = align === 'center' ? 'center' : align === 'end' ? 'end' : 'start';
-        element.scrollIntoView({ behavior: 'smooth', block: scrollBehavior as ScrollLogicalPosition });
-        console.log('[ChatWidget] Scrolled to message via DOM');
+        // Find the scrollable chat container (ChatMessageList's container)
+        const container = element.closest('.overflow-y-auto') as HTMLElement | null;
+        if (container) {
+          // Calculate the element's position relative to the container
+          const elementTopRelative = element.offsetTop;
+          const containerScrollTop = container.scrollTop;
+          const containerHeight = container.clientHeight;
+          const elementHeight = element.offsetHeight;
+          
+          let targetScrollTop: number;
+          
+          if (align === 'center') {
+            // Center the element in the container
+            targetScrollTop = elementTopRelative - (containerHeight / 2) + (elementHeight / 2);
+          } else if (align === 'start') {
+            // Align element to the top of the container
+            targetScrollTop = elementTopRelative;
+          } else if (align === 'end') {
+            // Align element to the bottom of the container
+            targetScrollTop = elementTopRelative - containerHeight + elementHeight;
+          } else {
+            // 'auto' - scroll minimum distance to make element visible
+            const elementTopInView = elementTopRelative - containerScrollTop;
+            const elementBottomInView = elementTopInView + elementHeight;
+            
+            if (elementTopInView < 0) {
+              // Element is above viewport, scroll up
+              targetScrollTop = elementTopRelative;
+            } else if (elementBottomInView > containerHeight) {
+              // Element is below viewport, scroll down
+              targetScrollTop = elementTopRelative - containerHeight + elementHeight;
+            } else {
+              // Element is already in view, no scroll needed
+              targetScrollTop = containerScrollTop;
+            }
+          }
+          
+          // Clamp scroll position to valid range
+          targetScrollTop = Math.max(0, Math.min(targetScrollTop, container.scrollHeight - containerHeight));
+          
+          // Smooth scroll to the target position
+          container.scrollTo({
+            top: targetScrollTop,
+            behavior: 'smooth'
+          });
+          
+          console.log('[ChatWidget] Scrolled to message via container-aware scroll');
+        } else {
+          console.warn('[ChatWidget] Could not find scrollable container for message');
+        }
       } else {
         console.warn('[ChatWidget] Could not find DOM element for message:', messageId);
       }
@@ -965,15 +1153,21 @@ const ChatWidget = () => {
         />
 
         {/* Chat header - transforms when Hype Train active */}
-        <div className={`absolute top-0 left-0 right-0 px-3 py-2 border-b backdrop-blur-ultra z-10 pointer-events-none shadow-lg overflow-hidden ${
-          currentHypeTrain ? 'border-purple-500/50' : (isSharedChat ? 'iridescent-border' : 'border-borderSubtle')
-        }`} style={currentHypeTrain ? undefined : { backgroundColor: 'rgba(12, 12, 13, 0.9)' }}>
+        <div className={`absolute top-0 left-0 right-0 px-3 ${currentHypeTrain ? 'py-4' : 'py-2'} ${currentHypeTrain ? '' : 'border-b'} backdrop-blur-ultra z-10 pointer-events-none shadow-lg overflow-hidden ${
+          currentHypeTrain ? '' : (isSharedChat ? 'iridescent-border' : 'border-borderSubtle')
+        }`} style={{ 
+          backgroundColor: currentHypeTrain ? 'var(--color-background)' : 'rgba(12, 12, 13, 0.9)',
+          boxShadow: currentHypeTrain ? '0 4px 20px color-mix(in srgb, var(--color-highlight-purple) 30%, transparent), 0 2px 8px color-mix(in srgb, var(--color-highlight-purple) 20%, transparent)' : undefined
+        }}>
           {currentHypeTrain ? (
             // Hype Train Mode - entire header is the progress bar
             (() => {
-              const percentage = Math.min(Math.round((currentHypeTrain.progress / currentHypeTrain.goal) * 100), 100);
+              // Guard against NaN when goal is 0 or undefined
+              const percentage = currentHypeTrain.goal > 0
+                ? Math.min(Math.round((currentHypeTrain.progress / currentHypeTrain.goal) * 100), 100)
+                : 0;
               // Remaining = goal - progress (in Hype points)
-              const remaining = currentHypeTrain.goal - currentHypeTrain.progress;
+              const remaining = Math.max(0, currentHypeTrain.goal - currentHypeTrain.progress);
               // 1 bit = 1 point, 1 Tier1 sub = 500 points
               const bitsNeeded = remaining;
               const subsNeeded = Math.ceil(remaining / 500);
@@ -981,28 +1175,61 @@ const ChatWidget = () => {
               
               return (
                 <>
-                  {/* Progress fill background - uses clip-path so animation doesn't reset */}
+                  {/* Progress fill background */}
                   <div 
                     className={`absolute inset-0 ${
                       isGolden ? 'hype-train-progress-golden' : 'hype-train-progress-rainbow'
                     }`}
                     style={{ 
-                      clipPath: `inset(0 ${100 - percentage}% 0 0)`,
-                      transition: 'clip-path 0.5s ease-out'
+                      width: `${percentage}%`,
+                      transition: 'width 0.5s ease-out'
                     }}
                   />
-                  {/* Unfilled portion - darker background */}
+                  {/* Unfilled portion with animated wavy left edge */}
                   <div 
-                    className="absolute inset-0 bg-black/70 transition-all duration-500 ease-out"
+                    className="absolute inset-0 hype-train-wave-edge"
                     style={{ 
-                      clipPath: `inset(0 0 0 ${percentage}%)`
+                      backgroundColor: 'var(--color-background)',
+                      left: `calc(${percentage}% - 19px)`,
+                      width: `calc(${100 - percentage}% + 19px)`,
+                      transition: 'left 0.5s ease-out, width 0.5s ease-out'
                     }}
                   />
-                  {/* Absolutely centered percentage */}
+                  {/* Absolutely centered content - celebration or percentage */}
                   <div className="absolute inset-0 flex items-center justify-center z-20 pointer-events-none">
-                    <span className="text-xl font-black text-white drop-shadow-lg tabular-nums">
-                      {percentage}%
-                    </span>
+                    {isLevelUpCelebration ? (
+                      <>
+                        {/* White flash effect */}
+                        <div className="absolute inset-0 bg-white/40 animate-hype-flash" />
+                        
+                        {/* Confetti particles - uses memoized config */}
+                        <div className="absolute inset-0 overflow-hidden">
+                          {confettiParticles.map((particle) => (
+                            <div
+                              key={particle.id}
+                              className="absolute w-2 h-2 rounded-full animate-confetti"
+                              style={{
+                                left: particle.left,
+                                backgroundColor: particle.color,
+                                animationDelay: particle.delay,
+                                animationDuration: particle.duration
+                              }}
+                            />
+                          ))}
+                        </div>
+                        
+                        {/* Scrolling HYPE text */}
+                        <div className="animate-hype-marquee whitespace-nowrap">
+                          <span className="text-xl font-black text-white drop-shadow-glow mx-4">
+                            🎉 LEVEL UP! {celebrationMessage} 🎉 LEVEL UP! {celebrationMessage} 🎉
+                          </span>
+                        </div>
+                      </>
+                    ) : (
+                      <span className="text-xl font-black text-white drop-shadow-lg tabular-nums">
+                        {percentage}%
+                      </span>
+                    )}
                   </div>
                   
                   {/* Content overlay - left and right aligned */}
@@ -1012,19 +1239,12 @@ const ChatWidget = () => {
                       {isGolden ? (
                         <span className="text-lg">✨</span>
                       ) : (
-                        <svg className="w-5 h-5 text-white" viewBox="0 0 256 256" fill="none">
-                          <line x1="48" y1="128" x2="208" y2="128" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="16"/>
-                          <line x1="48" y1="72" x2="208" y2="72" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="16"/>
-                          <line x1="96" y1="208" x2="72" y2="240" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="16"/>
-                          <line x1="160" y1="208" x2="184" y2="240" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="16"/>
-                          <rect x="48" y="32" width="160" height="176" rx="24" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="16"/>
-                          <line x1="128" y1="72" x2="128" y2="128" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="16"/>
-                          <circle cx="84" cy="172" r="12" fill="currentColor"/>
-                          <circle cx="172" cy="172" r="12" fill="currentColor"/>
+                        <svg className="w-5 h-5 text-white" viewBox="0 0 15 13" fill="none">
+                          <path fillRule="evenodd" clipRule="evenodd" d="M4.10001 0.549988H2.40001V4.79999H0.700012V10.75H1.55001C1.55001 11.6889 2.31113 12.45 3.25001 12.45C4.1889 12.45 4.95001 11.6889 4.95001 10.75H5.80001C5.80001 11.6889 6.56113 12.45 7.50001 12.45C8.4389 12.45 9.20001 11.6889 9.20001 10.75H10.05C10.05 11.6889 10.8111 12.45 11.75 12.45C12.6889 12.45 13.45 11.6889 13.45 10.75H14.3V0.549988H6.65001V2.24999H7.50001V4.79999H4.10001V0.549988ZM12.6 9.04999V6.49999H2.40001V9.04999H12.6ZM9.20001 4.79999H12.6V2.24999H9.20001V4.79999Z" fill="currentColor" />
                         </svg>
                       )}
                       <span className="text-sm font-bold text-white drop-shadow-sm">
-                        LVL {currentHypeTrain.level}
+                        LVL {displayedLevel || currentHypeTrain.level}
                       </span>
                     </div>
                     

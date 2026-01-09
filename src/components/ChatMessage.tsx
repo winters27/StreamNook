@@ -4,7 +4,8 @@ import { parseMessage, MessageSegment } from '../services/twitchChat';
 import { queueEmoteForCaching, EmoteSet, Emote } from '../services/emoteService';
 import { getCachedEmojiUrl, parseEmojisSync } from '../services/emojiService';
 import { calculateHalfPadding } from '../utils/chatLayoutUtils';
-import { computePaintStyle, getBadgeImageUrl, queueCosmeticForCaching } from '../services/seventvService';
+import { computePaintStyle, getBadgeImageUrl, getBadgeFallbackUrls, queueCosmeticForCaching } from '../services/seventvService';
+import { FallbackImage } from './FallbackImage';
 import { getCosmeticsWithFallback, getThirdPartyBadgesFromMemoryCache, getCosmeticsFromMemoryCache, getTwitchBadgesWithFallback } from '../services/cosmeticsCache';
 import { ThirdPartyBadge } from '../services/thirdPartyBadges';
 import { SevenTVBadge, SevenTVPaint } from '../types';
@@ -24,10 +25,17 @@ interface EmoteSegment {
 const channelNameCache = new Map<string, string>();
 const channelProfileImageCache = new Map<string, string>();
 
+// Badge sets that are channel-specific (different images per channel)
+// These are NOT cached locally to avoid cross-channel pollution
+const CHANNEL_SPECIFIC_BADGE_SETS = new Set([
+  'subscriber', 'bits', 'sub-gifter', 'sub-gift-leader',
+  'founder', 'hype-train', 'predictions'
+]);
+
 /**
  * Get the best URL for a Twitch badge, with reactive caching.
- * - If already cached locally, returns the local URL
- * - If not cached, queues for caching and returns the remote 4x URL
+ * - Channel-specific badges (subscriber, bits, etc.) are never cached to avoid cross-channel pollution
+ * - Global badges are cached locally for faster loading
  */
 function getTwitchBadgeUrl(badgeKey: string, badgeInfo: any): string {
   // If already has a local URL, use it
@@ -35,7 +43,16 @@ function getTwitchBadgeUrl(badgeKey: string, badgeInfo: any): string {
     return badgeInfo.localUrl;
   }
 
-  // Create a unique cache ID from badge key (set/version)
+  // Extract set ID from badge key (format: "set/version")
+  const setId = badgeKey.split('/')[0];
+  
+  // Channel-specific badges are never cached - always use remote URL
+  // This prevents cross-channel pollution where one streamer's sub badge appears in another's chat
+  if (CHANNEL_SPECIFIC_BADGE_SETS.has(setId)) {
+    return badgeInfo.image_url_4x || badgeInfo.image_url_1x || '';
+  }
+
+  // Global badges can be cached safely
   const cacheId = `twitch-${badgeKey}`;
   
   // Check if we have a cached version
@@ -642,14 +659,12 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
             );
           })}
           {seventvBadge && (
-            <img
+            <FallbackImage
               src={getBadgeImageUrl(seventvBadge)}
+              fallbackUrls={getBadgeFallbackUrls(seventvBadge.id).slice(1)}
               alt={seventvBadge.description || seventvBadge.name}
               title={seventvBadge.description || seventvBadge.name}
               className="w-5 h-5 inline-block crisp-image"
-              onError={(e) => {
-                e.currentTarget.style.display = 'none';
-              }}
             />
           )}
           {thirdPartyBadges.filter(badge => badge && badge.imageUrl).map((badge, idx) => (
@@ -773,14 +788,12 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
             );
           })}
           {seventvBadge && (
-            <img
+            <FallbackImage
               src={getBadgeImageUrl(seventvBadge)}
+              fallbackUrls={getBadgeFallbackUrls(seventvBadge.id).slice(1)}
               alt={seventvBadge.description || seventvBadge.name}
               title={seventvBadge.description || seventvBadge.name}
               className="w-5 h-5 inline-block crisp-image"
-              onError={(e) => {
-                e.currentTarget.style.display = 'none';
-              }}
             />
           )}
           {thirdPartyBadges.filter(badge => badge && badge.imageUrl).map((badge, idx) => (
@@ -920,14 +933,12 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
             );
           })}
           {seventvBadge && (
-            <img
+            <FallbackImage
               src={getBadgeImageUrl(seventvBadge)}
+              fallbackUrls={getBadgeFallbackUrls(seventvBadge.id).slice(1)}
               alt={seventvBadge.description || seventvBadge.name}
               title={seventvBadge.description || seventvBadge.name}
               className="w-5 h-5 inline-block crisp-image"
-              onError={(e) => {
-                e.currentTarget.style.display = 'none';
-              }}
             />
           )}
           {thirdPartyBadges.filter(badge => badge && badge.imageUrl).map((badge, idx) => (
@@ -1054,14 +1065,12 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
             );
           })}
           {seventvBadge && (
-            <img
+            <FallbackImage
               src={getBadgeImageUrl(seventvBadge)}
+              fallbackUrls={getBadgeFallbackUrls(seventvBadge.id).slice(1)}
               alt={seventvBadge.description || seventvBadge.name}
               title={seventvBadge.description || seventvBadge.name}
               className="w-5 h-5 inline-block crisp-image"
-              onError={(e) => {
-                e.currentTarget.style.display = 'none';
-              }}
             />
           )}
           {thirdPartyBadges.filter(badge => badge && badge.imageUrl).map((badge, idx) => (
@@ -1490,14 +1499,12 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
                 );
               })}
               {seventvBadge && (
-                <img
+                <FallbackImage
                   src={getBadgeImageUrl(seventvBadge)}
+                  fallbackUrls={getBadgeFallbackUrls(seventvBadge.id).slice(1)}
                   alt={seventvBadge.description || seventvBadge.name}
                   title={seventvBadge.description || seventvBadge.name}
                   className="w-5 h-5 crisp-image"
-                  onError={(e) => {
-                    e.currentTarget.style.display = 'none';
-                  }}
                 />
               )}
               {/* Third-party badges (FFZ, Chatterino, Homies) */}

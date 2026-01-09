@@ -2,7 +2,8 @@ import { useState, useEffect, useRef } from 'react';
 import { useAppStore } from '../stores/AppStore';
 import { X, User, ExternalLink, Link, Unlink, Maximize2 } from 'lucide-react';
 import ProfileModal from './ProfileModal';
-import { computePaintStyle, getBadgeImageUrl, getBadgeImageUrls } from '../services/seventvService';
+import { computePaintStyle, getBadgeImageUrl, getBadgeImageUrls, getBadgeFallbackUrls } from '../services/seventvService';
+import { FallbackImage } from './FallbackImage';
 import { TwitchBadge } from '../services/badgeService';
 import { ThirdPartyBadge } from '../services/thirdPartyBadges';
 import { SevenTVBadge, SevenTVPaint } from '../types';
@@ -536,9 +537,9 @@ const ProfileOverlay = ({ isOpen, onClose, anchorPosition }: ProfileOverlayProps
                       if (selected7TVBadge) {
                         const urls = getBadgeImageUrls(selected7TVBadge as any);
                         return urls.url4x ? (
-                          <img
+                          <FallbackImage
                             src={urls.url4x}
-                            srcSet={`${urls.url1x} 1x, ${urls.url2x} 2x, ${urls.url4x} 4x`}
+                            fallbackUrls={getBadgeFallbackUrls(selected7TVBadge.id).slice(1)}
                             alt={selected7TVBadge.tooltip || selected7TVBadge.name}
                             title={`7TV: ${selected7TVBadge.tooltip || selected7TVBadge.name}`}
                             className="w-5 h-5 flex-shrink-0"
@@ -752,14 +753,11 @@ const ProfileOverlay = ({ isOpen, onClose, anchorPosition }: ProfileOverlayProps
                                 : `${badge.tooltip || badge.name} - Connect 7TV to change`
                               }
                             >
-                              <img
+                              <FallbackImage
                                 src={urls.url4x}
-                                srcSet={`${urls.url1x} 1x, ${urls.url2x} 2x, ${urls.url4x} 4x`}
+                                fallbackUrls={getBadgeFallbackUrls(badge.id).slice(1)}
                                 alt={badge.tooltip || badge.name}
                                 className="w-5 h-5"
-                                onError={(e) => {
-                                  e.currentTarget.style.display = 'none';
-                                }}
                               />
                               {isUpdating && (
                                 <div className="absolute inset-0 flex items-center justify-center bg-black/30 rounded">

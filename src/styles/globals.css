@@ -721,6 +721,83 @@ body {
   animation: hype-train-level-up 0.5s ease-out;
 }
 
+/* ============================================
+   Hype Train Level-Up Celebration Animations
+   ============================================ */
+
+/* Flash effect - quick white flash on level-up */
+@keyframes hype-flash {
+  0% { opacity: 0.6; }
+  100% { opacity: 0; }
+}
+
+.animate-hype-flash {
+  animation: hype-flash 0.5s ease-out forwards;
+}
+
+/* Scrolling marquee for HYPE text */
+@keyframes hype-marquee {
+  0% { transform: translateX(100%); }
+  100% { transform: translateX(-100%); }
+}
+
+.animate-hype-marquee {
+  animation: hype-marquee 7s linear forwards;
+}
+
+/* Confetti falling animation */
+@keyframes confetti-fall {
+  0% {
+    transform: translateY(-10px) rotate(0deg);
+    opacity: 1;
+  }
+  50% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(50px) rotate(720deg);
+    opacity: 0;
+  }
+}
+
+.animate-confetti {
+  animation: confetti-fall 1.5s ease-out forwards;
+}
+
+/* Animated wavy edge for hype train progress bar */
+@keyframes wave-flow {
+  0% {
+    mask-position: 0 0;
+    -webkit-mask-position: 0 0;
+  }
+  100% {
+    mask-position: 0 100px;
+    -webkit-mask-position: 0 100px;
+  }
+}
+
+.hype-train-wave-edge {
+  /* Create a wavy left edge using a repeating gradient mask - longer smoother waves */
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 100'%3E%3Cpath d='M10,0 Q20,25 10,50 Q0,75 10,100 L20,100 L20,0 Z' fill='black'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 100'%3E%3Cpath d='M10,0 Q20,25 10,50 Q0,75 10,100 L20,100 L20,0 Z' fill='black'/%3E%3C/svg%3E");
+  -webkit-mask-size: 20px 100px;
+  mask-size: 20px 100px;
+  -webkit-mask-repeat: repeat-y;
+  mask-repeat: repeat-y;
+  -webkit-mask-position: 0 0;
+  mask-position: 0 0;
+  animation: wave-flow 3s linear infinite;
+}
+
+/* Glow text shadow for celebration text */
+.drop-shadow-glow {
+  text-shadow: 
+    0 0 10px rgba(255, 255, 255, 0.8),
+    0 0 20px rgba(255, 255, 255, 0.6),
+    0 0 40px rgba(168, 85, 247, 0.5),
+    0 0 80px rgba(168, 85, 247, 0.3);
+}
+
 /* Heart break animation for unfavoriting */
 /* Mining Started - Fly Up Animation */
 @keyframes fly-up-fade {
@@ -1785,6 +1862,104 @@ body {
     transparent 100%
   );
   animation: metal-shine-sweep 3s ease-in-out infinite;
+  pointer-events: none;
+}
+
+/* ============================================
+   Glass Hype Train Badge with Rainbow Shine
+   ============================================ */
+
+/* Glass hype train badge - iridescent/rainbow effect (theme-aware) */
+.hype-train-badge-glass {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--color-highlight-purple) 45%, transparent) 0%,
+    color-mix(in srgb, var(--color-highlight-blue) 30%, transparent) 50%,
+    color-mix(in srgb, var(--color-highlight-purple) 45%, transparent) 100%
+  );
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid color-mix(in srgb, var(--color-highlight-purple) 60%, transparent);
+  border-radius: 4px;
+  color: var(--color-text-primary);
+  font-size: 10px;
+  font-weight: 700;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 2px 10px
+      color-mix(in srgb, var(--color-highlight-purple) 35%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.25), inset 0 -1px 0 rgba(0, 0, 0, 0.15);
+  overflow: hidden;
+}
+
+/* Rainbow shine sweep overlay */
+.hype-train-badge-glass::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 50%;
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.1) 20%,
+    rgba(255, 255, 255, 0.5) 50%,
+    rgba(255, 255, 255, 0.1) 80%,
+    transparent 100%
+  );
+  animation: metal-shine-sweep 2.5s ease-in-out infinite;
+  pointer-events: none;
+}
+
+/* Golden Kappa variant for special Hype Trains */
+.hype-train-badge-glass-golden {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, #FFD700 45%, transparent) 0%,
+    color-mix(in srgb, #FFA500 30%, transparent) 50%,
+    color-mix(in srgb, #FFD700 45%, transparent) 100%
+  );
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid color-mix(in srgb, #FFD700 60%, transparent);
+  border-radius: 4px;
+  color: var(--color-text-primary);
+  font-size: 10px;
+  font-weight: 700;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 2px 10px
+      color-mix(in srgb, #FFD700 35%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.25), inset 0 -1px 0 rgba(0, 0, 0, 0.15);
+  overflow: hidden;
+}
+
+/* Golden shine sweep overlay */
+.hype-train-badge-glass-golden::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 50%;
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.15) 20%,
+    rgba(255, 255, 255, 0.6) 50%,
+    rgba(255, 255, 255, 0.15) 80%,
+    transparent 100%
+  );
+  animation: metal-shine-sweep 2s ease-in-out infinite;
   pointer-events: none;
 }
 
