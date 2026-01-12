@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "StreamNook"
-version = "6.6.0"
+version = "6.6.1"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -5175,8 +5175,8 @@ dependencies = [
 
 [[package]]
 name = "tauri-plugin-opener"
-version = "2.5.2"
-source = "git+https://github.com/tauri-apps/plugins-workspace?branch=v2#521cd8b372c862d96b1637775710e4d7cf2443e2"
+version = "2.5.3"
+source = "git+https://github.com/tauri-apps/plugins-workspace?branch=v2#f3d75f7abb536ba70d1746801096af6d9be7f8b1"
 dependencies = [
  "dunce",
  "glob",
@@ -5196,8 +5196,8 @@ dependencies = [
 
 [[package]]
 name = "tauri-plugin-shell"
-version = "2.3.3"
-source = "git+https://github.com/tauri-apps/plugins-workspace?branch=v2#521cd8b372c862d96b1637775710e4d7cf2443e2"
+version = "2.3.4"
+source = "git+https://github.com/tauri-apps/plugins-workspace?branch=v2#f3d75f7abb536ba70d1746801096af6d9be7f8b1"
 dependencies = [
  "encoding_rs",
  "log",
