@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "last_sync": 1768544467,
+  "last_sync": 1768630736,
   "entries": {
     "global_badges": {
       "id": "global_badges",
@@ -4300,10 +4300,10 @@
             }
           ]
         },
-        "cached_at": 1768544467
+        "cached_at": 1768630719
       },
       "metadata": {
-        "timestamp": 1768544467,
+        "timestamp": 1768630719,
         "expiry_days": 7,
         "source": "twitch",
         "version": 1
@@ -4318,7 +4318,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025903,
+        "timestamp": 1768630723,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -4334,7 +4334,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025905,
+        "timestamp": 1768630725,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -4350,7 +4350,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025907,
+        "timestamp": 1768630726,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -4366,7 +4366,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025908,
+        "timestamp": 1768630727,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -4382,7 +4382,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025909,
+        "timestamp": 1768630728,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -4398,7 +4398,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025910,
+        "timestamp": 1768630729,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -4414,7 +4414,7 @@
         "more_info": "Alone &#8211; a limited-time global chat badge awarded during the launch of the Little Nightmares III . To earn it, you needed to subscribe or gift a subscription (Prime subs excluded) to streamer in the Little Nightmares III category while the campaign was active. Event Duration: from 2025-10-09T13:00:00Z to 2025-10-23T18:59:00Z The badge is distributed via Twitch Drops and granted automatically after the requirement is met. This badge is available alongside another launch campaign badge, Low , which is free and could be earned simply by watching 30 minutes of a participating stream."
       },
       "metadata": {
-        "timestamp": 1768025911,
+        "timestamp": 1768630730,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -4430,7 +4430,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025912,
+        "timestamp": 1768630731,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -4446,7 +4446,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025913,
+        "timestamp": 1768630732,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -4462,7 +4462,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025914,
+        "timestamp": 1768630733,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -4478,7 +4478,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025915,
+        "timestamp": 1768630733,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -4494,7 +4494,7 @@
         "more_info": "Arc Raiders Launch 2025 Badge &#8211; a limited-time global chat badge to celebrate the release of Arc Raiders. To earn this badge, you need to subscribe or gift a subscription (Prime subs excluded) to any streamer in in the Arc Raiders category during the game’s launch period. Event duration: from 2025-10-30T16:00:00Z to 2025-11-14T07:59:00Z The badge is distributed as a Drops reward and will be automatically added to your Twitch account once the subscription requirement is met."
       },
       "metadata": {
-        "timestamp": 1768025916,
+        "timestamp": 1768630734,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -4510,7 +4510,7 @@
         "more_info": "This exclusive global Twitch badge was awarded during the Arcane Season 2 Premiere event. Viewers who watched at least 15 minutes of Episode 1 on Twitch—either on the official Riot Games channel or through a streamer co-streaming the premiere—were eligible to receive the badge. Distributed as a Twitch Drop, the badge was granted instantly upon meeting the viewing requirements. This limited-time reward celebrated the global anticipation for Arcane Season 2 and highlighted Twitch&#8217;s role as a hub for epic premieres and community engagement. Source: https://www.arcane.com/en-us/news/announcements/arcane-season-2-co-streaming/"
       },
       "metadata": {
-        "timestamp": 1768025917,
+        "timestamp": 1768630735,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -4526,7 +4526,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025918,
+        "timestamp": 1768630736,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -9310,7 +9310,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025901,
+        "timestamp": 1768630721,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -9326,7 +9326,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025902,
+        "timestamp": 1768630722,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -9342,7 +9342,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025904,
+        "timestamp": 1768630724,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
