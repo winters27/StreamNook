@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "last_sync": 1768630736,
+  "last_sync": 1768717427,
   "entries": {
     "global_badges": {
       "id": "global_badges",
@@ -4300,10 +4300,10 @@
             }
           ]
         },
-        "cached_at": 1768630719
+        "cached_at": 1768717141
       },
       "metadata": {
-        "timestamp": 1768630719,
+        "timestamp": 1768717141,
         "expiry_days": 7,
         "source": "twitch",
         "version": 1
@@ -4542,7 +4542,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025919,
+        "timestamp": 1768717143,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -4558,7 +4558,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025920,
+        "timestamp": 1768717144,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -4574,7 +4574,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025922,
+        "timestamp": 1768717145,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -4590,7 +4590,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025923,
+        "timestamp": 1768717146,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -4606,7 +4606,7 @@
         "more_info": "The Battlefield 6 global chat badge is part of the official Battlefield 6 Launch Twitch Drops campaign, celebrating the release of Battlefield 6. To earn this badge, viewers need to purchase a new paid or gift subscription (Prime subs excluded) to any creator streaming in the Battlefield 6 category during the campaign period. Event time: from 2025-10-10T15:00:00Z to 2025-10-18T06:59:00Z The campaign also includes several additional in-game rewards. The Battlefield 6 Badge will be automatically added to your Twitch account once the subscription requirement is met, as it is delivered via Drops."
       },
       "metadata": {
-        "timestamp": 1768025924,
+        "timestamp": 1768717147,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -4622,7 +4622,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025925,
+        "timestamp": 1768717147,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -4638,7 +4638,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025926,
+        "timestamp": 1768717148,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -4654,7 +4654,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025927,
+        "timestamp": 1768717149,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -4670,7 +4670,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025928,
+        "timestamp": 1768717150,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -4686,7 +4686,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025929,
+        "timestamp": 1768717151,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -4702,7 +4702,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025930,
+        "timestamp": 1768717152,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -4718,7 +4718,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025931,
+        "timestamp": 1768717153,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -4734,7 +4734,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025932,
+        "timestamp": 1768717154,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -4750,7 +4750,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025933,
+        "timestamp": 1768717155,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -4766,7 +4766,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025934,
+        "timestamp": 1768717156,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -4782,7 +4782,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025935,
+        "timestamp": 1768717156,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -4798,7 +4798,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025936,
+        "timestamp": 1768717157,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -4814,7 +4814,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025937,
+        "timestamp": 1768717158,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -4830,7 +4830,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025938,
+        "timestamp": 1768717159,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -4846,7 +4846,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025939,
+        "timestamp": 1768717160,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -4862,7 +4862,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025941,
+        "timestamp": 1768717161,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -4878,7 +4878,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025942,
+        "timestamp": 1768717162,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -4894,7 +4894,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025943,
+        "timestamp": 1768717163,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -4910,7 +4910,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025944,
+        "timestamp": 1768717164,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -4926,7 +4926,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025945,
+        "timestamp": 1768717165,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -4942,7 +4942,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025946,
+        "timestamp": 1768717166,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -4958,7 +4958,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025947,
+        "timestamp": 1768717167,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -4974,7 +4974,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025948,
+        "timestamp": 1768717168,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -4990,7 +4990,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025949,
+        "timestamp": 1768717169,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5006,7 +5006,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025950,
+        "timestamp": 1768717170,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5022,7 +5022,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025951,
+        "timestamp": 1768717171,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5038,7 +5038,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025952,
+        "timestamp": 1768717172,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5054,7 +5054,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025953,
+        "timestamp": 1768717173,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5070,7 +5070,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025954,
+        "timestamp": 1768717173,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5086,7 +5086,7 @@
         "more_info": "The Direct Relief – Charity 2018 badge was awarded to Twitch users who used Bits to Cheer with “#Charity” in their message during participating charity streams in 2018. The campaign supported Direct Relief, a humanitarian aid organization."
       },
       "metadata": {
-        "timestamp": 1768025955,
+        "timestamp": 1768717174,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5102,7 +5102,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025956,
+        "timestamp": 1768717175,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5118,7 +5118,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025957,
+        "timestamp": 1768717176,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5134,7 +5134,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025958,
+        "timestamp": 1768717177,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5150,7 +5150,7 @@
         "more_info": "Black Ops 7 Global Launch Badge &#8211; a limited-time global chat badge celebrating the worldwide release of Call of Duty: Black Ops 7. To earn this badge, viewers need to purchase a new paid or gift subscription (Prime subs excluded) to any creator streaming in the Call of Duty: Black Ops 7 category during the campaign period. Event time: 2025-11-14T18:00:00Z to 2025-12-01T19:59:00Z The badge is distributed as a Drops reward and will be automatically added to your Twitch account once the subscription condition is met."
       },
       "metadata": {
-        "timestamp": 1768025959,
+        "timestamp": 1768717178,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5166,7 +5166,7 @@
         "more_info": "The Borderlands 4 – Ripper Badge is a Twitch global chat badge awarded during a special Twitch Drop campaign. To earn it, you need to purchase a new paid or gift subscription (not a Prime sub) on a participating live channel during the event. Event time: First Release: from 2025-06-21T15:00:00Z to 2025-06-22T00:00:00Z Second Release: from 2025-09-11T12:00:00Z to 2025-09-15T06:59:00Z This marks the first time a limited-time badge returned after its initial run. Once you complete the requirement, the badge will be automatically granted to your Twitch account."
       },
       "metadata": {
-        "timestamp": 1768025960,
+        "timestamp": 1768717179,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5182,7 +5182,7 @@
         "more_info": "The Vault Symbol Badge is a limited-time Twitch global chat badge celebrating the reveal of Borderlands 4. To earn it, you need to watch at least 30 minutes of the Borderlands Fan Fest stream on June 21 . You can tune in to the official Borderlands Twitch channel or one of their partnered co-streamers during the event. Time window: from 2025-06-21T15:00:00Z to 2025-06-22T00:00:00Z Once earned, the badge will be automatically added to your Twitch account. Source: https://borderlands.2k.com/borderlands-4/news/story-trailer-borderlands-fan-fest/"
       },
       "metadata": {
-        "timestamp": 1768025961,
+        "timestamp": 1768717180,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5198,7 +5198,7 @@
         "more_info": "The Bot Badge is used to identify third-party chatbots in Twitch chat. Chatbots are automated tools that help streamers manage chat, run commands, and enhance viewer interaction. Some popular examples include Nightbot , StreamElements , and Moobot . This badge helps viewers quickly recognize when a message comes from a bot rather than a real user."
       },
       "metadata": {
-        "timestamp": 1768025962,
+        "timestamp": 1768717181,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5214,7 +5214,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025963,
+        "timestamp": 1768717182,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5230,7 +5230,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025965,
+        "timestamp": 1768717183,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5246,7 +5246,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025966,
+        "timestamp": 1768717184,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5262,7 +5262,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025967,
+        "timestamp": 1768717184,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5278,7 +5278,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025968,
+        "timestamp": 1768717185,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5294,7 +5294,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025969,
+        "timestamp": 1768717186,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5310,7 +5310,7 @@
         "more_info": "To earn the exclusive Clip the Halls badge on Twitch, share your favorite clips directly to TikTok or YouTube during the campaign period (December 2 – December 13). Simply use the “Share” button in Twitch Clips Manager to participate. The badge will be delivered in the following few business days after unlocking it. Source: https://blog.twitch.tv/en/2024/12/02/twitch-holiday-hoopla/"
       },
       "metadata": {
-        "timestamp": 1768025970,
+        "timestamp": 1768717187,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5326,7 +5326,7 @@
         "more_info": "This badge is awarded to the user who ranks #1 on a Twitch channel’s Clip Leaderboard &#8211; based on the most-viewed clips within a custom time frame selected by the streamer. While technically categorized as a global badge , it functions similarly to Bits or Gifted Sub badges: it only appears in that specific channel where the user earned their top spot. The second and third place leaders are also awarded their badge."
       },
       "metadata": {
-        "timestamp": 1768025971,
+        "timestamp": 1768717188,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5342,7 +5342,7 @@
         "more_info": "This badge is awarded to the user who ranks #2 on a Twitch channel’s Clip Leaderboard &#8211; based on the most-viewed clips within a custom time frame selected by the streamer. While technically categorized as a global badge , it functions similarly to Bits or Gifted Sub badges: it only appears in that specific channel where the user earned their top spot. The first and third place leaders are also awarded their badge."
       },
       "metadata": {
-        "timestamp": 1768025972,
+        "timestamp": 1768717189,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5358,7 +5358,7 @@
         "more_info": "This badge is awarded to the user who ranks #3 on a Twitch channel’s Clip Leaderboard &#8211; based on the most-viewed clips within a custom time frame selected by the streamer. While technically categorized as a global badge , it functions similarly to Bits or Gifted Sub badges: it only appears in that specific channel where the user earned their top spot. The first and second place leaders are also awarded their badge."
       },
       "metadata": {
-        "timestamp": 1768025973,
+        "timestamp": 1768717190,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5374,7 +5374,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025974,
+        "timestamp": 1768717191,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5390,7 +5390,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025975,
+        "timestamp": 1768717192,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5406,7 +5406,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025976,
+        "timestamp": 1768717193,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5422,7 +5422,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025978,
+        "timestamp": 1768717193,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5438,7 +5438,7 @@
         "more_info": "From June 7 at 9:30 AM PT to June 9 at 9:30 AM PT, viewers could earn the Ghost Chat Badge by watching 15 minutes of The Final Shape raid on Twitch Rivals. Source: https://www.bungie.net/7/en/News/article/twid-06-06-24"
       },
       "metadata": {
-        "timestamp": 1768025979,
+        "timestamp": 1768717194,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5454,7 +5454,7 @@
         "more_info": "Between June 7 at 9:30 AM PT and June 9 at 9:30 AM PT, you could earn the Scanning Ghost Chat Badge by streaming Destiny 2 for 30 minutes. Source: https://www.bungie.net/7/en/News/article/twid-06-06-24"
       },
       "metadata": {
-        "timestamp": 1768025980,
+        "timestamp": 1768717195,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5470,7 +5470,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025981,
+        "timestamp": 1768717196,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5486,7 +5486,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025982,
+        "timestamp": 1768717197,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5502,7 +5502,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025983,
+        "timestamp": 1768717198,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5518,7 +5518,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025984,
+        "timestamp": 1768717199,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5534,7 +5534,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025985,
+        "timestamp": 1768717200,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5550,7 +5550,7 @@
         "more_info": "The DragonScimmy badge is a limited-time global chat badge linked to Old School RuneScape’s major 2025 update &#8211; the launch of the Sailing skill. To earn this badge, you need to subscribe or gift a subscription (Prime subs doesn&#8217;t count) to any streamer in the Old School RuneScape category. Event duration: from 2025-12-02T08:00:00Z to 2026-01-01T07:59:00Z The badge is distributed as a Drops reward and will be automatically added to your Twitch account once the subscription requirement is met."
       },
       "metadata": {
-        "timestamp": 1768025987,
+        "timestamp": 1768717202,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5566,7 +5566,7 @@
         "more_info": "This badge was granted to users who watched DreamCon live or completed the post-event survey from July 26th to July 28th, 2024"
       },
       "metadata": {
-        "timestamp": 1768025988,
+        "timestamp": 1768717203,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5582,7 +5582,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025989,
+        "timestamp": 1768717204,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5598,7 +5598,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025990,
+        "timestamp": 1768717205,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5614,7 +5614,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025991,
+        "timestamp": 1768717206,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5630,7 +5630,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025992,
+        "timestamp": 1768717207,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5646,7 +5646,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025993,
+        "timestamp": 1768717208,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5662,7 +5662,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025994,
+        "timestamp": 1768717208,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5678,7 +5678,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025995,
+        "timestamp": 1768717209,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5694,7 +5694,7 @@
         "more_info": "To earn this exclusive badge, you must stream in the Elden Ring: Nightreign category on Twitch for at least 15 minutes using the Stream Together feature. The badge is available only during the event window: from 2025-05-29T07:00:00Z to 2025-05-30T19:00:00Z. On its blog, Twitch also pointed out: “Any viewers who tune in to these co-op streams during this window will also receive the SuperFan badge.” Official sources: https://x.com/twitch/status/1927875970566082850 https://blog.twitch.tv/en/2025/05/29/elden-ring-nightreign-awaits/"
       },
       "metadata": {
-        "timestamp": 1768025997,
+        "timestamp": 1768717210,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5710,7 +5710,7 @@
         "more_info": "To earn this limited-time badge, you need to download or share a clip from the Elden Ring: Nightreign category on Twitch between May 29 and June 3 . We recommend doing both: download and share a clip from the category during the event period to be sure to get that badge. Official sources: https://x.com/twitch/status/1927875970566082850 https://blog.twitch.tv/en/2025/05/29/elden-ring-nightreign-awaits/ &nbsp;"
       },
       "metadata": {
-        "timestamp": 1768025998,
+        "timestamp": 1768717211,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5726,7 +5726,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768025999,
+        "timestamp": 1768717212,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5742,7 +5742,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026000,
+        "timestamp": 1768717213,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5758,7 +5758,7 @@
         "more_info": "Evo 2025 is a limited-time global chat badge celebrating the world’s largest fighting game tournament. The badge could be earned during Evo 2025 by subscribing or gifting a subscription (Prime subscriptions not eligible) to any Twitch channel streaming one of the four official Evo titles: Street Fighter 6 TEKKEN 8 FATAL FURY: City of the Wolves Guilty Gear: Strive Event period: from 2025-08-01T17:00:00Z to 2025-08-04T05:00:00Z. ! Warning : For Street Fighter 6 streams, the first subscription unlocked an exclusive Guile costume in-game, and a second, separate subscription was required to earn the Evo 2025 badge. Subscribing to other eligible categories granted the badge immediately. A variety of subscription types counted, including new monthly subs (any tier), multi-month subs, and gift subs, while Prime and renewal subs were not eligible. Source: https://evo.gg/news/unlock-the-evo-2025-chat-badge-with-twitch-subscriptions"
       },
       "metadata": {
-        "timestamp": 1768026001,
+        "timestamp": 1768717214,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5774,7 +5774,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026002,
+        "timestamp": 1768717215,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5790,7 +5790,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026004,
+        "timestamp": 1768717217,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5806,7 +5806,7 @@
         "more_info": "The Founder Badge is a special subscriber badge (specific channel badge, not global) that marks you as one of the very first supporters of a Twitch channel. It is available exclusively to: The first 10 Prime or paid subscribers on non-Partner monetized channels (including Affiliates). The first 25 Prime or paid subscribers on Partner channels. Unlike limited-time event badges, this is a permanent channel-level badge tied to your subscription status. It replaces your regular subscriber badge in chat (rather than a global badge) and shows that you were among the very first to back the streamer. Founder badge first, then global badge Key details: Founders Badge only displays while you have an active subscription to the channel. If your sub expires, the badge disappears — but it will reappear automatically if you resubscribe. All subscription tiers are eligible (Tier 1, Tier 2, Tier 3, or Prime). Gift subscriptions do not qualify you for a Founder Badge. If a streamer moves from Affiliate → Partner, additional Founder slots (up to 25) are unlocked automatically. Eligible subscribers beyond the first 10 are then notified."
       },
       "metadata": {
-        "timestamp": 1768026005,
+        "timestamp": 1768717218,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5822,7 +5822,7 @@
         "more_info": "Fright Fest 2025 (or Crypt Clipper Badge) &#8211; a limited-time global chat badge introduced for Fright Fest 2025, Twitch’s Halloween celebration. 🎃 To earn it, share, export, or download any clip between October 27 and November 2 using the official Share button located below the clip (no need to manually copy links or share them in twitch chats). While Twitch doesn’t officially specify the category, it’s best to focus on clips created within the Fright Fest category &#8211; especially from Stream Together broadcasts. upd: people say it works in any category To maximize your chances of success, we recommend creating and sharing several clips from different channels and performing a multiple download/export/share action for each. Event Duration: from 2025-10-27T17:30:00Z to 2025-11-02T23:59:00Z This badge is not delivered via Drops, and it’s not granted instantly. Processing may take several days."
       },
       "metadata": {
-        "timestamp": 1768026006,
+        "timestamp": 1768717219,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5838,7 +5838,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026009,
+        "timestamp": 1768717220,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5854,7 +5854,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026010,
+        "timestamp": 1768717221,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5870,7 +5870,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026011,
+        "timestamp": 1768717222,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5886,7 +5886,7 @@
         "more_info": "The GamerDuo global chat badge in collaboration with Duolingo. To earn this badge, go to any live stream and purchase one new recurring or gift subscription during the event window. Prime subscriptions do not count. Event Duration: from 2025-10-02T19:00:00Z to 2025-10-16T19:00:00Z The badge is a standard Twitch Drop reward and is usually granted automatically to your account shortly after you meet the requirement."
       },
       "metadata": {
-        "timestamp": 1768026012,
+        "timestamp": 1768717223,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5902,7 +5902,7 @@
         "more_info": "Gears of War Superfan Badge &#8211; a limited-time global chat badge celebrating the launch of Gears of War: Reloaded. Twitch first announced this badge through an official on-platform notification (and for some users, via email). However, despite the early announcement, the badge itself was only added to the Twitch database on August 30, 2025, several days after the event had already ended. Users who met the requirements received the badge immediately once it became available in the database. Requirements to earn: For streamers: Go live in the Gears of War: Reloaded category using Stream Together between 2025-08-25T07:00:00Z and 2025-08-26T19:00:00Z. For viewers: Watch any participating Stream Together broadcast during the same period."
       },
       "metadata": {
-        "timestamp": 1768026013,
+        "timestamp": 1768717224,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5918,7 +5918,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026014,
+        "timestamp": 1768717225,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5934,7 +5934,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026015,
+        "timestamp": 1768717226,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5950,7 +5950,7 @@
         "more_info": "The Gingko Leaf global chat badge can be unlocked by watching a Ghost of Yotei stream during the game’s launch period. To earn it, you needed to watch 30 minutes of any live stream in the Ghost of Yotei category with Drops enabled during the campaign. This time only certain channels are participating! Be careful and make sure the drops are enabled Event Duration: from 2025-10-01T11:00:00Z to 2025-10-13T06:59:00Z The badge is distributed via Twitch Drops and granted automatically after meeting the requirement. Note that during this campaign another exclusive launch badge is also available: The Onryō’s Mask , which requires a subscription."
       },
       "metadata": {
-        "timestamp": 1768026017,
+        "timestamp": 1768717227,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5966,7 +5966,7 @@
         "more_info": "The GLHF (Good Luck, Have Fun) badge is a free Twitch chat badge promoting positivity and inclusivity in gaming. It is awarded to users who complete a short pledge form on the AnyKey website and log in with their Twitch account. The badge is typically granted instantly, allowing users to display it in chat right away."
       },
       "metadata": {
-        "timestamp": 1768026018,
+        "timestamp": 1768717228,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5982,7 +5982,7 @@
         "more_info": "The GlitchCon 2020 badge was awarded to viewers who tuned into the official Twitch channel during GlitchCon, a digital Twitch convention held in November 2020."
       },
       "metadata": {
-        "timestamp": 1768026019,
+        "timestamp": 1768717230,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -5998,7 +5998,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026020,
+        "timestamp": 1768717231,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6014,7 +6014,7 @@
         "more_info": "This badge was given to users who donated $5 USD or more using the &#8220;Charity tool&#8221; between November 28th, 2023, and December 3rd, 2023. P.s. In 2024, during the &#8220;Together For Good &#8217;24&#8221; event, a new pixel heart badge in a similar color has been introduced. To unlock this badge, users needed to donate $50 or more through the Charity tool."
       },
       "metadata": {
-        "timestamp": 1768026021,
+        "timestamp": 1768717232,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6030,7 +6030,7 @@
         "more_info": "During the &#8220;Together For Good&#8221; campaign (December 3–15), viewers could earn up to three unique badges by donating through the Twitch Charity tool . These limited-time badges recognize contributions at different donation tiers: Purple Pixel Heart Badge : Earned with a cumulative donation of $5. Ruby Pixel Heart Badge : Earned with a cumulative donation of $25. Gold Pixel Heart Badge : Earned with a cumulative donation of $50. What is a cumulative donation? It means all your donations made through the Twitch Charity tool across any participating channels are combined. For example, donating $2.50 on 20 different channels adds up to $50, qualifying you for the Tier 3 badge. Will I receive all the badges? Yes! If your total donations reach $50 or more, you will unlock all three badges, as each level includes the rewards from the lower tiers. Badges were awarded within 72 hours of meeting the donation threshold (weekends excluded). Donations made via tools outside the Twitch Charity system were not eligible. Source: https://blog.twitch.tv/en/2024/10/31/together-for-good-unite-donate-make-a-difference/ P.s. In 2023, a similar badge was released. This badge was awarded to users who donated $5 or more through the Charity tool."
       },
       "metadata": {
-        "timestamp": 1768026022,
+        "timestamp": 1768717233,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6046,7 +6046,7 @@
         "more_info": "Twitch has introduced a special April Fools 2025 badge to celebrate the platform’s new joke categories. Unlike regular badges, this one is only available for a limited time and requires a simple action. How to unlock the badge: Find a clip from one of the new April fools categories Share the clip on social media Important details: The badge is only available from April 1–4, 2025 . You must share a clip from one of the official April Fools categories &#8211; regular clips won’t count. It can probably be either your own clip or a clip made by someone else. The badge may take up few business days to appear after sharing/downloading. Twitch will alert you via Notifications Inbox when the badge is available."
       },
       "metadata": {
-        "timestamp": 1768026023,
+        "timestamp": 1768717234,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6062,7 +6062,7 @@
         "more_info": "The GP Explorer 3 global chat badge celebrates the third and final edition of Squeezie’s Formula 4 influencer race, taking place October 3–5, 2025 at the legendary 24 Hours of Le Mans circuit in France. How to earn Watch at least 15 minutes of a participating GP Explorer 3 live stream from 2025-10-04T06:00:00Z to 2025-10-05T19:00:00Z Where to watch There will be three primary broadcasts plus potential team co-streams: Squeezie &#8211; French main stream HasanAbi &#8211; English stream with Hasan &amp; Pokimane Ibai &#8211; Spanish stream Team channels (e.g. Lego Racing Team, Netflix, etc.) and other behind-the-scenes co-streams may also go live throughout the weekend. According to the official description, any participating stream counts toward the badge, but to be safe we recommend watching one of the three main broadcasts above to ensure eligibility."
       },
       "metadata": {
-        "timestamp": 1768026024,
+        "timestamp": 1768717235,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6078,7 +6078,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026025,
+        "timestamp": 1768717236,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6094,7 +6094,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026026,
+        "timestamp": 1768717237,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6110,7 +6110,7 @@
         "more_info": "Hornet &#8211; a limited-time global chat badge celebrating the launch of Hollow Knight: Silksong. To earn it, you need to subscribe (new recurring or gift sub &#8211; Prime does not count) to any streamer in the Hollow Knight: Silksong category during launch week. Event Duration: from 2025-09-04T14:00:00Z to 2025-09-15T06:59:00Z P.S. I&#8217;m live &#8211; if you’re hunting for this badge, you can also subscribe to my channel to qualify!"
       },
       "metadata": {
-        "timestamp": 1768026027,
+        "timestamp": 1768717238,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6126,7 +6126,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026029,
+        "timestamp": 1768717240,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6142,7 +6142,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026030,
+        "timestamp": 1768717241,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6158,7 +6158,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026031,
+        "timestamp": 1768717242,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6174,7 +6174,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026032,
+        "timestamp": 1768717243,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6190,7 +6190,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026033,
+        "timestamp": 1768717244,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6206,7 +6206,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026036,
+        "timestamp": 1768717246,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6222,7 +6222,7 @@
         "more_info": "This badge was created to promote @ibai &#8216;s Boxing Event and could be earned by watching the event&#8217;s stream."
       },
       "metadata": {
-        "timestamp": 1768026037,
+        "timestamp": 1768717247,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6238,7 +6238,7 @@
         "more_info": "The La Velada V badge is a limited-time global chat badge earned by watching at least 5 minutes of Ibai’s Twitch channel during La Velada del Año V , a live boxing and music event featuring Spanish-speaking streamers. Event start: 2025-07-26T16:45:00Z Event end: 2025-07-27T01:30:00Z A comparable badge was also available during the 2024 edition of the event: La Velada del Año IV . Source: infolavelada.com"
       },
       "metadata": {
-        "timestamp": 1768026038,
+        "timestamp": 1768717248,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6254,7 +6254,7 @@
         "more_info": "MSI 2025 Support a Streamer Badge is a limited-time Twitch global chat badge tied to the League of Legends Mid-Season Invitational 2025 (MSI 2025). To earn it, you need to gift a subscription to any streamer in the League of Legends category during the event period. Time window: June 24 – July 12, 2025"
       },
       "metadata": {
-        "timestamp": 1768026040,
+        "timestamp": 1768717250,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6270,7 +6270,7 @@
         "more_info": "MSI 2025 LoLEsports Subscriber Badge is a limited-time Twitch global chat badge available during the League of Legends Mid-Season Invitational 2025 (MSI 2025). To earn it, you need to subscribe to a lolesports channel (like riotgames ) during the event. Time window: June 27 – July 12, 2025"
       },
       "metadata": {
-        "timestamp": 1768026041,
+        "timestamp": 1768717251,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6286,7 +6286,7 @@
         "more_info": "The LEGENDUS badge is a limited-time global Twitch chat badge celebrating the Red Bull LEGENDUS STREET FIGHTER 6 Summit , hosted by FPS Shaka. To earn the badge, simply watch at least 30 minutes of the event on either of the following channels: twitch.tv/fps_shaka twitch.tv/legendus_shaka Event window : June 28–29 This is the first time a global badge has been distributed for a Japanese Twitch event! Source: Twitch Japan on X"
       },
       "metadata": {
-        "timestamp": 1768026042,
+        "timestamp": 1768717252,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6302,7 +6302,7 @@
         "more_info": "LoL Worlds 2025 badge is a limited-time global chat badge awarded to viewers who subscribe (or gift a subscription) to a participating LoL Esports broadcast or co-stream during Worlds 2025. Event Duration: from 2025-10-10T16:00:00Z to 2025-11-10T07:59:00Z Participating official Twitch channels include: Riot Games (this channel works even when it is offline) LTA Sul LTA Español LoLEsportsTW League of Legends JP A full list of eligible channels can be found in the official LoL Esports X post Prime subscriptions do not count toward earning the badge. The badge will be automatically granted to your Twitch account once the subscription requirement is met."
       },
       "metadata": {
-        "timestamp": 1768026043,
+        "timestamp": 1768717253,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6318,7 +6318,7 @@
         "more_info": "The Low global chat badge can be unlocked by watching any stream in the Little Nightmares III category during the game’s launch period. To earn it, you needed to watch 30 minutes of any live stream in the Little Nightmares III category during the campaign. Event Duration: from 2025-10-09T13:00:00Z to 2025-10-23T18:59:00Z The badge is distributed via Twitch Drops and granted automatically after meeting the requirement. Note that during this campaign another exclusive launch badge is also available: Alone , which requires a subscription."
       },
       "metadata": {
-        "timestamp": 1768026045,
+        "timestamp": 1768717254,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6334,7 +6334,7 @@
         "more_info": "The &#8220; Marathon Reveal Runner &#8221; Twitch badge is a special limited-edition reward for viewers who subscribe to any channel streaming new sci-fi PvP extraction shooter Marathon during its official reveal event. To earn this exclusive badge, simply subscribe to a stream in the Marathon category on 2025-04-12T17:00:00Z. Source: https://www.marathonthegame.com/"
       },
       "metadata": {
-        "timestamp": 1768026046,
+        "timestamp": 1768717255,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6350,7 +6350,7 @@
         "more_info": "The Mel global chat badge celebrates the early-access launch of Hades II on Twitch. To earn this badge, go to any live stream in the Hades II category and purchase one new recurring or gift subscription during the event window. Prime subscriptions do not count. Event Duration: from 2025-09-25T15:00:00Z to 2025-10-05T18:59:00Z The badge is a standard Twitch Drop reward and is usually granted automatically to your account shortly after you meet the requirement."
       },
       "metadata": {
-        "timestamp": 1768026047,
+        "timestamp": 1768717256,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6366,7 +6366,7 @@
         "more_info": "To earn this badge, you had to watch a Minecraft stream for at least 5 minutes and use the special emote :ssssssplode: between May 28 and May 31. To unlock the emote, you needed to watch a Minecraft stream anytime between May 25 and May 31. Source: https://blog.twitch.tv/en/2024/05/15/celebrating-15-years-of-minecraft-on-twitch/"
       },
       "metadata": {
-        "timestamp": 1768026048,
+        "timestamp": 1768717257,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6382,7 +6382,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026049,
+        "timestamp": 1768717258,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6398,7 +6398,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026050,
+        "timestamp": 1768717258,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6414,7 +6414,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026051,
+        "timestamp": 1768717259,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6430,7 +6430,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026052,
+        "timestamp": 1768717260,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6446,7 +6446,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026053,
+        "timestamp": 1768717261,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6462,7 +6462,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026054,
+        "timestamp": 1768717262,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6478,7 +6478,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026055,
+        "timestamp": 1768717263,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6494,7 +6494,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026056,
+        "timestamp": 1768717264,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6510,7 +6510,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026057,
+        "timestamp": 1768717265,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6526,7 +6526,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026058,
+        "timestamp": 1768717266,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6542,7 +6542,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026059,
+        "timestamp": 1768717267,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6558,7 +6558,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026060,
+        "timestamp": 1768717268,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6574,7 +6574,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026061,
+        "timestamp": 1768717268,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6590,7 +6590,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026062,
+        "timestamp": 1768717269,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6606,7 +6606,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026064,
+        "timestamp": 1768717270,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6622,7 +6622,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026065,
+        "timestamp": 1768717271,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6638,7 +6638,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026066,
+        "timestamp": 1768717272,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6654,7 +6654,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026067,
+        "timestamp": 1768717273,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6670,7 +6670,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026068,
+        "timestamp": 1768717274,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6686,7 +6686,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026069,
+        "timestamp": 1768717274,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6702,7 +6702,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026070,
+        "timestamp": 1768717275,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6718,7 +6718,7 @@
         "more_info": "The &#8220;Watching without audio&#8221; badge is a default Twitch badge available to every user. It was originally created to indicate viewers who may be watching streams without sound or with limited audio. While intended for accessibility, many users enable it simply by preference, without any specific meaning."
       },
       "metadata": {
-        "timestamp": 1768026071,
+        "timestamp": 1768717276,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6734,7 +6734,7 @@
         "more_info": "The &#8220;Listening only&#8221; badge is a default Twitch badge assigned to all users. It was designed to indicate viewers who may be watching streams without video or with limited visuals. Despite its original purpose, many users select this badge by choice, so it’s often used without any specific intention."
       },
       "metadata": {
-        "timestamp": 1768026072,
+        "timestamp": 1768717277,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6750,7 +6750,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026073,
+        "timestamp": 1768717278,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6766,7 +6766,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026074,
+        "timestamp": 1768717279,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6782,7 +6782,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026075,
+        "timestamp": 1768717280,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6798,7 +6798,7 @@
         "more_info": "The OWL All-Access Pass 2019 badge was granted to Twitch users who purchased the Overwatch League All-Access Pass in 2019. The pass included exclusive Twitch chat badges, emotes, and in-game Overwatch items, and gave fans special viewing features during the OWL season. Source: https://blog.twitch.tv/en/2019/01/31/the-best-way-to-watch-the-2019-overwatch-league-season-a0f5f5de8ab3/"
       },
       "metadata": {
-        "timestamp": 1768026076,
+        "timestamp": 1768717281,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6814,7 +6814,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026077,
+        "timestamp": 1768717282,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6830,7 +6830,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026078,
+        "timestamp": 1768717283,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6846,7 +6846,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026079,
+        "timestamp": 1768717283,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6862,7 +6862,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026080,
+        "timestamp": 1768717284,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6878,7 +6878,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026081,
+        "timestamp": 1768717285,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6894,7 +6894,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026082,
+        "timestamp": 1768717286,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6910,7 +6910,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026083,
+        "timestamp": 1768717287,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6926,7 +6926,7 @@
         "more_info": "Chaos Orb — a limited-time global chat badge celebrating the launch of Path of Exile II: The Third Edict . How to earn: Purchase 1 new recurring or gift subscription to any participating Twitch channel streaming Path of Exile II (Prime subscriptions do not count). This badge is granted as a Drops reward and is typically delivered shortly after meeting the requirements. Badge Earn Duration: from 2025-08-29T07:00:00Z to 2025-09-15T06:59:00Z Interestingly, this badge has different image depending on the display size. As a result, it may appear slightly different across various devices, making it a rather unique badge. Finally, Twitch updated the images so that it would be consistent across all resolutions. First version: Final version: P.s. The badge was initially added to the database with a different ID , but was updated to this one a day later. &nbsp; Update (August 30, 2025): According to Path of Exile on X , the Chaos Orb campaign has been temporarily paused: &#8220;There is an issue with the Chaos Orb Twitch campaign and it has temporarily been paused. If you should have been awarded a portal for gifting subscriptions you will retroactively receive them once the issue is fixed. Any subscriptions between now and the fix will also receive the Chaos Orb Badge when it is re-enabled. If you have any further issues please contact Twitch Support.&#8221; This means badge granting is currently suspended, but all eligible users will retroactively receive the Chaos Orb Badge once the campaign is re-enabled. &nbsp; Update (September 4, 2025): Twitch has resumed manual granting of the Chaos Orb badge after the campaign pause. The badge is now being distributed gradually on Twitch’s side, so you may not see it in your account immediately. &nbsp; Update (September 5, 2025): The badge is again granted instantly and automatically as a Drops reward."
       },
       "metadata": {
-        "timestamp": 1768026084,
+        "timestamp": 1768717288,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6942,7 +6942,7 @@
         "more_info": "The Pokémon Legends: Z-A Chikorita badge is a limited-time global chat badge awarded during the launch celebration of Pokémon Legends: Z-A. To earn it, viewers needed to purchase a new paid or gift subscription (Prime subs excluded) to any streamer playing Pokémon Legends: Z-A during the event. The streamer’s category must be set to Pokémon Legends: Z-A for the badge to qualify. Event Duration: from 2025-10-16T04:00:00Z to 2025-10-18T04:00:00Z This badge is part of a three-badge mini-series celebrating different Pokémon starters featured in the event: Pokémon Legends: Z-A Chikorita (Oct 16–18) Pokémon Legends: Z-A Tepig (Oct 18–20) Pokémon Legends: Z-A Totodile (Oct 20–22) The Chikorita badge is distributed automatically via Twitch Drops once the subscription condition is met."
       },
       "metadata": {
-        "timestamp": 1768026085,
+        "timestamp": 1768717289,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6958,7 +6958,7 @@
         "more_info": "The Pokémon Legends: Z-A Tepig badge is a limited-time global chat badge awarded during the launch celebration of Pokémon Legends: Z-A. To earn it, viewers needed to purchase a new paid or gift subscription (Prime subs excluded) to any streamer playing Pokémon Legends: Z-A during the event. The streamer’s category must be set to Pokémon Legends: Z-A for the badge to qualify. Event Duration: from 2025-10-18T04:01:00Z to 2025-10-20T04:00:00Z This badge is part of a three-badge mini-series celebrating different Pokémon starters featured in the event: Pokémon Legends: Z-A Chikorita (Oct 16–18) Pokémon Legends: Z-A Tepig (Oct 18–20) Pokémon Legends: Z-A Totodile (Oct 20–22) The Tepig badge is distributed automatically via Twitch Drops once the subscription condition is met."
       },
       "metadata": {
-        "timestamp": 1768026086,
+        "timestamp": 1768717290,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6974,7 +6974,7 @@
         "more_info": "The Pokémon Legends: Z-A Totodile badge is a limited-time global chat badge awarded during the launch celebration of Pokémon Legends: Z-A. To earn it, viewers needed to purchase a new paid or gift subscription (Prime subs excluded) to any streamer playing Pokémon Legends: Z-A during the event. The streamer’s category must be set to Pokémon Legends: Z-A for the badge to qualify. Event Duration: from 2025-10-20T04:01:00Z to 2025-10-22T04:00:00Z This badge is part of a three-badge mini-series celebrating different Pokémon starters featured in the event: Pokémon Legends: Z-A Chikorita (Oct 16–18) Pokémon Legends: Z-A Tepig (Oct 18–20) Pokémon Legends: Z-A Totodile (Oct 20–22) The Totodile badge is distributed automatically via Twitch Drops once the subscription condition is met."
       },
       "metadata": {
-        "timestamp": 1768026087,
+        "timestamp": 1768717291,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -6990,7 +6990,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026088,
+        "timestamp": 1768717292,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7006,7 +7006,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026089,
+        "timestamp": 1768717293,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7022,7 +7022,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026090,
+        "timestamp": 1768717294,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7038,7 +7038,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026091,
+        "timestamp": 1768717294,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7054,7 +7054,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026092,
+        "timestamp": 1768717295,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7070,7 +7070,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026093,
+        "timestamp": 1768717296,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7086,7 +7086,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026094,
+        "timestamp": 1768717297,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7102,7 +7102,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026096,
+        "timestamp": 1768717298,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7118,7 +7118,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026097,
+        "timestamp": 1768717299,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7134,7 +7134,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026098,
+        "timestamp": 1768717300,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7150,7 +7150,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026099,
+        "timestamp": 1768717300,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7166,7 +7166,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026100,
+        "timestamp": 1768717301,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7182,7 +7182,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026101,
+        "timestamp": 1768717302,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7198,7 +7198,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026102,
+        "timestamp": 1768717304,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7214,7 +7214,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026103,
+        "timestamp": 1768717305,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7230,7 +7230,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026104,
+        "timestamp": 1768717306,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7246,7 +7246,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026105,
+        "timestamp": 1768717307,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7262,7 +7262,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026106,
+        "timestamp": 1768717308,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7278,7 +7278,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026106,
+        "timestamp": 1768717308,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7294,7 +7294,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026108,
+        "timestamp": 1768717309,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7310,7 +7310,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026108,
+        "timestamp": 1768717310,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7326,7 +7326,7 @@
         "more_info": "The Prime Gaming badge is a crown icon that appears in Twitch chat for users who have linked their Amazon Prime (or Prime Video) account to Twitch. It’s a default perk for Prime members, helping others recognize your Prime status across all Twitch channels. To receive the badge, you need to connect your Amazon and Twitch accounts through the Prime Gaming account page . Once linked, the badge becomes available in your chat identity settings. Key perks of Prime Gaming include : A free monthly subscription to any Partner or Affiliate Twitch channel Access to exclusive emotes and chat color options Extended broadcast storage (60 days instead of 14) In-game rewards and free games (offer availability varies by region) Prime channel subscriptions do not auto-renew &#8211; you’ll need to manually use your benefit each month. This badge is widely used and easily recognizable, making it one of the most common and valued icons in Twitch chat. Source: https://www.amazongames.com/en-us/support/prime-gaming"
       },
       "metadata": {
-        "timestamp": 1768026110,
+        "timestamp": 1768717311,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7342,7 +7342,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026110,
+        "timestamp": 1768717312,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7358,7 +7358,7 @@
         "more_info": "During the &#8220;Together For Good&#8221; campaign (December 3–15), viewers could earn up to three unique badges by donating through the Twitch Charity tool . These limited-time badges recognize contributions at different donation tiers: Purple Pixel Heart Badge : Earned with a cumulative donation of $5. Ruby Pixel Heart Badge : Earned with a cumulative donation of $25. Gold Pixel Heart Badge : Earned with a cumulative donation of $50. What is a cumulative donation? It means all your donations made through the Twitch Charity tool across any participating channels are combined. For example, donating $2.50 on 20 different channels adds up to $50, qualifying you for the Tier 3 badge. Will I receive all the badges? Yes! If your total donations reach $50 or more, you will unlock all three badges, as each level includes the rewards from the lower tiers. Badges were awarded within 72 hours of meeting the donation threshold (weekends excluded). Donations made via tools outside the Twitch Charity system were not eligible. Source: https://blog.twitch.tv/en/2024/10/31/together-for-good-unite-donate-make-a-difference/"
       },
       "metadata": {
-        "timestamp": 1768026113,
+        "timestamp": 1768717314,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7374,7 +7374,7 @@
         "more_info": "Forefathers, one and all, bear witness! A new badge and emote have arisen! By June 25th, watch an Elden Ring stream for a minimum of 5 minutes to unlock the new Raging Wolf Helm badge! The badge will be available to use the following business day. Source: https://x.com/Twitch/status/1804184670814269596"
       },
       "metadata": {
-        "timestamp": 1768026114,
+        "timestamp": 1768717315,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7390,7 +7390,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026115,
+        "timestamp": 1768717316,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7406,7 +7406,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026119,
+        "timestamp": 1768717320,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7422,7 +7422,7 @@
         "more_info": "The r/place 2023 Cake badge was a limited-time global chat badge celebrating the return of Reddit’s r/place event in 2023. To earn it, viewers had to watch coverage of the r/place 2023 event on Twitch Rivals or other participating channels between July 20 and July 26, 2023 . The badge featured a cake icon, referencing Reddit’s tradition of celebrating account anniversaries with a cake next to usernames."
       },
       "metadata": {
-        "timestamp": 1768026120,
+        "timestamp": 1768717321,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7438,7 +7438,7 @@
         "more_info": "During the &#8220;Together For Good&#8221; campaign (December 3–15), viewers could earn up to three unique badges by donating through the Twitch Charity tool . These limited-time badges recognize contributions at different donation tiers: Purple Pixel Heart Badge : Earned with a cumulative donation of $5. Ruby Pixel Heart Badge : Earned with a cumulative donation of $25. Gold Pixel Heart Badge : Earned with a cumulative donation of $50. What is a cumulative donation? It means all your donations made through the Twitch Charity tool across any participating channels are combined. For example, donating $2.50 on 20 different channels adds up to $50, qualifying you for the Tier 3 badge. Will I receive all the badges? Yes! If your total donations reach $50 or more, you will unlock all three badges, as each level includes the rewards from the lower tiers. Badges were awarded within 72 hours of meeting the donation threshold (weekends excluded). Donations made via tools outside the Twitch Charity system were not eligible. Source: https://blog.twitch.tv/en/2024/10/31/together-for-good-unite-donate-make-a-difference/"
       },
       "metadata": {
-        "timestamp": 1768026121,
+        "timestamp": 1768717321,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7454,7 +7454,7 @@
         "more_info": "Sajam Slam Badge &#8211; a limited-time global chat badge celebrating TwitchCon 2025 and the Street Fighter 6 community. To earn it, you needed to purchase or gift a subscription (Prime subs excluded) to any streamer in the Street Fighter 6 category during the event period. Event Duration: from 2025-10-17T07:00:00Z to 2025-10-20T06:59:00Z The badge is delivered automatically via Twitch Drops once the subscription requirement is met."
       },
       "metadata": {
-        "timestamp": 1768026123,
+        "timestamp": 1768717323,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7470,7 +7470,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026124,
+        "timestamp": 1768717324,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7486,7 +7486,7 @@
         "more_info": "Share the Love Badge – A New Twitch Badge for Valentine’s Day Earn the exclusive Share the Love badge by sharing a clip of any streamer between February 14–28 using Clips Manager . How to Get the Badge: Download, export, or share a link to any Twitch clip. The badge will be awarded within a few business days, with a notification in your Inbox. If you don’t receive it, contact Twitch Support. Source: https://blog.twitch.tv/en/2025/02/14/share-the-love-this-valentine-s-day/"
       },
       "metadata": {
-        "timestamp": 1768026125,
+        "timestamp": 1768717325,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7502,7 +7502,7 @@
         "more_info": "Twitch has rolled out a new trio of Social Media global chat badges that reward creators for the total views their Twitch social posts receive. Icon Badge &#8211; for 100 views on social media posts Pro Badge &#8211; for 10,000 views on social media posts Legend Badge &#8211; for 100,000 views on social media posts To earn this badge create and share clips or other social posts using Twitch’s built-in social tools so that views are tracked. As your combined post views cross each milestone &#8211; 100, 10,000, and 100,000 &#8211; you’ll automatically receive the matching badge. Twitch has also added a dedicated page for tracking progress and a wiki page for these badges. Although technically this badge is a global badge, it works similarly to badges such as “Clips Leader,” “Gift Subs,” etc. That is, it will only be available on a specific channel whose clips have gained views."
       },
       "metadata": {
-        "timestamp": 1768026126,
+        "timestamp": 1768717326,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7518,7 +7518,7 @@
         "more_info": "Twitch has rolled out a new trio of Social Media global chat badges that reward creators for the total views their Twitch social posts receive. Icon Badge &#8211; for 100 views on social media posts Pro Badge &#8211; for 10,000 views on social media posts Legend Badge &#8211; for 100,000 views on social media posts To earn this badge create and share clips or other social posts using Twitch’s built-in social tools so that views are tracked. As your combined post views cross each milestone &#8211; 100, 10,000, and 100,000 &#8211; you’ll automatically receive the matching badge. Twitch has also added a dedicated page for tracking progress and a wiki page for these badges. Although technically this badge is a global badge, it works similarly to badges such as “Clips Leader,” “Gift Subs,” etc. That is, it will only be available on a specific channel whose clips have gained views. &nbsp;"
       },
       "metadata": {
-        "timestamp": 1768026127,
+        "timestamp": 1768717327,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7534,7 +7534,7 @@
         "more_info": "Twitch has rolled out a new trio of Social Media global chat badges that reward creators for the total views their Twitch social posts receive. Icon Badge &#8211; for 100 views on social media posts Pro Badge &#8211; for 10,000 views on social media posts Legend Badge &#8211; for 100,000 views on social media posts To earn this badge create and share clips or other social posts using Twitch’s built-in social tools so that views are tracked. As your combined post views cross each milestone &#8211; 100, 10,000, and 100,000 &#8211; you’ll automatically receive the matching badge. Twitch has also added a dedicated page for tracking progress and a wiki page for these badges. Although technically this badge is a global badge, it works similarly to badges such as “Clips Leader,” “Gift Subs,” etc. That is, it will only be available on a specific channel whose clips have gained views. &nbsp;"
       },
       "metadata": {
-        "timestamp": 1768026128,
+        "timestamp": 1768717328,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7550,7 +7550,7 @@
         "more_info": "The Sonic Racing global chat badge celebrates the high-speed launch of Sonic Racing: CrossWorlds on Twitch. To earn this badge, go to any live stream in the Sonic Racing: CrossWorlds category and purchase one new recurring or gift subscription during the event window. Prime subscriptions do not count. Event Duration: from 2025-09-26T18:00:00Z to 2025-10-04T06:59:00Z The badge is a standard Twitch Drop reward and is usually granted automatically to your account shortly after you meet the requirement."
       },
       "metadata": {
-        "timestamp": 1768026129,
+        "timestamp": 1768717329,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7566,7 +7566,7 @@
         "more_info": "Speedons 5 Badge – Limited-Time Twitch Event Badge. To earn this badge, you need to watch the Speedons 5 event, which runs from February 27 to March 2. The main broadcast will be on mistermv channel, but based on the event’s official website and X account , it may also be streamed on other channels. To ensure you receive the badge, we recommend watching at least 15–20 minutes on twitch.tv/mistermv during the event."
       },
       "metadata": {
-        "timestamp": 1768026130,
+        "timestamp": 1768717330,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7582,7 +7582,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026131,
+        "timestamp": 1768717331,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7598,7 +7598,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026132,
+        "timestamp": 1768717332,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7614,7 +7614,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026134,
+        "timestamp": 1768717333,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7630,7 +7630,7 @@
         "more_info": "The Stream For Humanity 2 badge is a limited-time global chat badge awarded for supporting the Stream For Humanity 2 charity marathon. To earn it, you needed to watch 15 minutes of a participating Stream For Humanity 2 broadcast. Event duration: from 2025-11-14T15:00:00Z to 2025-11-17T00:00:00Z The list of participating channels is limited and listed on the official Stream For Humanity website The stream should also be in the Stream For Humanity category. The badge is awarded through Twitch Drops , so it will automatically appear in your Drops Inventory once you have met the requirement. &nbsp;"
       },
       "metadata": {
-        "timestamp": 1768026135,
+        "timestamp": 1768717334,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7646,7 +7646,7 @@
         "more_info": "This badge was given to those who voted in every category for the 2024 Streamer Awards using the Twitch Extension &#8220;The Streamer Awards: The Predictor.&#8221; Source: https://blog.twitch.tv/en/2024/02/15/celebrate-the-streamer-awards-with-exclusive-incentives-on-twitch/"
       },
       "metadata": {
-        "timestamp": 1768026136,
+        "timestamp": 1768717335,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7662,7 +7662,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026138,
+        "timestamp": 1768717336,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7678,7 +7678,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026139,
+        "timestamp": 1768717337,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7694,7 +7694,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026140,
+        "timestamp": 1768717338,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7710,7 +7710,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026141,
+        "timestamp": 1768717339,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7726,7 +7726,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026142,
+        "timestamp": 1768717340,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7742,7 +7742,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026143,
+        "timestamp": 1768717341,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7758,7 +7758,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026144,
+        "timestamp": 1768717342,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7774,7 +7774,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026145,
+        "timestamp": 1768717343,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7790,7 +7790,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026146,
+        "timestamp": 1768717344,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7806,7 +7806,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026147,
+        "timestamp": 1768717345,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7822,7 +7822,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026148,
+        "timestamp": 1768717346,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7838,7 +7838,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026149,
+        "timestamp": 1768717347,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7854,7 +7854,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026150,
+        "timestamp": 1768717348,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7870,7 +7870,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026152,
+        "timestamp": 1768717349,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7886,7 +7886,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026153,
+        "timestamp": 1768717349,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7902,7 +7902,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026154,
+        "timestamp": 1768717350,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7918,7 +7918,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026155,
+        "timestamp": 1768717351,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7934,7 +7934,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026155,
+        "timestamp": 1768717352,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7950,7 +7950,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026157,
+        "timestamp": 1768717353,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7966,7 +7966,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026158,
+        "timestamp": 1768717354,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7982,7 +7982,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026159,
+        "timestamp": 1768717355,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -7998,7 +7998,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026160,
+        "timestamp": 1768717356,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8014,7 +8014,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026161,
+        "timestamp": 1768717357,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8030,7 +8030,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026162,
+        "timestamp": 1768717358,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8046,7 +8046,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026163,
+        "timestamp": 1768717359,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8062,7 +8062,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026164,
+        "timestamp": 1768717360,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8078,7 +8078,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026165,
+        "timestamp": 1768717361,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8094,7 +8094,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026166,
+        "timestamp": 1768717361,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8110,7 +8110,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026167,
+        "timestamp": 1768717362,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8126,7 +8126,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026168,
+        "timestamp": 1768717363,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8142,7 +8142,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026169,
+        "timestamp": 1768717364,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8158,7 +8158,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026170,
+        "timestamp": 1768717365,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8174,7 +8174,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026171,
+        "timestamp": 1768717366,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8190,7 +8190,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026172,
+        "timestamp": 1768717367,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8206,7 +8206,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026173,
+        "timestamp": 1768717368,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8222,7 +8222,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026174,
+        "timestamp": 1768717369,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8238,7 +8238,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026175,
+        "timestamp": 1768717370,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8254,7 +8254,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026176,
+        "timestamp": 1768717371,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8270,7 +8270,7 @@
         "more_info": "This badge is given to users who subscribe or gift a subscription to any channel during the 2024 SUBtember event . The event runs from 2024-08-29T17:00:00Z until 2024-10-01T07:00:00Z 2024. &nbsp; &nbsp;"
       },
       "metadata": {
-        "timestamp": 1768026177,
+        "timestamp": 1768717372,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8286,7 +8286,7 @@
         "more_info": "According to the official Twitch blog , SUBtember 2025 comes with an exclusive limited-time global chat badge, as well as major discounts and bonuses when purchasing subscriptions. How to earn: Sub, gift a subscription, or use Bits during SUBtember to unlock the SUBtember 2025 badge (Prime subscriptions do not count). The badge is not granted instantly and may take up to 7 business days to appear in your account. Notably, this year’s rules explicitly include using Bits as a valid way to earn the badge &#8211; something not mentioned in the 2024 edition. Event Duration: from 2025-08-29T17:00:00Z to 2025-10-01T17:00:00Z (34 days total) Full SUBtember 2025 FAQ from Twtich. For comparison, see also: SUBtember 2024 Badge P.s. My channel is live right now &#8211; if you’re looking to grab this badge, you can also subscribe here to qualify."
       },
       "metadata": {
-        "timestamp": 1768026178,
+        "timestamp": 1768717373,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8302,7 +8302,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026179,
+        "timestamp": 1768717374,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8318,7 +8318,7 @@
         "more_info": "The SuperUltraCombo 2023 badge was a limited-time Twitch chat badge celebrating fighting games during Super Ultra Combo Week , which ran from May 29 to June 2, 2023. To earn it, viewers simply had to watch at least 5 minutes of content from participating streams tagged with “SuperUltraCombo” during the event. Source: https://blog.twitch.tv/en/2023/05/25/it-s-super-ultra-combo-week-on-twitch/"
       },
       "metadata": {
-        "timestamp": 1768026180,
+        "timestamp": 1768717374,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8334,7 +8334,7 @@
         "more_info": "The Survival Cup 4 badge is a limited-time reward issued as part of the Twitch Rivals: Survival Cup 4 event. To earn it, viewers must purchase one new recurring subscription or one gift sub (Prime subs excluded) on any participating channel streaming the Survival Cup 4 event. The list of participating channels is limited for this badge! The main channel is /twitchrivals . You can also find lists of other ones there. Update: On the /twitchrivals stream, staff announced that there would be no badge for this event . They had considered the idea but did not finalize it."
       },
       "metadata": {
-        "timestamp": 1768026183,
+        "timestamp": 1768717376,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8350,7 +8350,7 @@
         "more_info": "The First Descendant Badge is a limited-time global chat badge awarded as part of a promotional campaign for the game The First Descendant . To earn the badge, viewers needed to: Watch any live stream in The First Descendant category (drops must be enabled on the channel) Purchase one new recurring or gift subscription (⚠️ Prime Subscriptions do not count ) Event Duration: from 2025-08-07T07:00:00Z to 2025-08-15T15:59:00Z This badge was distributed via the Twitch Drops system and was typically granted shortly after fulfilling the subscription requirement."
       },
       "metadata": {
-        "timestamp": 1768026185,
+        "timestamp": 1768717379,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8366,7 +8366,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026186,
+        "timestamp": 1768717380,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8382,7 +8382,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026187,
+        "timestamp": 1768717380,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8398,7 +8398,7 @@
         "more_info": "The Man Without Fear is a limited-time global chat badge celebrating the launch of Season 4.5 in Marvel Rivals. To earn it, viewers needed to subscribe or gift a subscription (Prime subs excluded) to any streamer in the Marvel Rivals category during the event period. Event time: 2025-10-10T12:00:00Z – 2025-10-18T06:59:00Z The badge will be automatically added to your Twitch account once the subscription requirement is met, as it is delivered via Drops."
       },
       "metadata": {
-        "timestamp": 1768026188,
+        "timestamp": 1768717381,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8414,7 +8414,7 @@
         "more_info": "The Onryō&#8217;s Mask &#8211; a limited-time global chat badge awarded during the launch of Ghost of Yotei . To earn it, you needed to subscribe or gift a subscription (Prime subs excluded) to streamer in the Ghost of Yotei category with drops enabled while the campaign was active. This time only certain channels are participating! Be careful and make sure the drops are enabled Event Duration: from 2025-10-01T10:59:00Z to 2025-10-13T06:59:00Z The badge is distributed via Twitch Drops and granted automatically after the requirement is met. This badge is available alongside another launch campaign badge, Gingko Leaf , which is free and could be earned simply by watching 30 minutes of a participating stream."
       },
       "metadata": {
-        "timestamp": 1768026189,
+        "timestamp": 1768717382,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8430,7 +8430,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026190,
+        "timestamp": 1768717383,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8446,7 +8446,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026191,
+        "timestamp": 1768717384,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8462,7 +8462,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026192,
+        "timestamp": 1768717385,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8478,7 +8478,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026192,
+        "timestamp": 1768717386,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8494,7 +8494,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026194,
+        "timestamp": 1768717387,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8510,7 +8510,7 @@
         "more_info": "The Together For Good 2025 event runs from 2025-11-17T08:00:00Z to 2025-12-03T07:59:00Z During the event, viewers can unlock four limited-time global chat badges by donating through the official Twitch charity donation tool . All donations made across any participating streams accumulate globally on your account &#8211; meaning you can unlock all four badges with a total of just $50 in donations. Look for a detailed step-by-step guide on how to do this in our Discord before the event starts! There are 4 badges available: Good Badge &#8211; earned with a cumulative donation of $5 Gooder Badge &#8211; earned with a cumulative donation of $50 Goodest Badge &#8211; earned with a cumulative donation of $100 (or 5$ only if the donation is made during the official kickoff broadcast on the /Twitch channel on November 17) Wicked Dub Badge &#8211; earned by donating at least $5 to a charity stream using Stream Together Please allow for at least 1 week for your badge to be awarded."
       },
       "metadata": {
-        "timestamp": 1768026195,
+        "timestamp": 1768717388,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8526,7 +8526,7 @@
         "more_info": "The Together For Good 2025 event runs from 2025-11-17T08:00:00Z to 2025-12-03T07:59:00Z During the event, viewers can unlock four limited-time global chat badges by donating through the official Twitch charity donation tool . All donations made across any participating streams accumulate globally on your account &#8211; meaning you can unlock all four badges with a total of just $50 in donations. Look for a detailed step-by-step guide on how to do this in our Discord before the event starts! There are 4 badges available: Good Badge &#8211; earned with a cumulative donation of $5 Gooder Badge &#8211; earned with a cumulative donation of $50 Goodest Badge &#8211; earned with a cumulative donation of $100 (or 5$ only if the donation is made during the official kickoff broadcast on the /Twitch channel on November 17) Wicked Dub Badge &#8211; earned by donating at least $5 to a charity stream using Stream Together Please allow for at least 1 week for your badge to be awarded."
       },
       "metadata": {
-        "timestamp": 1768026196,
+        "timestamp": 1768717389,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8542,7 +8542,7 @@
         "more_info": "The Together For Good 2025 event runs from 2025-11-17T08:00:00Z to 2025-12-03T07:59:00Z During the event, viewers can unlock four limited-time global chat badges by donating through the official Twitch charity donation tool . All donations made across any participating streams accumulate globally on your account &#8211; meaning you can unlock all four badges with a total of just $50 in donations. Look for a detailed step-by-step guide on how to do this in our Discord before the event starts! There are 4 badges available: Good Badge &#8211; earned with a cumulative donation of $5 Gooder Badge &#8211; earned with a cumulative donation of $50 Goodest Badge &#8211; earned with a cumulative donation of $100 (or 5$ only if the donation is made during the official kickoff broadcast on the /Twitch channel on November 17) Wicked Dub Badge &#8211; earned by donating at least $5 to a charity stream using Stream Together Please allow for at least 1 week for your badge to be awarded."
       },
       "metadata": {
-        "timestamp": 1768026197,
+        "timestamp": 1768717390,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8558,7 +8558,7 @@
         "more_info": "The Together For Good 2025 event runs from 2025-11-17T08:00:00Z to 2025-12-03T07:59:00Z During the event, viewers can unlock four limited-time global chat badges by donating through the official Twitch charity donation tool . All donations made across any participating streams accumulate globally on your account &#8211; meaning you can unlock all four badges with a total of just $50 in donations. Look for a detailed step-by-step guide on how to do this in our Discord before the event starts! There are 4 badges available: Good Badge &#8211; earned with a cumulative donation of $5 Gooder Badge &#8211; earned with a cumulative donation of $50 Goodest Badge &#8211; earned with a cumulative donation of $100 (or 5$ only if the donation is made during the official kickoff broadcast on the /Twitch channel on November 17) Wicked Dub Badge &#8211; earned by donating at least $5 to a charity stream using Stream Together Please allow for at least 1 week for your badge to be awarded."
       },
       "metadata": {
-        "timestamp": 1768026198,
+        "timestamp": 1768717391,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8574,7 +8574,7 @@
         "more_info": "Touch Grass &#8211; a limited-time global badge that could be earned by downloading and sharing a clip from any stream in the IRL category . Event period: August 21-24, 2025 Source: https://x.com/Twitch/status/1958559951267221896"
       },
       "metadata": {
-        "timestamp": 1768026200,
+        "timestamp": 1768717393,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8590,7 +8590,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026201,
+        "timestamp": 1768717393,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8606,7 +8606,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026202,
+        "timestamp": 1768717394,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8622,7 +8622,7 @@
         "more_info": "This badge is earned by joining the Twitch DJ Program. Source: https://www.twitch.tv/dj-program"
       },
       "metadata": {
-        "timestamp": 1768026203,
+        "timestamp": 1768717395,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8638,7 +8638,7 @@
         "more_info": "Twitch Intern 2022 &#8211; a special global chat badge recognizing users who participated in Twitch’s Summer Internship Program in 2022. Although it marks the 2022 internship cohort, the badge itself was only added to the Twitch database in 2025. For context on Twitch’s internship opportunities, see the official careers page: Twitch Early-Career Programs . Related badges for other cohorts: Twitch Intern 2024 Twitch Intern 2023 These badges follow the same pattern, honoring interns from their respective years."
       },
       "metadata": {
-        "timestamp": 1768026204,
+        "timestamp": 1768717396,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8654,7 +8654,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026205,
+        "timestamp": 1768717397,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8670,7 +8670,7 @@
         "more_info": "This badge is given to 2024 Twitch interns. Source: https://www.twitch.tv/jobs/early-career/"
       },
       "metadata": {
-        "timestamp": 1768026206,
+        "timestamp": 1768717398,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8686,7 +8686,7 @@
         "more_info": "Twitch Recap 2023 was an end-of-year event celebrating each user’s journey on Twitch throughout the year. It highlighted personal viewing habits, favorite streamers, and milestones across the platform. Twitch Recap 2023 Chat Badge is exclusive badge that was granted to many users who were active on Twitch during 2023 and participated in the Recap event at the end of the year. More details about Twitch Recap events can be found on Twitch’s info page . A similar badge was released the following year for Twitch Recap 2024 ."
       },
       "metadata": {
-        "timestamp": 1768026207,
+        "timestamp": 1768717399,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8702,7 +8702,7 @@
         "more_info": "Twitch Recap 2024 is a unique annual event that offers a personalized summary of your time spent on Twitch over the past year. It celebrates your highlights as a viewer, streamer, or community member. Twitch Recap 2024 chat badge was granted to most users who were active on Twitch in 2024 &#8211; whether by streaming, watching, chatting, or engaging in other ways. More details about Twitch Recap can be found on Twitch’s official info page . A similar badge was also awarded following Twitch Recap 2023. View it here: Twitch Recap 2023 Badge"
       },
       "metadata": {
-        "timestamp": 1768026209,
+        "timestamp": 1768717400,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8718,7 +8718,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026211,
+        "timestamp": 1768717401,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8734,7 +8734,7 @@
         "more_info": "This is a system badge for Twitch&#8217;s automated moderation messages. It appears only on Automod posts and cannot be earned by users. Helps identify moderation alerts."
       },
       "metadata": {
-        "timestamp": 1768026212,
+        "timestamp": 1768717402,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8750,7 +8750,7 @@
         "more_info": "The badge was available when you purchase a ticket on the official TwitchCon website for TwitchCon 2024 in Rotterdam. The badge was given out immediately after purchase, it was not necessary to attend the event."
       },
       "metadata": {
-        "timestamp": 1768026213,
+        "timestamp": 1768717403,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8766,7 +8766,7 @@
         "more_info": "The badge was available when you purchase a ticket on the official website at TwitchCon 2024 in San Diego. The badge was given out immediately after purchase, it was not necessary to attend the event."
       },
       "metadata": {
-        "timestamp": 1768026214,
+        "timestamp": 1768717404,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8782,7 +8782,7 @@
         "more_info": "The TwitchCon 2025 badge is granted to users who purchase a ticket to TwitchCon 2025 in Rotterdam via the official TwitchCon website. You don’t need to attend the event in person — the badge is automatically added to your Twitch account right after completing your ticket purchase."
       },
       "metadata": {
-        "timestamp": 1768026215,
+        "timestamp": 1768717405,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8798,7 +8798,7 @@
         "more_info": "TThis badge is part of the official TwitchCon 2025 Referral Program . To unlock it: Purchase your TwitchCon 2025 ticket. Share your personal referral link. If 10 friends buy tickets using your link, this exclusive badge will be added to your Twitch account. Referral progress is tracked after you buy your own ticket — no event attendance required. There is also a badge that you get for one purchase through your referral link."
       },
       "metadata": {
-        "timestamp": 1768026216,
+        "timestamp": 1768717406,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8814,7 +8814,7 @@
         "more_info": "This badge is part of the official TwitchCon 2025 Referral Program . To earn it: Purchase your own TwitchCon 2025 ticket. Share your unique referral link with friends. If at least one friend buys a ticket using your link, you’ll unlock this badge. You don’t need to attend the event — just complete your own ticket purchase and refer at least one successful sale. There is also another badge given out for 10 purchases through your referral link."
       },
       "metadata": {
-        "timestamp": 1768026217,
+        "timestamp": 1768717407,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8830,7 +8830,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026218,
+        "timestamp": 1768717408,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8846,7 +8846,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026219,
+        "timestamp": 1768717409,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8862,7 +8862,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026220,
+        "timestamp": 1768717410,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8878,7 +8878,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026221,
+        "timestamp": 1768717411,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8894,7 +8894,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026222,
+        "timestamp": 1768717412,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8910,7 +8910,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026223,
+        "timestamp": 1768717412,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8926,7 +8926,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026224,
+        "timestamp": 1768717413,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8942,7 +8942,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026225,
+        "timestamp": 1768717414,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8958,7 +8958,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026226,
+        "timestamp": 1768717415,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8974,7 +8974,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026228,
+        "timestamp": 1768717416,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -8990,7 +8990,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026229,
+        "timestamp": 1768717417,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -9006,7 +9006,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026231,
+        "timestamp": 1768717419,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -9022,7 +9022,7 @@
         "more_info": "VCT Paris 2025 &#8211; a limited-time global Twitch chat badge celebrating the VALORANT Champions Tour 2025 finals in Paris. To earn this badge &#8211; subscribe with a new paid or gift sub (Prime subs do not count) to any Twitch channel streaming in the VALORANT category during the live broadcasts of VALORANT Champions 2025 &#8211; from 2025-09-12T17:00:00Z to 2025-10-05T18:59:00Z. The badge should granted automatically after the requirement is met. For official event details: Everything You Need to Know &#8211; Champions Paris"
       },
       "metadata": {
-        "timestamp": 1768026232,
+        "timestamp": 1768717420,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -9038,7 +9038,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026233,
+        "timestamp": 1768717421,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -9054,7 +9054,7 @@
         "more_info": "Video Games Badge &#8211; a limited-time global chat badge unlockable during Video Games Day, a Twitch-wide celebration of gaming moments. To earn this badge you need to download or share any gaming Clip from 2025-09-12T07:00:00Z to 2025-09-16T06:59:00Z. Source: Twitch blog"
       },
       "metadata": {
-        "timestamp": 1768026234,
+        "timestamp": 1768717422,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -9070,7 +9070,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026235,
+        "timestamp": 1768717423,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -9086,7 +9086,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026236,
+        "timestamp": 1768717424,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -9102,7 +9102,7 @@
         "more_info": null
       },
       "metadata": {
-        "timestamp": 1768026237,
+        "timestamp": 1768717424,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -9118,7 +9118,7 @@
         "more_info": "This badge was given to viewers of the ZEVENT 2024 event. To earn it, you needed to watch at least 15 minutes of a stream from one of the ZEVENT 2024 partners. The list of partners was available on the ZEVENT 2024 website during the event."
       },
       "metadata": {
-        "timestamp": 1768026238,
+        "timestamp": 1768717425,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -9134,7 +9134,7 @@
         "more_info": "ZEVENT25 is a limited-time global chat badge awarded for watching a participating channel during the Z Event 2025 charity marathon. How to earn: Go to a participating live channel . Watch for 1 hour and the badge will be granted automatically. Event Duration: from 2025-09-04T18:00:00Z to 2025-09-08T00:00:00Z. A full list of participants, event details, and the official stream can be found on the Z Event website (&#8220;Les streamers&#8221; button)."
       },
       "metadata": {
-        "timestamp": 1768026239,
+        "timestamp": 1768717427,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -9150,7 +9150,7 @@
         "more_info": "The Rainbow Six Siege X 10th Anniversary badge &#8211; a limited-time global chat badge awarded during the Rainbow Six Siege X&#8217;s 10th anniversary celebration. To earn it, you needed to subscribe or gift a subscription (Prime subs doesn&#8217;t count) to streamer in the Tom Clancy&#8217;s Rainbow Six Siege X category. Event Duration: from 2025-12-01T19:00:00Z to 2026-01-01T07:59:00Z The badge is distributed via Twitch Drops and granted automatically after the requirement is met."
       },
       "metadata": {
-        "timestamp": 1768026117,
+        "timestamp": 1768717318,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -9166,7 +9166,7 @@
         "more_info": "The Streamer Awards Tux badge is a limited-time global chat badge awarded for supporting the Streamer Awards 2025 event. To earn it, you needed to watch 60 minutes of Streamer Awards stream on the QTcinderella&#8217;s channel. Event duration: 2025-12-06T23:00:00Z &#8211; 2025-12-07T07:59:00Z The badge is distributed via Twitch Drops and granted automatically after the requirement is met."
       },
       "metadata": {
-        "timestamp": 1768026137,
+        "timestamp": 1768717335,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -9182,7 +9182,7 @@
         "more_info": "Twitch Recap 2025 is Twitch’s annual end-of-year event that delivers a personalized summary of your activity across the platform. It highlights your year as a viewer, streamer, or community member and showcases your most memorable moments on Twitch throughout 2025. The Twitch Recap 2025 chat badge is automatically granted to users who were sufficiently active on Twitch during 2025. This includes activities such as watching streams, chatting, streaming, and general engagement. No additional actions are required to earn the badge. Similar badges were also awarded for previous Recap events, including Twitch Recap 2023 and Twitch Recap 2024 ."
       },
       "metadata": {
-        "timestamp": 1768026210,
+        "timestamp": 1768717401,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -9198,7 +9198,7 @@
         "more_info": "To earn the exclusive Ugly Sweater badge you need to download, export, or share a link to a clip from any category between Dec 1- 12. The badge will be delivered in the following few business days after unlocking it. Source: https://blog.twitch.tv/en/2025/11/26/holiday-hoopla-2025/"
       },
       "metadata": {
-        "timestamp": 1768026230,
+        "timestamp": 1768717418,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -9214,7 +9214,7 @@
         "more_info": "The RevedTV StreamAwards 2025 иadge is a limited-time global Twitch chat badge dedicated to the annual StreamAwards show, first launched in 2023. The event celebrates the best streamers, clips, and moments from the German-speaking Twitch community. To earn this badge, you need to watch the official StreamAwards 2025 livestream on the RevedTV channel for 60 minutes. Event duration: 2025-12-04T17:00:00Z &#8211; 2025-12-04T22:30:00Z Initially, this badge was uploaded with a different image, but it was updated a few hours later. First version"
       },
       "metadata": {
-        "timestamp": 1768026118,
+        "timestamp": 1768717319,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -9230,7 +9230,7 @@
         "more_info": "The Total War Anniversary badge &#8211; a limited-time global chat badge awarded during the Total War 25th Anniversary celebration. To earn it, you needed to subscribe or gift a subscription (Prime subs doesn&#8217;t count) to streamer in the Total War: Warhammer III category. Event duration: 2025-12-04T18:00:00Z &#8211; 2025-12-15T07:59:00Z The badge is distributed via Twitch Drops and granted automatically after the requirement is met."
       },
       "metadata": {
-        "timestamp": 1768026199,
+        "timestamp": 1768717392,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -9246,7 +9246,7 @@
         "more_info": "The The K4SEN Con 2025 badge was announced on the official Twitch Japan account on X. It was given out for free for watching 30 minutes of streams on the k4sen channel. The event ran from 2025-11-22T01:00:00Z to 2025-11-24T13:00:00Z However, despite the fact that the badge was announced as global in the original post, it was initially added as a channel badge. Only on December 5 did Twitch finally add this badge as a global one. No additional action was required from users; it automatically became global for everyone who received it during the event."
       },
       "metadata": {
-        "timestamp": 1768026035,
+        "timestamp": 1768717245,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -9262,7 +9262,7 @@
         "more_info": "The Rustmas 2025 badge &#8211; a limited-time global chat badge awarded during the special Rust event. To earn it, you needed to subscribe or gift a subscription (Prime subs doesn’t count) to streamer in the Rust category. Event duration: 2025-12-08T18:00:00Z &#8211; 2026-01-01T07:59:00Z The badge is distributed via Twitch Drops and granted automatically after the requirement is met."
       },
       "metadata": {
-        "timestamp": 1768026122,
+        "timestamp": 1768717322,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -9278,7 +9278,7 @@
         "more_info": "The Jeff Chat Badge is a limited-time global chat badge dedicated to Winter Drops Fest on Twitch. To earn it, viewers needed to subscribe or gift a subscription (Prime subs excluded) to any streamer in the Marvel Rivals category during the event period. Event time: 2025-12-06T09:00:00Z &#8211; 2025-12-15T23:29:00Z The badge is distributed via Twitch Drops and granted automatically after the requirement is met."
       },
       "metadata": {
-        "timestamp": 1768026034,
+        "timestamp": 1768717245,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -9294,7 +9294,7 @@
         "more_info": "It is a channel-only badge for a new role &#8211; Lead Moderator. Essentially the same as the moderator, but with more privileges. A Lead Moderator can add or remove other Mods and update all your channel’s moderation settings. It was first announced at the TwitchCon San Diego 2025 Opening Ceremony. Fun fact: the badge icon was chosen by user vote."
       },
       "metadata": {
-        "timestamp": 1768026039,
+        "timestamp": 1768717249,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -9358,7 +9358,7 @@
         "more_info": "The Diana badge &#8211; a limited-time global chat badge celebrating early hands-on access to Pragmata via the Sketchbook demo, ahead of its April 24, 2026 release. To earn it, you needed to subscribe or gift a subscription (Prime subs doesn’t count) to streamer in the Pragmata category. Event time: 2025-12-12T18:10:00Z &#8211; 2025-12-24T03:59:00Z The badge is distributed via Twitch Drops and granted automatically after the requirement is met."
       },
       "metadata": {
-        "timestamp": 1768025986,
+        "timestamp": 1768717201,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -9374,7 +9374,7 @@
         "more_info": "The Fallout Season 2 Ghoul badge &#8211; a limited-time global chat badge celebrating launch of Burning Springs and Fallout Season 2. To earn it, you needed to subscribe or gift a subscription (Prime subs doesn’t count) to streamer in the Fallout 76 category. Event time: 2025-12-17T16:00:00Z &#8211; 2026-01-01T07:58:00Z The badge is distributed via Twitch Drops and granted automatically after the requirement is met."
       },
       "metadata": {
-        "timestamp": 1768026003,
+        "timestamp": 1768717216,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -9390,7 +9390,7 @@
         "more_info": "The Frog Lantern badge is a limited-time global chat badge dedicated to new season of the game. To earn it, viewers needed to subscribe or gift a subscription (Prime subs excluded) 3 times to any streamer in the Sea of Thieves category during the event period. Important: the description says that you need to subscribe or gift a subscription 3 times! This is the first such case among paid badges. Event time: 2025-12-15T10:00:00Z &#8211; 2026-01-02T09:59:00Z The badge is distributed via Twitch Drops and granted automatically after the requirement is met."
       },
       "metadata": {
-        "timestamp": 1768026008,
+        "timestamp": 1768717219,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -9406,7 +9406,7 @@
         "more_info": "The Hunt Crosses badge &#8211; a limited-time global chat badge awarded during the special event &#8211; &#8220;Post Malone’s Murder Circus Encore&#8221;. To earn it, you needed to subscribe or gift a subscription (Prime subs doesn’t count) to streamer in the Hunt: Showdown 1896 category. Event duration: 2025-12-12T09:00:00Z &#8211; 2025-12-24T23:58:00Z The badge is distributed via Twitch Drops and granted automatically after the requirement is met."
       },
       "metadata": {
-        "timestamp": 1768026028,
+        "timestamp": 1768717239,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -9422,7 +9422,7 @@
         "more_info": "The Purple Noob badge is a limited-time global chat badge dedicated to Roblox. To earn it, you needed to watch 60 minutes of a any livestream in the ROBLOX category. Event time: 2025-12-16T23:30:00Z &#8211; 2026-01-05T07:59:00Z The badge is distributed via Twitch Drops and granted automatically after the requirement is met."
       },
       "metadata": {
-        "timestamp": 1768026112,
+        "timestamp": 1768717313,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -9438,7 +9438,7 @@
         "more_info": "The Raider badge is a limited-time global chat badge dedicated to new Cold Snap update. To earn it, viewers needed to subscribe or gift a subscription (Prime subs excluded) to any streamer in the ARC Raiders category during the event period. Event time: 2025-12-16T09:00:00Z &#8211; 2026-01-13T11:57:00Z The badge is distributed via Twitch Drops and granted automatically after the requirement is met."
       },
       "metadata": {
-        "timestamp": 1768026116,
+        "timestamp": 1768717317,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -9454,7 +9454,7 @@
         "more_info": "The Support a Streamer HO&#8217;26 Badge badge is a limited-time global chat badge awarded during the Holiday Ops 26 campaign. To earn it, viewers needed to subscribe or gift a subscription (Prime subs excluded) to any streamer in the World of Tanks category during the event period. Event time: 2025-12-15T09:00:00Z &#8211; 2025-12-22T23:58:00Z The badge is distributed via Twitch Drops and granted automatically after the requirement is met."
       },
       "metadata": {
-        "timestamp": 1768026181,
+        "timestamp": 1768717375,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -9470,7 +9470,7 @@
         "more_info": "The TFT Paris Open badge is a limited-time global chat badge dedicated to the 2025 TFT Paris Open event. To earn it, viewers needed to subscribe or gift a subscription (Prime subs excluded) 2 times in the Teamfight Tactics category. So, it is 2 paid subs to get this badge. Event duration: 2025-12-11T18:00:00Z &#8211; 2025-12-15T17:59:00Z The badge is distributed via Twitch Drops and granted automatically after the requirement is met."
       },
       "metadata": {
-        "timestamp": 1768026184,
+        "timestamp": 1768717378,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
