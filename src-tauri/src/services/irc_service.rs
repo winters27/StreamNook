@@ -1194,13 +1194,10 @@ impl IrcService {
             }
         }
 
-        // Parse message content into segments
-        let segments = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current()
-                .block_on(Self::parse_message_segments(&content, &emotes))
-        });
-
-        // Parse reply info (THE ENDGAME - all reply parsing done in Rust)
+        // Parse reply info FIRST (needed to strip @mention before segment parsing)
+        let reply_parent_user_login = tag_map
+            .get("reply-parent-user-login")
+            .map(|s| s.to_string());
         let reply_info = tag_map
             .get("reply-parent-msg-id")
             .map(|parent_id| ReplyInfo {
@@ -1217,11 +1214,49 @@ impl IrcService {
                     .get("reply-parent-user-id")
                     .map(|s| s.to_string())
                     .unwrap_or_default(),
-                parent_user_login: tag_map
-                    .get("reply-parent-user-login")
-                    .map(|s| s.to_string())
-                    .unwrap_or_default(),
+                parent_user_login: reply_parent_user_login.clone().unwrap_or_default(),
             });
+
+        // Strip redundant @mention from reply messages BEFORE parsing segments
+        // The UI shows reply context, so the leading @username is redundant
+        let content_for_segments = if let Some(ref login) = reply_parent_user_login {
+            // Case-insensitive regex to strip "@username " from the start
+            let pattern = format!(r"(?i)^@{}\s*", regex::escape(login));
+            if let Ok(re) = regex::Regex::new(&pattern) {
+                re.replace(&content, "").trim().to_string()
+            } else {
+                content.clone()
+            }
+        } else {
+            content.clone()
+        };
+
+        // Also update emote positions if we stripped the @mention
+        let emotes_adjusted = if content_for_segments.len() < content.len() {
+            let offset = content.len() - content_for_segments.len();
+            emotes
+                .into_iter()
+                .filter_map(|mut e| {
+                    // Skip emotes that were in the stripped portion
+                    if e.start < offset {
+                        return None;
+                    }
+                    e.start -= offset;
+                    e.end -= offset;
+                    Some(e)
+                })
+                .collect()
+        } else {
+            emotes
+        };
+
+        // Parse message content into segments (using stripped content)
+        let segments = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(Self::parse_message_segments(
+                &content_for_segments,
+                &emotes_adjusted,
+            ))
+        });
 
         // Shared chat detection
         let source_room_id = tag_map.get("source-room-id").map(|s| s.to_string());
@@ -1267,9 +1302,9 @@ impl IrcService {
             color,
             user_id,
             timestamp,
-            content,
+            content: content_for_segments,
             badges,
-            emotes,
+            emotes: emotes_adjusted,
             layout: LayoutResult {
                 height: 0.0,
                 width: 0.0,

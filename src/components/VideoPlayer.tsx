@@ -608,11 +608,12 @@ const VideoPlayer = () => {
           hasJumpedToLiveRef.current = true;
 
           // Wait for buffer to build up before seeking - this is crucial!
-          // If we seek before there's buffered data ahead, playback might stall
+          // Increased to 2 seconds to allow more buffer to accumulate
           setTimeout(() => {
             // Check buffer state
             if (video.buffered.length === 0) {
-              console.log('[HLS] Jump to live: no buffer yet, skipping seek');
+              console.log('[HLS] Jump to live: no buffer yet, retrying...');
+              hasJumpedToLiveRef.current = false;
               return;
             }
 
@@ -624,22 +625,22 @@ const VideoPlayer = () => {
 
             console.log(`[HLS] Jump to live: buffer=${bufferedDuration.toFixed(2)}s, current=${currentPos.toFixed(2)}s, bufferedEnd=${bufferedEnd.toFixed(2)}s, behind=${timeBehindLive.toFixed(2)}s`);
 
-            // Only seek if we're significantly behind (more than 5 seconds from live)
-            // and we have a reasonable buffer built up (at least 3 seconds)
-            if (timeBehindLive > 5 && bufferedDuration >= 3) {
-              // Seek to 2 seconds before buffered end to ensure smooth playback
-              // This mimics what happens when you manually click "jump to live"
-              const seekTarget = bufferedEnd - 2;
-              console.log(`[HLS] Jump to live: seeking from ${currentPos.toFixed(2)}s to ${seekTarget.toFixed(2)}s`);
+            // Only seek if we're significantly behind (more than 8 seconds from live)
+            // and we have a reasonable buffer built up (at least 5 seconds)
+            if (timeBehindLive > 8 && bufferedDuration >= 5) {
+              // Seek to 5 seconds before buffered end to ensure smooth playback
+              // This gives enough buffer headroom to prevent stalls
+              const seekTarget = bufferedEnd - 5;
+              console.log(`[HLS] Jump to live: seeking from ${currentPos.toFixed(2)}s to ${seekTarget.toFixed(2)}s (5s behind live)`);
               video.currentTime = seekTarget;
-            } else if (timeBehindLive <= 5) {
+            } else if (timeBehindLive <= 8) {
               console.log('[HLS] Jump to live: already close to live edge, no seek needed');
             } else {
               console.log(`[HLS] Jump to live: buffer too small (${bufferedDuration.toFixed(2)}s), waiting...`);
               // Try again after more buffer builds up
               hasJumpedToLiveRef.current = false;
             }
-          }, 1000); // Wait 1 second for buffer to build
+          }, 2000); // Wait 2 seconds for buffer to build (increased from 1s)
         }
 
         // Reset error counts on successful playback - stream is working

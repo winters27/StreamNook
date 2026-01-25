@@ -13,6 +13,10 @@ export interface Emote {
   emote_type?: string;
   /** Owner/broadcaster ID for subscription emotes */
   owner_id?: string;
+  /** Owner/author display name for emote attribution */
+  owner_name?: string;
+  /** Emote width in pixels (for aspect ratio sorting) */
+  width?: number;
 }
 
 export interface EmoteSet {
@@ -28,10 +32,14 @@ const cachedEmoteFiles: Map<string, string> = new Map();
 // Pending downloads to prevent duplicate requests
 const pendingDownloads: Map<string, Promise<string | null>> = new Map();
 
-// Queue system for downloads
+// Queue system for downloads - balanced approach
+// Caching is a background optimization, NOT blocking for the user
 const MAX_CONCURRENT_DOWNLOADS = 3;
+const MIN_DELAY_BETWEEN_DOWNLOADS_MS = 50; // Minimal gap between downloads
 const downloadQueue: Array<{ id: string, url: string }> = [];
 let activeDownloads = 0;
+let processingScheduled = false;
+let lastDownloadTime = 0;
 
 // Settings cache
 let cachedSettings: { enabled: boolean; expiryDays: number } | null = null;
@@ -53,6 +61,32 @@ async function getEmoteCacheSettings(): Promise<{ enabled: boolean; expiryDays: 
   }
 }
 
+// Schedule queue processing during idle time to avoid UI stutters
+// Uses a very long timeout to ensure we only cache when truly idle
+function scheduleQueueProcessing() {
+  if (processingScheduled || downloadQueue.length === 0) return;
+  processingScheduled = true;
+  
+  // Calculate how long to wait before next download
+  const timeSinceLastDownload = Date.now() - lastDownloadTime;
+  const delayNeeded = Math.max(0, MIN_DELAY_BETWEEN_DOWNLOADS_MS - timeSinceLastDownload);
+  
+  if (typeof requestIdleCallback === 'function') {
+    // Wait for minimum delay, then wait for true idle
+    setTimeout(() => {
+      requestIdleCallback(() => {
+        processingScheduled = false;
+        processDownloadQueue();
+      }, { timeout: 10000 }); // 10 second timeout - very patient
+    }, delayNeeded);
+  } else {
+    setTimeout(() => {
+      processingScheduled = false;
+      processDownloadQueue();
+    }, delayNeeded + 200);
+  }
+}
+
 async function processDownloadQueue() {
   if (activeDownloads >= MAX_CONCURRENT_DOWNLOADS || downloadQueue.length === 0) {
     return;
@@ -62,6 +96,7 @@ async function processDownloadQueue() {
   if (!next) return;
 
   activeDownloads++;
+  lastDownloadTime = Date.now();
 
   try {
     await downloadEmoteIfNeeded(next.id, next.url);
@@ -69,7 +104,8 @@ async function processDownloadQueue() {
     console.debug(`[EmoteService] Error processing queue item ${next.id}:`, e);
   } finally {
     activeDownloads--;
-    processDownloadQueue();
+    // Schedule next batch during idle time with delay
+    scheduleQueueProcessing();
   }
 }
 
@@ -111,13 +147,19 @@ async function downloadEmoteIfNeeded(id: string, url: string): Promise<string | 
   return downloadPromise;
 }
 
-export function queueEmoteForCaching(id: string, url: string) {
+export function queueEmoteForCaching(id: string, url: string, priority: boolean = false) {
   if (cachedEmoteFiles.has(id) || pendingDownloads.has(id) || downloadQueue.some(item => item.id === id)) {
     return;
   }
 
-  downloadQueue.push({ id, url });
-  processDownloadQueue();
+  // Priority items go to front of queue (for search results)
+  if (priority) {
+    downloadQueue.unshift({ id, url });
+  } else {
+    downloadQueue.push({ id, url });
+  }
+  // Schedule during idle time to avoid stuttering during scroll
+  scheduleQueueProcessing();
 }
 
 export function getCachedEmoteUrl(id: string): string | undefined {
@@ -156,49 +198,35 @@ export function preloadChannelEmotes(emotes: Emote[]) {
 
   console.log(`[EmoteService] Browser preload: ${cached.length} cached, ${remote.length} remote`);
 
-  if (cached.length > 0) {
-    preloadImagesIntoMemory(cached.map(e => e.localUrl!));
-  }
+  // Preload all immediately - browser handles connection throttling
+  const allUrls = [
+    ...cached.map(e => e.localUrl!),
+    ...remote.map(e => e.url)
+  ];
 
-  if (remote.length > 0 && typeof window.requestIdleCallback === 'function') {
-    // @ts-ignore
-    window.requestIdleCallback(() => {
-      preloadImagesIntoMemory(remote.map(e => e.url));
-    }, { timeout: 2000 });
-  }
-}
-
-function preloadImagesIntoMemory(urls: string[]) {
-  const CHUNK_SIZE = 10;
-  let index = 0;
-
-  function processChunk() {
-    const chunk = urls.slice(index, index + CHUNK_SIZE);
-    if (chunk.length === 0) return;
-
-    chunk.forEach(url => {
-      const img = new Image();
-      img.src = url;
-    });
-
-    index += CHUNK_SIZE;
-    if (index < urls.length) {
-      setTimeout(processChunk, 50);
-    }
-  }
-
-  processChunk();
+  // Fire all preloads immediately - no chunking delays
+  // Browser will naturally queue based on connection limits
+  allUrls.forEach(url => {
+    const img = new Image();
+    img.src = url;
+  });
 }
 
 /**
  * Fetch all emotes for a channel using the high-performance Rust backend
  * This performs concurrent fetching from BTTV, 7TV, and FFZ with serde JSON parsing
  * Also fetches user-specific Twitch emotes (subscriptions, drops, etc.) if authenticated
+ * 
+ * IMPORTANT: This is "content-first" - we return emotes with CDN URLs immediately.
+ * Local cached URLs are only used if they're already in memory (non-blocking).
+ * Background caching happens when emotes are displayed via onLoad handlers.
  */
 export async function fetchAllEmotes(channelName?: string, channelId?: string): Promise<EmoteSet> {
+  // AWAIT cache initialization to ensure cached files are found
+  // This populates cachedEmoteFiles so local URLs can be used
   await ensureEmoteFileCache();
 
-  console.log('[EmoteService] Fetching emotes via Rust backend for channel:', channelName, 'ID:', channelId);
+  console.log('[EmoteService] Fetching emotes via Rust backend for channel:', channelName, 'ID:', channelId, 'Cached files:', cachedEmoteFiles.size);
 
   try {
     // Try to get the auth token for user-specific Twitch emotes
@@ -217,9 +245,11 @@ export async function fetchAllEmotes(channelName?: string, channelId?: string): 
       accessToken,
     });
 
-    // Enhance with local URLs if available
+    // Enhance with local URLs ONLY if they're already cached (non-blocking lookup)
+    // The browser will load from CDN if localUrl is undefined
     const enhanceWithLocalUrls = (emotes: Emote[]) => {
       return emotes.map(emote => {
+        // Only use cached path if it's already in memory - no blocking
         const localPath = cachedEmoteFiles.get(emote.id);
         return {
           ...emote,
@@ -235,12 +265,22 @@ export async function fetchAllEmotes(channelName?: string, channelId?: string): 
       ffz: enhanceWithLocalUrls(emoteSet.ffz),
     };
 
+    // Count how many emotes got local URLs
+    const countLocalUrls = (emotes: Emote[]) => emotes.filter(e => e.localUrl).length;
+    const localUrlCounts = {
+      twitch: countLocalUrls(enhancedSet.twitch),
+      bttv: countLocalUrls(enhancedSet.bttv),
+      '7tv': countLocalUrls(enhancedSet['7tv']),
+      ffz: countLocalUrls(enhancedSet.ffz),
+    };
+
     console.log('[EmoteService] Fetched emotes from Rust:', {
       twitch: enhancedSet.twitch.length,
       bttv: enhancedSet.bttv.length,
       '7tv': enhancedSet['7tv'].length,
       ffz: enhancedSet.ffz.length,
-      cached: cachedEmoteFiles.size
+      cachedFilesInMemory: cachedEmoteFiles.size,
+      localUrlsAssigned: localUrlCounts,
     });
 
     return enhancedSet;

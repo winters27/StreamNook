@@ -11,6 +11,10 @@ const proxiedEmojiCache = new Map<string, string>();
 // Pending emoji fetches (to avoid duplicate requests)
 const pendingEmojiFetches = new Set<string>();
 
+// Cache for failed emoji fetches (codepoints that returned 404)
+// These are permanently excluded from re-fetching
+const failedEmojiCodepoints = new Set<string>();
+
 // Queue for batch emoji caching
 let emojiCacheQueue: string[] = [];
 let emojiCacheFlushTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -20,8 +24,8 @@ let emojiCacheFlushTimeout: ReturnType<typeof setTimeout> | null = null;
  * This fetches the image through Rust to bypass tracking prevention
  */
 export function queueEmojiForCaching(codepoint: string) {
-    // Skip if already cached or pending
-    if (proxiedEmojiCache.has(codepoint) || pendingEmojiFetches.has(codepoint)) {
+    // Skip if already cached, pending, or previously failed
+    if (proxiedEmojiCache.has(codepoint) || pendingEmojiFetches.has(codepoint) || failedEmojiCodepoints.has(codepoint)) {
         return;
     }
 
@@ -52,7 +56,9 @@ async function flushEmojiCacheQueue() {
                 const dataUrl = await invoke<string>('get_emoji_image', { codepoint });
                 proxiedEmojiCache.set(codepoint, dataUrl);
             } catch (error) {
-                console.warn(`[EmojiService] Failed to cache emoji ${codepoint}:`, error);
+                // Add to failed cache to prevent re-queueing
+                failedEmojiCodepoints.add(codepoint);
+                console.warn(`[EmojiService] Failed to cache emoji ${codepoint} (will not retry):`, error);
             } finally {
                 pendingEmojiFetches.delete(codepoint);
             }

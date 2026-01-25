@@ -2,6 +2,7 @@ import React, { useRef, useEffect, useCallback, memo } from 'react';
 import ChatMessage from './ChatMessage';
 import { EmoteSet } from '../services/emoteService';
 import { BackendChatMessage } from '../services/twitchChat';
+import { ModerationContext } from '../hooks/useTwitchChat';
 
 interface ChatMessageListProps {
   messages: (string | BackendChatMessage)[];
@@ -21,7 +22,7 @@ interface ChatMessageListProps {
   onBadgeClick: (badgeKey: string, badgeInfo: any) => void;
   highlightedMessageId: string | null;
   deletedMessageIds: Set<string>;
-  clearedUserIds: Set<string>;
+  clearedUserContexts: Map<string, ModerationContext>;
   emotes: EmoteSet | null;
   getMessageId: (message: string | BackendChatMessage) => string | null;
 }
@@ -48,7 +49,7 @@ const ChatMessageList = memo(function ChatMessageList({
   onBadgeClick,
   highlightedMessageId,
   deletedMessageIds,
-  clearedUserIds,
+  clearedUserContexts,
   emotes,
   getMessageId,
 }: ChatMessageListProps) {
@@ -219,16 +220,18 @@ const ChatMessageList = memo(function ChatMessageList({
         {messages.map((message, index) => {
           const messageId = getMessageId(message);
           
-          // Check if message is deleted
-          let isDeleted = false;
+          // Check if message is deleted/moderated
+          let moderationContext: ModerationContext | null = null;
+          
           if (messageId && deletedMessageIds.has(messageId)) {
-            isDeleted = true;
+            // Single message deleted by mod
+            moderationContext = { type: 'deleted' };
           } else {
             const userId = typeof message !== 'string'
               ? message.user_id
               : message.match(/user-id=([^;]+)/)?.[1];
-            if (userId && clearedUserIds.has(userId)) {
-              isDeleted = true;
+            if (userId && clearedUserContexts.has(userId)) {
+              moderationContext = clearedUserContexts.get(userId)!;
             }
           }
 
@@ -251,7 +254,7 @@ const ChatMessageList = memo(function ChatMessageList({
                 onUsernameClick={onUsernameClick}
                 onReplyClick={onReplyClick}
                 isHighlighted={highlightedMessageId === messageId}
-                isDeleted={isDeleted}
+                moderationContext={moderationContext}
                 onEmoteRightClick={onEmoteRightClick}
                 onUsernameRightClick={onUsernameRightClick}
                 onBadgeClick={onBadgeClick}

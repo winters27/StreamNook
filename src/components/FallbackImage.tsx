@@ -20,13 +20,11 @@ export const FallbackImage: React.FC<FallbackImageProps> = ({
 }) => {
   const [currentSrc, setCurrentSrc] = useState(src);
   const [fallbackIndex, setFallbackIndex] = useState(0);
-  const [hasLoaded, setHasLoaded] = useState(false);
 
   // Reset state when src changes
   useEffect(() => {
     setCurrentSrc(src);
     setFallbackIndex(0);
-    setHasLoaded(false);
   }, [src]);
 
   const handleError = (e: React.SyntheticEvent<HTMLImageElement>) => {
@@ -42,16 +40,12 @@ export const FallbackImage: React.FC<FallbackImageProps> = ({
     }
   };
 
-  const handleLoad = () => {
-    setHasLoaded(true);
-  };
-
   return (
     <img
       {...props}
       src={currentSrc}
+      loading="lazy"
       onError={handleError}
-      onLoad={handleLoad}
     />
   );
 };

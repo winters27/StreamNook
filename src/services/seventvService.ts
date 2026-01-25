@@ -261,6 +261,11 @@ const requestGql = async ({ query }: { query: string }): Promise<any> => {
 // Track pending cosmetic downloads to prevent duplicates
 const pendingCosmeticDownloads = new Map<string, Promise<string | null>>();
 
+// Queue system for cosmetic downloads (matches emoteService/badgeImageCacheService pattern)
+const MAX_CONCURRENT_COSMETIC_DOWNLOADS = 5;
+const cosmeticDownloadQueue: Array<{ id: string, url: string }> = [];
+let activeCosmeticDownloads = 0;
+
 // Settings cache for cosmetics
 let cosmeticCacheSettings: { enabled: boolean; expiryDays: number } | null = null;
 
@@ -276,6 +281,26 @@ async function getCosmeticCacheSettings(): Promise<{ enabled: boolean; expiryDay
   } catch (e) {
     console.warn('[7TVService] Failed to load settings:', e);
     return { enabled: true, expiryDays: 7 };
+  }
+}
+
+async function processCosmeticDownloadQueue() {
+  if (activeCosmeticDownloads >= MAX_CONCURRENT_COSMETIC_DOWNLOADS || cosmeticDownloadQueue.length === 0) {
+    return;
+  }
+
+  const next = cosmeticDownloadQueue.shift();
+  if (!next) return;
+
+  activeCosmeticDownloads++;
+
+  try {
+    await downloadCosmeticIfNeeded(next.id, next.url);
+  } catch (e) {
+    console.debug(`[7TVService] Error processing queue item ${next.id}:`, e);
+  } finally {
+    activeCosmeticDownloads--;
+    processCosmeticDownloadQueue();
   }
 }
 
@@ -326,12 +351,16 @@ export function queueCosmeticForCaching(id: string, url: string) {
   if ((cachedCosmeticFiles && cachedCosmeticFiles[id]) || pendingCosmeticDownloads.has(id)) {
     return;
   }
-  downloadCosmeticIfNeeded(id, url).catch(() => {
-    // Silent fail
-  });
+  if (cosmeticDownloadQueue.some(item => item.id === id)) {
+    return;
+  }
+  cosmeticDownloadQueue.push({ id, url });
+  processCosmeticDownloadQueue();
 }
 
 // Fetch user cosmetics from 7TV v4 API
+// IMPORTANT: This is "content-first" - we don't block on cache initialization.
+// Cosmetics load from CDN immediately, cached URLs used only if already in memory.
 export async function getUserCosmetics(twitchId: string): Promise<UserCosmeticsResponse | null> {
   // Check cache
   const cached = userCache.get(twitchId);
@@ -341,25 +370,23 @@ export async function getUserCosmetics(twitchId: string): Promise<UserCosmeticsR
     return cached.data;
   }
 
-  // Initialize cached files map if needed
-  if (cachedCosmeticFiles === null) {
-    if (filesInitializationPromise) {
-      await filesInitializationPromise;
-    } else {
-      filesInitializationPromise = (async () => {
-        try {
-          cachedCosmeticFiles = await invoke('get_cached_files', { cacheType: 'cosmetic' });
-        } catch (e) {
-          console.warn('Failed to get cached cosmetic files:', e);
-          cachedCosmeticFiles = {};
-        } finally {
-          filesInitializationPromise = null;
-        }
-      })();
-      await filesInitializationPromise;
-    }
+  // Start cache initialization in the background (non-blocking)
+  // This populates cachedCosmeticFiles for future lookups
+  if (cachedCosmeticFiles === null && !filesInitializationPromise) {
+    filesInitializationPromise = (async () => {
+      try {
+        cachedCosmeticFiles = await invoke('get_cached_files', { cacheType: 'cosmetic' });
+      } catch (e) {
+        console.warn('Failed to get cached cosmetic files:', e);
+        cachedCosmeticFiles = {};
+      } finally {
+        filesInitializationPromise = null;
+      }
+    })();
+    // DON'T await - let it run in background
   }
 
+  // Use whatever cached files are already available (may be empty object initially)
   const cachedFiles = cachedCosmeticFiles || {};
 
   // Check if there's already a pending request for this user
@@ -395,7 +422,7 @@ export async function getUserCosmetics(twitchId: string): Promise<UserCosmeticsR
             paintData.selected = true;
           }
 
-          // Attach local URLs to image layers
+          // Attach local URLs to image layers ONLY if already cached (non-blocking)
           if (paintData.data?.layers) {
             for (const layer of paintData.data.layers) {
               if (layer.ty.__typename === 'PaintLayerTypeImage' && layer.ty.images) {
@@ -424,7 +451,7 @@ export async function getUserCosmetics(twitchId: string): Promise<UserCosmeticsR
           badgeData.selected = true;
         }
 
-        // Attach local URL
+        // Attach local URL ONLY if already cached (non-blocking lookup)
         const localPath = cachedFiles[badgeData.id];
         if (localPath) {
           badgeData.localUrl = convertFileSrc(localPath);

@@ -252,6 +252,7 @@ export interface Settings {
   auto_update_on_start?: boolean; // Automatically update when app starts if update available
   compact_view?: CompactViewSettings; // Compact view preset settings
   custom_themes?: CustomTheme[]; // User-created custom themes
+  network?: NetworkSettings; // Network bandwidth test results and settings
 }
 
 export interface ReleaseNotes {
@@ -631,4 +632,103 @@ export interface HypeTrainData {
   started_at: string;
   expires_at: string;
   is_golden_kappa?: boolean;
+}
+
+// ===== Network Bandwidth Test Types =====
+
+// Phase 1: Baseline Speed Test Types
+export interface BaselineSpeedResult {
+  download_mbps: number;              // Average download speed
+  upload_mbps: number;                // Average upload speed (optional test)
+  latency_ms: number;                 // Round-trip latency
+  jitter_ms: number;                  // Latency variance
+  stability_score: number;            // 0-100 based on variance
+  test_server: string;                // CDN location used for test
+  timestamp: string;
+}
+
+// Phase 2: Twitch-Specific Test Types
+export interface BandwidthTestResult {
+  quality: string;                    // e.g., "1080p60", "720p", "480p"
+  average_video_bitrate_kbps: number; // Measured video bandwidth
+  peak_video_bitrate_kbps: number;    // Peak video bandwidth
+  buffering_events: number;           // Number of buffer stalls during test
+  chat_messages_per_second: number;   // Chat throughput at this quality
+  badge_load_time_ms: number;         // Average badge/emote load time
+  stability_score: number;            // 0-100 score based on variance
+  can_handle: boolean;                // Whether user's connection can handle this
+  baseline_utilization_percent: number; // % of baseline speed used
+}
+
+export interface BandwidthTestConfig {
+  test_duration_seconds: number;      // How long to test each quality
+  test_stream_login?: string;         // Optional specific streamer (else auto-select)
+  include_chat_test: boolean;         // Whether to measure chat bandwidth
+  include_baseline_test: boolean;     // Whether to run Phase 1 first
+  qualities_to_test: string[];        // Which qualities to test
+}
+
+export interface BandwidthTestProgress {
+  phase: 'baseline' | 'finding_stream' | 'testing_quality' | 'complete' | 'error';
+  current_quality?: string;
+  current_quality_index?: number;
+  total_qualities: number;
+  elapsed_seconds: number;
+  message: string;
+  // Baseline results (available after Phase 1)
+  baseline_result?: BaselineSpeedResult;
+  // Test stream info (available after finding stream)
+  test_stream_login?: string;
+  test_stream_id?: string;
+}
+
+export interface BandwidthTestSummary {
+  // Phase 1 results
+  baseline: BaselineSpeedResult;
+  
+  // Phase 2 results  
+  test_stream_name: string;
+  test_stream_viewers: number;
+  quality_results: BandwidthTestResult[];
+  
+  // Analysis
+  recommended_video_quality: string;
+  recommended_badge_quality: 'high' | 'medium' | 'low';
+  recommended_emote_quality: 'high' | 'medium' | 'low';
+  network_stability: 'excellent' | 'good' | 'fair' | 'poor';
+  
+  // Comparison insights
+  twitch_vs_baseline_ratio: number;   // How much of baseline Twitch uses
+  potential_throttling: boolean;      // True if Twitch << baseline
+  
+  timestamp: string;
+}
+
+export interface NetworkSettings {
+  // Baseline test results
+  last_baseline_result?: BaselineSpeedResult;
+  
+  // Recommendation results (persisted after test)
+  last_test_timestamp?: string;
+  recommended_quality?: string;
+  recommended_badge_quality?: 'high' | 'medium' | 'low';
+  recommended_emote_quality?: 'high' | 'medium' | 'low';
+  
+  // User overrides
+  use_recommended_settings?: boolean;
+  
+  // Test history (last N full test summaries for trend analysis)
+  test_history?: BandwidthTestHistoryEntry[];
+}
+
+/** Slimmed-down test history entry for storage efficiency */
+export interface BandwidthTestHistoryEntry {
+  timestamp: string;
+  download_mbps: number;
+  upload_mbps: number;
+  latency_ms: number;
+  stability_score: number;
+  recommended_quality: string;
+  network_stability: 'excellent' | 'good' | 'fair' | 'poor';
+  had_throttling: boolean;
 }

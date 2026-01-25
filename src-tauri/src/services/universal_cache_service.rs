@@ -672,6 +672,94 @@ pub fn clear_universal_cache() -> Result<()> {
     Ok(())
 }
 
+/// One-time emote cache migration token
+/// This token triggers cache clearing exactly once when upgrading.
+/// After migration completes, the token is written to disk and never triggers again.
+/// UPDATE: Changed token to force re-migration with manifest clearing
+const EMOTE_CACHE_MIGRATION_TOKEN: &str = "AVIF_MIGRATION_2024_V2";
+
+/// Migrate emote cache if migration token not yet applied
+/// This is a ONE-TIME migration - it clears the cache once, then never again.
+pub fn migrate_emote_cache_on_version_change(_current_version: &str) -> Result<bool> {
+    let cache_dir = get_universal_cache_dir()?;
+    let version_file = cache_dir.join(".emote_cache_version");
+
+    // Read stored token
+    let stored_token = if version_file.exists() {
+        fs::read_to_string(&version_file)
+            .unwrap_or_default()
+            .trim()
+            .to_string()
+    } else {
+        String::new()
+    };
+
+    // If migration token not applied yet, clear cache and write token
+    if stored_token != EMOTE_CACHE_MIGRATION_TOKEN {
+        println!(
+            "[UniversalCache] One-time emote cache migration: '{}' -> '{}'",
+            if stored_token.is_empty() {
+                "<none>"
+            } else {
+                &stored_token
+            },
+            EMOTE_CACHE_MIGRATION_TOKEN
+        );
+
+        // Clear only the emotes directory
+        let emotes_dir = cache_dir.join("emotes");
+        if emotes_dir.exists() {
+            fs::remove_dir_all(&emotes_dir)?;
+            fs::create_dir_all(&emotes_dir)?;
+            println!("[UniversalCache] Emote cache directory cleared for one-time migration");
+        }
+
+        // Also clear emote entries from manifest to prevent stale references
+        let manifest_path = cache_dir.join("manifest.json");
+        if manifest_path.exists() {
+            if let Ok(mut manifest) = load_manifest() {
+                let initial_count = manifest.entries.len();
+
+                // Remove all emote-type entries and file:emote entries
+                manifest.entries.retain(|key, entry| {
+                    // Keep non-emote entries
+                    if entry.cache_type != CacheType::Emote {
+                        // Also check for file: prefixed emote entries
+                        if key.starts_with("file:") {
+                            // Check if it's an emote file by path or type
+                            if let Some(path) =
+                                entry.data.get("local_path").and_then(|p| p.as_str())
+                            {
+                                if path.contains("/emotes/") || path.contains("\\emotes\\") {
+                                    return false; // Remove emote files
+                                }
+                            }
+                        }
+                        return true;
+                    }
+                    false // Remove emote entries
+                });
+
+                let removed_count = initial_count - manifest.entries.len();
+                if removed_count > 0 {
+                    let _ = save_manifest(&manifest);
+                    println!(
+                        "[UniversalCache] Cleared {} emote entries from manifest",
+                        removed_count
+                    );
+                }
+            }
+        }
+
+        // Write migration token (prevents re-triggering on future updates)
+        fs::write(&version_file, EMOTE_CACHE_MIGRATION_TOKEN)?;
+
+        return Ok(true);
+    }
+
+    Ok(false)
+}
+
 /// Cache a file from a URL
 pub async fn cache_file(
     cache_type: CacheType,

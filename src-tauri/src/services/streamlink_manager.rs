@@ -476,7 +476,22 @@ impl StreamlinkManager {
             cmd.args(args.split_whitespace());
         }
 
-        let output = cmd.output().await.context("Failed to run Streamlink")?;
+        println!("[Streamlink] Executing command...");
+
+        // Add timeout to prevent hanging if Streamlink or proxy servers are unresponsive
+        // Use tokio::time::timeout to limit how long we wait for Streamlink
+        let timeout_duration = std::time::Duration::from_secs(30);
+        let output = tokio::time::timeout(timeout_duration, cmd.output())
+            .await
+            .map_err(|_| anyhow::anyhow!(
+                "Streamlink timed out after 30 seconds. This may be due to slow proxy servers or network issues. Try disabling ttvlol plugin or check your network connection."
+            ))?
+            .context("Failed to run Streamlink")?;
+
+        println!(
+            "[Streamlink] Command completed with status: {:?}",
+            output.status
+        );
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);

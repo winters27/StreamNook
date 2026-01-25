@@ -23,6 +23,12 @@ pub struct Emote {
     /// Owner/broadcaster ID for subscription emotes
     #[serde(skip_serializing_if = "Option::is_none")]
     pub owner_id: Option<String>,
+    /// Owner/author display name for emote attribution
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_name: Option<String>,
+    /// Emote width in pixels (for aspect ratio sorting - wide emotes > 32)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -337,6 +343,8 @@ impl EmoteService {
                             local_url: None,
                             emote_type,
                             owner_id,
+                            width: None,
+                            owner_name: None,
                         });
                     }
                 }
@@ -397,6 +405,8 @@ impl EmoteService {
                                     local_url: None,
                                     emote_type: None,
                                     owner_id: None,
+                                    width: None,
+                                    owner_name: None,
                                 });
                             }
                         }
@@ -439,6 +449,8 @@ impl EmoteService {
                                         local_url: None,
                                         emote_type: None,
                                         owner_id: None,
+                                        width: None,
+                                        owner_name: None,
                                     });
                                 }
                             }
@@ -462,6 +474,8 @@ impl EmoteService {
                                         local_url: None,
                                         emote_type: None,
                                         owner_id: None,
+                                        width: None,
+                                        owner_name: None,
                                     });
                                 }
                             }
@@ -483,7 +497,8 @@ impl EmoteService {
     ) -> Result<Vec<Emote>> {
         let mut emotes = Vec::new();
 
-        // Fetch trending 7TV emotes using GraphQL
+        // Fetch trending 7TV emotes using GraphQL (v4 API)
+        // Note: v4 API uses `defaultName` instead of `name`, and `flags` is now an object
         let gql_query = r#"
         query EmoteSearch(
             $query: String,
@@ -504,8 +519,10 @@ impl EmoteService {
                 ) {
                     items {
                         id
-                        name
-                        flags
+                        defaultName
+                        flags {
+                            zeroWidth
+                        }
                     }
                 }
             }
@@ -513,7 +530,7 @@ impl EmoteService {
         "#;
 
         let variables = serde_json::json!({
-            "filters": { "animated": true },
+            // Removed "animated": true filter to include all emotes (both static and animated)
             "page": 1,
             "perPage": 300,
             "query": null,
@@ -548,18 +565,23 @@ impl EmoteService {
                         for item in items {
                             if let (Some(id), Some(name)) = (
                                 item.get("id").and_then(|v| v.as_str()),
-                                item.get("name").and_then(|v| v.as_str()),
+                                item.get("defaultName").and_then(|v| v.as_str()),
                             ) {
-                                let flags = item.get("flags").and_then(|v| v.as_i64()).unwrap_or(0);
+                                let is_zero_width = item
+                                    .pointer("/flags/zeroWidth")
+                                    .and_then(|v| v.as_bool())
+                                    .unwrap_or(false);
                                 emotes.push(Emote {
                                     id: id.to_string(),
                                     name: name.to_string(),
-                                    url: format!("https://cdn.7tv.app/emote/{}/4x.webp", id),
+                                    url: format!("https://cdn.7tv.app/emote/{}/1x.avif", id),
                                     provider: EmoteProvider::SevenTV,
-                                    is_zero_width: Some(flags == 256),
+                                    is_zero_width: Some(is_zero_width),
                                     local_url: None,
                                     emote_type: None,
                                     owner_id: None,
+                                    width: None,
+                                    owner_name: None,
                                 });
                             }
                         }
@@ -589,12 +611,14 @@ impl EmoteService {
                                 emotes.push(Emote {
                                     id: id.to_string(),
                                     name: name.to_string(),
-                                    url: format!("https://cdn.7tv.app/emote/{}/4x.webp", id),
+                                    url: format!("https://cdn.7tv.app/emote/{}/1x.avif", id),
                                     provider: EmoteProvider::SevenTV,
                                     is_zero_width: Some(flags == 256),
                                     local_url: None,
                                     emote_type: None,
                                     owner_id: None,
+                                    width: None,
+                                    owner_name: None,
                                 });
                             }
                         }
@@ -631,15 +655,22 @@ impl EmoteService {
                                         .get("flags")
                                         .and_then(|v| v.as_i64())
                                         .unwrap_or(0);
+                                    // Extract owner display name from emote data
+                                    let owner_name = emote_data
+                                        .pointer("/owner/display_name")
+                                        .and_then(|v| v.as_str())
+                                        .map(|s| s.to_string());
                                     emotes.push(Emote {
                                         id: id.to_string(),
                                         name: name.to_string(),
-                                        url: format!("https://cdn.7tv.app/emote/{}/4x.webp", id),
+                                        url: format!("https://cdn.7tv.app/emote/{}/1x.avif", id),
                                         provider: EmoteProvider::SevenTV,
                                         is_zero_width: Some((flags & 256) == 256),
                                         local_url: None,
                                         emote_type: None,
                                         owner_id: None,
+                                        width: None,
+                                        owner_name,
                                     });
                                 }
                             }
@@ -696,6 +727,8 @@ impl EmoteService {
                                             local_url: None,
                                             emote_type: None,
                                             owner_id: None,
+                                            width: None,
+                                            owner_name: None,
                                         });
                                     }
                                 }
@@ -749,6 +782,8 @@ impl EmoteService {
                                                 local_url: None,
                                                 emote_type: None,
                                                 owner_id: None,
+                                                width: None,
+                                                owner_name: None,
                                             });
                                         }
                                     }
@@ -776,6 +811,8 @@ impl EmoteService {
                 local_url: None,
                 emote_type: None,
                 owner_id: None,
+                width: None,
+                owner_name: None,
             },
             Emote {
                 id: "354".to_string(),
@@ -786,6 +823,8 @@ impl EmoteService {
                 local_url: None,
                 emote_type: None,
                 owner_id: None,
+                width: None,
+                owner_name: None,
             },
             Emote {
                 id: "425618".to_string(),
@@ -797,6 +836,8 @@ impl EmoteService {
                 local_url: None,
                 emote_type: None,
                 owner_id: None,
+                width: None,
+                owner_name: None,
             },
             Emote {
                 id: "305954156".to_string(),
@@ -808,6 +849,8 @@ impl EmoteService {
                 local_url: None,
                 emote_type: None,
                 owner_id: None,
+                width: None,
+                owner_name: None,
             },
             Emote {
                 id: "88".to_string(),
@@ -818,6 +861,8 @@ impl EmoteService {
                 local_url: None,
                 emote_type: None,
                 owner_id: None,
+                width: None,
+                owner_name: None,
             },
             Emote {
                 id: "81273".to_string(),
@@ -828,6 +873,8 @@ impl EmoteService {
                 local_url: None,
                 emote_type: None,
                 owner_id: None,
+                width: None,
+                owner_name: None,
             },
             Emote {
                 id: "81248".to_string(),
@@ -838,6 +885,8 @@ impl EmoteService {
                 local_url: None,
                 emote_type: None,
                 owner_id: None,
+                width: None,
+                owner_name: None,
             },
             Emote {
                 id: "81249".to_string(),
@@ -848,6 +897,8 @@ impl EmoteService {
                 local_url: None,
                 emote_type: None,
                 owner_id: None,
+                width: None,
+                owner_name: None,
             },
             Emote {
                 id: "81274".to_string(),
@@ -858,6 +909,8 @@ impl EmoteService {
                 local_url: None,
                 emote_type: None,
                 owner_id: None,
+                width: None,
+                owner_name: None,
             },
             Emote {
                 id: "81997".to_string(),
@@ -868,6 +921,8 @@ impl EmoteService {
                 local_url: None,
                 emote_type: None,
                 owner_id: None,
+                width: None,
+                owner_name: None,
             },
             Emote {
                 id: "166266".to_string(),
@@ -879,6 +934,8 @@ impl EmoteService {
                 local_url: None,
                 emote_type: None,
                 owner_id: None,
+                width: None,
+                owner_name: None,
             },
             Emote {
                 id: "191762".to_string(),
@@ -890,6 +947,8 @@ impl EmoteService {
                 local_url: None,
                 emote_type: None,
                 owner_id: None,
+                width: None,
+                owner_name: None,
             },
             Emote {
                 id: "196892".to_string(),
@@ -901,6 +960,8 @@ impl EmoteService {
                 local_url: None,
                 emote_type: None,
                 owner_id: None,
+                width: None,
+                owner_name: None,
             },
             Emote {
                 id: "245".to_string(),
@@ -911,6 +972,8 @@ impl EmoteService {
                 local_url: None,
                 emote_type: None,
                 owner_id: None,
+                width: None,
+                owner_name: None,
             },
             Emote {
                 id: "1902".to_string(),
@@ -921,6 +984,8 @@ impl EmoteService {
                 local_url: None,
                 emote_type: None,
                 owner_id: None,
+                width: None,
+                owner_name: None,
             },
         ]
     }

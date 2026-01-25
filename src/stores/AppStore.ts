@@ -18,7 +18,7 @@ export interface Toast {
   createdAt: number;
 }
 
-export type SettingsTab = 'Interface' | 'Player' | 'Chat' | 'Theme' | 'Integrations' | 'Notifications' | 'Cache' | 'Support' | 'Updates' | 'Analytics';
+export type SettingsTab = 'Interface' | 'Player' | 'Chat' | 'Theme' | 'Network' | 'Integrations' | 'Notifications' | 'Cache' | 'Support' | 'Updates' | 'Analytics';
 
 export type HomeTab = 'following' | 'recommended' | 'browse' | 'search' | 'category';
 

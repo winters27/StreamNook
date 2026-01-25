@@ -24,6 +24,13 @@ interface ClearChatEvent {
   ban_duration?: number;
 }
 
+// Moderation context for cleared messages
+export interface ModerationContext {
+  type: 'timeout' | 'ban' | 'deleted';
+  duration?: number; // seconds, only for timeouts
+  username?: string; // affected user
+}
+
 export const useTwitchChat = () => {
   const [messages, setMessages] = useState<any[]>([]);
   const [isPausedForBuffer, setIsPausedForBuffer] = useState(false);
@@ -31,8 +38,8 @@ export const useTwitchChat = () => {
   const [error, setError] = useState<string | null>(null);
   // Track deleted message IDs for showing "[deleted]" styling
   const [deletedMessageIds, setDeletedMessageIds] = useState<Set<string>>(new Set());
-  // Track users whose messages are cleared (timeout/ban)
-  const [clearedUserIds, setClearedUserIds] = useState<Set<string>>(new Set());
+  // Track users whose messages are cleared (timeout/ban) with moderation context
+  const [clearedUserContexts, setClearedUserContexts] = useState<Map<string, ModerationContext>>(new Map());
 
   // Use refs for all mutable state that needs to be accessed in callbacks
   const wsRef = useRef<WebSocket | null>(null);
@@ -41,6 +48,9 @@ export const useTwitchChat = () => {
   const currentChannelRef = useRef<string | null>(null);
   const currentUserIdRef = useRef<string | null>(null);
   const isPausedForBufferRef = useRef(false);
+  // Ref for synchronous access to messages (needed for optimistic reply tags)
+  const messagesRef = useRef<any[]>([]);
+
 
   // Track the user's badge string from IRC for optimistic updates
   const userBadgesFromIrcRef = useRef<string | null>(null);
@@ -63,6 +73,11 @@ export const useTwitchChat = () => {
   useEffect(() => {
     isConnectedRef.current = isConnected;
   }, [isConnected]);
+
+  // Keep messagesRef in sync for synchronous access in sendMessage
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
 
   // Cleanup function to properly close WebSocket and clear handlers
   // Note: We do NOT call stop_chat here because the Rust backend handles its own
@@ -128,9 +143,11 @@ export const useTwitchChat = () => {
     currentChannelRef.current = channel;
     setError(null);
 
-    // Clear old messages and seen IDs
+    // Clear old messages, seen IDs, and moderation contexts
     setMessages([]);
     seenMessageIdsRef.current = new Set();
+    setDeletedMessageIds(new Set());
+    setClearedUserContexts(new Map());
 
     // Initialize badge cache BEFORE fetching IVR messages
     // This ensures historical messages have badges populated correctly
@@ -390,12 +407,30 @@ export const useTwitchChat = () => {
             // Handle CLEARCHAT event - user timed out/banned or chat cleared
             if (parsed.type === 'CLEARCHAT') {
               if (parsed.target_user_id) {
-                // User was timed out or banned - mark all their messages as deleted
-                console.log('[Chat] CLEARCHAT: User timed out/banned:', parsed.target_user, 'duration:', parsed.ban_duration);
-                setClearedUserIds(prev => {
-                  const newSet = new Set(prev);
-                  newSet.add(parsed.target_user_id);
-                  return newSet;
+                // Determine moderation type based on ban_duration
+                // If ban_duration is present (even 0), it's a timeout
+                // If ban_duration is absent/undefined, it's a permanent ban
+                const moderationType: 'timeout' | 'ban' = 
+                  parsed.ban_duration !== undefined && parsed.ban_duration !== null 
+                    ? 'timeout' 
+                    : 'ban';
+                
+                console.log(
+                  '[Chat] CLEARCHAT:', 
+                  moderationType === 'timeout' 
+                    ? `User timed out for ${parsed.ban_duration}s:` 
+                    : 'User banned:',
+                  parsed.target_user
+                );
+                
+                setClearedUserContexts(prev => {
+                  const newMap = new Map(prev);
+                  newMap.set(parsed.target_user_id, {
+                    type: moderationType,
+                    duration: parsed.ban_duration,
+                    username: parsed.target_user,
+                  });
+                  return newMap;
                 });
               } else {
                 // Full chat clear - this is rare, usually mod action
@@ -774,54 +809,54 @@ export const useTwitchChat = () => {
     const badges = userInfo.badges || userBadgesFromIrcRef.current || '';
     console.log('[Chat] Using badges for optimistic message:', badges, '(is fresh:', !!userInfo.badges, ')');
 
-    // Build reply tags if replying
+    // Build reply tags synchronously if replying
+    // Use messagesRef for synchronous access (setMessages callback is async)
     let replyTags = '';
     if (replyParentMsgId) {
-      setMessages(currentMessages => {
-        // Handle both string (IRC format) and object (JSON format) messages
-        const parentMessage = currentMessages.find(msg => {
-          if (typeof msg === 'string') {
-            return msg.includes(`id=${replyParentMsgId}`);
-          } else if (msg && typeof msg === 'object') {
-            return msg.id === replyParentMsgId;
-          }
-          return false;
-        });
+      const currentMessages = messagesRef.current;
+      
+      // Handle both string (IRC format) and object (JSON format) messages
+      const parentMessage = currentMessages.find(msg => {
+        if (typeof msg === 'string') {
+          return msg.includes(`id=${replyParentMsgId}`);
+        } else if (msg && typeof msg === 'object') {
+          return (msg as any).id === replyParentMsgId;
+        }
+        return false;
+      });
 
-        if (parentMessage) {
-          let parentDisplayName = '';
-          let parentUsername = '';
-          let parentUserId = '';
-          let parentMsgBody = '';
+      if (parentMessage) {
+        let parentDisplayName = '';
+        let parentUsername = '';
+        let parentUserId = '';
+        let parentMsgBody = '';
 
-          if (typeof parentMessage === 'string') {
-            // IRC string format
-            const parentDisplayNameMatch = parentMessage.match(/display-name=([^;]+)/);
-            const parentUsernameMatch = parentMessage.match(/:(\w+)!\w+@\w+\.tmi\.twitch\.tv PRIVMSG/);
-            const parentUserIdMatch = parentMessage.match(/user-id=([^;]+)/);
-            const parentMsgBodyMatch = parentMessage.match(/PRIVMSG #\w+ :(.+)$/);
+        if (typeof parentMessage === 'string') {
+          // IRC string format
+          const parentDisplayNameMatch = parentMessage.match(/display-name=([^;]+)/);
+          const parentUsernameMatch = parentMessage.match(/:(\w+)!\w+@\w+\.tmi\.twitch\.tv PRIVMSG/);
+          const parentUserIdMatch = parentMessage.match(/user-id=([^;]+)/);
+          const parentMsgBodyMatch = parentMessage.match(/PRIVMSG #\w+ :(.+)$/);
 
-            parentDisplayName = parentDisplayNameMatch ? parentDisplayNameMatch[1] : '';
-            parentUsername = parentUsernameMatch ? parentUsernameMatch[1] : '';
-            parentUserId = parentUserIdMatch ? parentUserIdMatch[1] : '';
-            parentMsgBody = parentMsgBodyMatch ? parentMsgBodyMatch[1] : '';
-          } else if (parentMessage && typeof parentMessage === 'object') {
-            // JSON object format
-            parentDisplayName = parentMessage.display_name || '';
-            parentUsername = parentMessage.username || '';
-            parentUserId = parentMessage.user_id || '';
-            parentMsgBody = parentMessage.content || '';
-          }
-
-          const escapedParentMsgBody = parentMsgBody.replace(/\\/g, '\\\\').replace(/;/g, '\\:').replace(/ /g, '\\s').replace(/\r/g, '\\r').replace(/\n/g, '\\n');
-
-          replyTags = `reply-parent-msg-id=${replyParentMsgId};reply-parent-user-id=${parentUserId};reply-parent-user-login=${parentUsername};reply-parent-display-name=${parentDisplayName};reply-parent-msg-body=${escapedParentMsgBody};`;
-        } else {
-          replyTags = `reply-parent-msg-id=${replyParentMsgId};`;
+          parentDisplayName = parentDisplayNameMatch ? parentDisplayNameMatch[1] : '';
+          parentUsername = parentUsernameMatch ? parentUsernameMatch[1] : '';
+          parentUserId = parentUserIdMatch ? parentUserIdMatch[1] : '';
+          parentMsgBody = parentMsgBodyMatch ? parentMsgBodyMatch[1] : '';
+        } else if (parentMessage && typeof parentMessage === 'object') {
+          // JSON object format
+          const pm = parentMessage as any;
+          parentDisplayName = pm.display_name || '';
+          parentUsername = pm.username || '';
+          parentUserId = pm.user_id || '';
+          parentMsgBody = pm.content || '';
         }
 
-        return currentMessages; // Don't modify messages in this setter
-      });
+        const escapedParentMsgBody = parentMsgBody.replace(/\\/g, '\\\\').replace(/;/g, '\\:').replace(/ /g, '\\s').replace(/\r/g, '\\r').replace(/\n/g, '\\n');
+
+        replyTags = `reply-parent-msg-id=${replyParentMsgId};reply-parent-user-id=${parentUserId};reply-parent-user-login=${parentUsername};reply-parent-display-name=${parentDisplayName};reply-parent-msg-body=${escapedParentMsgBody};`;
+      } else {
+        replyTags = `reply-parent-msg-id=${replyParentMsgId};`;
+      }
     }
 
     const optimisticMessage = `@badge-info=;badges=${badges};color=${color};display-name=${userInfo.displayName};emotes=;first-msg=0;flags=;id=${tempId};mod=0;${replyTags}returning-chatter=0;room-id=;subscriber=0;tmi-sent-ts=${timestamp};turbo=0;user-id=${userInfo.userId};user-type= :${userInfo.username}!${userInfo.username}@${userInfo.username}.tmi.twitch.tv PRIVMSG #${currentChannelRef.current} :${messageText}`;
@@ -908,5 +943,5 @@ export const useTwitchChat = () => {
     }
   }, [trimToLimit]);
 
-  return { messages, connectChat, sendMessage, isConnected, error, setPaused, deletedMessageIds, clearedUserIds };
+  return { messages, connectChat, sendMessage, isConnected, error, setPaused, deletedMessageIds, clearedUserContexts };
 };

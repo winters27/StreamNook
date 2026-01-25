@@ -70,7 +70,7 @@ const PlayerSettings = () => {
       </div>
 
       {/* Auto-Switch Settings */}
-      <div>
+      <div id="settings-section-auto-switch">
         <h3 className="text-lg font-semibold text-textPrimary border-b border-borderColor pb-2 mb-4">
           Auto-Switch
         </h3>
@@ -215,7 +215,7 @@ const PlayerSettings = () => {
       </div>
 
       {/* Custom Streamlink Location */}
-      <div className="space-y-4">
+      <div id="settings-section-streamlink-location" className="space-y-4">
         <h3 className="text-lg font-semibold text-textPrimary border-b border-borderColor pb-2">
           Custom Streamlink Location
         </h3>
@@ -275,7 +275,7 @@ const PlayerSettings = () => {
       </div>
 
       {/* Streamlink Optimization Settings */}
-      <div className="space-y-4">
+      <div id="settings-section-streamlink-optimization" className="space-y-4">
         <h3 className="text-lg font-semibold text-textPrimary border-b border-borderColor pb-2">
           Streamlink Optimization
         </h3>
@@ -446,7 +446,7 @@ const PlayerSettings = () => {
       </div>
 
       {/* Video Player Settings */}
-      <div className="space-y-4">
+      <div id="settings-section-video-player" className="space-y-4">
         <h3 className="text-lg font-semibold text-textPrimary border-b border-borderColor pb-2 mt-6">
           Video Player
         </h3>

@@ -58,7 +58,7 @@ const InterfaceSettings = () => {
             </div>
 
             {/* Sidebar Section */}
-            <div className="space-y-4">
+            <div id="settings-section-sidebar" className="space-y-4">
                 <h4 className="text-sm font-medium text-textSecondary uppercase tracking-wider">
                     Sidebar
                 </h4>
@@ -183,7 +183,9 @@ const InterfaceSettings = () => {
             </div>
 
             {/* Compact View Settings */}
-            <CompactViewSettings />
+            <div id="settings-section-compact">
+                <CompactViewSettings />
+            </div>
         </div>
     );
 };

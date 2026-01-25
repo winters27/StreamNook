@@ -27,11 +27,11 @@
 #![allow(clippy::collapsible_match)]
 
 use commands::{
-    app::*, automation::*, badge_metadata::*, badge_service::*, badges::*, cache::*, chat::*,
-    chat_identity::*, components::*, cosmetics_cache::*, discord::*, drops::*, emoji::*, emotes::*,
-    eventsub::*, hype_train::*, layout::*, logs::*, profile_cache::*, settings::*, seventv::*,
-    seventv_cosmetics::*, streaming::*, twitch::*, universal_cache::*, user_profile::*,
-    whisper_storage::*,
+    app::*, automation::*, badge_metadata::*, badge_service::*, badges::*, bandwidth_test::*,
+    cache::*, chat::*, chat_identity::*, components::*, cosmetics_cache::*, discord::*, drops::*,
+    emoji::*, emotes::*, eventsub::*, hype_train::*, layout::*, logs::*, profile_cache::*,
+    resub::*, settings::*, seventv::*, seventv_cosmetics::*, seventv_cosmetics_fetch::*,
+    streaming::*, twitch::*, universal_cache::*, user_profile::*, whisper_storage::*,
 };
 use models::settings::{AppState, Settings};
 use services::background_service::BackgroundService;
@@ -88,6 +88,21 @@ fn cleanup_update_artifacts() {
 fn main() {
     // Clean up any leftover files from previous update attempts
     cleanup_update_artifacts();
+
+    // Migrate emote cache if app version changed (handles format changes like webp → avif)
+    // This clears stale emote files that may have the old format
+    let current_version = env!("CARGO_PKG_VERSION");
+    match services::universal_cache_service::migrate_emote_cache_on_version_change(current_version)
+    {
+        Ok(migrated) => {
+            if migrated {
+                println!("[Main] ✅ Emote cache migrated for new version");
+            }
+        }
+        Err(e) => {
+            eprintln!("[Main] Failed to migrate emote cache: {}", e);
+        }
+    }
 
     // Load settings from our custom location in the same directory as cache
     let settings = load_settings_from_file().unwrap_or_else(|_| Settings::default());
@@ -499,6 +514,9 @@ fn main() {
             set_seventv_badge,
             open_seventv_login_window,
             receive_seventv_token,
+            // 7TV Global Cosmetics commands
+            get_all_seventv_badges,
+            get_all_seventv_paints,
             // Automation commands
             automate_connection,
             scrape_whispers,
@@ -532,6 +550,11 @@ fn main() {
             // Hype Train commands
             get_hype_train_status,
             get_bulk_hype_train_status,
+            // Bandwidth Test commands
+            run_baseline_speed_test,
+            // Resub notification commands
+            get_resub_notification,
+            use_resub_token,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

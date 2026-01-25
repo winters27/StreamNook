@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { MessageCircle, UserPlus, UserMinus, Loader2, ChevronDown, ChevronUp } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../stores/AppStore';
-import { computePaintStyle, getBadgeImageUrls, getBadgeFallbackUrls } from '../services/seventvService';
+import { computePaintStyle, getBadgeImageUrls, getBadgeFallbackUrls, queueCosmeticForCaching } from '../services/seventvService';
 import { FallbackImage } from './FallbackImage';
 import { formatIVRDate, formatSubTenure } from '../services/ivrService';
 import {
@@ -255,6 +255,30 @@ const UserProfileCard = ({
     selectedPaint ? computePaintStyle(selectedPaint as any, color) : { color }, 
     [selectedPaint, color]
   );
+
+  // Reactive caching for 7TV cosmetics displayed in profile
+  useEffect(() => {
+    // Cache 7TV badges
+    const badges = cachedProfile?.seventvCosmetics?.badges || profileData?.seventv_cosmetics?.badges || [];
+    badges.forEach((badge: any) => {
+      if (badge?.id && !badge.localUrl) {
+        const badgeUrl = `https://cdn.7tv.app/badge/${badge.id}/4x`;
+        queueCosmeticForCaching(badge.id, badgeUrl);
+      }
+    });
+    
+    // Cache paint image layers
+    if (selectedPaint?.data?.layers) {
+      selectedPaint.data.layers.forEach((layer: any) => {
+        if (layer.ty?.__typename === 'PaintLayerTypeImage' && layer.ty.images) {
+          const img = layer.ty.images.find((i: any) => i.scale === 1) || layer.ty.images[0];
+          if (img && !img.localUrl) {
+            queueCosmeticForCaching(layer.id, img.url);
+          }
+        }
+      });
+    }
+  }, [cachedProfile?.seventvCosmetics?.badges, profileData?.seventv_cosmetics?.badges, selectedPaint]);
 
   const formatDate = (ds: string) => new Date(ds).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
 

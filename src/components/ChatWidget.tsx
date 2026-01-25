@@ -21,9 +21,11 @@ import UserProfileCard from './UserProfileCard';
 import ErrorBoundary from './ErrorBoundary';
 import PredictionOverlay from './PredictionOverlay';
 import ChannelPointsMenu from './ChannelPointsMenu';
+import ResubNotificationBanner, { ResubNotification } from './ResubNotificationBanner';
 import { fetchAllEmotes, Emote, EmoteSet, preloadChannelEmotes, queueEmoteForCaching } from '../services/emoteService';
 import { preloadThirdPartyBadgeDatabases } from '../services/thirdPartyBadges';
 import { initializeBadges, getBadgeInfo } from '../services/twitchBadges';
+import { initializeBadgeImageCache } from '../services/badgeImageCacheService';
 import { parseMessage } from '../services/twitchChat';
 import { fetchStreamViewerCount } from '../services/twitchService';
 import {
@@ -36,6 +38,8 @@ import {
 } from '../services/favoriteEmoteService';
 import { getAppleEmojiUrl } from '../services/emojiService';
 import { fetchRecentMessagesAsIRC } from '../services/ivrService';
+import { useChatUserStore } from '../stores/chatUserStore';
+import MentionAutocomplete from './MentionAutocomplete';
 
 import { BackendChatMessage } from '../services/twitchChat';
 
@@ -63,7 +67,105 @@ const formatHypeTrainTimeRemaining = (expiresAt: string): string => {
   return `${seconds}s`;
 };
 
-// Unhinged celebration messages for level-up (module-level constant to avoid re-renders)
+// Emote Grid Item - TRUE lazy loading with IntersectionObserver
+// Image src only set when element enters viewport
+const EmoteGridItem = memo(({ emote, isFavorited, onInsert, onToggleFavorite }: {
+  emote: Emote;
+  isFavorited: boolean;
+  onInsert: () => void;
+  onToggleFavorite: () => void;
+}) => {
+  const [isHovered, setIsHovered] = useState(false);
+  const [isVisible, setIsVisible] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+  
+  // IntersectionObserver to detect when emote scrolls into view
+  useEffect(() => {
+    const element = containerRef.current;
+    if (!element) return;
+    
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach(entry => {
+          if (entry.isIntersecting) {
+            setIsVisible(true);
+            observer.disconnect(); // Once visible, stop observing
+          }
+        });
+      },
+      { rootMargin: '100px' } // Start loading 100px before entering viewport
+    );
+    
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+  
+  return (
+    <div 
+      ref={containerRef}
+      className="relative group"
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+    >
+      <button onClick={onInsert} className="flex items-center justify-center p-1 min-w-8 min-h-8 hover:bg-glass rounded transition-colors">
+        {isVisible ? (
+          <img
+            src={emote.localUrl || emote.url}
+            alt={emote.name}
+            referrerPolicy="no-referrer"
+            className="h-8 w-auto max-w-[64px] object-contain"
+            onError={(e) => {
+              const target = e.currentTarget;
+              if (emote.localUrl && target.src !== emote.url) {
+                target.src = emote.url;
+              } else {
+                target.style.opacity = '0.3';
+              }
+            }}
+          />
+        ) : (
+          // Placeholder while not visible - same size to prevent layout shift
+          <div className="h-8 w-8 bg-glass/30 rounded animate-pulse" />
+        )}
+      </button>
+      {/* Tooltip - only renders when hovered to avoid preloading 4x images */}
+      {isHovered && (
+        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 pointer-events-none" style={{ zIndex: 2147483647 }}>
+          <div className="glass-panel border border-borderSubtle rounded-lg p-3 shadow-2xl min-w-[120px]" style={{ backgroundColor: 'var(--color-background)', borderColor: 'var(--color-border-subtle)' }}>
+            <img
+              src={emote.provider === '7tv' ? `https://cdn.7tv.app/emote/${emote.id}/4x.avif` : (emote.localUrl || emote.url)}
+              alt={emote.name}
+              className="h-16 w-auto max-w-[96px] object-contain mx-auto"
+              onError={(e) => {
+                if (emote.provider === '7tv') {
+                  const target = e.currentTarget;
+                  const src = target.src;
+                  if (src.includes('/4x.avif')) target.src = `https://cdn.7tv.app/emote/${emote.id}/2x.avif`;
+                  else if (src.includes('/2x.avif')) target.src = `https://cdn.7tv.app/emote/${emote.id}/1x.avif`;
+                }
+              }}
+            />
+            <div className="mt-2 text-center">
+              <div className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>{emote.name}</div>
+              <div className="text-[10px]" style={{ color: 'var(--color-text-secondary)' }}>
+                {emote.owner_name ? `by ${emote.owner_name}` : emote.provider}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+      <button 
+        onClick={(e) => { e.stopPropagation(); onToggleFavorite(); }} 
+        className={`absolute top-0 right-0 p-1 rounded-bl transition-all ${isFavorited ? 'text-yellow-400 opacity-100' : 'text-textSecondary opacity-0 group-hover:opacity-100'} hover:text-yellow-400 hover:bg-glass`} 
+        title={isFavorited ? 'Remove from favorites' : 'Add to favorites'}
+      >
+        <svg className="w-3 h-3" fill={isFavorited ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth={2} viewBox="0 0 20 20">
+          <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
+        </svg>
+      </button>
+    </div>
+  );
+});
 const HYPE_MESSAGES = [
   // Classic hype
   'HYYYYPE! 🚂',
@@ -128,7 +230,7 @@ const HYPE_MESSAGES = [
 ];
 
 const ChatWidget = () => {
-  const { messages, connectChat, sendMessage, isConnected, error, setPaused: setBufferPaused, deletedMessageIds, clearedUserIds } = useTwitchChat();
+  const { messages, connectChat, sendMessage, isConnected, error, setPaused: setBufferPaused, deletedMessageIds, clearedUserContexts } = useTwitchChat();
   const { currentStream, currentUser, currentHypeTrain } = useAppStore();
   
   // UI state
@@ -139,7 +241,8 @@ const ChatWidget = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [isLoadingEmotes, setIsLoadingEmotes] = useState(false);
   const [favoriteEmotes, setFavoriteEmotes] = useState<Emote[]>([]);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const emoteScrollRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const [isPaused, setIsPaused] = useState(false);
   const [pausedMessageCount, setPausedMessageCount] = useState(0);
   const isHoveringChatRef = useRef<boolean>(false);
@@ -167,11 +270,29 @@ const ChatWidget = () => {
   } | null>(null);
   const userMessageHistory = useRef<Map<string, ParsedMessage[]>>(new Map());
   const connectedChannelRef = useRef<string | null>(null);
+
+  // Warm up badge cache on mount (non-blocking, runs before messages render)
+  useEffect(() => {
+    initializeBadgeImageCache();
+  }, []);
   const lastProcessedCountRef = useRef<number>(0);
   const messageIdToIndexRef = useRef<Map<string, number>>(new Map());
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
   const [isSharedChat, setIsSharedChat] = useState<boolean>(false);
   const [replyingTo, setReplyingTo] = useState<{ messageId: string; username: string } | null>(null);
+
+  // @ mention autocomplete state
+  const [showMentionAutocomplete, setShowMentionAutocomplete] = useState(false);
+  const [mentionQuery, setMentionQuery] = useState('');
+  const [mentionSelectedIndex, setMentionSelectedIndex] = useState(0);
+  const [mentionStartPosition, setMentionStartPosition] = useState<number | null>(null);
+  const { addUser, getMatchingUsers, clearUsers } = useChatUserStore();
+
+  // Resub notification state
+  const [resubNotification, setResubNotification] = useState<ResubNotification | null>(null);
+  const [isResubMode, setIsResubMode] = useState(false);
+  const [includeStreak, setIncludeStreak] = useState(false);
+  const [resubDismissed, setResubDismissed] = useState(false);
 
   // Drops mining state
   const [dropsCampaign, setDropsCampaign] = useState<{ id: string; name: string; game_name: string } | null>(null);
@@ -201,6 +322,9 @@ const ChatWidget = () => {
         let parsed: ParsedMessage;
         let msgId: string | undefined;
         let userId: string | undefined;
+        let username: string | undefined;
+        let displayName: string | undefined;
+        let userColor: string | undefined;
 
         if (typeof message === 'string') {
           const channelIdMatch = message.match(/room-id=([^;]+)/);
@@ -208,11 +332,17 @@ const ChatWidget = () => {
           parsed = parseMessage(message, channelId);
           msgId = parsed.tags.get('id');
           userId = parsed.tags.get('user-id');
+          username = parsed.username;
+          displayName = parsed.tags.get('display-name') || parsed.username;
+          userColor = parsed.color;
         } else {
           // Backend message object
           parsed = parseMessage(message);
           msgId = message.id;
           userId = message.tags['user-id'] || message.user_id;
+          username = message.username;
+          displayName = message.display_name || message.username;
+          userColor = message.color || parsed.color;
         }
 
         if (msgId) {
@@ -224,13 +354,23 @@ const ChatWidget = () => {
           history.push(parsed);
           if (history.length > 50) history.shift();
           userMessageHistory.current.set(userId, history);
+          
+          // Add user to mention autocomplete store
+          if (username && displayName) {
+            addUser({
+              userId,
+              username,
+              displayName,
+              color: userColor || '#9147FF',
+            });
+          }
         }
       } catch (err) {
         console.error('[ChatWidget] Failed to parse message:', err, message);
       }
     });
     lastProcessedCountRef.current = messages.length;
-  }, [messages]);
+  }, [messages, addUser]);
 
   useEffect(() => {
     let intervalId: NodeJS.Timeout;
@@ -396,6 +536,7 @@ const ChatWidget = () => {
       connectChat(currentStream.user_login, currentStream.user_id);
       loadEmotes(currentStream.user_login, currentStream.user_id);
       userMessageHistory.current.clear();
+      clearUsers(); // Clear mention autocomplete user list
       // PHASE 3: Clear Rust user message history when switching channels
       invoke('clear_user_message_history').catch(err => 
         console.warn('[ChatWidget] Failed to clear Rust user history:', err)
@@ -405,6 +546,11 @@ const ChatWidget = () => {
       setCustomPointsName(null);
       setCustomPointsIconUrl(null);
       setShowChannelPointsMenu(false);
+      // Reset resub notification state when switching channels
+      setResubNotification(null);
+      setIsResubMode(false);
+      setIncludeStreak(false);
+      setResubDismissed(false);
     }
     return () => {
       if (currentStream?.user_login !== connectedChannelRef.current) connectedChannelRef.current = null;
@@ -493,6 +639,28 @@ const ChatWidget = () => {
       fetchChannelPoints().finally(() => setIsLoadingChannelPoints(false));
     }
   }, [currentStream?.user_login, fetchChannelPoints]);
+
+  // Fetch resub notification when entering a new channel
+  useEffect(() => {
+    const fetchResubNotification = async () => {
+      if (!currentStream?.user_login || resubDismissed) return;
+      
+      try {
+        const notification = await invoke<ResubNotification | null>('get_resub_notification', {
+          channelLogin: currentStream.user_login,
+        });
+        setResubNotification(notification);
+        if (notification) {
+          console.log('[ChatWidget] Resub notification available:', notification.cumulative_tenure_months, 'months');
+        }
+      } catch (err) {
+        console.warn('[ChatWidget] Failed to fetch resub notification:', err);
+        setResubNotification(null);
+      }
+    };
+    
+    fetchResubNotification();
+  }, [currentStream?.user_login, resubDismissed]);
 
   // Listen for channel points updates from backend events
   useEffect(() => {
@@ -786,22 +954,28 @@ const ChatWidget = () => {
   const loadEmotes = async (channelName: string, channelId?: string) => {
     setIsLoadingEmotes(true);
     try {
-      // Pre-warm third-party badge databases in parallel (FFZ, Chatterino, Homies)
-      // This ensures badge lookups are instant for chat messages
+      // Start badge and third-party database loading in parallel (non-blocking)
+      // These will populate caches in the background for future lookups
       preloadThirdPartyBadgeDatabases().catch(err =>
         console.warn('[ChatWidget] Failed to preload third-party badge databases:', err)
       );
 
-      try {
-        const [clientId, token] = await invoke<[string, string]>('get_twitch_credentials');
-        await initializeBadges(clientId, token, channelId);
-      } catch (err) {
-        console.error('[ChatWidget] Failed to initialize badges:', err);
-      }
+      // Start badge initialization in the background (non-blocking)
+      invoke<[string, string]>('get_twitch_credentials')
+        .then(([clientId, token]) => initializeBadges(clientId, token, channelId))
+        .catch(err => console.warn('[ChatWidget] Badge init error (non-blocking):', err));
+
+      // PRIORITY: Fetch emotes first and display immediately
+      // This is the critical path - emotes should appear ASAP
       const emoteSet = await fetchAllEmotes(channelName, channelId);
       setEmotes(emoteSet);
+      setIsLoadingEmotes(false); // Clear loading state immediately after emotes arrive
 
-      // Fetch channel names for Twitch emote owners (for grouped display)
+      // Note: We use loading="lazy" on emote picker images instead of preloading
+      // This prevents WebView connection throttling issues with 900+ images
+
+      // BACKGROUND: Fetch channel names for Twitch emote owners (for grouped display)
+      // This can happen after emotes are already displayed
       if (emoteSet?.twitch) {
         const ownerIds = new Set<string>();
         for (const emote of emoteSet.twitch) {
@@ -810,57 +984,41 @@ const ChatWidget = () => {
           }
         }
         
-        // Fetch display names for all unique owner IDs (in parallel)
+        // Fetch display names for all unique owner IDs (in parallel, non-blocking)
         if (ownerIds.size > 0) {
           const newCache = new Map(channelNameCache);
           const idsToFetch = Array.from(ownerIds).filter(id => !newCache.has(id));
           
           if (idsToFetch.length > 0) {
             console.log(`[ChatWidget] Fetching ${idsToFetch.length} channel names for emote groups`);
-            const results = await Promise.allSettled(
+            Promise.allSettled(
               idsToFetch.map(async (id) => {
                 const user = await invoke<{ display_name: string }>('get_user_by_id', { userId: id });
                 return { id, name: user.display_name };
               })
-            );
-            
-            for (const result of results) {
-              if (result.status === 'fulfilled') {
-                newCache.set(result.value.id, result.value.name);
+            ).then(results => {
+              for (const result of results) {
+                if (result.status === 'fulfilled') {
+                  newCache.set(result.value.id, result.value.name);
+                }
               }
-            }
-            setChannelNameCache(newCache);
+              setChannelNameCache(new Map(newCache));
+            });
           }
         }
       }
 
-      // Preload channel-specific emotes with high priority for fast emote picker
-      if (emoteSet) {
-        // Prioritize channel emotes (7TV and BTTV channel emotes are most used)
-        const channelEmotes = [
-          ...emoteSet['7tv'],
-          ...emoteSet.bttv,
-          ...emoteSet.ffz
-        ];
+      // BACKGROUND: Load favorite emotes (non-blocking)
+      loadFavoriteEmotes().then(() => {
+        if (emoteSet) {
+          const allEmotes = [...emoteSet.twitch, ...emoteSet.bttv, ...emoteSet['7tv'], ...emoteSet.ffz];
+          const availableFavorites = getAvailableFavorites(allEmotes);
+          setFavoriteEmotes(availableFavorites);
+        }
+      }).catch(err => console.warn('[ChatWidget] Failed to load favorites:', err));
 
-        // MODIFICATION: Removed aggressive preloading.
-        // Previously we preloaded ALL channel emotes here, which caused UI freezes
-        // on channels with many emotes (e.g. 500+ 7TV emotes).
-        // Now we rely on the browser's natural loading or the Emote Picker's own virtualization.
-
-        // If we really need preloading, we should only do the top 20-30 most used, not all.
-        // For now, disabling is the safest fix for the freeze.
-      }
-
-      const favorites = await loadFavoriteEmotes();
-      if (emoteSet) {
-        const allEmotes = [...emoteSet.twitch, ...emoteSet.bttv, ...emoteSet['7tv'], ...emoteSet.ffz];
-        const availableFavorites = getAvailableFavorites(allEmotes);
-        setFavoriteEmotes(availableFavorites);
-      }
     } catch (err) {
       console.error('Failed to load emotes:', err);
-    } finally {
       setIsLoadingEmotes(false);
     }
   };
@@ -913,7 +1071,37 @@ const ChatWidget = () => {
       const replyParentMsgId = replyingTo?.messageId;
       setMessageInput('');
       setReplyingTo(null);
+      // Reset textarea height after sending
+      if (inputRef.current) {
+        inputRef.current.style.height = '36px';
+      }
       inputRef.current?.focus();
+
+      // Handle resub mode - send resub notification
+      if (isResubMode && resubNotification && currentStream?.user_login) {
+        setIsResubMode(false);
+        try {
+          const success = await invoke<boolean>('use_resub_token', {
+            channelLogin: currentStream.user_login,
+            message: messageToSend || null,
+            includeStreak: includeStreak,
+            tokenId: resubNotification.id,
+          });
+          if (success) {
+            setResubNotification(null); // Token consumed
+            setResubDismissed(true);
+          } else {
+            useAppStore.getState().addToast('Failed to share resub notification', 'error');
+            setMessageInput(messageToSend);
+          }
+        } catch (err) {
+          console.error('[ChatWidget] Failed to use resub token:', err);
+          useAppStore.getState().addToast('Failed to share resub notification', 'error');
+          setMessageInput(messageToSend);
+        }
+        return;
+      }
+
       try {
         let badgeString = '';
         try {
@@ -943,11 +1131,131 @@ const ChatWidget = () => {
   };
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
+    // Handle autocomplete navigation when visible
+    if (showMentionAutocomplete) {
+      const matchingUsers = getMatchingUsers(mentionQuery);
+      
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setMentionSelectedIndex(prev => 
+          prev > 0 ? prev - 1 : matchingUsers.length - 1
+        );
+        return;
+      }
+      
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setMentionSelectedIndex(prev => 
+          prev < matchingUsers.length - 1 ? prev + 1 : 0
+        );
+        return;
+      }
+      
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        const selectedUser = matchingUsers[mentionSelectedIndex];
+        if (selectedUser) {
+          insertMention(selectedUser);
+        }
+        return;
+      }
+      
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setShowMentionAutocomplete(false);
+        return;
+      }
+      
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        const selectedUser = matchingUsers[mentionSelectedIndex];
+        if (selectedUser) {
+          insertMention(selectedUser);
+        }
+        return;
+      }
+    }
+    
+    // Normal Enter to send message
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSendMessage();
     }
   };
+
+  // Handle input changes and detect @ mentions
+  const handleInputChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const value = e.target.value;
+    const cursorPos = e.target.selectionStart || value.length;
+    
+    setMessageInput(value);
+    
+    // Auto-resize textarea (expand upward as content grows)
+    const textarea = e.target;
+    // Temporarily set overflow hidden to get accurate scrollHeight
+    textarea.style.overflow = 'hidden';
+    textarea.style.height = 'auto'; // Reset to calculate new height
+    const maxHeight = 120; // ~5 lines max
+    const newHeight = Math.min(textarea.scrollHeight, maxHeight);
+    textarea.style.height = `${newHeight}px`;
+    // Enable scrolling only if we hit max height
+    textarea.style.overflow = newHeight >= maxHeight ? 'auto' : 'hidden';
+    
+    // Find the @ trigger before cursor
+    const textBeforeCursor = value.slice(0, cursorPos);
+    const lastAtIndex = textBeforeCursor.lastIndexOf('@');
+    
+    if (lastAtIndex !== -1) {
+      // Check if there's a space between @ and cursor (if so, not a mention)
+      const textAfterAt = textBeforeCursor.slice(lastAtIndex + 1);
+      const hasSpace = textAfterAt.includes(' ');
+      
+      // Also check if @ is at start or preceded by whitespace
+      const charBeforeAt = lastAtIndex > 0 ? textBeforeCursor[lastAtIndex - 1] : ' ';
+      const isValidStart = /\s/.test(charBeforeAt) || lastAtIndex === 0;
+      
+      if (!hasSpace && isValidStart) {
+        const query = textAfterAt;
+        setMentionQuery(query);
+        setMentionStartPosition(lastAtIndex);
+        setMentionSelectedIndex(0);
+        
+        // Only show autocomplete if we have matches
+        const matches = getMatchingUsers(query);
+        setShowMentionAutocomplete(matches.length > 0);
+        return;
+      }
+    }
+    
+    // No valid @ trigger found
+    setShowMentionAutocomplete(false);
+    setMentionQuery('');
+    setMentionStartPosition(null);
+  }, [getMatchingUsers]);
+
+  // Insert a mention at the current @ position
+  const insertMention = useCallback((user: { username: string; displayName: string }) => {
+    if (mentionStartPosition === null) return;
+    
+    const beforeMention = messageInput.slice(0, mentionStartPosition);
+    const afterMention = messageInput.slice(mentionStartPosition + 1 + mentionQuery.length);
+    
+    // Insert @username with a trailing space
+    const newValue = `${beforeMention}@${user.username} ${afterMention}`;
+    setMessageInput(newValue);
+    
+    // Hide autocomplete
+    setShowMentionAutocomplete(false);
+    setMentionQuery('');
+    setMentionStartPosition(null);
+    
+    // Focus and set cursor position after the inserted mention
+    inputRef.current?.focus();
+    const newCursorPos = beforeMention.length + user.username.length + 2; // +2 for @ and space
+    setTimeout(() => {
+      inputRef.current?.setSelectionRange(newCursorPos, newCursorPos);
+    }, 0);
+  }, [messageInput, mentionStartPosition, mentionQuery]);
 
   const insertEmote = (emoteName: string) => {
     setMessageInput(prev => prev + (prev ? ' ' : '') + emoteName + ' ');
@@ -969,11 +1277,16 @@ const ChatWidget = () => {
 
   const emojiCategories = EMOJI_CATEGORIES;
 
-  const allEmojis = Object.entries(emojiCategories).flatMap(([category, emojis]) =>
-    emojis.map(emoji => ({ emoji, category }))
+  // Memoize allEmojis to prevent recreation on every render
+  const allEmojis = useMemo(() => 
+    Object.entries(emojiCategories).flatMap(([category, emojis]) =>
+      emojis.map(emoji => ({ emoji, category }))
+    ),
+    [emojiCategories]
   );
 
-  const getFilteredEmotes = (): Emote[] => {
+  // Memoize filtered emotes to prevent recalculation on every render
+  const filteredEmotes = useMemo((): Emote[] => {
     if (selectedProvider === 'emoji') return [];
     if (selectedProvider === 'favorites') {
       const favs = favoriteEmotes;
@@ -986,14 +1299,27 @@ const ChatWidget = () => {
     if (!searchQuery) return providerEmotes;
     const query = searchQuery.toLowerCase();
     return providerEmotes.filter((emote: Emote) => emote.name.toLowerCase().includes(query));
-  };
+  }, [selectedProvider, favoriteEmotes, searchQuery, emotes]);
 
-  // Group Twitch emotes by their source/owner for categorized display
-  const getGroupedTwitchEmotes = (): Map<string, { name: string; emotes: Emote[] }> => {
-    const filtered = getFilteredEmotes();
+  // With IntersectionObserver-based lazy loading, we can show all emotes
+  // Only visible ones will actually load their images
+  useEffect(() => {
+    // Scroll to top when switching providers
+    if (emoteScrollRef.current) {
+      emoteScrollRef.current.scrollTop = 0;
+    }
+  }, [selectedProvider, searchQuery]);
+
+  // Sort emotes by width (smaller first for better grid layout)
+  const sortedEmotes = useMemo(() => {
+    return [...filteredEmotes].sort((a, b) => (a.width || 32) - (b.width || 32));
+  }, [filteredEmotes]);
+
+  // Memoize grouped Twitch emotes to prevent recalculation on every render
+  const groupedTwitchEmotes = useMemo((): Map<string, { name: string; emotes: Emote[] }> => {
     const groups = new Map<string, { name: string; emotes: Emote[] }>();
     
-    for (const emote of filtered) {
+    for (const emote of filteredEmotes) {
       const type = emote.emote_type || 'globals';
       const ownerId = emote.owner_id || 'twitch';
       
@@ -1060,13 +1386,12 @@ const ChatWidget = () => {
     }
     
     return sortedGroups;
-  };
+  }, [filteredEmotes, channelNameCache, currentStream?.user_id]);
 
-  const getFilteredEmojis = () => {
+  // Memoize filtered emojis
+  const filteredEmojis = useMemo(() => {
     if (!searchQuery) return allEmojis;
     const query = searchQuery.toLowerCase();
-    // Debug search
-    console.log(`[EmojiSearch] Query: "${query}", Keywords loaded: ${Object.keys(EMOJI_KEYWORDS).length}`);
     return allEmojis.filter(({ emoji, category }) => {
       // Check category match
       if (category.toLowerCase().includes(query)) return true;
@@ -1077,7 +1402,7 @@ const ChatWidget = () => {
       }
       return false;
     });
-  };
+  }, [searchQuery, allEmojis]);
 
   if (!currentStream) {
     return (
@@ -1095,8 +1420,6 @@ const ChatWidget = () => {
       </div>
     );
   }
-
-  const filteredEmotes = getFilteredEmotes();
 
   const handleUsernameClick = async (userId: string, username: string, displayName: string, color: string, badges: Array<{ key: string; info: any }>, event: React.MouseEvent) => {
     try {
@@ -1341,7 +1664,7 @@ const ChatWidget = () => {
                 onBadgeClick={handleBadgeClick}
                 highlightedMessageId={highlightedMessageId}
                 deletedMessageIds={deletedMessageIds}
-                clearedUserIds={clearedUserIds}
+                clearedUserContexts={clearedUserContexts}
                 emotes={emotes}
                 getMessageId={getMessageId}
               />
@@ -1365,7 +1688,7 @@ const ChatWidget = () => {
           <div className="p-2">
             <div className="relative">
               {showEmotePicker && (
-                <div className="absolute bottom-full left-0 right-0 mb-2 h-[520px] border border-borderSubtle rounded-lg shadow-lg flex flex-col overflow-hidden" style={{ backgroundColor: 'rgba(12, 12, 13, 0.95)' }}>
+                <div className="absolute bottom-full left-0 right-0 mb-2 h-[520px] max-h-[calc(100vh-120px)] border border-borderSubtle rounded-lg shadow-lg flex flex-col overflow-hidden" style={{ backgroundColor: 'rgba(12, 12, 13, 0.95)' }}>
                   <div className="p-2 border-b border-borderSubtle">
                     <input type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="Search emotes..."
                       className="w-full glass-input text-xs px-3 py-1.5 placeholder-textSecondary" />
@@ -1392,9 +1715,9 @@ const ChatWidget = () => {
                       </button>
                     </div>
                   </div>
-                  <div className="flex-1 overflow-y-auto p-3 scrollbar-thin">
+                  <div ref={emoteScrollRef} className="flex-1 overflow-y-auto p-3 scrollbar-thin">
                     {selectedProvider === 'emoji' ? (
-                      getFilteredEmojis().length === 0 ? (
+                      filteredEmojis.length === 0 ? (
                         <div className="flex items-center justify-center h-32"><p className="text-xs text-textSecondary">No emojis found</p></div>
                       ) : (
                         <div className="space-y-4">
@@ -1423,27 +1746,34 @@ const ChatWidget = () => {
                     ) : selectedProvider === 'twitch' ? (
                       // Grouped Twitch emotes by channel
                       <div className="space-y-4">
-                        {Array.from(getGroupedTwitchEmotes().entries()).map(([groupKey, group]) => (
+                        {Array.from(groupedTwitchEmotes.entries()).map(([groupKey, group]) => (
                           <div key={groupKey}>
                             <h3 className="text-xs text-textPrimary font-semibold mb-2 px-2 sticky top-0 py-1.5 border-b border-borderSubtle z-10 backdrop-blur-ultra" style={{ backgroundColor: 'rgba(12, 12, 13, 0.95)' }}>
                               {group.name} ({group.emotes.length})
                             </h3>
                             <div className="grid grid-cols-7 gap-2">
-                              {group.emotes.map((emote) => {
+                              {group.emotes.map((emote, idx) => {
                                 const isFavorited = isFavoriteEmote(emote.id);
                                 return (
-                                  <div key={`${emote.provider}-${emote.id}`} className="relative group">
+                                  <div key={`${groupKey}-${emote.provider}-${emote.id}-${idx}`} className="relative group">
                                     <button onClick={() => insertEmote(emote.name)} className="flex flex-col items-center gap-1 p-1.5 hover:bg-glass rounded transition-colors w-full" title={emote.name}>
                                       <img
                                         src={emote.localUrl || emote.url}
                                         alt={emote.name}
+                                        loading="lazy"
+                                        referrerPolicy="no-referrer"
+                                        crossOrigin="anonymous"
                                         className="w-8 h-8 object-contain"
-                                        onLoad={() => {
-                                          if (!emote.localUrl) {
-                                            queueEmoteForCaching(emote.id, emote.url);
+                                        // Don't cache emotes from picker - only from chat messages
+                                        onError={(e) => {
+                                          // If cached file failed, try CDN URL
+                                          const target = e.currentTarget;
+                                          if (emote.localUrl && target.src !== emote.url) {
+                                            target.src = emote.url;
+                                          } else {
+                                            target.style.display = 'none';
                                           }
                                         }}
-                                        onError={(e) => { e.currentTarget.style.display = 'none'; }}
                                       />
                                       <span className="text-xs text-textSecondary truncate w-full text-center">{emote.name}</span>
                                     </button>
@@ -1477,35 +1807,21 @@ const ChatWidget = () => {
                         ))}
                       </div>
                     ) : (
-                      // Flat grid for other providers (BTTV, 7TV, FFZ, Favorites)
-                      <div className="grid grid-cols-7 gap-2">
-                        {filteredEmotes.map((emote) => {
+                      <div className="flex flex-wrap gap-1 justify-start">
+                        {sortedEmotes.map((emote: Emote, idx: number) => {
                           const isFavorited = isFavoriteEmote(emote.id);
                           return (
-                            <div key={`${emote.provider}-${emote.id}`} className="relative group">
-                              <button onClick={() => insertEmote(emote.name)} className="flex flex-col items-center gap-1 p-1.5 hover:bg-glass rounded transition-colors w-full" title={emote.name}>
-                                <img
-                                  src={emote.localUrl || emote.url}
-                                  alt={emote.name}
-                                  className="w-8 h-8 object-contain"
-                                  onLoad={() => {
-                                    // Lazily cache this emote when it's displayed
-                                    // Now safe to call due to download queue in service
-                                    if (!emote.localUrl) {
-                                      queueEmoteForCaching(emote.id, emote.url);
-                                    }
-                                  }}
-                                  onError={(e) => { e.currentTarget.style.display = 'none'; }}
-                                />
-                                <span className="text-xs text-textSecondary truncate w-full text-center">{emote.name}</span>
-                              </button>
-                              <button onClick={async (e) => {
-                                e.stopPropagation();
+                            <EmoteGridItem
+                              key={`${emote.provider}-${emote.id}-${idx}`}
+                              emote={emote}
+                              isFavorited={isFavorited}
+                              onInsert={() => insertEmote(emote.name)}
+                              onToggleFavorite={async () => {
                                 try {
                                   if (isFavorited) {
                                     await removeFavoriteEmote(emote.id);
                                     if (selectedProvider === 'favorites') setFavoriteEmotes(prev => prev.filter(e => e.id !== emote.id));
-                                    useAppStore.getState().addToast(`Removed ${emote.name} from favorites`, 'success');
+                                    useAppStore.getState().addToast(`Removed ${emote.name} from favorites`, 'info');
                                   } else {
                                     await addFavoriteEmote(emote);
                                     if (emotes) {
@@ -1519,10 +1835,8 @@ const ChatWidget = () => {
                                   console.error('Failed to toggle favorite:', err);
                                   useAppStore.getState().addToast('Failed to update favorites', 'error');
                                 }
-                              }} className={`absolute top-0 right-0 p-1 rounded-bl transition-all ${isFavorited ? 'text-yellow-400 opacity-100' : 'text-textSecondary opacity-0 group-hover:opacity-100'} hover:text-yellow-400 hover:bg-glass`} title={isFavorited ? 'Remove from favorites' : 'Add to favorites'}>
-                                <svg className="w-3 h-3" fill={isFavorited ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth={2} viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" /></svg>
-                              </button>
-                            </div>
+                              }}
+                            />
                           );
                         })}
                       </div>
@@ -1543,7 +1857,30 @@ const ChatWidget = () => {
                   onEmotesChange={() => loadEmotes(currentStream.user_login, currentStream.user_id)}
                 />
               )}
-              {replyingTo && (
+              {/* Resub Notification Banner - shows when user has a shareable resub */}
+              {resubNotification && !resubDismissed && currentStream && (
+                <ResubNotificationBanner
+                  resubNotification={resubNotification}
+                  channelLogin={currentStream.user_login}
+                  isResubMode={isResubMode}
+                  includeStreak={includeStreak}
+                  onActivateShare={() => {
+                    setIsResubMode(true);
+                    setReplyingTo(null); // Clear reply mode if active
+                    inputRef.current?.focus();
+                  }}
+                  onDismiss={() => {
+                    setResubDismissed(true);
+                    setIsResubMode(false);
+                  }}
+                  onToggleStreak={() => setIncludeStreak(!includeStreak)}
+                  onCancelShare={() => {
+                    setIsResubMode(false);
+                    setMessageInput('');
+                  }}
+                />
+              )}
+              {replyingTo && !isResubMode && (
                 <div className="mb-2 flex items-center gap-2 px-3 py-2 bg-glass rounded-lg border border-borderSubtle">
                   <svg className="w-4 h-4 text-accent flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" /></svg>
                   <span className="text-xs text-textSecondary flex-1">Replying to <span className="text-accent font-semibold">{replyingTo.username}</span></span>
@@ -1621,8 +1958,36 @@ const ChatWidget = () => {
                     <Pickaxe size={18} className={isMining ? 'animate-pulse' : ''} />
                   </button>
                 )}
-                <input ref={inputRef} type="text" value={messageInput} onChange={(e) => setMessageInput(e.target.value)} onKeyPress={handleKeyPress}
-                  placeholder="Send a message" className="flex-1 min-w-0 glass-input text-textPrimary text-sm px-3 py-2 placeholder-textSecondary" disabled={!isConnected} />
+                {/* Input container with mention autocomplete */}
+                <div className="relative flex-1 min-w-0">
+                  {/* @ Mention Autocomplete */}
+                  {showMentionAutocomplete && (
+                    <MentionAutocomplete
+                      users={getMatchingUsers(mentionQuery)}
+                      selectedIndex={mentionSelectedIndex}
+                      onSelect={(user) => insertMention(user)}
+                      onSelectedIndexChange={setMentionSelectedIndex}
+                    />
+                  )}
+                  <textarea 
+                    ref={inputRef} 
+                    value={messageInput} 
+                    onChange={handleInputChange} 
+                    onKeyDown={handleKeyPress}
+                    placeholder="Send a message" 
+                    className="w-full glass-input text-textPrimary text-sm px-3 py-2 placeholder-textSecondary resize-none overflow-hidden scrollbar-thin"
+                    style={{ 
+                      minHeight: '36px',
+                      maxHeight: '120px',
+                    }}
+                    rows={1}
+                    disabled={!isConnected}
+                    onBlur={() => {
+                      // Delay hiding to allow click on autocomplete
+                      setTimeout(() => setShowMentionAutocomplete(false), 150);
+                    }}
+                  />
+                </div>
                 <button onClick={handleSendMessage} disabled={!messageInput.trim() || !isConnected} className="flex-shrink-0 p-2 glass-button text-white rounded disabled:opacity-50 disabled:cursor-not-allowed" title="Send message">
                   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" /></svg>
                 </button>

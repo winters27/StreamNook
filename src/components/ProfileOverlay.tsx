@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useAppStore } from '../stores/AppStore';
 import { X, User, ExternalLink, Link, Unlink, Maximize2 } from 'lucide-react';
 import ProfileModal from './ProfileModal';
-import { computePaintStyle, getBadgeImageUrl, getBadgeImageUrls, getBadgeFallbackUrls } from '../services/seventvService';
+import { computePaintStyle, getBadgeImageUrl, getBadgeImageUrls, getBadgeFallbackUrls, queueCosmeticForCaching } from '../services/seventvService';
 import { FallbackImage } from './FallbackImage';
 import { TwitchBadge } from '../services/badgeService';
 import { ThirdPartyBadge } from '../services/thirdPartyBadges';
@@ -211,6 +211,29 @@ const ProfileOverlay = ({ isOpen, onClose, anchorPosition }: ProfileOverlayProps
       setSeventvPaint(selectedPaint as SevenTVPaint);
     }
   };
+
+  // Reactive caching for 7TV cosmetics displayed in profile
+  useEffect(() => {
+    // Cache 7TV badges
+    seventvBadges.forEach((badge: any) => {
+      if (badge?.id && !badge.localUrl) {
+        const badgeUrl = `https://cdn.7tv.app/badge/${badge.id}/4x`;
+        queueCosmeticForCaching(badge.id, badgeUrl);
+      }
+    });
+    
+    // Cache paint image layers
+    if ((seventvPaint as any)?.data?.layers) {
+      ((seventvPaint as any).data.layers as any[]).forEach((layer: any) => {
+        if (layer.ty?.__typename === 'PaintLayerTypeImage' && layer.ty.images) {
+          const img = layer.ty.images.find((i: any) => i.scale === 1) || layer.ty.images[0];
+          if (img && !img.localUrl) {
+            queueCosmeticForCaching(layer.id, img.url);
+          }
+        }
+      });
+    }
+  }, [seventvBadges, seventvPaint]);
 
   // Check 7TV auth status on mount and listen for connection events
   useEffect(() => {

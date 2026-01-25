@@ -12,6 +12,13 @@ scripts/generate_emoji_map.js
 scripts/generate_emoji_categories.js
 scripts/inspect-drops-api.js
 scripts/inspect-predictions.js
+scripts/fetch-7tv-badges.mjs
+scripts/explore-7tv-badges.mjs
+scripts/twitch-gql-server.js
+scripts/*.json
+
+# Documentation
+docs/
 
 # Drops folder (local mining tool) - only root level, not src/components/drops
 /drops/

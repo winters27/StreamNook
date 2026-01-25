@@ -10,6 +10,7 @@ import { getCosmeticsWithFallback, getThirdPartyBadgesFromMemoryCache, getCosmet
 import { ThirdPartyBadge } from '../services/thirdPartyBadges';
 import { SevenTVBadge, SevenTVPaint } from '../types';
 import { useAppStore } from '../stores/AppStore';
+import { useChatUserStore } from '../stores/chatUserStore';
 import { queueBadgeForCaching, getCachedBadgeUrl } from '../services/badgeImageCacheService';
 
 // EmoteSegment type definition (migrated from emoteParser.ts)
@@ -85,12 +86,112 @@ interface ChatMessageProps {
   ) => void;
   onReplyClick?: (parentMsgId: string) => void;
   isHighlighted?: boolean;
-  isDeleted?: boolean; // Message was deleted by mod action (CLEARMSG/CLEARCHAT)
+  moderationContext?: { type: 'timeout' | 'ban' | 'deleted'; duration?: number } | null; // Moderation context from CLEARMSG/CLEARCHAT
   onEmoteRightClick?: (emoteName: string) => void;
   onUsernameRightClick?: (messageId: string, username: string) => void;
   onBadgeClick?: (badgeKey: string, badgeInfo: any) => void;
   emotes?: EmoteSet | null;
 }
+
+/**
+ * Component for rendering @mentions with user's 7TV paint styling
+ */
+const MentionSpan: React.FC<{
+  username: string;
+  onUsernameClick?: ChatMessageProps['onUsernameClick'];
+}> = ({ username, onUsernameClick }) => {
+  // Subscribe to the specific user from the store (reactive updates)
+  const cachedUser = useChatUserStore((state) => state.getUserByUsername(username));
+  
+  // Local state for users not in chat store (fallback API lookup)
+  const [apiUserColor, setApiUserColor] = useState<string | null>(null);
+  const [apiUserPaint, setApiUserPaint] = useState<any>(null);
+  
+  // If user is in chat store, use their data directly
+  const userColor = cachedUser?.color || apiUserColor || '#9147FF';
+  const userPaint = cachedUser?.paint || apiUserPaint;
+  const userId = cachedUser?.userId;
+  
+  // Only do API lookup if user is NOT in the chat store
+  useEffect(() => {
+    if (cachedUser) return; // Already have data from store
+    
+    // Try to look up via API and get cosmetics
+    import('@tauri-apps/api/core').then(({ invoke }) => {
+      invoke<{ id: string; login: string; display_name: string }>('get_user_by_login', { login: username })
+        .then((user) => {
+          if (user) {
+            // Try to get cosmetics for this user (includes paint)
+            getCosmeticsWithFallback(user.id).then((cosmetics) => {
+              if (cosmetics) {
+                const selectedPaint = cosmetics.paints?.find((p: any) => p.selected);
+                if (selectedPaint) {
+                  setApiUserPaint(selectedPaint);
+                }
+              }
+            }).catch(() => {});
+          }
+        })
+        .catch(() => {});
+    });
+  }, [username, cachedUser]);
+  
+  // Compute paint style - use user's Twitch color as fallback (not accent)
+  const nameStyle = useMemo(() => {
+    if (userPaint) {
+      return computePaintStyle(userPaint, userColor);
+    }
+    // Use user's Twitch chat color as fallback
+    return { color: userColor };
+  }, [userPaint, userColor]);
+  
+  const handleClick = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!onUsernameClick) return;
+    
+    // Use cached user data if available
+    if (cachedUser) {
+      onUsernameClick(
+        cachedUser.userId,
+        cachedUser.username,
+        cachedUser.displayName,
+        cachedUser.color,
+        [],
+        e
+      );
+      return;
+    }
+    
+    // Fallback to API lookup
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const user = await invoke<{ id: string; login: string; display_name: string }>('get_user_by_login', { login: username });
+      if (user) {
+        onUsernameClick(
+          user.id,
+          user.login,
+          user.display_name,
+          userColor,
+          [],
+          e
+        );
+      }
+    } catch (err) {
+      console.warn('[MentionSpan] Could not look up mentioned user:', err);
+    }
+  };
+  
+  return (
+    <span
+      className="inline-flex items-center px-1.5 py-0.5 rounded bg-accent/15 font-medium cursor-pointer hover:bg-accent/25 transition-colors"
+      style={nameStyle}
+      title={`View ${username}'s profile`}
+      onClick={handleClick}
+    >
+      @{username}
+    </span>
+  );
+};
 
 // Custom comparison function for React.memo
 // Only re-render if the message content or highlight state actually changes
@@ -106,7 +207,8 @@ const chatMessageAreEqual = (prevProps: ChatMessageProps, nextProps: ChatMessage
   }
   if (prevProps.messageIndex !== nextProps.messageIndex) return false;
   if (prevProps.isHighlighted !== nextProps.isHighlighted) return false;
-  if (prevProps.isDeleted !== nextProps.isDeleted) return false;
+  if (prevProps.moderationContext?.type !== nextProps.moderationContext?.type ||
+      prevProps.moderationContext?.duration !== nextProps.moderationContext?.duration) return false;
 
   // All other props (callbacks) can be ignored for re-render decisions
   // since they don't affect the visual output of the message
@@ -115,7 +217,7 @@ const chatMessageAreEqual = (prevProps: ChatMessageProps, nextProps: ChatMessage
 
 // Memoized ChatMessage component to prevent unnecessary re-renders
 // This is critical for preventing animation restarts when new messages arrive
-const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, onUsernameClick, onReplyClick, isHighlighted = false, isDeleted = false, onEmoteRightClick, onUsernameRightClick, onBadgeClick, emotes }: ChatMessageProps) {
+const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, onUsernameClick, onReplyClick, isHighlighted = false, moderationContext = null, onEmoteRightClick, onUsernameRightClick, onBadgeClick, emotes }: ChatMessageProps) {
   const { settings, currentUser, currentStream } = useAppStore();
   const chatDesign = settings.chat_design;
   const parsed = useMemo(() => {
@@ -356,11 +458,11 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
 
   // Reactive caching for 7TV cosmetics
   useEffect(() => {
-    // Cache 7TV Badge
-    if (seventvBadge?.badge_info && !seventvBadge.localUrl) {
+    // Cache 7TV Badge - use id directly (BadgeV4 interface)
+    if (seventvBadge?.id && !seventvBadge.localUrl) {
       const badgeUrl = getBadgeImageUrl(seventvBadge);
       if (badgeUrl && !badgeUrl.startsWith('asset') && !badgeUrl.includes('localhost')) {
-        queueCosmeticForCaching(seventvBadge.badge_info.id, badgeUrl);
+        queueCosmeticForCaching(seventvBadge.id, badgeUrl);
       }
     }
 
@@ -408,8 +510,10 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
             key={`${segment.emoteId || segment.content}-${index}`}
             src={emoteUrl}
             alt={segment.content}
-            className="inline h-7 align-middle mx-0.5 cursor-pointer hover:scale-110 transition-transform crisp-image"
             loading="lazy"
+            className="inline-block h-7 w-auto max-w-[96px] align-middle mx-0.5 cursor-pointer hover:scale-110 transition-transform crisp-image"
+            referrerPolicy="no-referrer"
+            crossOrigin="anonymous"
             title={`Right-click to copy: ${segment.content}`}
             onContextMenu={(e) => {
               e.preventDefault();
@@ -434,8 +538,8 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
             key={`emoji-${segment.content}-${index}`}
             src={emojiSrc}
             alt={segment.content}
-            className="inline h-5 w-5 align-middle mx-0.5 crisp-image"
             loading="lazy"
+            className="inline h-5 w-5 align-middle mx-0.5 crisp-image"
             title={segment.content}
             onError={(e) => {
               // Fallback to native emoji if image fails to load
@@ -451,16 +555,16 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
     });
   };
 
-  // Helper function to detect URLs and make them clickable
+  // Helper function to detect URLs and @mentions, making them styled and clickable
   const parseTextWithLinks = (text: string) => {
-    // URL regex pattern that matches http://, https://, and www. URLs
-    const urlRegex = /(https?:\/\/[^\s]+|www\.[^\s]+)/g;
-    const parts = text.split(urlRegex);
+    // Combined regex: URLs and @mentions
+    // @mentions: @username (alphanumeric + underscores, 1-25 chars per Twitch rules)
+    const combinedRegex = /(https?:\/\/[^\s]+|www\.[^\s]+|@[a-zA-Z0-9_]{1,25})(?=\s|$|[.,!?:;'")>\]}\-])/g;
+    const parts = text.split(combinedRegex);
 
     return parts.map((part, index) => {
       // Check if this part is a URL
-      if (part.match(urlRegex)) {
-        // Ensure the URL has a protocol
+      if (part.match(/^(https?:\/\/|www\.)/)) {
         const url = part.startsWith('http') ? part : `https://${part}`;
 
         return (
@@ -485,6 +589,20 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
           </a>
         );
       }
+      
+      // Check if this part is an @mention
+      if (part.match(/^@[a-zA-Z0-9_]{1,25}$/)) {
+        const mentionedUsername = part.slice(1); // Remove @
+        
+        return (
+          <MentionSpan
+            key={index}
+            username={mentionedUsername}
+            onUsernameClick={onUsernameClick}
+          />
+        );
+      }
+      
       return part;
     });
   };
@@ -648,6 +766,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
                 key={`bits-badge-${badge.key}-${idx}`}
                 src={getTwitchBadgeUrl(badge.key, badge.info)}
                 alt={badge.info.title}
+                loading="lazy"
                 title={badge.info.title}
                 className="w-5 h-5 inline-block cursor-pointer hover:scale-110 transition-transform crisp-image"
                 onClick={() => onBadgeClick?.(badge.key, badge.info)}
@@ -777,6 +896,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
                 key={`donation-badge-${badge.key}-${idx}`}
                 src={getTwitchBadgeUrl(badge.key, badge.info)}
                 alt={badge.info.title}
+                loading="lazy"
                 title={badge.info.title}
                 className="w-5 h-5 inline-block cursor-pointer hover:scale-110 transition-transform crisp-image"
                 onClick={() => onBadgeClick?.(badge.key, badge.info)}
@@ -1406,7 +1526,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
       className={`px-3 hover:bg-glass transition-colors ${borderClass} ${animationClass
         } ${isHighlightedMessage ? 'highlight-message-gradient' : ''
         } ${isFirstMessage ? 'bg-gradient-to-r from-purple-500/20 via-purple-400/10 to-transparent' : ''} ${isFromSharedChat ? 'border-l-2 border-l-accent/50 bg-accent/5' : ''
-        } ${backgroundClass} ${isDeleted ? 'opacity-50' : ''}`}
+        } ${backgroundClass} ${moderationContext ? 'opacity-50' : ''}`}
       style={{
         ...messageStyle,
         borderLeftColor: (isMentioned || isReplyToMe) && borderLeftColor ? borderLeftColor : undefined,
@@ -1617,7 +1737,15 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
                 </span>
                 <span style={{ fontWeight: 300 }} className="text-textPrimary break-words">
                   {' '}{renderContent(contentWithEmotes)}
-                  {isDeleted && <span className="ml-1.5 text-xs text-red-400/70 font-medium">[deleted]</span>}
+                  {moderationContext && (
+                    <span className="ml-1.5 text-xs text-red-400/70 font-medium">
+                      {moderationContext.type === 'timeout' 
+                        ? `[timed out for ${moderationContext.duration}s]`
+                        : moderationContext.type === 'ban'
+                          ? '[banned]'
+                          : '[deleted by mod]'}
+                    </span>
+                  )}
                 </span>
               </>
             )}

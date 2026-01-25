@@ -1,9 +1,13 @@
 import { useEffect, useState, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { X, ArrowUpDown, RefreshCw, Check, Trophy, Award, ChevronUp } from 'lucide-react';
+import { X, ArrowUpDown, RefreshCw, Check, Trophy, Award, ChevronUp, Search } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../stores/AppStore';
 import { getAllUserBadgesWithEarned } from '../services/badgeService';
+import { getProfileFromMemoryCache, getFullProfileWithFallback } from '../services/cosmeticsCache';
+
+// Tab navigation types
+type AttainableTab = 'twitch-badges' | '7tv-badges' | '7tv-paints';
 
 interface BadgeVersion {
   id: string;
@@ -35,6 +39,50 @@ interface BadgeSet {
   versions: BadgeVersion[];
 }
 
+// 7TV Types
+interface SevenTVImage {
+  url: string;
+  mime: string | null;
+  scale: number | null;
+  width: number | null;
+  height: number | null;
+  frameCount: number | null;  // camelCase from Rust serde rename
+}
+
+interface SevenTVGlobalBadge {
+  id: string;
+  name: string;
+  description: string | null;
+  tags: string[];
+  images: SevenTVImage[];
+  updatedAt: string | null;  // camelCase from Rust serde rename
+}
+
+interface SevenTVPaintLayer {
+  id: string;
+  opacity: number;
+  ty: any; // Rust renames to "ty" - Complex union type from API
+}
+
+interface SevenTVPaintShadow {
+  color: { hex: string; r: number; g: number; b: number; a: number };
+  offsetX: number;  // camelCase from Rust serde rename
+  offsetY: number;  // camelCase from Rust serde rename
+  blur: number;
+}
+
+interface SevenTVGlobalPaint {
+  id: string;
+  name: string;
+  description: string | null;
+  tags: string[];
+  data: {
+    layers: SevenTVPaintLayer[];
+    shadows: SevenTVPaintShadow[];
+  } | null;
+  updatedAt: string | null;  // camelCase from Rust serde rename
+}
+
 interface BadgesOverlayProps {
   onClose: () => void;
   onBadgeClick: (badge: BadgeVersion, setId: string) => void;
@@ -42,6 +90,11 @@ interface BadgesOverlayProps {
 
 const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
   const { isAuthenticated, currentUser, currentStream } = useAppStore();
+  
+  // Tab state
+  const [activeTab, setActiveTab] = useState<AttainableTab>('twitch-badges');
+  
+  // Twitch badges state
   const [badges, setBadges] = useState<BadgeSet[]>([]);
   const [badgesWithMetadata, setBadgesWithMetadata] = useState<BadgeWithMetadata[]>([]);
   const [loading, setLoading] = useState(true);
@@ -55,18 +108,43 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
   const [dropdownPosition, setDropdownPosition] = useState<{ top: number; left: number } | null>(null);
   const rankButtonRef = useRef<HTMLButtonElement>(null);
   
+  // 7TV state
+  const [seventvBadges, setSeventvBadges] = useState<SevenTVGlobalBadge[]>([]);
+  const [seventvPaints, setSeventvPaints] = useState<SevenTVGlobalPaint[]>([]);
+  const [loadingSeventvBadges, setLoadingSeventvBadges] = useState(false);
+  const [loadingSeventvPaints, setLoadingSeventvPaints] = useState(false);
+  const [seventvBadgesError, setSeventvBadgesError] = useState<string | null>(null);
+  const [seventvPaintsError, setSeventvPaintsError] = useState<string | null>(null);
+  
+  // Selected 7TV item for detail view
+  const [selectedSeventvBadge, setSelectedSeventvBadge] = useState<SevenTVGlobalBadge | null>(null);
+  const [selectedSeventvPaint, setSelectedSeventvPaint] = useState<SevenTVGlobalPaint | null>(null);
+  
   // User's collected global badges (Set of "setId_version" keys)
   const [collectedBadgeKeys, setCollectedBadgeKeys] = useState<Set<string>>(new Set());
   const [loadingUserBadges, setLoadingUserBadges] = useState(false);
+  
+  // Search state
+  const [searchQuery, setSearchQuery] = useState('');
+  
+  // User's owned 7TV cosmetics
+  const [userOwned7TVBadgeIds, setUserOwned7TVBadgeIds] = useState<Set<string>>(new Set());
+  const [userOwned7TVPaintIds, setUserOwned7TVPaintIds] = useState<Set<string>>(new Set());
+  const [loadingUser7TVCosmetics, setLoadingUser7TVCosmetics] = useState(false);
 
+  // Load all data on mount (eager load for tab counts)
   useEffect(() => {
     loadBadges();
+    // Eager load 7TV data for tab counts
+    loadSeventvBadges();
+    loadSeventvPaints();
   }, []);
 
   // Load user's collected badges when authenticated
   useEffect(() => {
     if (isAuthenticated && currentUser) {
       loadUserBadges();
+      loadUser7TVCosmetics();
     }
   }, [isAuthenticated, currentUser]);
 
@@ -111,6 +189,222 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
     } finally {
       setLoadingUserBadges(false);
     }
+  };
+
+  // Load user's 7TV cosmetics for collection counters
+  const loadUser7TVCosmetics = async () => {
+    if (!currentUser) return;
+    
+    setLoadingUser7TVCosmetics(true);
+    try {
+      const channelId = currentStream?.user_id || currentUser.user_id;
+      const channelName = currentStream?.user_login || currentUser.login || currentUser.username;
+      
+      // Try memory cache first
+      let profile = getProfileFromMemoryCache(currentUser.user_id);
+      
+      // If no cache, fetch from API
+      if (!profile) {
+        profile = await getFullProfileWithFallback(
+          currentUser.user_id,
+          currentUser.login || currentUser.username,
+          channelId,
+          channelName
+        );
+      }
+      
+      // Extract owned badge and paint IDs
+      const badgeIds = new Set<string>();
+      const paintIds = new Set<string>();
+      
+      profile.seventvCosmetics.badges?.forEach((badge: any) => {
+        if (badge?.id) badgeIds.add(badge.id);
+      });
+      
+      profile.seventvCosmetics.paints?.forEach((paint: any) => {
+        if (paint?.id) paintIds.add(paint.id);
+      });
+      
+      setUserOwned7TVBadgeIds(badgeIds);
+      setUserOwned7TVPaintIds(paintIds);
+      console.log(`[BadgesOverlay] User owns ${badgeIds.size} 7TV badges and ${paintIds.size} 7TV paints`);
+    } catch (err) {
+      console.error('[BadgesOverlay] Failed to load user 7TV cosmetics:', err);
+    } finally {
+      setLoadingUser7TVCosmetics(false);
+    }
+  };
+
+  // Load 7TV badges when tab is activated
+  const loadSeventvBadges = async () => {
+    if (seventvBadges.length > 0 || loadingSeventvBadges) return; // Already loaded or loading
+    
+    setLoadingSeventvBadges(true);
+    setSeventvBadgesError(null);
+    try {
+      console.log('[Attainables] Fetching 7TV badges...');
+      const badges = await invoke<SevenTVGlobalBadge[]>('get_all_seventv_badges');
+      setSeventvBadges(badges);
+      console.log(`[Attainables] Loaded ${badges.length} 7TV badges`);
+    } catch (err) {
+      console.error('[Attainables] Failed to load 7TV badges:', err);
+      setSeventvBadgesError('Failed to load 7TV badges');
+    } finally {
+      setLoadingSeventvBadges(false);
+    }
+  };
+
+  // Load 7TV paints when tab is activated
+  const loadSeventvPaints = async () => {
+    if (seventvPaints.length > 0 || loadingSeventvPaints) return; // Already loaded or loading
+    
+    setLoadingSeventvPaints(true);
+    setSeventvPaintsError(null);
+    try {
+      console.log('[Attainables] Fetching 7TV paints...');
+      const paints = await invoke<SevenTVGlobalPaint[]>('get_all_seventv_paints');
+      setSeventvPaints(paints);
+      console.log(`[Attainables] Loaded ${paints.length} 7TV paints`);
+    } catch (err) {
+      console.error('[Attainables] Failed to load 7TV paints:', err);
+      setSeventvPaintsError('Failed to load 7TV paints');
+    } finally {
+      setLoadingSeventvPaints(false);
+    }
+  };
+
+  // Load data when tab changes
+  useEffect(() => {
+    if (activeTab === '7tv-badges') {
+      loadSeventvBadges();
+    } else if (activeTab === '7tv-paints') {
+      loadSeventvPaints();
+    }
+  }, [activeTab]);
+
+  // Check if a 7TV badge/image is animated (frameCount > 1)
+  const isAnimatedBadge = (badge: SevenTVGlobalBadge): boolean => {
+    return badge.images?.some(img => (img.frameCount || 0) > 1) || false;
+  };
+
+  // Get best image URL for 7TV badge (prefer animated webp if available)
+  const getSeventvBadgeImageUrl = (badge: SevenTVGlobalBadge, preferAnimated = true): string => {
+    if (!badge.images || badge.images.length === 0) return '';
+    
+    // Prefer webp format (supports animation)
+    const webpImages = badge.images.filter(img => img.mime === 'image/webp');
+    
+    // Check for animated versions first (frameCount > 1)
+    if (preferAnimated) {
+      const animatedImages = webpImages.filter(img => (img.frameCount || 0) > 1);
+      if (animatedImages.length > 0) {
+        // Get highest scale animated image
+        const scale4 = animatedImages.find(img => img.scale === 4);
+        const scale3 = animatedImages.find(img => img.scale === 3);
+        const scale2 = animatedImages.find(img => img.scale === 2);
+        if (scale4?.url) return scale4.url;
+        if (scale3?.url) return scale3.url;
+        if (scale2?.url) return scale2.url;
+        return animatedImages[0]?.url || '';
+      }
+    }
+    
+    // Fall back to static highest scale
+    const scale4 = webpImages.find(img => img.scale === 4);
+    const scale2 = webpImages.find(img => img.scale === 2);
+    const scale1 = webpImages.find(img => img.scale === 1);
+    
+    return scale4?.url || scale2?.url || scale1?.url || badge.images[0]?.url || '';
+  };
+
+  // Check if a 7TV paint is animated (has image layer with frameCount > 1)
+  const isAnimatedPaint = (paint: SevenTVGlobalPaint): boolean => {
+    if (!paint.data?.layers?.[0]?.ty) return false;
+    const layerType = paint.data.layers[0].ty;
+    if (layerType.__typename !== 'PaintLayerTypeImage' || !layerType.images) return false;
+    return layerType.images.some((img: any) => (img.frameCount || 0) > 1);
+  };
+
+  // Get animated paint image URL (prefer animated webp)
+  const getAnimatedPaintImageUrl = (paint: SevenTVGlobalPaint): string | null => {
+    if (!paint.data?.layers?.[0]?.ty) return null;
+    const layerType = paint.data.layers[0].ty;
+    if (layerType.__typename !== 'PaintLayerTypeImage' || !layerType.images) return null;
+    
+    // Find animated webp images (frameCount > 1, not containing '_static')
+    const animatedImages = layerType.images.filter((img: any) => 
+      img.mime === 'image/webp' && 
+      (img.frameCount || 0) > 1 && 
+      !img.url.includes('_static')
+    );
+    
+    if (animatedImages.length === 0) return null;
+    
+    // Prefer highest scale
+    const scale4 = animatedImages.find((img: any) => img.scale === 4);
+    const scale3 = animatedImages.find((img: any) => img.scale === 3);
+    const scale2 = animatedImages.find((img: any) => img.scale === 2);
+    
+    return scale4?.url || scale3?.url || scale2?.url || animatedImages[0]?.url || null;
+  };
+
+  // Generate CSS gradient from 7TV paint layers
+  const generatePaintGradient = (paint: SevenTVGlobalPaint): string => {
+    if (!paint.data || !paint.data.layers || paint.data.layers.length === 0) {
+      return 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)'; // Default fallback
+    }
+
+    const layer = paint.data.layers[0];
+    const layerType = layer.ty;
+    
+    if (!layerType) return 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
+
+    // Handle different layer types
+    if (layerType.__typename === 'PaintLayerTypeSingleColor' && layerType.color) {
+      return layerType.color.hex;
+    }
+
+    if (layerType.__typename === 'PaintLayerTypeLinearGradient' && layerType.stops) {
+      const angle = layerType.angle || 90;
+      const stops = layerType.stops
+        .map((stop: any) => `${stop.color.hex} ${Math.round(stop.at * 100)}%`)
+        .join(', ');
+      return `linear-gradient(${angle}deg, ${stops})`;
+    }
+
+    if (layerType.__typename === 'PaintLayerTypeRadialGradient' && layerType.stops) {
+      const stops = layerType.stops
+        .map((stop: any) => `${stop.color.hex} ${Math.round(stop.at * 100)}%`)
+        .join(', ');
+      return `radial-gradient(circle, ${stops})`;
+    }
+
+    if (layerType.__typename === 'PaintLayerTypeImage' && layerType.images?.[0]?.url) {
+      // For image paints, prefer animated webp if available
+      const animatedUrl = getAnimatedPaintImageUrl(paint);
+      return `url(${animatedUrl || layerType.images[0].url})`;
+    }
+
+    return 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
+  };
+
+  // Generate CSS text-shadow from 7TV paint shadows
+  const generatePaintShadow = (paint: SevenTVGlobalPaint): string => {
+    if (!paint.data?.shadows || paint.data.shadows.length === 0) {
+      return 'none';
+    }
+
+    // Convert each shadow to CSS text-shadow format
+    // Format: offsetX offsetY blur color
+    const shadows = paint.data.shadows.map(shadow => {
+      const offsetX = shadow.offsetX || 0;
+      const offsetY = shadow.offsetY || 0;
+      const blur = (shadow.blur || 0) * 10; // Scale up blur for visibility
+      const color = shadow.color?.hex || '#000000';
+      return `${offsetX}px ${offsetY}px ${blur}px ${color}`;
+    });
+
+    return shadows.join(', ');
   };
 
   // Check if user has collected a specific badge
@@ -1292,142 +1586,118 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-borderSubtle">
           <div className="flex items-center gap-4">
-            <div>
-              <h2 className="text-xl font-bold text-textPrimary">Twitch Global Badges</h2>
-              <p className="text-sm text-textSecondary mt-1">
-                Click on any badge to view detailed information
-              </p>
+            {/* Tab Navigation */}
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setActiveTab('twitch-badges')}
+                className={`px-4 py-2 rounded-lg transition-all flex items-center gap-2 ${
+                  activeTab === 'twitch-badges'
+                    ? 'bg-[#9147ff] text-white shadow-lg shadow-[#9147ff]/30'
+                    : 'bg-glass text-textSecondary hover:bg-glass/80 hover:text-textPrimary'
+                }`}
+              >
+                <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M11.571 4.714h1.715v5.143H11.57zm4.715 0H18v5.143h-1.714zM6 0L1.714 4.286v15.428h5.143V24l4.286-4.286h3.428L22.286 12V0zm14.571 11.143l-3.428 3.428h-3.429l-3 3v-3H6.857V1.714h13.714Z"/>
+                </svg>
+                Twitch Badges
+                <span className="text-xs opacity-70">({badgesWithMetadata.length})</span>
+              </button>
+              
+              <button
+                onClick={() => setActiveTab('7tv-badges')}
+                className={`px-4 py-2 rounded-lg transition-all flex items-center gap-2 ${
+                  activeTab === '7tv-badges'
+                    ? 'bg-[#29b6f6] text-white shadow-lg shadow-[#29b6f6]/30'
+                    : 'bg-glass text-textSecondary hover:bg-glass/80 hover:text-textPrimary'
+                }`}
+              >
+                <svg className="w-4 h-4" viewBox="0 0 28 21" fill="currentColor">
+                  <path d="M20.7465 5.48825L21.9799 3.33745L22.646 2.20024L21.4125 0.0494437V0H14.8259L17.2928 4.3016L17.9836 5.48825H20.7465Z" />
+                  <path d="M7.15395 19.9258L14.5546 7.02104L15.4673 5.43884L13.0004 1.13724L12.3097 0.0247596H1.8995L0.666057 2.17556L0 3.31276L1.23344 5.46356V5.51301H9.12745L2.96025 16.267L2.09685 17.7998L3.33029 19.9506V20H7.15395" />
+                  <path d="M17.4655 19.9257H21.2398L26.1736 11.3225L27.037 9.83924L25.8036 7.68844V7.63899H22.0046L19.5377 11.9406L19.365 12.262L16.8981 7.96038L16.7255 7.63899L14.2586 11.9406L13.5679 13.1272L17.2682 19.5796L17.4655 19.9257Z" />
+                </svg>
+                7TV Badges
+                <span className="text-xs opacity-70">({loadingSeventvBadges ? '...' : seventvBadges.length})</span>
+              </button>
+              
+              <button
+                onClick={() => setActiveTab('7tv-paints')}
+                className={`px-4 py-2 rounded-lg transition-all flex items-center gap-2 ${
+                  activeTab === '7tv-paints'
+                    ? 'bg-[#29b6f6] text-white shadow-lg shadow-[#29b6f6]/30'
+                    : 'bg-glass text-textSecondary hover:bg-glass/80 hover:text-textPrimary'
+                }`}
+              >
+                <svg className="w-4 h-4" viewBox="0 0 28 21" fill="currentColor">
+                  <path d="M20.7465 5.48825L21.9799 3.33745L22.646 2.20024L21.4125 0.0494437V0H14.8259L17.2928 4.3016L17.9836 5.48825H20.7465Z" />
+                  <path d="M7.15395 19.9258L14.5546 7.02104L15.4673 5.43884L13.0004 1.13724L12.3097 0.0247596H1.8995L0.666057 2.17556L0 3.31276L1.23344 5.46356V5.51301H9.12745L2.96025 16.267L2.09685 17.7998L3.33029 19.9506V20H7.15395" />
+                  <path d="M17.4655 19.9257H21.2398L26.1736 11.3225L27.037 9.83924L25.8036 7.68844V7.63899H22.0046L19.5377 11.9406L19.365 12.262L16.8981 7.96038L16.7255 7.63899L14.2586 11.9406L13.5679 13.1272L17.2682 19.5796L17.4655 19.9257Z" />
+                </svg>
+                7TV Paints
+                <span className="text-xs opacity-70">({loadingSeventvPaints ? '...' : seventvPaints.length})</span>
+              </button>
+              
+              {/* Search Input */}
+              <div className="relative ml-auto">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-textSecondary" />
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder={`Search ${activeTab === 'twitch-badges' ? 'badges' : activeTab === '7tv-badges' ? '7TV badges' : '7TV paints'}...`}
+                  className="w-48 pl-9 pr-3 py-2 bg-glass border border-borderSubtle rounded-lg text-sm text-textPrimary placeholder-textSecondary focus:outline-none focus:border-accent transition-colors"
+                />
+              </div>
             </div>
             
-            {/* Collection Counter - only shows truly global collectible badges */}
-            {isAuthenticated && totalGlobalBadges > 0 && (
-              <div 
-                className={`flex items-center gap-3 px-4 py-2.5 bg-gradient-to-r ${
-                  currentRank?.colors.bg || 'from-[#6b7280]/10 via-[#9ca3af]/10 to-[#d1d5db]/10'
-                } border border-${currentRank?.colors.border || '[#6b7280]/30'} rounded-xl relative overflow-visible cursor-pointer hover:brightness-110 transition-all`}
-                style={{ 
-                  borderColor: currentRank ? `${currentRank.colors.from}30` : 'rgba(107, 114, 128, 0.3)',
-                  boxShadow: currentRank ? `0 0 20px ${currentRank.colors.glow}` : 'none'
-                }}
-                onClick={() => {
-                  // Set dropdown position when opening
-                  if (!showRankList && rankButtonRef.current) {
-                    const rect = rankButtonRef.current.getBoundingClientRect();
-                    setDropdownPosition({ top: rect.bottom + 8, left: rect.left - 280 });
-                  }
-                  setShowRankList(!showRankList);
-                }}
-              >
-                {/* Sparkle effects - using rank colors */}
-                <div className="absolute inset-0 overflow-hidden pointer-events-none">
-                  {(currentRank?.colors.sparkle || ['#6b7280', '#9ca3af', '#d1d5db', '#4b5563']).map((color, i) => (
-                    <div 
-                      key={i}
-                      className="absolute w-1 h-1 rounded-full animate-ping"
-                      style={{ 
-                        backgroundColor: color,
-                        opacity: 0.5 + (i * 0.1),
-                        top: `${20 + (i * 20)}%`, 
-                        left: `${15 + (i * 25)}%`,
-                        animationDelay: `${i * 0.5}s`,
-                        animationDuration: `${2 + (i * 0.3)}s`
-                      }} 
-                    />
-                  ))}
-                </div>
-                <div 
-                  className="flex items-center justify-center w-9 h-9 rounded-lg shadow-lg relative"
-                  style={{
-                    background: currentRank 
-                      ? `linear-gradient(to bottom right, ${currentRank.colors.from}, ${currentRank.colors.via}, ${currentRank.colors.to})`
-                      : 'linear-gradient(to bottom right, #6b7280, #9ca3af, #d1d5db)'
-                  }}
-                >
-                  <div className="absolute inset-0 bg-gradient-to-tr from-transparent via-white/20 to-transparent rounded-lg" />
-                  <Trophy size={18} className="text-white drop-shadow-sm relative z-10" style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.3))' }} />
-                </div>
-                <div className="flex flex-col relative z-10">
-                  {currentRank && (
-                    <span 
-                      className="text-xs font-bold uppercase tracking-wider"
-                      style={{
-                        background: `linear-gradient(to right, ${currentRank.colors.from}, ${currentRank.colors.via}, ${currentRank.colors.to})`,
-                        WebkitBackgroundClip: 'text',
-                        WebkitTextFillColor: 'transparent',
-                        backgroundClip: 'text'
-                      }}
-                    >
-                      {currentRank.title}
-                    </span>
-                  )}
-                  <div className="flex items-baseline gap-1">
+            {/* Collection Counter - shows collected/total for current tab */}
+            {isAuthenticated && (
+              <>
+                {/* Twitch Badges Counter */}
+                {activeTab === 'twitch-badges' && totalGlobalBadges > 0 && (
+                  <div className="flex items-center gap-2 px-3 py-1.5 bg-glass rounded-lg border border-borderSubtle">
+                    <Check size={14} className="text-green-400" />
                     {loadingUserBadges ? (
-                      <div 
-                        className="w-4 h-4 border-2 border-t-transparent rounded-full animate-spin" 
-                        style={{ borderColor: currentRank?.colors.from || '#6b7280' }}
-                      />
+                      <div className="w-4 h-4 border-2 border-t-transparent border-accent rounded-full animate-spin" />
                     ) : (
-                      <>
-                        <span 
-                          className="text-lg font-bold"
-                          style={{
-                            background: currentRank 
-                              ? `linear-gradient(to right, ${currentRank.colors.from}, ${currentRank.colors.via}, ${currentRank.colors.to})`
-                              : 'linear-gradient(to right, #6b7280, #9ca3af, #d1d5db)',
-                            WebkitBackgroundClip: 'text',
-                            WebkitTextFillColor: 'transparent',
-                            backgroundClip: 'text'
-                          }}
-                        >
-                          {collectedCount}
-                        </span>
-                        <span className="text-textSecondary text-sm">/ {totalGlobalBadges}</span>
-                      </>
+                      <span className="text-sm text-textPrimary">
+                        <span className="font-semibold text-accent">{collectedCount}</span>
+                        <span className="text-textSecondary"> / {totalGlobalBadges} collected</span>
+                      </span>
                     )}
                   </div>
-                </div>
-                {collectedCount > 0 && !loadingUserBadges && totalGlobalBadges > 0 && (
-                  <div 
-                    className="ml-2 px-2 py-0.5 rounded-full relative z-10"
-                    style={{
-                      background: currentRank 
-                        ? `linear-gradient(to right, ${currentRank.colors.from}20, ${currentRank.colors.to}20)`
-                        : 'linear-gradient(to right, rgba(107, 114, 128, 0.2), rgba(156, 163, 175, 0.2))',
-                      border: `1px solid ${currentRank?.colors.from || '#6b7280'}30`
-                    }}
-                  >
-                    <span 
-                      className="text-xs font-medium"
-                      style={{
-                        background: currentRank 
-                          ? `linear-gradient(to right, ${currentRank.colors.from}, ${currentRank.colors.via})`
-                          : 'linear-gradient(to right, #6b7280, #9ca3af)',
-                        WebkitBackgroundClip: 'text',
-                        WebkitTextFillColor: 'transparent',
-                        backgroundClip: 'text'
-                      }}
-                    >
-                      {Math.round((collectedCount / totalGlobalBadges) * 100)}%
-                    </span>
+                )}
+                
+                {/* 7TV Badges Counter */}
+                {activeTab === '7tv-badges' && seventvBadges.length > 0 && (
+                  <div className="flex items-center gap-2 px-3 py-1.5 bg-glass rounded-lg border border-borderSubtle">
+                    <Check size={14} className="text-[#29b6f6]" />
+                    {loadingUser7TVCosmetics ? (
+                      <div className="w-4 h-4 border-2 border-t-transparent border-[#29b6f6] rounded-full animate-spin" />
+                    ) : (
+                      <span className="text-sm text-textPrimary">
+                        <span className="font-semibold text-[#29b6f6]">{userOwned7TVBadgeIds.size}</span>
+                        <span className="text-textSecondary"> / {seventvBadges.length} owned</span>
+                      </span>
+                    )}
                   </div>
                 )}
-                {/* View Ranks Button */}
-                <button
-                  ref={rankButtonRef}
-                  onClick={(e) => { 
-                    e.stopPropagation(); 
-                    if (!showRankList && rankButtonRef.current) {
-                      const rect = rankButtonRef.current.getBoundingClientRect();
-                      setDropdownPosition({ top: rect.bottom + 8, left: rect.left - 280 });
-                    }
-                    setShowRankList(!showRankList); 
-                  }}
-                  className="ml-1 p-1.5 rounded-lg hover:bg-white/10 transition-colors relative z-10"
-                  title="View all collector ranks"
-                >
-                  <Award size={16} className="text-textSecondary hover:text-textPrimary transition-colors" />
-                </button>
-              </div>
+                
+                {/* 7TV Paints Counter */}
+                {activeTab === '7tv-paints' && seventvPaints.length > 0 && (
+                  <div className="flex items-center gap-2 px-3 py-1.5 bg-glass rounded-lg border border-borderSubtle">
+                    <Check size={14} className="text-[#29b6f6]" />
+                    {loadingUser7TVCosmetics ? (
+                      <div className="w-4 h-4 border-2 border-t-transparent border-[#29b6f6] rounded-full animate-spin" />
+                    ) : (
+                      <span className="text-sm text-textPrimary">
+                        <span className="font-semibold text-[#29b6f6]">{userOwned7TVPaintIds.size}</span>
+                        <span className="text-textSecondary"> / {seventvPaints.length} owned</span>
+                      </span>
+                    )}
+                  </div>
+                )}
+              </>
             )}
           </div>
           <button
@@ -1441,34 +1711,37 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-6 custom-scrollbar">
-          {loading && (
-            <div className="flex items-center justify-center h-full">
-              <div className="text-center">
-                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-accent mx-auto mb-4"></div>
-                <p className="text-textSecondary">Loading badges...</p>
-              </div>
-            </div>
-          )}
+          {/* ========== TWITCH BADGES TAB ========== */}
+          {activeTab === 'twitch-badges' && (
+            <>
+              {loading && (
+                <div className="flex items-center justify-center h-full">
+                  <div className="text-center">
+                    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-accent mx-auto mb-4"></div>
+                    <p className="text-textSecondary">Loading badges...</p>
+                  </div>
+                </div>
+              )}
 
-          {error && (
-            <div className="flex items-center justify-center h-full">
-              <div className="text-center">
-                <p className="text-red-400 mb-4">{error}</p>
-                <button
-                  onClick={loadBadges}
-                  className="px-4 py-2 bg-accent hover:bg-accent/80 rounded-lg transition-colors"
-                >
-                  Retry
-                </button>
-              </div>
-            </div>
-          )}
+              {error && (
+                <div className="flex items-center justify-center h-full">
+                  <div className="text-center">
+                    <p className="text-red-400 mb-4">{error}</p>
+                    <button
+                      onClick={loadBadges}
+                      className="px-4 py-2 bg-accent hover:bg-accent/80 rounded-lg transition-colors"
+                    >
+                      Retry
+                    </button>
+                  </div>
+                </div>
+              )}
 
-          {!loading && !error && sortedBadges.length === 0 && (
-            <div className="flex items-center justify-center h-full">
-              <p className="text-textSecondary">No badges found</p>
-            </div>
-          )}
+              {!loading && !error && sortedBadges.length === 0 && (
+                <div className="flex items-center justify-center h-full">
+                  <p className="text-textSecondary">No badges found</p>
+                </div>
+              )}
 
           {!loading && !error && sortedBadges.length > 0 && (
             <>
@@ -1622,203 +1895,324 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
               </div>
             </>
           )}
+            </>
+          )}
+
+          {/* ========== 7TV BADGES TAB ========== */}
+          {activeTab === '7tv-badges' && (
+            <>
+              {loadingSeventvBadges && (
+                <div className="flex items-center justify-center h-full">
+                  <div className="text-center">
+                    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#29b6f6] mx-auto mb-4"></div>
+                    <p className="text-textSecondary">Loading 7TV badges...</p>
+                  </div>
+                </div>
+              )}
+
+              {seventvBadgesError && (
+                <div className="flex items-center justify-center h-full">
+                  <div className="text-center">
+                    <p className="text-red-400 mb-4">{seventvBadgesError}</p>
+                    <button
+                      onClick={() => { setSeventvBadges([]); loadSeventvBadges(); }}
+                      className="px-4 py-2 bg-[#29b6f6] hover:bg-[#29b6f6]/80 rounded-lg transition-colors text-white"
+                    >
+                      Retry
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {!loadingSeventvBadges && !seventvBadgesError && seventvBadges.length === 0 && (
+                <div className="flex items-center justify-center h-full">
+                  <p className="text-textSecondary">No 7TV badges found</p>
+                </div>
+              )}
+
+              {!loadingSeventvBadges && !seventvBadgesError && seventvBadges.length > 0 && (
+                <div className="grid grid-cols-8 gap-2">
+                  {seventvBadges
+                    .filter(badge => !searchQuery || badge.name.toLowerCase().includes(searchQuery.toLowerCase()))
+                    .map((badge) => {
+                    const animated = isAnimatedBadge(badge);
+                    const isOwned = userOwned7TVBadgeIds.has(badge.id);
+                    return (
+                      <button
+                        key={badge.id}
+                        onClick={() => setSelectedSeventvBadge(badge)}
+                        className={`flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-glass transition-all duration-200 group cursor-pointer relative ${
+                          isOwned ? 'ring-2 ring-[#29b6f6]/50 bg-[#29b6f6]/10' : ''
+                        }`}
+                        title={badge.description || badge.name}
+                      >
+                        {/* Owned indicator */}
+                        {isOwned && (
+                          <div className="absolute top-1 right-1 w-5 h-5 bg-[#29b6f6] rounded-full flex items-center justify-center shadow-lg z-10">
+                            <Check size={12} className="text-white" />
+                          </div>
+                        )}
+                        <div className={`w-18 h-18 flex items-center justify-center bg-glass rounded-lg group-hover:scale-110 transition-transform duration-200 ${
+                          isOwned ? 'ring-1 ring-[#29b6f6]/30' : ''
+                        }`}>
+                          <img
+                            src={getSeventvBadgeImageUrl(badge)}
+                            alt={badge.name}
+                            className="w-16 h-16 object-contain"
+                            loading="lazy"
+                          />
+                        </div>
+                        <span className={`text-xs text-center line-clamp-2 transition-colors font-medium ${
+                          isOwned ? 'text-[#29b6f6]' : 'text-textSecondary group-hover:text-textPrimary'
+                        }`}>
+                          {badge.name}
+                        </span>
+
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </>
+          )}
+
+          {/* ========== 7TV PAINTS TAB ========== */}
+          {activeTab === '7tv-paints' && (
+            <>
+              {loadingSeventvPaints && (
+                <div className="flex items-center justify-center h-full">
+                  <div className="text-center">
+                    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#29b6f6] mx-auto mb-4"></div>
+                    <p className="text-textSecondary">Loading 7TV paints...</p>
+                  </div>
+                </div>
+              )}
+
+              {seventvPaintsError && (
+                <div className="flex items-center justify-center h-full">
+                  <div className="text-center">
+                    <p className="text-red-400 mb-4">{seventvPaintsError}</p>
+                    <button
+                      onClick={() => { setSeventvPaints([]); loadSeventvPaints(); }}
+                      className="px-4 py-2 bg-[#29b6f6] hover:bg-[#29b6f6]/80 rounded-lg transition-colors text-white"
+                    >
+                      Retry
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {!loadingSeventvPaints && !seventvPaintsError && seventvPaints.length === 0 && (
+                <div className="flex items-center justify-center h-full">
+                  <p className="text-textSecondary">No 7TV paints found</p>
+                </div>
+              )}
+
+              {!loadingSeventvPaints && !seventvPaintsError && seventvPaints.length > 0 && (
+                <div className="grid grid-cols-8 gap-2">
+                  {seventvPaints
+                    .filter(paint => !searchQuery || paint.name.toLowerCase().includes(searchQuery.toLowerCase()))
+                    .map((paint) => {
+                    const animated = isAnimatedPaint(paint);
+                    const animatedUrl = animated ? getAnimatedPaintImageUrl(paint) : null;
+                    const isOwned = userOwned7TVPaintIds.has(paint.id);
+                    
+                    return (
+                      <button
+                        key={paint.id}
+                        onClick={() => setSelectedSeventvPaint(paint)}
+                        className={`flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-glass transition-all duration-200 group cursor-pointer relative ${
+                          isOwned ? 'ring-2 ring-[#29b6f6]/50 bg-[#29b6f6]/10' : ''
+                        }`}
+                        title={paint.description || paint.name}
+                      >
+                        {/* Owned indicator */}
+                        {isOwned && (
+                          <div className="absolute top-1 right-1 w-5 h-5 bg-[#29b6f6] rounded-full flex items-center justify-center shadow-lg z-10">
+                            <Check size={12} className="text-white" />
+                          </div>
+                        )}
+                        <div 
+                          className={`w-20 h-14 flex items-center justify-center rounded-lg group-hover:scale-110 transition-transform duration-200 overflow-hidden bg-secondary relative ${
+                            isOwned ? 'ring-1 ring-[#29b6f6]/30' : ''
+                          }`}
+                        >
+                          {/* For animated image paints, show the animated image with text overlay */}
+                          {animated && animatedUrl ? (
+                            <>
+                              <img 
+                                src={animatedUrl} 
+                                alt="" 
+                                className="absolute inset-0 w-full h-full object-cover"
+                                style={{ 
+                                  maskImage: 'linear-gradient(black, black)',
+                                  WebkitMaskImage: 'linear-gradient(black, black)'
+                                }}
+                              />
+                              <span 
+                                className="text-base font-bold px-1 truncate relative z-10 mix-blend-overlay text-white"
+                                style={{ textShadow: '0 0 2px rgba(0,0,0,0.8)' }}
+                              >
+                                {paint.name}
+                              </span>
+                            </>
+                          ) : (
+                            /* For gradient paints, use background-clip text effect with shadow */
+                            <span 
+                              className="text-base font-bold px-1 truncate relative"
+                              data-text={paint.name}
+                              style={{ 
+                                background: generatePaintGradient(paint),
+                                backgroundClip: 'text',
+                                WebkitBackgroundClip: 'text',
+                                WebkitTextFillColor: 'transparent',
+                                filter: generatePaintShadow(paint) !== 'none' ? `drop-shadow(${generatePaintShadow(paint).split(',')[0]})` : 'none'
+                              }}
+                            >
+                              {paint.name}
+                            </span>
+                          )}
+                        </div>
+                        <span className={`text-xs text-center line-clamp-2 transition-colors font-medium ${
+                          isOwned ? 'text-[#29b6f6]' : 'text-textSecondary group-hover:text-textPrimary'
+                        }`}>
+                          {paint.name}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </>
+          )}
         </div>
       </div>
       
-      {/* Ranks Dropdown Portal - rendered outside the DOM hierarchy to prevent cursor flicker */}
-      {showRankList && dropdownPosition && createPortal(
-        <>
-          {/* Invisible overlay to capture clicks */}
+      {/* 7TV Badge Detail Modal */}
+      {selectedSeventvBadge && createPortal(
+        <div 
+          className="fixed inset-0 flex items-center justify-center bg-black/80 backdrop-blur-sm"
+          style={{ zIndex: 100000 }}
+          onClick={() => setSelectedSeventvBadge(null)}
+        >
           <div 
-            className="fixed inset-0"
-            style={{ zIndex: 99998 }}
-            onClick={() => setShowRankList(false)}
-          />
-          <div 
-            className="fixed w-80 bg-primary border border-borderSubtle rounded-xl shadow-2xl overflow-hidden backdrop-blur-xl"
-            style={{ 
-              zIndex: 99999,
-              top: dropdownPosition.top,
-              left: Math.max(8, dropdownPosition.left)
-            }}
+            className="bg-secondary border border-borderSubtle rounded-xl shadow-2xl p-6 max-w-md w-full mx-4"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="p-3 border-b border-borderSubtle bg-secondary">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Trophy size={16} className="text-accent" />
-                  <span className="font-semibold text-textPrimary">Collector Ranks</span>
-                </div>
-                <button
-                  onClick={() => setShowRankList(false)}
-                  className="p-1 hover:bg-glass rounded-lg transition-colors"
-                >
-                  <X size={14} className="text-textSecondary" />
-                </button>
-              </div>
-              <p className="text-xs text-textSecondary mt-1">Collect global badges to rank up!</p>
+            <div className="flex justify-between items-start mb-4">
+              <h3 className="text-xl font-bold text-textPrimary">{selectedSeventvBadge.name}</h3>
+              <button
+                onClick={() => setSelectedSeventvBadge(null)}
+                className="p-1 hover:bg-glass rounded-lg transition-colors"
+              >
+                <X size={18} className="text-textSecondary" />
+              </button>
             </div>
-            {/* Epic tier animations */}
-            <style>{`
-              /* DRIFTER - VHS static fade */
-              @keyframes drifter-static { 0%, 100% { opacity: 0.7; } 50% { opacity: 0.9; } }
-              @keyframes drifter-flare { 0% { opacity: 0; transform: translateX(-100%); } 50% { opacity: 0.3; } 100% { opacity: 0; transform: translateX(100%); } }
-              .rank-drifter-icon { animation: drifter-static 2s ease-in-out infinite; }
-              .rank-drifter-text { animation: drifter-static 3s ease-in-out infinite; }
-              
-              /* NOMAD - Sand particles, golden glow */
-              @keyframes nomad-dust { 0%, 100% { opacity: 0.5; transform: translateX(0); } 50% { opacity: 0.8; transform: translateX(2px); } }
-              @keyframes nomad-glow { 0%, 100% { box-shadow: 0 0 8px rgba(212, 168, 75, 0.3); } 50% { box-shadow: 0 0 16px rgba(212, 168, 75, 0.5); } }
-              .rank-nomad-icon { animation: nomad-glow 3s ease-in-out infinite; }
-              .rank-nomad-text { animation: nomad-dust 4s ease-in-out infinite; }
-              
-              /* RONIN - Neon katana slash, electric blue */
-              @keyframes ronin-slash { 0% { background-position: -200% center; } 100% { background-position: 200% center; } }
-              @keyframes ronin-pulse { 0%, 100% { box-shadow: 0 0 10px rgba(59, 130, 246, 0.4), 0 0 20px rgba(14, 165, 233, 0.2); } 50% { box-shadow: 0 0 20px rgba(59, 130, 246, 0.6), 0 0 40px rgba(14, 165, 233, 0.4); } }
-              .rank-ronin-icon { animation: ronin-pulse 1.5s ease-in-out infinite; }
-              .rank-ronin-text { background: linear-gradient(90deg, #3b82f6, #60a5fa, #0ea5e9, #38bdf8, #3b82f6); background-size: 200% auto; -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; animation: ronin-slash 2s linear infinite; }
-              
-              /* PHANTOM - Ghostly cyan, chromatic aberration */
-              @keyframes phantom-ghost { 0%, 100% { opacity: 0.8; filter: blur(0px); } 50% { opacity: 1; filter: blur(0.5px); } }
-              @keyframes phantom-aberration { 0%, 100% { text-shadow: -1px 0 #06b6d4, 1px 0 #67e8f9; } 50% { text-shadow: -2px 0 #06b6d4, 2px 0 #67e8f9; } }
-              .rank-phantom-icon { animation: phantom-ghost 2s ease-in-out infinite; }
-              .rank-phantom-text { animation: phantom-aberration 3s ease-in-out infinite; }
-              
-              /* VANGUARD - Chrome holographic, rotation */
-              @keyframes vanguard-holo { 0% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } 100% { background-position: 0% 50%; } }
-              @keyframes vanguard-shine { 0%, 100% { opacity: 0.2; } 50% { opacity: 0.4; } }
-              .rank-vanguard-icon { background: linear-gradient(45deg, #94a3b8, #cbd5e1, #e2e8f0, #94a3b8); background-size: 200% 200%; animation: vanguard-holo 4s ease infinite; }
-              .rank-vanguard-text { background: linear-gradient(90deg, #94a3b8, #cbd5e1, #e2e8f0, #94a3b8); background-size: 200% auto; -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; animation: vanguard-holo 3s ease infinite; }
-              
-              /* AURORA - Northern lights flow */
-              @keyframes aurora-flow { 0% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } 100% { background-position: 0% 50%; } }
-              @keyframes aurora-shimmer { 0%, 100% { opacity: 0.8; } 50% { opacity: 1; } }
-              .rank-aurora-icon { background: linear-gradient(135deg, #14b8a6, #a855f7, #ec4899, #14b8a6); background-size: 300% 300%; animation: aurora-flow 6s ease infinite; }
-              .rank-aurora-text { background: linear-gradient(90deg, #14b8a6, #a855f7, #ec4899, #06b6d4, #14b8a6); background-size: 200% auto; -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; animation: aurora-flow 4s ease infinite; }
-              
-              /* NEXUS - Wireframe grid, glitch */
-              @keyframes nexus-grid { 0%, 100% { opacity: 0.9; } 50% { opacity: 1; } }
-              @keyframes nexus-glitch { 0%, 92%, 100% { transform: translate(0); } 93% { transform: translate(-2px, 1px); } 95% { transform: translate(2px, -1px); } 97% { transform: translate(-1px, 2px); } }
-              .rank-nexus-icon { animation: nexus-grid 2s ease-in-out infinite, nexus-glitch 4s step-end infinite; }
-              .rank-nexus-text { background: linear-gradient(90deg, #7c3aed, #a855f7, #c084fc, #e879f9, #7c3aed); background-size: 200% auto; -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; animation: aurora-flow 3s ease infinite, nexus-glitch 5s step-end infinite; }
-              
-              /* AEON - Cosmic nebula, golden filaments */
-              @keyframes aeon-nebula { 0% { background-position: 0% 0%; } 100% { background-position: 100% 100%; } }
-              @keyframes aeon-pulse { 0%, 100% { box-shadow: 0 0 15px rgba(255, 215, 0, 0.3), 0 0 30px rgba(74, 0, 128, 0.2); } 50% { box-shadow: 0 0 25px rgba(255, 215, 0, 0.5), 0 0 50px rgba(74, 0, 128, 0.3); } }
-              .rank-aeon-icon { background: linear-gradient(135deg, #1a1a2e, #4a0080, #ffd700); animation: aeon-pulse 3s ease-in-out infinite; }
-              .rank-aeon-text { background: linear-gradient(90deg, #ffd700, #4a0080, #ffffff, #ffd700); background-size: 300% auto; -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; animation: aeon-nebula 8s linear infinite; }
-              
-              /* TITAN - Liquid mercury, prismatic diamond */
-              @keyframes titan-mercury { 0%, 100% { background-position: 0% 50%; filter: brightness(1); } 25% { filter: brightness(1.1); } 50% { background-position: 100% 50%; filter: brightness(1.2); } 75% { filter: brightness(1.1); } }
-              @keyframes titan-flare { 0%, 100% { box-shadow: 0 0 20px rgba(255, 255, 255, 0.3), 0 0 40px rgba(168, 216, 234, 0.2); } 50% { box-shadow: 0 0 30px rgba(255, 255, 255, 0.5), 0 0 60px rgba(168, 216, 234, 0.4), 0 0 80px rgba(255, 215, 0, 0.2); } }
-              .rank-titan-icon { background: linear-gradient(135deg, #e8e8e8, #ffffff, #c0c0c0, #a8d8ea, #e8e8e8); background-size: 200% 200%; animation: titan-mercury 4s ease infinite, titan-flare 3s ease-in-out infinite; }
-              .rank-titan-text { background: linear-gradient(90deg, #e8e8e8, #ffffff, #a8d8ea, #ffd700, #e8e8e8); background-size: 300% auto; -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; animation: titan-mercury 5s ease infinite; }
-              
-              /* APEX - Full adaptive RGB, floating effect */
-              @keyframes apex-rgb { 0% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } 100% { background-position: 0% 50%; } }
-              @keyframes apex-float { 0%, 100% { transform: translateY(0) scale(1); } 50% { transform: translateY(-2px) scale(1.02); } }
-              @keyframes apex-glow { 0%, 100% { box-shadow: 0 0 20px rgba(255, 0, 128, 0.4), 0 0 40px rgba(121, 40, 202, 0.3), 0 0 60px rgba(0, 212, 255, 0.2); } 33% { box-shadow: 0 0 25px rgba(121, 40, 202, 0.5), 0 0 50px rgba(0, 212, 255, 0.4), 0 0 70px rgba(255, 0, 128, 0.3); } 66% { box-shadow: 0 0 30px rgba(0, 212, 255, 0.5), 0 0 55px rgba(255, 0, 128, 0.4), 0 0 80px rgba(121, 40, 202, 0.3); } }
-              .rank-apex-icon { background: linear-gradient(135deg, #ff0080, #7928ca, #00d4ff, #ff0080); background-size: 300% 300%; animation: apex-rgb 3s ease infinite, apex-float 2s ease-in-out infinite, apex-glow 4s ease-in-out infinite; }
-              .rank-apex-text { background: linear-gradient(90deg, #ff0080, #7928ca, #00d4ff, #ff6b6b, #feca57, #ff0080); background-size: 300% auto; -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; animation: apex-rgb 2s ease infinite; }
-            `}</style>
-            <div className="p-2 space-y-1 max-h-96 overflow-y-auto custom-scrollbar">
-              {allRanks.map((rank) => {
-                const isCurrentRank = currentRank?.title === rank.title;
-                const currentPercentage = totalGlobalBadges > 0 ? Math.round((collectedCount / totalGlobalBadges) * 100) : 0;
-                const requiredPercentage = parseFloat(rank.requirement.replace(/[^0-9.]/g, '')) || 0;
-                const isAchieved = currentPercentage >= requiredPercentage;
-                
-                return (
-                  <div 
-                    key={rank.title}
-                    className={`flex items-center gap-3 p-2.5 rounded-lg transition-all ${
-                      isCurrentRank 
-                        ? 'bg-gradient-to-r from-[#ffffff08] to-transparent' 
-                        : isAchieved 
-                          ? 'bg-[#ffffff05]' 
-                          : 'opacity-60'
-                    }`}
-                    style={{
-                      boxShadow: isCurrentRank ? `inset 0 0 0 1px ${rank.colors.from}50` : undefined
-                    }}
-                  >
-                    {/* Rank Icon */}
-                    <div 
-                      className={`w-8 h-8 rounded-lg flex items-center justify-center shadow-md relative overflow-hidden flex-shrink-0 rank-${rank.tier}-icon`}
-                      style={{
-                        background: `linear-gradient(to bottom right, ${rank.colors.from}, ${rank.colors.via}, ${rank.colors.to})`
-                      }}
-                    >
-                      <div className="absolute inset-0 bg-gradient-to-tr from-transparent via-white/20 to-transparent" />
-                      <Trophy 
-                        size={14} 
-                        className="text-white relative z-10"
-                        style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.3))' }}
-                      />
-                    </div>
-                    
-                    {/* Rank Info */}
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span 
-                          className={`font-bold text-sm tracking-wider rank-${rank.tier}-text`}
-                          style={{
-                            background: `linear-gradient(to right, ${rank.colors.from}, ${rank.colors.via}, ${rank.colors.to})`,
-                            WebkitBackgroundClip: 'text',
-                            WebkitTextFillColor: 'transparent',
-                            backgroundClip: 'text'
-                          }}
-                        >
-                          {rank.title}
-                        </span>
-                        {isCurrentRank && (
-                          <span className="px-1.5 py-0.5 bg-accent/20 text-accent text-[10px] font-bold rounded uppercase">
-                            Current
-                          </span>
-                        )}
-                        {isAchieved && !isCurrentRank && (
-                          <Check size={12} className="text-green-500" />
-                        )}
-                      </div>
-                      <p className="text-[11px] text-textSecondary truncate">{rank.description}</p>
-                    </div>
-                    
-                    {/* Requirement Badge */}
-                    <div 
-                      className="px-2 py-1 rounded-md text-xs font-medium flex-shrink-0"
-                      style={{
-                        background: `linear-gradient(to right, ${rank.colors.from}15, ${rank.colors.to}15)`,
-                        color: rank.colors.from
-                      }}
-                    >
-                      {rank.requirement}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-            {/* Progress to next rank */}
-            {currentRank && currentRank.title !== 'APEX' && (
-              <div className="p-3 border-t border-borderSubtle bg-glass/30">
-                <div className="flex items-center gap-2 text-xs text-textSecondary">
-                  <ChevronUp size={12} />
-                  <span>
-                    {(() => {
-                      const nextRankIndex = allRanks.findIndex(r => r.title === currentRank.title) - 1;
-                      if (nextRankIndex >= 0) {
-                        const nextRank = allRanks[nextRankIndex];
-                        const nextRequired = parseFloat(nextRank.requirement.replace(/[^0-9.]/g, '')) || 100;
-                        const badgesNeeded = Math.ceil((nextRequired / 100) * totalGlobalBadges) - collectedCount;
-                        return `${badgesNeeded} more badge${badgesNeeded !== 1 ? 's' : ''} to ${nextRank.title}`;
-                      }
-                      return 'Keep collecting!';
-                    })()}
-                  </span>
-                </div>
+            
+            {/* Large badge preview */}
+            <div className="flex justify-center mb-6">
+              <div className={`w-32 h-32 flex items-center justify-center bg-glass rounded-xl ${isAnimatedBadge(selectedSeventvBadge) ? 'ring-4 ring-[#29b6f6]/50' : ''}`}>
+                <img
+                  src={getSeventvBadgeImageUrl(selectedSeventvBadge)}
+                  alt={selectedSeventvBadge.name}
+                  className="w-28 h-28 object-contain"
+                />
               </div>
-            )}
+            </div>
+            
+            {/* Badge info */}
+            <div className="space-y-3">
+              {selectedSeventvBadge.description && (
+                <div>
+                  <span className="text-xs text-textSecondary uppercase tracking-wider">Description</span>
+                  <p className="text-textPrimary mt-1">{selectedSeventvBadge.description}</p>
+                </div>
+              )}
+              
+
+              
+              {isAnimatedBadge(selectedSeventvBadge) && (
+                <div className="flex items-center gap-2 text-[#29b6f6]">
+                  <span className="w-2 h-2 bg-[#29b6f6] rounded-full animate-pulse"></span>
+                  <span className="text-sm">Animated Badge</span>
+                </div>
+              )}
+            </div>
           </div>
-        </>,
+        </div>,
+        document.body
+      )}
+
+      {/* 7TV Paint Detail Modal */}
+      {selectedSeventvPaint && createPortal(
+        <div 
+          className="fixed inset-0 flex items-center justify-center bg-black/80 backdrop-blur-sm"
+          style={{ zIndex: 100000 }}
+          onClick={() => setSelectedSeventvPaint(null)}
+        >
+          <div 
+            className="bg-secondary border border-borderSubtle rounded-xl shadow-2xl p-6 max-w-md w-full mx-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex justify-between items-start mb-4">
+              <h3 className="text-xl font-bold text-textPrimary">{selectedSeventvPaint.name}</h3>
+              <button
+                onClick={() => setSelectedSeventvPaint(null)}
+                className="p-1 hover:bg-glass rounded-lg transition-colors"
+              >
+                <X size={18} className="text-textSecondary" />
+              </button>
+            </div>
+            
+            {/* Large paint preview with user's name */}
+            <div className="flex justify-center mb-6">
+              <div className="px-8 py-6 bg-glass rounded-xl border border-borderSubtle">
+                <span 
+                  className="text-3xl font-bold"
+                  style={{ 
+                    background: generatePaintGradient(selectedSeventvPaint),
+                    backgroundClip: 'text',
+                    WebkitBackgroundClip: 'text',
+                    WebkitTextFillColor: 'transparent',
+                    filter: generatePaintShadow(selectedSeventvPaint) !== 'none' ? `drop-shadow(${generatePaintShadow(selectedSeventvPaint).split(',')[0]})` : 'none'
+                  }}
+                >
+                  {currentUser?.display_name || currentUser?.login || 'YourName'}
+                </span>
+              </div>
+            </div>
+            
+            {/* Paint gradient preview bar */}
+            <div 
+              className="h-8 rounded-lg mb-6"
+              style={{ background: generatePaintGradient(selectedSeventvPaint) }}
+            />
+            
+            {/* Paint info */}
+            <div className="space-y-3">
+              {selectedSeventvPaint.description && (
+                <div>
+                  <span className="text-xs text-textSecondary uppercase tracking-wider">Description</span>
+                  <p className="text-textPrimary mt-1">{selectedSeventvPaint.description}</p>
+                </div>
+              )}
+              
+              {selectedSeventvPaint.tags.length > 0 && (
+                <div>
+                  <span className="text-xs text-textSecondary uppercase tracking-wider">Tags</span>
+                  <div className="flex flex-wrap gap-2 mt-1">
+                    {selectedSeventvPaint.tags.map((tag, i) => (
+                      <span key={i} className="px-2 py-1 bg-[#29b6f6]/10 text-[#29b6f6] text-xs rounded-lg">
+                        {tag}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+            </div>
+          </div>
+        </div>,
         document.body
       )}
     </div>
