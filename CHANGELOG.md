@@ -1,3 +1,19 @@
+## [6.7.0] - 2026-01-24
+### ✨ Features
+- **7TV Cosmetics Integration**: Access and view 7TV badges and paints directly within the application! Browse them in the new 'Attainables' section of your profile.
+- **Twitch Resub Notifications**: Get notified when you can share your subscription anniversary in chat, with options to include your sub streak.
+- **@Mention Autocomplete**: Type '@' in the chat input to bring up a list of recent chat participants, making it easier to tag users.
+- **Network Speed Test**: A new 'Network' tab in Settings allows you to run a quick speed test via Cloudflare to understand your connection quality and get recommendations for optimal streaming settings.
+- **Improved Emote Handling**: Emotes now load more efficiently with background caching and lazy loading in the emote picker, reducing UI stutter.
+
+### 🐛 Bug Fixes
+- **HLS Jump-to-Live Buffer**: Fixed an issue where jumping to live could cause playback stalls due to insufficient buffer.
+- **Streamlink Timeouts**: Streamlink processes now have a timeout to prevent the application from hanging indefinitely.
+- **Emoji Caching**: Improved emoji caching to prevent retrying failed fetches, ensuring a smoother experience.
+
+### 🔧 Maintenance
+- **Code Refinements**: Various code improvements and dependency updates for better performance and stability.
+
 ## [6.6.1] - 2026-01-09
 ### ✨ Features
 - **Hype Train Enhancements**: Experience more engaging Hype Trains with animated level-up celebrations, confetti, and special "HYPE" messages! See Hype Train status directly on stream cards in the Home feed and Sidebar. Golden Kappa trains now have a distinct visual flair.
@@ -927,6 +943,7 @@ ATTENTION: ALL USERS LOG OUT OF TWITCH THEN LOG BACK IN FOR SOME CHANGES OT TAKE
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
