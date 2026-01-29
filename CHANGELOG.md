@@ -1,3 +1,22 @@
+## [6.8.0] - 2026-01-29
+### ✨ Features
+- **7TV Cosmetics Deep Linking**: You can now open the Badges Overlay directly to a specific 7TV paint or badge using deep links.
+- **7TV Cosmetic Sorting & Filtering**: Enhanced the Badges Overlay with sorting options (newest, oldest, name) and filtering for animated/static 7TV paints.
+- **Cheermote Segment**: Added support for rendering Twitch Cheermotes (animated bits) in chat messages.
+- **Diagnostic Logging Control**: Introduced a new setting to toggle diagnostic log verbosity (Debug/Info vs. Warn/Error), controllable via `Settings > Support > Enable Diagnostic Logging`.
+- **ULID Timestamp Utilities**: Added helper functions to extract creation dates from ULID identifiers, used for sorting 7TV cosmetics.
+
+### 🐛 Bug Fixes
+- **Chat Badge Display**: Fixed an issue where 7TV badges were not correctly rendered with their associated metadata.
+- **Profile Overlay**: Resolved a bug where the profile overlay would fail to open if the user ID was not numeric.
+- **Streamlink Missing Dialog**: Improved error handling and fallback behavior when Streamlink is not found.
+- **Subscription Status Display**: Corrected the logic for showing subscription status in the video player (e.g., correctly indicating lapsed subscribers).
+
+### 🔧 Maintenance
+- **Centralized Logger**: Replaced all `console.log`, `console.warn`, `console.error` calls throughout the application with a new centralized `Logger` utility. This allows for runtime control over log verbosity based on user diagnostic settings, reducing noise in production builds.
+- **Dependency Updates**: Updated various project dependencies to their latest stable versions.
+- **Code Refactoring**: Applied various refactoring efforts across the codebase to improve code quality and maintainability.
+
 ## [6.7.0] - 2026-01-24
 ### ✨ Features
 - **7TV Cosmetics Integration**: Access and view 7TV badges and paints directly within the application! Browse them in the new 'Attainables' section of your profile.
@@ -943,6 +962,7 @@ ATTENTION: ALL USERS LOG OUT OF TWITCH THEN LOG BACK IN FOR SOME CHANGES OT TAKE
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
