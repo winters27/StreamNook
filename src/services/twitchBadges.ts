@@ -1,3 +1,4 @@
+import { Logger } from '../utils/logger';
 /**
  * DEPRECATED: This service has been replaced by the unified Rust badge service
  * 
@@ -45,7 +46,7 @@ export async function fetchChannelBadges(channelId: string, _clientId?: string, 
  * This stub returns null to maintain backwards compatibility
  */
 export function getBadgeInfo(_badgeKey: string, _channelId?: string): any | null {
-  console.warn('[twitchBadges] getBadgeInfo() is deprecated. Use getAllUserBadges() instead');
+  Logger.warn('[twitchBadges] getBadgeInfo() is deprecated. Use getAllUserBadges() instead');
   return null;
 }
 
@@ -53,7 +54,7 @@ export function getBadgeInfo(_badgeKey: string, _channelId?: string): any | null
  * @deprecated Badge initialization is now automatic
  */
 export async function initializeBadges(_clientId: string, _token: string, channelId?: string): Promise<void> {
-  console.warn('[twitchBadges] initializeBadges() is deprecated. Badges initialize automatically');
+  Logger.warn('[twitchBadges] initializeBadges() is deprecated. Badges initialize automatically');
   // Pre-fetch channel badges if provided
   if (channelId) {
     const { prefetchChannelBadges } = await import('./badgeService');
@@ -88,16 +89,16 @@ export async function initializeBadgeCache(channelId?: string): Promise<void> {
       // Not cached, fetch+cache via the non-unified badge command.
       // (The unified badge service caches in memory only, and won't populate
       // `get_cached_global_badges`.)
-      console.log('[BadgeCache] Global badges not cached, prefetching...');
+      Logger.debug('[BadgeCache] Global badges not cached, prefetching...');
       await invoke('prefetch_global_badges');
       globalBadges = await invoke('get_cached_global_badges');
     }
 
     if (globalBadges) {
       globalBadgesCache = globalBadges;
-      console.log('[BadgeCache] Loaded global badges into memory cache');
+      Logger.debug('[BadgeCache] Loaded global badges into memory cache');
     } else {
-      console.warn('[BadgeCache] Failed to load global badges even after prefetch');
+      Logger.warn('[BadgeCache] Failed to load global badges even after prefetch');
     }
 
     // ------------------------------------------------------------
@@ -114,9 +115,9 @@ export async function initializeBadgeCache(channelId?: string): Promise<void> {
         });
 
         channelBadgesCache.set(channelId, channelBadges);
-        console.log('[BadgeCache] Loaded channel badges into memory cache for:', channelId);
+        Logger.debug('[BadgeCache] Loaded channel badges into memory cache for:', channelId);
       } catch (e) {
-        console.warn('[BadgeCache] Failed to fetch channel badges:', e);
+        Logger.warn('[BadgeCache] Failed to fetch channel badges:', e);
       }
 
       // Still prefetch in unified service so other codepaths (profile lookups)
@@ -128,7 +129,7 @@ export async function initializeBadgeCache(channelId?: string): Promise<void> {
       }
     }
   } catch (error) {
-    console.warn('[BadgeCache] Failed to initialize badge cache:', error);
+    Logger.warn('[BadgeCache] Failed to initialize badge cache:', error);
   }
 }
 

@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { X, Star, UserPlus, UserMinus, Loader2 } from 'lucide-react';
 import { useAppStore } from '../stores/AppStore';
 
+import { Logger } from '../utils/logger';
 interface SubscribeOverlayProps {
   channel: string;
 }
@@ -33,7 +34,7 @@ const SubscribeOverlay = ({ channel }: SubscribeOverlayProps) => {
         const result = await invoke<boolean>('check_following_status', { channel });
         setIsFollowing(result);
       } catch (err) {
-        console.error('[SubscribeOverlay] Failed to check follow status:', err);
+        Logger.error('[SubscribeOverlay] Failed to check follow status:', err);
         // Default to showing "Follow" if we can't determine status
         setIsFollowing(false);
       } finally {
@@ -53,7 +54,7 @@ const SubscribeOverlay = ({ channel }: SubscribeOverlayProps) => {
     setFollowLoading(true);
 
     const action = isFollowing ? 'unfollow' : 'follow';
-    console.log(`[SubscribeOverlay] Initiating ${action} for ${channel}`);
+    Logger.debug(`[SubscribeOverlay] Initiating ${action} for ${channel}`);
 
     try {
       const result = await invoke<AutomationResult>('automate_connection', {
@@ -61,14 +62,14 @@ const SubscribeOverlay = ({ channel }: SubscribeOverlayProps) => {
         action: action
       });
 
-      console.log('[SubscribeOverlay] Automation result:', result);
+      Logger.debug('[SubscribeOverlay] Automation result:', result);
 
       if (result.success) {
         // Toggle the follow state
         setIsFollowing(prev => !prev);
-        console.log(`[SubscribeOverlay] Successfully ${action}ed ${channel}`);
+        Logger.debug(`[SubscribeOverlay] Successfully ${action}ed ${channel}`);
       } else {
-        console.error(`[SubscribeOverlay] ${action} failed:`, result.message);
+        Logger.error(`[SubscribeOverlay] ${action} failed:`, result.message);
         // Show helpful toast message
         useAppStore.getState().addToast(
           `Follow/Unfollow failed. Try logging out and back in via Settings to re-authenticate.`,
@@ -76,7 +77,7 @@ const SubscribeOverlay = ({ channel }: SubscribeOverlayProps) => {
         );
       }
     } catch (err: any) {
-      console.error(`[SubscribeOverlay] ${action} error:`, err);
+      Logger.error(`[SubscribeOverlay] ${action} error:`, err);
       // Show helpful error message
       useAppStore.getState().addToast(
         `Follow/Unfollow failed. Try logging out and back in via Settings to re-authenticate.`,

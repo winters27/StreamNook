@@ -1,3 +1,4 @@
+import { Logger } from '../utils/logger';
 // Service for caching cosmetics - user lookups in memory, image files on disk
 // User -> cosmetics mappings come from APIs fresh each time
 // Image files are cached to disk by their respective services (seventvService, thirdPartyBadges)
@@ -165,7 +166,7 @@ export async function getTwitchBadgesWithFallback(
 
       const result = Array.from(uniqueBadges.values());
 
-      console.log(`[cosmeticsCache] Resolved ${result.length} total Twitch badges for ${username}`);
+      Logger.debug(`[cosmeticsCache] Resolved ${result.length} total Twitch badges for ${username}`);
 
       // Store in memory cache for this session
       inMemoryTwitchBadgesCache.set(cacheKey, result);
@@ -236,7 +237,7 @@ export async function getFullProfileWithFallback(
       // They're already in the correct format with imageUrl from badgeService.ts
       const thirdPartyBadges = badgeData.thirdPartyBadges || [];
 
-      console.log(`[cosmeticsCache] Fetched ${twitchBadges.length} Twitch badges and ${thirdPartyBadges.length} third-party badges for ${username}`);
+      Logger.debug(`[cosmeticsCache] Fetched ${twitchBadges.length} Twitch badges and ${thirdPartyBadges.length} third-party badges for ${username}`);
 
       const profile: CachedProfile = {
         userId,
@@ -281,7 +282,7 @@ export async function refreshProfileInBackground(
   const effectiveChannelName = channelName || username;
   const twitchCacheKey = `${userId}-${effectiveChannelId}`;
 
-  console.log('[CosmeticsCache] Refreshing profile in background for:', username);
+  Logger.debug('[CosmeticsCache] Refreshing profile in background for:', username);
 
   try {
     // Fetch badge data from unified service and 7TV cosmetics in parallel
@@ -344,9 +345,9 @@ export async function refreshProfileInBackground(
     };
 
     inMemoryProfileCache.set(userId, profile);
-    console.log('[CosmeticsCache] Profile refreshed for:', username, `(${twitchBadges.length} Twitch, ${thirdPartyBadges.length} third-party badges)`);
+    Logger.debug('[CosmeticsCache] Profile refreshed for:', username, `(${twitchBadges.length} Twitch, ${thirdPartyBadges.length} third-party badges)`);
   } catch (error) {
-    console.error('[CosmeticsCache] Failed to refresh profile:', error);
+    Logger.error('[CosmeticsCache] Failed to refresh profile:', error);
   }
 }
 
@@ -362,5 +363,5 @@ export function clearCosmeticsMemoryCache(): void {
   pendingTwitchBadgesRequests.clear();
   inMemoryProfileCache.clear();
   pendingProfileRequests.clear();
-  console.log('[CosmeticsCache] All memory caches cleared');
+  Logger.debug('[CosmeticsCache] All memory caches cleared');
 }

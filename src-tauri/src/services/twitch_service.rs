@@ -7,6 +7,7 @@ use crate::services::cookie_jar_service::CookieJarService;
 use anyhow::Result;
 use chrono::{Duration as ChronoDuration, Utc};
 use keyring::Entry;
+use log::{debug, error};
 use reqwest::header::{ACCEPT, AUTHORIZATION};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -102,12 +103,12 @@ impl TwitchService {
 
         // Create directory if it doesn't exist
         if !path.exists() {
-            println!("[TWITCH_SERVICE] Creating directory: {:?}", path);
+            debug!("[TWITCH_SERVICE] Creating directory: {:?}", path);
             fs::create_dir_all(&path)?;
         }
 
         path.push(TOKEN_FILE_NAME);
-        println!("[TWITCH_SERVICE] Token file path: {:?}", path);
+        debug!("[TWITCH_SERVICE] Token file path: {:?}", path);
         Ok(path)
     }
 
@@ -116,7 +117,7 @@ impl TwitchService {
         // Check file first
         if let Ok(path) = Self::get_token_file_path() {
             if path.exists() {
-                println!("[TWITCH_SERVICE] Found stored token file");
+                debug!("[TWITCH_SERVICE] Found stored token file");
                 return true;
             }
         }
@@ -124,7 +125,7 @@ impl TwitchService {
         // Check cookies
         if let Ok(cookie_jar) = CookieJarService::new_main() {
             if cookie_jar.has_auth_token().await {
-                println!("[TWITCH_SERVICE] Found stored cookie token");
+                debug!("[TWITCH_SERVICE] Found stored cookie token");
                 return true;
             }
         }
@@ -132,7 +133,7 @@ impl TwitchService {
         // Check keyring
         if let Ok(entry) = Entry::new(KEYRING_SERVICE, KEYRING_USERNAME) {
             if entry.get_password().is_ok() {
-                println!("[TWITCH_SERVICE] Found stored keyring token");
+                debug!("[TWITCH_SERVICE] Found stored keyring token");
                 return true;
             }
         }
@@ -157,7 +158,7 @@ impl TwitchService {
             .collect();
 
         fs::write(&path, encrypted)?;
-        println!("[STORAGE] Token saved to file: {:?}", path);
+        debug!("[STORAGE] Token saved to file: {:?}", path);
         Ok(())
     }
 
@@ -190,7 +191,7 @@ impl TwitchService {
         let path = Self::get_token_file_path()?;
         if path.exists() {
             fs::remove_file(&path)?;
-            println!("[STORAGE] Token file deleted: {:?}", path);
+            debug!("[STORAGE] Token file deleted: {:?}", path);
         }
         Ok(())
     }
@@ -202,7 +203,7 @@ impl TwitchService {
         cookie_jar
             .set_full_token_data(&token.access_token, &token.refresh_token, token.expires_at)
             .await?;
-        println!("[STORAGE] ✅ Full token data saved to cookies (access, refresh, expires_at)");
+        debug!("[STORAGE] ✅ Full token data saved to cookies (access, refresh, expires_at)");
         Ok(())
     }
 
@@ -228,7 +229,7 @@ impl TwitchService {
     async fn delete_cookies() -> Result<()> {
         let cookie_jar = CookieJarService::new_main()?;
         cookie_jar.clear().await?;
-        println!("[STORAGE] Cookies deleted");
+        debug!("[STORAGE] Cookies deleted");
         Ok(())
     }
 
@@ -239,7 +240,7 @@ impl TwitchService {
         // Start device flow
         let device_response = Self::start_device_flow(&client).await?;
 
-        println!(
+        debug!(
             "Device code flow started. User code: {}",
             device_response.user_code
         );
@@ -252,21 +253,21 @@ impl TwitchService {
 
         // Spawn a task to poll for token
         tokio::task::spawn(async move {
-            println!("[LOGIN] Starting token polling task...");
+            debug!("[LOGIN] Starting token polling task...");
             let result = Self::poll_for_token(&client, &device_code, interval, expires_in).await;
 
             match result {
                 Ok(token_response) => {
-                    println!("[LOGIN] Token received from Twitch!");
-                    println!(
+                    debug!("[LOGIN] Token received from Twitch!");
+                    debug!(
                         "[LOGIN] Access token (first 10 chars): {}...",
                         &token_response.access_token[..10.min(token_response.access_token.len())]
                     );
-                    println!(
+                    debug!(
                         "[LOGIN] Refresh token present: {}",
                         token_response.refresh_token.is_some()
                     );
-                    println!(
+                    debug!(
                         "[LOGIN] Expires in: {} seconds",
                         token_response.expires_in.unwrap_or(0)
                     );
@@ -284,7 +285,7 @@ impl TwitchService {
                     };
 
                     // Store token to both file and cookies for persistence
-                    println!("[LOGIN] Storing token to file and cookies...");
+                    debug!("[LOGIN] Storing token to file and cookies...");
 
                     // Store to file (backward compatibility)
                     let file_result = Self::store_token_to_file(&storable_token);
@@ -294,36 +295,36 @@ impl TwitchService {
 
                     match (file_result, cookie_result) {
                         (Ok(_), Ok(_)) => {
-                            println!("[LOGIN] ✅ Token stored successfully to file and cookies!");
+                            debug!("[LOGIN] ✅ Token stored successfully to file and cookies!");
 
                             // Try to also store in keyring as backup (but don't fail if it doesn't work)
                             if let Ok(entry) = Entry::new(KEYRING_SERVICE, KEYRING_USERNAME) {
                                 if let Ok(token_json) = serde_json::to_string(&storable_token) {
                                     let _ = entry.set_password(&token_json);
-                                    println!("[LOGIN] Also stored token in keyring as backup");
+                                    debug!("[LOGIN] Also stored token in keyring as backup");
                                 }
                             }
 
                             // Emit success event
-                            println!("[LOGIN] Emitting twitch-login-complete event...");
+                            debug!("[LOGIN] Emitting twitch-login-complete event...");
                             if let Err(e) = app_handle.emit("twitch-login-complete", ()) {
-                                eprintln!("[LOGIN] ❌ Failed to emit login-complete event: {}", e);
+                                error!("[LOGIN] ❌ Failed to emit login-complete event: {}", e);
                             } else {
-                                println!("[LOGIN] ✅ Event emitted successfully");
+                                debug!("[LOGIN] ✅ Event emitted successfully");
                             }
                         }
                         (Ok(_), Err(e)) => {
-                            eprintln!("[LOGIN] ⚠️ Token saved to file but cookies failed: {:?}", e);
+                            error!("[LOGIN] ⚠️ Token saved to file but cookies failed: {:?}", e);
                             // Still emit success since file storage worked
                             let _ = app_handle.emit("twitch-login-complete", ());
                         }
                         (Err(e), Ok(_)) => {
-                            eprintln!("[LOGIN] ⚠️ Token saved to cookies but file failed: {:?}", e);
+                            error!("[LOGIN] ⚠️ Token saved to cookies but file failed: {:?}", e);
                             // Still emit success since cookies worked
                             let _ = app_handle.emit("twitch-login-complete", ());
                         }
                         (Err(file_err), Err(cookie_err)) => {
-                            eprintln!(
+                            error!(
                                 "[LOGIN] ❌ Failed to store token anywhere! File: {:?}, Cookie: {:?}",
                                 file_err, cookie_err
                             );
@@ -335,7 +336,7 @@ impl TwitchService {
                     }
                 }
                 Err(e) => {
-                    eprintln!("[LOGIN] ❌ Token polling failed: {}", e);
+                    error!("[LOGIN] ❌ Token polling failed: {}", e);
                     let _ = app_handle.emit("twitch-login-error", e.to_string());
                 }
             }
@@ -383,11 +384,11 @@ impl TwitchService {
         }
 
         // Log for debugging
-        println!(
+        debug!(
             "Token stored successfully in keyring. Service: {}, Username: {}",
             KEYRING_SERVICE, KEYRING_USERNAME
         );
-        println!(
+        debug!(
             "Access token: {}...",
             &token_response.access_token[..10.min(token_response.access_token.len())]
         );
@@ -493,7 +494,7 @@ impl TwitchService {
             let _ = entry.delete_credential();
         }
 
-        println!("[LOGOUT] Complete - all tokens cleared from all storage locations");
+        debug!("[LOGOUT] Complete - all tokens cleared from all storage locations");
         Ok(())
     }
 
@@ -506,7 +507,7 @@ impl TwitchService {
             ("client_secret", CLIENT_SECRET),
         ];
 
-        println!("[REFRESH] Attempting to refresh token...");
+        debug!("[REFRESH] Attempting to refresh token...");
 
         let response = client
             .post("https://id.twitch.tv/oauth2/token")
@@ -543,19 +544,19 @@ impl TwitchService {
     }
 
     pub async fn get_token() -> Result<String> {
-        // println!("[GET_TOKEN] Attempting to retrieve token from storage...");
+        // debug!("[GET_TOKEN] Attempting to retrieve token from storage...");
 
         // Try to load from file first (primary storage)
         match Self::load_token_from_file() {
             Ok(mut token) => {
-                // println!("[GET_TOKEN] ✅ Token retrieved from file storage");
+                // debug!("[GET_TOKEN] ✅ Token retrieved from file storage");
 
                 // Check if token is expired or about to expire (within 5 minutes)
                 let buffer_time = 300; // 5 minutes buffer
                 if Utc::now().timestamp() >= (token.expires_at - buffer_time) {
                     // Token is expired or about to expire, refresh it
                     if !token.refresh_token.is_empty() {
-                        println!("[GET_TOKEN] Token expired or expiring soon, refreshing...");
+                        debug!("[GET_TOKEN] Token expired or expiring soon, refreshing...");
                         match Self::refresh_token(&token.refresh_token).await {
                             Ok(new_token) => {
                                 token = new_token;
@@ -563,7 +564,7 @@ impl TwitchService {
                                 let _ = Self::store_token_to_cookies(&token).await;
                             }
                             Err(e) => {
-                                eprintln!("[GET_TOKEN] Failed to refresh token: {:?}", e);
+                                error!("[GET_TOKEN] Failed to refresh token: {:?}", e);
                                 return Err(anyhow::anyhow!(
                                     "Token expired and refresh failed. Please log in again."
                                 ));
@@ -579,13 +580,13 @@ impl TwitchService {
                 return Ok(token.access_token);
             }
             Err(file_err) => {
-                println!("[GET_TOKEN] Could not read from file: {:?}", file_err);
+                debug!("[GET_TOKEN] Could not read from file: {:?}", file_err);
 
                 // Try cookies as fallback (new persistent storage)
-                println!("[GET_TOKEN] Trying cookies as fallback...");
+                debug!("[GET_TOKEN] Trying cookies as fallback...");
                 match Self::load_token_from_cookies().await {
                     Ok(mut cookie_token) => {
-                        println!("[GET_TOKEN] ✅ Token retrieved from cookies");
+                        debug!("[GET_TOKEN] ✅ Token retrieved from cookies");
 
                         // Check if token is expired or about to expire
                         let buffer_time = 300; // 5 minutes buffer
@@ -594,7 +595,7 @@ impl TwitchService {
                         {
                             // Try to refresh if we have a refresh token
                             if !cookie_token.refresh_token.is_empty() {
-                                println!(
+                                debug!(
                                     "[GET_TOKEN] Cookie token expired or expiring soon, refreshing..."
                                 );
                                 match Self::refresh_token(&cookie_token.refresh_token).await {
@@ -605,7 +606,7 @@ impl TwitchService {
                                         let _ = Self::store_token_to_cookies(&new_token).await;
                                     }
                                     Err(e) => {
-                                        eprintln!(
+                                        error!(
                                             "[GET_TOKEN] Failed to refresh cookie token: {:?}",
                                             e
                                         );
@@ -628,9 +629,7 @@ impl TwitchService {
                                     .await?;
 
                                 if response.status() == 401 {
-                                    println!(
-                                        "[GET_TOKEN] Cookie token is invalid, clearing cookies"
-                                    );
+                                    debug!("[GET_TOKEN] Cookie token is invalid, clearing cookies");
                                     let _ = Self::delete_cookies().await;
                                     return Err(anyhow::anyhow!(
                                         "Not authenticated. Please log in to Twitch first."
@@ -646,16 +645,16 @@ impl TwitchService {
                     }
                     Err(_) => {
                         // Fallback to keyring if cookies don't exist
-                        println!("[GET_TOKEN] Trying keyring as fallback...");
+                        debug!("[GET_TOKEN] Trying keyring as fallback...");
 
                         if let Ok(entry) = Entry::new(KEYRING_SERVICE, KEYRING_USERNAME) {
                             if let Ok(pwd) = entry.get_password() {
-                                println!("[GET_TOKEN] ✅ Token retrieved from keyring fallback");
+                                debug!("[GET_TOKEN] ✅ Token retrieved from keyring fallback");
 
                                 let mut token: StorableToken = match serde_json::from_str(&pwd) {
                                     Ok(t) => t,
                                     Err(e) => {
-                                        eprintln!(
+                                        error!(
                                             "[GET_TOKEN] Failed to parse keyring token: {:?}",
                                             e
                                         );
@@ -673,16 +672,14 @@ impl TwitchService {
                                 let buffer_time = 300;
                                 if Utc::now().timestamp() >= (token.expires_at - buffer_time) {
                                     if !token.refresh_token.is_empty() {
-                                        println!(
-                                            "[GET_TOKEN] Keyring token expired, refreshing..."
-                                        );
+                                        debug!("[GET_TOKEN] Keyring token expired, refreshing...");
                                         match Self::refresh_token(&token.refresh_token).await {
                                             Ok(new_token) => {
                                                 token = new_token;
                                                 let _ = Self::store_token_to_cookies(&token).await;
                                             }
                                             Err(e) => {
-                                                eprintln!(
+                                                error!(
                                                     "[GET_TOKEN] Failed to refresh keyring token: {:?}",
                                                     e
                                                 );
@@ -698,7 +695,7 @@ impl TwitchService {
                             }
                         }
 
-                        eprintln!(
+                        error!(
                             "[GET_TOKEN] ❌ No token found in file, cookies, or keyring storage"
                         );
                         Err(anyhow::anyhow!(
@@ -719,7 +716,7 @@ impl TwitchService {
         let access_token = match Self::get_token().await {
             Ok(t) => t,
             Err(e) => {
-                println!("❌ [Auth Debug] No valid token available: {:?}", e);
+                debug!("❌ [Auth Debug] No valid token available: {:?}", e);
                 return Ok(TokenHealthStatus {
                     is_valid: false,
                     seconds_remaining: 0,
@@ -742,9 +739,7 @@ impl TwitchService {
             .await?;
 
         if !response.status().is_success() {
-            println!(
-                "❌ [Auth Debug] Token is INVALID or EXPIRED. User needs to login or refresh."
-            );
+            debug!("❌ [Auth Debug] Token is INVALID or EXPIRED. User needs to login or refresh.");
             return Ok(TokenHealthStatus {
                 is_valid: false,
                 seconds_remaining: 0,
@@ -776,18 +771,16 @@ impl TwitchService {
         let user_id = data["user_id"].as_str().map(|s| s.to_string());
         let login = data["login"].as_str().map(|s| s.to_string());
 
-        println!("✅ [Auth Debug] Token is VALID.");
-        println!("ℹ️ [Auth Debug] Scopes: {}", scopes.join(", "));
-        println!(
+        debug!("✅ [Auth Debug] Token is VALID.");
+        debug!("ℹ️ [Auth Debug] Scopes: {}", scopes.join(", "));
+        debug!(
             "⏳ [Auth Debug] Time remaining: {}h {}m ({}s)",
             hours, minutes, seconds_remaining
         );
 
         let needs_refresh = seconds_remaining < 3600;
         if needs_refresh {
-            println!(
-                "⚠️ [Auth Debug] Token expires in less than 1 hour! Consider refreshing soon."
-            );
+            debug!("⚠️ [Auth Debug] Token expires in less than 1 hour! Consider refreshing soon.");
         }
 
         Ok(TokenHealthStatus {
@@ -829,13 +822,13 @@ impl TwitchService {
             ));
         }
 
-        println!("🔄 [Auth Debug] Force refreshing token...");
+        debug!("🔄 [Auth Debug] Force refreshing token...");
         let new_token = Self::refresh_token(&token.refresh_token).await?;
 
         // Update all storage locations
         let _ = Self::store_token_to_cookies(&new_token).await;
 
-        println!("🔄 [Auth Debug] Token refreshed successfully!");
+        debug!("🔄 [Auth Debug] Token refreshed successfully!");
         Ok(new_token.access_token)
     }
 
@@ -1586,7 +1579,7 @@ impl TwitchService {
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
-            println!(
+            debug!(
                 "[check_following_status] API error: {} - {}",
                 status, error_text
             );
@@ -1604,7 +1597,7 @@ impl TwitchService {
             .map(|arr| !arr.is_empty())
             .unwrap_or(false);
 
-        println!(
+        debug!(
             "[check_following_status] User {} following {}: {}",
             user_info.id, target_user_id, is_following
         );

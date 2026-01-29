@@ -1,6 +1,7 @@
 // 7TV Global Cosmetics Fetch - Badges and Paints
 // Fetches all available badges and paints from 7TV v4 GraphQL API
 
+use log::debug;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
@@ -197,7 +198,7 @@ async fn execute_gql_query(query: &str) -> Result<serde_json::Value, String> {
 /// Fetch all 7TV global badges
 #[tauri::command]
 pub async fn get_all_seventv_badges() -> Result<Vec<SevenTVGlobalBadge>, String> {
-    println!("[7TV] Fetching all badges...");
+    debug!("[7TV] Fetching all badges...");
 
     let json = execute_gql_query(ALL_BADGES_QUERY).await?;
 
@@ -213,14 +214,14 @@ pub async fn get_all_seventv_badges() -> Result<Vec<SevenTVGlobalBadge>, String>
         })
         .unwrap_or_default();
 
-    println!("[7TV] Fetched {} badges", badges.len());
+    debug!("[7TV] Fetched {} badges", badges.len());
     Ok(badges)
 }
 
 /// Fetch all 7TV global paints
 #[tauri::command]
 pub async fn get_all_seventv_paints() -> Result<Vec<SevenTVGlobalPaint>, String> {
-    println!("[7TV] Fetching all paints...");
+    debug!("[7TV] Fetching all paints...");
 
     let json = execute_gql_query(ALL_PAINTS_QUERY).await?;
 
@@ -236,6 +237,6 @@ pub async fn get_all_seventv_paints() -> Result<Vec<SevenTVGlobalPaint>, String>
         })
         .unwrap_or_default();
 
-    println!("[7TV] Fetched {} paints", paints.len());
+    debug!("[7TV] Fetched {} paints", paints.len());
     Ok(paints)
 }

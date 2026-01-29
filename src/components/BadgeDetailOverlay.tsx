@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../stores/AppStore';
 import { parseBadgeForLinks, type ParsedBadgeLink } from '../services/badgeParsingService';
 
+import { Logger } from '../utils/logger';
 interface TwitchCategory {
   id: string;
   name: string;
@@ -110,7 +111,7 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
               }
             }
 
-            console.log(`[BadgeDetail] Refined category: "${link.name}" → "${bestMatch.name}"`);
+            Logger.debug(`[BadgeDetail] Refined category: "${link.name}" → "${bestMatch.name}"`);
 
             // Add the validated link with refined name
             validLinks.push({
@@ -118,10 +119,10 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
               name: bestMatch.name,
             });
           } else {
-            console.log(`[BadgeDetail] No matching category found for "${link.name}", skipping`);
+            Logger.debug(`[BadgeDetail] No matching category found for "${link.name}", skipping`);
           }
         } catch (error) {
-          console.warn(`[BadgeDetail] Failed to search categories for "${link.name}":`, error);
+          Logger.warn(`[BadgeDetail] Failed to search categories for "${link.name}":`, error);
           // Keep original link on error
           validLinks.push(link);
         }
@@ -145,7 +146,7 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
             });
 
             if (matchingCampaign) {
-              console.log(`[BadgeDetail] Refined drops: "${link.name}" → "${matchingCampaign.campaign.name}"`);
+              Logger.debug(`[BadgeDetail] Refined drops: "${link.name}" → "${matchingCampaign.campaign.name}"`);
 
               // Add the validated link with official campaign name
               validLinks.push({
@@ -153,15 +154,15 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
                 name: matchingCampaign.campaign.name,
               });
             } else {
-              console.log(`[BadgeDetail] No matching drops campaign found for "${link.name}", skipping`);
+              Logger.debug(`[BadgeDetail] No matching drops campaign found for "${link.name}", skipping`);
               // Don't add invalid drops links
             }
           } else {
-            console.log(`[BadgeDetail] No drops campaigns available to validate "${link.name}", skipping`);
+            Logger.debug(`[BadgeDetail] No drops campaigns available to validate "${link.name}", skipping`);
             // Don't add drops links if we can't validate them
           }
         } catch (error) {
-          console.warn(`[BadgeDetail] Failed to search drops for "${link.name}":`, error);
+          Logger.warn(`[BadgeDetail] Failed to search drops for "${link.name}":`, error);
           // Don't add unvalidated drops links
         }
       }
@@ -207,7 +208,7 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
         });
         setBadgeBaseInfo(info);
       } catch (error) {
-        console.warn('[BadgeDetail] Failed to fetch BadgeBase info:', error);
+        Logger.warn('[BadgeDetail] Failed to fetch BadgeBase info:', error);
         // Silently fail - BadgeBase info is optional
       } finally {
         setLoadingBadgeBase(false);

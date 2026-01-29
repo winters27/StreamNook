@@ -1,5 +1,6 @@
 use crate::services::badge_service::BadgeService;
 use crate::services::twitch_service::TwitchService;
+use log::debug;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -208,13 +209,13 @@ pub async fn get_user_profile_complete(
         let cache = PROFILE_CACHE.read().await;
         if let Some(cached) = cache.get(&cache_key) {
             if cached.timestamp.elapsed().unwrap_or(CACHE_DURATION) < CACHE_DURATION {
-                println!("[UserProfile] Cache hit for: {}", username);
+                debug!("[UserProfile] Cache hit for: {}", username);
                 return Ok(cached.profile.clone());
             }
         }
     }
 
-    println!(
+    debug!(
         "[UserProfile] Fetching complete profile for: {} in channel {}",
         username, channel_name
     );
@@ -271,7 +272,7 @@ pub async fn get_user_profile_complete(
 pub async fn clear_user_profile_cache() -> Result<(), String> {
     let mut cache = PROFILE_CACHE.write().await;
     cache.clear();
-    println!("[UserProfile] Cache cleared");
+    debug!("[UserProfile] Cache cleared");
     Ok(())
 }
 
@@ -285,7 +286,7 @@ pub async fn clear_user_profile_cache_for_user(
     let cache_key = format!("{}:{}:{}", user_id, username, channel_id);
     let mut cache = PROFILE_CACHE.write().await;
     cache.remove(&cache_key);
-    println!("[UserProfile] Cache cleared for: {}", username);
+    debug!("[UserProfile] Cache cleared for: {}", username);
     Ok(())
 }
 

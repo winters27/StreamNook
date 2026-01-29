@@ -6,6 +6,7 @@ import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { parseEmojisProxied, EmojiSegment } from '../services/emojiService';
 
+import { Logger } from '../utils/logger';
 interface LiveNotification {
   streamer_name: string;
   streamer_login: string;
@@ -205,7 +206,7 @@ const ToastManager = () => {
           break;
       }
     } catch (error) {
-      console.warn('Could not play notification sound:', error);
+      Logger.warn('Could not play notification sound:', error);
     }
   }, []);
 
@@ -281,7 +282,7 @@ const ToastManager = () => {
             const { startStream } = useAppStore.getState();
             await startStream(notification.streamer_login);
           } catch (e) {
-            console.error('Failed to open stream:', e);
+            Logger.error('Failed to open stream:', e);
             const { addToast: showError } = useAppStore.getState();
             showError('Failed to open stream. Please try again.', 'error');
           }

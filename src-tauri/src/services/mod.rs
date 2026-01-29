@@ -7,6 +7,7 @@ pub mod channel_points_service;
 pub mod channel_points_websocket_service;
 pub mod chat_service;
 pub mod cookie_jar_service;
+pub mod diagnostic_logger;
 pub mod discord_service;
 pub mod drops_auth_service;
 pub mod drops_service;

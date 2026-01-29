@@ -108,6 +108,15 @@ pub enum MessageSegment {
         content: String,
         url: String,
     },
+    /// Cheermote segment for animated bits (e.g., Cheer500)
+    Cheermote {
+        content: String,       // Original text, e.g., "Cheer500"
+        prefix: String,        // e.g., "cheer" (lowercase)
+        bits: u32,             // e.g., 500
+        tier: String,          // e.g., "100" (tier ID for URL)
+        color: String,         // e.g., "#9c3ee8" (tier color)
+        cheermote_url: String, // Animated GIF URL
+    },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

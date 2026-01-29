@@ -6,6 +6,7 @@ import type { TwitchStream, TwitchCategory } from '../types';
 import LoadingWidget from './LoadingWidget';
 import { parseEmojisProxied, EmojiSegment } from '../services/emojiService';
 
+import { Logger } from '../utils/logger';
 // Component to render stream title with Apple-style emojis (inline)
 const StreamTitleWithEmojis = ({ title }: { title: string }) => {
     const [segments, setSegments] = useState<EmojiSegment[]>([]);
@@ -204,7 +205,7 @@ const Home = () => {
             setGamesCursor(cursor);
             setHasMoreGames(!!cursor);
         } catch (e) {
-            console.error('Failed to load top games:', e);
+            Logger.error('Failed to load top games:', e);
             setTopGames([]);
             setHasMoreGames(false);
         } finally {
@@ -225,7 +226,7 @@ const Home = () => {
             setGamesCursor(cursor);
             setHasMoreGames(!!cursor);
         } catch (e) {
-            console.error('Failed to load more top games:', e);
+            Logger.error('Failed to load more top games:', e);
         } finally {
             setIsLoadingMoreGames(false);
         }
@@ -250,7 +251,7 @@ const Home = () => {
                 }
                 setDropsGameIds(dropsIdMap);
                 setDropsGameNames(dropsNameMap);
-                console.log(`[Home] Found ${dropsIdMap.size} categories with active drops`);
+                Logger.debug(`[Home] Found ${dropsIdMap.size} categories with active drops`);
 
                 // Also check current mining status to sync state
                 try {
@@ -262,7 +263,7 @@ const Home = () => {
                         if (miningGameName) {
                             for (const campaign of campaigns) {
                                 if (campaign.game_name?.toLowerCase() === miningGameName) {
-                                    console.log(`[Home] Already mining campaign: ${campaign.name}`);
+                                    Logger.debug(`[Home] Already mining campaign: ${campaign.name}`);
                                     setActiveMiningIds(prev => new Set(prev).add(campaign.id));
                                     break;
                                 }
@@ -270,14 +271,14 @@ const Home = () => {
                         }
                     }
                 } catch (e) {
-                    console.warn('Could not get mining status:', e);
+                    Logger.warn('Could not get mining status:', e);
                 }
             } else {
                 setDropsGameIds(new Map());
                 setDropsGameNames(new Map());
             }
         } catch (e) {
-            console.error('Failed to load active drops:', e);
+            Logger.error('Failed to load active drops:', e);
             setDropsGameIds(new Map());
             setDropsGameNames(new Map());
         } finally {
@@ -404,11 +405,11 @@ const Home = () => {
             // Stop mining
             try {
                 await invoke('stop_auto_mining');
-                console.log(`[Home] Stopped mining drops for ${campaign.name}`);
+                Logger.debug(`[Home] Stopped mining drops for ${campaign.name}`);
                 setActiveMiningIds(new Set()); // Clear all mining IDs
                 useAppStore.getState().addToast(`Stopped mining drops for ${campaign.game_name}`, 'info');
             } catch (error) {
-                console.error('Failed to stop mining:', error);
+                Logger.error('Failed to stop mining:', error);
                 useAppStore.getState().addToast('Failed to stop mining drops', 'error');
             }
         } else {
@@ -421,7 +422,7 @@ const Home = () => {
 
             try {
                 await invoke('start_campaign_mining', { campaignId: campaign.id });
-                console.log(`[Home] Started mining drops for ${campaign.name}`);
+                Logger.debug(`[Home] Started mining drops for ${campaign.name}`);
 
                 // Add to active mining set
                 setActiveMiningIds(new Set([campaign.id]));
@@ -434,7 +435,7 @@ const Home = () => {
 
                 useAppStore.getState().addToast(`Started mining drops for ${campaign.game_name}`, 'success');
             } catch (error) {
-                console.error('Failed to start mining:', error);
+                Logger.error('Failed to start mining:', error);
                 useAppStore.getState().addToast('Failed to start mining drops', 'error');
             }
         }
@@ -466,7 +467,7 @@ const Home = () => {
             }) as [TwitchStream[], string | null];
             setCategoryStreams(streams);
         } catch (e) {
-            console.error('Failed to load category streams:', e);
+            Logger.error('Failed to load category streams:', e);
             setCategoryStreams([]);
         } finally {
             setIsLoadingCategoryStreams(false);
@@ -486,7 +487,7 @@ const Home = () => {
             }) as TwitchStream[];
             setCategoryStreams(streams);
         } catch (e) {
-            console.error('Failed to load category streams by name:', e);
+            Logger.error('Failed to load category streams by name:', e);
             setCategoryStreams([]);
         } finally {
             setIsLoadingCategoryStreams(false);
@@ -515,7 +516,7 @@ const Home = () => {
             const results = await invoke('search_channels', { query: searchQuery }) as TwitchStream[];
             setSearchResults(results);
         } catch (e) {
-            console.error('Search failed:', e);
+            Logger.error('Search failed:', e);
             setSearchResults([]);
         } finally {
             setIsSearching(false);

@@ -13,6 +13,7 @@ import { themes, themeCategories, getThemeById, applyTheme, Theme, getThemeByIdW
 import { getSelectedCompactViewPreset } from '../constants/compactViewPresets';
 import type { MiningStatus } from '../types';
 
+import { Logger } from '../utils/logger';
 const TitleBar = () => {
   const store = useAppStore();
   const { openSettings, setShowProfileOverlay, setShowDropsOverlay, setShowBadgesOverlay, setShowWhispersOverlay, showProfileOverlay, isAuthenticated, currentUser, isMiningActive, isTheaterMode, toggleTheaterMode, streamUrl, settings, updateSettings, isHomeActive, toggleHome, whisperImportState } = store;
@@ -37,7 +38,7 @@ const TitleBar = () => {
     try {
       return getThemeByIdWithCustom(currentThemeId, customThemes) || getThemeById('winters-glass') || themes[0];
     } catch (error) {
-      console.error('[TitleBar] Error getting theme:', error);
+      Logger.error('[TitleBar] Error getting theme:', error);
       return themes[0]; // Return first theme as ultimate fallback
     }
   }, [currentThemeId, customThemes]);
@@ -65,28 +66,28 @@ const TitleBar = () => {
   // Close theme picker on click outside
   useEffect(() => {
     if (!showThemePicker) {
-      console.log('Theme picker closed, removing listener');
+      Logger.debug('Theme picker closed, removing listener');
       return;
     }
 
-    console.log('Theme picker opened, will add listener in 100ms');
+    Logger.debug('Theme picker opened, will add listener in 100ms');
 
     const handleClickOutside = (event: MouseEvent) => {
-      console.log('Click outside detected', event.target);
+      Logger.debug('Click outside detected', event.target);
       if (themePickerRef.current && !themePickerRef.current.contains(event.target as Node)) {
-        console.log('Closing theme picker via click outside');
+        Logger.debug('Closing theme picker via click outside');
         setShowThemePicker(false);
       }
     };
 
     // Add listener after a delay to ensure state has updated
     const timeoutId = setTimeout(() => {
-      console.log('Adding mousedown listener');
+      Logger.debug('Adding mousedown listener');
       document.addEventListener('mousedown', handleClickOutside);
     }, 100);
 
     return () => {
-      console.log('Cleanup: removing listener and timeout');
+      Logger.debug('Cleanup: removing listener and timeout');
       clearTimeout(timeoutId);
       document.removeEventListener('mousedown', handleClickOutside);
     };
@@ -108,7 +109,7 @@ const TitleBar = () => {
         const settings = await invoke<any>('get_drops_settings');
         setDropsSettings(settings);
       } catch (err) {
-        console.error('Failed to get drops settings:', err);
+        Logger.error('Failed to get drops settings:', err);
       }
     };
 
@@ -413,7 +414,7 @@ const TitleBar = () => {
           <div className="relative" ref={themePickerRef}>
             <button
               onClick={() => {
-                console.log('Theme picker clicked, current state:', showThemePicker);
+                Logger.debug('Theme picker clicked, current state:', showThemePicker);
                 setShowThemePicker(!showThemePicker);
               }}
               className={`p-1.5 hover:bg-glass rounded transition-all duration-200 ${showThemePicker ? 'text-accent bg-glass' : 'text-textSecondary hover:text-textPrimary'

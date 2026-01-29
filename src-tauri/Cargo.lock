@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "StreamNook"
-version = "6.6.1"
+version = "6.7.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -15,10 +15,12 @@ dependencies = [
  "cosmic-text",
  "dirs",
  "discord-rich-presence",
+ "env_logger",
  "futures",
  "futures-util",
  "keyring",
  "lazy_static",
+ "log",
  "lru",
  "mime_guess",
  "oauth2",

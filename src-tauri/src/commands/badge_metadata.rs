@@ -1,4 +1,5 @@
 use crate::services::universal_cache_service::{cache_item, get_cached_item, CacheType};
+use log::debug;
 use regex::Regex;
 use scraper::{Html, Selector};
 use serde::{Deserialize, Serialize};
@@ -39,9 +40,9 @@ pub async fn fetch_badge_metadata(
     // Check universal cache first (unless force refresh is requested)
     let should_force = force.unwrap_or(false);
     if !should_force {
-        println!("[BadgeMetadata] Checking cache for: {}", cache_key);
+        debug!("[BadgeMetadata] Checking cache for: {}", cache_key);
         if let Ok(Some(cached)) = get_cached_item(CacheType::Badge, &cache_key).await {
-            println!("[BadgeMetadata] Found in cache: {}", cache_key);
+            debug!("[BadgeMetadata] Found in cache: {}", cache_key);
             if let Ok(cached_info) = serde_json::from_value::<BadgeMetadataCached>(cached.data) {
                 // Return full info with URL
                 return Ok(BadgeMetadata {
@@ -53,10 +54,10 @@ pub async fn fetch_badge_metadata(
             }
         }
     } else {
-        println!("[BadgeMetadata] Force refresh requested for: {}", cache_key);
+        debug!("[BadgeMetadata] Force refresh requested for: {}", cache_key);
     }
 
-    println!("[BadgeMetadata] Fetching info from: {}", url);
+    debug!("[BadgeMetadata] Fetching info from: {}", url);
 
     // Fetch the HTML page
     let client = reqwest::Client::builder()
@@ -108,7 +109,7 @@ pub async fn fetch_badge_metadata(
             0, // Never expire
         )
         .await;
-        println!("[BadgeMetadata] Cached badge info permanently");
+        debug!("[BadgeMetadata] Cached badge info permanently");
     }
 
     // Return full info with URL

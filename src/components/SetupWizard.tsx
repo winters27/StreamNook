@@ -24,6 +24,7 @@ import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useAppStore } from '../stores/AppStore';
 
+import { Logger } from '../utils/logger';
 interface SetupWizardProps {
     isOpen: boolean;
     onClose: () => void;
@@ -78,7 +79,7 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
             setStatus(prev => ({ ...prev, componentsInstalled: installed }));
             return installed;
         } catch (e) {
-            console.error('Failed to check components:', e);
+            Logger.error('Failed to check components:', e);
             setStatus(prev => ({ ...prev, componentsInstalled: false }));
             return false;
         }
@@ -88,11 +89,11 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
     const checkDropsAuthStatus = useCallback(async () => {
         try {
             const isDropsAuth = await invoke('is_drops_authenticated') as boolean;
-            console.log('[SetupWizard] Drops auth status:', isDropsAuth);
+            Logger.debug('[SetupWizard] Drops auth status:', isDropsAuth);
             setStatus(prev => ({ ...prev, dropsAuthenticated: isDropsAuth }));
             return isDropsAuth;
         } catch (e) {
-            console.error('Failed to check drops auth status:', e);
+            Logger.error('Failed to check drops auth status:', e);
             setStatus(prev => ({ ...prev, dropsAuthenticated: false }));
             return false;
         }
@@ -117,7 +118,7 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
             // Auto-advance to next step
             setCurrentStep(2);
         } catch (e) {
-            console.error('Failed to extract components:', e);
+            Logger.error('Failed to extract components:', e);
             const errorMsg = String(e);
             setStatus(prev => ({ ...prev, extractionError: errorMsg }));
             setError(errorMsg);
@@ -140,7 +141,7 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                 setCustomStreamlinkPath(selected);
             }
         } catch (error) {
-            console.error('Failed to open folder picker:', error);
+            Logger.error('Failed to open folder picker:', error);
             addToast('Failed to open folder picker', 'error');
         } finally {
             setIsSelectingFolder(false);
@@ -229,7 +230,7 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
         });
 
         loginWindow.once('tauri://error', (e) => {
-            console.error('Failed to open drops login window:', e);
+            Logger.error('Failed to open drops login window:', e);
         });
     }, []);
 
@@ -258,7 +259,7 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                     const dropsWindow = await WebviewWindow.getByLabel('drops-login');
                     if (dropsWindow) {
                         await dropsWindow.close();
-                        console.log('Drops login window closed');
+                        Logger.debug('Drops login window closed');
                     }
                 } catch {
                     // Window doesn't exist, continue
@@ -272,18 +273,18 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                 try {
                     await invoke('focus_window');
                 } catch (focusError) {
-                    console.error('Failed to focus window:', focusError);
+                    Logger.error('Failed to focus window:', focusError);
                 }
 
                 // Auto-advance to next step after a short delay
                 setTimeout(() => setCurrentStep(3), 500);
             } catch (pollError) {
-                console.error('Failed to complete drops login:', pollError);
+                Logger.error('Failed to complete drops login:', pollError);
                 setError(`Login failed: ${pollError}`);
                 setDropsDeviceCode(null);
             }
         } catch (e) {
-            console.error('Failed to start drops login:', e);
+            Logger.error('Failed to start drops login:', e);
             setError(`Failed to start login: ${e}`);
         } finally {
             setIsAuthenticating(false);
@@ -305,7 +306,7 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                 try {
                     await invoke('focus_window');
                 } catch (focusError) {
-                    console.error('Failed to focus window:', focusError);
+                    Logger.error('Failed to focus window:', focusError);
                 }
 
                 // Auto-advance to next step after a short delay
@@ -319,7 +320,7 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                 unlistenError();
             });
         } catch (e) {
-            console.error('Failed to start login:', e);
+            Logger.error('Failed to start login:', e);
             setError(`Failed to start login: ${e}`);
             setIsAuthenticating(false);
         }
@@ -334,7 +335,7 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
             });
             onClose();
         } catch (e) {
-            console.error('Failed to save settings:', e);
+            Logger.error('Failed to save settings:', e);
             addToast('Failed to save settings', 'error');
         }
     }, [settings, updateSettings, onClose, addToast]);
@@ -752,7 +753,7 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                                         try {
                                             await invoke('scrape_whispers');
                                         } catch (err) {
-                                            console.error('[SetupWizard] Whisper import failed:', err);
+                                            Logger.error('[SetupWizard] Whisper import failed:', err);
                                             setWhisperImportState({
                                                 isImporting: false,
                                                 error: err instanceof Error ? err.message : String(err)

@@ -1,6 +1,7 @@
 use anyhow::Result;
 use cfspeedtest::speedtest::{fetch_metadata, test_download, test_latency, test_upload};
 use cfspeedtest::OutputFormat;
+use log::debug;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 
@@ -31,7 +32,7 @@ pub struct BaselineSpeedService;
 impl BaselineSpeedService {
     /// Run a comprehensive speed test using cfspeedtest crate
     pub async fn run_download_test(_duration_seconds: u32) -> Result<BaselineSpeedResult> {
-        println!("[BaselineSpeed] Starting Cloudflare speed test...");
+        debug!("[BaselineSpeed] Starting Cloudflare speed test...");
 
         // Run the test in a blocking task since cfspeedtest is synchronous
         let result = tokio::task::spawn_blocking(|| Self::run_cfspeedtest()).await??;
@@ -45,19 +46,19 @@ impl BaselineSpeedService {
 
         // Fetch metadata about the connection
         let metadata = fetch_metadata(&client)?;
-        println!(
+        debug!(
             "[BaselineSpeed] Connected to Cloudflare - Location: {}, IP: {}",
             metadata.colo, metadata.ip
         );
 
         // Run latency test (returns average in ms)
-        println!("[BaselineSpeed] Testing latency...");
+        debug!("[BaselineSpeed] Testing latency...");
         let latency = test_latency(&client);
-        println!("[BaselineSpeed] Latency: {:.1}ms", latency);
+        debug!("[BaselineSpeed] Latency: {:.1}ms", latency);
 
         // Run multiple download tests with different payload sizes for accuracy
         // Using larger payloads and multiple iterations for better measurement
-        println!("[BaselineSpeed] Testing download speed (this may take 15-20 seconds)...");
+        debug!("[BaselineSpeed] Testing download speed (this may take 15-20 seconds)...");
         let mut download_speeds = Vec::new();
 
         // Configuration for thorough testing:
@@ -72,7 +73,7 @@ impl BaselineSpeedService {
         for (size, label, iterations) in test_configs {
             for i in 1..=iterations {
                 let speed = test_download(&client, size, OutputFormat::None);
-                println!("[BaselineSpeed] Download ({label} #{i}): {:.2} Mbps", speed);
+                debug!("[BaselineSpeed] Download ({label} #{i}): {:.2} Mbps", speed);
                 download_speeds.push(speed);
             }
         }
@@ -86,14 +87,14 @@ impl BaselineSpeedService {
 
         // Calculate stability score based on variance
         let stability_score = Self::calculate_stability(&download_speeds);
-        println!("[BaselineSpeed] Stability: {}%", stability_score);
+        debug!("[BaselineSpeed] Stability: {}%", stability_score);
 
         // Run upload tests (smaller but still multiple iterations)
-        println!("[BaselineSpeed] Testing upload speed...");
+        debug!("[BaselineSpeed] Testing upload speed...");
         let mut upload_speeds = Vec::new();
         for i in 1..=3 {
             let speed = test_upload(&client, 5_000_000, OutputFormat::None); // 5MB x 3 = 15MB
-            println!("[BaselineSpeed] Upload (5MB #{i}): {:.2} Mbps", speed);
+            debug!("[BaselineSpeed] Upload (5MB #{i}): {:.2} Mbps", speed);
             upload_speeds.push(speed);
         }
         let upload_mbps = if upload_speeds.is_empty() {
@@ -104,7 +105,7 @@ impl BaselineSpeedService {
 
         let server_info = format!("Cloudflare {} ({})", metadata.colo, metadata.country);
 
-        println!(
+        debug!(
             "[BaselineSpeed] Test complete: {:.2} Mbps down, {:.2} Mbps up, {}ms latency",
             download_mbps, upload_mbps, latency as i32
         );
@@ -150,13 +151,13 @@ impl BaselineSpeedService {
         })
         .await??;
 
-        println!("[BaselineSpeed] Latency: {}ms", result.0);
+        debug!("[BaselineSpeed] Latency: {}ms", result.0);
         Ok(result)
     }
 
     /// Quick speed test with live updates - uses cfspeedtest for accurate results
     pub async fn run_quick_test(app_handle: AppHandle) -> Result<BaselineSpeedResult> {
-        println!("[BaselineSpeed] Starting Cloudflare speed test with live updates...");
+        debug!("[BaselineSpeed] Starting Cloudflare speed test with live updates...");
 
         // Create a channel for live speed updates
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<LiveSpeedUpdate>();
@@ -189,18 +190,18 @@ impl BaselineSpeedService {
 
         // Fetch metadata about the connection
         let metadata = fetch_metadata(&client)?;
-        println!(
+        debug!(
             "[BaselineSpeed] Connected to Cloudflare - Location: {}, IP: {}",
             metadata.colo, metadata.ip
         );
 
         // Run latency test (returns average in ms)
-        println!("[BaselineSpeed] Testing latency...");
+        debug!("[BaselineSpeed] Testing latency...");
         let latency = test_latency(&client);
-        println!("[BaselineSpeed] Latency: {:.1}ms", latency);
+        debug!("[BaselineSpeed] Latency: {:.1}ms", latency);
 
         // Run multiple download tests with different payload sizes for accuracy
-        println!("[BaselineSpeed] Testing download speed (this may take 20-30 seconds)...");
+        debug!("[BaselineSpeed] Testing download speed (this may take 20-30 seconds)...");
         let mut download_speeds = Vec::new();
 
         // Configuration for thorough testing:
@@ -219,7 +220,7 @@ impl BaselineSpeedService {
             for i in 1..=iterations {
                 current_iteration += 1;
                 let speed = test_download(&client, size, OutputFormat::None);
-                println!("[BaselineSpeed] Download ({label} #{i}): {:.2} Mbps", speed);
+                debug!("[BaselineSpeed] Download ({label} #{i}): {:.2} Mbps", speed);
                 download_speeds.push(speed);
 
                 // Emit live update
@@ -241,15 +242,15 @@ impl BaselineSpeedService {
 
         // Calculate stability score based on variance
         let stability_score = Self::calculate_stability(&download_speeds);
-        println!("[BaselineSpeed] Stability: {}%", stability_score);
+        debug!("[BaselineSpeed] Stability: {}%", stability_score);
 
         // Run upload tests (smaller but still multiple iterations)
-        println!("[BaselineSpeed] Testing upload speed...");
+        debug!("[BaselineSpeed] Testing upload speed...");
         let mut upload_speeds = Vec::new();
         let total_upload_iterations = 3;
         for i in 1..=total_upload_iterations {
             let speed = test_upload(&client, 5_000_000, OutputFormat::None); // 5MB x 3 = 15MB
-            println!("[BaselineSpeed] Upload (5MB #{i}): {:.2} Mbps", speed);
+            debug!("[BaselineSpeed] Upload (5MB #{i}): {:.2} Mbps", speed);
             upload_speeds.push(speed);
 
             // Emit live update
@@ -268,7 +269,7 @@ impl BaselineSpeedService {
 
         let server_info = format!("Cloudflare {} ({})", metadata.colo, metadata.country);
 
-        println!(
+        debug!(
             "[BaselineSpeed] Test complete: {:.2} Mbps down, {:.2} Mbps up, {}ms latency",
             download_mbps, upload_mbps, latency as i32
         );

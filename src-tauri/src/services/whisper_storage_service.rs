@@ -1,3 +1,4 @@
+use log::debug;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -62,7 +63,7 @@ impl WhisperStorageService {
         let path = Self::get_storage_path(app_handle)?;
 
         if !path.exists() {
-            println!("[WhisperStorage] No whispers file found, returning empty storage");
+            debug!("[WhisperStorage] No whispers file found, returning empty storage");
             return Ok(WhisperStorage {
                 conversations: HashMap::new(),
                 version: 1,
@@ -75,7 +76,7 @@ impl WhisperStorageService {
         let storage: WhisperStorage = serde_json::from_str(&contents)
             .map_err(|e| format!("Failed to parse whispers file: {}", e))?;
 
-        println!(
+        debug!(
             "[WhisperStorage] Loaded {} conversations from disk",
             storage.conversations.len()
         );
@@ -92,7 +93,7 @@ impl WhisperStorageService {
 
         fs::write(&path, contents).map_err(|e| format!("Failed to write whispers file: {}", e))?;
 
-        println!(
+        debug!(
             "[WhisperStorage] Saved {} conversations to disk",
             storage.conversations.len()
         );

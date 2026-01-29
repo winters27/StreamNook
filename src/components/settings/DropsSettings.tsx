@@ -1,6 +1,7 @@
 import { useAppStore } from '../../stores/AppStore';
 import { useState, useEffect } from 'react';
 
+import { Logger } from '../../utils/logger';
 const DropsSettings = () => {
   const { settings, updateSettings } = useAppStore();
   const [isMining, setIsMining] = useState(false);
@@ -31,7 +32,7 @@ const DropsSettings = () => {
         const mining = await invoke<boolean>('is_auto_mining');
         setIsMining(mining);
       } catch (error) {
-        console.error('Failed to check mining status:', error);
+        Logger.error('Failed to check mining status:', error);
       }
     };
     checkMiningStatus();
@@ -42,7 +43,7 @@ const DropsSettings = () => {
       const { listen } = await import('@tauri-apps/api/event');
       unlisten = await listen<any>('mining-status-update', (event) => {
         const status = event.payload;
-        console.log('Mining status update received:', status);
+        Logger.debug('Mining status update received:', status);
 
         // Update mining state based on actual status
         setIsMining(status.is_mining);
@@ -88,7 +89,7 @@ const DropsSettings = () => {
         setIsInitializing(false);
       }
     } catch (error) {
-      console.error('Failed to toggle mining:', error);
+      Logger.error('Failed to toggle mining:', error);
       setIsInitializing(false);
       setIsMining(false);
     }
@@ -120,7 +121,7 @@ const DropsSettings = () => {
         drops: { ...settings.drops, ...newSettings },
       });
     } catch (error) {
-      console.error('Failed to update drops settings:', error);
+      Logger.error('Failed to update drops settings:', error);
     }
   };
 

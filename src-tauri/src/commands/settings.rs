@@ -1,6 +1,7 @@
 use crate::models::settings::{AppState, Settings};
 use crate::services::cache_service;
 use crate::services::live_notification_service::LiveNotification;
+use log::debug;
 use regex::Regex;
 use std::fs;
 use tauri::{AppHandle, Emitter, State};
@@ -461,7 +462,7 @@ pub async fn send_test_notification(
         .emit("streamer-went-live", &notification)
         .map_err(|e| format!("Failed to emit test notification: {}", e))?;
 
-    println!("[Test Notification] Sent in-app notification");
+    debug!("[Test Notification] Sent in-app notification");
 
     Ok(())
 }

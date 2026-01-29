@@ -1,6 +1,7 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use lazy_static::lazy_static;
+use log::{debug, error};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -280,7 +281,7 @@ impl LogService {
                         )
                         .await
                         {
-                            eprintln!("[LogService] Failed to send to Discord webhook: {}", e);
+                            error!("[LogService] Failed to send to Discord webhook: {}", e);
                         }
                     });
                 }
@@ -422,7 +423,7 @@ impl LogService {
             anyhow::bail!("Discord webhook returned status: {}", response.status());
         }
 
-        println!("[LogService] Error report sent to Discord");
+        debug!("[LogService] Error report sent to Discord");
         Ok(())
     }
 }

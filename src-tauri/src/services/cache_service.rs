@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use log::debug;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -34,11 +35,11 @@ pub fn get_app_data_dir() -> Result<PathBuf> {
 
     // Check if we're in development mode by looking for TAURI_ENV or checking debug assertions
     let app_dir = if cfg!(debug_assertions) {
-        // println!("[CacheService] Running in DEBUG mode, using com.streamnook.dev");
+        // debug!("[CacheService] Running in DEBUG mode, using com.streamnook.dev");
         // In development, use com.streamnook.dev
         PathBuf::from(local_app_data).join("com.streamnook.dev")
     } else {
-        // println!("[CacheService] Running in RELEASE mode, using StreamNook");
+        // debug!("[CacheService] Running in RELEASE mode, using StreamNook");
         // In production, use StreamNook (without space, matching the actual folder name)
         PathBuf::from(local_app_data).join("StreamNook")
     };

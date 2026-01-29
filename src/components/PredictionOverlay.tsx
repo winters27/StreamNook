@@ -12,6 +12,7 @@ const ChannelPointsIcon = ({ className = "", size = 14 }: { className?: string; 
 );
 import { useAppStore } from '../stores/AppStore';
 
+import { Logger } from '../utils/logger';
 interface PredictionOutcome {
   id: string;
   title: string;
@@ -72,8 +73,8 @@ const PredictionOverlay = ({ channelId, channelLogin }: PredictionOverlayProps) 
 
   // Debug log on mount and when channel changes
   useEffect(() => {
-    console.log('[Prediction] 🎯 PredictionOverlay mounted/updated');
-    console.log('[Prediction] 📺 Watching for channel:', {
+    Logger.debug('[Prediction] 🎯 PredictionOverlay mounted/updated');
+    Logger.debug('[Prediction] 📺 Watching for channel:', {
       channelId: currentChannelId || 'NOT SET',
       channelLogin: currentChannelLogin || 'NOT SET',
       fromProps: { channelId, channelLogin },
@@ -86,7 +87,7 @@ const PredictionOverlay = ({ channelId, channelLogin }: PredictionOverlayProps) 
     const fetchActivePrediction = async () => {
       if (!currentChannelLogin) return;
       
-      console.log('[Prediction] 🔍 Checking for active prediction on channel:', currentChannelLogin);
+      Logger.debug('[Prediction] 🔍 Checking for active prediction on channel:', currentChannelLogin);
       
       try {
         const result = await invoke<PredictionData | null>('get_active_prediction', {
@@ -94,7 +95,7 @@ const PredictionOverlay = ({ channelId, channelLogin }: PredictionOverlayProps) 
         });
         
         if (result) {
-          console.log('[Prediction] ✅ Found active prediction on mount:', result);
+          Logger.debug('[Prediction] ✅ Found active prediction on mount:', result);
           
           // Only set if we don't already have this prediction active
           if (!activePrediction || activePrediction.prediction_id !== result.prediction_id) {
@@ -121,10 +122,10 @@ const PredictionOverlay = ({ channelId, channelLogin }: PredictionOverlayProps) 
             }
           }
         } else {
-          console.log('[Prediction] No active prediction found on channel');
+          Logger.debug('[Prediction] No active prediction found on channel');
         }
       } catch (err) {
-        console.warn('[Prediction] Failed to fetch active prediction:', err);
+        Logger.warn('[Prediction] Failed to fetch active prediction:', err);
       }
     };
     
@@ -143,18 +144,18 @@ const PredictionOverlay = ({ channelId, channelLogin }: PredictionOverlayProps) 
 
   // Fetch channel points when prediction becomes active
   const fetchChannelPoints = useCallback(async () => {
-    console.log('[Prediction] fetchChannelPoints called with:', { currentChannelLogin, currentChannelId });
+    Logger.debug('[Prediction] fetchChannelPoints called with:', { currentChannelLogin, currentChannelId });
     
     // First try by channel login if available
     if (currentChannelLogin) {
-      console.log('[Prediction] Fetching channel points by login:', currentChannelLogin);
+      Logger.debug('[Prediction] Fetching channel points by login:', currentChannelLogin);
       
       try {
         const result = await invoke<any>('get_channel_points_for_channel', {
           channelLogin: currentChannelLogin
         });
         
-        console.log('[Prediction] Channel points result:', JSON.stringify(result, null, 2));
+        Logger.debug('[Prediction] Channel points result:', JSON.stringify(result, null, 2));
         
         // Use the correct path: data.user.channel.self.communityPoints.balance
         const balance = result?.data?.user?.channel?.self?.communityPoints?.balance;
@@ -162,45 +163,45 @@ const PredictionOverlay = ({ channelId, channelLogin }: PredictionOverlayProps) 
         // Extract custom points icon URL
         const customIconUrl = result?.data?.user?.channel?.communityPointsSettings?.image?.url;
         if (customIconUrl) {
-          console.log('[Prediction] ✅ Got custom points icon:', customIconUrl);
+          Logger.debug('[Prediction] ✅ Got custom points icon:', customIconUrl);
           setCustomPointsIconUrl(customIconUrl);
         } else {
           setCustomPointsIconUrl(null);
         }
         
         if (typeof balance === 'number') {
-          console.log('[Prediction] ✅ Setting channel points to:', balance);
+          Logger.debug('[Prediction] ✅ Setting channel points to:', balance);
           setChannelPoints(balance);
           return; // Success!
         }
       } catch (err) {
-        console.error('[Prediction] Failed to fetch by login:', err);
+        Logger.error('[Prediction] Failed to fetch by login:', err);
       }
     }
     
     // Fallback: try by channel ID
     if (currentChannelId) {
-      console.log('[Prediction] Trying fallback: get_channel_points_balance with ID:', currentChannelId);
+      Logger.debug('[Prediction] Trying fallback: get_channel_points_balance with ID:', currentChannelId);
       
       try {
         const result = await invoke<any>('get_channel_points_balance', {
           channelId: currentChannelId
         });
         
-        console.log('[Prediction] get_channel_points_balance result:', result);
+        Logger.debug('[Prediction] get_channel_points_balance result:', result);
         
         const balance = result?.balance || result?.points;
         if (typeof balance === 'number') {
-          console.log('[Prediction] ✅ Setting channel points from fallback:', balance);
+          Logger.debug('[Prediction] ✅ Setting channel points from fallback:', balance);
           setChannelPoints(balance);
           return;
         }
       } catch (err) {
-        console.error('[Prediction] Fallback also failed:', err);
+        Logger.error('[Prediction] Fallback also failed:', err);
       }
     }
     
-    console.log('[Prediction] Could not fetch channel points with any method');
+    Logger.debug('[Prediction] Could not fetch channel points with any method');
   }, [currentChannelLogin, currentChannelId]);
 
   // Listen for channel points updates from backend events
@@ -208,7 +209,7 @@ const PredictionOverlay = ({ channelId, channelLogin }: PredictionOverlayProps) 
     // Listen for points spent (includes new balance)
     const unlistenSpent = listen<{ channel_id: string; points: number; balance: number }>('channel-points-spent', (event) => {
       if (currentChannelId && event.payload.channel_id === currentChannelId) {
-        console.log('[Prediction] Points spent event - new balance:', event.payload.balance);
+        Logger.debug('[Prediction] Points spent event - new balance:', event.payload.balance);
         setChannelPoints(event.payload.balance);
       }
     });
@@ -216,7 +217,7 @@ const PredictionOverlay = ({ channelId, channelLogin }: PredictionOverlayProps) 
     // Listen for points earned (includes new balance)
     const unlistenEarned = listen<{ channel_id: string; points: number; balance: number }>('channel-points-earned', (event) => {
       if (currentChannelId && event.payload.channel_id === currentChannelId) {
-        console.log('[Prediction] Points earned event - new balance:', event.payload.balance);
+        Logger.debug('[Prediction] Points earned event - new balance:', event.payload.balance);
         setChannelPoints(event.payload.balance);
       }
     });
@@ -229,11 +230,11 @@ const PredictionOverlay = ({ channelId, channelLogin }: PredictionOverlayProps) 
 
   // Listen for prediction events
   useEffect(() => {
-    console.log('[Prediction] 📡 Setting up event listeners...');
+    Logger.debug('[Prediction] 📡 Setting up event listeners...');
     
     const unlistenCreated = listen<PredictionData>('prediction-created', (event) => {
       const prediction = event.payload;
-      console.log('[Prediction] 🎰 Received prediction-created event:', {
+      Logger.debug('[Prediction] 🎰 Received prediction-created event:', {
         eventChannelId: prediction.channel_id,
         currentChannelId: currentChannelId,
         match: prediction.channel_id === currentChannelId,
@@ -242,7 +243,7 @@ const PredictionOverlay = ({ channelId, channelLogin }: PredictionOverlayProps) 
       
       // Only show if this prediction is for the current channel we're watching
       if (currentChannelId && prediction.channel_id === currentChannelId) {
-        console.log('[Prediction] ✅ Prediction MATCHES current channel! Showing overlay.');
+        Logger.debug('[Prediction] ✅ Prediction MATCHES current channel! Showing overlay.');
         setActivePrediction(prediction);
         setTimeRemaining(prediction.prediction_window_seconds);
         setIsLocked(false);
@@ -256,7 +257,7 @@ const PredictionOverlay = ({ channelId, channelLogin }: PredictionOverlayProps) 
 
     const unlistenUpdated = listen<PredictionData & { winning_outcome_id?: string }>('prediction-updated', (event) => {
       const prediction = event.payload;
-      console.log('[Prediction] 🎰 Received prediction-updated event:', {
+      Logger.debug('[Prediction] 🎰 Received prediction-updated event:', {
         eventChannelId: prediction.channel_id,
         currentChannelId: currentChannelId,
         match: prediction.channel_id === currentChannelId,
@@ -268,7 +269,7 @@ const PredictionOverlay = ({ channelId, channelLogin }: PredictionOverlayProps) 
       // This handles the case where user starts watching after prediction was created
       if (currentChannelId && prediction.channel_id === currentChannelId) {
         if (!activePrediction && (prediction.status === 'ACTIVE' || prediction.status === 'LOCKED')) {
-          console.log('[Prediction] ✅ Late-joining prediction! Initializing overlay from update event.');
+          Logger.debug('[Prediction] ✅ Late-joining prediction! Initializing overlay from update event.');
           setActivePrediction(prediction);
           setTimeRemaining(prediction.prediction_window_seconds || 60);
           setIsLocked(prediction.status === 'LOCKED');
@@ -279,7 +280,7 @@ const PredictionOverlay = ({ channelId, channelLogin }: PredictionOverlayProps) 
           setResolutionState('none');
           fetchChannelPoints();
         } else if (activePrediction?.prediction_id === prediction.prediction_id) {
-          console.log('[Prediction] Prediction updated:', prediction);
+          Logger.debug('[Prediction] Prediction updated:', prediction);
           setActivePrediction(prev => prev ? { ...prev, ...prediction } : null);
           
           if (prediction.status === 'LOCKED') {
@@ -288,10 +289,10 @@ const PredictionOverlay = ({ channelId, channelLogin }: PredictionOverlayProps) 
           
           // Handle resolution states
           if (prediction.status === 'RESOLVE_PENDING') {
-            console.log('[Prediction] 🔄 Prediction is being resolved...');
+            Logger.debug('[Prediction] 🔄 Prediction is being resolved...');
             setResolutionState('pending');
           } else if (prediction.status === 'RESOLVED') {
-            console.log('[Prediction] ✅ Prediction RESOLVED! winning_outcome_id:', prediction.winning_outcome_id);
+            Logger.debug('[Prediction] ✅ Prediction RESOLVED! winning_outcome_id:', prediction.winning_outcome_id);
             
             // Use the winning_outcome_id from the event payload
             const winningId = prediction.winning_outcome_id;
@@ -304,7 +305,7 @@ const PredictionOverlay = ({ channelId, channelLogin }: PredictionOverlayProps) 
               const userBet = hasPlacedBetRef.current;
               const userSelectedOutcome = selectedOutcomeRef.current;
               
-              console.log('[Prediction] 🎯 Resolution check:', {
+              Logger.debug('[Prediction] 🎯 Resolution check:', {
                 winningId,
                 userBet,
                 userSelectedOutcome,
@@ -327,7 +328,7 @@ const PredictionOverlay = ({ channelId, channelLogin }: PredictionOverlayProps) 
               }
             } else {
               // No winner ID - prediction was cancelled/refunded
-              console.log('[Prediction] No winning_outcome_id - prediction was refunded');
+              Logger.debug('[Prediction] No winning_outcome_id - prediction was refunded');
               setResolutionState('refund');
               addToast(`🔄 Prediction refunded`, 'info');
             }
@@ -341,7 +342,7 @@ const PredictionOverlay = ({ channelId, channelLogin }: PredictionOverlayProps) 
               setWinningOutcomeId(null);
             }, 4000);
           } else if (prediction.status === 'CANCELED') {
-            console.log('[Prediction] ❌ Prediction CANCELED');
+            Logger.debug('[Prediction] ❌ Prediction CANCELED');
             setResolutionState('refund');
             addToast(`🔄 Prediction cancelled - points refunded`, 'info');
             
@@ -358,14 +359,14 @@ const PredictionOverlay = ({ channelId, channelLogin }: PredictionOverlayProps) 
 
     const unlistenLocked = listen<{ channel_id: string; prediction_id: string }>('prediction-locked', (event) => {
       if (currentChannelId && event.payload.channel_id === currentChannelId && activePrediction?.prediction_id === event.payload.prediction_id) {
-        console.log('[Prediction] Prediction locked');
+        Logger.debug('[Prediction] Prediction locked');
         setIsLocked(true);
       }
     });
 
     const unlistenEnded = listen<{ channel_id: string; prediction_id: string; winning_outcome_id?: string }>('prediction-ended', (event) => {
       if (currentChannelId && event.payload.channel_id === currentChannelId && activePrediction?.prediction_id === event.payload.prediction_id) {
-        console.log('[Prediction] Prediction ended, winner:', event.payload.winning_outcome_id);
+        Logger.debug('[Prediction] Prediction ended, winner:', event.payload.winning_outcome_id);
         
         // Show result briefly before closing
         if (event.payload.winning_outcome_id) {
@@ -430,7 +431,7 @@ const PredictionOverlay = ({ channelId, channelLogin }: PredictionOverlayProps) 
       // Refresh channel points
       fetchChannelPoints();
     } catch (err: any) {
-      console.error('[Prediction] Failed to place prediction:', err);
+      Logger.error('[Prediction] Failed to place prediction:', err);
       addToast(`Failed to place prediction: ${err}`, 'error');
     } finally {
       setIsSubmitting(false);

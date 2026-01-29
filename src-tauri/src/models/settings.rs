@@ -274,6 +274,9 @@ pub struct Settings {
     pub setup_complete: bool,
     #[serde(default)]
     pub compact_view: Option<CompactViewSettings>,
+    /// Whether diagnostic logging is enabled (defaults to true)
+    #[serde(default = "default_true")]
+    pub error_reporting_enabled: bool,
 }
 
 fn default_theme() -> String {
@@ -307,6 +310,7 @@ impl Default for Settings {
             theme: default_theme(),
             setup_complete: false, // New users need to complete setup
             compact_view: None,
+            error_reporting_enabled: true, // Diagnostics enabled by default
         }
     }
 }

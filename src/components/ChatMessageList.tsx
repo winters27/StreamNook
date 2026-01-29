@@ -4,6 +4,7 @@ import { EmoteSet } from '../services/emoteService';
 import { BackendChatMessage } from '../services/twitchChat';
 import { ModerationContext } from '../hooks/useTwitchChat';
 
+import { Logger } from '../utils/logger';
 interface ChatMessageListProps {
   messages: (string | BackendChatMessage)[];
   isPaused: boolean;
@@ -68,7 +69,7 @@ const ChatMessageList = memo(function ChatMessageList({
   const handleWheel = useCallback((e: React.WheelEvent) => {
     if (e.deltaY < 0) {
       // Scrolling UP (away from bottom)
-      console.log('[ChatMessageList] 🔼 WHEEL UP detected, setting userScrolledUpRef=true');
+      Logger.debug('[ChatMessageList] 🔼 WHEEL UP detected, setting userScrolledUpRef=true');
       userScrolledUpRef.current = true;
     } else if (e.deltaY > 0) {
       // Scrolling DOWN (toward bottom) - clear the flag

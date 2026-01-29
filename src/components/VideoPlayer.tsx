@@ -8,6 +8,7 @@ import { Loader2 } from 'lucide-react';
 import { Heart, HeartBreak } from 'phosphor-react';
 import { useAppStore } from '../stores/AppStore';
 
+import { Logger } from '../utils/logger';
 const VideoPlayer = () => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const playerRef = useRef<Plyr | null>(null);
@@ -39,6 +40,12 @@ const VideoPlayer = () => {
   const [checkingFollowStatus, setCheckingFollowStatus] = useState(true);
   const [heartDropAnimation, setHeartDropAnimation] = useState(false);
 
+  // Subscription state
+  const [isSubscribed, setIsSubscribed] = useState<boolean>(false);
+  const [hasSubHistory, setHasSubHistory] = useState<boolean>(false);
+  const [cumulativeMonths, setCumulativeMonths] = useState<number>(0);
+  const [subscriberBadgeUrl, setSubscriberBadgeUrl] = useState<string | null>(null);
+
   // Track consecutive fatal errors to determine when stream is truly offline
   const fatalErrorCountRef = useRef<number>(0);
   const manifestErrorCountRef = useRef<number>(0);
@@ -67,7 +74,7 @@ const VideoPlayer = () => {
       getAvailableQualities().then(qualities => {
         if (qualities.length > 0) {
           setAvailableQualities(qualities);
-          console.log('[Quality] Fetched from Streamlink:', qualities);
+          Logger.debug('[Quality] Fetched from Streamlink:', qualities);
         }
       });
     }
@@ -78,13 +85,13 @@ const VideoPlayer = () => {
     const container = containerRef.current;
     if (!container || availableQualities.length === 0) return;
 
-    console.log('[Quality] Setting up menu with Streamlink qualities:', availableQualities);
-    console.log('[Quality] Current selected quality from settings:', settings.quality);
+    Logger.debug('[Quality] Setting up menu with Streamlink qualities:', availableQualities);
+    Logger.debug('[Quality] Current selected quality from settings:', settings.quality);
 
     setTimeout(() => {
       const settingsMenu = container.querySelector('.plyr__menu');
       if (!settingsMenu) {
-        console.warn('[Quality] Could not find Plyr settings menu');
+        Logger.warn('[Quality] Could not find Plyr settings menu');
         return;
       }
 
@@ -173,7 +180,7 @@ const VideoPlayer = () => {
             const selectedQuality = btn.getAttribute('data-quality');
             if (!selectedQuality) return;
 
-            console.log(`[Quality] User selected: ${selectedQuality}`);
+            Logger.debug(`[Quality] User selected: ${selectedQuality}`);
 
             // Update UI - mark selected
             qualitySubmenu.querySelectorAll('[data-quality]').forEach(b => {
@@ -249,16 +256,16 @@ const VideoPlayer = () => {
       try {
         hlsRef.current.destroy();
       } catch (e) {
-        console.warn('Error destroying existing HLS:', e);
+        Logger.warn('Error destroying existing HLS:', e);
       }
       hlsRef.current = null;
     }
 
-    console.log('Creating HLS.js player for URL:', streamUrl);
+    Logger.debug('Creating HLS.js player for URL:', streamUrl);
 
     // Check if HLS.js is supported
     if (Hls.isSupported()) {
-      console.log('[HLS] HLS.js is supported, creating player...');
+      Logger.debug('[HLS] HLS.js is supported, creating player...');
 
       // Create HLS.js instance with optimized settings
       // Note: liveSyncDurationCount and liveMaxLatencyDurationCount are kept at default/conservative
@@ -301,8 +308,8 @@ const VideoPlayer = () => {
 
       // HLS.js event handlers
       hls.on(Hls.Events.MANIFEST_PARSED, (_event, data) => {
-        console.log('[HLS] Manifest parsed, starting playback');
-        console.log('[HLS] Available quality levels:', data.levels.map(l => `${l.height}p @ ${l.bitrate}bps`).join(', '));
+        Logger.debug('[HLS] Manifest parsed, starting playback');
+        Logger.debug('[HLS] Available quality levels:', data.levels.map(l => `${l.height}p @ ${l.bitrate}bps`).join(', '));
 
         // Reset error counts on successful manifest parse - stream is working
         fatalErrorCountRef.current = 0;
@@ -376,18 +383,18 @@ const VideoPlayer = () => {
         // Start playback
         if (currentSettings.autoplay) {
           video.play().catch(e => {
-            console.log('[HLS] Autoplay failed:', e);
+            Logger.debug('[HLS] Autoplay failed:', e);
             // Try muted autoplay as fallback
             video.muted = true;
             video.play().catch(() => {
-              console.log('[HLS] Muted autoplay also failed');
+              Logger.debug('[HLS] Muted autoplay also failed');
             });
           });
         }
       });
 
       hls.on(Hls.Events.ERROR, (_event, data) => {
-        console.error('[HLS] Error:', JSON.stringify({ type: data.type, details: data.details, fatal: data.fatal }));
+        Logger.error('[HLS] Error:', JSON.stringify({ type: data.type, details: data.details, fatal: data.fatal }));
 
         // Handle non-fatal errors with improved recovery
         if (!data.fatal) {
@@ -395,12 +402,12 @@ const VideoPlayer = () => {
 
           // Handle buffer stalled errors with active recovery
           if (data.details === 'bufferStalledError') {
-            console.log('[HLS] Buffer stalled, attempting recovery...');
+            Logger.debug('[HLS] Buffer stalled, attempting recovery...');
 
             // Try to recover by seeking slightly forward if video is paused
             if (video.paused && !userInitiatedPauseRef.current) {
-              console.log('[HLS] Video is paused due to stall, attempting to resume playback');
-              video.play().catch(e => console.log('[HLS] Resume play failed:', e));
+              Logger.debug('[HLS] Video is paused due to stall, attempting to resume playback');
+              video.play().catch(e => Logger.debug('[HLS] Resume play failed:', e));
             }
 
             // If we have buffered data ahead, try jumping to it
@@ -412,7 +419,7 @@ const VideoPlayer = () => {
               // If we're significantly behind the buffered end, seek forward
               if (bufferedEnd - currentTime > 2.0) {
                 const seekTarget = currentTime + 0.5; // Small jump forward
-                console.log(`[HLS] Seeking forward from ${currentTime} to ${seekTarget} to recover from stall`);
+                Logger.debug(`[HLS] Seeking forward from ${currentTime} to ${seekTarget} to recover from stall`);
                 video.currentTime = seekTarget;
               }
             }
@@ -425,8 +432,8 @@ const VideoPlayer = () => {
             nonFatalErrorCountRef.current++;
             lastErrorTimeRef.current = now;
 
-            console.log(`[HLS] Non-fatal error count: ${nonFatalErrorCountRef.current}/${maxNonFatalErrorsBeforeOffline}`);
-            console.log(`[HLS] Time since last fragment: ${now - lastFragLoadedTimeRef.current}ms`);
+            Logger.debug(`[HLS] Non-fatal error count: ${nonFatalErrorCountRef.current}/${maxNonFatalErrorsBeforeOffline}`);
+            Logger.debug(`[HLS] Time since last fragment: ${now - lastFragLoadedTimeRef.current}ms`);
 
             // Check if we should trigger offline detection
             // Conditions: 
@@ -444,8 +451,8 @@ const VideoPlayer = () => {
               !isAutoSwitchingRef.current;
 
             if (shouldTriggerOffline) {
-              console.log('[HLS] Multiple non-fatal errors with stalled fragments detected. Stream appears to have ended.');
-              console.log(`[HLS] Non-fatal errors: ${nonFatalErrorCountRef.current}, Time since frag: ${timeSinceLastFrag}ms`);
+              Logger.debug('[HLS] Multiple non-fatal errors with stalled fragments detected. Stream appears to have ended.');
+              Logger.debug(`[HLS] Non-fatal errors: ${nonFatalErrorCountRef.current}, Time since frag: ${timeSinceLastFrag}ms`);
 
               // Reset error counts
               nonFatalErrorCountRef.current = 0;
@@ -468,7 +475,7 @@ const VideoPlayer = () => {
             nonFatalErrorCountRef.current++;
             lastErrorTimeRef.current = now;
 
-            console.log(`[HLS] Non-fatal error (${data.details}) count: ${nonFatalErrorCountRef.current}/${maxNonFatalErrorsBeforeOffline}`);
+            Logger.debug(`[HLS] Non-fatal error (${data.details}) count: ${nonFatalErrorCountRef.current}/${maxNonFatalErrorsBeforeOffline}`);
           }
 
           // For non-fatal errors, return early - HLS.js will try to recover
@@ -487,11 +494,11 @@ const VideoPlayer = () => {
           fatalErrorCountRef.current++;
           lastErrorTimeRef.current = now;
 
-          console.log(`[HLS] Fatal error count: ${fatalErrorCountRef.current}/${maxFatalErrorsBeforeOffline}`);
+          Logger.debug(`[HLS] Fatal error count: ${fatalErrorCountRef.current}/${maxFatalErrorsBeforeOffline}`);
 
           // Check if we've exceeded max fatal errors - likely stream is offline
           if (fatalErrorCountRef.current >= maxFatalErrorsBeforeOffline && !isAutoSwitchingRef.current) {
-            console.log('[HLS] Max fatal errors reached, stream appears to be offline. Triggering auto-switch...');
+            Logger.debug('[HLS] Max fatal errors reached, stream appears to be offline. Triggering auto-switch...');
 
             // Reset error count
             fatalErrorCountRef.current = 0;
@@ -503,7 +510,7 @@ const VideoPlayer = () => {
 
           switch (data.type) {
             case Hls.ErrorTypes.NETWORK_ERROR:
-              console.log('[HLS] Fatal network error, attempting recovery...');
+              Logger.debug('[HLS] Fatal network error, attempting recovery...');
 
               // Check if this is a manifest/playlist load error (strong indicator of offline stream)
               if (data.details === 'manifestLoadError' ||
@@ -511,11 +518,11 @@ const VideoPlayer = () => {
                 data.details === 'manifestParsingError' ||
                 data.details === 'levelLoadError' ||
                 data.details === 'levelLoadTimeOut') {
-                console.log(`[HLS] Manifest/level loading failed: ${data.details}`);
+                Logger.debug(`[HLS] Manifest/level loading failed: ${data.details}`);
 
                 // For manifest errors, use separate counter to be more careful
                 manifestErrorCountRef.current++;
-                console.log(`[HLS] Manifest error count: ${manifestErrorCountRef.current}/${maxManifestErrorsBeforeOffline}`);
+                Logger.debug(`[HLS] Manifest error count: ${manifestErrorCountRef.current}/${maxManifestErrorsBeforeOffline}`);
 
                 // Only trigger offline if we've had multiple manifest errors AND 
                 // either never played successfully OR it's been a while since we started
@@ -525,8 +532,8 @@ const VideoPlayer = () => {
                   (!hasPlayedSuccessfully || timeSinceStart > minPlayTimeBeforeOfflineMs);
 
                 if (shouldTriggerOffline && !isAutoSwitchingRef.current) {
-                  console.log('[HLS] Multiple manifest errors, stream likely offline. Triggering auto-switch...');
-                  console.log(`[HLS] Has played: ${hasPlayedSuccessfully}, Time since start: ${timeSinceStart}ms`);
+                  Logger.debug('[HLS] Multiple manifest errors, stream likely offline. Triggering auto-switch...');
+                  Logger.debug(`[HLS] Has played: ${hasPlayedSuccessfully}, Time since start: ${timeSinceStart}ms`);
                   manifestErrorCountRef.current = 0;
                   fatalErrorCountRef.current = 0;
                   handleStreamOffline();
@@ -537,11 +544,11 @@ const VideoPlayer = () => {
               hls.startLoad();
               break;
             case Hls.ErrorTypes.MEDIA_ERROR:
-              console.log('[HLS] Fatal media error, attempting recovery...');
+              Logger.debug('[HLS] Fatal media error, attempting recovery...');
               hls.recoverMediaError();
               break;
             default:
-              console.error('[HLS] Fatal error, cannot recover. Recreating player...');
+              Logger.error('[HLS] Fatal error, cannot recover. Recreating player...');
               setTimeout(() => {
                 if (videoRef.current && isLiveRef.current && !isAutoSwitchingRef.current) {
                   createPlayer();
@@ -554,14 +561,14 @@ const VideoPlayer = () => {
 
       hls.on(Hls.Events.LEVEL_SWITCHED, (_event, data) => {
         const level = hls.levels[data.level];
-        console.log(`[HLS] Level switched to: ${data.level} (${level?.height}p @ ${level?.bitrate}bps)`);
+        Logger.debug(`[HLS] Level switched to: ${data.level} (${level?.height}p @ ${level?.bitrate}bps)`);
 
         // Update Plyr's quality display if in auto mode
         if (playerRef.current && hls.currentLevel === -1) {
           // In auto mode, update the display to show current quality
           const qualityBadge = containerRef.current?.querySelector('.plyr__menu__container [data-plyr="quality"][aria-checked="true"]');
           if (qualityBadge && level) {
-            console.log(`[HLS] Auto selected: ${level.height}p`);
+            Logger.debug(`[HLS] Auto selected: ${level.height}p`);
           }
         }
       });
@@ -576,7 +583,7 @@ const VideoPlayer = () => {
 
         // Log occasionally to avoid spam
         if (Math.random() < 0.05) {
-          console.log(`[HLS] Fragment loaded: ${data.frag.sn}`);
+          Logger.debug(`[HLS] Fragment loaded: ${data.frag.sn}`);
         }
       });
 
@@ -586,25 +593,25 @@ const VideoPlayer = () => {
 
       // Add video event listeners
       video.addEventListener('loadedmetadata', () => {
-        console.log(`[Video] Metadata loaded: ${video.videoWidth}x${video.videoHeight}`);
+        Logger.debug(`[Video] Metadata loaded: ${video.videoWidth}x${video.videoHeight}`);
       });
 
       video.addEventListener('playing', () => {
-        console.log(`[Video] Playing: ${video.videoWidth}x${video.videoHeight}, paused: ${video.paused}, readyState: ${video.readyState}`);
-        console.log(`[Video] Audio state: muted=${video.muted}, volume=${video.volume}`);
+        Logger.debug(`[Video] Playing: ${video.videoWidth}x${video.videoHeight}, paused: ${video.paused}, readyState: ${video.readyState}`);
+        Logger.debug(`[Video] Audio state: muted=${video.muted}, volume=${video.volume}`);
 
         // Track successful playback - this helps us distinguish between
         // "stream never loaded" vs "stream was playing and then had issues"
         if (lastSuccessfulPlayRef.current === 0) {
           lastSuccessfulPlayRef.current = Date.now();
-          console.log('[Video] First successful playback recorded');
+          Logger.debug('[Video] First successful playback recorded');
         }
 
         // Jump to live on first play if enabled (fixes 15s delay)
         // This is a one-time seek on load - doesn't affect ongoing buffer behavior
         // Usage of 'playing' event ensures stream is actually running before we seek
         if (currentSettings.jump_to_live && !hasJumpedToLiveRef.current && isLiveRef.current) {
-          console.log('[HLS] Jump to live on load enabled, will seek to live edge...');
+          Logger.debug('[HLS] Jump to live on load enabled, will seek to live edge...');
           hasJumpedToLiveRef.current = true;
 
           // Wait for buffer to build up before seeking - this is crucial!
@@ -612,7 +619,7 @@ const VideoPlayer = () => {
           setTimeout(() => {
             // Check buffer state
             if (video.buffered.length === 0) {
-              console.log('[HLS] Jump to live: no buffer yet, retrying...');
+              Logger.debug('[HLS] Jump to live: no buffer yet, retrying...');
               hasJumpedToLiveRef.current = false;
               return;
             }
@@ -623,7 +630,7 @@ const VideoPlayer = () => {
             const currentPos = video.currentTime;
             const timeBehindLive = bufferedEnd - currentPos;
 
-            console.log(`[HLS] Jump to live: buffer=${bufferedDuration.toFixed(2)}s, current=${currentPos.toFixed(2)}s, bufferedEnd=${bufferedEnd.toFixed(2)}s, behind=${timeBehindLive.toFixed(2)}s`);
+            Logger.debug(`[HLS] Jump to live: buffer=${bufferedDuration.toFixed(2)}s, current=${currentPos.toFixed(2)}s, bufferedEnd=${bufferedEnd.toFixed(2)}s, behind=${timeBehindLive.toFixed(2)}s`);
 
             // Only seek if we're significantly behind (more than 8 seconds from live)
             // and we have a reasonable buffer built up (at least 5 seconds)
@@ -631,12 +638,12 @@ const VideoPlayer = () => {
               // Seek to 5 seconds before buffered end to ensure smooth playback
               // This gives enough buffer headroom to prevent stalls
               const seekTarget = bufferedEnd - 5;
-              console.log(`[HLS] Jump to live: seeking from ${currentPos.toFixed(2)}s to ${seekTarget.toFixed(2)}s (5s behind live)`);
+              Logger.debug(`[HLS] Jump to live: seeking from ${currentPos.toFixed(2)}s to ${seekTarget.toFixed(2)}s (5s behind live)`);
               video.currentTime = seekTarget;
             } else if (timeBehindLive <= 8) {
-              console.log('[HLS] Jump to live: already close to live edge, no seek needed');
+              Logger.debug('[HLS] Jump to live: already close to live edge, no seek needed');
             } else {
-              console.log(`[HLS] Jump to live: buffer too small (${bufferedDuration.toFixed(2)}s), waiting...`);
+              Logger.debug(`[HLS] Jump to live: buffer too small (${bufferedDuration.toFixed(2)}s), waiting...`);
               // Try again after more buffer builds up
               hasJumpedToLiveRef.current = false;
             }
@@ -651,7 +658,7 @@ const VideoPlayer = () => {
 
     } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
       // Native HLS support (Safari)
-      console.log('[HLS] Using native HLS support');
+      Logger.debug('[HLS] Using native HLS support');
       video.src = streamUrl;
 
       // Initialize Plyr for Safari
@@ -686,10 +693,10 @@ const VideoPlayer = () => {
       syncVolumeToPlayer();
 
       video.addEventListener('loadedmetadata', () => {
-        video.play().catch(e => console.log('Initial play failed:', e));
+        video.play().catch(e => Logger.debug('Initial play failed:', e));
       });
     } else {
-      console.error('[HLS] HLS is not supported in this browser');
+      Logger.error('[HLS] HLS is not supported in this browser');
     }
     // Only depend on streamUrl - settings and isAutoSwitching are read from refs inside the callback
     // This prevents player recreation when volume/muted settings change or when isAutoSwitching toggles
@@ -706,7 +713,7 @@ const VideoPlayer = () => {
     // If HLS instance already exists, fully destroy it before creating new one
     // HLS.js doesn't handle reusing instances well after detach/attach cycles
     if (hlsRef.current) {
-      console.log('[HLS] Stream URL changed, destroying old HLS instance before creating new one:', streamUrl);
+      Logger.debug('[HLS] Stream URL changed, destroying old HLS instance before creating new one:', streamUrl);
 
       try {
         // Stop loading new data
@@ -716,7 +723,7 @@ const VideoPlayer = () => {
         // Then destroy the instance
         hlsRef.current.destroy();
       } catch (e) {
-        console.warn('[HLS] Error destroying old HLS instance:', e);
+        Logger.warn('[HLS] Error destroying old HLS instance:', e);
       }
       hlsRef.current = null;
 
@@ -756,7 +763,7 @@ const VideoPlayer = () => {
         try {
           hlsRef.current.destroy();
         } catch (e) {
-          console.warn('Error destroying HLS on cleanup:', e);
+          Logger.warn('Error destroying HLS on cleanup:', e);
         }
         hlsRef.current = null;
       }
@@ -868,7 +875,7 @@ const VideoPlayer = () => {
         const result = await invoke<boolean>('check_following_status', { targetUserId: currentStream.user_id });
         setIsFollowing(result);
       } catch (err) {
-        console.error('[VideoPlayer] Failed to check follow status:', err);
+        Logger.error('[VideoPlayer] Failed to check follow status:', err);
         setIsFollowing(false);
       } finally {
         setCheckingFollowStatus(false);
@@ -877,6 +884,86 @@ const VideoPlayer = () => {
 
     checkFollowStatus();
   }, [currentStream?.user_id]);
+
+  // Check subscription status when stream changes
+  useEffect(() => {
+    if (!currentStream?.user_id || !currentStream?.user_login || !currentUser?.login) {
+      setIsSubscribed(false);
+      setHasSubHistory(false);
+      setCumulativeMonths(0);
+      setSubscriberBadgeUrl(null);
+      return;
+    }
+
+    const channelId = currentStream.user_id;
+    const channelLogin = currentStream.user_login;
+    const userLogin = currentUser.login;
+
+    const checkSubscriptionStatus = async () => {
+      try {
+        const { fetchIVRSubage } = await import('../services/ivrService');
+        const subageData = await fetchIVRSubage(userLogin, channelLogin);
+        
+        Logger.debug('[VideoPlayer] IVR subage response:', JSON.stringify(subageData, null, 2));
+        
+        // Check if currently subscribed - IVR API uses meta.type to indicate active sub
+        // meta.type can be "paid", "gift", "prime", etc. when actively subscribed
+        const metaData = (subageData as any)?.meta;
+        const isSub = metaData?.type != null;
+        const cumMonths = subageData?.cumulative?.months ?? 0;
+        const tier = metaData?.tier ?? null;
+        
+        Logger.debug('[VideoPlayer] Subscription check:', { isSub, cumMonths, tier, metaType: metaData?.type, hasSubHistory: cumMonths > 0 && !isSub });
+        
+        setIsSubscribed(isSub);
+        setHasSubHistory(cumMonths > 0 && !isSub);
+        setCumulativeMonths(cumMonths);
+        
+        // Determine which badge version to show
+        let badgeMonths = cumMonths;
+        if (!isSub && cumMonths > 0) {
+          // Lapsed subscriber: show badge for NEXT month they'd reach
+          badgeMonths = cumMonths + 1;
+        }
+        
+        // Map months to badge version string
+        const getBadgeVersion = (months: number): string => {
+          if (months >= 72) return '72';
+          if (months >= 60) return '60';
+          if (months >= 48) return '48';
+          if (months >= 36) return '36';
+          if (months >= 24) return '24';
+          if (months >= 18) return '18';
+          if (months >= 12) return '12';
+          if (months >= 9) return '9';
+          if (months >= 6) return '6';
+          if (months >= 3) return '3';
+          if (months >= 2) return '2';
+          return '0';
+        };
+        
+        const badgeVersion = getBadgeVersion(badgeMonths);
+        
+        // Fetch badge from cache
+        const { initializeBadgeCache, parseBadges } = await import('../services/twitchBadges');
+        await initializeBadgeCache(channelId);
+        const badges = parseBadges(`subscriber/${badgeVersion}`, channelId);
+        
+        if (badges.length > 0 && badges[0].info?.image_url_2x) {
+          setSubscriberBadgeUrl(badges[0].info.image_url_2x);
+        } else {
+          setSubscriberBadgeUrl(null);
+        }
+      } catch (err) {
+        Logger.error('[VideoPlayer] Failed to check subscription status:', err);
+        setIsSubscribed(false);
+        setHasSubHistory(false);
+        setSubscriberBadgeUrl(null);
+      }
+    };
+
+    checkSubscriptionStatus();
+  }, [currentStream?.user_id, currentStream?.user_login, currentUser?.login]);
 
   // Handle follow/unfollow action using browser automation
   const handleFollowClick = useCallback(async () => {
@@ -893,7 +980,7 @@ const VideoPlayer = () => {
     }
 
     setFollowLoading(true);
-    console.log(`[VideoPlayer] Initiating ${action} for ${currentStream.user_login}`);
+    Logger.debug(`[VideoPlayer] Initiating ${action} for ${currentStream.user_login}`);
 
     try {
       const result = await invoke<{ success: boolean; message: string; action: string }>('automate_connection', {
@@ -901,13 +988,13 @@ const VideoPlayer = () => {
         action: action
       });
 
-      console.log('[VideoPlayer] Automation result:', result);
+      Logger.debug('[VideoPlayer] Automation result:', result);
 
       if (result.success) {
         setIsFollowing(prev => !prev);
-        console.log(`[VideoPlayer] Successfully ${action}ed ${currentStream.user_login}`);
+        Logger.debug(`[VideoPlayer] Successfully ${action}ed ${currentStream.user_login}`);
       } else {
-        console.error(`[VideoPlayer] ${action} failed:`, result.message);
+        Logger.error(`[VideoPlayer] ${action} failed:`, result.message);
 
         // Check if user is not logged in
         if (result.message.includes('NOT_LOGGED_IN')) {
@@ -922,7 +1009,7 @@ const VideoPlayer = () => {
           });
 
           webview.once('tauri://error', (e) => {
-            console.error('Error opening login window:', e);
+            Logger.error('Error opening login window:', e);
           });
         } else {
           // Show helpful toast message for other failures
@@ -933,7 +1020,7 @@ const VideoPlayer = () => {
         }
       }
     } catch (err: any) {
-      console.error(`[VideoPlayer] ${action} error:`, err);
+      Logger.error(`[VideoPlayer] ${action} error:`, err);
       // Show helpful error message
       useAppStore.getState().addToast(
         `Follow/Unfollow failed. Try logging out and back in via Settings to re-authenticate.`,
@@ -955,11 +1042,11 @@ const VideoPlayer = () => {
       const { login, msgId, displayName } = customEvent.detail;
       const currentUserLogin = currentUser?.login?.toLowerCase();
       
-      console.log('[VideoPlayer] Subscription event detected:', { login, msgId, displayName, currentUserLogin });
+      Logger.debug('[VideoPlayer] Subscription event detected:', { login, msgId, displayName, currentUserLogin });
       
       // Check if this subscription is from the current user
       if (currentUserLogin && login === currentUserLogin && subscribeWindowLabelRef.current) {
-        console.log('[VideoPlayer] Detected own subscription! Auto-closing subscribe window...');
+        Logger.debug('[VideoPlayer] Detected own subscription! Auto-closing subscribe window...');
         
         // Show success toast
         useAppStore.getState().addToast(
@@ -972,10 +1059,10 @@ const VideoPlayer = () => {
           const subscribeWindow = await WebviewWindow.getByLabel(subscribeWindowLabelRef.current);
           if (subscribeWindow) {
             await subscribeWindow.close();
-            console.log('[VideoPlayer] Subscribe window closed successfully');
+            Logger.debug('[VideoPlayer] Subscribe window closed successfully');
           }
         } catch (e) {
-          console.warn('[VideoPlayer] Failed to close subscribe window:', e);
+          Logger.warn('[VideoPlayer] Failed to close subscribe window:', e);
         }
         
         // Clear the reference
@@ -1015,14 +1102,14 @@ const VideoPlayer = () => {
       subscribeWindowRef.current = webview;
 
       webview.once('tauri://error', (e) => {
-        console.error('Error opening subscribe window:', e);
+        Logger.error('Error opening subscribe window:', e);
         subscribeWindowRef.current = null;
         subscribeWindowLabelRef.current = null;
       });
       
       // Clear reference when window is closed manually
       webview.once('tauri://destroyed', () => {
-        console.log('[VideoPlayer] Subscribe window closed by user');
+        Logger.debug('[VideoPlayer] Subscribe window closed by user');
         subscribeWindowRef.current = null;
         subscribeWindowLabelRef.current = null;
       });
@@ -1109,12 +1196,29 @@ const VideoPlayer = () => {
           <button
             onClick={handleSubscribeClick}
             className="flex items-center gap-2 px-4 py-2 glass-button text-textPrimary text-sm font-semibold rounded-lg shadow-lg transition-all duration-200 hover:scale-105"
-            title={`Subscribe to ${currentStream.user_name}`}
+            title={
+              isSubscribed 
+                ? `Gift a sub to ${currentStream.user_name}'s community`
+                : hasSubHistory
+                  ? `Resubscribe to ${currentStream.user_name} (${cumulativeMonths + 1} months)`
+                  : `Subscribe to ${currentStream.user_name}`
+            }
           >
-            <span>Subscribe</span>
-            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
-              <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
-            </svg>
+            <span>
+              {isSubscribed ? 'Gift Subs' : hasSubHistory ? 'Resubscribe' : 'Subscribe'}
+            </span>
+            {subscriberBadgeUrl ? (
+              <img 
+                src={subscriberBadgeUrl} 
+                alt="Subscriber badge" 
+                className="w-5 h-5 object-contain"
+                referrerPolicy="no-referrer"
+              />
+            ) : (
+              <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
+              </svg>
+            )}
           </button>
         </div>
       )}

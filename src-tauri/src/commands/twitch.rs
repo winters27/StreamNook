@@ -7,6 +7,7 @@ use crate::services::whisper_history_service::{
 };
 use crate::services::whisper_service::WhisperService;
 use anyhow::Result;
+use log::{debug, error};
 use std::sync::Arc;
 use tauri::{AppHandle, State};
 use tokio::sync::Mutex as TokioMutex;
@@ -64,7 +65,7 @@ pub async fn clear_webview_data(app: AppHandle) -> Result<(), String> {
     use std::fs;
     use tauri::Manager;
 
-    println!("[CLEAR_WEBVIEW] Starting WebView2 data cleanup...");
+    debug!("[CLEAR_WEBVIEW] Starting WebView2 data cleanup...");
 
     // Try multiple possible locations for WebView2 data
     let mut paths_to_clear = Vec::new();
@@ -93,19 +94,19 @@ pub async fn clear_webview_data(app: AppHandle) -> Result<(), String> {
     let mut cleared_any = false;
     for webview_data_path in paths_to_clear {
         if webview_data_path.exists() {
-            println!(
+            debug!(
                 "[CLEAR_WEBVIEW] Found WebView2 data at: {:?}",
                 webview_data_path
             );
 
             // Remove the entire WebView2 data directory
             if let Err(e) = fs::remove_dir_all(&webview_data_path) {
-                eprintln!(
+                error!(
                     "[CLEAR_WEBVIEW] Warning: Could not fully remove {:?}: {}",
                     webview_data_path, e
                 );
             } else {
-                println!(
+                debug!(
                     "[CLEAR_WEBVIEW] Successfully cleared: {:?}",
                     webview_data_path
                 );
@@ -115,7 +116,7 @@ pub async fn clear_webview_data(app: AppHandle) -> Result<(), String> {
     }
 
     if !cleared_any {
-        println!("[CLEAR_WEBVIEW] No WebView2 data directories found to clear");
+        debug!("[CLEAR_WEBVIEW] No WebView2 data directories found to clear");
     }
 
     Ok(())

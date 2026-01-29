@@ -1,3 +1,4 @@
+import { Logger } from '../utils/logger';
 // IVR API Service for fetching additional Twitch user data
 // API Documentation: https://api.ivr.fi
 
@@ -122,16 +123,16 @@ export async function fetchIVRUserData(username: string): Promise<IVRUserData | 
     const cached = userDataCache.get(cacheKey);
 
     if (cached && Date.now() - cached.timestamp < CACHE_DURATION) {
-        console.log('[IVR] Using cached user data for:', username);
+        Logger.debug('[IVR] Using cached user data for:', username);
         return cached.data;
     }
 
     try {
-        console.log('[IVR] Fetching user data for:', username);
+        Logger.debug('[IVR] Fetching user data for:', username);
         const response = await fetch(`https://api.ivr.fi/v2/twitch/user?login=${encodeURIComponent(username)}`);
 
         if (!response.ok) {
-            console.error('[IVR] API error:', response.status, response.statusText);
+            Logger.error('[IVR] API error:', response.status, response.statusText);
             userDataCache.set(cacheKey, { data: null, timestamp: Date.now() });
             return null;
         }
@@ -148,7 +149,7 @@ export async function fetchIVRUserData(username: string): Promise<IVRUserData | 
         userDataCache.set(cacheKey, { data: null, timestamp: Date.now() });
         return null;
     } catch (error) {
-        console.error('[IVR] Failed to fetch user data:', error);
+        Logger.error('[IVR] Failed to fetch user data:', error);
         return null;
     }
 }
@@ -164,18 +165,18 @@ export async function fetchIVRSubage(username: string, channel: string): Promise
     const cached = subageCache.get(cacheKey);
 
     if (cached && Date.now() - cached.timestamp < CACHE_DURATION) {
-        console.log('[IVR] Using cached subage data for:', username, 'in', channel);
+        Logger.debug('[IVR] Using cached subage data for:', username, 'in', channel);
         return cached.data;
     }
 
     try {
-        console.log('[IVR] Fetching subage data for:', username, 'in', channel);
+        Logger.debug('[IVR] Fetching subage data for:', username, 'in', channel);
         const response = await fetch(
             `https://api.ivr.fi/v2/twitch/subage/${encodeURIComponent(username)}/${encodeURIComponent(channel)}`
         );
 
         if (!response.ok) {
-            console.error('[IVR] Subage API error:', response.status, response.statusText);
+            Logger.error('[IVR] Subage API error:', response.status, response.statusText);
             subageCache.set(cacheKey, { data: null, timestamp: Date.now() });
             return null;
         }
@@ -184,7 +185,7 @@ export async function fetchIVRSubage(username: string, channel: string): Promise
         subageCache.set(cacheKey, { data, timestamp: Date.now() });
         return data;
     } catch (error) {
-        console.error('[IVR] Failed to fetch subage data:', error);
+        Logger.error('[IVR] Failed to fetch subage data:', error);
         return null;
     }
 }
@@ -200,12 +201,12 @@ export async function fetchIVRModVip(username: string, channel: string): Promise
     const cached = modVipCache.get(cacheKey);
 
     if (cached && Date.now() - cached.timestamp < CACHE_DURATION) {
-        console.log('[IVR] Using cached mod/vip data for:', username, 'in', channel);
+        Logger.debug('[IVR] Using cached mod/vip data for:', username, 'in', channel);
         return cached.data;
     }
 
     try {
-        console.log('[IVR] Fetching mod/vip data for:', username, 'in', channel);
+        Logger.debug('[IVR] Fetching mod/vip data for:', username, 'in', channel);
         const response = await fetch(
             `https://api.ivr.fi/v2/twitch/modvip/${encodeURIComponent(channel)}?login=${encodeURIComponent(username)}`
         );
@@ -225,7 +226,7 @@ export async function fetchIVRModVip(username: string, channel: string): Promise
                 modVipCache.set(cacheKey, { data: emptyData, timestamp: Date.now() });
                 return emptyData;
             }
-            console.error('[IVR] ModVip API error:', response.status, response.statusText);
+            Logger.error('[IVR] ModVip API error:', response.status, response.statusText);
             modVipCache.set(cacheKey, { data: null, timestamp: Date.now() });
             return null;
         }
@@ -263,7 +264,7 @@ export async function fetchIVRModVip(username: string, channel: string): Promise
         modVipCache.set(cacheKey, { data: emptyData, timestamp: Date.now() });
         return emptyData;
     } catch (error) {
-        console.error('[IVR] Failed to fetch mod/vip data:', error);
+        Logger.error('[IVR] Failed to fetch mod/vip data:', error);
         return null;
     }
 }
@@ -278,12 +279,12 @@ export async function fetchRecentMessages(channel: string): Promise<string[]> {
     const cached = recentMessagesCache.get(cacheKey);
 
     if (cached && Date.now() - cached.timestamp < RECENT_MESSAGES_CACHE_DURATION) {
-        console.log('[RecentMessages] Using cached recent messages for:', channel);
+        Logger.debug('[RecentMessages] Using cached recent messages for:', channel);
         return cached.data || [];
     }
 
     try {
-        console.log('[RecentMessages] Fetching recent messages for:', channel);
+        Logger.debug('[RecentMessages] Fetching recent messages for:', channel);
         // Use the robotty.de recent-messages API which returns raw IRC messages
         // Limit to 50 messages to match Twitch-style chat behavior
         const response = await fetch(
@@ -291,7 +292,7 @@ export async function fetchRecentMessages(channel: string): Promise<string[]> {
         );
 
         if (!response.ok) {
-            console.error('[RecentMessages] API error:', response.status, response.statusText);
+            Logger.error('[RecentMessages] API error:', response.status, response.statusText);
             recentMessagesCache.set(cacheKey, { data: null, timestamp: Date.now() });
             return [];
         }
@@ -310,14 +311,14 @@ export async function fetchRecentMessages(channel: string): Promise<string[]> {
                 return `@historical=1 ${msg}`;
             });
             recentMessagesCache.set(cacheKey, { data: historicalMessages, timestamp: Date.now() });
-            console.log('[RecentMessages] Fetched', historicalMessages.length, 'recent messages');
+            Logger.debug('[RecentMessages] Fetched', historicalMessages.length, 'recent messages');
             return historicalMessages;
         }
 
         recentMessagesCache.set(cacheKey, { data: [], timestamp: Date.now() });
         return [];
     } catch (error) {
-        console.error('[RecentMessages] Failed to fetch recent messages:', error);
+        Logger.error('[RecentMessages] Failed to fetch recent messages:', error);
         return [];
     }
 }
@@ -423,7 +424,7 @@ export function formatIVRDate(dateString: string, includeRelative: boolean = tru
 
         return `${absoluteDate} (${relativeTime})`;
     } catch (error) {
-        console.error('[IVR] Failed to format date:', error);
+        Logger.error('[IVR] Failed to format date:', error);
         return dateString;
     }
 }
@@ -454,7 +455,7 @@ export function clearIVRCache(): void {
     subageCache.clear();
     modVipCache.clear();
     recentMessagesCache.clear();
-    console.log('[IVR] Cache cleared');
+    Logger.debug('[IVR] Cache cleared');
 }
 
 /**

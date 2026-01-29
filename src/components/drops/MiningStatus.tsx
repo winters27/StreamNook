@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { MiningStatus as MiningStatusType } from '../../types';
 
+import { Logger } from '../../utils/logger';
 const MiningStatus = () => {
   const [status, setStatus] = useState<MiningStatusType | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -23,7 +24,7 @@ const MiningStatus = () => {
 
         // Listen for status updates
         unlisten = await listen<MiningStatusType>('mining-status-update', (event) => {
-          console.log('🔄 Mining status update received:', event.payload);
+          Logger.debug('🔄 Mining status update received:', event.payload);
           setStatus(event.payload);
           setLastProgressUpdate(Date.now());
         });
@@ -35,7 +36,7 @@ const MiningStatus = () => {
           required_minutes: number;
           timestamp: string;
         }>('drops-progress-update', (event) => {
-          console.log('📊 Direct WebSocket progress update received:', event.payload);
+          Logger.debug('📊 Direct WebSocket progress update received:', event.payload);
           
           // Update status if the drop ID matches
           setStatus((prevStatus) => {
@@ -71,7 +72,7 @@ const MiningStatus = () => {
           setLastProgressUpdate(Date.now());
         });
       } catch (error) {
-        console.error('Failed to setup mining status listener:', error);
+        Logger.error('Failed to setup mining status listener:', error);
         setIsLoading(false);
       }
     };
@@ -99,7 +100,7 @@ const MiningStatus = () => {
       // Trigger a reload of the parent component's data
       window.dispatchEvent(new CustomEvent('reload-drops-data'));
     } catch (error) {
-      console.error('Failed to stop mining:', error);
+      Logger.error('Failed to stop mining:', error);
     } finally {
       setIsStopping(false);
     }

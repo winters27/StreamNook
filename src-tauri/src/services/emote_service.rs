@@ -1,4 +1,5 @@
 use anyhow::Result;
+use log::{debug, error};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -109,14 +110,14 @@ impl EmoteService {
             if let Some(cached) = cache.get(&cache_key) {
                 if let Ok(elapsed) = cached.timestamp.elapsed() {
                     if elapsed < self.cache_duration {
-                        println!("[EmoteService] Memory cache hit for {}", cache_key);
+                        debug!("[EmoteService] Memory cache hit for {}", cache_key);
                         return Ok(cached.set.clone());
                     }
                 }
             }
         }
 
-        println!(
+        debug!(
             "[EmoteService] Fetching emotes concurrently for channel: {:?}, ID: {:?}",
             channel_name, channel_id
         );
@@ -134,7 +135,7 @@ impl EmoteService {
         let bttv_emotes = match bttv_result {
             Ok(emotes) => emotes,
             Err(e) => {
-                eprintln!("[EmoteService] BTTV fetch error: {}", e);
+                error!("[EmoteService] BTTV fetch error: {}", e);
                 Vec::new()
             }
         };
@@ -142,7 +143,7 @@ impl EmoteService {
         let seven_tv_emotes = match seven_tv_result {
             Ok(emotes) => emotes,
             Err(e) => {
-                eprintln!("[EmoteService] 7TV fetch error: {}", e);
+                error!("[EmoteService] 7TV fetch error: {}", e);
                 Vec::new()
             }
         };
@@ -150,7 +151,7 @@ impl EmoteService {
         let ffz_emotes = match ffz_result {
             Ok(emotes) => emotes,
             Err(e) => {
-                eprintln!("[EmoteService] FFZ fetch error: {}", e);
+                error!("[EmoteService] FFZ fetch error: {}", e);
                 Vec::new()
             }
         };
@@ -158,7 +159,7 @@ impl EmoteService {
         let twitch_emotes = match twitch_result {
             Ok(emotes) => emotes,
             Err(e) => {
-                eprintln!("[EmoteService] Twitch user emotes fetch error: {}", e);
+                error!("[EmoteService] Twitch user emotes fetch error: {}", e);
                 // Fallback to hardcoded global emotes
                 Self::get_global_twitch_emotes()
             }
@@ -172,7 +173,7 @@ impl EmoteService {
             ffz: ffz_emotes,
         };
 
-        println!(
+        debug!(
             "[EmoteService] Fetched emotes: Twitch={}, BTTV={}, 7TV={}, FFZ={}",
             emote_set.twitch.len(),
             emote_set.bttv.len(),
@@ -235,7 +236,7 @@ impl EmoteService {
     pub async fn clear_cache(&self) {
         let mut cache = self.cache.write().await;
         cache.clear();
-        println!("[EmoteService] Memory cache cleared");
+        debug!("[EmoteService] Memory cache cleared");
     }
 
     /// Fetch user-specific Twitch emotes using the Helix API
@@ -248,7 +249,7 @@ impl EmoteService {
         let token = match access_token {
             Some(t) if !t.is_empty() => t,
             _ => {
-                println!("[EmoteService] No access token provided, using global emotes fallback");
+                debug!("[EmoteService] No access token provided, using global emotes fallback");
                 return Ok(Self::get_global_twitch_emotes());
             }
         };
@@ -270,7 +271,7 @@ impl EmoteService {
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("No user_id in token validation response"))?;
 
-        println!(
+        debug!(
             "[EmoteService] Fetching Twitch emotes for user_id: {}",
             user_id
         );
@@ -306,7 +307,7 @@ impl EmoteService {
             if !response.status().is_success() {
                 let status = response.status();
                 let error_text = response.text().await.unwrap_or_default();
-                eprintln!(
+                error!(
                     "[EmoteService] Twitch emotes API error {}: {}",
                     status, error_text
                 );
@@ -358,7 +359,7 @@ impl EmoteService {
             }
         }
 
-        println!(
+        debug!(
             "[EmoteService] Fetched {} Twitch user emotes",
             all_emotes.len()
         );
@@ -413,8 +414,8 @@ impl EmoteService {
                     }
                 }
             }
-            Ok(_) => eprintln!("[EmoteService] BTTV global: non-success status"),
-            Err(e) => eprintln!("[EmoteService] BTTV global request failed: {}", e),
+            Ok(_) => error!("[EmoteService] BTTV global: non-success status"),
+            Err(e) => error!("[EmoteService] BTTV global request failed: {}", e),
         }
 
         // Fetch channel-specific BTTV emotes
@@ -483,7 +484,7 @@ impl EmoteService {
                     }
                 }
                 Ok(_) => {} // Channel not found or error - not critical
-                Err(e) => eprintln!("[EmoteService] BTTV channel request failed: {}", e),
+                Err(e) => error!("[EmoteService] BTTV channel request failed: {}", e),
             }
         }
 
@@ -588,8 +589,8 @@ impl EmoteService {
                     }
                 }
             }
-            Ok(_) => eprintln!("[EmoteService] 7TV GraphQL: non-success status"),
-            Err(e) => eprintln!("[EmoteService] 7TV GraphQL request failed: {}", e),
+            Ok(_) => error!("[EmoteService] 7TV GraphQL: non-success status"),
+            Err(e) => error!("[EmoteService] 7TV GraphQL request failed: {}", e),
         }
 
         // Fetch global 7TV emotes (v3 API)
@@ -625,8 +626,8 @@ impl EmoteService {
                     }
                 }
             }
-            Ok(_) => eprintln!("[EmoteService] 7TV global: non-success status"),
-            Err(e) => eprintln!("[EmoteService] 7TV global request failed: {}", e),
+            Ok(_) => error!("[EmoteService] 7TV global: non-success status"),
+            Err(e) => error!("[EmoteService] 7TV global request failed: {}", e),
         }
 
         // Fetch channel-specific 7TV emotes
@@ -678,7 +679,7 @@ impl EmoteService {
                     }
                 }
                 Ok(_) => {} // Channel not found - not critical
-                Err(e) => eprintln!("[EmoteService] 7TV channel request failed: {}", e),
+                Err(e) => error!("[EmoteService] 7TV channel request failed: {}", e),
             }
         }
 
@@ -737,8 +738,8 @@ impl EmoteService {
                     }
                 }
             }
-            Ok(_) => eprintln!("[EmoteService] FFZ global: non-success status"),
-            Err(e) => eprintln!("[EmoteService] FFZ global request failed: {}", e),
+            Ok(_) => error!("[EmoteService] FFZ global: non-success status"),
+            Err(e) => error!("[EmoteService] FFZ global request failed: {}", e),
         }
 
         // Fetch channel-specific FFZ emotes
@@ -793,7 +794,7 @@ impl EmoteService {
                     }
                 }
                 Ok(_) => {} // Channel not found - not critical
-                Err(e) => eprintln!("[EmoteService] FFZ channel request failed: {}", e),
+                Err(e) => error!("[EmoteService] FFZ channel request failed: {}", e),
             }
         }
 

@@ -1,5 +1,6 @@
 use anyhow::Result;
 use cookie_store::{CookieStore, RawCookie};
+use log::{debug, error};
 use reqwest::{Client, ClientBuilder};
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter};
@@ -17,14 +18,14 @@ fn get_app_data_dir() -> Result<PathBuf> {
     // Try to use the standard config directory first
     if let Some(config_dir) = dirs::config_dir() {
         let app_dir = config_dir.join("StreamNook");
-        println!("[COOKIE_JAR] Using config directory: {:?}", app_dir);
+        debug!("[COOKIE_JAR] Using config directory: {:?}", app_dir);
         return Ok(app_dir);
     }
 
     // Fallback to data directory
     if let Some(data_dir) = dirs::data_dir() {
         let app_dir = data_dir.join("StreamNook");
-        println!("[COOKIE_JAR] Fallback to data directory: {:?}", app_dir);
+        debug!("[COOKIE_JAR] Fallback to data directory: {:?}", app_dir);
         return Ok(app_dir);
     }
 
@@ -32,7 +33,7 @@ fn get_app_data_dir() -> Result<PathBuf> {
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {
             let app_dir = exe_dir.join("data");
-            println!("[COOKIE_JAR] Fallback to exe directory: {:?}", app_dir);
+            debug!("[COOKIE_JAR] Fallback to exe directory: {:?}", app_dir);
             return Ok(app_dir);
         }
     }
@@ -63,23 +64,23 @@ impl CookieJarService {
     fn new_with_path(file_path: PathBuf) -> Result<Self> {
         let store = if file_path.exists() {
             // Load existing cookies
-            println!("[COOKIE_JAR] Loading cookies from: {:?}", file_path);
+            debug!("[COOKIE_JAR] Loading cookies from: {:?}", file_path);
             match Self::load_from_file(&file_path) {
                 Ok(store) => {
-                    println!(
+                    debug!(
                         "[COOKIE_JAR] ✅ Loaded {} cookies",
                         store.iter_any().count()
                     );
                     store
                 }
                 Err(e) => {
-                    eprintln!("[COOKIE_JAR] ⚠️ Failed to load cookies: {:?}", e);
-                    eprintln!("[COOKIE_JAR] Creating new cookie store");
+                    error!("[COOKIE_JAR] ⚠️ Failed to load cookies: {:?}", e);
+                    error!("[COOKIE_JAR] Creating new cookie store");
                     CookieStore::default()
                 }
             }
         } else {
-            println!("[COOKIE_JAR] Creating new cookie store at: {:?}", file_path);
+            debug!("[COOKIE_JAR] Creating new cookie store at: {:?}", file_path);
             CookieStore::default()
         };
 
@@ -94,12 +95,12 @@ impl CookieJarService {
         let mut path = get_app_data_dir()?;
 
         if !path.exists() {
-            println!("[COOKIE_JAR] Creating directory: {:?}", path);
+            debug!("[COOKIE_JAR] Creating directory: {:?}", path);
             fs::create_dir_all(&path)?;
         }
 
         path.push(filename);
-        println!("[COOKIE_JAR] Cookie file path: {:?}", path);
+        debug!("[COOKIE_JAR] Cookie file path: {:?}", path);
         Ok(path)
     }
 
@@ -128,7 +129,7 @@ impl CookieJarService {
             .save_json(&mut writer)
             .map_err(|e| anyhow::anyhow!("Failed to save cookies: {:?}", e))?;
 
-        println!(
+        debug!(
             "[COOKIE_JAR] ✅ Saved {} cookies to {:?}",
             store.iter_any().count(),
             self.file_path
@@ -145,7 +146,7 @@ impl CookieJarService {
 
         if self.file_path.exists() {
             fs::remove_file(&self.file_path)?;
-            println!(
+            debug!(
                 "[COOKIE_JAR] ✅ Cleared cookies and deleted file: {:?}",
                 self.file_path
             );

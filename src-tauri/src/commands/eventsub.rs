@@ -1,4 +1,5 @@
 use crate::services::eventsub_service::EventSubService;
+use log::debug;
 use std::sync::Arc;
 use tauri::{AppHandle, State};
 use tokio::sync::RwLock;
@@ -16,7 +17,7 @@ pub async fn connect_eventsub(
 ) -> Result<(), String> {
     let service = state.0.read().await;
 
-    println!(
+    debug!(
         "[EventSub] Connecting to EventSub for broadcaster: {}",
         broadcaster_id
     );
@@ -34,7 +35,7 @@ pub async fn connect_eventsub(
 pub async fn disconnect_eventsub(state: State<'_, EventSubServiceState>) -> Result<(), String> {
     let service = state.0.read().await;
 
-    println!("[EventSub] Disconnecting from EventSub");
+    debug!("[EventSub] Disconnecting from EventSub");
 
     service.disconnect().await;
 

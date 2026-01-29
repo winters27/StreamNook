@@ -5,6 +5,7 @@
  */
 import { invoke } from '@tauri-apps/api/core';
 
+import { Logger } from '../utils/logger';
 // Cache for proxied emoji URLs (codepoint -> data URL)
 const proxiedEmojiCache = new Map<string, string>();
 
@@ -58,7 +59,7 @@ async function flushEmojiCacheQueue() {
             } catch (error) {
                 // Add to failed cache to prevent re-queueing
                 failedEmojiCodepoints.add(codepoint);
-                console.warn(`[EmojiService] Failed to cache emoji ${codepoint} (will not retry):`, error);
+                Logger.warn(`[EmojiService] Failed to cache emoji ${codepoint} (will not retry):`, error);
             } finally {
                 pendingEmojiFetches.delete(codepoint);
             }
@@ -192,7 +193,7 @@ async function replaceShortcodes(text: string): Promise<string> {
         // Call Rust backend for emoji shortcode conversion
         return await invoke<string>('convert_emoji_shortcodes', { text });
     } catch (error) {
-        console.warn('Failed to convert emoji shortcodes via Rust, returning original text:', error);
+        Logger.warn('Failed to convert emoji shortcodes via Rust, returning original text:', error);
         return text;
     }
 }
@@ -306,7 +307,7 @@ export async function getProxiedEmojiUrl(emoji: string): Promise<string> {
 
         return dataUrl;
     } catch (error) {
-        console.warn(`Failed to fetch emoji via proxy: ${codepoint}`, error);
+        Logger.warn(`Failed to fetch emoji via proxy: ${codepoint}`, error);
         // Return the native emoji as fallback
         return emoji;
     }

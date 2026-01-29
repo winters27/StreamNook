@@ -5,6 +5,7 @@ import { useAppStore } from '../stores/AppStore';
 import { computePaintStyle, getBadgeImageUrls, getBadgeFallbackUrls, queueCosmeticForCaching } from '../services/seventvService';
 import { FallbackImage } from './FallbackImage';
 import { formatIVRDate, formatSubTenure } from '../services/ivrService';
+import { Logger } from '../utils/logger';
 import {
   getProfileFromMemoryCache,
   getFullProfileWithFallback,
@@ -207,7 +208,7 @@ const UserProfileCard = ({
     // 1. Try to load from memory cache IMMEDIATELY (no await, synchronous)
     const cached = getProfileFromMemoryCache(userId);
     if (cached) {
-      console.log('[UserProfileCard] Instant load from cache:', cached);
+      Logger.debug('[UserProfileCard] Instant load from cache:', cached);
       setCachedProfile(cached);
     }
 
@@ -215,7 +216,7 @@ const UserProfileCard = ({
     const fetchFullProfile = async () => {
       setIsLoadingProfile(true);
       try {
-        console.log('[UserProfileCard] Fetching complete profile via Rust:', { userId, username, channelId, channelName });
+        Logger.debug('[UserProfileCard] Fetching complete profile via Rust:', { userId, username, channelId, channelName });
 
         // Fetch Rust profile (Twitch info, IVR data) and fresh cosmetics in parallel
         const [rustProfile, freshCachedProfile] = await Promise.all([
@@ -228,14 +229,14 @@ const UserProfileCard = ({
           getFullProfileWithFallback(userId, username, channelId, channelName)
         ]);
 
-        console.log('[UserProfileCard] Profile data received:', rustProfile);
+        Logger.debug('[UserProfileCard] Profile data received:', rustProfile);
         setProfileData(rustProfile);
         setCachedProfile(freshCachedProfile);
 
         // Refresh in background for next time
         refreshProfileInBackground(userId, username, channelId, channelName);
       } catch (error) {
-        console.error('Failed to fetch user profile:', error);
+        Logger.error('Failed to fetch user profile:', error);
       } finally {
         setIsLoadingProfile(false);
       }
@@ -336,7 +337,7 @@ const UserProfileCard = ({
     setFollowError(null);
 
     const action = isFollowing ? 'unfollow' : 'follow';
-    console.log(`[UserProfileCard] Initiating ${action} for ${username}`);
+    Logger.debug(`[UserProfileCard] Initiating ${action} for ${username}`);
 
     try {
       const result = await invoke<{ success: boolean; message: string; action: string }>('automate_connection', {
@@ -344,21 +345,21 @@ const UserProfileCard = ({
         action: action
       });
 
-      console.log('[UserProfileCard] Automation result:', result);
+      Logger.debug('[UserProfileCard] Automation result:', result);
 
       if (result.success) {
         setIsFollowing(prev => !prev);
-        console.log(`[UserProfileCard] Successfully ${action}ed ${username}`);
+        Logger.debug(`[UserProfileCard] Successfully ${action}ed ${username}`);
       } else {
         setFollowError(result.message);
-        console.error(`[UserProfileCard] ${action} failed:`, result.message);
+        Logger.error(`[UserProfileCard] ${action} failed:`, result.message);
         useAppStore.getState().addToast(
           `Follow/Unfollow failed. Try logging out and back in via Settings to re-authenticate.`,
           'error'
         );
       }
     } catch (err: any) {
-      console.error(`[UserProfileCard] ${action} error:`, err);
+      Logger.error(`[UserProfileCard] ${action} error:`, err);
       setFollowError(err?.message || `Failed to ${action}`);
       useAppStore.getState().addToast(
         `Follow/Unfollow failed. Try logging out and back in via Settings to re-authenticate.`,
@@ -497,14 +498,17 @@ const UserProfileCard = ({
               </div>
             )}
             {selectedPaint && (
-              <div
-                className="px-1.5 py-px rounded text-[9px] font-bold inline-block relative overflow-hidden"
+              <button
+                onClick={() => {
+                  useAppStore.getState().openBadgesWithPaint(selectedPaint.id);
+                }}
+                className="px-1.5 py-px rounded text-[9px] font-bold inline-block relative overflow-hidden cursor-pointer hover:ring-1 hover:ring-accent/50 transition-all"
                 style={{
                   ...computePaintStyle(selectedPaint as any, color),
                   WebkitBackgroundClip: 'padding-box',
                   backgroundClip: 'padding-box',
                 }}
-                title={`7TV Paint: ${selectedPaint.name}`}
+                title={`Click to view paint details: ${selectedPaint.name}`}
               >
                 <span
                   style={{
@@ -516,7 +520,7 @@ const UserProfileCard = ({
                 >
                   🎨 {selectedPaint.name}
                 </span>
-              </div>
+              </button>
             )}
           </div>
           <p className="text-sm text-textSecondary mb-3">@{username}</p>
@@ -581,7 +585,7 @@ const UserProfileCard = ({
                               const { open } = await import('@tauri-apps/plugin-shell');
                               await open(`https://7tv.app/badges/${b.id}`);
                             } catch (err) {
-                              console.error('Failed to open URL:', err);
+                              Logger.error('Failed to open URL:', err);
                             }
                           }}
                         />
@@ -715,7 +719,7 @@ const UserProfileCard = ({
                     const currentWindow = getCurrentWindow();
                     await currentWindow.close();
                   } catch (err) {
-                    console.error('Failed to emit whisper event:', err);
+                    Logger.error('Failed to emit whisper event:', err);
                   }
                 } else {
                   useAppStore.getState().openWhisperWithUser(user);

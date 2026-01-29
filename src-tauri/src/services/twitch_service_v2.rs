@@ -1,3 +1,4 @@
+use log::{debug, error};
 use anyhow::Result;
 use reqwest::header::{AUTHORIZATION, ACCEPT};
 use reqwest::Client;
@@ -59,7 +60,7 @@ impl TwitchService {
         let mut jar_lock = COOKIE_JAR.lock().await;
         
         if jar_lock.is_none() {
-            println!("[TWITCH_AUTH] Initializing cookie jar...");
+            debug!("[TWITCH_AUTH] Initializing cookie jar...");
             let jar = CookieJarService::new_main()?;
             *jar_lock = Some(jar);
         }
@@ -75,7 +76,7 @@ impl TwitchService {
         // Start device flow
         let device_response = Self::start_device_flow(&client).await?;
         
-        println!("[TWITCH_AUTH] Device code flow started. User code: {}", device_response.user_code);
+        debug!("[TWITCH_AUTH] Device code flow started. User code: {}", device_response.user_code);
         
         // Clone values for the spawned task
         let device_code = device_response.device_code.clone();
@@ -85,16 +86,16 @@ impl TwitchService {
         
         // Spawn a task to poll for token
         tokio::task::spawn(async move {
-            println!("[TWITCH_AUTH] Starting token polling task...");
+            debug!("[TWITCH_AUTH] Starting token polling task...");
             let result = Self::poll_for_token(&client, &device_code, interval, expires_in).await;
             
             match result {
                 Ok(token_response) => {
-                    println!("[TWITCH_AUTH] ✅ Token received from Twitch!");
+                    debug!("[TWITCH_AUTH] ✅ Token received from Twitch!");
                     
                     // Store in cookies (mimicking TwitchDropsMiner's cookie jar approach)
                     if let Err(e) = cookie_jar.set_auth_token(&token_response.access_token).await {
-                        eprintln!("[TWITCH_AUTH] ❌ Failed to save auth token to cookies: {}", e);
+                        error!("[TWITCH_AUTH] ❌ Failed to save auth token to cookies: {}", e);
                         let _ = app_handle.emit("twitch-login-error", format!("Failed to save token: {}", e));
                         return;
                     }
@@ -102,28 +103,28 @@ impl TwitchService {
                     // Validate the token and get user info
                     match Self::validate_and_store_user_info(&token_response.access_token, &cookie_jar).await {
                         Ok(user_id) => {
-                            println!("[TWITCH_AUTH] ✅ Login successful, user ID: {}", user_id);
+                            debug!("[TWITCH_AUTH] ✅ Login successful, user ID: {}", user_id);
                             
                             // Save cookies to disk
                             if let Err(e) = cookie_jar.save().await {
-                                eprintln!("[TWITCH_AUTH] ⚠️ Failed to save cookies: {}", e);
+                                error!("[TWITCH_AUTH] ⚠️ Failed to save cookies: {}", e);
                             }
                             
                             // Emit success event
                             if let Err(e) = app_handle.emit("twitch-login-complete", ()) {
-                                eprintln!("[TWITCH_AUTH] ❌ Failed to emit login-complete event: {}", e);
+                                error!("[TWITCH_AUTH] ❌ Failed to emit login-complete event: {}", e);
                             } else {
-                                println!("[TWITCH_AUTH] ✅ Login complete!");
+                                debug!("[TWITCH_AUTH] ✅ Login complete!");
                             }
                         }
                         Err(e) => {
-                            eprintln!("[TWITCH_AUTH] ❌ Failed to validate token: {}", e);
+                            error!("[TWITCH_AUTH] ❌ Failed to validate token: {}", e);
                             let _ = app_handle.emit("twitch-login-error", format!("Token validation failed: {}", e));
                         }
                     }
                 }
                 Err(e) => {
-                    eprintln!("[TWITCH_AUTH] ❌ Token polling failed: {}", e);
+                    error!("[TWITCH_AUTH] ❌ Token polling failed: {}", e);
                     let _ = app_handle.emit("twitch-login-error", e.to_string());
                 }
             }
@@ -152,7 +153,7 @@ impl TwitchService {
         
         // Verify client ID matches (like TwitchDropsMiner does)
         if validate_response.client_id != CLIENT_ID {
-            println!("[TWITCH_AUTH] ⚠️ Cookie client ID mismatch, clearing cookies");
+            debug!("[TWITCH_AUTH] ⚠️ Cookie client ID mismatch, clearing cookies");
             let _ = cookie_jar.clear().await;
             return Err(anyhow::anyhow!("Client ID mismatch"));
         }
@@ -238,7 +239,7 @@ impl TwitchService {
     pub async fn logout(_state: &AppState) -> Result<()> {
         let cookie_jar = Self::get_cookie_jar().await?;
         cookie_jar.clear().await?;
-        println!("[TWITCH_AUTH] Logout complete - cookies cleared");
+        debug!("[TWITCH_AUTH] Logout complete - cookies cleared");
         Ok(())
     }
 
@@ -248,7 +249,7 @@ impl TwitchService {
         
         // Check if we have an auth token in cookies
         if let Some(auth_token) = cookie_jar.get_auth_token().await {
-            println!("[TWITCH_AUTH] Token retrieved from cookies");
+            debug!("[TWITCH_AUTH] Token retrieved from cookies");
             
             // Validate the token
             let client = Client::new();
@@ -259,7 +260,7 @@ impl TwitchService {
                 .await?;
             
             if response.status() == 401 {
-                println!("[TWITCH_AUTH] Token is invalid, clearing cookies");
+                debug!("[TWITCH_AUTH] Token is invalid, clearing cookies");
                 let _ = cookie_jar.clear().await;
                 return Err(anyhow::anyhow!("Not authenticated. Please log in to Twitch first."));
             }

@@ -1,4 +1,5 @@
 use crate::services::drops_auth_service::DropsAuthService;
+use log::debug;
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -43,12 +44,12 @@ async fn try_gql_badge_update(badge_id: &str, badge_version: &str) -> Result<boo
     let token = match DropsAuthService::get_token().await {
         Ok(t) => t,
         Err(_) => {
-            println!("[ChatIdentity] No drops auth token available, will use browser fallback");
+            debug!("[ChatIdentity] No drops auth token available, will use browser fallback");
             return Ok(false);
         }
     };
 
-    println!(
+    debug!(
         "[ChatIdentity] 🚀 Attempting fast GQL badge update for '{}'",
         badge_id
     );
@@ -79,7 +80,7 @@ async fn try_gql_badge_update(badge_id: &str, badge_version: &str) -> Result<boo
     {
         Ok(r) => r,
         Err(e) => {
-            println!(
+            debug!(
                 "[ChatIdentity] GQL request failed: {}, will use browser fallback",
                 e
             );
@@ -90,7 +91,7 @@ async fn try_gql_badge_update(badge_id: &str, badge_version: &str) -> Result<boo
     let status = response.status();
 
     if !status.is_success() {
-        println!(
+        debug!(
             "[ChatIdentity] GQL returned {}, will use browser fallback",
             status
         );
@@ -100,7 +101,7 @@ async fn try_gql_badge_update(badge_id: &str, badge_version: &str) -> Result<boo
     let response_text = match response.text().await {
         Ok(t) => t,
         Err(e) => {
-            println!(
+            debug!(
                 "[ChatIdentity] Failed to read GQL response: {}, will use browser fallback",
                 e
             );
@@ -111,18 +112,18 @@ async fn try_gql_badge_update(badge_id: &str, badge_version: &str) -> Result<boo
     // Check for GraphQL errors
     if let Ok(json) = serde_json::from_str::<serde_json::Value>(&response_text) {
         if json.get("errors").is_some() {
-            println!("[ChatIdentity] GQL returned errors, will use browser fallback");
+            debug!("[ChatIdentity] GQL returned errors, will use browser fallback");
             return Ok(false);
         }
 
         if json.get("data").is_some() {
-            println!("[ChatIdentity] ✅ GQL badge update successful!");
+            debug!("[ChatIdentity] ✅ GQL badge update successful!");
             return Ok(true);
         }
     }
 
     // Unexpected response format
-    println!("[ChatIdentity] Unexpected GQL response format, will use browser fallback");
+    debug!("[ChatIdentity] Unexpected GQL response format, will use browser fallback");
     Ok(false)
 }
 
@@ -198,7 +199,7 @@ struct GQLBadge {
 /// Try to fetch badges via GQL (fast path)
 /// Returns Ok(Some(badges)) if successful, Ok(None) if should fallback
 async fn try_gql_badge_fetch(username: &str) -> Result<Option<Vec<ChatIdentityBadge>>, String> {
-    println!(
+    debug!(
         "[ChatIdentity] 🚀 Attempting fast GQL badge fetch for '{}'",
         username
     );
@@ -208,7 +209,7 @@ async fn try_gql_badge_fetch(username: &str) -> Result<Option<Vec<ChatIdentityBa
     let token = match DropsAuthService::get_token().await {
         Ok(t) => t,
         Err(_) => {
-            println!("[ChatIdentity] No drops auth token, will use browser fallback");
+            debug!("[ChatIdentity] No drops auth token, will use browser fallback");
             return Ok(None);
         }
     };
@@ -220,7 +221,7 @@ async fn try_gql_badge_fetch(username: &str) -> Result<Option<Vec<ChatIdentityBa
         match fetch_badge_collection(&client, username, &token).await {
             Ok(result) => result,
             Err(e) => {
-                println!(
+                debug!(
                     "[ChatIdentity] Badge fetch failed: {}, will use browser fallback",
                     e
                 );
@@ -229,7 +230,7 @@ async fn try_gql_badge_fetch(username: &str) -> Result<Option<Vec<ChatIdentityBa
         };
 
     if available_badges.is_empty() {
-        println!("[ChatIdentity] No badges found via GQL, will use browser fallback");
+        debug!("[ChatIdentity] No badges found via GQL, will use browser fallback");
         return Ok(None);
     }
 
@@ -264,7 +265,7 @@ async fn try_gql_badge_fetch(username: &str) -> Result<Option<Vec<ChatIdentityBa
         }
     });
 
-    println!(
+    debug!(
         "[ChatIdentity] ✅ GQL fetch successful! Found {} badges",
         sorted_badges.len()
     );
@@ -695,7 +696,7 @@ pub async fn fetch_chat_identity_badges(
     app: AppHandle,
     channel_name: String,
 ) -> Result<BadgeScrapeResult, String> {
-    println!(
+    debug!(
         "[ChatIdentity] Fetching badges using channel: {}",
         channel_name
     );
@@ -703,7 +704,7 @@ pub async fn fetch_chat_identity_badges(
     // FAST PATH: Try GQL first (no browser window needed)
     match try_gql_badge_fetch(&channel_name).await {
         Ok(Some(badges)) => {
-            println!(
+            debug!(
                 "[ChatIdentity] ✅ Fast GQL path succeeded with {} badges!",
                 badges.len()
             );
@@ -717,15 +718,15 @@ pub async fn fetch_chat_identity_badges(
             return Ok(result);
         }
         Ok(None) => {
-            println!("[ChatIdentity] GQL returned no badges, using browser fallback...");
+            debug!("[ChatIdentity] GQL returned no badges, using browser fallback...");
         }
         Err(e) => {
-            println!("[ChatIdentity] GQL error: {}, using browser fallback...", e);
+            debug!("[ChatIdentity] GQL error: {}, using browser fallback...", e);
         }
     }
 
     // FALLBACK: Use browser scraping (slower but works when GQL fails)
-    println!("[ChatIdentity] Using browser fallback for badge scraping...");
+    debug!("[ChatIdentity] Using browser fallback for badge scraping...");
 
     let window_label = format!("identity-fetch-{}", chrono::Utc::now().timestamp_millis());
     let url = format!("https://www.twitch.tv/popout/{}/chat", channel_name);
@@ -741,7 +742,7 @@ pub async fn fetch_chat_identity_badges(
     // Generate the scraper script
     let scraper_script = generate_badge_scraper_script();
 
-    println!("[ChatIdentity] Creating hidden window for badge scraping...");
+    debug!("[ChatIdentity] Creating hidden window for badge scraping...");
 
     // Create hidden window with initialization script
     let _webview = WebviewWindowBuilder::new(
@@ -760,7 +761,7 @@ pub async fn fetch_chat_identity_badges(
     .build()
     .map_err(|e| format!("Failed to create window: {}", e))?;
 
-    println!("[ChatIdentity] Window created, script will auto-run when page loads");
+    debug!("[ChatIdentity] Window created, script will auto-run when page loads");
 
     // Return immediately - the script will call receive_badge_data when done
     Ok(BadgeScrapeResult {
@@ -773,7 +774,7 @@ pub async fn fetch_chat_identity_badges(
 /// Command called by the hidden window when badges are found
 #[tauri::command]
 pub async fn receive_badge_data(app: AppHandle, result: BadgeScrapeResult) -> Result<(), String> {
-    println!(
+    debug!(
         "[ChatIdentity] Received {} badges from scraper (success: {}, message: {})",
         result.badges.len(),
         result.success,
@@ -786,7 +787,7 @@ pub async fn receive_badge_data(app: AppHandle, result: BadgeScrapeResult) -> Re
     // Always close fetch windows (production mode)
     for (label, window) in app.webview_windows() {
         if label.starts_with("identity-fetch-") {
-            println!("[ChatIdentity] Closing fetch window: {}", label);
+            debug!("[ChatIdentity] Closing fetch window: {}", label);
             let _ = window.close();
         }
     }
@@ -803,7 +804,7 @@ pub async fn update_chat_identity(
     badge_id: String,
     badge_version: String,
 ) -> Result<BadgeUpdateResult, String> {
-    println!(
+    debug!(
         "[ChatIdentity] Setting badge '{}' (v{}) in channel {}",
         badge_id, badge_version, channel_name
     );
@@ -812,7 +813,7 @@ pub async fn update_chat_identity(
     match try_gql_badge_update(&badge_id, &badge_version).await {
         Ok(true) => {
             // GQL succeeded! Emit success immediately and return
-            println!("[ChatIdentity] ✅ Fast GQL update succeeded!");
+            debug!("[ChatIdentity] ✅ Fast GQL update succeeded!");
             let result = BadgeUpdateResult {
                 success: true,
                 message: "Badge updated via GQL (instant)".to_string(),
@@ -823,11 +824,11 @@ pub async fn update_chat_identity(
         }
         Ok(false) => {
             // GQL not available or failed, fall through to browser automation
-            println!("[ChatIdentity] GQL not available, using browser fallback...");
+            debug!("[ChatIdentity] GQL not available, using browser fallback...");
         }
         Err(e) => {
             // Actual error occurred, but we'll still try browser fallback
-            println!("[ChatIdentity] GQL error: {}, using browser fallback...", e);
+            debug!("[ChatIdentity] GQL error: {}, using browser fallback...", e);
         }
     }
 
@@ -846,7 +847,7 @@ pub async fn update_chat_identity(
     // Generate the update script
     let update_script = generate_badge_update_script(&badge_id, &badge_version);
 
-    println!("[ChatIdentity] Creating hidden window for badge update (fallback)...");
+    debug!("[ChatIdentity] Creating hidden window for badge update (fallback)...");
 
     // Create hidden window with initialization script
     let _webview = WebviewWindowBuilder::new(
@@ -865,7 +866,7 @@ pub async fn update_chat_identity(
     .build()
     .map_err(|e| format!("Failed to create window: {}", e))?;
 
-    println!("[ChatIdentity] Window created, script will auto-run when page loads");
+    debug!("[ChatIdentity] Window created, script will auto-run when page loads");
 
     Ok(BadgeUpdateResult {
         success: true,
@@ -880,7 +881,7 @@ pub async fn receive_update_result(
     app: AppHandle,
     result: BadgeUpdateResult,
 ) -> Result<(), String> {
-    println!(
+    debug!(
         "[ChatIdentity] Update result: {} - {} (badge: {})",
         if result.success { "✅" } else { "❌" },
         result.message,
@@ -892,7 +893,7 @@ pub async fn receive_update_result(
     // Always close update windows (production mode)
     for (label, window) in app.webview_windows() {
         if label.starts_with("identity-update-") {
-            println!("[ChatIdentity] Closing update window: {}", label);
+            debug!("[ChatIdentity] Closing update window: {}", label);
             let _ = window.close();
         }
     }

@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use log::debug;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -109,7 +110,7 @@ pub fn load_manifest() -> Result<UniversalCacheManifest> {
     let json = match fs::read_to_string(&manifest_path) {
         Ok(json) => json,
         Err(e) => {
-            println!("[UniversalCache] Failed to read manifest file: {}", e);
+            debug!("[UniversalCache] Failed to read manifest file: {}", e);
             // Create new manifest
             return Ok(UniversalCacheManifest {
                 version: CACHE_VERSION,
@@ -122,14 +123,14 @@ pub fn load_manifest() -> Result<UniversalCacheManifest> {
     match serde_json::from_str::<UniversalCacheManifest>(&json) {
         Ok(manifest) => Ok(manifest),
         Err(e) => {
-            println!(
+            debug!(
                 "[UniversalCache] Failed to parse manifest ({}), creating new one",
                 e
             );
             // Backup the corrupted manifest
             let backup_path = manifest_path.with_extension("json.backup");
             let _ = fs::rename(&manifest_path, &backup_path);
-            println!(
+            debug!(
                 "[UniversalCache] Backed up corrupted manifest to {:?}",
                 backup_path
             );
@@ -167,7 +168,7 @@ pub async fn fetch_universal_cache_data(
     // Try to fetch from universal cache repository
     let url = format!("{}/{}/{}.json", UNIVERSAL_CACHE_URL, type_str, id);
 
-    println!("[UniversalCache] Attempting to fetch from: {}", url);
+    debug!("[UniversalCache] Attempting to fetch from: {}", url);
 
     let client = reqwest::Client::builder()
         .user_agent("StreamNook/1.0")
@@ -177,21 +178,21 @@ pub async fn fetch_universal_cache_data(
     match client.get(&url).send().await {
         Ok(response) if response.status().is_success() => {
             let entry: UniversalCacheEntry = response.json().await?;
-            println!(
+            debug!(
                 "[UniversalCache] Successfully fetched {} from universal cache",
                 id
             );
             Ok(Some(entry))
         }
         Ok(response) => {
-            println!(
+            debug!(
                 "[UniversalCache] Universal cache returned status: {}",
                 response.status()
             );
             Ok(None)
         }
         Err(e) => {
-            println!(
+            debug!(
                 "[UniversalCache] Failed to fetch from universal cache: {}",
                 e
             );
@@ -218,7 +219,7 @@ async fn download_universal_manifest() -> Result<bool> {
         DOWNLOAD_IN_PROGRESS.store(false, Ordering::SeqCst);
     });
 
-    println!("[UniversalCache] Downloading universal manifest from GitHub...");
+    debug!("[UniversalCache] Downloading universal manifest from GitHub...");
 
     let url = format!("{}/manifest.json", UNIVERSAL_CACHE_URL);
 
@@ -230,7 +231,7 @@ async fn download_universal_manifest() -> Result<bool> {
     match client.get(&url).send().await {
         Ok(response) if response.status().is_success() => {
             let remote_manifest: UniversalCacheManifest = response.json().await?;
-            println!(
+            debug!(
                 "[UniversalCache] Downloaded manifest with {} entries",
                 remote_manifest.entries.len()
             );
@@ -251,7 +252,7 @@ async fn download_universal_manifest() -> Result<bool> {
             local_manifest.last_sync = Some(get_current_timestamp());
 
             save_manifest(&local_manifest)?;
-            println!("[UniversalCache] Merged universal manifest into local cache");
+            debug!("[UniversalCache] Merged universal manifest into local cache");
 
             // Assign positions if not already set
             let needs_positions = local_manifest
@@ -261,7 +262,7 @@ async fn download_universal_manifest() -> Result<bool> {
                 .any(|(_, entry)| entry.position.is_none());
 
             if needs_positions {
-                println!("[UniversalCache] Assigning positions to badge metadata...");
+                debug!("[UniversalCache] Assigning positions to badge metadata...");
                 // Note: assign_badge_metadata_positions will acquire its own lock
                 drop(_async_lock);
                 let _ = assign_badge_metadata_positions_internal().await;
@@ -270,14 +271,14 @@ async fn download_universal_manifest() -> Result<bool> {
             Ok(true)
         }
         Ok(response) => {
-            println!(
+            debug!(
                 "[UniversalCache] GitHub returned status: {}",
                 response.status()
             );
             Ok(true)
         }
         Err(e) => {
-            println!(
+            debug!(
                 "[UniversalCache] Failed to download universal manifest: {}",
                 e
             );
@@ -305,7 +306,7 @@ pub async fn get_cached_item(
         if entry.cache_type == cache_type && !is_cache_expired(&entry.metadata) {
             return Ok(Some(entry.clone()));
         } else if is_cache_expired(&entry.metadata) {
-            println!("[UniversalCache] Local cache entry for {} is expired", id);
+            debug!("[UniversalCache] Local cache entry for {} is expired", id);
         }
     }
 
@@ -327,7 +328,7 @@ pub async fn get_cached_item(
             // Try to find the item again
             if let Some(entry) = manifest.entries.get(id) {
                 if entry.cache_type == cache_type && !is_cache_expired(&entry.metadata) {
-                    println!("[UniversalCache] Found {} in downloaded manifest", id);
+                    debug!("[UniversalCache] Found {} in downloaded manifest", id);
                     return Ok(Some(entry.clone()));
                 }
             }
@@ -514,7 +515,7 @@ fn assign_badge_metadata_positions_impl() -> Result<usize> {
         .count();
 
     save_manifest(&manifest)?;
-    println!(
+    debug!(
         "[UniversalCache] Assigned positions to {} badge metadata entries",
         count
     );
@@ -533,13 +534,13 @@ pub fn export_manifest_for_github(output_path: PathBuf) -> Result<()> {
     let manifest = load_manifest()?;
     let json = serde_json::to_string_pretty(&manifest)?;
     fs::write(&output_path, json)?;
-    println!("[UniversalCache] Exported manifest to {:?}", output_path);
+    debug!("[UniversalCache] Exported manifest to {:?}", output_path);
     Ok(())
 }
 
 /// Sync with universal cache - download commonly used items
 pub async fn sync_universal_cache(item_types: Vec<CacheType>) -> Result<usize> {
-    println!("[UniversalCache] Starting sync with universal cache");
+    debug!("[UniversalCache] Starting sync with universal cache");
 
     let mut synced_count = 0;
 
@@ -554,7 +555,7 @@ pub async fn sync_universal_cache(item_types: Vec<CacheType>) -> Result<usize> {
 
         let index_url = format!("{}/{}/index.json", UNIVERSAL_CACHE_URL, type_str);
 
-        println!("[UniversalCache] Fetching index from: {}", index_url);
+        debug!("[UniversalCache] Fetching index from: {}", index_url);
 
         let client = reqwest::Client::builder()
             .user_agent("StreamNook/1.0")
@@ -564,7 +565,7 @@ pub async fn sync_universal_cache(item_types: Vec<CacheType>) -> Result<usize> {
         match client.get(&index_url).send().await {
             Ok(response) if response.status().is_success() => {
                 let index: Vec<String> = response.json().await?;
-                println!(
+                debug!(
                     "[UniversalCache] Found {} items in {} index",
                     index.len(),
                     type_str
@@ -580,13 +581,13 @@ pub async fn sync_universal_cache(item_types: Vec<CacheType>) -> Result<usize> {
                 }
             }
             Ok(response) => {
-                println!(
+                debug!(
                     "[UniversalCache] Index fetch returned status: {}",
                     response.status()
                 );
             }
             Err(e) => {
-                println!("[UniversalCache] Failed to fetch index: {}", e);
+                debug!("[UniversalCache] Failed to fetch index: {}", e);
             }
         }
     }
@@ -596,7 +597,7 @@ pub async fn sync_universal_cache(item_types: Vec<CacheType>) -> Result<usize> {
     manifest.last_sync = Some(get_current_timestamp());
     save_manifest(&manifest)?;
 
-    println!(
+    debug!(
         "[UniversalCache] Sync complete. Synced {} items",
         synced_count
     );
@@ -617,7 +618,7 @@ pub fn cleanup_expired_entries() -> Result<usize> {
 
     if removed_count > 0 {
         save_manifest(&manifest)?;
-        println!(
+        debug!(
             "[UniversalCache] Cleaned up {} expired entries",
             removed_count
         );
@@ -696,7 +697,7 @@ pub fn migrate_emote_cache_on_version_change(_current_version: &str) -> Result<b
 
     // If migration token not applied yet, clear cache and write token
     if stored_token != EMOTE_CACHE_MIGRATION_TOKEN {
-        println!(
+        debug!(
             "[UniversalCache] One-time emote cache migration: '{}' -> '{}'",
             if stored_token.is_empty() {
                 "<none>"
@@ -711,7 +712,7 @@ pub fn migrate_emote_cache_on_version_change(_current_version: &str) -> Result<b
         if emotes_dir.exists() {
             fs::remove_dir_all(&emotes_dir)?;
             fs::create_dir_all(&emotes_dir)?;
-            println!("[UniversalCache] Emote cache directory cleared for one-time migration");
+            debug!("[UniversalCache] Emote cache directory cleared for one-time migration");
         }
 
         // Also clear emote entries from manifest to prevent stale references
@@ -743,7 +744,7 @@ pub fn migrate_emote_cache_on_version_change(_current_version: &str) -> Result<b
                 let removed_count = initial_count - manifest.entries.len();
                 if removed_count > 0 {
                     let _ = save_manifest(&manifest);
-                    println!(
+                    debug!(
                         "[UniversalCache] Cleared {} emote entries from manifest",
                         removed_count
                     );
@@ -824,7 +825,7 @@ pub async fn cache_file(
         return Ok(path_str);
     }
 
-    println!(
+    debug!(
         "[UniversalCache] Downloading and caching file: {} (type: {:?})",
         id, cache_type
     );
@@ -873,7 +874,7 @@ pub async fn cache_file(
 
     save_cached_item(entry).await?;
 
-    println!("[UniversalCache] Successfully cached file: {}", path_str);
+    debug!("[UniversalCache] Successfully cached file: {}", path_str);
     Ok(path_str)
 }
 
@@ -933,7 +934,7 @@ pub fn get_cached_items_batch(
 
 /// Get all cached files for a specific type
 pub async fn get_cached_files_list(cache_type: CacheType) -> Result<HashMap<String, String>> {
-    // println!(
+    // debug!(
     //     "[UniversalCache] Getting cached files list for {:?}",
     //     cache_type
     // );
@@ -951,7 +952,7 @@ pub async fn get_cached_files_list(cache_type: CacheType) -> Result<HashMap<Stri
         }
     }
 
-    // println!(
+    // debug!(
     //     "[UniversalCache] Found {} cached files for {:?}",
     //     files.len(),
     //     cache_type
@@ -959,46 +960,78 @@ pub async fn get_cached_files_list(cache_type: CacheType) -> Result<HashMap<Stri
     Ok(files)
 }
 
-/// Auto-sync universal cache if stale (>24 hours since last sync)
-/// Returns true if sync was triggered, false if cache was fresh
-pub async fn auto_sync_if_stale() -> Result<bool> {
-    const STALE_THRESHOLD_SECONDS: u64 = 24 * 60 * 60; // 24 hours
+/// Fetch the remote manifest's last_sync timestamp (lightweight check)
+/// Returns Some(timestamp) if remote manifest exists and has a last_sync, None otherwise
+async fn fetch_remote_manifest_timestamp() -> Result<Option<u64>> {
+    let url = format!("{}/manifest.json", UNIVERSAL_CACHE_URL);
 
-    let manifest = load_manifest()?;
+    let client = reqwest::Client::builder()
+        .user_agent("StreamNook/1.0")
+        .timeout(std::time::Duration::from_secs(10))
+        .build()?;
 
-    let should_sync = match manifest.last_sync {
-        None => {
-            println!("[UniversalCache] No last_sync timestamp found, triggering auto-sync");
-            true
+    match client.get(&url).send().await {
+        Ok(response) if response.status().is_success() => {
+            let remote_manifest: UniversalCacheManifest = response.json().await?;
+            Ok(remote_manifest.last_sync)
         }
-        Some(last_sync) => {
-            let current_time = get_current_timestamp();
-            let age_seconds = current_time.saturating_sub(last_sync);
-            let is_stale = age_seconds > STALE_THRESHOLD_SECONDS;
+        Ok(response) => {
+            debug!(
+                "[UniversalCache] Remote manifest fetch returned status: {}",
+                response.status()
+            );
+            Ok(None)
+        }
+        Err(e) => {
+            debug!(
+                "[UniversalCache] Failed to fetch remote manifest timestamp: {}",
+                e
+            );
+            Ok(None)
+        }
+    }
+}
 
-            if is_stale {
-                let age_hours = age_seconds / 3600;
-                println!(
-                    "[UniversalCache] Cache is stale ({}h old), triggering auto-sync",
-                    age_hours
-                );
-            }
+/// Auto-sync universal cache if remote manifest is newer than local
+/// Returns true if sync was triggered, false if cache was already current
+pub async fn auto_sync_if_stale() -> Result<bool> {
+    let manifest = load_manifest()?;
+    let local_sync = manifest.last_sync.unwrap_or(0);
 
-            is_stale
+    // Fetch remote manifest timestamp to compare
+    let remote_sync = match fetch_remote_manifest_timestamp().await {
+        Ok(Some(ts)) => ts,
+        Ok(None) => {
+            debug!("[UniversalCache] Remote manifest unavailable, skipping sync");
+            return Ok(false);
+        }
+        Err(e) => {
+            debug!("[UniversalCache] Failed to check remote manifest: {}", e);
+            return Ok(false);
         }
     };
 
+    let should_sync = remote_sync > local_sync;
+
     if should_sync {
+        debug!(
+            "[UniversalCache] Remote manifest is newer (remote: {}, local: {}), triggering sync",
+            remote_sync, local_sync
+        );
         // Fire-and-forget: spawn download in background so we don't block startup
         tokio::spawn(async {
             match download_universal_manifest().await {
-                Ok(true) => println!("[UniversalCache] Auto-sync completed successfully"),
-                Ok(false) => println!("[UniversalCache] Auto-sync skipped (already in progress)"),
-                Err(e) => println!("[UniversalCache] Auto-sync failed: {}", e),
+                Ok(true) => debug!("[UniversalCache] Auto-sync completed successfully"),
+                Ok(false) => debug!("[UniversalCache] Auto-sync skipped (already in progress)"),
+                Err(e) => debug!("[UniversalCache] Auto-sync failed: {}", e),
             }
         });
         Ok(true)
     } else {
+        debug!(
+            "[UniversalCache] Local cache is current (remote: {}, local: {})",
+            remote_sync, local_sync
+        );
         Ok(false)
     }
 }

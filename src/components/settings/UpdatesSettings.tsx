@@ -5,6 +5,7 @@ import { useAppStore } from '../../stores/AppStore';
 import { Check, Loader2, Download, RefreshCw, Package, ArrowRight, AlertCircle, ChevronDown, ChevronRight, FileText, Zap, Settings, Github, Sparkles, Bug, Wrench } from 'lucide-react';
 import { parseInlineMarkdown } from '../../services/markdownService';
 
+import { Logger } from '../../utils/logger';
 interface VersionChange {
     from: string;
     to: string;
@@ -169,7 +170,7 @@ const ComponentChangeRow = ({
                 setNotes(data.body || 'No release notes found.');
             }
         } catch (e) {
-            console.error(`Failed to fetch ${name} changelog:`, e);
+            Logger.error(`Failed to fetch ${name} changelog:`, e);
             setError('Could not load changelog.');
         } finally {
             setLoading(false);
@@ -276,7 +277,7 @@ const UpdatesSettings = () => {
             const status = await invoke('check_for_bundle_update') as BundleUpdateStatus;
             setUpdateStatus(status);
         } catch (e) {
-            console.error('Failed to check for updates:', e);
+            Logger.error('Failed to check for updates:', e);
             setError(String(e));
         } finally {
             setIsChecking(false);
@@ -327,7 +328,7 @@ const UpdatesSettings = () => {
             // Refresh status
             await checkForUpdates();
         } catch (e) {
-            console.error('Failed to update:', e);
+            Logger.error('Failed to update:', e);
             setError(String(e));
             addToast('Update failed: ' + String(e), 'error');
             setIsUpdating(false);

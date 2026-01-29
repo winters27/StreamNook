@@ -1,5 +1,6 @@
 use crate::services::badge_service::{BadgeService, UserBadgesResponse};
 use crate::services::twitch_service::TwitchService;
+use log::debug;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -22,7 +23,7 @@ pub async fn initialize_badge_service() {
     let _ = service.fetch_third_party_badges().await;
 
     *BADGE_SERVICE.write().await = Some(service);
-    println!("[BadgeService] Service initialized and pre-warmed");
+    debug!("[BadgeService] Service initialized and pre-warmed");
 }
 
 pub async fn get_service() -> Result<Arc<RwLock<Option<BadgeService>>>, String> {

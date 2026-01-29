@@ -1,3 +1,4 @@
+use log::debug;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -22,7 +23,7 @@ pub async fn automate_connection(
     channel: String,
     action: String,
 ) -> Result<AutomationResult, String> {
-    println!(
+    debug!(
         "[Automation] Starting {} action for channel: {}",
         action, channel
     );
@@ -45,8 +46,8 @@ pub async fn automate_connection(
     // Navigate to /about page instead of main channel - minimal content, fastest loading!
     let url = format!("https://www.twitch.tv/{}/about", channel);
 
-    println!("[Automation] Creating hidden window: {}", window_label);
-    println!("[Automation] Navigating to: {}", url);
+    debug!("[Automation] Creating hidden window: {}", window_label);
+    debug!("[Automation] Navigating to: {}", url);
 
     // Create a channel to receive the result from the injected script
     let (result_tx, result_rx) = oneshot::channel::<AutomationResult>();
@@ -102,7 +103,7 @@ pub async fn automate_connection(
             attempts += 1;
 
             if attempts > max_attempts {
-                println!("[Automation] Timeout waiting for button");
+                debug!("[Automation] Timeout waiting for button");
                 let _ = send_result(
                     result_tx_clone.clone(),
                     AutomationResult {
@@ -122,11 +123,11 @@ pub async fn automate_connection(
             match eval_result {
                 Ok(_) => {
                     if attempts <= 3 || attempts % 5 == 0 {
-                        println!("[Automation] Script injected, attempt {}", attempts);
+                        debug!("[Automation] Script injected, attempt {}", attempts);
                     }
                 }
                 Err(e) => {
-                    println!("[Automation] Script injection failed: {}", e);
+                    debug!("[Automation] Script injection failed: {}", e);
                     tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
                     continue;
                 }
@@ -183,7 +184,7 @@ pub async fn automate_connection(
                 // Check if button state changed (verification)
                 if attempts >= 5 {
                     // Enough time has passed, declare success
-                    println!(
+                    debug!(
                         "[Automation] Button click initiated after {} attempts",
                         attempts
                     );
@@ -211,11 +212,11 @@ pub async fn automate_connection(
     // Wait for result with timeout
     match tokio::time::timeout(tokio::time::Duration::from_secs(35), result_rx).await {
         Ok(Ok(result)) => {
-            println!("[Automation] Completed: {:?}", result);
+            debug!("[Automation] Completed: {:?}", result);
 
             // Emit event to refresh following list if action succeeded
             if result.success {
-                println!("[Automation] Emitting refresh-following-list event...");
+                debug!("[Automation] Emitting refresh-following-list event...");
                 let _ = app_handle.emit("refresh-following-list", ());
             }
 
@@ -632,7 +633,7 @@ pub struct WhisperExportData {
 /// and running the scraper script automatically
 #[tauri::command]
 pub async fn scrape_whispers(app: AppHandle) -> Result<WhisperScrapeResult, String> {
-    println!("[Whisper Scraper] Starting automated whisper scraping...");
+    debug!("[Whisper Scraper] Starting automated whisper scraping...");
 
     let window_label = "whisper-scraper";
     let url = "https://www.twitch.tv/messages";
@@ -646,7 +647,7 @@ pub async fn scrape_whispers(app: AppHandle) -> Result<WhisperScrapeResult, Stri
     // Generate the scraper script that will send data back to Tauri
     let scraper_script = generate_whisper_scraper_script();
 
-    println!("[Whisper Scraper] Creating hidden window for scraping...");
+    debug!("[Whisper Scraper] Creating hidden window for scraping...");
 
     // Create a HIDDEN webview window - runs in background
     let webview_result = WebviewWindowBuilder::new(
@@ -672,7 +673,7 @@ pub async fn scrape_whispers(app: AppHandle) -> Result<WhisperScrapeResult, Stri
         }
     };
 
-    println!("[Whisper Scraper] Window created, script will auto-run when page loads");
+    debug!("[Whisper Scraper] Window created, script will auto-run when page loads");
 
     // The script will call receive_whisper_export when done
     // Return success immediately - the frontend will listen for the event
@@ -721,8 +722,8 @@ pub async fn receive_whisper_export(
     app: AppHandle,
     data: WhisperExportData,
 ) -> Result<WhisperScrapeResult, String> {
-    println!("[Whisper Scraper] Received export data from WebView!");
-    println!(
+    debug!("[Whisper Scraper] Received export data from WebView!");
+    debug!(
         "[Whisper Scraper] {} conversations, exported at {}",
         data.conversations.len(),
         data.exported_at
@@ -764,7 +765,7 @@ pub async fn receive_whisper_export(
 
     std::fs::write(&file_path, &json_data).map_err(|e| format!("Failed to write file: {}", e))?;
 
-    println!("[Whisper Scraper] Saved to {:?}", file_path);
+    debug!("[Whisper Scraper] Saved to {:?}", file_path);
 
     // Close the scraper window
     if let Some(window) = app.get_webview_window("whisper-scraper") {

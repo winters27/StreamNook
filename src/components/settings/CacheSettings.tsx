@@ -1,5 +1,6 @@
 import { useAppStore } from '../../stores/AppStore';
 
+import { Logger } from '../../utils/logger';
 const CacheSettings = () => {
   const { settings, updateSettings } = useAppStore();
 
@@ -77,7 +78,7 @@ const CacheSettings = () => {
               const { addToast } = useAppStore.getState();
               addToast(`Cache: ${stats.total_files} files, ${sizeMB} MB`, 'info');
             } catch (error) {
-              console.error('Failed to get cache stats:', error);
+              Logger.error('Failed to get cache stats:', error);
               const { addToast } = useAppStore.getState();
               addToast('Failed to get cache statistics: ' + error, 'error');
             }
@@ -94,7 +95,7 @@ const CacheSettings = () => {
               const { addToast } = useAppStore.getState();
               addToast('Cache cleared successfully!', 'success');
             } catch (error) {
-              console.error('Failed to clear cache:', error);
+              Logger.error('Failed to clear cache:', error);
               const { addToast } = useAppStore.getState();
               addToast('Failed to clear cache: ' + error, 'error');
             }

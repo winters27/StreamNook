@@ -16,6 +16,7 @@ import DropsSettingsTab from './drops/DropsSettingsTab';
 import DropsInventoryTab from './drops/DropsInventoryTab';
 import ChannelPickerModal from './drops/ChannelPickerModal';
 
+import { Logger } from '../utils/logger';
 // Twitch SVG Icon Component
 const TwitchIcon = ({ size = 20 }: { size?: number }) => (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
@@ -139,7 +140,7 @@ export default function DropsCenter() {
             setIsAuthenticated(authenticated);
             return authenticated;
         } catch (err) {
-            console.error('Failed to check drops authentication:', err);
+            Logger.error('Failed to check drops authentication:', err);
             setIsAuthenticated(false);
             return false;
         }
@@ -162,7 +163,7 @@ export default function DropsCenter() {
 
             pollForToken(deviceInfo);
         } catch (err) {
-            console.error('Failed to start drops login:', err);
+            Logger.error('Failed to start drops login:', err);
             setError(err instanceof Error ? err.message : String(err));
             setIsAuthenticating(false);
         }
@@ -180,14 +181,14 @@ export default function DropsCenter() {
             try {
                 const loginWindow = await WebviewWindow.getByLabel('drops-login');
                 if (loginWindow) {
-                    console.log('[DropsCenter] Closing drops-login webview window');
+                    Logger.debug('[DropsCenter] Closing drops-login webview window');
                     await loginWindow.close();
-                    console.log('[DropsCenter] Successfully closed drops-login window');
+                    Logger.debug('[DropsCenter] Successfully closed drops-login window');
                 } else {
-                    console.log('[DropsCenter] No drops-login window found to close');
+                    Logger.debug('[DropsCenter] No drops-login window found to close');
                 }
             } catch (closeErr) {
-                console.warn('[DropsCenter] Failed to close drops-login window:', closeErr);
+                Logger.warn('[DropsCenter] Failed to close drops-login window:', closeErr);
             }
 
             setIsAuthenticated(true);
@@ -196,7 +197,7 @@ export default function DropsCenter() {
             addToast('Drops login successful!', 'success');
             await loadDropsData();
         } catch (err) {
-            console.error('Failed to complete drops login:', err);
+            Logger.error('Failed to complete drops login:', err);
             setError(err instanceof Error ? err.message : String(err));
             setIsAuthenticating(false);
             
@@ -217,14 +218,14 @@ export default function DropsCenter() {
             setStatistics(null);
             setSelectedGame(null);
         } catch (err) {
-            console.error('Failed to logout from drops:', err);
+            Logger.error('Failed to logout from drops:', err);
         }
     };
 
     // ---- Action Handlers ----
     const handleClaimDrop = async (dropId: string, dropInstanceId?: string) => {
         try {
-            console.log('[DropsCenter] Claiming drop:', dropId, 'with dropInstanceId:', dropInstanceId);
+            Logger.debug('[DropsCenter] Claiming drop:', dropId, 'with dropInstanceId:', dropInstanceId);
             await invoke('claim_drop', { dropId, dropInstanceId });
             addToast('Drop claimed successfully!', 'success');
 
@@ -250,7 +251,7 @@ export default function DropsCenter() {
                 }, 100);
             }
         } catch (err) {
-            console.error('Failed to claim drop:', err);
+            Logger.error('Failed to claim drop:', err);
             addToast('Failed to claim drop', 'error');
         }
     };
@@ -279,7 +280,7 @@ export default function DropsCenter() {
             }
             addToast('Started mining campaign', 'success');
         } catch (err) {
-            console.error('Failed to start mining:', err);
+            Logger.error('Failed to start mining:', err);
             addToast('Failed to start mining', 'error');
         } finally {
             setPendingCampaign(null);
@@ -308,7 +309,7 @@ export default function DropsCenter() {
             await invoke('stop_auto_mining');
             addToast('Mining stopped', 'info');
         } catch (err) {
-            console.error('Failed to stop mining:', err);
+            Logger.error('Failed to stop mining:', err);
             // If there was an error, refresh the status from backend
             try {
                 const status = await invoke<MiningStatus>('get_mining_status');
@@ -322,7 +323,7 @@ export default function DropsCenter() {
             await invoke('start_auto_mining');
             addToast('Auto-mining started', 'success');
         } catch (err) {
-            console.error('Failed to start auto mining:', err);
+            Logger.error('Failed to start auto mining:', err);
             addToast('Failed to start auto-mining', 'error');
         }
     };
@@ -353,7 +354,7 @@ export default function DropsCenter() {
                 drops: updatedSettings
             });
         } catch (err) {
-            console.error('Failed to update drops settings:', err);
+            Logger.error('Failed to update drops settings:', err);
             addToast('Failed to save settings', 'error');
         }
     };
@@ -401,13 +402,13 @@ export default function DropsCenter() {
         setSelectedGame(game);
 
         try {
-            console.log('[DropsCenter] Fetching fresh inventory for game:', game.name);
+            Logger.debug('[DropsCenter] Fetching fresh inventory for game:', game.name);
             
             // Poll inventory to get the latest progress data
             const inventoryData = await invoke<InventoryResponse>('get_drops_inventory');
             
             if (inventoryData?.items) {
-                console.log('[DropsCenter] Got fresh inventory with', inventoryData.items.length, 'items');
+                Logger.debug('[DropsCenter] Got fresh inventory with', inventoryData.items.length, 'items');
                 
                 // Update global inventory items state
                 setInventoryItems(inventoryData.items);
@@ -431,7 +432,7 @@ export default function DropsCenter() {
                     });
                 });
                 
-                console.log('[DropsCenter] Extracted', progressFromInventory.length, 'progress entries from inventory');
+                Logger.debug('[DropsCenter] Extracted', progressFromInventory.length, 'progress entries from inventory');
                 
                 // Merge inventory progress with existing progress (inventory takes priority for matching drops)
                 setProgress(prevProgress => {
@@ -452,7 +453,7 @@ export default function DropsCenter() {
                         }
                     });
                     
-                    console.log('[DropsCenter] Merged progress now has', mergedProgress.length, 'entries');
+                    Logger.debug('[DropsCenter] Merged progress now has', mergedProgress.length, 'entries');
                     return mergedProgress;
                 });
                 
@@ -465,7 +466,7 @@ export default function DropsCenter() {
                 });
                 
                 if (freshInventoryForGame.length > 0) {
-                    console.log('[DropsCenter] Found', freshInventoryForGame.length, 'inventory items for game:', game.name);
+                    Logger.debug('[DropsCenter] Found', freshInventoryForGame.length, 'inventory items for game:', game.name);
                     
                     // Update the selected game with fresh inventory
                     setSelectedGame(prevGame => {
@@ -493,7 +494,7 @@ export default function DropsCenter() {
                 }
             }
         } catch (err) {
-            console.error('[DropsCenter] Failed to fetch inventory for game:', err);
+            Logger.error('[DropsCenter] Failed to fetch inventory for game:', err);
             // Don't show error toast - we still show the panel with cached data
         } finally {
             setIsLoadingGameDetail(false);
@@ -508,14 +509,14 @@ export default function DropsCenter() {
             return;
         }
 
-        console.log(`[DropsCenter] Starting Mine All for ${gameName} with ${campaignIds.length} campaigns`);
+        Logger.debug(`[DropsCenter] Starting Mine All for ${gameName} with ${campaignIds.length} campaigns`);
 
         // Find the game to check campaign completion status
         const game = unifiedGames.find(g => g.name.toLowerCase() === gameName.toLowerCase());
         
         // IMPORTANT: Save current progress before any async operations that might clear it
         const currentProgress = [...progress];
-        console.log(`[DropsCenter] Saved progress state with ${currentProgress.length} entries`);
+        Logger.debug(`[DropsCenter] Saved progress state with ${currentProgress.length} entries`);
         
         // Filter out campaigns that are already fully complete (all drops claimed or 100% watched)
         // and find the first incomplete campaign to start from
@@ -527,7 +528,7 @@ export default function DropsCenter() {
             
             if (!campaign) {
                 // Campaign not found, include it just in case
-                console.log(`[DropsCenter] Campaign ID ${campaignId} not found in active_campaigns, including anyway`);
+                Logger.debug(`[DropsCenter] Campaign ID ${campaignId} not found in active_campaigns, including anyway`);
                 incompleteCampaignIds.push(campaignId);
                 continue;
             }
@@ -541,11 +542,11 @@ export default function DropsCenter() {
             // Get drops from inventory if available (more accurate), otherwise from campaign
             const dropsToCheck = inventoryItem?.campaign.time_based_drops || campaign.time_based_drops;
             
-            console.log(`[DropsCenter] Campaign "${campaign.name}": ${dropsToCheck.length} drops to check (from ${inventoryItem ? 'inventory' : 'campaign'})`);
+            Logger.debug(`[DropsCenter] Campaign "${campaign.name}": ${dropsToCheck.length} drops to check (from ${inventoryItem ? 'inventory' : 'campaign'})`);
             
             // If no drops, consider it incomplete (we can't determine completion status)
             if (!dropsToCheck || dropsToCheck.length === 0) {
-                console.log(`[DropsCenter] Campaign "${campaign.name}" has no drops, assuming incomplete`);
+                Logger.debug(`[DropsCenter] Campaign "${campaign.name}" has no drops, assuming incomplete`);
                 incompleteCampaignIds.push(campaignId);
                 continue;
             }
@@ -562,7 +563,7 @@ export default function DropsCenter() {
                 const dropOwnProgress = drop.progress;
                 
                 if (dropOwnProgress?.is_claimed) {
-                    console.log(`[DropsCenter] Drop "${drop.name}" is claimed`);
+                    Logger.debug(`[DropsCenter] Drop "${drop.name}" is claimed`);
                     continue; // This drop is complete
                 }
                 
@@ -570,11 +571,11 @@ export default function DropsCenter() {
                 if (dropOwnProgress) {
                     const isCompleteFromOwn = dropOwnProgress.current_minutes_watched >= dropOwnProgress.required_minutes_watched;
                     if (isCompleteFromOwn) {
-                        console.log(`[DropsCenter] Drop "${drop.name}" is 100% complete (${dropOwnProgress.current_minutes_watched}/${dropOwnProgress.required_minutes_watched})`);
+                        Logger.debug(`[DropsCenter] Drop "${drop.name}" is 100% complete (${dropOwnProgress.current_minutes_watched}/${dropOwnProgress.required_minutes_watched})`);
                         continue; // This drop is complete
                     }
                     // Has progress but not complete - this drop is incomplete
-                    console.log(`[DropsCenter] Drop "${drop.name}" is in progress (${dropOwnProgress.current_minutes_watched}/${dropOwnProgress.required_minutes_watched})`);
+                    Logger.debug(`[DropsCenter] Drop "${drop.name}" is in progress (${dropOwnProgress.current_minutes_watched}/${dropOwnProgress.required_minutes_watched})`);
                     allDropsComplete = false;
                     break; // Found an incomplete drop, no need to check more
                 }
@@ -585,17 +586,17 @@ export default function DropsCenter() {
                     const isComplete = progressEntry.current_minutes_watched >= progressEntry.required_minutes_watched;
                     const isClaimed = progressEntry.is_claimed;
                     if (isComplete || isClaimed) {
-                        console.log(`[DropsCenter] Drop "${drop.name}" complete from progress array`);
+                        Logger.debug(`[DropsCenter] Drop "${drop.name}" complete from progress array`);
                         continue; // This drop is complete
                     }
                     // Has progress but not complete
-                    console.log(`[DropsCenter] Drop "${drop.name}" in progress from array (${progressEntry.current_minutes_watched}/${progressEntry.required_minutes_watched})`);
+                    Logger.debug(`[DropsCenter] Drop "${drop.name}" in progress from array (${progressEntry.current_minutes_watched}/${progressEntry.required_minutes_watched})`);
                     allDropsComplete = false;
                     break; // Found an incomplete drop
                 }
                 
                 // No progress data found at all - assume NOT complete (need to start mining)
-                console.log(`[DropsCenter] Drop "${drop.name}" (ID: ${drop.id}) has no progress data, assuming incomplete`);
+                Logger.debug(`[DropsCenter] Drop "${drop.name}" (ID: ${drop.id}) has no progress data, assuming incomplete`);
                 allDropsComplete = false;
                 break; // Found an incomplete drop
             }
@@ -603,9 +604,9 @@ export default function DropsCenter() {
             // A campaign is incomplete if any drop is not complete
             if (!allDropsComplete) {
                 incompleteCampaignIds.push(campaignId);
-                console.log(`[DropsCenter] Campaign "${campaign.name}" is incomplete, including in queue`);
+                Logger.debug(`[DropsCenter] Campaign "${campaign.name}" is incomplete, including in queue`);
             } else {
-                console.log(`[DropsCenter] Campaign "${campaign.name}" is fully complete, skipping`);
+                Logger.debug(`[DropsCenter] Campaign "${campaign.name}" is fully complete, skipping`);
             }
         }
         
@@ -617,7 +618,7 @@ export default function DropsCenter() {
         
         const skippedCount = campaignIds.length - incompleteCampaignIds.length;
         if (skippedCount > 0) {
-            console.log(`[DropsCenter] Skipping ${skippedCount} completed campaigns, starting with ${incompleteCampaignIds.length} remaining`);
+            Logger.debug(`[DropsCenter] Skipping ${skippedCount} completed campaigns, starting with ${incompleteCampaignIds.length} remaining`);
         }
 
         // SMART PRIORITIZATION: Sort incomplete campaigns to prioritize ones with existing progress
@@ -673,7 +674,7 @@ export default function DropsCenter() {
             return progressB - progressA; // Higher progress first
         });
         
-        console.log(`[DropsCenter] Sorted campaign order (by progress):`, sortedIncompleteCampaignIds.map(id => {
+        Logger.debug(`[DropsCenter] Sorted campaign order (by progress):`, sortedIncompleteCampaignIds.map(id => {
             const campaign = game?.active_campaigns.find(c => c.id === id);
             return campaign?.name || id;
         }));
@@ -684,7 +685,7 @@ export default function DropsCenter() {
             try {
                 await invoke('stop_auto_mining');
             } catch (err) {
-                console.error('Failed to stop mining:', err);
+                Logger.error('Failed to stop mining:', err);
             }
             // Wait a moment for the stop to take effect
             await new Promise(resolve => setTimeout(resolve, 500));
@@ -712,7 +713,7 @@ export default function DropsCenter() {
                 addToast(`Mining all ${incompleteCampaignIds.length} campaigns for ${gameName}`, 'success');
             }
         } catch (err) {
-            console.error('Failed to start mine all:', err);
+            Logger.error('Failed to start mine all:', err);
             addToast('Failed to start mining', 'error');
             setMineAllQueue(null);
         }
@@ -726,13 +727,13 @@ export default function DropsCenter() {
 
         if (nextIndex >= mineAllQueue.campaignIds.length) {
             // All campaigns done
-            console.log(`[DropsCenter] Mine All complete for ${mineAllQueue.gameName}`);
+            Logger.debug(`[DropsCenter] Mine All complete for ${mineAllQueue.gameName}`);
             addToast(`Finished mining all campaigns for ${mineAllQueue.gameName}!`, 'success');
             setMineAllQueue(null);
             return;
         }
 
-        console.log(`[DropsCenter] Moving to next campaign ${nextIndex + 1}/${mineAllQueue.campaignIds.length}`);
+        Logger.debug(`[DropsCenter] Moving to next campaign ${nextIndex + 1}/${mineAllQueue.campaignIds.length}`);
 
         // Update the queue index
         setMineAllQueue(prev => prev ? { ...prev, currentIndex: nextIndex } : null);
@@ -742,7 +743,7 @@ export default function DropsCenter() {
             await invoke('start_campaign_mining', { campaignId: mineAllQueue.campaignIds[nextIndex] });
             addToast(`Mining campaign ${nextIndex + 1} of ${mineAllQueue.campaignIds.length}`, 'info');
         } catch (err) {
-            console.error('Failed to start next campaign:', err);
+            Logger.error('Failed to start next campaign:', err);
             addToast('Failed to start next campaign', 'error');
             setMineAllQueue(null);
         }
@@ -779,7 +780,7 @@ export default function DropsCenter() {
             if (statsData) setStatistics(statsData);
             if (inventoryData?.items) setInventoryItems(inventoryData.items);
             if (inventoryData?.completed_drops) {
-                console.log(`[DropsCenter] Found ${inventoryData.completed_drops.length} completed drops`);
+                Logger.debug(`[DropsCenter] Found ${inventoryData.completed_drops.length} completed drops`);
                 setCompletedDrops(inventoryData.completed_drops);
             }
 
@@ -923,7 +924,7 @@ export default function DropsCenter() {
             }));
 
         } catch (err) {
-            console.error('Failed to load unified drops data:', err);
+            Logger.error('Failed to load unified drops data:', err);
             setError(err instanceof Error ? err.message : String(err));
         } finally {
             setIsLoading(false);
@@ -938,18 +939,18 @@ export default function DropsCenter() {
         // Get app settings to check if notification is enabled
         const appSettings = useAppStore.getState().settings;
         if (!appSettings.live_notifications?.show_favorite_drops_notifications) {
-            console.log('[DropsCenter] Favorite drops notifications disabled');
+            Logger.debug('[DropsCenter] Favorite drops notifications disabled');
             return;
         }
         
         // Get current favorite games
         const favoriteGames = dropsSettings?.favorite_games || [];
         if (favoriteGames.length === 0) {
-            console.log('[DropsCenter] No favorited games, skipping new drops check');
+            Logger.debug('[DropsCenter] No favorited games, skipping new drops check');
             return;
         }
         
-        console.log('[DropsCenter] Checking for new drops in favorited games:', favoriteGames);
+        Logger.debug('[DropsCenter] Checking for new drops in favorited games:', favoriteGames);
         
         // Get previously cached campaign data
         let cachedData: Record<string, string[]> = {};
@@ -959,7 +960,7 @@ export default function DropsCenter() {
                 cachedData = JSON.parse(cached);
             }
         } catch (e) {
-            console.warn('[DropsCenter] Failed to parse cached campaign data:', e);
+            Logger.warn('[DropsCenter] Failed to parse cached campaign data:', e);
         }
         
         // Build current campaign map for favorited games
@@ -1003,7 +1004,7 @@ export default function DropsCenter() {
         
         // Emit notifications for each game with new drops
         newDropNotifications.forEach(({ gameName, boxArt, newCount, campaignNames }) => {
-            console.log(`[DropsCenter] New drops available for ${gameName}:`, campaignNames);
+            Logger.debug(`[DropsCenter] New drops available for ${gameName}:`, campaignNames);
             
             emit('new-favorite-drops', {
                 game_name: gameName,
@@ -1022,7 +1023,7 @@ export default function DropsCenter() {
         try {
             localStorage.setItem(FAVORITE_CAMPAIGNS_CACHE_KEY, JSON.stringify(newCacheData));
         } catch (e) {
-            console.warn('[DropsCenter] Failed to save campaign cache:', e);
+            Logger.warn('[DropsCenter] Failed to save campaign cache:', e);
         }
     };
 
@@ -1037,7 +1038,7 @@ export default function DropsCenter() {
                     const settings = await invoke<DropsSettings>('get_drops_settings');
                     setDropsSettings(settings);
                 } catch (e) {
-                    console.error(e);
+                    Logger.error(e);
                 }
                 await loadDropsData();
                 
@@ -1057,7 +1058,7 @@ export default function DropsCenter() {
 
         const setupListeners = async () => {
             unlistenStatus = await listen<MiningStatus>('mining-status-update', (event) => {
-                console.log('[DropsCenter] Mining status update:', event.payload);
+                Logger.debug('[DropsCenter] Mining status update:', event.payload);
                 setMiningStatus(event.payload);
                 
                 // Update AppStore's isMiningActive based on the status
@@ -1070,7 +1071,7 @@ export default function DropsCenter() {
             // 2. Mine All Game - check if there are more campaigns in queue, start next if so
             // 3. Auto-Mining - handled by backend's start_mining (doesn't use this event)
             unlistenComplete = await listen<{ game_name: string; reason: string }>('mining-complete', async (event) => {
-                console.log('[DropsCenter] Mining complete:', event.payload);
+                Logger.debug('[DropsCenter] Mining complete:', event.payload);
                 
                 // Check if we're in a Mine All queue (use ref to get current value, not stale closure)
                 const currentQueue = mineAllQueueRef.current;
@@ -1081,7 +1082,7 @@ export default function DropsCenter() {
                     
                     if (nextIndex < currentQueue.campaignIds.length) {
                         // More campaigns to mine - start the next one
-                        console.log(`[DropsCenter] Mine All: Starting campaign ${nextIndex + 1}/${currentQueue.campaignIds.length}`);
+                        Logger.debug(`[DropsCenter] Mine All: Starting campaign ${nextIndex + 1}/${currentQueue.campaignIds.length}`);
                         
                         // Update queue index
                         setMineAllQueue(prev => prev ? { ...prev, currentIndex: nextIndex } : null);
@@ -1090,21 +1091,21 @@ export default function DropsCenter() {
                             await invoke('start_campaign_mining', { campaignId: currentQueue.campaignIds[nextIndex] });
                             addToast(`✅ Campaign complete! Mining ${nextIndex + 1} of ${currentQueue.campaignIds.length}...`, 'info');
                         } catch (err) {
-                            console.error('[DropsCenter] Failed to start next campaign:', err);
+                            Logger.error('[DropsCenter] Failed to start next campaign:', err);
                             addToast('Failed to start next campaign', 'error');
                             setMineAllQueue(null);
                             useAppStore.getState().setMiningActive(false);
                         }
                     } else {
                         // All campaigns in queue complete - Mine All Game is done
-                        console.log(`[DropsCenter] Mine All complete for ${currentQueue.gameName}`);
+                        Logger.debug(`[DropsCenter] Mine All complete for ${currentQueue.gameName}`);
                         addToast(`🎉 All campaigns for ${event.payload.game_name} complete!`, 'success');
                         setMineAllQueue(null);
                         useAppStore.getState().setMiningActive(false);
                     }
                 } else {
                     // Single Campaign Mining mode - stop completely
-                    console.log('[DropsCenter] Single campaign complete - stopping');
+                    Logger.debug('[DropsCenter] Single campaign complete - stopping');
                     addToast(`✅ Drops complete for ${event.payload.game_name}!`, 'success');
                     useAppStore.getState().setMiningActive(false);
                 }
@@ -1115,7 +1116,7 @@ export default function DropsCenter() {
 
             // Listen for mining stopped due to no channels available (all streams offline)
             unlistenNoChannels = await listen<{ reason: string }>('mining-stopped-no-channels', async (event) => {
-                console.log('[DropsCenter] Mining stopped - no channels:', event.payload);
+                Logger.debug('[DropsCenter] Mining stopped - no channels:', event.payload);
                 
                 // Check if we're in a Mine All queue
                 const currentQueue = mineAllQueueRef.current;
@@ -1125,7 +1126,7 @@ export default function DropsCenter() {
                     const nextIndex = currentQueue.currentIndex + 1;
                     
                     if (nextIndex < currentQueue.campaignIds.length) {
-                        console.log(`[DropsCenter] Channels offline - trying next campaign ${nextIndex + 1}/${currentQueue.campaignIds.length}`);
+                        Logger.debug(`[DropsCenter] Channels offline - trying next campaign ${nextIndex + 1}/${currentQueue.campaignIds.length}`);
                         addToast(`⚠️ All streams offline - trying next campaign...`, 'warning');
                         
                         setMineAllQueue(prev => prev ? { ...prev, currentIndex: nextIndex } : null);
@@ -1135,7 +1136,7 @@ export default function DropsCenter() {
                             try {
                                 await invoke('start_campaign_mining', { campaignId: currentQueue.campaignIds[nextIndex] });
                             } catch (err) {
-                                console.error('[DropsCenter] Failed to start next campaign:', err);
+                                Logger.error('[DropsCenter] Failed to start next campaign:', err);
                                 addToast('Failed to start next campaign', 'error');
                                 setMineAllQueue(null);
                                 useAppStore.getState().setMiningActive(false);
@@ -1158,7 +1159,7 @@ export default function DropsCenter() {
             });
 
             unlistenProgress = await listen<any>('drops-progress-update', (event) => {
-                console.log('[DropsCenter] Received drops-progress-update:', event.payload);
+                Logger.debug('[DropsCenter] Received drops-progress-update:', event.payload);
 
                 // Update progress state
                 setProgress((prev) => {
@@ -1172,7 +1173,7 @@ export default function DropsCenter() {
                             required_minutes_watched: event.payload.required_minutes,
                             last_updated: event.payload.timestamp
                         };
-                        console.log('[DropsCenter] Updated existing progress:', newProg[idx]);
+                        Logger.debug('[DropsCenter] Updated existing progress:', newProg[idx]);
                         return newProg;
                     } else {
                         // Add new progress entry
@@ -1184,7 +1185,7 @@ export default function DropsCenter() {
                             is_claimed: false,
                             last_updated: event.payload.timestamp
                         };
-                        console.log('[DropsCenter] Added new progress entry:', newEntry);
+                        Logger.debug('[DropsCenter] Added new progress entry:', newEntry);
                         return [...prev, newEntry];
                     }
                 });
@@ -1210,7 +1211,7 @@ export default function DropsCenter() {
 
                     // If current_drop exists and matches this update, just update its progress
                     if (prev.current_drop && prev.current_drop.drop_id === dropId) {
-                        console.log('[DropsCenter] Updating existing current_drop progress:', currentMinutes, '/', requiredMinutes);
+                        Logger.debug('[DropsCenter] Updating existing current_drop progress:', currentMinutes, '/', requiredMinutes);
                         return {
                             ...prev,
                             current_drop: {
@@ -1232,22 +1233,22 @@ export default function DropsCenter() {
                     if (!prev.current_drop) {
                         // No current drop - use the new one
                         shouldSwitch = true;
-                        console.log('[DropsCenter] No current drop, using new drop');
+                        Logger.debug('[DropsCenter] No current drop, using new drop');
                     } else if (isCurrentDropComplete && !isNewDropComplete) {
                         // Current is complete (ready to claim), new is not - switch to show the in-progress one
                         shouldSwitch = true;
-                        console.log('[DropsCenter] Current drop complete, switching to incomplete drop');
+                        Logger.debug('[DropsCenter] Current drop complete, switching to incomplete drop');
                     } else if (!isCurrentDropComplete && !isNewDropComplete) {
                         // Both incomplete - show the one closer to completion (higher %)
                         if (newDropPercent > currentDropPercent) {
                             shouldSwitch = true;
-                            console.log('[DropsCenter] New drop has higher progress:', newDropPercent.toFixed(1), '% vs', currentDropPercent.toFixed(1), '%');
+                            Logger.debug('[DropsCenter] New drop has higher progress:', newDropPercent.toFixed(1), '% vs', currentDropPercent.toFixed(1), '%');
                         }
                     }
                     // If both are complete, keep the current one (don't switch)
 
                     if (shouldSwitch) {
-                        console.log('[DropsCenter] Switching to drop:', dropId, '(', currentMinutes, '/', requiredMinutes, 'minutes)');
+                        Logger.debug('[DropsCenter] Switching to drop:', dropId, '(', currentMinutes, '/', requiredMinutes, 'minutes)');
                         return {
                             ...prev,
                             current_drop: {
@@ -1294,7 +1295,7 @@ export default function DropsCenter() {
         // Find the campaign
         const currentCampaign = gameWithCampaign.active_campaigns.find(c => c.id === currentCampaignId);
         if (!currentCampaign) {
-            console.log(`[MineAll] Campaign ${currentCampaignId} not found, moving to next`);
+            Logger.debug(`[MineAll] Campaign ${currentCampaignId} not found, moving to next`);
             startNextCampaignInQueue();
             return;
         }
@@ -1311,7 +1312,7 @@ export default function DropsCenter() {
         });
 
         if (allDropsComplete && currentCampaign.time_based_drops.length > 0) {
-            console.log(`[MineAll] All drops complete for campaign "${currentCampaign.name}", moving to next campaign`);
+            Logger.debug(`[MineAll] All drops complete for campaign "${currentCampaign.name}", moving to next campaign`);
 
             // Small delay before starting next campaign
             const timer = setTimeout(() => {
@@ -1329,7 +1330,7 @@ export default function DropsCenter() {
         const miningGameName = miningStatus?.current_drop?.game_name?.toLowerCase() ||
             miningStatus?.current_channel?.game_name?.toLowerCase();
 
-        console.log('[DropsCenter] Updating is_mining flag. Mining:', miningStatus.is_mining, 'Game:', miningGameName);
+        Logger.debug('[DropsCenter] Updating is_mining flag. Mining:', miningStatus.is_mining, 'Game:', miningGameName);
 
         // Detect if mining just started for a new game (to trigger scroll)
         const currentMiningGame = miningStatus.is_mining && miningGameName ? miningGameName : null;
@@ -1337,7 +1338,7 @@ export default function DropsCenter() {
 
         // If a new game started mining (different from previous), scroll to top
         if (currentMiningGame && currentMiningGame !== prevMiningGame) {
-            console.log('[DropsCenter] New mining game detected, scrolling to top:', currentMiningGame);
+            Logger.debug('[DropsCenter] New mining game detected, scrolling to top:', currentMiningGame);
             // Small delay to allow the list to re-sort first
             setTimeout(() => {
                 if (gamesContainerRef.current) {
@@ -1413,7 +1414,7 @@ export default function DropsCenter() {
         if (newFavoriteCampaigns.length > 0 && dropsSettings.notify_on_drop_available) {
             newFavoriteCampaigns.forEach(({ gameName, campaignName }) => {
                 addToast(`🎁 New drop for ${gameName}: ${campaignName}`, 'success');
-                console.log(`[DropsCenter] New favorite campaign notification: ${gameName} - ${campaignName}`);
+                Logger.debug(`[DropsCenter] New favorite campaign notification: ${gameName} - ${campaignName}`);
             });
         }
         

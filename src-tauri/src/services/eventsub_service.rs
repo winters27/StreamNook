@@ -1,6 +1,7 @@
 use crate::services::twitch_service::TwitchService;
 use anyhow::Result;
 use futures_util::{SinkExt, StreamExt};
+use log::{debug, error};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
@@ -257,12 +258,12 @@ impl EventSubService {
 
     /// Clean up any existing WebSocket subscriptions from Twitch API
     async fn cleanup_existing_subscriptions() {
-        println!("🧹 Cleaning up existing EventSub subscriptions...");
+        debug!("🧹 Cleaning up existing EventSub subscriptions...");
 
         let token = match TwitchService::get_token().await {
             Ok(t) => t,
             Err(e) => {
-                eprintln!("❌ Failed to get token for cleanup: {}", e);
+                error!("❌ Failed to get token for cleanup: {}", e);
                 return;
             }
         };
@@ -280,25 +281,25 @@ impl EventSubService {
         {
             Ok(r) => r,
             Err(e) => {
-                eprintln!("❌ Failed to list subscriptions: {}", e);
+                error!("❌ Failed to list subscriptions: {}", e);
                 return;
             }
         };
 
         if !response.status().is_success() {
-            eprintln!("❌ Failed to list subscriptions: {}", response.status());
+            error!("❌ Failed to list subscriptions: {}", response.status());
             return;
         }
 
         let subscriptions: SubscriptionListResponse = match response.json().await {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("❌ Failed to parse subscription list: {}", e);
+                error!("❌ Failed to parse subscription list: {}", e);
                 return;
             }
         };
 
-        println!(
+        debug!(
             "📋 Found {} existing subscriptions (cost: {}/{})",
             subscriptions.total, subscriptions.total_cost, subscriptions.max_total_cost
         );
@@ -325,7 +326,7 @@ impl EventSubService {
                     .send()
                     .await
                 {
-                    eprintln!("❌ Failed to delete subscription {}: {}", sub.id, e);
+                    error!("❌ Failed to delete subscription {}: {}", sub.id, e);
                 } else {
                     deleted += 1;
                 }
@@ -336,7 +337,7 @@ impl EventSubService {
         }
 
         if deleted > 0 {
-            println!("🗑️  Deleted {} orphaned subscriptions", deleted);
+            debug!("🗑️  Deleted {} orphaned subscriptions", deleted);
         }
     }
 
@@ -369,7 +370,7 @@ impl EventSubService {
             // The frontend will handle reconnection when needed
             tokio::select! {
                 _ = shutdown_rx.recv() => {
-                    println!("🛑 EventSub shutdown signal received");
+                    debug!("🛑 EventSub shutdown signal received");
                 }
                 result = Self::run_connection(
                     broadcaster_id.clone(),
@@ -380,10 +381,10 @@ impl EventSubService {
                 ) => {
                     match result {
                         Ok(_) => {
-                            println!("🔌 EventSub connection closed normally");
+                            debug!("🔌 EventSub connection closed normally");
                         }
                         Err(e) => {
-                            eprintln!("❌ EventSub connection error: {}", e);
+                            error!("❌ EventSub connection error: {}", e);
                         }
                     }
                 }
@@ -397,7 +398,7 @@ impl EventSubService {
                 *sess = None;
             }
 
-            println!("🔌 EventSub task ended");
+            debug!("🔌 EventSub task ended");
         });
 
         Ok(())
@@ -410,12 +411,12 @@ impl EventSubService {
         session_id: Arc<RwLock<Option<String>>>,
         subscriptions: Arc<RwLock<Vec<String>>>,
     ) -> Result<()> {
-        println!("🔌 Connecting to Twitch EventSub...");
+        debug!("🔌 Connecting to Twitch EventSub...");
 
         let (ws_stream, _) = connect_async(EVENTSUB_URL).await?;
         let (mut write, mut read) = ws_stream.split();
 
-        println!("✅ Connected to Twitch EventSub, waiting for welcome message...");
+        debug!("✅ Connected to Twitch EventSub, waiting for welcome message...");
 
         // Wait for welcome message
         let welcome_msg = read
@@ -426,21 +427,21 @@ impl EventSubService {
         // Handle different message types and extract text
         let welcome_text = match &welcome_msg {
             Message::Text(text) => {
-                println!("📝 Received text message");
+                debug!("📝 Received text message");
                 text.to_string()
             }
             Message::Binary(data) => {
                 let text = String::from_utf8(data.to_vec())
                     .map_err(|e| anyhow::anyhow!("Failed to decode binary message: {}", e))?;
-                println!("📝 Received binary message (decoded)");
+                debug!("📝 Received binary message (decoded)");
                 text
             }
             Message::Close(frame) => {
-                println!("🔌 Received close frame: {:?}", frame);
+                debug!("🔌 Received close frame: {:?}", frame);
                 return Err(anyhow::anyhow!("Connection closed by server"));
             }
             Message::Ping(_) | Message::Pong(_) => {
-                println!("📝 Received ping/pong, waiting for welcome message...");
+                debug!("📝 Received ping/pong, waiting for welcome message...");
                 let next_msg = read
                     .next()
                     .await
@@ -461,14 +462,14 @@ impl EventSubService {
         let welcome: EventSubMessage = match serde_json::from_str(&welcome_text) {
             Ok(msg) => msg,
             Err(e) => {
-                eprintln!("❌ Failed to parse welcome message: {}", e);
-                eprintln!("📝 Raw message: {}", welcome_text);
+                error!("❌ Failed to parse welcome message: {}", e);
+                error!("📝 Raw message: {}", welcome_text);
                 return Err(anyhow::anyhow!("Failed to parse welcome message: {}", e));
             }
         };
 
         if welcome.metadata.message_type != "session_welcome" {
-            eprintln!(
+            error!(
                 "❌ Expected session_welcome, got: {}",
                 welcome.metadata.message_type
             );
@@ -494,8 +495,8 @@ impl EventSubService {
             *conn = true;
         }
 
-        println!("✅ EventSub session established: {}", session_info.id);
-        println!("⏱️  Keepalive timeout: {} seconds", keepalive_timeout);
+        debug!("✅ EventSub session established: {}", session_info.id);
+        debug!("⏱️  Keepalive timeout: {} seconds", keepalive_timeout);
 
         // Subscribe to events using the session ID
         let sess_id = session_info.id.clone();
@@ -504,7 +505,7 @@ impl EventSubService {
             tokio::time::sleep(Duration::from_secs(1)).await;
 
             if let Err(e) = Self::subscribe_to_events(&broadcaster_id, &sess_id).await {
-                eprintln!("❌ Failed to subscribe to EventSub events: {}", e);
+                error!("❌ Failed to subscribe to EventSub events: {}", e);
             }
         });
 
@@ -525,7 +526,7 @@ impl EventSubService {
 
                 let elapsed = last_message_clone.read().await.elapsed();
                 if elapsed > Duration::from_secs(keepalive_timeout + 5) {
-                    eprintln!(
+                    error!(
                         "❌ No message received for {} seconds, connection may be dead",
                         elapsed.as_secs()
                     );
@@ -540,7 +541,7 @@ impl EventSubService {
         while let Some(msg) = read.next().await {
             // Check if we should stop
             if !*connected.read().await {
-                println!("🛑 Connection marked as disconnected, stopping listener");
+                debug!("🛑 Connection marked as disconnected, stopping listener");
                 break;
             }
 
@@ -553,22 +554,22 @@ impl EventSubService {
                     }
 
                     if let Err(e) = Self::handle_message(&text, &app_handle).await {
-                        eprintln!("❌ Error handling message: {}", e);
+                        error!("❌ Error handling message: {}", e);
                     }
                 }
                 Ok(Message::Close(_)) => {
-                    println!("🔌 EventSub connection closed by server");
+                    debug!("🔌 EventSub connection closed by server");
                     break;
                 }
                 Ok(Message::Ping(data)) => {
                     // Respond to ping with pong
                     if let Err(e) = write.send(Message::Pong(data)).await {
-                        eprintln!("❌ Failed to send pong: {}", e);
+                        error!("❌ Failed to send pong: {}", e);
                         break;
                     }
                 }
                 Err(e) => {
-                    eprintln!("❌ WebSocket error: {}", e);
+                    error!("❌ WebSocket error: {}", e);
                     break;
                 }
                 _ => {}
@@ -584,45 +585,45 @@ impl EventSubService {
     async fn handle_message(text: &str, app_handle: &AppHandle) -> Result<()> {
         // Handle potential empty messages
         if text.trim().is_empty() {
-            println!("⚠️ Received empty message, ignoring");
+            debug!("⚠️ Received empty message, ignoring");
             return Ok(());
         }
 
         let message: EventSubMessage = match serde_json::from_str(text) {
             Ok(msg) => msg,
             Err(e) => {
-                eprintln!("❌ Failed to parse EventSub message: {}", e);
-                eprintln!("📝 Raw message: {}", text);
+                error!("❌ Failed to parse EventSub message: {}", e);
+                error!("📝 Raw message: {}", text);
                 return Err(anyhow::anyhow!("Failed to parse message: {}", e));
             }
         };
 
         match message.metadata.message_type.as_str() {
             "session_welcome" => {
-                println!("✅ Received welcome message");
+                debug!("✅ Received welcome message");
             }
             "session_keepalive" => {
-                println!("💓 Received keepalive");
+                debug!("💓 Received keepalive");
             }
             "notification" => {
                 let notification: NotificationPayload = serde_json::from_value(message.payload)?;
                 Self::handle_notification(notification, app_handle).await?;
             }
             "session_reconnect" => {
-                println!("🔄 Server requested reconnection");
+                debug!("🔄 Server requested reconnection");
                 let session_payload: SessionPayload = serde_json::from_value(message.payload)?;
                 if let Some(reconnect_url) = session_payload.session.reconnect_url {
-                    println!("🔗 Reconnect URL: {}", reconnect_url);
+                    debug!("🔗 Reconnect URL: {}", reconnect_url);
                     // TODO: Implement reconnection logic
                 }
             }
             "revocation" => {
-                println!("⚠️  Subscription revoked");
+                debug!("⚠️  Subscription revoked");
                 let notification: NotificationPayload = serde_json::from_value(message.payload)?;
-                println!("Revoked subscription: {:?}", notification.subscription);
+                debug!("Revoked subscription: {:?}", notification.subscription);
             }
             _ => {
-                println!("📨 Unknown message type: {}", message.metadata.message_type);
+                debug!("📨 Unknown message type: {}", message.metadata.message_type);
             }
         }
 
@@ -633,7 +634,7 @@ impl EventSubService {
         notification: NotificationPayload,
         app_handle: &AppHandle,
     ) -> Result<()> {
-        println!(
+        debug!(
             "📬 Received notification: {}",
             notification.subscription.subscription_type
         );
@@ -644,7 +645,7 @@ impl EventSubService {
                 if let Ok(raid_event) =
                     serde_json::from_value::<RaidEvent>(notification.event.clone())
                 {
-                    println!(
+                    debug!(
                         "🎉 Raid: {} -> {} ({} viewers)",
                         raid_event.from_broadcaster_user_name,
                         raid_event.to_broadcaster_user_name,
@@ -658,7 +659,7 @@ impl EventSubService {
                 if let Ok(offline_event) =
                     serde_json::from_value::<StreamOfflineEvent>(notification.event.clone())
                 {
-                    println!("📴 Stream offline: {}", offline_event.broadcaster_user_name);
+                    debug!("📴 Stream offline: {}", offline_event.broadcaster_user_name);
                     let _ = app_handle.emit("eventsub://offline", &offline_event);
                 }
             }
@@ -667,7 +668,7 @@ impl EventSubService {
                 if let Ok(online_event) =
                     serde_json::from_value::<StreamOnlineEvent>(notification.event.clone())
                 {
-                    println!("📡 Stream online: {}", online_event.broadcaster_user_name);
+                    debug!("📡 Stream online: {}", online_event.broadcaster_user_name);
                     let _ = app_handle.emit("eventsub://online", &online_event);
                 }
             }
@@ -676,7 +677,7 @@ impl EventSubService {
                 if let Ok(update_event) =
                     serde_json::from_value::<ChannelUpdateEvent>(notification.event.clone())
                 {
-                    println!(
+                    debug!(
                         "📝 Channel updated: \"{}\" - {}",
                         update_event.title, update_event.category_name
                     );
@@ -685,7 +686,7 @@ impl EventSubService {
             }
             "channel.channel_points_automatic_reward_redemption.add" => {
                 // Handle automatic channel points rewards
-                println!("🎁 Automatic channel points reward redeemed");
+                debug!("🎁 Automatic channel points reward redeemed");
                 let _ = app_handle.emit("channel-points-automatic-reward", &notification.event);
             }
             "channel.channel_points_custom_reward_redemption.add" => {
@@ -693,7 +694,7 @@ impl EventSubService {
                 if let Ok(redemption) = serde_json::from_value::<ChannelPointsRedemptionEvent>(
                     notification.event.clone(),
                 ) {
-                    println!(
+                    debug!(
                         "🎁 Custom reward redeemed: {} by {}",
                         redemption.reward.title, redemption.user_name
                     );
@@ -705,7 +706,7 @@ impl EventSubService {
                 if let Ok(whisper_event) =
                     serde_json::from_value::<WhisperReceivedEvent>(notification.event.clone())
                 {
-                    println!(
+                    debug!(
                         "💬 Whisper received from {} (@{}): {}",
                         whisper_event.from_user_name,
                         whisper_event.from_user_login,
@@ -730,7 +731,7 @@ impl EventSubService {
                 if let Ok(event) =
                     serde_json::from_value::<HypeTrainBeginEvent>(notification.event.clone())
                 {
-                    println!(
+                    debug!(
                         "🚂 Hype Train started! Level {} - Goal: {}/{}",
                         event.level, event.progress, event.goal
                     );
@@ -741,7 +742,7 @@ impl EventSubService {
                 if let Ok(event) =
                     serde_json::from_value::<HypeTrainProgressEvent>(notification.event.clone())
                 {
-                    println!(
+                    debug!(
                         "🚂 Hype Train progress: Level {} - {}/{}",
                         event.level, event.progress, event.goal
                     );
@@ -752,12 +753,12 @@ impl EventSubService {
                 if let Ok(event) =
                     serde_json::from_value::<HypeTrainEndEvent>(notification.event.clone())
                 {
-                    println!("🚂 Hype Train ended at Level {}!", event.level);
+                    debug!("🚂 Hype Train ended at Level {}!", event.level);
                     let _ = app_handle.emit("eventsub://hype-train-end", &event);
                 }
             }
             _ => {
-                println!(
+                debug!(
                     "📨 Unhandled subscription type: {}",
                     notification.subscription.subscription_type
                 );
@@ -776,7 +777,7 @@ impl EventSubService {
         let current_user_id = match TwitchService::get_user_info().await {
             Ok(user) => user.id,
             Err(e) => {
-                eprintln!("❌ Failed to get current user info: {}", e);
+                error!("❌ Failed to get current user info: {}", e);
                 String::new()
             }
         };
@@ -862,7 +863,7 @@ impl EventSubService {
                 .await?;
 
             if response.status().is_success() {
-                println!("✅ Subscribed to {}", event_type);
+                debug!("✅ Subscribed to {}", event_type);
             } else {
                 let status = response.status();
                 let error_text = response.text().await?;
@@ -870,9 +871,9 @@ impl EventSubService {
                 // Hype Train events require moderator access - silently skip if 403
                 if event_type.starts_with("channel.hype_train") && status.as_u16() == 403 {
                     // This is expected when not a moderator of the channel
-                    println!("ℹ️ Skipped {} (requires moderator access)", event_type);
+                    debug!("ℹ️ Skipped {} (requires moderator access)", event_type);
                 } else {
-                    eprintln!("❌ Failed to subscribe to {}: {}", event_type, error_text);
+                    error!("❌ Failed to subscribe to {}: {}", event_type, error_text);
                 }
             }
 
@@ -908,13 +909,13 @@ impl EventSubService {
                 .await?;
 
             if response.status().is_success() {
-                println!(
+                debug!(
                     "✅ Subscribed to whisper messages for user {}",
                     current_user_id
                 );
             } else {
                 let error_text = response.text().await?;
-                eprintln!("❌ Failed to subscribe to whispers: {}", error_text);
+                error!("❌ Failed to subscribe to whispers: {}", error_text);
             }
         }
 
@@ -922,7 +923,7 @@ impl EventSubService {
     }
 
     pub async fn disconnect(&self) {
-        println!("🔌 Disconnecting EventSub...");
+        debug!("🔌 Disconnecting EventSub...");
 
         // Mark as disconnected first to stop all loops
         {
@@ -952,6 +953,6 @@ impl EventSubService {
         // Give the task a moment to clean up
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        println!("🔌 EventSub disconnected");
+        debug!("🔌 EventSub disconnected");
     }
 }

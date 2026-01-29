@@ -96,6 +96,10 @@ impl LayoutService {
                 MessageSegment::Emoji { .. } => {
                     text.push_str(emoji_placeholder);
                 }
+                MessageSegment::Cheermote { .. } => {
+                    // Cheermotes render as GIF + number, approximate width ~40px
+                    text.push_str("          "); // 10 spaces ≈ 40px
+                }
             }
         }
         (text, has_links)
@@ -212,6 +216,7 @@ impl LayoutService {
             segments.iter().fold((0, 0), |(e, j), seg| match seg {
                 MessageSegment::Emote { .. } => (e + 1, j),
                 MessageSegment::Emoji { .. } => (e, j + 1),
+                MessageSegment::Cheermote { .. } => (e + 1, j), // Cheermotes count as emotes for height
                 _ => (e, j),
             });
 

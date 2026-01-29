@@ -28,11 +28,13 @@
 
 use commands::{
     app::*, automation::*, badge_metadata::*, badge_service::*, badges::*, bandwidth_test::*,
-    cache::*, chat::*, chat_identity::*, components::*, cosmetics_cache::*, discord::*, drops::*,
-    emoji::*, emotes::*, eventsub::*, hype_train::*, layout::*, logs::*, profile_cache::*,
-    resub::*, settings::*, seventv::*, seventv_cosmetics::*, seventv_cosmetics_fetch::*,
-    streaming::*, twitch::*, universal_cache::*, user_profile::*, whisper_storage::*,
+    cache::*, chat::*, chat_identity::*, components::*, cosmetics_cache::*, diagnostic_logging::*,
+    discord::*, drops::*, emoji::*, emotes::*, eventsub::*, hype_train::*, layout::*, logs::*,
+    profile_cache::*, resub::*, settings::*, seventv::*, seventv_cosmetics::*,
+    seventv_cosmetics_fetch::*, streaming::*, twitch::*, universal_cache::*, user_profile::*,
+    whisper_storage::*,
 };
+use log::{debug, error};
 use models::settings::{AppState, Settings};
 use services::background_service::BackgroundService;
 use services::badge_polling_service::BadgePollingService;
@@ -71,14 +73,14 @@ fn cleanup_update_artifacts() {
             // Remove leftover StreamNook_new.exe if it exists
             let temp_exe = exe_dir.join("StreamNook_new.exe");
             if temp_exe.exists() {
-                println!("[Main] Cleaning up leftover update file: {:?}", temp_exe);
+                debug!("[Main] Cleaning up leftover update file: {:?}", temp_exe);
                 let _ = std::fs::remove_file(&temp_exe);
             }
 
             // Remove leftover update batch script if it exists
             let batch_file = exe_dir.join("update_streamnook.bat");
             if batch_file.exists() {
-                println!("[Main] Cleaning up leftover batch file: {:?}", batch_file);
+                debug!("[Main] Cleaning up leftover batch file: {:?}", batch_file);
                 let _ = std::fs::remove_file(&batch_file);
             }
         }
@@ -86,6 +88,9 @@ fn cleanup_update_artifacts() {
 }
 
 fn main() {
+    // Initialize the logging system FIRST so all debug!/error! macros work
+    services::diagnostic_logger::init_logging();
+
     // Clean up any leftover files from previous update attempts
     cleanup_update_artifacts();
 
@@ -96,16 +101,19 @@ fn main() {
     {
         Ok(migrated) => {
             if migrated {
-                println!("[Main] ✅ Emote cache migrated for new version");
+                debug!("[Main] ✅ Emote cache migrated for new version");
             }
         }
         Err(e) => {
-            eprintln!("[Main] Failed to migrate emote cache: {}", e);
+            error!("[Main] Failed to migrate emote cache: {}", e);
         }
     }
 
     // Load settings from our custom location in the same directory as cache
     let settings = load_settings_from_file().unwrap_or_else(|_| Settings::default());
+
+    // Apply persisted diagnostic logging setting immediately after loading settings
+    services::diagnostic_logger::set_diagnostics_enabled(settings.error_reporting_enabled);
 
     // Initialize drops service with persisted settings (including priority_games for favorites)
     let drops_service = Arc::new(TokioMutex::new(DropsService::new_with_settings(
@@ -183,7 +191,7 @@ fn main() {
             let app_state_for_live_notif_clone = app_state_for_live_notif.clone();
             tauri::async_runtime::spawn(async move {
                 if let Err(e) = live_notif_service.start(live_app_handle, app_state_for_live_notif_clone).await {
-                    eprintln!("Failed to start live notification service: {}", e);
+                    error!("Failed to start live notification service: {}", e);
                 }
             });
 
@@ -199,7 +207,7 @@ fn main() {
             tauri::async_runtime::spawn(async move {
                 use services::twitch_service::TwitchService;
 
-                println!("[Main] Starting token health verification...");
+                debug!("[Main] Starting token health verification...");
 
                 // Wait a moment to let the app fully initialize
                 tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
@@ -207,37 +215,37 @@ fn main() {
                 match TwitchService::verify_token_health().await {
                     Ok(status) => {
                         if status.is_valid {
-                            println!(
+                            debug!(
                                 "[Main] ✅ Token health check passed: {}h {}m remaining",
                                 status.hours_remaining, status.minutes_remaining
                             );
                             if status.needs_refresh {
-                                println!("[Main] ⚠️ Token expires soon, but will auto-refresh on next API call");
+                                debug!("[Main] ⚠️ Token expires soon, but will auto-refresh on next API call");
                             }
 
                             // Auto-start analytics dashboard for admin users
-                            println!("[Main] Checking if user is admin for dashboard auto-start...");
+                            debug!("[Main] Checking if user is admin for dashboard auto-start...");
                             match auto_start_dashboard_for_admin(admin_app_handle).await {
                                 Ok(started) => {
                                     if started {
-                                        println!("[Main] ✅ Analytics dashboard auto-started for admin user");
+                                        debug!("[Main] ✅ Analytics dashboard auto-started for admin user");
                                     } else {
-                                        println!("[Main] Dashboard not auto-started (not admin or not available)");
+                                        debug!("[Main] Dashboard not auto-started (not admin or not available)");
                                     }
                                 }
                                 Err(e) => {
-                                    println!("[Main] Failed to auto-start dashboard: {}", e);
+                                    debug!("[Main] Failed to auto-start dashboard: {}", e);
                                 }
                             }
                         } else {
-                            println!(
+                            debug!(
                                 "[Main] ❌ Token health check failed: {:?}",
                                 status.error.unwrap_or_else(|| "Unknown error".to_string())
                             );
                         }
                     }
                     Err(e) => {
-                        println!("[Main] ❌ Token health verification error: {}", e);
+                        debug!("[Main] ❌ Token health verification error: {}", e);
                     }
                 }
             });
@@ -247,7 +255,7 @@ fn main() {
                 use services::twitch_service::TwitchService;
                 use commands::badges::fetch_global_badges;
 
-                println!("[Main] Starting background badge pre-fetch...");
+                debug!("[Main] Starting background badge pre-fetch...");
 
                 // Wait a few seconds to let the app fully initialize (after token health check)
                 tokio::time::sleep(tokio::time::Duration::from_secs(4)).await;
@@ -257,15 +265,15 @@ fn main() {
                         let client_id = "1qgws7yzcp21g5ledlzffw3lmqdvie".to_string();
                         match fetch_global_badges(client_id, token).await {
                             Ok(badges) => {
-                                println!("[Main] Background badge pre-fetch complete: {} badge sets cached", badges.data.len());
+                                debug!("[Main] Background badge pre-fetch complete: {} badge sets cached", badges.data.len());
                             }
                             Err(e) => {
-                                println!("[Main] Background badge pre-fetch failed: {}", e);
+                                debug!("[Main] Background badge pre-fetch failed: {}", e);
                             }
                         }
                     }
                     Err(e) => {
-                        println!("[Main] Failed to get token for background badge pre-fetch: {}", e);
+                        debug!("[Main] Failed to get token for background badge pre-fetch: {}", e);
                     }
                 }
             });
@@ -274,7 +282,7 @@ fn main() {
             tauri::async_runtime::spawn(async move {
                 use commands::badge_service::initialize_badge_service;
 
-                println!("[Main] Initializing unified badge service...");
+                debug!("[Main] Initializing unified badge service...");
 
                 // Wait a moment for token to be available
                 tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
@@ -555,6 +563,9 @@ fn main() {
             // Resub notification commands
             get_resub_notification,
             use_resub_token,
+            // Diagnostic Logging commands
+            set_diagnostics_enabled,
+            is_diagnostics_enabled,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

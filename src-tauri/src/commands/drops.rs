@@ -1,6 +1,7 @@
 use crate::models::drops::*;
 use crate::models::settings::AppState;
 use crate::services::drops_auth_service::{DropsAuthService, DropsDeviceCodeInfo};
+use log::debug;
 use tauri::{AppHandle, State};
 
 #[tauri::command]
@@ -378,7 +379,7 @@ pub async fn place_prediction(
             .get("points")
             .and_then(|v| v.as_i64())
             .unwrap_or(0);
-        println!(
+        debug!(
             "🔮 Prediction placed successfully! ID: {}, Points: {}",
             pred_id, pred_points
         );
@@ -493,7 +494,7 @@ pub async fn get_active_prediction(
             }
         }
 
-        println!(
+        debug!(
             "🔮 Found active prediction on {}: {} (status: {})",
             channel_login, title, status
         );
@@ -847,7 +848,7 @@ pub async fn get_channel_rewards(
         .await
         .map_err(|e| format!("Failed to parse channel rewards response: {}", e))?;
 
-    println!(
+    debug!(
         "[ChannelRewards] Raw response: {}",
         serde_json::to_string_pretty(&result).unwrap_or_default()
     );
@@ -975,7 +976,7 @@ pub async fn redeem_channel_reward(
 
     // Check for successful redemption
     if result["data"]["redeemCommunityPointsCustomReward"]["redemption"].is_object() {
-        println!(
+        debug!(
             "🎁 Successfully redeemed reward {} for {} points on channel {}",
             reward_id, cost, channel_id
         );
@@ -1056,7 +1057,7 @@ pub async fn send_highlighted_message(
         .await
         .map_err(|e| format!("Failed to parse response: {}", e))?;
 
-    println!(
+    debug!(
         "[SendHighlightedMessage] Response: {}",
         serde_json::to_string_pretty(&result).unwrap_or_default()
     );
@@ -1102,7 +1103,7 @@ pub async fn send_highlighted_message(
 
     // Check for successful send
     if result["data"]["sendHighlightedChatMessage"].is_object() {
-        println!(
+        debug!(
             "✨ Successfully sent highlighted message to channel {} for {} points",
             channel_id, cost
         );
@@ -1181,7 +1182,7 @@ pub async fn unlock_random_emote(
         .await
         .map_err(|e| format!("Failed to parse response: {}", e))?;
 
-    println!(
+    debug!(
         "[UnlockRandomEmote] Response: {}",
         serde_json::to_string_pretty(&result).unwrap_or_default()
     );
@@ -1254,7 +1255,7 @@ pub async fn unlock_random_emote(
                 })
             });
 
-        println!(
+        debug!(
             "🎉 Successfully unlocked random emote on channel {} for {} points: {:?}",
             channel_id, cost, unlocked_emote
         );
@@ -1342,7 +1343,7 @@ pub async fn get_modifiable_emotes(channel_id: String) -> Result<Vec<ModifiableE
         .await
         .map_err(|e| format!("Failed to parse response: {}", e))?;
 
-    println!(
+    debug!(
         "[ChannelPointsContext] Fetching emote variants for channel {}",
         channel_id
     );
@@ -1422,7 +1423,7 @@ pub async fn get_modifiable_emotes(channel_id: String) -> Result<Vec<ModifiableE
         }
     }
 
-    println!(
+    debug!(
         "[ChannelPointsContext] Found {} unlockable emotes for channel {}",
         emotes.len(),
         channel_id
@@ -1455,7 +1456,7 @@ pub async fn unlock_modified_emote(
     let session_id = uuid::Uuid::new_v4().to_string().replace("-", "")[..16].to_string();
     let transaction_id = uuid::Uuid::new_v4().to_string().replace("-", "");
 
-    println!(
+    debug!(
         "[UnlockModifiedEmote] Unlocking emote {} on channel {} for {} points (txn: {})",
         emote_id, channel_id, cost, transaction_id
     );
@@ -1492,7 +1493,7 @@ pub async fn unlock_modified_emote(
         .await
         .map_err(|e| format!("Failed to parse response: {}", e))?;
 
-    println!(
+    debug!(
         "[UnlockModifiedEmote] Response: {}",
         serde_json::to_string_pretty(&result).unwrap_or_default()
     );
@@ -1559,7 +1560,7 @@ pub async fn unlock_modified_emote(
             ),
         });
 
-        println!(
+        debug!(
             "🖌️ Successfully modified emote {} on channel {} - New balance: {:?}",
             emote_id, channel_id, new_balance
         );
@@ -1608,7 +1609,7 @@ pub async fn unlock_chosen_emote(
     let session_id = uuid::Uuid::new_v4().to_string().replace("-", "")[..16].to_string();
     let transaction_id = uuid::Uuid::new_v4().to_string().replace("-", "");
 
-    println!(
+    debug!(
         "[UnlockChosenEmote] Unlocking emote {} on channel {} for {} points (txn: {})",
         emote_id, channel_id, cost, transaction_id
     );
@@ -1635,7 +1636,7 @@ pub async fn unlock_chosen_emote(
         }
     });
 
-    println!(
+    debug!(
         "[UnlockChosenEmote] Sending payload: {}",
         serde_json::to_string_pretty(&payload).unwrap_or_default()
     );
@@ -1656,7 +1657,7 @@ pub async fn unlock_chosen_emote(
         .await
         .map_err(|e| format!("Failed to parse response: {}", e))?;
 
-    println!(
+    debug!(
         "[UnlockChosenEmote] Response: {}",
         serde_json::to_string_pretty(&result).unwrap_or_default()
     );
@@ -1717,7 +1718,7 @@ pub async fn unlock_chosen_emote(
             ),
         });
 
-        println!(
+        debug!(
             "🎉 Successfully unlocked emote {} on channel {} - New balance: {:?}",
             emote_id, channel_id, new_balance
         );

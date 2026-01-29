@@ -4,6 +4,7 @@ import { Trophy, TrendingUp, ExternalLink } from 'lucide-react';
 import { ChannelPointsBalance } from '../types';
 import { useAppStore } from '../stores/AppStore';
 
+import { Logger } from '../utils/logger';
 interface ChannelPointsLeaderboardProps {
   onStreamClick?: (channelName: string) => void;
 }
@@ -33,7 +34,7 @@ const ChannelPointsLeaderboard = ({ onStreamClick }: ChannelPointsLeaderboardPro
       // Fetch profile pictures for all users
       await fetchProfilePictures(sorted);
     } catch (error) {
-      console.error('Failed to fetch channel points balances:', error);
+      Logger.error('Failed to fetch channel points balances:', error);
     } finally {
       setLoading(false);
     }
@@ -74,7 +75,7 @@ const ChannelPointsLeaderboard = ({ onStreamClick }: ChannelPointsLeaderboardPro
         setProfilePics(pics);
       }
     } catch (error) {
-      console.error('Failed to fetch profile pictures:', error);
+      Logger.error('Failed to fetch profile pictures:', error);
     }
   };
 

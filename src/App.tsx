@@ -24,6 +24,7 @@ import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
 import { getThemeById, applyTheme, DEFAULT_THEME_ID, getThemeByIdWithCustom } from './themes';
 import { getSelectedCompactViewPreset } from './constants/compactViewPresets';
 
+import { Logger } from './utils/logger';
 interface BadgeVersion {
   id: string;
   image_url_1x: string;
@@ -48,7 +49,7 @@ const DEFAULT_CHAT_WIDTH = 384; // For 'right' placement
 const DEFAULT_CHAT_HEIGHT = 200; // For 'bottom' placement
 
 function App() {
-  const { loadSettings, chatPlacement, isLoading, currentStream, streamUrl, checkAuthStatus, showProfileOverlay, setShowProfileOverlay, addToast, setShowDropsOverlay, showBadgesOverlay, setShowBadgesOverlay, showWhispersOverlay, setShowWhispersOverlay, settings, updateSettings, isTheaterMode, isHomeActive, toggleHome, stopStream, loadActiveDropsCache } = useAppStore();
+  const { loadSettings, chatPlacement, isLoading, currentStream, streamUrl, checkAuthStatus, showProfileOverlay, setShowProfileOverlay, addToast, setShowDropsOverlay, showBadgesOverlay, setShowBadgesOverlay, badgesOverlayInitialPaintId, badgesOverlayInitialBadgeId, showWhispersOverlay, setShowWhispersOverlay, settings, updateSettings, isTheaterMode, isHomeActive, toggleHome, stopStream, loadActiveDropsCache } = useAppStore();
 
   const [chatSize, setChatSize] = useState(chatPlacement === 'bottom' ? DEFAULT_CHAT_HEIGHT : DEFAULT_CHAT_WIDTH);
   const [isResizing, setIsResizing] = useState(false);
@@ -89,11 +90,11 @@ function App() {
       const oldPlacement = prevChatPlacementRef.current;
       const oldChatSize = prevChatSizeRef.current;
 
-      console.log('[ChatSize] Placement changed from', oldPlacement, 'to', chatPlacement);
+      Logger.debug('[ChatSize] Placement changed from', oldPlacement, 'to', chatPlacement);
 
       // Set appropriate default based on new placement
       const newSize = chatPlacement === 'bottom' ? DEFAULT_CHAT_HEIGHT : DEFAULT_CHAT_WIDTH;
-      console.log('[ChatSize] Setting chat size to', newSize);
+      Logger.debug('[ChatSize] Setting chat size to', newSize);
       setChatSize(newSize);
       chatSizeRef.current = newSize;
 
@@ -105,7 +106,7 @@ function App() {
 
       // Skip if in theater mode - compact view handles its own sizing
       if (isTheaterMode) {
-        console.log('[ChatSize] Skipping resize - theater/compact mode is active');
+        Logger.debug('[ChatSize] Skipping resize - theater/compact mode is active');
         prevChatPlacementRef.current = chatPlacement;
         prevChatSizeRef.current = newSize;
         return;
@@ -118,7 +119,7 @@ function App() {
           // Don't adjust if window is maximized
           const isMaximized = await window.isMaximized();
           if (isMaximized) {
-            console.log('[ChatSize] Window is maximized, skipping resize');
+            Logger.debug('[ChatSize] Window is maximized, skipping resize');
             prevChatPlacementRef.current = chatPlacement;
             prevChatSizeRef.current = newSize;
             return;
@@ -127,9 +128,9 @@ function App() {
           const size = await window.innerSize();
           const titleBarHeight = 32;
 
-          console.log('[ChatSize] Calculating window size to preserve video dimensions');
-          console.log('[ChatSize] Old layout:', oldPlacement, 'with chat size', oldChatSize);
-          console.log('[ChatSize] New layout:', chatPlacement, 'with chat size', newSize);
+          Logger.debug('[ChatSize] Calculating window size to preserve video dimensions');
+          Logger.debug('[ChatSize] Old layout:', oldPlacement, 'with chat size', oldChatSize);
+          Logger.debug('[ChatSize] New layout:', chatPlacement, 'with chat size', newSize);
 
           const [newWidth, newHeight] = await invoke<[number, number]>('calculate_aspect_ratio_size_preserve_video', {
             currentWidth: size.width,
@@ -141,13 +142,13 @@ function App() {
             titleBarHeight: titleBarHeight,
           });
 
-          console.log('[ChatSize] New window size to preserve video:', newWidth, newHeight);
+          Logger.debug('[ChatSize] New window size to preserve video:', newWidth, newHeight);
 
           if (Math.abs(size.width - newWidth) > 5 || Math.abs(size.height - newHeight) > 5) {
             await window.setSize(new LogicalSize(newWidth, newHeight));
           }
         } catch (error) {
-          console.error('[ChatSize] Failed to resize window:', error);
+          Logger.error('[ChatSize] Failed to resize window:', error);
         }
       }
 
@@ -183,7 +184,7 @@ function App() {
         try {
           appVersion = await invoke<string>('get_current_app_version');
         } catch (e) {
-          console.warn('[App] Failed to get app version for presence:', e);
+          Logger.warn('[App] Failed to get app version for presence:', e);
         }
 
         if (isAuthenticated && currentUser) {
@@ -226,13 +227,13 @@ function App() {
       // Pre-fetch cosmetics for current user
       const { currentUser, isAuthenticated } = useAppStore.getState();
       if (isAuthenticated && currentUser?.user_id) {
-        console.log('[App] Pre-fetching cosmetics for current user...');
+        Logger.debug('[App] Pre-fetching cosmetics for current user...');
         const { getCosmeticsWithFallback, getThirdPartyBadgesWithFallback } = await import('./services/cosmeticsCache');
         Promise.all([
           getCosmeticsWithFallback(currentUser.user_id),
           getThirdPartyBadgesWithFallback(currentUser.user_id)
         ]).catch((err: Error) =>
-          console.error('[App] Failed to pre-fetch user cosmetics:', err)
+          Logger.error('[App] Failed to pre-fetch user cosmetics:', err)
         );
       }
 
@@ -254,24 +255,24 @@ function App() {
       const unlistenDropsError = await listen('drops-error', (event: any) => {
         const { category, message } = event.payload;
         // Log as error - this will be picked up by logService and sent to Discord
-        console.error(`[${category}] ${message}`);
+        Logger.error(`[${category}] ${message}`);
       });
 
       // Listen for start-whisper events from standalone profile windows
       const unlistenStartWhisper = await listen<{ id: string; login: string; display_name: string; profile_image_url?: string }>('start-whisper', (event) => {
-        console.log('[App] Received start-whisper event:', event.payload);
+        Logger.debug('[App] Received start-whisper event:', event.payload);
         useAppStore.getState().openWhisperWithUser(event.payload);
       });
 
       // Listen for refresh-following-list events (triggered by follow/unfollow automation)
       const unlistenRefreshFollowing = await listen('refresh-following-list', () => {
-        console.log('[App] Received refresh-following-list event, refreshing...');
+        Logger.debug('[App] Received refresh-following-list event, refreshing...');
         useAppStore.getState().loadFollowedStreams();
       });
 
       // Listen for mining status updates (for title bar gift box animation)
       const unlistenMiningStatus = await listen<{ is_mining: boolean }>('mining-status-update', (event) => {
-        console.log('[App] Mining status update:', event.payload.is_mining);
+        Logger.debug('[App] Mining status update:', event.payload.is_mining);
         useAppStore.getState().setMiningActive(event.payload.is_mining);
       });
 
@@ -316,7 +317,7 @@ function App() {
           const { success, message, conversations, messages } = event.payload;
           const { setWhisperImportState, addToast } = useAppStore.getState();
           if (success) {
-            console.log('[App] Whisper import completed:', conversations, 'conversations,', messages, 'messages');
+            Logger.debug('[App] Whisper import completed:', conversations, 'conversations,', messages, 'messages');
             setWhisperImportState({
               isImporting: false,
               result: { conversations, messages },
@@ -324,7 +325,7 @@ function App() {
             });
             addToast(`Imported ${messages.toLocaleString()} whisper messages from ${conversations} conversations`, 'success');
           } else {
-            console.error('[App] Whisper import failed:', message);
+            Logger.error('[App] Whisper import failed:', message);
             setWhisperImportState({
               isImporting: false,
               error: message
@@ -336,7 +337,7 @@ function App() {
 
       // Listen for reserved stream going offline (watch token allocation feature)
       const unlistenReservedOffline = await listen('reserved-stream-offline', () => {
-        console.log('[App] Reserved stream went offline, clearing reservation');
+        Logger.debug('[App] Reserved stream went offline, clearing reservation');
         addToast('Reserved stream went offline - token returned to rotation', 'info');
       });
 
@@ -347,7 +348,7 @@ function App() {
 
         // Only check if we were authenticated and are currently watching a stream
         if (wasAuthenticated && currentStream) {
-          console.log('[App] Performing periodic auth check...');
+          Logger.debug('[App] Performing periodic auth check...');
           await checkAuthStatus();
         }
       }, 5 * 60 * 1000); // 5 minutes
@@ -375,7 +376,7 @@ function App() {
     const customThemes = settings.custom_themes || [];
     const theme = getThemeByIdWithCustom(themeId, customThemes) || getThemeById(DEFAULT_THEME_ID);
     if (theme) {
-      console.log('[App] Applying theme:', theme.name);
+      Logger.debug('[App] Applying theme:', theme.name);
       applyTheme(theme);
     }
   }, [settings.theme, settings.custom_themes]);
@@ -388,7 +389,7 @@ function App() {
 
       // Skip if setup is already complete
       if (settings.setup_complete) {
-        console.log('[App] Setup already complete, skipping wizard');
+        Logger.debug('[App] Setup already complete, skipping wizard');
         return;
       }
 
@@ -399,15 +400,15 @@ function App() {
         }) as boolean;
 
         if (!isInstalled) {
-          console.log('[App] Streamlink not found at', settings.streamlink_path, '- showing setup wizard');
+          Logger.debug('[App] Streamlink not found at', settings.streamlink_path, '- showing setup wizard');
           setShowSetupWizard(true);
         } else {
           // Streamlink is installed, mark setup as complete for existing users
-          console.log('[App] Streamlink found, marking setup as complete for existing user');
+          Logger.debug('[App] Streamlink found, marking setup as complete for existing user');
           await updateSettings({ ...settings, setup_complete: true });
         }
       } catch (error) {
-        console.error('[App] Failed to check streamlink installation:', error);
+        Logger.error('[App] Failed to check streamlink installation:', error);
         // On error, still show setup wizard to be safe
         setShowSetupWizard(true);
       }
@@ -425,13 +426,13 @@ function App() {
         const { settings, logoutFromTwitch, isAuthenticated } = useAppStore.getState();
         const lastSeenVersion = settings.last_seen_version;
 
-        console.log('[App] Version check - Current:', currentVersion, 'Last seen:', lastSeenVersion);
+        Logger.debug('[App] Version check - Current:', currentVersion, 'Last seen:', lastSeenVersion);
 
         // One-time force re-login for v4.9.1 webview features
         // This only triggers once per user, ever, and only if they're currently logged in
         const hasCompletedWebviewMigration = localStorage.getItem(WEBVIEW_RELOGIN_MIGRATION_KEY);
         if (!hasCompletedWebviewMigration && isAuthenticated) {
-          console.log('[App] One-time force re-login for webview features (v4.9.1)');
+          Logger.debug('[App] One-time force re-login for webview features (v4.9.1)');
 
           // Mark migration as complete BEFORE logout so it only happens once
           localStorage.setItem(WEBVIEW_RELOGIN_MIGRATION_KEY, 'true');
@@ -462,7 +463,7 @@ function App() {
         // This ensures Twitch session cookies are fully cleared so user must re-login
         const hasCompletedV220Migration = localStorage.getItem(V220_RELOGIN_MIGRATION_KEY);
         if (!hasCompletedV220Migration && isAuthenticated) {
-          console.log('[App] One-time force re-login for v2.2.0 update');
+          Logger.debug('[App] One-time force re-login for v2.2.0 update');
 
           // Mark migration as complete BEFORE logout so it only happens once
           localStorage.setItem(V220_RELOGIN_MIGRATION_KEY, 'true');
@@ -473,9 +474,9 @@ function App() {
           // Also clear WebView2 browsing data (cookies, cache) so Twitch session is fully cleared
           try {
             await invoke('clear_webview_data');
-            console.log('[App] WebView2 data cleared successfully');
+            Logger.debug('[App] WebView2 data cleared successfully');
           } catch (e) {
-            console.warn('[App] Failed to clear WebView2 data:', e);
+            Logger.warn('[App] Failed to clear WebView2 data:', e);
           }
 
           // Show a toast explaining why
@@ -499,16 +500,16 @@ function App() {
 
         // If there's no last seen version (first run) or the version has changed
         if (lastSeenVersion && lastSeenVersion !== currentVersion) {
-          console.log('[App] Version changed, showing changelog');
+          Logger.debug('[App] Version changed, showing changelog');
           setChangelogVersion(currentVersion);
           setShowChangelog(true);
         } else if (!lastSeenVersion) {
           // First run - just update the last seen version without showing changelog
-          console.log('[App] First run, setting initial version');
+          Logger.debug('[App] First run, setting initial version');
           updateSettings({ ...settings, last_seen_version: currentVersion });
         }
       } catch (error) {
-        console.error('[App] Failed to check version:', error);
+        Logger.error('[App] Failed to check version:', error);
       }
     };
 
@@ -526,9 +527,9 @@ function App() {
       try {
         const { settings } = useAppStore.getState();
         await updateSettings({ ...settings, last_seen_version: changelogVersion });
-        console.log('[App] Updated last_seen_version to:', changelogVersion);
+        Logger.debug('[App] Updated last_seen_version to:', changelogVersion);
       } catch (error) {
-        console.error('[App] Failed to update last_seen_version:', error);
+        Logger.error('[App] Failed to update last_seen_version:', error);
       }
     }
   };
@@ -566,18 +567,18 @@ function App() {
           const videoHeight = Math.round(targetWidth / 16 * 9);
           const targetHeight = videoHeight + titleBarHeight;
 
-          console.log(`Entering compact view - resizing to: ${targetWidth}x${targetHeight} (${preset.name}, video: ${targetWidth}x${videoHeight})`);
+          Logger.debug(`Entering compact view - resizing to: ${targetWidth}x${targetHeight} (${preset.name}, video: ${targetWidth}x${videoHeight})`);
           await window.setSize(new LogicalSize(targetWidth, targetHeight));
         } else if (savedWindowSize) {
           // Exiting theater mode - restore previous size
-          console.log('Exiting compact view - restoring to:', savedWindowSize.width, 'x', savedWindowSize.height);
+          Logger.debug('Exiting compact view - restoring to:', savedWindowSize.width, 'x', savedWindowSize.height);
           await window.setSize(new LogicalSize(savedWindowSize.width, savedWindowSize.height));
           setSavedWindowSize(null);
           // Clear from localStorage
           localStorage.removeItem('streamnook-compact-saved-size');
         }
       } catch (error) {
-        console.error('Failed to resize window for compact view:', error);
+        Logger.error('Failed to resize window for compact view:', error);
       }
     };
 
@@ -593,12 +594,12 @@ function App() {
       if (savedWindowSize && !isTheaterMode) {
         try {
           const window = getCurrentWindow();
-          console.log('Restoring window size from previous session:', savedWindowSize.width, 'x', savedWindowSize.height);
+          Logger.debug('Restoring window size from previous session:', savedWindowSize.width, 'x', savedWindowSize.height);
           await window.setSize(new LogicalSize(savedWindowSize.width, savedWindowSize.height));
           setSavedWindowSize(null);
           localStorage.removeItem('streamnook-compact-saved-size');
         } catch (error) {
-          console.error('Failed to restore window size:', error);
+          Logger.error('Failed to restore window size:', error);
         }
       }
     };
@@ -639,7 +640,7 @@ function App() {
     if (!isAuthenticated || !currentUser?.user_id) return;
 
     // Increment streams_watched when starting a new stream
-    console.log('[Stats] Stream started, incrementing streams_watched');
+    Logger.debug('[Stats] Stream started, incrementing streams_watched');
     incrementStat(currentUser.user_id, 'streams_watched', 1);
 
     // Track watch time every minute
@@ -680,7 +681,7 @@ function App() {
         // Don't adjust if window is maximized
         const isMaximized = await window.isMaximized();
         if (isMaximized) {
-          console.log('Window is maximized, skipping aspect ratio adjustment');
+          Logger.debug('Window is maximized, skipping aspect ratio adjustment');
           isAdjustingRef.current = false;
           return;
         }
@@ -690,9 +691,9 @@ function App() {
         const width = size.width;
         const height = size.height;
 
-        console.log('[AspectRatio] Current window size:', width, height);
-        console.log('[AspectRatio] Chat size:', currentChatSize);
-        console.log('[AspectRatio] Chat placement:', currentChatPlacement);
+        Logger.debug('[AspectRatio] Current window size:', width, height);
+        Logger.debug('[AspectRatio] Chat size:', currentChatSize);
+        Logger.debug('[AspectRatio] Chat placement:', currentChatPlacement);
 
         // Title bar height is approximately 32px
         const titleBarHeight = 32;
@@ -705,17 +706,17 @@ function App() {
           titleBarHeight: titleBarHeight,
         });
 
-        console.log('[AspectRatio] Calculated new size:', newWidth, newHeight);
+        Logger.debug('[AspectRatio] Calculated new size:', newWidth, newHeight);
 
         // Only resize if dimensions changed significantly (more than 5px difference)
         if (Math.abs(width - newWidth) > 5 || Math.abs(height - newHeight) > 5) {
-          console.log('[AspectRatio] Resizing window to:', newWidth, newHeight);
+          Logger.debug('[AspectRatio] Resizing window to:', newWidth, newHeight);
           await window.setSize(new LogicalSize(newWidth, newHeight));
         } else {
-          console.log('[AspectRatio] Size difference too small, not resizing');
+          Logger.debug('[AspectRatio] Size difference too small, not resizing');
         }
       } catch (error) {
-        console.error('Failed to adjust window for aspect ratio:', error);
+        Logger.error('Failed to adjust window for aspect ratio:', error);
       } finally {
         isAdjustingRef.current = false;
       }
@@ -766,11 +767,11 @@ function App() {
         });
 
         if (Math.abs(width - newWidth) > 5 || Math.abs(height - newHeight) > 5) {
-          console.log('[AspectRatio] Resize event - adjusting to:', newWidth, newHeight);
+          Logger.debug('[AspectRatio] Resize event - adjusting to:', newWidth, newHeight);
           await window.setSize(new LogicalSize(newWidth, newHeight));
         }
       } catch (error) {
-        console.error('Failed to adjust window for aspect ratio:', error);
+        Logger.error('Failed to adjust window for aspect ratio:', error);
       } finally {
         isAdjustingRef.current = false;
       }
@@ -831,7 +832,7 @@ function App() {
             try {
               await invoke('download_and_install_bundle');
             } catch (e) {
-              console.error('Auto-update failed:', e);
+              Logger.error('Auto-update failed:', e);
               addToast(`Auto-update failed: ${e}`, 'error');
             }
           } else {
@@ -846,7 +847,7 @@ function App() {
           }
         }
       } catch (error) {
-        console.error('Failed to check for bundle updates:', error);
+        Logger.error('Failed to check for bundle updates:', error);
       }
     };
     checkUpdates();
@@ -984,6 +985,8 @@ function App() {
         <BadgesOverlay
           onClose={() => setShowBadgesOverlay(false)}
           onBadgeClick={(badge, setId) => setSelectedBadge({ badge, setId })}
+          initialPaintId={badgesOverlayInitialPaintId}
+          initialBadgeId={badgesOverlayInitialBadgeId}
         />
       )}
       {selectedBadge && (

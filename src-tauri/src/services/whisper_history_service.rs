@@ -1,3 +1,4 @@
+use log::{debug, error};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -265,7 +266,7 @@ impl WhisperHistoryService {
                     }
                     Err(e) => {
                         // Log error but continue with other users
-                        eprintln!(
+                        error!(
                             "[WhisperHistory] Failed to fetch messages for user {}: {}",
                             other_user_id, e
                         );

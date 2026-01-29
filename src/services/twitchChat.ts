@@ -5,7 +5,9 @@ export type MessageSegment =
   | { type: 'text'; content: string }
   | { type: 'emote'; content: string; emote_id?: string; emote_url: string; is_zero_width?: boolean }
   | { type: 'emoji'; content: string; emoji_url: string }
-  | { type: 'link'; content: string; url: string };
+  | { type: 'link'; content: string; url: string }
+  // Cheermote segment for animated bits (e.g., Cheer500)
+  | { type: 'cheermote'; content: string; prefix: string; bits: number; tier: string; color: string; cheermote_url: string };
 
 // Reply information parsed from IRC tags - matches Rust ReplyInfo
 export interface BackendReplyInfo {

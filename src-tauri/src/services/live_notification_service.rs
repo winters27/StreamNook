@@ -1,6 +1,7 @@
 use crate::models::settings::AppState;
 use crate::services::twitch_service::TwitchService;
 use anyhow::Result;
+use log::{debug, error};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -105,17 +106,17 @@ impl LiveNotificationService {
                         // Send in-app notifications for new live streamers
                         for stream in new_live_streamers {
                             if let Err(e) = Self::send_notification(&app_handle, &stream).await {
-                                eprintln!("Failed to send live notification: {}", e);
+                                error!("Failed to send live notification: {}", e);
                             }
                         }
                     }
                     Err(e) => {
-                        eprintln!("Failed to fetch followed streams: {}", e);
+                        error!("Failed to fetch followed streams: {}", e);
                     }
                 }
             }
 
-            println!("Live notification service stopped");
+            debug!("Live notification service stopped");
         });
 
         Ok(())
@@ -158,7 +159,7 @@ impl LiveNotificationService {
         // Emit event to frontend (for in-app notifications)
         app_handle.emit("streamer-went-live", &notification)?;
 
-        println!(
+        debug!(
             "[In-App Notification] {} is now live!",
             notification.streamer_name
         );

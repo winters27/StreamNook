@@ -9,6 +9,7 @@ pub mod chat;
 pub mod chat_identity;
 pub mod components;
 pub mod cosmetics_cache;
+pub mod diagnostic_logging;
 pub mod discord;
 pub mod drops;
 pub mod emoji;

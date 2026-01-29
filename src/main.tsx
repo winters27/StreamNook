@@ -5,9 +5,10 @@ import ProfileCardPage from './pages/ProfileCardPage.tsx';
 import './styles/globals.css';
 import { initLogCapture } from './services/logService';
 
+import { Logger } from './utils/logger';
 // Initialize log capture early to capture all console messages
 initLogCapture();
-console.log('[App] StreamNook starting...');
+Logger.debug('[App] StreamNook starting...');
 
 // Remove Plyr's localStorage - we manage player settings via Tauri backend
 // Plyr has built-in localStorage persistence that conflicts with our settings management

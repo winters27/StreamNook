@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { Settings, TwitchUser, TwitchStream, UserInfo, TwitchCategory, HypeTrainData } from '../types';
 import { trackActivity, isStreamlinkError, sendStreamlinkDiagnostics } from '../services/logService';
+import { Logger, setDiagnosticsEnabled } from '../utils/logger';
 import { upsertUser } from '../services/supabaseService';
 
 export interface Toast {
@@ -98,6 +99,8 @@ interface AppState {
   showProfileOverlay: boolean;
   showDropsOverlay: boolean;
   showBadgesOverlay: boolean;
+  badgesOverlayInitialPaintId: string | null;
+  badgesOverlayInitialBadgeId: string | null;
   showWhispersOverlay: boolean;
   showDashboardOverlay: boolean;
   showStreamlinkMissing: boolean;
@@ -148,6 +151,8 @@ interface AppState {
   setShowProfileOverlay: (show: boolean) => void;
   setShowDropsOverlay: (show: boolean) => void;
   setShowBadgesOverlay: (show: boolean) => void;
+  openBadgesWithPaint: (paintId: string) => void;
+  openBadgesWithBadge: (badgeId: string) => void;
   setShowWhispersOverlay: (show: boolean) => void;
   setShowDashboardOverlay: (show: boolean) => void;
   openWhisperWithUser: (user: { id: string; login: string; display_name: string; profile_image_url?: string }) => void;
@@ -220,6 +225,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   showProfileOverlay: false,
   showDropsOverlay: false,
   showBadgesOverlay: false,
+  badgesOverlayInitialPaintId: null,
+  badgesOverlayInitialBadgeId: null,
   showWhispersOverlay: false,
   showDashboardOverlay: false,
   showStreamlinkMissing: false,
@@ -267,7 +274,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({ activeHypeTrainChannels: newMap });
     } catch (e) {
       // Silently fail - Hype Train badges are non-critical
-      console.warn('[HypeTrain] Failed to refresh bulk status:', e);
+      Logger.warn('[HypeTrain] Failed to refresh bulk status:', e);
     }
   },
   // Whisper import state
@@ -287,7 +294,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     // Prevent multiple auto-switch attempts
     if (isAutoSwitching) {
-      console.log('[AutoSwitch] Already in progress, skipping');
+      Logger.debug('[AutoSwitch] Already in progress, skipping');
       return;
     }
 
@@ -296,26 +303,26 @@ export const useAppStore = create<AppState>((set, get) => ({
     const timeSinceRaidRedirect = Date.now() - lastRaidRedirectTime;
     const RAID_COOLDOWN_MS = 15000; // 15 seconds
     if (lastRaidRedirectTime > 0 && timeSinceRaidRedirect < RAID_COOLDOWN_MS) {
-      console.log(`[AutoSwitch] Skipping - raid redirect occurred ${Math.round(timeSinceRaidRedirect / 1000)}s ago`);
+      Logger.debug(`[AutoSwitch] Skipping - raid redirect occurred ${Math.round(timeSinceRaidRedirect / 1000)}s ago`);
       return;
     }
 
     // Check if auto-switch is enabled
     const autoSwitchEnabled = settings.auto_switch?.enabled ?? true;
     if (!autoSwitchEnabled) {
-      console.log('[AutoSwitch] Disabled in settings');
+      Logger.debug('[AutoSwitch] Disabled in settings');
       return;
     }
 
     if (!currentStream) {
-      console.log('[AutoSwitch] No current stream to switch from');
+      Logger.debug('[AutoSwitch] No current stream to switch from');
       return;
     }
 
     const gameName = currentStream.game_name;
     const currentUserLogin = currentStream.user_login;
 
-    console.log(`[AutoSwitch] Stream ${currentUserLogin} appears offline, verifying...`);
+    Logger.debug(`[AutoSwitch] Stream ${currentUserLogin} appears offline, verifying...`);
     set({ isAutoSwitching: true });
 
     try {
@@ -332,12 +339,12 @@ export const useAppStore = create<AppState>((set, get) => ({
         const streamData = await invoke('check_stream_online', { userLogin: currentUserLogin }) as TwitchStream | null;
 
         if (streamData) {
-          console.log(`[AutoSwitch] Stream is still online (attempt ${attempt + 1}), aborting auto-switch`);
+          Logger.debug(`[AutoSwitch] Stream is still online (attempt ${attempt + 1}), aborting auto-switch`);
           set({ isAutoSwitching: false });
           return;
         }
 
-        console.log(`[AutoSwitch] Stream confirmed offline (attempt ${attempt + 1})`);
+        Logger.debug(`[AutoSwitch] Stream confirmed offline (attempt ${attempt + 1})`);
       }
 
       isOffline = true;
@@ -347,30 +354,30 @@ export const useAppStore = create<AppState>((set, get) => ({
         return;
       }
 
-      console.log(`[AutoSwitch] Stream ${currentUserLogin} confirmed offline`);
+      Logger.debug(`[AutoSwitch] Stream ${currentUserLogin} confirmed offline`);
 
       // Step 2: Clean up current stream connections thoroughly
-      console.log('[AutoSwitch] Cleaning up current stream connections...');
+      Logger.debug('[AutoSwitch] Cleaning up current stream connections...');
 
       try {
         await invoke('stop_stream');
-        console.log('[AutoSwitch] Stream stopped');
+        Logger.debug('[AutoSwitch] Stream stopped');
       } catch (e) {
-        console.warn('[AutoSwitch] Error stopping stream:', e);
+        Logger.warn('[AutoSwitch] Error stopping stream:', e);
       }
 
       try {
         await invoke('stop_chat');
-        console.log('[AutoSwitch] Chat stopped');
+        Logger.debug('[AutoSwitch] Chat stopped');
       } catch (e) {
-        console.warn('[AutoSwitch] Error stopping chat:', e);
+        Logger.warn('[AutoSwitch] Error stopping chat:', e);
       }
 
       try {
         await invoke('stop_drops_monitoring');
-        console.log('[AutoSwitch] Drops monitoring stopped');
+        Logger.debug('[AutoSwitch] Drops monitoring stopped');
       } catch (e) {
-        console.warn('[AutoSwitch] Error stopping drops monitoring:', e);
+        Logger.warn('[AutoSwitch] Error stopping drops monitoring:', e);
       }
 
       // Clear current stream state
@@ -383,7 +390,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (switchMode === 'same_category') {
         // Switch to same category - find streams in the same game
         if (!gameName) {
-          console.log('[AutoSwitch] No game category for current stream');
+          Logger.debug('[AutoSwitch] No game category for current stream');
           if (settings.auto_switch?.show_notification ?? true) {
             state.addToast(`${currentUserLogin} went offline. Unable to find similar streams.`, 'info');
           }
@@ -391,7 +398,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           return;
         }
 
-        console.log(`[AutoSwitch] Looking for streams in category: ${gameName}`);
+        Logger.debug(`[AutoSwitch] Looking for streams in category: ${gameName}`);
 
         streams = await invoke('get_streams_by_game_name', {
           gameName: gameName,
@@ -400,7 +407,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         }) as TwitchStream[];
 
         if (!streams || streams.length === 0) {
-          console.log('[AutoSwitch] No other streams found in this category');
+          Logger.debug('[AutoSwitch] No other streams found in this category');
           if (settings.auto_switch?.show_notification ?? true) {
             state.addToast(`${currentUserLogin} went offline. No other ${gameName} streams available.`, 'info');
           }
@@ -409,7 +416,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
       } else if (switchMode === 'followed_streams') {
         // Switch to followed streams - get live followed streamers
-        console.log('[AutoSwitch] Looking for live followed streams');
+        Logger.debug('[AutoSwitch] Looking for live followed streams');
 
         try {
           // Load fresh followed streams data
@@ -419,7 +426,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           streams = followedStreams.filter(s => s.user_login.toLowerCase() !== currentUserLogin.toLowerCase());
 
           if (!streams || streams.length === 0) {
-            console.log('[AutoSwitch] No other followed streams are live');
+            Logger.debug('[AutoSwitch] No other followed streams are live');
             if (settings.auto_switch?.show_notification ?? true) {
               state.addToast(`${currentUserLogin} went offline. No other followed streams are live.`, 'info');
             }
@@ -431,7 +438,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           streams.sort((a, b) => (b.viewer_count || 0) - (a.viewer_count || 0));
 
         } catch (e) {
-          console.error('[AutoSwitch] Error fetching followed streams:', e);
+          Logger.error('[AutoSwitch] Error fetching followed streams:', e);
           if (settings.auto_switch?.show_notification ?? true) {
             state.addToast(`${currentUserLogin} went offline. Unable to load followed streams.`, 'error');
           }
@@ -443,7 +450,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       // The first stream is the highest viewer count (already sorted by API)
       const nextStream = streams[0];
 
-      console.log(`[AutoSwitch] Found next stream: ${nextStream.user_name} (${nextStream.viewer_count} viewers)`);
+      Logger.debug(`[AutoSwitch] Found next stream: ${nextStream.user_name} (${nextStream.viewer_count} viewers)`);
 
       // Step 4: Show notification if enabled
       if (settings.auto_switch?.show_notification ?? true) {
@@ -459,10 +466,10 @@ export const useAppStore = create<AppState>((set, get) => ({
 
       await state.startStream(nextStream.user_login, nextStream);
 
-      console.log(`[AutoSwitch] Successfully switched to ${nextStream.user_name}`);
+      Logger.debug(`[AutoSwitch] Successfully switched to ${nextStream.user_name}`);
 
     } catch (e) {
-      console.error('[AutoSwitch] Error during auto-switch:', e);
+      Logger.error('[AutoSwitch] Error during auto-switch:', e);
       state.addToast('Auto-switch failed. Please select a new stream manually.', 'error');
     } finally {
       set({ isAutoSwitching: false });
@@ -506,12 +513,19 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
     set({ settings, chatPlacement: settings.chat_placement });
 
+    // Sync diagnostic logging state to both frontend and backend
+    const diagnosticsEnabled = settings.error_reporting_enabled !== false;
+    setDiagnosticsEnabled(diagnosticsEnabled);
+    invoke('set_diagnostics_enabled', { enabled: diagnosticsEnabled }).catch((e) => {
+      Logger.warn('[Diagnostics] Failed to sync to backend:', e);
+    });
+
     // Connect to Discord if enabled
     if (settings.discord_rpc_enabled) {
       try {
         await invoke('connect_discord');
       } catch (e) {
-        console.warn('Could not connect to Discord:', e);
+        Logger.warn('Could not connect to Discord:', e);
       }
     }
   },
@@ -527,6 +541,15 @@ export const useAppStore = create<AppState>((set, get) => ({
     await invoke('save_settings', { settings: newSettings });
     set({ settings: newSettings, chatPlacement: newSettings.chat_placement });
 
+    // Sync diagnostic logging state if it changed
+    if (newSettings.error_reporting_enabled !== oldSettings.error_reporting_enabled) {
+      const diagnosticsEnabled = newSettings.error_reporting_enabled !== false;
+      setDiagnosticsEnabled(diagnosticsEnabled);
+      invoke('set_diagnostics_enabled', { enabled: diagnosticsEnabled }).catch((e) => {
+        Logger.warn('[Diagnostics] Failed to sync to backend:', e);
+      });
+    }
+
     // Handle Discord enable/disable toggle
     if (newSettings.discord_rpc_enabled !== oldSettings.discord_rpc_enabled) {
       if (newSettings.discord_rpc_enabled) {
@@ -534,14 +557,14 @@ export const useAppStore = create<AppState>((set, get) => ({
         try {
           await invoke('connect_discord');
         } catch (e) {
-          console.warn('Could not connect to Discord:', e);
+          Logger.warn('Could not connect to Discord:', e);
         }
       } else {
         // Disconnect from Discord
         try {
           await invoke('disconnect_discord');
         } catch (e) {
-          console.warn('Could not disconnect from Discord:', e);
+          Logger.warn('Could not disconnect from Discord:', e);
         }
       }
     }
@@ -551,7 +574,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       const streams = await invoke('get_followed_streams') as TwitchStream[];
       set({ followedStreams: streams });
     } catch (e) {
-      console.warn('Could not load followed streams:', e);
+      Logger.warn('Could not load followed streams:', e);
       // User is not authenticated, this is expected on first launch
       set({ followedStreams: [] });
 
@@ -581,7 +604,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         hasMoreRecommended: cursor !== null
       });
     } catch (e) {
-      console.warn('Could not load recommended streams:', e);
+      Logger.warn('Could not load recommended streams:', e);
       set({ recommendedStreams: [], recommendedCursor: null, hasMoreRecommended: false });
     }
   },
@@ -617,7 +640,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         isLoadingMore: false
       });
     } catch (e) {
-      console.warn('Could not load more recommended streams:', e);
+      Logger.warn('Could not load more recommended streams:', e);
       set({ isLoadingMore: false, hasMoreRecommended: false });
     }
   },
@@ -630,13 +653,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       // Stop drops monitoring
       try {
         await invoke('stop_drops_monitoring');
-        console.log('🛑 Stopped drops monitoring');
+        Logger.debug('🛑 Stopped drops monitoring');
       } catch (e) {
-        console.warn('Could not stop drops monitoring:', e);
+        Logger.warn('Could not stop drops monitoring:', e);
       }
 
       // Clean up EventSub listeners
-      console.log('[EventSub] Cleaning up listeners on stop...');
+      Logger.debug('[EventSub] Cleaning up listeners on stop...');
       for (const cleanup of eventSubListenerCleanup) {
         cleanup();
       }
@@ -645,9 +668,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       // Disconnect EventSub
       try {
         await invoke('disconnect_eventsub');
-        console.log('🛑 Disconnected EventSub');
+        Logger.debug('🛑 Disconnected EventSub');
       } catch (e) {
-        console.warn('Could not disconnect EventSub:', e);
+        Logger.warn('Could not disconnect EventSub:', e);
       }
 
       set({ streamUrl: null, currentStream: null, currentHypeTrain: null });
@@ -660,11 +683,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         try {
           await invoke('set_idle_discord_presence');
         } catch (e) {
-          console.warn('Could not set idle Discord presence:', e);
+          Logger.warn('Could not set idle Discord presence:', e);
         }
       }
     } catch (e) {
-      console.error('Failed to stop stream:', e);
+      Logger.error('Failed to stop stream:', e);
     }
   },
 
@@ -679,10 +702,10 @@ export const useAppStore = create<AppState>((set, get) => ({
         url: `https://twitch.tv/${currentStream.user_login}`
       }) as string[];
 
-      console.log('[Qualities] Available from Streamlink:', qualities);
+      Logger.debug('[Qualities] Available from Streamlink:', qualities);
       return qualities;
     } catch (e) {
-      console.error('Failed to get stream qualities:', e);
+      Logger.error('Failed to get stream qualities:', e);
       return [];
     }
   },
@@ -690,13 +713,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   changeStreamQuality: async (quality: string) => {
     const currentStream = get().currentStream;
     if (!currentStream) {
-      console.warn('No active stream to change quality');
+      Logger.warn('No active stream to change quality');
       return;
     }
 
     trackActivity(`Changed quality to: ${quality}`);
     try {
-      console.log(`[Quality] Changing to: ${quality}`);
+      Logger.debug(`[Quality] Changing to: ${quality}`);
       set({ isLoading: true });
 
       const url = await invoke('change_stream_quality', {
@@ -710,10 +733,10 @@ export const useAppStore = create<AppState>((set, get) => ({
 
       set({ streamUrl: url, settings: newSettings, isLoading: false });
       get().addToast(`Quality changed to ${quality}`, 'success');
-      console.log('[Quality] Stream URL updated:', url);
-      console.log('[Quality] Settings updated with new quality:', quality);
+      Logger.debug('[Quality] Stream URL updated:', url);
+      Logger.debug('[Quality] Settings updated with new quality:', quality);
     } catch (e) {
-      console.error('Failed to change quality:', e);
+      Logger.error('Failed to change quality:', e);
       get().addToast(`Failed to change quality: ${e}`, 'error');
       set({ isLoading: false });
     }
@@ -725,7 +748,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       // Check if streamlink is available before trying to start the stream
       const isAvailable = await invoke('is_streamlink_available') as boolean;
       if (!isAvailable) {
-        console.log('[Stream] Streamlink not found, showing missing dialog');
+        Logger.debug('[Stream] Streamlink not found, showing missing dialog');
         // Save the pending stream so we can resume after user selects a path
         set({
           isLoading: false,
@@ -753,7 +776,7 @@ export const useAppStore = create<AppState>((set, get) => ({
             info = await invoke('get_channel_info', { channelName: channel }) as TwitchStream;
           } catch (e) {
             // If that fails too, create a minimal info object
-            console.warn('Could not get channel info:', e);
+            Logger.warn('Could not get channel info:', e);
             info = {
               id: '',
               user_id: '',
@@ -778,7 +801,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       try {
         await invoke('start_chat', { channel });
       } catch (e) {
-        console.warn('Could not start chat:', e);
+        Logger.warn('Could not start chat:', e);
         // Chat connection failed, but stream can still work
       }
 
@@ -792,7 +815,7 @@ export const useAppStore = create<AppState>((set, get) => ({
             channelId,
             channelName
           });
-          console.log('🎮 Started drops monitoring for', channelName);
+          Logger.debug('🎮 Started drops monitoring for', channelName);
 
           // Auto-reserve watch token for this stream (if enabled in settings)
           // This ensures the user is "present" in chat for gifted sub eligibility
@@ -803,21 +826,21 @@ export const useAppStore = create<AppState>((set, get) => ({
                 channelId,
                 channelLogin: channelName
               });
-              console.log('🔒 Auto-reserved watch token for', channelName);
+              Logger.debug('🔒 Auto-reserved watch token for', channelName);
             }
           } catch (reserveError) {
-            console.warn('Could not auto-reserve watch token:', reserveError);
+            Logger.warn('Could not auto-reserve watch token:', reserveError);
             // Non-critical, stream can still work
           }
         }
       } catch (e) {
-        console.warn('Could not start drops monitoring:', e);
+        Logger.warn('Could not start drops monitoring:', e);
         // Non-critical, stream can still work
       }
 
       // Update Discord with game matching (don't await - let it run in background)
       if (get().settings.discord_rpc_enabled) {
-        console.log('[Discord] Updating presence for stream:', {
+        Logger.debug('[Discord] Updating presence for stream:', {
           user: info.user_name,
           title: info.title,
           game: info.game_name,
@@ -833,10 +856,10 @@ export const useAppStore = create<AppState>((set, get) => ({
           gameName: info.game_name || '', // Pass game name for matching
           streamUrl: `https://twitch.tv/${channel}`,
         }).then(() => {
-          console.log('[Discord] Presence updated successfully');
+          Logger.debug('[Discord] Presence updated successfully');
         }).catch((e) => {
           // Discord errors are non-critical - log as warning, don't show to user
-          console.warn('[Discord] Could not update presence (Discord may not be running):', e);
+          Logger.warn('[Discord] Could not update presence (Discord may not be running):', e);
         });
       }
 
@@ -847,7 +870,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (channelId && get().isAuthenticated) {
         try {
           // Clean up any existing event listeners first
-          console.log('[EventSub] Cleaning up existing listeners...');
+          Logger.debug('[EventSub] Cleaning up existing listeners...');
           for (const cleanup of eventSubListenerCleanup) {
             cleanup();
           }
@@ -865,7 +888,7 @@ export const useAppStore = create<AppState>((set, get) => ({
             if (!autoRedirectOnRaid) return;
             
             const raidData = event.payload;
-            console.log(`[EventSub] Raid detected! Redirecting to ${raidData.to_broadcaster_user_login} (${raidData.viewers} viewers)`);
+            Logger.debug(`[EventSub] Raid detected! Redirecting to ${raidData.to_broadcaster_user_login} (${raidData.viewers} viewers)`);
 
             // Mark that a raid redirect is happening - this prevents auto-switch from overriding
             set({ lastRaidRedirectTime: Date.now() });
@@ -883,7 +906,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
           // Listen for stream offline events
           const unlistenOffline = await listen('eventsub://offline', () => {
-            console.log('[EventSub] Stream went offline via EventSub notification');
+            Logger.debug('[EventSub] Stream went offline via EventSub notification');
             // Use the existing handleStreamOffline which has all the auto-switch logic
             get().handleStreamOffline();
           });
@@ -894,7 +917,7 @@ export const useAppStore = create<AppState>((set, get) => ({
             const updateData = event.payload;
             const currentStream = get().currentStream;
             if (currentStream) {
-              console.log(`[EventSub] Channel updated: "${updateData.title}" - ${updateData.category_name}`);
+              Logger.debug(`[EventSub] Channel updated: "${updateData.title}" - ${updateData.category_name}`);
               set({
                 currentStream: {
                   ...currentStream,
@@ -938,7 +961,7 @@ export const useAppStore = create<AppState>((set, get) => ({
               if (status.is_active) {
                 // Check for level up
                 if (status.level > hypeTrainPreviousLevel && hypeTrainPreviousLevel > 0) {
-                  console.log(`[HypeTrain GQL] 🚂 Level UP! ${hypeTrainPreviousLevel} → ${status.level}`);
+                  Logger.debug(`[HypeTrain GQL] 🚂 Level UP! ${hypeTrainPreviousLevel} → ${status.level}`);
                 }
                 hypeTrainPreviousLevel = status.level;
                 
@@ -961,7 +984,7 @@ export const useAppStore = create<AppState>((set, get) => ({
               } else {
                 // Only clear if we previously had a hype train
                 if (get().currentHypeTrain !== null) {
-                  console.log('[HypeTrain GQL] 🚂 Hype Train ended');
+                  Logger.debug('[HypeTrain GQL] 🚂 Hype Train ended');
                   hypeTrainPreviousLevel = 0;
                   set({ currentHypeTrain: null });
                 }
@@ -988,21 +1011,21 @@ export const useAppStore = create<AppState>((set, get) => ({
             }
           });
 
-          console.log(`🔔 Connected to EventSub (channel: ${info.user_name})`);
+          Logger.debug(`🔔 Connected to EventSub (channel: ${info.user_name})`);
         } catch (e) {
-          console.warn('[EventSub] Could not connect:', e);
+          Logger.warn('[EventSub] Could not connect:', e);
           // Non-critical, stream can still work
         }
       }
     } catch (e) {
       const errorMessage = e instanceof Error ? e.message : String(e);
-      console.error('Failed to start stream:', errorMessage);
+      Logger.error('Failed to start stream:', errorMessage);
 
       // Check if this is a streamlink-related error and send diagnostics
       if (isStreamlinkError(errorMessage)) {
-        console.log('[Stream] Streamlink error detected, sending diagnostics to Discord...');
+        Logger.debug('[Stream] Streamlink error detected, sending diagnostics to Discord...');
         sendStreamlinkDiagnostics(errorMessage).catch(err => {
-          console.warn('[Stream] Failed to send streamlink diagnostics:', err);
+          Logger.warn('[Stream] Failed to send streamlink diagnostics:', err);
         });
       }
 
@@ -1034,7 +1057,16 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   setShowBadgesOverlay: (show: boolean) => {
     if (show) trackActivity('Opened Badges');
-    set({ showBadgesOverlay: show });
+    // Clear initial IDs when closing
+    set({ showBadgesOverlay: show, badgesOverlayInitialPaintId: show ? get().badgesOverlayInitialPaintId : null, badgesOverlayInitialBadgeId: show ? get().badgesOverlayInitialBadgeId : null });
+  },
+  openBadgesWithPaint: (paintId: string) => {
+    trackActivity('Opened Badges with Paint');
+    set({ showBadgesOverlay: true, badgesOverlayInitialPaintId: paintId, badgesOverlayInitialBadgeId: null });
+  },
+  openBadgesWithBadge: (badgeId: string) => {
+    trackActivity('Opened Badges with Badge');
+    set({ showBadgesOverlay: true, badgesOverlayInitialBadgeId: badgeId, badgesOverlayInitialPaintId: null });
   },
   setShowWhispersOverlay: (show: boolean) => {
     if (show) trackActivity('Opened Whispers');
@@ -1081,13 +1113,13 @@ export const useAppStore = create<AppState>((set, get) => ({
     trackActivity('Started Twitch login');
     try {
       set({ isLoading: true });
-      console.log('Starting Twitch Device Code login...');
+      Logger.debug('Starting Twitch Device Code login...');
 
       // Use Device Code flow (like Python app)
       const [verificationUri, userCode] = await invoke('twitch_login') as [string, string];
 
-      console.log('Device code received:', userCode);
-      console.log('Verification URI:', verificationUri);
+      Logger.debug('Device code received:', userCode);
+      Logger.debug('Verification URI:', verificationUri);
 
       // Show the user code to the user
       get().addToast(`Enter code ${userCode} at twitch.tv/activate`, 'info');
@@ -1109,13 +1141,13 @@ export const useAppStore = create<AppState>((set, get) => ({
         });
 
         loginWindow.once('tauri://error', (e) => {
-          console.error('Failed to open login window:', e);
+          Logger.error('Failed to open login window:', e);
           get().addToast(`Please visit ${verificationUri} and enter code: ${userCode}`, 'warning');
         });
 
-        console.log('In-app login window opened successfully');
+        Logger.debug('In-app login window opened successfully');
       } catch (e) {
-        console.error('Failed to open login window:', e);
+        Logger.error('Failed to open login window:', e);
         get().addToast(`Please visit ${verificationUri} and enter code: ${userCode}`, 'warning');
       }
 
@@ -1123,21 +1155,21 @@ export const useAppStore = create<AppState>((set, get) => ({
       const { listen } = await import('@tauri-apps/api/event');
 
       const unlisten = await listen('twitch-login-complete', async () => {
-        console.log('Login complete event received');
+        Logger.debug('Login complete event received');
 
         // Close the login window
         try {
           const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
           const loginWindow = await WebviewWindow.getByLabel('twitch-login');
           if (loginWindow) {
-            console.log('[TwitchLogin] Closing twitch-login webview window');
+            Logger.debug('[TwitchLogin] Closing twitch-login webview window');
             await loginWindow.close();
-            console.log('[TwitchLogin] Successfully closed twitch-login window');
+            Logger.debug('[TwitchLogin] Successfully closed twitch-login window');
           } else {
-            console.log('[TwitchLogin] No twitch-login window found to close');
+            Logger.debug('[TwitchLogin] No twitch-login window found to close');
           }
         } catch (e) {
-          console.warn('[TwitchLogin] Failed to close twitch-login window:', e);
+          Logger.warn('[TwitchLogin] Failed to close twitch-login window:', e);
         }
 
         // After successful login, check auth status FIRST
@@ -1153,7 +1185,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         try {
           await invoke('focus_window');
         } catch (e) {
-          console.warn('Could not focus window:', e);
+          Logger.warn('Could not focus window:', e);
         }
 
         // Clean up listener
@@ -1162,7 +1194,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
       // Also listen for login errors
       const unlistenError = await listen('twitch-login-error', async (event) => {
-        console.error('Login error event received:', event.payload);
+        Logger.error('Login error event received:', event.payload);
         const errorMessage = String(event.payload);
         get().addToast(`Login failed: ${errorMessage}`, 'error');
         set({ isLoading: false });
@@ -1172,18 +1204,18 @@ export const useAppStore = create<AppState>((set, get) => ({
           const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
           const loginWindow = await WebviewWindow.getByLabel('twitch-login');
           if (loginWindow) {
-            console.log('[TwitchLogin] Closing twitch-login window after error');
+            Logger.debug('[TwitchLogin] Closing twitch-login window after error');
             await loginWindow.close();
           }
         } catch (e) {
-          console.warn('[TwitchLogin] Failed to close twitch-login window on error:', e);
+          Logger.warn('[TwitchLogin] Failed to close twitch-login window on error:', e);
         }
 
         unlistenError();
       });
 
     } catch (e) {
-      console.error('Login failed:', e);
+      Logger.error('Login failed:', e);
       const errorMessage = e instanceof Error ? e.message : String(e);
       get().addToast(`Login failed: ${errorMessage}. Please try again.`, 'error');
       set({ isLoading: false });
@@ -1201,7 +1233,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
       get().addToast('Successfully logged out from Twitch', 'success');
     } catch (e) {
-      console.error('Logout failed:', e);
+      Logger.error('Logout failed:', e);
       get().addToast('Failed to logout. Please try again.', 'error');
     }
   },
@@ -1235,12 +1267,12 @@ export const useAppStore = create<AppState>((set, get) => ({
         try {
           const appVersion = await invoke<string>('get_current_app_version');
           upsertUser(user, appVersion).catch((e) => {
-            console.warn('[Auth] Failed to upsert user to Supabase:', e);
+            Logger.warn('[Auth] Failed to upsert user to Supabase:', e);
           });
         } catch (vErr) {
-          console.warn('[Auth] Failed to get app version for stats:', vErr);
+          Logger.warn('[Auth] Failed to get app version for stats:', vErr);
           upsertUser(user).catch((e) => {
-            console.warn('[Auth] Failed to upsert user to Supabase:', e);
+            Logger.warn('[Auth] Failed to upsert user to Supabase:', e);
           });
         }
       }
@@ -1254,9 +1286,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       // Start whisper listener after successful authentication
       try {
         await invoke('start_whisper_listener');
-        console.log('[Auth] Whisper listener started');
+        Logger.debug('[Auth] Whisper listener started');
       } catch (whisperError) {
-        console.warn('[Auth] Could not start whisper listener:', whisperError);
+        Logger.warn('[Auth] Could not start whisper listener:', whisperError);
       }
     } catch (e) {
       // Check if user was previously authenticated (session expired)
@@ -1381,7 +1413,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!forceRefresh && dropsCache) {
       const cacheAge = Date.now() - dropsCache.lastFetchedAt;
       if (cacheAge < DROPS_CACHE_DURATION) {
-        console.log(`[DropsCache] Using cached data (${Math.round(cacheAge / 60000)}min old, ${dropsCache.campaigns.length} campaigns)`);
+        Logger.debug(`[DropsCache] Using cached data (${Math.round(cacheAge / 60000)}min old, ${dropsCache.campaigns.length} campaigns)`);
         return;
       }
     }
@@ -1422,7 +1454,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           isLoadingDropsCache: false,
         });
 
-        console.log(`[DropsCache] Loaded ${campaigns.length} active campaigns for ${byGameId.size} games`);
+        Logger.debug(`[DropsCache] Loaded ${campaigns.length} active campaigns for ${byGameId.size} games`);
       } else {
         set({
           dropsCache: {
@@ -1433,10 +1465,10 @@ export const useAppStore = create<AppState>((set, get) => ({
           },
           isLoadingDropsCache: false,
         });
-        console.log('[DropsCache] No active campaigns found');
+        Logger.debug('[DropsCache] No active campaigns found');
       }
     } catch (e) {
-      console.error('[DropsCache] Failed to load active drops:', e);
+      Logger.error('[DropsCache] Failed to load active drops:', e);
       set({ isLoadingDropsCache: false });
     }
   },

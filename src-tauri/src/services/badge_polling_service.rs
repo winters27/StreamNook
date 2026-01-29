@@ -2,6 +2,7 @@ use crate::commands::badges::get_cached_global_badges;
 use crate::models::settings::AppState;
 use crate::services::cache_service;
 use crate::services::universal_cache_service::{get_cached_item, CacheType};
+use log::{debug, error};
 
 use chrono::{Datelike, Local, NaiveDate, TimeZone};
 use regex::Regex;
@@ -118,7 +119,7 @@ impl BadgePollingService {
             // First poll
             if let Err(e) = poll_once(&app_handle, &app_state, &running, &is_polling, &state).await
             {
-                eprintln!("[BadgePolling] Initial poll failed: {e}");
+                error!("[BadgePolling] Initial poll failed: {e}");
             }
 
             let mut ticker = interval(Duration::from_secs(POLL_INTERVAL_SECS));
@@ -147,11 +148,11 @@ impl BadgePollingService {
                 if let Err(e) =
                     poll_once(&app_handle, &app_state, &running, &is_polling, &state).await
                 {
-                    eprintln!("[BadgePolling] Poll failed: {e}");
+                    error!("[BadgePolling] Poll failed: {e}");
                 }
             }
 
-            println!("[BadgePolling] Service stopped");
+            debug!("[BadgePolling] Service stopped");
         });
     }
 
@@ -277,7 +278,7 @@ async fn poll_once_impl(
     // Persist updated state
     local_state.last_poll_timestamp_ms = current_time_ms();
     if let Err(e) = save_state_to_disk(&local_state) {
-        eprintln!("[BadgePolling] Failed to persist state: {e}");
+        error!("[BadgePolling] Failed to persist state: {e}");
     }
     *state.write().await = local_state;
 

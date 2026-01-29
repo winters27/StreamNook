@@ -1,6 +1,7 @@
 // Unified service for fetching user cosmetics from multiple providers (7TV, FFZ, BTTV)
 import { invoke } from '@tauri-apps/api/core';
 
+import { Logger } from '../utils/logger';
 // 7TV Types
 interface Paint7TV {
   id: string;
@@ -255,7 +256,7 @@ async function fetch7TVCosmetics(twitchUserId: string): Promise<{ paints: Paint7
       badges: badges.filter((b) => b !== null)
     };
   } catch (error) {
-    console.error('[7TV] Failed to fetch cosmetics:', error);
+    Logger.error('[7TV] Failed to fetch cosmetics:', error);
     return { paints: [], badges: [] };
   }
 }
@@ -289,13 +290,13 @@ async function fetchFFZBadges(_twitchUserId: string, username: string): Promise<
           }
         }
       } catch (err) {
-        console.warn(`[FFZ] Failed to fetch badge ${badgeId}:`, err);
+        Logger.warn(`[FFZ] Failed to fetch badge ${badgeId}:`, err);
       }
     }
 
     return badges;
   } catch (error) {
-    console.error('[FFZ] Failed to fetch badges:', error);
+    Logger.error('[FFZ] Failed to fetch badges:', error);
     return [];
   }
 }
@@ -319,7 +320,7 @@ async function loadFromDiskCache(userId: string): Promise<UserCosmetics | null> 
 
     return data;
   } catch (error) {
-    console.warn('[Cosmetics] Failed to load disk cache:', error);
+    Logger.warn('[Cosmetics] Failed to load disk cache:', error);
     return null;
   }
 }
@@ -332,7 +333,7 @@ async function saveToDiskCache(cosmetics: UserCosmetics): Promise<void> {
       data: JSON.stringify(cosmetics)
     });
   } catch (error) {
-    console.warn('[Cosmetics] Failed to save disk cache:', error);
+    Logger.warn('[Cosmetics] Failed to save disk cache:', error);
   }
 }
 

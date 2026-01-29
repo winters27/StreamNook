@@ -1,5 +1,6 @@
 // Tauri commands for ProfileCache service
 use crate::services::profile_cache_service::{UserProfile, PROFILE_CACHE};
+use log::debug;
 use tauri::command;
 
 /// Get complete user profile with all cosmetics and badges
@@ -14,7 +15,7 @@ pub async fn get_user_profile(
         .get_user_profile(user_id, username, channel_id, channel_name)
         .await
         .map_err(|e| {
-            println!("[ProfileCache Command] Failed to get profile: {}", e);
+            debug!("[ProfileCache Command] Failed to get profile: {}", e);
             format!("Failed to get user profile: {}", e)
         })
 }
@@ -31,7 +32,7 @@ pub async fn refresh_user_profile(
         .refresh_user_profile(user_id, username, channel_id, channel_name)
         .await
         .map_err(|e| {
-            println!("[ProfileCache Command] Failed to refresh profile: {}", e);
+            debug!("[ProfileCache Command] Failed to refresh profile: {}", e);
             format!("Failed to refresh user profile: {}", e)
         })
 }
@@ -47,7 +48,7 @@ pub async fn clear_profile_cache() -> Result<(), String> {
 #[command]
 pub async fn preload_badge_databases() -> Result<(), String> {
     PROFILE_CACHE.preload_badge_databases().await.map_err(|e| {
-        println!(
+        debug!(
             "[ProfileCache Command] Failed to preload badge databases: {}",
             e
         );

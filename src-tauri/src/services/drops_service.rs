@@ -2,6 +2,7 @@ use crate::models::drops::*;
 use crate::services::drops_auth_service::DropsAuthService;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
+use log::{debug, error};
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION};
 use reqwest::Client;
 use serde::Deserialize;
@@ -216,15 +217,15 @@ impl DropsService {
     /// Fetch inventory (in-progress campaigns) using the Inventory GQL operation
     /// This matches TwitchDropsMiner's fetch_inventory() function
     pub async fn fetch_inventory(&self) -> Result<InventoryResponse> {
-        println!("🔍 [fetch_inventory] Fetching inventory (in-progress campaigns)...");
+        debug!("🔍 [fetch_inventory] Fetching inventory (in-progress campaigns)...");
 
         let token = match DropsAuthService::get_token().await {
             Ok(t) => {
-                println!("✅ [fetch_inventory] Got token");
+                debug!("✅ [fetch_inventory] Got token");
                 t
             }
             Err(e) => {
-                println!("❌ [fetch_inventory] Failed to get token: {}", e);
+                debug!("❌ [fetch_inventory] Failed to get token: {}", e);
                 return Err(e);
             }
         };
@@ -248,7 +249,7 @@ impl DropsService {
             .send()
             .await?;
 
-        println!(
+        debug!(
             "📡 [fetch_inventory] Response status: {}",
             response.status()
         );
@@ -257,14 +258,14 @@ impl DropsService {
         let response_json: serde_json::Value = match serde_json::from_str(&response_text) {
             Ok(json) => json,
             Err(e) => {
-                println!("❌ Failed to parse JSON: {}", e);
+                debug!("❌ Failed to parse JSON: {}", e);
                 return Err(anyhow::anyhow!("Failed to parse response as JSON: {}", e));
             }
         };
 
         // Check for errors
         if let Some(errors) = response_json.get("errors") {
-            println!("❌ GraphQL errors found: {:?}", errors);
+            debug!("❌ GraphQL errors found: {:?}", errors);
             return Err(anyhow::anyhow!("GraphQL errors: {:?}", errors));
         }
 
@@ -297,7 +298,7 @@ impl DropsService {
             }
         }
 
-        println!("📊 Found {} in-progress campaigns", campaigns_array.len());
+        debug!("📊 Found {} in-progress campaigns", campaigns_array.len());
 
         let mut items = Vec::new();
         let mut active_count = 0;
@@ -423,7 +424,7 @@ impl DropsService {
                             self_data["dropInstanceID"].as_str().map(|s| s.to_string());
 
                         if drop_instance_id.is_some() {
-                            println!(
+                            debug!(
                                 "📋 Found dropInstanceID for {}: {:?}",
                                 drop_id, drop_instance_id
                             );
@@ -514,7 +515,7 @@ impl DropsService {
 
         let total_campaigns = items.len() as i32;
 
-        println!(
+        debug!(
             "📊 Inventory summary: {} total, {} active, {} upcoming, {} expired",
             total_campaigns, active_count, upcoming_count, expired_count
         );
@@ -548,7 +549,7 @@ impl DropsService {
         // Sort completed drops by most recent first
         completed_drops.sort_by(|a, b| b.last_awarded_at.cmp(&a.last_awarded_at));
 
-        println!(
+        debug!(
             "🎁 Found {} completed drops in user's permanent inventory",
             completed_drops.len()
         );
@@ -575,13 +576,13 @@ impl DropsService {
             if let Some((campaigns, cached_at)) = cache.as_ref() {
                 let age = Utc::now().signed_duration_since(*cached_at);
                 if age.num_seconds() < CACHE_TTL_SECONDS {
-                    println!(
+                    debug!(
                         "📦 Using cached campaigns ({} seconds old)",
                         age.num_seconds()
                     );
                     return Ok(campaigns.clone());
                 } else {
-                    println!(
+                    debug!(
                         "⏰ Campaign cache expired ({} seconds old)",
                         age.num_seconds()
                     );
@@ -590,7 +591,7 @@ impl DropsService {
         }
 
         // Cache miss or expired - fetch from API
-        println!("🔄 Fetching fresh campaigns from API");
+        debug!("🔄 Fetching fresh campaigns from API");
         let campaigns = self.fetch_all_active_campaigns_from_api().await?;
 
         // IMPORTANT:
@@ -606,23 +607,23 @@ impl DropsService {
     /// Internal method to fetch campaigns from API (no caching)
     /// This should only be called by get_all_active_campaigns_cached or during mining operations
     pub(crate) async fn fetch_all_active_campaigns_from_api(&self) -> Result<Vec<DropCampaign>> {
-        println!("🔍 [fetch_all_active_campaigns_from_api] Starting (no filters)...");
+        debug!("🔍 [fetch_all_active_campaigns_from_api] Starting (no filters)...");
 
         let token = match DropsAuthService::get_token().await {
             Ok(t) => {
-                println!(
+                debug!(
                     "✅ [get_all_active_campaigns] Got token (first 10 chars): {}",
                     &t[..10.min(t.len())]
                 );
                 t
             }
             Err(e) => {
-                println!("❌ [get_all_active_campaigns] Failed to get token: {}", e);
+                debug!("❌ [get_all_active_campaigns] Failed to get token: {}", e);
                 return Err(e);
             }
         };
 
-        println!("🔍 Fetching drops campaigns using Android app client ID...");
+        debug!("🔍 Fetching drops campaigns using Android app client ID...");
 
         // Use a full GraphQL query that includes timeBasedDrops with requiredMinutesWatched
         // The ViewerDropsDashboard persisted query doesn't include these fields
@@ -688,7 +689,7 @@ impl DropsService {
             .send()
             .await?;
 
-        println!("📡 Response status: {}", response.status());
+        debug!("📡 Response status: {}", response.status());
 
         // Get the raw response text first
         let response_text = response.text().await?;
@@ -697,7 +698,7 @@ impl DropsService {
         let response_json: serde_json::Value = match serde_json::from_str(&response_text) {
             Ok(json) => json,
             Err(e) => {
-                println!("❌ Failed to parse JSON: {}", e);
+                debug!("❌ Failed to parse JSON: {}", e);
                 return Err(anyhow::anyhow!("Failed to parse response as JSON: {}", e));
             }
         };
@@ -712,20 +713,20 @@ impl DropsService {
         }
 
         if let Some(errors) = response_json.get("errors") {
-            println!("❌ GraphQL errors found: {:?}", errors);
+            debug!("❌ GraphQL errors found: {:?}", errors);
             return Err(anyhow::anyhow!("GraphQL errors: {:?}", errors));
         }
 
         // Check if data and currentUser exist
         if response_json["data"].is_null() {
-            println!("⚠️ Response data is null");
+            debug!("⚠️ Response data is null");
             return Err(anyhow::anyhow!(
                 "Unable to fetch drops data. This is likely due to client ID mismatch."
             ));
         }
 
         if response_json["data"]["currentUser"].is_null() {
-            println!("⚠️ currentUser is null - token/client ID mismatch");
+            debug!("⚠️ currentUser is null - token/client ID mismatch");
             return Err(anyhow::anyhow!(
                 "Authentication mismatch: Token was issued for app client ID but drops API requires web client ID"
             ));
@@ -740,7 +741,7 @@ impl DropsService {
             .unwrap_or(&Vec::new())
             .to_vec();
 
-        println!(
+        debug!(
             "📊 Raw campaigns response: {} campaigns found",
             campaigns_array.len()
         );
@@ -803,7 +804,7 @@ impl DropsService {
                                         });
                                     }
                                 }
-                                println!(
+                                debug!(
                                     "  🔒 ACL campaign: {} allowed channels for {}",
                                     allowed_channels.len(),
                                     campaign_json["name"].as_str().unwrap_or("unknown")
@@ -870,7 +871,7 @@ impl DropsService {
                         // Drops with 0 required minutes are event-based/badge drops that cannot be auto-mined
                         let is_mineable = required_minutes > 0;
 
-                        println!("📋 [fetch_all_active_campaigns] Drop '{}': required_minutes={}, is_mineable={}", 
+                        debug!("📋 [fetch_all_active_campaigns] Drop '{}': required_minutes={}, is_mineable={}", 
                             drop_name, required_minutes, is_mineable);
 
                         time_based_drops.push(TimeBasedDrop {
@@ -932,7 +933,7 @@ impl DropsService {
             }
         }
 
-        println!("📊 Returning {} total campaigns (unfiltered)", result.len());
+        debug!("📊 Returning {} total campaigns (unfiltered)", result.len());
         Ok(result)
     }
 
@@ -972,12 +973,12 @@ impl DropsService {
         let settings = self.settings.read().await;
         let mut filtered_result = Vec::new();
 
-        println!("📊 Applying filters to {} campaigns", all_campaigns.len());
+        debug!("📊 Applying filters to {} campaigns", all_campaigns.len());
 
         for campaign in all_campaigns {
             // Skip excluded games
             if settings.excluded_games.contains(&campaign.game_name) {
-                println!("  ⛔ Filtered out: {} (excluded)", campaign.game_name);
+                debug!("  ⛔ Filtered out: {} (excluded)", campaign.game_name);
                 continue;
             }
 
@@ -986,18 +987,18 @@ impl DropsService {
                 && !settings.priority_games.is_empty()
                 && !settings.priority_games.contains(&campaign.game_name)
             {
-                println!(
+                debug!(
                     "  ⛔ Filtered out: {} (not in priority list)",
                     campaign.game_name
                 );
                 continue;
             }
 
-            println!("  ✅ Included: {} ({})", campaign.name, campaign.game_name);
+            debug!("  ✅ Included: {} ({})", campaign.name, campaign.game_name);
             filtered_result.push(campaign);
         }
 
-        println!("📊 Returning {} filtered campaigns", filtered_result.len());
+        debug!("📊 Returning {} filtered campaigns", filtered_result.len());
         Ok(filtered_result)
     }
 
@@ -1011,7 +1012,7 @@ impl DropsService {
         // First check if a drop_instance_id was provided directly from the frontend
         // This is the most reliable method - the frontend extracts it from inventory data
         let drop_instance_id = if let Some(provided_id) = provided_drop_instance_id {
-            println!(
+            debug!(
                 "🎁 Using provided dropInstanceID from frontend: {}",
                 provided_id
             );
@@ -1032,7 +1033,7 @@ impl DropsService {
 
             if let Some(instance_id) = stored_instance_id {
                 // Use the stored dropInstanceID from the API
-                println!("🎁 Using stored dropInstanceID from API: {}", instance_id);
+                debug!("🎁 Using stored dropInstanceID from API: {}", instance_id);
                 instance_id
             } else {
                 // Fallback: Generate dropInstanceID in format: user_id#campaign_id#drop_id
@@ -1041,17 +1042,17 @@ impl DropsService {
 
                 if campaign_id.is_empty() {
                     // Last resort: just use drop_id
-                    println!("⚠️ No campaign_id available, using drop_id as fallback");
+                    debug!("⚠️ No campaign_id available, using drop_id as fallback");
                     drop_id.to_string()
                 } else {
                     let generated_id = format!("{}#{}#{}", user_id, campaign_id, drop_id);
-                    println!("🎁 Generated dropInstanceID: {}", generated_id);
+                    debug!("🎁 Generated dropInstanceID: {}", generated_id);
                     generated_id
                 }
             }
         };
 
-        println!(
+        debug!(
             "🎁 Claiming drop: {} with dropInstanceID: {}",
             drop_id, drop_instance_id
         );
@@ -1081,8 +1082,8 @@ impl DropsService {
         let status = response.status();
         let response_text = response.text().await?;
 
-        println!("📡 Claim response status: {}", status);
-        println!("📡 Claim response: {}", response_text);
+        debug!("📡 Claim response status: {}", status);
+        debug!("📡 Claim response: {}", response_text);
 
         if !status.is_success() {
             return Err(anyhow::anyhow!("Failed to claim drop: {}", response_text));
@@ -1092,7 +1093,7 @@ impl DropsService {
         let response_json: serde_json::Value = serde_json::from_str(&response_text)?;
 
         if let Some(errors) = response_json.get("errors") {
-            println!("❌ GraphQL errors: {:?}", errors);
+            debug!("❌ GraphQL errors: {:?}", errors);
             return Err(anyhow::anyhow!("GraphQL errors: {:?}", errors));
         }
 
@@ -1104,14 +1105,14 @@ impl DropsService {
                     .and_then(|s| s.as_str())
                     .unwrap_or("UNKNOWN");
 
-                println!("🎁 Claim result status: {}", result_status);
+                debug!("🎁 Claim result status: {}", result_status);
 
                 match result_status {
                     "ELIGIBLE_FOR_ALL" | "DROP_INSTANCE_ALREADY_CLAIMED" => {
-                        println!("✅ Drop claimed successfully!");
+                        debug!("✅ Drop claimed successfully!");
                     }
                     _ => {
-                        println!("⚠️ Unexpected claim status: {}", result_status);
+                        debug!("⚠️ Unexpected claim status: {}", result_status);
                     }
                 }
             }
@@ -1396,7 +1397,7 @@ impl DropsService {
 
         // Spawn background monitoring task
         tokio::spawn(async move {
-            println!(
+            debug!(
                 "🎮 Started drops and channel points monitoring for {}",
                 channel_name
             );
@@ -1405,7 +1406,7 @@ impl DropsService {
                 // Check if monitoring should continue
                 let should_continue = *monitoring_active.read().await;
                 if !should_continue {
-                    println!("🛑 Stopping drops monitoring");
+                    debug!("🛑 Stopping drops monitoring");
                     break;
                 }
 
@@ -1439,7 +1440,7 @@ impl DropsService {
                                 .await
                                 {
                                     Ok(new_balance) => {
-                                        println!(
+                                        debug!(
                                             "✅ Auto-claimed {} channel points! New balance: {}",
                                             claim.points_earned, new_balance
                                         );
@@ -1455,7 +1456,7 @@ impl DropsService {
                                         }
                                     }
                                     Err(e) => {
-                                        eprintln!("❌ Failed to auto-claim channel points: {}", e);
+                                        error!("❌ Failed to auto-claim channel points: {}", e);
                                     }
                                 }
                             }
@@ -1491,7 +1492,7 @@ impl DropsService {
                             {
                                 let mut attempted = attempted_claims.write().await;
                                 attempted.insert(progress.drop_id.clone());
-                                println!(
+                                debug!(
                                     "📝 [Auto] Marking drop {} as attempted (won't retry)",
                                     progress.drop_id
                                 );
@@ -1505,7 +1506,7 @@ impl DropsService {
                             .await
                             {
                                 Ok(_) => {
-                                    println!("✅ Auto-claimed drop: {}", progress.drop_id);
+                                    debug!("✅ Auto-claimed drop: {}", progress.drop_id);
 
                                     // Create claimed drop record
                                     let claimed = ClaimedDrop {
@@ -1527,7 +1528,7 @@ impl DropsService {
                                     }
                                 }
                                 Err(e) => {
-                                    eprintln!("❌ Failed to auto-claim drop (won't retry): {}", e);
+                                    error!("❌ Failed to auto-claim drop (won't retry): {}", e);
                                 }
                             }
                         }
@@ -1568,7 +1569,7 @@ impl DropsService {
             progress.required_minutes_watched = required_minutes;
             progress.last_updated = Utc::now();
 
-            println!(
+            debug!(
                 "✅ Updated drop progress from WebSocket: {}/{} minutes for drop {}",
                 current_minutes, required_minutes, drop_id
             );
@@ -1585,7 +1586,7 @@ impl DropsService {
             };
             progress_map.insert(drop_id.clone(), progress);
 
-            println!(
+            debug!(
                 "✅ Created new drop progress from WebSocket: {}/{} minutes for drop {}",
                 current_minutes, required_minutes, drop_id
             );
@@ -1933,7 +1934,7 @@ impl DropsService {
         // Determine the dropInstanceID to use
         let drop_instance_id = if let Some(instance_id) = stored_instance_id {
             // Use the stored dropInstanceID from the API (this is the correct one!)
-            println!(
+            debug!(
                 "🎁 [Auto] Using stored dropInstanceID from API: {}",
                 instance_id
             );
@@ -1960,12 +1961,12 @@ impl DropsService {
                 drop_id.to_string()
             } else {
                 let generated_id = format!("{}#{}#{}", user_id, campaign_id, drop_id);
-                println!("🎁 [Auto] Generated dropInstanceID: {}", generated_id);
+                debug!("🎁 [Auto] Generated dropInstanceID: {}", generated_id);
                 generated_id
             }
         };
 
-        println!(
+        debug!(
             "🎁 [Auto] Claiming drop: {} with dropInstanceID: {}",
             drop_id, drop_instance_id
         );
@@ -2007,8 +2008,8 @@ impl DropsService {
         let status = response.status();
         let response_text = response.text().await?;
 
-        println!("📡 [Auto] Claim response status: {}", status);
-        println!("📡 [Auto] Claim response: {}", response_text);
+        debug!("📡 [Auto] Claim response status: {}", status);
+        debug!("📡 [Auto] Claim response: {}", response_text);
 
         if !status.is_success() {
             return Err(anyhow::anyhow!("Failed to claim drop: {}", response_text));
@@ -2018,7 +2019,7 @@ impl DropsService {
         let response_json: serde_json::Value = serde_json::from_str(&response_text)?;
 
         if let Some(errors) = response_json.get("errors") {
-            println!("❌ [Auto] GraphQL errors: {:?}", errors);
+            debug!("❌ [Auto] GraphQL errors: {:?}", errors);
             return Err(anyhow::anyhow!("GraphQL errors: {:?}", errors));
         }
 

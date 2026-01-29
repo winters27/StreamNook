@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { Logger } from '../utils/logger';
 // Service for Twitch API calls (GraphQL and Helix)
 
 interface TwitchBadge {
@@ -84,21 +85,21 @@ export async function fetchUserBadgesGQL(
     });
 
     if (!response.ok) {
-      console.warn('[TwitchGQL] Failed to fetch user badges:', response.status);
+      Logger.warn('[TwitchGQL] Failed to fetch user badges:', response.status);
       return [];
     }
 
     const result: TwitchGQLResponse = await response.json();
 
     if (!result.data?.user?.displayBadges) {
-      console.warn('[TwitchGQL] No badges found for user:', username);
+      Logger.warn('[TwitchGQL] No badges found for user:', username);
       return [];
     }
 
-    console.log(`[TwitchGQL] Fetched ${result.data.user.displayBadges.length} badges for ${username}`);
+    Logger.debug(`[TwitchGQL] Fetched ${result.data.user.displayBadges.length} badges for ${username}`);
     return result.data.user.displayBadges;
   } catch (error) {
-    console.error('[TwitchGQL] Error fetching user badges:', error);
+    Logger.error('[TwitchGQL] Error fetching user badges:', error);
     return [];
   }
 }
@@ -124,21 +125,21 @@ export async function fetchStreamViewerCount(
     });
 
     if (!response.ok) {
-      console.error(`[TwitchHelix] Failed to fetch stream info: ${response.status} ${response.statusText}`);
+      Logger.error(`[TwitchHelix] Failed to fetch stream info: ${response.status} ${response.statusText}`);
       return null;
     }
 
     const result: TwitchStreamResponse = await response.json();
 
     if (result.data.length > 0) {
-      console.log(`[TwitchHelix] Fetched viewer count for ${userLogin}: ${result.data[0].viewer_count}`);
+      Logger.debug(`[TwitchHelix] Fetched viewer count for ${userLogin}: ${result.data[0].viewer_count}`);
       return result.data[0].viewer_count;
     } else {
-      console.log(`[TwitchHelix] Stream for ${userLogin} is offline.`);
+      Logger.debug(`[TwitchHelix] Stream for ${userLogin} is offline.`);
       return null;
     }
   } catch (error) {
-    console.error('[TwitchHelix] Error fetching stream viewer count:', error);
+    Logger.error('[TwitchHelix] Error fetching stream viewer count:', error);
     return null;
   }
 }

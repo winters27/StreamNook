@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { SevenTVBadge, SevenTVPaint } from '../types';
 
+import { Logger } from '../utils/logger';
 // v4 GraphQL API Types
 interface PaintLayer {
   id: string;
@@ -237,7 +238,7 @@ const requestGql = async ({ query }: { query: string }): Promise<any> => {
 
       if (response.errors || response.message) {
         if (retryCount === 5) {
-          console.error('[7TV] Error fetching user cosmetics:', response.errors || response.message);
+          Logger.error('[7TV] Error fetching user cosmetics:', response.errors || response.message);
           return undefined;
         }
         await new Promise((r) => setTimeout(r, 500));
@@ -248,7 +249,7 @@ const requestGql = async ({ query }: { query: string }): Promise<any> => {
       return response;
     } catch (error) {
       if (retryCount === 5) {
-        console.error('[7TV] Network error:', error);
+        Logger.error('[7TV] Network error:', error);
         return undefined;
       }
       await new Promise((r) => setTimeout(r, 500));
@@ -279,7 +280,7 @@ async function getCosmeticCacheSettings(): Promise<{ enabled: boolean; expiryDay
     };
     return cosmeticCacheSettings;
   } catch (e) {
-    console.warn('[7TVService] Failed to load settings:', e);
+    Logger.warn('[7TVService] Failed to load settings:', e);
     return { enabled: true, expiryDays: 7 };
   }
 }
@@ -297,7 +298,7 @@ async function processCosmeticDownloadQueue() {
   try {
     await downloadCosmeticIfNeeded(next.id, next.url);
   } catch (e) {
-    console.debug(`[7TVService] Error processing queue item ${next.id}:`, e);
+    Logger.debug(`[7TVService] Error processing queue item ${next.id}:`, e);
   } finally {
     activeCosmeticDownloads--;
     processCosmeticDownloadQueue();
@@ -335,7 +336,7 @@ async function downloadCosmeticIfNeeded(id: string, url: string): Promise<string
       }
       return null;
     } catch (e) {
-      console.debug(`[7TVService] Failed to cache cosmetic ${id}:`, e);
+      Logger.debug(`[7TVService] Failed to cache cosmetic ${id}:`, e);
       return null;
     } finally {
       pendingCosmeticDownloads.delete(id);
@@ -377,7 +378,7 @@ export async function getUserCosmetics(twitchId: string): Promise<UserCosmeticsR
       try {
         cachedCosmeticFiles = await invoke('get_cached_files', { cacheType: 'cosmetic' });
       } catch (e) {
-        console.warn('Failed to get cached cosmetic files:', e);
+        Logger.warn('Failed to get cached cosmetic files:', e);
         cachedCosmeticFiles = {};
       } finally {
         filesInitializationPromise = null;
@@ -471,7 +472,7 @@ export async function getUserCosmetics(twitchId: string): Promise<UserCosmeticsR
       userCache.set(twitchId, { data: result, timestamp: now });
       return result;
     } catch (error) {
-      console.error('[7TV] Failed to fetch user cosmetics:', error);
+      Logger.error('[7TV] Failed to fetch user cosmetics:', error);
       const emptyResult = { paints: [], badges: [], seventvUserId: undefined };
       userCache.set(twitchId, { data: emptyResult, timestamp: now });
       return emptyResult;
@@ -598,7 +599,7 @@ export const computePaintStyle = (paint: PaintV4, userColor?: string): React.CSS
     backgroundColor: backgroundColor,
     WebkitBackgroundClip: 'text',
     backgroundClip: 'text',
-    backgroundSize: 'cover',
+    backgroundSize: '100% 100%', // Per 7TV docs: ensures paint spans full text width
     backgroundPosition: 'center',
     backgroundRepeat: 'no-repeat',
     color: 'transparent',

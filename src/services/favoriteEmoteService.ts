@@ -2,6 +2,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { Emote } from './emoteService';
 
+import { Logger } from '../utils/logger';
 export interface FavoriteEmote extends Emote {
   addedAt: number; // Timestamp when added to favorites
 }
@@ -25,7 +26,7 @@ export async function loadFavoriteEmotes(): Promise<FavoriteEmote[]> {
     favoriteEmotesCache = [];
     return [];
   } catch (error) {
-    console.error('[FavoriteEmoteService] Failed to load favorite emotes:', error);
+    Logger.error('[FavoriteEmoteService] Failed to load favorite emotes:', error);
     favoriteEmotesCache = [];
     return [];
   }
@@ -40,7 +41,7 @@ export async function saveFavoriteEmotes(favorites: FavoriteEmote[]): Promise<vo
     await invoke('save_favorite_emotes_cache', { data });
     favoriteEmotesCache = favorites;
   } catch (error) {
-    console.error('[FavoriteEmoteService] Failed to save favorite emotes:', error);
+    Logger.error('[FavoriteEmoteService] Failed to save favorite emotes:', error);
     throw error;
   }
 }
@@ -70,7 +71,7 @@ export async function addFavoriteEmote(emote: Emote): Promise<void> {
       await loadFavoriteEmotes();
     }
   } catch (error) {
-    console.error('[FavoriteEmoteService] Failed to add favorite emote:', error);
+    Logger.error('[FavoriteEmoteService] Failed to add favorite emote:', error);
     throw error;
   }
 }
@@ -87,7 +88,7 @@ export async function removeFavoriteEmote(emoteId: string): Promise<void> {
       favoriteEmotesCache = favoriteEmotesCache.filter(e => e.id !== emoteId);
     }
   } catch (error) {
-    console.error('[FavoriteEmoteService] Failed to remove favorite emote:', error);
+    Logger.error('[FavoriteEmoteService] Failed to remove favorite emote:', error);
     throw error;
   }
 }

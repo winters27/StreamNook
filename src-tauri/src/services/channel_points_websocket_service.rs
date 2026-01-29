@@ -1,6 +1,7 @@
 use anyhow::Result;
 use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
+use log::{debug, error};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -87,7 +88,7 @@ impl ChannelPointsWebSocketService {
                 display_name: channel_display_name.to_string(),
             },
         );
-        println!(
+        debug!(
             "📝 Registered channel mapping: {} -> {} ({})",
             channel_id, channel_login, channel_display_name
         );
@@ -133,7 +134,7 @@ impl ChannelPointsWebSocketService {
         let num_connections =
             (channel_ids.len() + MAX_CHANNELS_PER_CONNECTION - 1) / MAX_CHANNELS_PER_CONNECTION;
 
-        println!(
+        debug!(
             "🔌 Creating {} WebSocket connection(s) for {} channels",
             num_connections.min(10),
             channel_ids.len()
@@ -188,7 +189,7 @@ impl ChannelPointsWebSocketService {
                 )
                 .await
                 {
-                    eprintln!("❌ WebSocket connection {} failed: {}", index, e);
+                    error!("❌ WebSocket connection {} failed: {}", index, e);
                 }
             });
         }
@@ -234,7 +235,7 @@ impl ChannelPointsWebSocketService {
         index: usize,
         channel_mappings: Arc<RwLock<HashMap<String, ChannelMapping>>>,
     ) -> Result<()> {
-        println!(
+        debug!(
             "🔗 Connecting WebSocket #{} with {} topics",
             index,
             topics.len()
@@ -264,7 +265,7 @@ impl ChannelPointsWebSocketService {
         write
             .send(Message::text(listen_message.to_string()))
             .await?;
-        println!(
+        debug!(
             "📡 WebSocket #{} sent LISTEN for {} topics",
             index,
             topics.len()
@@ -286,7 +287,7 @@ impl ChannelPointsWebSocketService {
                 });
 
                 if let Err(e) = write.send(Message::text(ping_message.to_string())).await {
-                    eprintln!("❌ WebSocket #{} failed to send PING: {}", index, e);
+                    error!("❌ WebSocket #{} failed to send PING: {}", index, e);
                     break;
                 }
 
@@ -298,7 +299,7 @@ impl ChannelPointsWebSocketService {
                     }
                 }
 
-                println!("💓 WebSocket #{} sent PING", index);
+                debug!("💓 WebSocket #{} sent PING", index);
             }
         });
 
@@ -320,12 +321,12 @@ impl ChannelPointsWebSocketService {
                     }
                 }
                 Ok(Message::Close(_)) => {
-                    println!("🔌 WebSocket #{} closed by server", index);
+                    debug!("🔌 WebSocket #{} closed by server", index);
                     should_reconnect = true;
                     break;
                 }
                 Err(e) => {
-                    eprintln!("❌ WebSocket #{} error: {}", index, e);
+                    error!("❌ WebSocket #{} error: {}", index, e);
                     should_reconnect = true;
                     break;
                 }
@@ -347,7 +348,7 @@ impl ChannelPointsWebSocketService {
         // Attempt reconnection after delay if needed
         if should_reconnect {
             tokio::time::sleep(Duration::from_secs(60)).await;
-            println!("🔄 Attempting to reconnect WebSocket #{}...", index);
+            debug!("🔄 Attempting to reconnect WebSocket #{}...", index);
 
             // Recursively reconnect
             Box::pin(Self::handle_connection(
@@ -419,7 +420,7 @@ impl ChannelPointsWebSocketService {
                 }
             }
             "PONG" => {
-                println!("🏓 WebSocket #{} received PONG", index);
+                debug!("🏓 WebSocket #{} received PONG", index);
 
                 // Update last pong time
                 let mut conns = connections.write().await;
@@ -428,19 +429,19 @@ impl ChannelPointsWebSocketService {
                 }
             }
             "RECONNECT" => {
-                println!("⚠️ WebSocket #{} received RECONNECT request", index);
+                debug!("⚠️ WebSocket #{} received RECONNECT request", index);
                 // Connection will automatically reconnect when closed
             }
             "RESPONSE" => {
                 if let Some(error) = msg.error {
                     // Only treat non-empty errors as actual errors
                     if !error.is_empty() {
-                        eprintln!("❌ WebSocket #{} error response: {}", index, error);
+                        error!("❌ WebSocket #{} error response: {}", index, error);
                     } else {
-                        println!("✅ WebSocket #{} LISTEN acknowledged", index);
+                        debug!("✅ WebSocket #{} LISTEN acknowledged", index);
                     }
                 } else {
-                    println!("✅ WebSocket #{} LISTEN acknowledged", index);
+                    debug!("✅ WebSocket #{} LISTEN acknowledged", index);
                 }
             }
             _ => {}
@@ -503,14 +504,14 @@ impl ChannelPointsWebSocketService {
                             drop(mapping);
 
                             // Channel not in mapping - try to look it up via API (for drops mining channels)
-                            println!(
+                            debug!(
                                 "🔍 Channel {} not in mapping, attempting API lookup...",
                                 cid
                             );
                             if let Ok(Some((login, display_name))) =
                                 Self::lookup_channel_by_id(cid).await
                             {
-                                println!(
+                                debug!(
                                     "✅ Resolved channel {} -> {} ({})",
                                     cid, login, display_name
                                 );
@@ -541,7 +542,7 @@ impl ChannelPointsWebSocketService {
                     let channel_login_str = channel_login.as_deref().unwrap_or("unknown");
                     let channel_display_str = channel_display_name.as_deref().unwrap_or("unknown");
 
-                    println!(
+                    debug!(
                         "💰 Points earned: +{} (reason: {}) - New balance: {} - Channel: {} (ID: {}, Login: {})",
                         points,
                         reason,
@@ -569,7 +570,7 @@ impl ChannelPointsWebSocketService {
                         .as_str()
                         .map(|s| s.to_string());
 
-                    println!("🎁 Bonus claim available! ID: {}", claim_id);
+                    debug!("🎁 Bonus claim available! ID: {}", claim_id);
 
                     let _ = app_handle.emit(
                         "channel-points-claim-available",
@@ -590,7 +591,7 @@ impl ChannelPointsWebSocketService {
                         .as_str()
                         .map(|s| s.to_string());
 
-                    println!("💸 Points spent: -{} - New balance: {}", points, balance);
+                    debug!("💸 Points spent: -{} - New balance: {}", points, balance);
 
                     let _ = app_handle.emit(
                         "channel-points-spent",
@@ -615,7 +616,7 @@ impl ChannelPointsWebSocketService {
         if let Some(event_type) = message_data["type"].as_str() {
             match event_type {
                 "stream-up" => {
-                    println!("📺 Stream went live: {:?}", channel_id);
+                    debug!("📺 Stream went live: {:?}", channel_id);
                     let _ = app_handle.emit(
                         "stream-up",
                         json!({
@@ -624,7 +625,7 @@ impl ChannelPointsWebSocketService {
                     );
                 }
                 "stream-down" => {
-                    println!("📴 Stream went offline: {:?}", channel_id);
+                    debug!("📴 Stream went offline: {:?}", channel_id);
                     let _ = app_handle.emit(
                         "stream-down",
                         json!({
@@ -645,7 +646,7 @@ impl ChannelPointsWebSocketService {
     ) {
         if let Some(raid_id) = message_data["raid"]["id"].as_str() {
             let target = message_data["raid"]["target_login"].as_str().unwrap_or("");
-            println!("🎯 Raid detected from {:?} to {}", channel_id, target);
+            debug!("🎯 Raid detected from {:?} to {}", channel_id, target);
         }
     }
 
@@ -749,7 +750,7 @@ impl ChannelPointsWebSocketService {
                             }
                         }
 
-                        println!(
+                        debug!(
                             "🔮 Prediction created on {}: {} (ID: {}, {} outcomes)",
                             channel_display,
                             title,
@@ -770,7 +771,7 @@ impl ChannelPointsWebSocketService {
                                 "status": status
                             }),
                         );
-                        println!(
+                        debug!(
                             "📤 Emitted prediction-created event to frontend: {:?}",
                             emit_result.is_ok()
                         );
@@ -825,7 +826,7 @@ impl ChannelPointsWebSocketService {
                             }
                         }
 
-                        println!(
+                        debug!(
                             "🔮 Prediction updated on {}: {} - Status: {} - Winner: {:?}",
                             channel_display, title, status, winning_outcome_id
                         );
@@ -850,7 +851,7 @@ impl ChannelPointsWebSocketService {
                         let prediction_id = event.get("id").and_then(|v| v.as_str()).unwrap_or("");
                         let title = event.get("title").and_then(|v| v.as_str()).unwrap_or("");
 
-                        println!("🔒 Prediction locked on {}: {}", channel_display, title);
+                        debug!("🔒 Prediction locked on {}: {}", channel_display, title);
 
                         let _ = app_handle.emit(
                             "prediction-locked",
@@ -871,7 +872,7 @@ impl ChannelPointsWebSocketService {
                             event.get("winning_outcome_id").and_then(|v| v.as_str());
 
                         let winner_display = winning_outcome_id.unwrap_or("cancelled");
-                        println!(
+                        debug!(
                             "🏆 Prediction ended on {}: {} - Winner: {}",
                             channel_display, title, winner_display
                         );
@@ -907,7 +908,7 @@ impl ChannelPointsWebSocketService {
                     if conn.is_connected {
                         let elapsed = Utc::now().signed_duration_since(conn.last_pong);
                         if elapsed.num_minutes() > 5 {
-                            println!(
+                            debug!(
                                 "⚠️ WebSocket #{} hasn't received PONG in {} minutes",
                                 index,
                                 elapsed.num_minutes()
@@ -923,7 +924,7 @@ impl ChannelPointsWebSocketService {
     pub async fn disconnect_all(&self) {
         let mut connections = self.connections.write().await;
         connections.clear();
-        println!("🔌 All WebSocket connections closed");
+        debug!("🔌 All WebSocket connections closed");
     }
 
     /// Look up channel info by ID via Twitch API (fallback for unknown channels)
@@ -934,7 +935,7 @@ impl ChannelPointsWebSocketService {
         let token = match DropsAuthService::get_token().await {
             Ok(t) => t,
             Err(e) => {
-                eprintln!("❌ Failed to get token for channel lookup: {}", e);
+                error!("❌ Failed to get token for channel lookup: {}", e);
                 return Ok(None);
             }
         };
@@ -980,7 +981,7 @@ impl ChannelPointsWebSocketService {
                 Ok(None)
             }
             Err(e) => {
-                eprintln!("❌ API lookup failed for channel {}: {}", channel_id, e);
+                error!("❌ API lookup failed for channel {}: {}", channel_id, e);
                 Ok(None)
             }
         }

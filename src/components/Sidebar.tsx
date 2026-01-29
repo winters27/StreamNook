@@ -5,6 +5,7 @@ import type { TwitchStream } from '../types';
 import { invoke } from '@tauri-apps/api/core';
 import { getSidebarSettings, type SidebarMode } from './settings/InterfaceSettings';
 
+import { Logger } from '../utils/logger';
 // Width constants
 const COMPACT_WIDTH = 56;
 const DEFAULT_EXPANDED_WIDTH = 280;
@@ -25,7 +26,7 @@ const getPersistedWidth = (): number => {
             }
         }
     } catch (e) {
-        console.error('[Sidebar] Failed to read persisted width:', e);
+        Logger.error('[Sidebar] Failed to read persisted width:', e);
     }
     return DEFAULT_EXPANDED_WIDTH;
 };
@@ -35,7 +36,7 @@ const persistWidth = (width: number): void => {
     try {
         localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, width.toString());
     } catch (e) {
-        console.error('[Sidebar] Failed to persist width:', e);
+        Logger.error('[Sidebar] Failed to persist width:', e);
     }
 };
 
@@ -108,7 +109,7 @@ const Sidebar = () => {
                 }
             } catch (err) {
                 // Silently fail - drops indicator is optional
-                console.warn('[Sidebar] Could not load drops data:', err);
+                Logger.warn('[Sidebar] Could not load drops data:', err);
             }
         };
         loadActiveDrops();
@@ -237,7 +238,7 @@ const Sidebar = () => {
 
         // Only refresh on rising edge (sidebar just opened)
         if (isSidebarVisible && !wasVisible) {
-            console.log('[Sidebar] Refreshing streams on sidebar open');
+            Logger.debug('[Sidebar] Refreshing streams on sidebar open');
             if (isAuthenticated) {
                 loadFollowedStreams();
             }
@@ -309,7 +310,7 @@ const Sidebar = () => {
                     }
                 }
             } catch (error) {
-                console.error('[Sidebar] Failed to fetch profile images from Twitch:', error);
+                Logger.error('[Sidebar] Failed to fetch profile images from Twitch:', error);
             } finally {
                 uniqueUserIds.forEach(id => fetchingProfilesRef.current.delete(id));
             }

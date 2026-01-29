@@ -1,3 +1,4 @@
+import { Logger } from '../utils/logger';
 /**
  * DEPRECATED: This service has been replaced by the unified Rust badge service
  * 
@@ -12,7 +13,7 @@
  * 
  * // Get all badges (including third-party) for a user
  * const badges = await getAllUserBadges(userId, username, channelId, channelName);
- * console.log(badges.third_party_badges); // FFZ, Chatterino, Homies badges
+ * Logger.debug(badges.third_party_badges); // FFZ, Chatterino, Homies badges
  * ```
  * 
  * The Rust backend handles:
@@ -36,7 +37,7 @@ export {
  * This function is no longer needed as third-party badges are included automatically
  */
 export async function getAllThirdPartyBadges(_userId: string): Promise<any[]> {
-  console.warn('[thirdPartyBadges] getAllThirdPartyBadges() is deprecated. Use getAllUserBadges() from badgeService.ts');
+  Logger.warn('[thirdPartyBadges] getAllThirdPartyBadges() is deprecated. Use getAllUserBadges() from badgeService.ts');
   // Return empty array to maintain compatibility
   // Real implementation should use getAllUserBadges()
   return [];
@@ -46,7 +47,7 @@ export async function getAllThirdPartyBadges(_userId: string): Promise<any[]> {
  * @deprecated Third-party badge databases are now pre-fetched automatically
  */
 export async function preloadThirdPartyBadgeDatabases(): Promise<void> {
-  console.warn('[thirdPartyBadges] preloadThirdPartyBadgeDatabases() is deprecated. Databases are pre-fetched automatically');
+  Logger.warn('[thirdPartyBadges] preloadThirdPartyBadgeDatabases() is deprecated. Databases are pre-fetched automatically');
   // No-op, databases are loaded automatically by Rust backend
 }
 
@@ -54,6 +55,6 @@ export async function preloadThirdPartyBadgeDatabases(): Promise<void> {
  * @deprecated Use clearBadgeCache() from badgeService.ts
  */
 export function clearThirdPartyBadgeCaches(): void {
-  console.warn('[thirdPartyBadges] clearThirdPartyBadgeCaches() is deprecated. Use clearBadgeCache() from badgeService.ts');
+  Logger.warn('[thirdPartyBadges] clearThirdPartyBadgeCaches() is deprecated. Use clearBadgeCache() from badgeService.ts');
   // No-op, use clearBadgeCache() instead
 }

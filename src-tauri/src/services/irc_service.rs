@@ -9,6 +9,7 @@ use crate::services::twitch_service::TwitchService;
 use crate::services::user_message_history_service::UserMessageHistoryService;
 use anyhow::Result;
 use futures_util::{SinkExt, StreamExt};
+use log::{debug, error};
 use rand::Rng;
 use serde_json::json;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -81,7 +82,7 @@ impl IrcService {
         // Stop any existing chat connection first
         Self::stop().await?;
 
-        println!(
+        debug!(
             "[IRC Chat] Starting IRC chat service for channel: {}",
             channel
         );
@@ -105,7 +106,7 @@ impl IrcService {
         // Get user info
         let user_info = TwitchService::get_user_info().await?;
 
-        println!("[IRC Chat] User: {} ({})", user_info.login, user_info.id);
+        debug!("[IRC Chat] User: {} ({})", user_info.login, user_info.id);
 
         // Create broadcast channel for messages with larger buffer
         let (tx, _rx) = broadcast::channel::<String>(1000);
@@ -149,13 +150,13 @@ impl IrcService {
             )
             .await
             {
-                eprintln!("[IRC Chat] Connection error: {}", e);
+                error!("[IRC Chat] Connection error: {}", e);
             }
         });
 
         *get_irc_handle().lock().await = Some(irc_handle);
 
-        println!("[IRC Chat] Chat service started on port {}", port);
+        debug!("[IRC Chat] Chat service started on port {}", port);
 
         Ok(port)
     }
@@ -169,7 +170,7 @@ impl IrcService {
         emote_service: Arc<tokio::sync::RwLock<EmoteService>>,
     ) -> Result<()> {
         loop {
-            println!("[IRC Chat] Connecting to Twitch IRC...");
+            debug!("[IRC Chat] Connecting to Twitch IRC...");
 
             // Connect to Twitch IRC
             let stream = TcpStream::connect((IRC_SERVER, IRC_PORT)).await?;
@@ -184,7 +185,7 @@ impl IrcService {
             // Step 1: Request capabilities first
             {
                 let mut w = writer.lock().await;
-                println!("[IRC Chat] Requesting capabilities...");
+                debug!("[IRC Chat] Requesting capabilities...");
                 w.write_all(b"CAP REQ :twitch.tv/tags twitch.tv/commands twitch.tv/membership\r\n")
                     .await?;
                 w.flush().await?;
@@ -202,11 +203,11 @@ impl IrcService {
                     ));
                 }
 
-                println!("[IRC Chat] Server response: {}", line.trim());
+                debug!("[IRC Chat] Server response: {}", line.trim());
 
                 if line.contains("CAP * ACK") {
                     cap_acknowledged = true;
-                    println!("[IRC Chat] Capabilities acknowledged");
+                    debug!("[IRC Chat] Capabilities acknowledged");
                 }
             }
 
@@ -216,8 +217,8 @@ impl IrcService {
                 // IRC requires "oauth:" prefix for the password
                 let auth_token = format!("oauth:{}", token);
 
-                println!("[IRC Chat] Authenticating with username: {}", username);
-                println!(
+                debug!("[IRC Chat] Authenticating with username: {}", username);
+                debug!(
                     "[IRC Chat] Using token: oauth:{}...",
                     &token[..10.min(token.len())]
                 );
@@ -238,11 +239,11 @@ impl IrcService {
                     return Err(anyhow::anyhow!("Connection closed during authentication"));
                 }
 
-                println!("[IRC Chat] Auth response: {}", line.trim());
+                debug!("[IRC Chat] Auth response: {}", line.trim());
 
                 if line.contains("001") {
                     authenticated = true;
-                    println!("[IRC Chat] Successfully authenticated");
+                    debug!("[IRC Chat] Successfully authenticated");
                 } else if line.contains("NOTICE")
                     && (line.contains("Login unsuccessful")
                         || line.contains("Login authentication failed"))
@@ -261,7 +262,7 @@ impl IrcService {
                 w.flush().await?;
             }
 
-            println!("[IRC Chat] Joined channel: #{}", initial_channel);
+            debug!("[IRC Chat] Joined channel: #{}", initial_channel);
 
             // Fetch channel emotes
             Self::fetch_and_store_emotes(initial_channel, Arc::clone(&emote_service)).await;
@@ -272,7 +273,7 @@ impl IrcService {
             // Flush queued messages
             let mut queue = get_message_queue().lock().await;
             if !queue.is_empty() {
-                println!("[IRC Chat] Flushing {} queued messages", queue.len());
+                debug!("[IRC Chat] Flushing {} queued messages", queue.len());
                 while let Some(msg) = queue.pop_front() {
                     let _ = tx.send(msg);
                 }
@@ -311,19 +312,19 @@ impl IrcService {
                 line.clear();
                 let should_reconnect = match reader.read_line(&mut line).await {
                     Ok(0) => {
-                        println!("[IRC Chat] Connection closed by server");
+                        debug!("[IRC Chat] Connection closed by server");
                         true
                     }
                     Ok(_) => {
                         if let Err(e) =
                             Self::handle_irc_message(&line, &tx, &writer, &layout_service).await
                         {
-                            eprintln!("[IRC Chat] Error handling message: {}", e);
+                            error!("[IRC Chat] Error handling message: {}", e);
                         }
                         false
                     }
                     Err(e) => {
-                        eprintln!("[IRC Chat] Read error: {}", e);
+                        error!("[IRC Chat] Read error: {}", e);
                         true
                     }
                 };
@@ -331,7 +332,7 @@ impl IrcService {
                 if should_reconnect {
                     ping_handle.abort();
                     heartbeat_handle.abort();
-                    println!("[IRC Chat] Reconnecting in 5 seconds...");
+                    debug!("[IRC Chat] Reconnecting in 5 seconds...");
                     let _ = tx.send("IRC_RECONNECTING".to_string());
                     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                     break;
@@ -368,9 +369,17 @@ impl IrcService {
             // Regular chat message - forward as-is with shared chat detection
             let enhanced_message = Self::enhance_message_with_shared_chat(trimmed).await;
 
+            // Debug: Log cheer/bits messages (raw IRC data)
+            if enhanced_message.contains("bits=") {
+                debug!(
+                    "\n[IRC CHEER DEBUG] ========== RAW BITS MESSAGE ==========\n{}\n[IRC CHEER DEBUG] =========================================\n",
+                    enhanced_message
+                );
+            }
+
             // Debug: Log the received IRC message to see what we're parsing
             if enhanced_message.contains(":Stare") || enhanced_message.contains(" Stare ") {
-                println!(
+                debug!(
                     "[IRC Chat DEBUG] Received PRIVMSG with 'Stare': {}",
                     enhanced_message
                 );
@@ -378,7 +387,7 @@ impl IrcService {
 
             // Parse and layout
             if let Some(mut chat_msg) = Self::parse_privmsg(&enhanced_message) {
-                println!(
+                debug!(
                     "[IRC Chat DEBUG] Parsed message from {}: content='{}', {} segments",
                     chat_msg.username,
                     chat_msg.content,
@@ -405,7 +414,7 @@ impl IrcService {
 
                 if let Ok(json_msg) = serde_json::to_string(&chat_msg) {
                     if tx.send(json_msg).is_err() {
-                        // println!("[IRC Chat] No active receivers, queueing message");
+                        // debug!("[IRC Chat] No active receivers, queueing message");
                         let mut queue = get_message_queue().lock().await;
                         // Store serialized JSON in queue
                         queue.push_back(
@@ -432,6 +441,23 @@ impl IrcService {
             // Subscription, resub, gift sub, etc.
             // Parse USERNOTICE messages - layout will be measured by frontend
             if let Some(mut chat_msg) = Self::parse_usernotice(trimmed) {
+                // Skip USERNOTICE messages with no visible content
+                // These render as blank/ghost messages (e.g., "onetapgiftredeemed" with no text)
+                let has_content = !chat_msg.content.is_empty();
+                let has_system_msg = chat_msg
+                    .metadata
+                    .system_message
+                    .as_ref()
+                    .is_some_and(|s| !s.is_empty());
+
+                if !has_content && !has_system_msg {
+                    debug!(
+                        "[IRC Chat] Skipping empty USERNOTICE: type={:?}",
+                        chat_msg.metadata.msg_type
+                    );
+                    return Ok(());
+                }
+
                 // DOM-FIRST ARCHITECTURE: Frontend measures heights via ResizeObserver
                 // Backend only provides message data, not layout calculations
                 chat_msg.layout = LayoutResult {
@@ -441,7 +467,7 @@ impl IrcService {
                     is_first_message: false,
                 };
 
-                println!(
+                debug!(
                     "[IRC Chat] Parsed USERNOTICE: type={:?}, user_content_len={}",
                     chat_msg.metadata.msg_type,
                     chat_msg.content.len()
@@ -470,7 +496,7 @@ impl IrcService {
             }
         } else if trimmed.contains("ROOMSTATE") {
             // Room state updates (slow mode, sub-only, etc.)
-            println!("[IRC Chat] Room state update: {}", trimmed);
+            debug!("[IRC Chat] Room state update: {}", trimmed);
 
             // Check for shared chat information
             if let Some(room_id) = Self::extract_tag_value(trimmed, "room-id") {
@@ -480,11 +506,11 @@ impl IrcService {
             // User state in channel (mod status, badges, etc.)
             // USERSTATE is sent when joining a channel AND after sending a message
             // It contains the user's badges which we need for optimistic message display
-            println!("[IRC Chat] User state update: {}", trimmed);
+            debug!("[IRC Chat] User state update: {}", trimmed);
 
             // Extract badges from USERSTATE and cache them
             if let Some(badges) = Self::extract_tag_value(trimmed, "badges") {
-                println!("[IRC Chat] Caching user badges from USERSTATE: {}", badges);
+                debug!("[IRC Chat] Caching user badges from USERSTATE: {}", badges);
                 *get_user_badges_cache().lock().await = Some(badges.clone());
 
                 // Send badges to frontend via special message
@@ -494,7 +520,7 @@ impl IrcService {
 
             // Extract emote-sets to fetch user's subscribed emotes
             if let Some(emote_sets) = Self::extract_tag_value(trimmed, "emote-sets") {
-                println!(
+                debug!(
                     "[IRC Chat] User has {} emote sets available",
                     emote_sets.split(',').count()
                 );
@@ -504,7 +530,7 @@ impl IrcService {
         } else if trimmed.contains("CLEARMSG") {
             // Single message deleted by mod
             // Format: @login=<user>;room-id=<room>;target-msg-id=<msg-id>;tmi-sent-ts=<ts> :tmi.twitch.tv CLEARMSG #<channel> :<message>
-            println!("[IRC Chat] Message deleted: {}", trimmed);
+            debug!("[IRC Chat] Message deleted: {}", trimmed);
 
             if let Some(target_msg_id) = Self::extract_tag_value(trimmed, "target-msg-id") {
                 // Send deletion event to frontend
@@ -519,7 +545,7 @@ impl IrcService {
             // User timed out/banned (clear all their messages) or chat cleared
             // Format: @ban-duration=<sec>;room-id=<room>;target-user-id=<id>;tmi-sent-ts=<ts> :tmi.twitch.tv CLEARCHAT #<channel> :<user>
             // Or for full chat clear: :tmi.twitch.tv CLEARCHAT #<channel>
-            println!("[IRC Chat] Chat clear/timeout: {}", trimmed);
+            debug!("[IRC Chat] Chat clear/timeout: {}", trimmed);
 
             let target_user_id = Self::extract_tag_value(trimmed, "target-user-id");
             let ban_duration = Self::extract_tag_value(trimmed, "ban-duration");
@@ -540,7 +566,7 @@ impl IrcService {
             let _ = tx.send(clear_event.to_string());
         } else if trimmed.contains("NOTICE") {
             // System notices
-            println!("[IRC Chat] Notice: {}", trimmed);
+            debug!("[IRC Chat] Notice: {}", trimmed);
         }
 
         Ok(())
@@ -619,7 +645,7 @@ impl IrcService {
                                                     .insert(id.clone(), partner_ids.clone());
                                             }
 
-                                            println!(
+                                            debug!(
                                                 "[IRC Chat] Detected shared chat session with {} participants",
                                                 partner_ids.len()
                                             );
@@ -630,7 +656,7 @@ impl IrcService {
                         }
                     }
                     Err(e) => {
-                        eprintln!("[IRC Chat] Failed to check shared chat status: {}", e);
+                        error!("[IRC Chat] Failed to check shared chat status: {}", e);
                     }
                 }
             }
@@ -676,19 +702,19 @@ impl IrcService {
         let (mut local_tx, _local_rx) = local_socket.split();
         let mut rx = tx.subscribe();
 
-        println!("[WS] New local WebSocket client connected");
+        debug!("[WS] New local WebSocket client connected");
 
         // Send any queued messages first
         let mut queue = get_message_queue().lock().await;
         let queued_count = queue.len();
         if queued_count > 0 {
-            println!(
+            debug!(
                 "[WS] Sending {} queued messages to new client",
                 queued_count
             );
             while let Some(msg) = queue.pop_front() {
                 if local_tx.send(warp::ws::Message::text(msg)).await.is_err() {
-                    println!("[WS] Client disconnected while sending queued messages");
+                    debug!("[WS] Client disconnected while sending queued messages");
                     return;
                 }
             }
@@ -698,7 +724,7 @@ impl IrcService {
         // Forward messages from broadcast to local client
         while let Ok(text) = rx.recv().await {
             if local_tx.send(warp::ws::Message::text(text)).await.is_err() {
-                println!("[WS] Client disconnected");
+                debug!("[WS] Client disconnected");
                 break;
             }
         }
@@ -732,7 +758,7 @@ impl IrcService {
             format!("PRIVMSG #{} :{}\r\n", channel, message)
         };
 
-        println!("[IRC Chat] Sending message: {}", message);
+        debug!("[IRC Chat] Sending message: {}", message);
         w.write_all(formatted_message.as_bytes()).await?;
         w.flush().await?;
 
@@ -757,7 +783,7 @@ impl IrcService {
             .await
             .insert(channel.to_string());
 
-        println!("[IRC Chat] Joined additional channel: #{}", channel);
+        debug!("[IRC Chat] Joined additional channel: #{}", channel);
 
         // Check for shared chat in the new channel
         if let Ok(broadcaster_info) = TwitchService::get_user_by_login(channel).await {
@@ -782,7 +808,7 @@ impl IrcService {
 
         get_current_channels().lock().await.remove(channel);
 
-        println!("[IRC Chat] Left channel: #{}", channel);
+        debug!("[IRC Chat] Left channel: #{}", channel);
 
         Ok(())
     }
@@ -792,7 +818,7 @@ impl IrcService {
         channel_name: &str,
         emote_service: Arc<tokio::sync::RwLock<EmoteService>>,
     ) {
-        println!("[IRC Chat] Fetching emotes for channel: {}", channel_name);
+        debug!("[IRC Chat] Fetching emotes for channel: {}", channel_name);
 
         // Get broadcaster ID from channel name
         match TwitchService::get_user_by_login(channel_name).await {
@@ -807,7 +833,7 @@ impl IrcService {
                     .await
                 {
                     Ok(emote_set) => {
-                        println!(
+                        debug!(
                             "[IRC Chat] Fetched {} total emotes (Twitch: {}, BTTV: {}, 7TV: {}, FFZ: {})",
                             emote_set.total_count(),
                             emote_set.twitch.len(),
@@ -818,12 +844,12 @@ impl IrcService {
                         *get_channel_emotes().lock().await = Some(emote_set);
                     }
                     Err(e) => {
-                        eprintln!("[IRC Chat] Failed to fetch channel emotes: {}", e);
+                        error!("[IRC Chat] Failed to fetch channel emotes: {}", e);
                     }
                 }
             }
             Err(e) => {
-                eprintln!(
+                error!(
                     "[IRC Chat] Failed to get user info for {}: {}",
                     channel_name, e
                 );
@@ -883,7 +909,7 @@ impl IrcService {
         for emote in &sorted_emotes {
             // Validate emote bounds (character indices)
             if emote.start >= char_count || emote.end >= char_count || emote.start > emote.end {
-                eprintln!(
+                error!(
                     "[IRC Chat] Skipping invalid emote position: start={}, end={}, char_count={}",
                     emote.start, emote.end, char_count
                 );
@@ -1002,6 +1028,18 @@ impl IrcService {
                     content: word.to_string(),
                     url,
                 });
+            } else if let Some((prefix, bits, tier, color, cheermote_url)) =
+                Self::parse_cheermote(word)
+            {
+                // Found a cheermote pattern (e.g., Cheer500, Party1000)
+                segments.push(MessageSegment::Cheermote {
+                    content: word.to_string(),
+                    prefix,
+                    bits,
+                    tier,
+                    color,
+                    cheermote_url,
+                });
             } else if let Some(emote) = emote_map.get(word) {
                 // Found a third-party emote (BTTV, FFZ, or 7TV)
                 segments.push(MessageSegment::Emote {
@@ -1039,6 +1077,93 @@ impl IrcService {
 
         drop(emote_set_lock);
         segments
+    }
+
+    /// Parse a potential cheermote pattern (e.g., Cheer500, Party1000)
+    /// Returns Some((prefix, bits, tier, color, url)) if valid, None otherwise
+    fn parse_cheermote(word: &str) -> Option<(String, u32, String, String, String)> {
+        // Known cheermote prefixes on Twitch
+        // Only these specific prefixes should be treated as cheermotes
+        const CHEERMOTE_PREFIXES: &[&str] = &[
+            "cheer",
+            "cheerwhal",
+            "corgo",
+            "scoops",
+            "uni",
+            "showlove",
+            "party",
+            "seemsgood",
+            "pride",
+            "kappa",
+            "frankerz",
+            "heyguys",
+            "dansgame",
+            "elegiggle",
+            "trihard",
+            "kreygasm",
+            "4head",
+            "swiftrage",
+            "notlikethis",
+            "failfish",
+            "vohiyo",
+            "pjsalt",
+            "mrdestructoid",
+            "bday",
+            "ripcheer",
+            "shamrock",
+            "biblethump",
+            "doodlecheer",
+            "streamlabs",
+            "muxy",
+            "bitboss",
+            "anon",
+        ];
+
+        // Case-insensitive prefix matching
+        let word_lower = word.to_lowercase();
+
+        // Find which prefix (if any) matches
+        let matched_prefix = CHEERMOTE_PREFIXES
+            .iter()
+            .find(|&&prefix| word_lower.starts_with(prefix))?;
+
+        // Extract the amount part after the prefix
+        let amount_str = &word_lower[matched_prefix.len()..];
+
+        // Must have only digits after the prefix
+        if amount_str.is_empty() || !amount_str.chars().all(|c| c.is_ascii_digit()) {
+            return None;
+        }
+
+        let bits: u32 = amount_str.parse().ok()?;
+
+        // Must have at least 1 bit
+        if bits == 0 {
+            return None;
+        }
+
+        // Determine tier and color based on bits amount
+        let (tier, color) = match bits {
+            10000.. => ("10000", "#ff1f1f"),    // Red
+            5000..=9999 => ("5000", "#0099fe"), // Blue
+            1000..=4999 => ("1000", "#1db2a6"), // Teal
+            100..=999 => ("100", "#9c3ee8"),    // Purple
+            _ => ("1", "#979797"),              // Gray
+        };
+
+        // Construct the animated GIF URL using Twitch CDN pattern
+        let cheermote_url = format!(
+            "https://d3aqoihi2n8ty8.cloudfront.net/actions/{}/dark/animated/{}/2.gif",
+            matched_prefix, tier
+        );
+
+        Some((
+            matched_prefix.to_string(),
+            bits,
+            tier.to_string(),
+            color.to_string(),
+            cheermote_url,
+        ))
     }
 
     fn parse_privmsg(raw: &str) -> Option<ChatMessage> {
@@ -1554,7 +1679,7 @@ impl IrcService {
     }
 
     pub async fn stop() -> Result<()> {
-        println!("[IRC Chat] Stopping chat service");
+        debug!("[IRC Chat] Stopping chat service");
 
         // Stop IRC connection
         if let Some(handle) = get_irc_handle().lock().await.take() {
@@ -1581,7 +1706,7 @@ impl IrcService {
         // Clear channel emotes
         *get_channel_emotes().lock().await = None;
 
-        println!("[IRC Chat] Chat service stopped");
+        debug!("[IRC Chat] Chat service stopped");
 
         Ok(())
     }

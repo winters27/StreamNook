@@ -1,4 +1,5 @@
 use futures_util::{SinkExt, StreamExt};
+use log::{debug, error};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
@@ -67,7 +68,7 @@ impl WhisperService {
         {
             let mut connected = self.is_connected.write().await;
             if *connected {
-                println!("[WhisperService] Already connected to whisper EventSub");
+                debug!("[WhisperService] Already connected to whisper EventSub");
                 return Ok(());
             }
             // Mark as connecting immediately to prevent duplicate connections
@@ -78,13 +79,13 @@ impl WhisperService {
 
         // Spawn the WebSocket listener
         tokio::spawn(async move {
-            println!("[WhisperService] Connecting to Twitch EventSub for whispers...");
+            debug!("[WhisperService] Connecting to Twitch EventSub for whispers...");
 
             match connect_async(EVENTSUB_URL).await {
                 Ok((ws_stream, _)) => {
                     let (mut write, mut read) = ws_stream.split();
 
-                    println!("[WhisperService] Connected to EventSub WebSocket");
+                    debug!("[WhisperService] Connected to EventSub WebSocket");
 
                     while let Some(msg) = read.next().await {
                         match msg {
@@ -93,7 +94,7 @@ impl WhisperService {
                                 {
                                     match ws_msg.metadata.message_type.as_str() {
                                         "session_welcome" => {
-                                            println!(
+                                            debug!(
                                                 "[WhisperService] Received session welcome, subscribing to whispers..."
                                             );
                                             if let Ok(payload) =
@@ -110,12 +111,12 @@ impl WhisperService {
                                                 )
                                                 .await
                                                 {
-                                                    eprintln!(
+                                                    error!(
                                                         "[WhisperService] Failed to subscribe to whispers: {}",
                                                         e
                                                     );
                                                 } else {
-                                                    println!(
+                                                    debug!(
                                                         "[WhisperService] Successfully subscribed to whisper events"
                                                     );
                                                 }
@@ -160,7 +161,7 @@ impl WhisperService {
                                                             .to_string(),
                                                     };
 
-                                                    println!(
+                                                    debug!(
                                                         "[WhisperService] Received whisper from {}: {}",
                                                         whisper_event.from_user_name,
                                                         whisper_event.text
@@ -170,7 +171,7 @@ impl WhisperService {
                                                     if let Err(e) = app_handle
                                                         .emit("whisper-received", &whisper_event)
                                                     {
-                                                        eprintln!(
+                                                        error!(
                                                             "[WhisperService] Failed to emit whisper event: {}",
                                                             e
                                                         );
@@ -182,11 +183,11 @@ impl WhisperService {
                                             // Just a keepalive, no action needed
                                         }
                                         "session_reconnect" => {
-                                            println!("[WhisperService] Server requested reconnect");
+                                            debug!("[WhisperService] Server requested reconnect");
                                             // Handle reconnect if needed
                                         }
                                         _ => {
-                                            println!(
+                                            debug!(
                                                 "[WhisperService] Unknown message type: {}",
                                                 ws_msg.metadata.message_type
                                             );
@@ -197,16 +198,16 @@ impl WhisperService {
                             Ok(Message::Ping(data)) => {
                                 // Respond to ping
                                 if let Err(e) = write.send(Message::Pong(data)).await {
-                                    eprintln!("[WhisperService] Failed to send pong: {}", e);
+                                    error!("[WhisperService] Failed to send pong: {}", e);
                                 }
                             }
                             Ok(Message::Close(_)) => {
-                                println!("[WhisperService] WebSocket closed");
+                                debug!("[WhisperService] WebSocket closed");
                                 *is_connected.write().await = false;
                                 break;
                             }
                             Err(e) => {
-                                eprintln!("[WhisperService] WebSocket error: {}", e);
+                                error!("[WhisperService] WebSocket error: {}", e);
                                 *is_connected.write().await = false;
                                 break;
                             }
@@ -215,12 +216,12 @@ impl WhisperService {
                     }
                 }
                 Err(e) => {
-                    eprintln!("[WhisperService] Failed to connect to EventSub: {}", e);
+                    error!("[WhisperService] Failed to connect to EventSub: {}", e);
                 }
             }
 
             *is_connected.write().await = false;
-            println!("[WhisperService] Whisper listener stopped");
+            debug!("[WhisperService] Whisper listener stopped");
         });
 
         Ok(())
@@ -258,7 +259,7 @@ impl WhisperService {
         let response_text = response.text().await.unwrap_or_default();
 
         if status.is_success() {
-            println!("[WhisperService] Whisper subscription created successfully");
+            debug!("[WhisperService] Whisper subscription created successfully");
             Ok(())
         } else {
             Err(format!(

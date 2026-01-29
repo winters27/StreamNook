@@ -1,5 +1,6 @@
 import React, { Component, ErrorInfo, ReactNode } from 'react';
 
+import { Logger } from '../utils/logger';
 interface Props {
     children: ReactNode;
     fallback?: ReactNode;
@@ -27,12 +28,12 @@ class ErrorBoundary extends Component<Props, State> {
 
         if (this.props.reportToLogService) {
             // Log as error so it gets picked up by logService and sent to Discord
-            console.error(`[${componentName}] Critical error caught by boundary:`, error);
-            console.error(`[${componentName}] Component stack:`, errorInfo.componentStack);
+            Logger.error(`[${componentName}] Critical error caught by boundary:`, error);
+            Logger.error(`[${componentName}] Component stack:`, errorInfo.componentStack);
         } else {
             // Use console.warn instead of console.error to avoid Discord webhook spam for handled errors
-            console.warn(`[${componentName}] Error caught and handled by boundary:`, error.message || error.toString());
-            console.warn(`[${componentName}] Component stack:`, errorInfo.componentStack);
+            Logger.warn(`[${componentName}] Error caught and handled by boundary:`, error.message || error.toString());
+            Logger.warn(`[${componentName}] Component stack:`, errorInfo.componentStack);
         }
     }
 

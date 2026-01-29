@@ -1,6 +1,7 @@
 // Universal cache service for badges, emotes, and other assets
 import { invoke } from '@tauri-apps/api/core';
 
+import { Logger } from '../utils/logger';
 export interface UniversalCacheEntry {
   id: string;
   cache_type: 'badge' | 'emote' | 'badgebase' | 'third-party-badge' | 'cosmetic';
@@ -34,7 +35,7 @@ export async function getUniversalCachedItem(
     });
     return result;
   } catch (error) {
-    console.error('[UniversalCache] Failed to get cached item:', error);
+    Logger.error('[UniversalCache] Failed to get cached item:', error);
     return null;
   }
 }
@@ -58,7 +59,7 @@ export async function saveUniversalCachedItem(
       expiryDays,
     });
   } catch (error) {
-    console.error('[UniversalCache] Failed to save cached item:', error);
+    Logger.error('[UniversalCache] Failed to save cached item:', error);
   }
 }
 
@@ -72,10 +73,10 @@ export async function syncUniversalCache(
     const count = await invoke<number>('sync_universal_cache_data', {
       cacheTypes,
     });
-    console.log(`[UniversalCache] Synced ${count} items from universal cache`);
+    Logger.debug(`[UniversalCache] Synced ${count} items from universal cache`);
     return count;
   } catch (error) {
-    console.error('[UniversalCache] Failed to sync:', error);
+    Logger.error('[UniversalCache] Failed to sync:', error);
     return 0;
   }
 }
@@ -86,10 +87,10 @@ export async function syncUniversalCache(
 export async function cleanupUniversalCache(): Promise<number> {
   try {
     const count = await invoke<number>('cleanup_universal_cache');
-    console.log(`[UniversalCache] Cleaned up ${count} expired entries`);
+    Logger.debug(`[UniversalCache] Cleaned up ${count} expired entries`);
     return count;
   } catch (error) {
-    console.error('[UniversalCache] Failed to cleanup:', error);
+    Logger.error('[UniversalCache] Failed to cleanup:', error);
     return 0;
   }
 }
@@ -100,9 +101,9 @@ export async function cleanupUniversalCache(): Promise<number> {
 export async function clearUniversalCache(): Promise<void> {
   try {
     await invoke('clear_all_universal_cache');
-    console.log('[UniversalCache] Cleared all cache data');
+    Logger.debug('[UniversalCache] Cleared all cache data');
   } catch (error) {
-    console.error('[UniversalCache] Failed to clear cache:', error);
+    Logger.error('[UniversalCache] Failed to clear cache:', error);
   }
 }
 
@@ -114,7 +115,7 @@ export async function getUniversalCacheStats(): Promise<UniversalCacheStats | nu
     const stats = await invoke<UniversalCacheStats>('get_universal_cache_statistics');
     return stats;
   } catch (error) {
-    console.error('[UniversalCache] Failed to get stats:', error);
+    Logger.error('[UniversalCache] Failed to get stats:', error);
     return null;
   }
 }
@@ -177,11 +178,11 @@ export async function autoSyncUniversalCacheIfStale(): Promise<boolean> {
   try {
     const synced = await invoke<boolean>('auto_sync_universal_cache_if_stale');
     if (synced) {
-      console.log('[UniversalCache] Auto-sync triggered (cache was stale)');
+      Logger.debug('[UniversalCache] Auto-sync triggered (cache was stale)');
     }
     return synced;
   } catch (error) {
-    console.error('[UniversalCache] Auto-sync check failed:', error);
+    Logger.error('[UniversalCache] Auto-sync check failed:', error);
     return false;
   }
 }

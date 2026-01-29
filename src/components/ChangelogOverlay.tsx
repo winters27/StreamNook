@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import type { ReleaseNotes } from '../types';
 import { parseInlineMarkdown } from '../services/markdownService';
 
+import { Logger } from '../utils/logger';
 interface ChangelogOverlayProps {
   version: string;
   onClose: () => void;
@@ -119,7 +120,7 @@ const ChangelogOverlay = ({ version, onClose }: ChangelogOverlayProps) => {
         const notes = await invoke<ReleaseNotes>('get_release_notes', { version });
         setReleaseNotes(notes);
       } catch (err) {
-        console.error('Failed to fetch release notes:', err);
+        Logger.error('Failed to fetch release notes:', err);
         setError('Failed to load release notes');
       } finally {
         setIsLoading(false);

@@ -1,3 +1,4 @@
+use log::{debug, error};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Listener, Manager};
@@ -44,11 +45,11 @@ impl BackgroundService {
     pub async fn start(&self) {
         let mut is_running = self.is_running.write().await;
         if *is_running {
-            println!("Background service is already running.");
+            debug!("Background service is already running.");
             return;
         }
         *is_running = true;
-        println!("Starting background service for channel points farming with WebSocket pooling.");
+        debug!("Starting background service for channel points farming with WebSocket pooling.");
 
         let is_running = self.is_running.clone();
         let settings = self.settings.clone();
@@ -67,7 +68,7 @@ impl BackgroundService {
                     let reason = payload["reason"].as_str().unwrap_or("watch");
 
                     if points > 0 {
-                        println!("💰 Channel points earned: +{} ({})", points, reason);
+                        debug!("💰 Channel points earned: +{} ({})", points, reason);
 
                         // Create a channel points claim record
                         let claim = ChannelPointsClaim {
@@ -105,13 +106,13 @@ impl BackgroundService {
                     match ChannelPointsService::new().get_user_id(&token).await {
                         Ok(id) => (token, id),
                         Err(e) => {
-                            eprintln!("Failed to get user ID for WebSockets: {}", e);
+                            error!("Failed to get user ID for WebSockets: {}", e);
                             return;
                         }
                     }
                 }
                 Err(e) => {
-                    eprintln!("Failed to get token for WebSockets: {}", e);
+                    error!("Failed to get token for WebSockets: {}", e);
                     return;
                 }
             };
@@ -123,7 +124,7 @@ impl BackgroundService {
                         streams.iter().map(|s| s.user_id.clone()).collect();
 
                     if !channel_ids.is_empty() {
-                        println!(
+                        debug!(
                             "🔌 Connecting WebSockets to {} channels for real-time monitoring",
                             channel_ids.len()
                         );
@@ -143,12 +144,12 @@ impl BackgroundService {
                             .connect_to_channels(channel_ids, &user_id, &token, app_handle_ws)
                             .await
                         {
-                            eprintln!("Failed to connect WebSockets: {}", e);
+                            error!("Failed to connect WebSockets: {}", e);
                         }
                     }
                 }
                 Err(e) => {
-                    eprintln!("Failed to get channels for WebSocket monitoring: {}", e);
+                    error!("Failed to get channels for WebSocket monitoring: {}", e);
                 }
             }
         });
@@ -170,12 +171,12 @@ impl BackgroundService {
                 };
 
                 if auto_claim_enabled {
-                    println!("Checking for channel points bonuses to claim...");
+                    debug!("Checking for channel points bonuses to claim...");
                     // Use the drops token (same user, different client ID)
                     let token = match DropsAuthService::get_token().await {
                         Ok(token) => token,
                         Err(e) => {
-                            eprintln!(
+                            error!(
                                 "Could not get drops auth token for channel points farming: {}",
                                 e
                             );
@@ -186,10 +187,10 @@ impl BackgroundService {
                     match TwitchService::get_followed_streams(&app_handle_claim.state()).await {
                         Ok(live_streams) => {
                             if live_streams.is_empty() {
-                                println!("No followed streams are currently live.");
+                                debug!("No followed streams are currently live.");
                                 continue;
                             }
-                            println!(
+                            debug!(
                                 "Found {} live streams to check for channel points bonuses.",
                                 live_streams.len()
                             );
@@ -197,7 +198,7 @@ impl BackgroundService {
 
                             // Check and claim bonuses for all live streams
                             for stream in &live_streams {
-                                println!("Checking channel points for: {}", stream.user_name);
+                                debug!("Checking channel points for: {}", stream.user_name);
                                 match cps
                                     .check_and_claim_points(
                                         &stream.user_login,
@@ -207,7 +208,7 @@ impl BackgroundService {
                                     .await
                                 {
                                     Ok(Some(points)) => {
-                                        println!(
+                                        debug!(
                                             "Successfully claimed {} bonus points for {}.",
                                             points, stream.user_name
                                         );
@@ -216,7 +217,7 @@ impl BackgroundService {
                                         // No bonus available, this is normal
                                     }
                                     Err(e) => {
-                                        eprintln!(
+                                        error!(
                                             "Error checking/claiming points for {}: {}",
                                             stream.user_name, e
                                         );
@@ -225,14 +226,14 @@ impl BackgroundService {
                             }
                         }
                         Err(e) => {
-                            eprintln!("Error fetching followed streams: {}", e);
+                            error!("Error fetching followed streams: {}", e);
                         }
                     }
                 } else {
-                    println!("Auto-claiming channel points is disabled.");
+                    debug!("Auto-claiming channel points is disabled.");
                 }
             }
-            println!("Channel points bonus claiming loop stopped.");
+            debug!("Channel points bonus claiming loop stopped.");
         });
 
         // Stream watching loop for earning channel points (separate from bonus claiming)
@@ -254,7 +255,7 @@ impl BackgroundService {
             let mut stream_watch_history: HashMap<String, DateTime<Utc>> = HashMap::new();
             let mut current_rotation_index: usize = 0; // Track where we are in the rotation
 
-            println!("🔄 [CP-WATCH] Channel points watch loop started");
+            debug!("🔄 [CP-WATCH] Channel points watch loop started");
 
             while *is_running_watch.read().await {
                 watch_interval.tick().await;
@@ -268,13 +269,13 @@ impl BackgroundService {
                     )
                 };
 
-                println!(
+                debug!(
                     "🔍 [CP-WATCH] Tick - auto_claim_channel_points={}",
                     auto_claim_enabled
                 );
 
                 if !auto_claim_enabled {
-                    println!("⏸️ [CP-WATCH] Channel points farming disabled in settings");
+                    debug!("⏸️ [CP-WATCH] Channel points farming disabled in settings");
                     // If disabled, stop watching all streams
                     let cps = cps_watch.lock().await;
                     let watching = cps.get_watching_streams().await;
@@ -288,7 +289,7 @@ impl BackgroundService {
                 let token = match DropsAuthService::get_token().await {
                     Ok(token) => token,
                     Err(e) => {
-                        eprintln!("Could not get auth token for watching streams: {}", e);
+                        error!("Could not get auth token for watching streams: {}", e);
                         continue;
                     }
                 };
@@ -298,7 +299,7 @@ impl BackgroundService {
                     match TwitchService::get_followed_streams(&app_handle_watch.state()).await {
                         Ok(streams) => streams,
                         Err(e) => {
-                            eprintln!("Error fetching followed streams: {}", e);
+                            error!("Error fetching followed streams: {}", e);
                             continue;
                         }
                     };
@@ -318,7 +319,7 @@ impl BackgroundService {
                     minutes_since_rotation = 0; // Reset counter
 
                     let total_streams = live_streams.len();
-                    println!(
+                    debug!(
                         "🔄 Rotating streams for channel points farming ({} live streams)...",
                         total_streams
                     );
@@ -349,13 +350,13 @@ impl BackgroundService {
                             {
                                 streams_to_watch.push(reserved_stream);
                                 reserved_stream_id = Some(reserved_id.clone());
-                                println!(
+                                debug!(
                                     "  🔒 Reserved slot: {} (for gifted sub eligibility)",
                                     reserved_stream.user_name
                                 );
                             } else {
                                 // Reserved stream went offline - emit event to frontend
-                                println!("  ⚠️ Reserved stream went offline, clearing reservation");
+                                debug!("  ⚠️ Reserved stream went offline, clearing reservation");
                                 let _ = app_handle_watch.emit("reserved-stream-offline", ());
                             }
                         }
@@ -396,7 +397,7 @@ impl BackgroundService {
                             let duration = Utc::now().signed_duration_since(*last_watched);
                             format!("{} min ago", duration.num_minutes())
                         };
-                        println!(
+                        debug!(
                             "  📌 Rotation slot: {} (last watched: {})",
                             stream.user_name, time_since
                         );
@@ -411,7 +412,7 @@ impl BackgroundService {
                         let channel_id = &stream.user_id;
                         let channel_login = &stream.user_login;
 
-                        println!(
+                        debug!(
                             "🎬 Starting to watch {} for channel points (rotation {}/{})",
                             stream.user_name,
                             streams_to_watch
@@ -425,7 +426,7 @@ impl BackgroundService {
                             .start_watching_stream(channel_id, channel_login, &token)
                             .await
                         {
-                            eprintln!("Failed to start watching {}: {}", stream.user_name, e);
+                            error!("Failed to start watching {}: {}", stream.user_name, e);
                         }
                     }
 
@@ -433,7 +434,7 @@ impl BackgroundService {
                     if total_streams > MAX_CONCURRENT_STREAMS {
                         let rotation_cycle =
                             (total_streams + MAX_CONCURRENT_STREAMS - 1) / MAX_CONCURRENT_STREAMS;
-                        println!(
+                        debug!(
                             "🔄 Full rotation cycle: {} streams / {} per rotation = ~{} rotations needed",
                             total_streams, MAX_CONCURRENT_STREAMS, rotation_cycle
                         );
@@ -444,24 +445,24 @@ impl BackgroundService {
                 let cps = cps_watch.lock().await;
                 let watching = cps.get_watching_streams().await;
                 if !watching.is_empty() {
-                    println!(
+                    debug!(
                         "📡 Sending minute-watched payloads for {} streams (farming {} total live)",
                         watching.len(),
                         live_streams.len()
                     );
                     if let Err(e) = cps.send_minute_watched_for_streams(&token).await {
-                        eprintln!("Error sending minute-watched payloads: {}", e);
+                        error!("Error sending minute-watched payloads: {}", e);
                     }
                 } else if !live_streams.is_empty() {
                     // We have live streams but aren't watching any - start immediately
-                    println!(
+                    debug!(
                         "⚠️ Have {} live streams but not watching any, starting immediately",
                         live_streams.len()
                     );
                     minutes_since_rotation = ROTATION_INTERVAL_MINUTES; // Force rotation on next tick
                 }
             }
-            println!("Stream watching loop stopped.");
+            debug!("Stream watching loop stopped.");
         });
     }
 
@@ -477,7 +478,7 @@ impl BackgroundService {
             let _ = cps.stop_watching_stream(&stream.channel_id).await;
         }
 
-        println!("Background service stopped.");
+        debug!("Background service stopped.");
     }
 
     /// Get all channel points balances from the channel points service
@@ -495,14 +496,14 @@ impl BackgroundService {
         reserved.channel_id = Some(channel_id);
         reserved.channel_login = Some(channel_login.clone());
         reserved.reserved_at = Some(Utc::now());
-        println!("🔒 Reserved watch slot for: {}", channel_login);
+        debug!("🔒 Reserved watch slot for: {}", channel_login);
     }
 
     /// Clear the reserved slot, returning it to the rotation pool
     pub async fn clear_reservation(&self) {
         let mut reserved = self.reserved_slot.write().await;
         if let Some(login) = &reserved.channel_login {
-            println!("🔓 Cleared reservation for: {}", login);
+            debug!("🔓 Cleared reservation for: {}", login);
         }
         *reserved = ReservedStreamSlot::default();
     }

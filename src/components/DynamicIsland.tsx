@@ -5,6 +5,7 @@ import { X, SpeakerHigh, SpeakerSlash } from 'phosphor-react';
 import { listen, emit } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../stores/AppStore';
+import { Logger } from '../utils/logger';
 import type {
     DynamicIslandNotification,
     LiveNotificationData,
@@ -124,7 +125,7 @@ const saveCachedNotifications = (notifications: DynamicIslandNotification[]) => 
             timestamp: Date.now(),
         }));
     } catch (error) {
-        console.warn('Failed to cache notifications:', error);
+        Logger.warn('Failed to cache notifications:', error);
     }
 };
 
@@ -229,7 +230,7 @@ const DynamicIsland = () => {
             oscillator.start(audioContext.currentTime);
             oscillator.stop(audioContext.currentTime + 0.25);
         } catch (error) {
-            console.warn('Could not play notification sound:', error);
+            Logger.warn('Could not play notification sound:', error);
         }
     }, []);
 
@@ -306,7 +307,7 @@ const DynamicIsland = () => {
                                             await invoke('download_and_install_bundle');
                                             addToast('Update installed successfully!', 'success');
                                         } catch (e) {
-                                            console.error('Failed to update:', e);
+                                            Logger.error('Failed to update:', e);
                                             addToast('Update failed: ' + String(e), 'error');
                                         }
                                     },
@@ -336,7 +337,7 @@ const DynamicIsland = () => {
                 }
             }
         } catch (error) {
-            console.warn('Could not check for updates:', error);
+            Logger.warn('Could not check for updates:', error);
         }
     }, [notificationsEnabled, showUpdateNotifications, notifications, addNotification, soundEnabled, playNotificationSound, useDynamicIsland, useToast, quickUpdateOnToast, addToast, openSettings, sendNativeNotification]);
 
@@ -356,14 +357,14 @@ const DynamicIsland = () => {
 
                 // If auto-update is enabled and an update is available, start it immediately
                 if (autoUpdateOnStartRef.current && status.update_available) {
-                    console.log('[Auto-Update] Update available, starting automatic update...');
+                    Logger.debug('[Auto-Update] Update available, starting automatic update...');
                     addToast(`Auto-updating to v${status.latest_version}...`, 'info');
 
                     try {
                         await invoke('download_and_install_bundle');
                         addToast('Update installed successfully!', 'success');
                     } catch (e) {
-                        console.error('[Auto-Update] Failed:', e);
+                        Logger.error('[Auto-Update] Failed:', e);
                         addToast('Auto-update failed: ' + String(e), 'error');
                         // Still notify about the available update
                         checkForUpdates();
@@ -373,7 +374,7 @@ const DynamicIsland = () => {
                     checkForUpdates();
                 }
             } catch (error) {
-                console.warn('Could not check for updates:', error);
+                Logger.warn('Could not check for updates:', error);
             }
         }, 5000);
 
@@ -863,7 +864,7 @@ const DynamicIsland = () => {
             campaign_names: string[];
         }>('new-favorite-drops', (event) => {
             const data = event.payload;
-            console.log('[DynamicIsland] New drops in favorite category:', data);
+            Logger.debug('[DynamicIsland] New drops in favorite category:', data);
 
             // Add to Dynamic Island if enabled
             if (useDynamicIsland) {

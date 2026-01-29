@@ -1,6 +1,7 @@
 use crate::services::seventv_auth_service::{
     SevenTVAuthService, SevenTVAuthStatus, SevenTVCosmeticsService,
 };
+use log::debug;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
@@ -32,7 +33,7 @@ pub async fn open_seventv_login_window(app: AppHandle) -> Result<bool, String> {
     let window_label = format!("seventv-login-{}", chrono::Utc::now().timestamp_millis());
     let login_url = SevenTVAuthService::get_login_url();
 
-    println!("[7TV] Opening login window: {}", login_url);
+    debug!("[7TV] Opening login window: {}", login_url);
 
     // Simple JavaScript: find token, navigate to URL with token
     let token_capture_script = r#"
@@ -109,7 +110,7 @@ pub async fn open_seventv_login_window(app: AppHandle) -> Result<bool, String> {
 
                     // Log occasionally
                     if poll_count % 20 == 0 {
-                        println!(
+                        debug!(
                             "[7TV] Poll #{}: URL = {}",
                             poll_count,
                             &url_str[..url_str.len().min(50)]
@@ -120,7 +121,7 @@ pub async fn open_seventv_login_window(app: AppHandle) -> Result<bool, String> {
                     if url_str.contains("#7TV_TOKEN=") {
                         if let Some(token_part) = url_str.split("#7TV_TOKEN=").nth(1) {
                             if let Ok(token) = urlencoding::decode(token_part) {
-                                println!("[7TV] Token captured! Length: {}", token.len());
+                                debug!("[7TV] Token captured! Length: {}", token.len());
 
                                 // Decode JWT to get user_id
                                 let mut user_id = String::new();
@@ -145,7 +146,7 @@ pub async fn open_seventv_login_window(app: AppHandle) -> Result<bool, String> {
                                                         .and_then(|v| v.as_str())
                                                         .unwrap_or("")
                                                         .to_string();
-                                                    println!("[7TV] User ID from JWT: {}", user_id);
+                                                    debug!("[7TV] User ID from JWT: {}", user_id);
                                                 }
                                             }
                                         }
@@ -161,10 +162,10 @@ pub async fn open_seventv_login_window(app: AppHandle) -> Result<bool, String> {
                                 .await
                                 {
                                     Ok(_) => {
-                                        println!("[7TV] Token stored successfully!");
+                                        debug!("[7TV] Token stored successfully!");
                                         let _ = app_handle.emit("seventv-connected", true);
                                     }
-                                    Err(e) => println!("[7TV] Failed to store token: {}", e),
+                                    Err(e) => debug!("[7TV] Failed to store token: {}", e),
                                 }
 
                                 // Close window
@@ -176,12 +177,12 @@ pub async fn open_seventv_login_window(app: AppHandle) -> Result<bool, String> {
                     }
                 }
             } else {
-                println!("[7TV] Window closed by user");
+                debug!("[7TV] Window closed by user");
                 return;
             }
         }
 
-        println!("[7TV] Token capture timed out");
+        debug!("[7TV] Token capture timed out");
     });
 
     Ok(true)

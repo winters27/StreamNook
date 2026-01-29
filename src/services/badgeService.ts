@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 
+import { Logger } from '../utils/logger';
 /**
  * Unified Badge Service - Lightweight wrapper for Rust backend
  * All heavy lifting (API calls, caching, parsing) is done in Rust
@@ -129,7 +130,7 @@ export async function getAllUserBadges(
       ivrBadges: [], // Legacy field, not used anymore
     };
   } catch (error) {
-    console.error('[badgeService] Failed to get user badges:', error);
+    Logger.error('[badgeService] Failed to get user badges:', error);
     return {
       displayBadges: [],
       earnedBadges: [],
@@ -185,7 +186,7 @@ export async function getAllUserBadgesWithEarned(
       ivrBadges: [], // Legacy field, not used anymore
     };
   } catch (error) {
-    console.error('[badgeService] Failed to get user badges with earned:', error);
+    Logger.error('[badgeService] Failed to get user badges with earned:', error);
     return {
       displayBadges: [],
       earnedBadges: [],

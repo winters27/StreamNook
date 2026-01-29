@@ -1,6 +1,7 @@
 import { X, Gift, Package, Check, Pause, Play, Clock, Zap, Star, Ban, ExternalLink } from 'lucide-react';
 import type { UnifiedGame, DropProgress, MiningStatus, DropCampaign, TimeBasedDrop, InventoryItem, CompletedDrop } from '../../types';
 
+import { Logger } from '../../utils/logger';
 // Helper to check if a drop is mineable
 // Uses the is_mineable field from backend, with fallback to checking required_minutes_watched
 // Also checks inventory data as a secondary source since it has more accurate progress info
@@ -324,12 +325,12 @@ export default function GameDetailPanel({
                         const gameDropIds = new Set(allDropsForGame.map(d => d.id));
 
                         // DEBUG: Log all IDs for comparison
-                        console.log('[GameDetailPanel] Game:', game.name);
-                        console.log('[GameDetailPanel] Current campaign being mined:', currentCampaignName);
-                        console.log('[GameDetailPanel] Drops from this game:', localDropMap.size);
-                        console.log('[GameDetailPanel] Global drops available:', globalDropMap.size);
-                        console.log('[GameDetailPanel] All progress entries:', progress.length);
-                        console.log('[GameDetailPanel] Progress drop_ids:', progress.map(p => p.drop_id));
+                        Logger.debug('[GameDetailPanel] Game:', game.name);
+                        Logger.debug('[GameDetailPanel] Current campaign being mined:', currentCampaignName);
+                        Logger.debug('[GameDetailPanel] Drops from this game:', localDropMap.size);
+                        Logger.debug('[GameDetailPanel] Global drops available:', globalDropMap.size);
+                        Logger.debug('[GameDetailPanel] All progress entries:', progress.length);
+                        Logger.debug('[GameDetailPanel] Progress drop_ids:', progress.map(p => p.drop_id));
 
                         // Filter progress entries that are actively being mined:
                         // - Has some progress (current_minutes > 0)
@@ -356,7 +357,7 @@ export default function GameDetailPanel({
                             if (currentCampaignName) {
                                 const dropCampaignName = localLookup?.campaignName || globalLookup?.campaignName;
                                 if (dropCampaignName && dropCampaignName !== currentCampaignName) {
-                                    console.log(`[GameDetailPanel] Filtering out drop ${p.drop_id} - belongs to "${dropCampaignName}", mining "${currentCampaignName}"`);
+                                    Logger.debug(`[GameDetailPanel] Filtering out drop ${p.drop_id} - belongs to "${dropCampaignName}", mining "${currentCampaignName}"`);
                                     return false;
                                 }
                             }
@@ -364,7 +365,7 @@ export default function GameDetailPanel({
                             return true;
                         });
 
-                        console.log('[GameDetailPanel] Active progress entries for current campaign:', progressForThisGame.length);
+                        Logger.debug('[GameDetailPanel] Active progress entries for current campaign:', progressForThisGame.length);
 
                         // Map each progress entry to its drop object (for benefit image/name)
                         const dropsWithProgress = progressForThisGame.map(dropProg => {
@@ -377,7 +378,7 @@ export default function GameDetailPanel({
                                 const { drop: localDrop } = localLookup;
                                 const benefitImage = localDrop.benefit_edges?.[0]?.image_url || '';
                                 const benefitName = localDrop.benefit_edges?.[0]?.name || localDrop.name;
-                                console.log('[GameDetailPanel] ✓ Local match:', dropProg.drop_id, '→', benefitName, benefitImage ? '(has image)' : '(no image)');
+                                Logger.debug('[GameDetailPanel] ✓ Local match:', dropProg.drop_id, '→', benefitName, benefitImage ? '(has image)' : '(no image)');
                                 return {
                                     dropId: localDrop.id,
                                     progress: dropProg,
@@ -391,7 +392,7 @@ export default function GameDetailPanel({
                                 const { drop: globalDrop, gameName: dropGameName } = globalLookup;
                                 const benefitImage = globalDrop.benefit_edges?.[0]?.image_url || '';
                                 const benefitName = globalDrop.benefit_edges?.[0]?.name || globalDrop.name;
-                                console.log('[GameDetailPanel] ✓ Global match:', dropProg.drop_id, '→', benefitName, `(from ${dropGameName})`, benefitImage ? '(has image)' : '(no image)');
+                                Logger.debug('[GameDetailPanel] ✓ Global match:', dropProg.drop_id, '→', benefitName, `(from ${dropGameName})`, benefitImage ? '(has image)' : '(no image)');
                                 return {
                                     dropId: globalDrop.id,
                                     progress: dropProg,
@@ -403,7 +404,7 @@ export default function GameDetailPanel({
                             } else {
                                 // Progress exists but no matching drop object found anywhere
                                 // Show fallback UI with just the progress data
-                                console.log('[GameDetailPanel] ✗ No drop match for:', dropProg.drop_id);
+                                Logger.debug('[GameDetailPanel] ✗ No drop match for:', dropProg.drop_id);
                                 return {
                                     dropId: dropProg.drop_id,
                                     progress: dropProg,
@@ -415,7 +416,7 @@ export default function GameDetailPanel({
                             }
                         });
 
-                        console.log('[GameDetailPanel] Final drops with progress:', dropsWithProgress.length, 'matched:', dropsWithProgress.filter(d => d.hasDropObject).length);
+                        Logger.debug('[GameDetailPanel] Final drops with progress:', dropsWithProgress.length, 'matched:', dropsWithProgress.filter(d => d.hasDropObject).length);
 
                         // Only show "Currently Mining" section if we are actually mining THIS specific game
                         // This prevents showing the mining UI when viewing a different game's panel
@@ -582,9 +583,9 @@ export default function GameDetailPanel({
                             return drop.benefit_edges.some(benefit => completedBenefitIds.has(benefit.id));
                         };
                         
-                        console.log('[Active Campaigns] Completed benefit IDs (from gameEventDrops):', completedBenefitIds.size);
-                        console.log('[Active Campaigns] Completed drop IDs (from inventory progress):', completedDropIds.size);
-                        console.log('[Active Campaigns] Backend completedDrops:', completedDrops.length);
+                        Logger.debug('[Active Campaigns] Completed benefit IDs (from gameEventDrops):', completedBenefitIds.size);
+                        Logger.debug('[Active Campaigns] Completed drop IDs (from inventory progress):', completedDropIds.size);
+                        Logger.debug('[Active Campaigns] Backend completedDrops:', completedDrops.length);
                         
                         // Filter campaigns: show only incomplete campaigns in this section
                         // A campaign is shown here if it has ANY drop that:
@@ -597,13 +598,13 @@ export default function GameDetailPanel({
                             return campaign.time_based_drops.some(drop => {
                                 // FIRST: Check if this drop's BENEFIT is in the completedBenefitIds set
                                 if (isDropCompletedByBenefit(drop)) {
-                                    console.log('[Active Campaigns] Drop', drop.name, 'has completed benefit, skipping');
+                                    Logger.debug('[Active Campaigns] Drop', drop.name, 'has completed benefit, skipping');
                                     return false; // This drop's reward was already claimed
                                 }
                                 
                                 // SECOND: Check if this drop's ID is in the completedDropIds set (from inventory)
                                 if (completedDropIds.has(drop.id)) {
-                                    console.log('[Active Campaigns] Drop', drop.name, 'is in completed drops (inventory), skipping');
+                                    Logger.debug('[Active Campaigns] Drop', drop.name, 'is in completed drops (inventory), skipping');
                                     return false;
                                 }
                                 
@@ -749,23 +750,23 @@ export default function GameDetailPanel({
                         const addedDropIds = new Set<string>();
 
                         // DEBUG: Log what we're receiving
-                        console.log('[Your Collection] Game:', game.name);
-                        console.log('[Your Collection] inventory_items count:', game.inventory_items.length);
-                        console.log('[Your Collection] progress array count:', progress.length);
+                        Logger.debug('[Your Collection] Game:', game.name);
+                        Logger.debug('[Your Collection] inventory_items count:', game.inventory_items.length);
+                        Logger.debug('[Your Collection] progress array count:', progress.length);
 
                         // 1. Check inventory_items for completed/claimed drops
                         // Each inventory item has its own progress data
                         game.inventory_items.forEach(item => {
-                            console.log('[Your Collection] Inventory item:', item.campaign.name, 'claimed_drops:', item.claimed_drops, 'total_drops:', item.total_drops);
+                            Logger.debug('[Your Collection] Inventory item:', item.campaign.name, 'claimed_drops:', item.claimed_drops, 'total_drops:', item.total_drops);
 
                             item.campaign.time_based_drops.forEach((drop, dropIndex) => {
                                 // Check if this drop has internal progress data showing it's complete
                                 const dropProgress = drop.progress;
 
                                 // DEBUG: Log each drop's progress
-                                console.log(`[Your Collection] Drop ${dropIndex}:`, drop.id, drop.name);
-                                console.log('  - progress:', dropProgress);
-                                console.log('  - drop.required_minutes_watched:', drop.required_minutes_watched);
+                                Logger.debug(`[Your Collection] Drop ${dropIndex}:`, drop.id, drop.name);
+                                Logger.debug('  - progress:', dropProgress);
+                                Logger.debug('  - drop.required_minutes_watched:', drop.required_minutes_watched);
 
                                 // Check completion using multiple methods:
                                 // 1. Progress field shows 100%
@@ -784,7 +785,7 @@ export default function GameDetailPanel({
                                 // Also check if claimed based on claimed_drops count
                                 const isClaimedByIndex = dropIndex < item.claimed_drops;
 
-                                console.log('  - isComplete:', isComplete, 'isClaimed:', isClaimed, 'isClaimedByIndex:', isClaimedByIndex);
+                                Logger.debug('  - isComplete:', isComplete, 'isClaimed:', isClaimed, 'isClaimedByIndex:', isClaimedByIndex);
 
                                 // Include if: (a) complete based on progress, or (b) claimed based on index
                                 if (isComplete || isClaimedByIndex) {
@@ -798,7 +799,7 @@ export default function GameDetailPanel({
                                             isClaimed: isClaimed || isClaimedByIndex,
                                             isMineable: isDropMineable(drop, game.inventory_items),
                                         });
-                                        console.log('  ✓ Added to collection, drop_instance_id:', dropProgress?.drop_instance_id);
+                                        Logger.debug('  ✓ Added to collection, drop_instance_id:', dropProgress?.drop_instance_id);
                                     }
                                 }
                             });
@@ -849,7 +850,7 @@ export default function GameDetailPanel({
                                                 isClaimed,
                                                 isMineable: isDropMineable(drop, game.inventory_items),
                                             });
-                                            console.log('[Your Collection] Added from active campaign:', drop.name, 'claimed:', isClaimed);
+                                            Logger.debug('[Your Collection] Added from active campaign:', drop.name, 'claimed:', isClaimed);
                                         }
                                     }
                                 }

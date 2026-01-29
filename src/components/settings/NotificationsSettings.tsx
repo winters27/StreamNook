@@ -3,6 +3,7 @@ import { useAppStore } from '../../stores/AppStore';
 import { invoke } from '@tauri-apps/api/core';
 import { Bell, Radio, MessageCircle, Download, Smartphone, MessageSquare, Gift, Award, Zap } from 'lucide-react';
 
+import { Logger } from '../../utils/logger';
 const NotificationsSettings = () => {
   const { settings, updateSettings } = useAppStore();
   const [isSending, setIsSending] = useState(false);
@@ -36,7 +37,7 @@ const NotificationsSettings = () => {
     try {
       await invoke('send_test_notification');
     } catch (error) {
-      console.error('Failed to send test notification:', error);
+      Logger.error('Failed to send test notification:', error);
     } finally {
       setIsSending(false);
     }

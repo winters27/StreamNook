@@ -1,6 +1,7 @@
 import { createClient, RealtimeChannel, SupabaseClient } from '@supabase/supabase-js';
 import type { TwitchUser } from '../types';
 
+import { Logger } from '../utils/logger';
 // Supabase client singleton
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -14,9 +15,9 @@ let supabase: SupabaseClient | null = null;
 
 if (isConfigured) {
     supabase = createClient(supabaseUrl, supabaseAnonKey);
-    console.log('[Supabase] Client initialized');
+    Logger.debug('[Supabase] Client initialized');
 } else {
-    console.warn('[Supabase] Not configured - analytics features disabled. Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to .env');
+    Logger.warn('[Supabase] Not configured - analytics features disabled. Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to .env');
 }
 
 // Presence channel reference
@@ -54,7 +55,7 @@ export const trackPresence = async (
     appVersion?: string
 ): Promise<(() => void) | null> => {
     if (!supabase) {
-        console.log('[Supabase] Skipping presence tracking - not configured');
+        Logger.debug('[Supabase] Skipping presence tracking - not configured');
         return null;
     }
 
@@ -89,32 +90,32 @@ export const trackPresence = async (
         presenceChannel
             .on('presence', { event: 'sync' }, () => {
                 const state = presenceChannel?.presenceState();
-                console.log('[Supabase] Presence sync:', Object.keys(state || {}).length, 'users online');
+                Logger.debug('[Supabase] Presence sync:', Object.keys(state || {}).length, 'users online');
             })
             .on('presence', { event: 'join' }, ({ key, newPresences }) => {
-                console.log('[Supabase] User joined:', key, newPresences);
+                Logger.debug('[Supabase] User joined:', key, newPresences);
             })
             .on('presence', { event: 'leave' }, ({ key, leftPresences }) => {
-                console.log('[Supabase] User left:', key, leftPresences);
+                Logger.debug('[Supabase] User left:', key, leftPresences);
             })
             .subscribe(async (status) => {
                 if (status === 'SUBSCRIBED') {
                     await presenceChannel?.track(presenceState);
-                    console.log('[Supabase] Presence tracking started for:', currentPresenceKey);
+                    Logger.debug('[Supabase] Presence tracking started for:', currentPresenceKey);
                 }
             });
 
         // Return cleanup function
         return () => {
             if (presenceChannel) {
-                console.log('[Supabase] Cleaning up presence tracking');
+                Logger.debug('[Supabase] Cleaning up presence tracking');
                 presenceChannel.unsubscribe();
                 presenceChannel = null;
                 currentPresenceKey = null;
             }
         };
     } catch (error) {
-        console.error('[Supabase] Failed to track presence:', error);
+        Logger.error('[Supabase] Failed to track presence:', error);
         return null;
     }
 };
@@ -127,7 +128,7 @@ export const trackPresence = async (
  */
 export const updatePresence = async (userId: string, displayName: string, appVersion?: string): Promise<void> => {
     if (!supabase || !presenceChannel) {
-        console.log('[Supabase] Skipping presence update - not configured or not tracking');
+        Logger.debug('[Supabase] Skipping presence update - not configured or not tracking');
         return;
     }
 
@@ -140,9 +141,9 @@ export const updatePresence = async (userId: string, displayName: string, appVer
         };
 
         await presenceChannel.track(presenceState);
-        console.log('[Supabase] Presence updated for user:', displayName);
+        Logger.debug('[Supabase] Presence updated for user:', displayName);
     } catch (error) {
-        console.error('[Supabase] Failed to update presence:', error);
+        Logger.error('[Supabase] Failed to update presence:', error);
     }
 };
 
@@ -153,7 +154,7 @@ export const updatePresence = async (userId: string, displayName: string, appVer
  */
 export const upsertUser = async (user: TwitchUser, appVersion?: string): Promise<void> => {
     if (!supabase) {
-        console.log('[Supabase] Skipping user upsert - not configured');
+        Logger.debug('[Supabase] Skipping user upsert - not configured');
         return;
     }
 
@@ -177,16 +178,16 @@ export const upsertUser = async (user: TwitchUser, appVersion?: string): Promise
             });
 
         if (error) {
-            console.error('[Supabase] Failed to upsert user:', error);
+            Logger.error('[Supabase] Failed to upsert user:', error);
             return;
         }
 
-        console.log('[Supabase] User upserted:', user.display_name || user.username);
+        Logger.debug('[Supabase] User upserted:', user.display_name || user.username);
 
         // Also update presence with user info
         await updatePresence(user.user_id, user.display_name || user.username, appVersion);
     } catch (error) {
-        console.error('[Supabase] Failed to upsert user:', error);
+        Logger.error('[Supabase] Failed to upsert user:', error);
     }
 };
 
@@ -212,7 +213,7 @@ export const subscribeToOnlineCount = (
     callback: (count: number) => void
 ): (() => void) | null => {
     if (!presenceChannel) {
-        console.log('[Supabase] Cannot subscribe to online count - not tracking presence');
+        Logger.debug('[Supabase] Cannot subscribe to online count - not tracking presence');
         return null;
     }
 
@@ -282,13 +283,13 @@ export const getAllUsers = async (): Promise<SupabaseUser[]> => {
             .order('last_seen', { ascending: false });
 
         if (error) {
-            console.error('[Supabase] Failed to get all users:', error);
+            Logger.error('[Supabase] Failed to get all users:', error);
             return [];
         }
 
         return (data as SupabaseUser[]) || [];
     } catch (error) {
-        console.error('[Supabase] Failed to get all users:', error);
+        Logger.error('[Supabase] Failed to get all users:', error);
         return [];
     }
 };
@@ -346,13 +347,13 @@ export const getTotalUsersCount = async (): Promise<number> => {
             .select('*', { count: 'exact', head: true });
 
         if (error) {
-            console.error('[Supabase] Failed to get total users count:', error);
+            Logger.error('[Supabase] Failed to get total users count:', error);
             return 0;
         }
 
         return count || 0;
     } catch (error) {
-        console.error('[Supabase] Failed to get total users count:', error);
+        Logger.error('[Supabase] Failed to get total users count:', error);
         return 0;
     }
 };
@@ -407,15 +408,15 @@ export const incrementStat = async (
     amount: number = 1
 ): Promise<void> => {
     if (!supabase) {
-        console.warn('[Supabase] Cannot increment stat - Supabase not configured');
+        Logger.warn('[Supabase] Cannot increment stat - Supabase not configured');
         return;
     }
     if (!userId) {
-        console.warn('[Supabase] Cannot increment stat - No user ID provided');
+        Logger.warn('[Supabase] Cannot increment stat - No user ID provided');
         return;
     }
 
-    console.log(`[Supabase] Attempting to increment ${stat} by ${amount} for user ${userId}`);
+    Logger.debug(`[Supabase] Attempting to increment ${stat} by ${amount} for user ${userId}`);
 
     try {
         // Use the Postgres function for atomic increment
@@ -428,25 +429,25 @@ export const incrementStat = async (
         if (error) {
             // If function doesn't exist, fall back to manual upsert
             if (error.message?.includes('function') || error.code === '42883') {
-                console.log('[Supabase] RPC function not found, using manual upsert fallback');
+                Logger.debug('[Supabase] RPC function not found, using manual upsert fallback');
                 await manualIncrementStat(userId, stat, amount);
                 return;
             }
-            console.error('[Supabase] Failed to increment stat via RPC:', error.message, error.code);
+            Logger.error('[Supabase] Failed to increment stat via RPC:', error.message, error.code);
             // Try manual fallback for any error
-            console.log('[Supabase] Trying manual upsert as fallback...');
+            Logger.debug('[Supabase] Trying manual upsert as fallback...');
             await manualIncrementStat(userId, stat, amount);
             return;
         }
 
-        console.log(`[Supabase] ✓ Incremented ${stat} by ${amount} for user ${userId}`);
+        Logger.debug(`[Supabase] ✓ Incremented ${stat} by ${amount} for user ${userId}`);
     } catch (error) {
-        console.error('[Supabase] Exception incrementing stat:', error);
+        Logger.error('[Supabase] Exception incrementing stat:', error);
         // Try manual fallback as last resort
         try {
             await manualIncrementStat(userId, stat, amount);
         } catch (fallbackError) {
-            console.error('[Supabase] Manual fallback also failed:', fallbackError);
+            Logger.error('[Supabase] Manual fallback also failed:', fallbackError);
         }
     }
 };
@@ -487,7 +488,7 @@ const manualIncrementStat = async (
                 });
         }
     } catch (error) {
-        console.error('[Supabase] Manual increment failed:', error);
+        Logger.error('[Supabase] Manual increment failed:', error);
     }
 };
 
@@ -509,13 +510,13 @@ export const getUserStats = async (userId: string): Promise<UserStats | null> =>
             .single();
 
         if (error && error.code !== 'PGRST116') { // PGRST116 = no rows returned
-            console.error('[Supabase] Failed to get user stats:', error);
+            Logger.error('[Supabase] Failed to get user stats:', error);
             return null;
         }
 
         return data as UserStats || null;
     } catch (error) {
-        console.error('[Supabase] Failed to get user stats:', error);
+        Logger.error('[Supabase] Failed to get user stats:', error);
         return null;
     }
 };
@@ -540,7 +541,7 @@ export const getGlobalStats = async (): Promise<GlobalStats> => {
             .select('channel_points_farmed, hours_watched, messages_sent, streams_watched');
 
         if (error) {
-            console.error('[Supabase] Failed to get global stats:', error);
+            Logger.error('[Supabase] Failed to get global stats:', error);
             return {
                 total_channel_points: 0,
                 total_hours_watched: 0,
@@ -564,7 +565,7 @@ export const getGlobalStats = async (): Promise<GlobalStats> => {
 
         return stats;
     } catch (error) {
-        console.error('[Supabase] Failed to get global stats:', error);
+        Logger.error('[Supabase] Failed to get global stats:', error);
         return {
             total_channel_points: 0,
             total_hours_watched: 0,
@@ -591,7 +592,7 @@ export const getAllUsersWithStats = async (): Promise<UserWithStats[]> => {
             .order('last_seen', { ascending: false });
 
         if (usersError) {
-            console.error('[Supabase] Failed to get users:', usersError);
+            Logger.error('[Supabase] Failed to get users:', usersError);
             return [];
         }
 
@@ -601,7 +602,7 @@ export const getAllUsersWithStats = async (): Promise<UserWithStats[]> => {
             .select('*');
 
         if (statsError && statsError.code !== 'PGRST116') {
-            console.error('[Supabase] Failed to get stats:', statsError);
+            Logger.error('[Supabase] Failed to get stats:', statsError);
         }
 
         // Create a map of stats by user_id
@@ -618,7 +619,7 @@ export const getAllUsersWithStats = async (): Promise<UserWithStats[]> => {
 
         return usersWithStats;
     } catch (error) {
-        console.error('[Supabase] Failed to get users with stats:', error);
+        Logger.error('[Supabase] Failed to get users with stats:', error);
         return [];
     }
 };

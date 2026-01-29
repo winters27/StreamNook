@@ -2,6 +2,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { convertFileSrc } from '@tauri-apps/api/core';
 
+import { Logger } from '../utils/logger';
 export interface Emote {
   id: string;
   name: string;
@@ -56,7 +57,7 @@ async function getEmoteCacheSettings(): Promise<{ enabled: boolean; expiryDays: 
     };
     return cachedSettings;
   } catch (e) {
-    console.warn('[EmoteService] Failed to load settings:', e);
+    Logger.warn('[EmoteService] Failed to load settings:', e);
     return { enabled: true, expiryDays: 7 };
   }
 }
@@ -101,7 +102,7 @@ async function processDownloadQueue() {
   try {
     await downloadEmoteIfNeeded(next.id, next.url);
   } catch (e) {
-    console.debug(`[EmoteService] Error processing queue item ${next.id}:`, e);
+    Logger.debug(`[EmoteService] Error processing queue item ${next.id}:`, e);
   } finally {
     activeDownloads--;
     // Schedule next batch during idle time with delay
@@ -136,7 +137,7 @@ async function downloadEmoteIfNeeded(id: string, url: string): Promise<string | 
       }
       return null;
     } catch (e) {
-      console.debug(`[EmoteService] Failed to cache emote ${id}:`, e);
+      Logger.debug(`[EmoteService] Failed to cache emote ${id}:`, e);
       return null;
     } finally {
       pendingDownloads.delete(id);
@@ -176,12 +177,12 @@ async function ensureEmoteFileCache() {
 
   initializationPromise = (async () => {
     try {
-      console.log('[EmoteService] Initializing emote file cache...');
+      Logger.debug('[EmoteService] Initializing emote file cache...');
       const files = await invoke('get_cached_files', { cacheType: 'emote' }) as Record<string, string>;
       Object.entries(files).forEach(([id, path]) => cachedEmoteFiles.set(id, path));
-      console.log(`[EmoteService] Emote file cache initialized with ${cachedEmoteFiles.size} entries`);
+      Logger.debug(`[EmoteService] Emote file cache initialized with ${cachedEmoteFiles.size} entries`);
     } catch (e) {
-      console.warn('[EmoteService] Failed to init emote file cache:', e);
+      Logger.warn('[EmoteService] Failed to init emote file cache:', e);
     } finally {
       initializationPromise = null;
     }
@@ -196,7 +197,7 @@ export function preloadChannelEmotes(emotes: Emote[]) {
   const cached = emotes.filter(e => e.localUrl);
   const remote = emotes.filter(e => !e.localUrl);
 
-  console.log(`[EmoteService] Browser preload: ${cached.length} cached, ${remote.length} remote`);
+  Logger.debug(`[EmoteService] Browser preload: ${cached.length} cached, ${remote.length} remote`);
 
   // Preload all immediately - browser handles connection throttling
   const allUrls = [
@@ -226,16 +227,16 @@ export async function fetchAllEmotes(channelName?: string, channelId?: string): 
   // This populates cachedEmoteFiles so local URLs can be used
   await ensureEmoteFileCache();
 
-  console.log('[EmoteService] Fetching emotes via Rust backend for channel:', channelName, 'ID:', channelId, 'Cached files:', cachedEmoteFiles.size);
+  Logger.debug('[EmoteService] Fetching emotes via Rust backend for channel:', channelName, 'ID:', channelId, 'Cached files:', cachedEmoteFiles.size);
 
   try {
     // Try to get the auth token for user-specific Twitch emotes
     let accessToken: string | null = null;
     try {
       accessToken = await invoke<string>('get_twitch_token');
-      console.log('[EmoteService] Auth token available, will fetch user-specific Twitch emotes');
+      Logger.debug('[EmoteService] Auth token available, will fetch user-specific Twitch emotes');
     } catch {
-      console.log('[EmoteService] No auth token available, Twitch emotes will be limited to globals');
+      Logger.debug('[EmoteService] No auth token available, Twitch emotes will be limited to globals');
     }
 
     // Call the Rust backend which does concurrent fetching with tokio::join!
@@ -274,7 +275,7 @@ export async function fetchAllEmotes(channelName?: string, channelId?: string): 
       ffz: countLocalUrls(enhancedSet.ffz),
     };
 
-    console.log('[EmoteService] Fetched emotes from Rust:', {
+    Logger.debug('[EmoteService] Fetched emotes from Rust:', {
       twitch: enhancedSet.twitch.length,
       bttv: enhancedSet.bttv.length,
       '7tv': enhancedSet['7tv'].length,
@@ -285,7 +286,7 @@ export async function fetchAllEmotes(channelName?: string, channelId?: string): 
 
     return enhancedSet;
   } catch (error) {
-    console.error('[EmoteService] Failed to fetch emotes from Rust backend:', error);
+    Logger.error('[EmoteService] Failed to fetch emotes from Rust backend:', error);
     // Return empty set on error
     return {
       twitch: [],
@@ -317,7 +318,7 @@ export async function getEmoteByName(channelId: string | null, emoteName: string
     
     return null;
   } catch (error) {
-    console.error('[EmoteService] Failed to get emote by name:', error);
+    Logger.error('[EmoteService] Failed to get emote by name:', error);
     return null;
   }
 }
@@ -331,9 +332,9 @@ export async function clearEmoteCache() {
   try {
     await invoke('clear_emote_cache');
     await invoke('clear_cache'); // Also clear disk cache
-    console.log('[EmoteService] Cleared all emote caches');
+    Logger.debug('[EmoteService] Cleared all emote caches');
   } catch (e) {
-    console.warn('[EmoteService] Failed to clear emote cache:', e);
+    Logger.warn('[EmoteService] Failed to clear emote cache:', e);
   }
 }
 

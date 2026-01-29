@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { X, Users, Zap, Radio, Loader2, Sparkles } from 'lucide-react';
 
+import { Logger } from '../../utils/logger';
 interface MiningChannel {
   id: string;
   display_name: string;
@@ -55,7 +56,7 @@ export default function ChannelPickerModal({
         setSelectedChannelId(eligibleChannels[0].id);
       }
     } catch (err) {
-      console.error('Failed to load eligible channels:', err);
+      Logger.error('Failed to load eligible channels:', err);
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setIsLoading(false);

@@ -15,6 +15,7 @@ import {
 } from '../services/cosmeticsCache';
 import { invoke } from '@tauri-apps/api/core';
 
+import { Logger } from '../utils/logger';
 interface ProfileOverlayProps {
   isOpen: boolean;
   onClose: () => void;
@@ -96,7 +97,7 @@ const ProfileOverlay = ({ isOpen, onClose, anchorPosition }: ProfileOverlayProps
             lastFetched: Date.now(),
             userId: currentUser.user_id
           };
-          console.log('[ProfileOverlay] Chat identity badges cached:', result.badges.length);
+          Logger.debug('[ProfileOverlay] Chat identity badges cached:', result.badges.length);
         }
         setIsFetchingIdentity(false);
       });
@@ -136,7 +137,7 @@ const ProfileOverlay = ({ isOpen, onClose, anchorPosition }: ProfileOverlayProps
       const { invoke } = await import('@tauri-apps/api/core');
       await invoke('fetch_chat_identity_badges', { channelName: currentUser.login });
     } catch (e) {
-      console.error('Failed to fetch identity:', e);
+      Logger.error('Failed to fetch identity:', e);
       setIsFetchingIdentity(false);
     }
   };
@@ -152,7 +153,7 @@ const ProfileOverlay = ({ isOpen, onClose, anchorPosition }: ProfileOverlayProps
         badgeVersion: badge.version
       });
     } catch (e) {
-      console.error('Failed to update identity:', e);
+      Logger.error('Failed to update identity:', e);
       setUpdatingBadgeId(null);
     }
   };
@@ -183,7 +184,7 @@ const ProfileOverlay = ({ isOpen, onClose, anchorPosition }: ProfileOverlayProps
     // Try to load from memory cache immediately (synchronous, instant)
     const cachedProfile = getProfileFromMemoryCache(currentUser.user_id);
     if (cachedProfile) {
-      console.log('[ProfileOverlay] Using cached profile data');
+      Logger.debug('[ProfileOverlay] Using cached profile data');
       applyProfileData(cachedProfile);
     }
 
@@ -240,10 +241,10 @@ const ProfileOverlay = ({ isOpen, onClose, anchorPosition }: ProfileOverlayProps
     const check7TVAuth = async () => {
       try {
         const status = await invoke('get_seventv_auth_status') as { is_authenticated: boolean; user_id?: string };
-        console.log('[ProfileOverlay] 7TV auth status:', status);
+        Logger.debug('[ProfileOverlay] 7TV auth status:', status);
         setSeventvAuthConnected(status.is_authenticated);
       } catch (e) {
-        console.log('[ProfileOverlay] 7TV auth check failed (expected if not connected):', e);
+        Logger.debug('[ProfileOverlay] 7TV auth check failed (expected if not connected):', e);
         setSeventvAuthConnected(false);
       }
     };
@@ -256,7 +257,7 @@ const ProfileOverlay = ({ isOpen, onClose, anchorPosition }: ProfileOverlayProps
     const setupListener = async () => {
       const { listen } = await import('@tauri-apps/api/event');
       unlisten = await listen('seventv-connected', () => {
-        console.log('[ProfileOverlay] 7TV connected event received!');
+        Logger.debug('[ProfileOverlay] 7TV connected event received!');
         setSeventvAuthConnected(true);
         setIsConnecting7TV(false);
       });
@@ -288,12 +289,12 @@ const ProfileOverlay = ({ isOpen, onClose, anchorPosition }: ProfileOverlayProps
           ...p,
           selected: p.id === paintId
         })));
-        console.log('[ProfileOverlay] 7TV paint updated successfully');
+        Logger.debug('[ProfileOverlay] 7TV paint updated successfully');
       } else {
-        console.error('[ProfileOverlay] Failed to update 7TV paint:', result.error);
+        Logger.error('[ProfileOverlay] Failed to update 7TV paint:', result.error);
       }
     } catch (e) {
-      console.error('[ProfileOverlay] Failed to update 7TV paint:', e);
+      Logger.error('[ProfileOverlay] Failed to update 7TV paint:', e);
     } finally {
       setUpdatingSeventvPaintId(null);
     }
@@ -318,12 +319,12 @@ const ProfileOverlay = ({ isOpen, onClose, anchorPosition }: ProfileOverlayProps
           ...b,
           selected: b.id === badgeId
         })));
-        console.log('[ProfileOverlay] 7TV badge updated successfully');
+        Logger.debug('[ProfileOverlay] 7TV badge updated successfully');
       } else {
-        console.error('[ProfileOverlay] Failed to update 7TV badge:', result.error);
+        Logger.error('[ProfileOverlay] Failed to update 7TV badge:', result.error);
       }
     } catch (e) {
-      console.error('[ProfileOverlay] Failed to update 7TV badge:', e);
+      Logger.error('[ProfileOverlay] Failed to update 7TV badge:', e);
     } finally {
       setUpdatingSeventvBadgeId(null);
     }
@@ -336,7 +337,7 @@ const ProfileOverlay = ({ isOpen, onClose, anchorPosition }: ProfileOverlayProps
       const { open } = await import('@tauri-apps/plugin-shell');
       await open(`https://7tv.app/users/${seventvUserId}/cosmetics`);
     } catch (err) {
-      console.error('Failed to open 7TV cosmetics page:', err);
+      Logger.error('Failed to open 7TV cosmetics page:', err);
     }
   };
 
@@ -346,7 +347,7 @@ const ProfileOverlay = ({ isOpen, onClose, anchorPosition }: ProfileOverlayProps
       const { open } = await import('@tauri-apps/plugin-shell');
       await open('https://7tv.app/');
     } catch (err) {
-      console.error('Failed to open 7TV page:', err);
+      Logger.error('Failed to open 7TV page:', err);
     }
   };
 
@@ -374,7 +375,7 @@ const ProfileOverlay = ({ isOpen, onClose, anchorPosition }: ProfileOverlayProps
         applyProfileData(profile);
       }
     } catch (error) {
-      console.error('[ProfileOverlay] Failed to fetch profile:', error);
+      Logger.error('[ProfileOverlay] Failed to fetch profile:', error);
     } finally {
       setIsLoadingBadges(false);
     }
@@ -395,7 +396,7 @@ const ProfileOverlay = ({ isOpen, onClose, anchorPosition }: ProfileOverlayProps
       // Only refresh if cache is older than 60 seconds
       const cacheAge = Date.now() - cachedProfile.lastUpdated;
       if (cacheAge > 60000) {
-        console.log('[ProfileOverlay] Cache is stale, refreshing in background');
+        Logger.debug('[ProfileOverlay] Cache is stale, refreshing in background');
         refreshProfileInBackground(
           currentUser.user_id,
           currentUser.login || currentUser.username,
@@ -416,20 +417,20 @@ const ProfileOverlay = ({ isOpen, onClose, anchorPosition }: ProfileOverlayProps
         chatIdentityCache.badges.length > 0) {
       
       // Always apply cached data immediately (even if state already has badges)
-      console.log('[ProfileOverlay] Loading chat identity badges from cache:', chatIdentityCache.badges.length);
+      Logger.debug('[ProfileOverlay] Loading chat identity badges from cache:', chatIdentityCache.badges.length);
       setChatIdentityBadges(chatIdentityCache.badges);
       
       const cacheAge = Date.now() - chatIdentityCache.lastFetched;
       
       // If cache is fresh enough, don't fetch at all
       if (cacheAge < CHAT_IDENTITY_BACKGROUND_REFRESH_TTL) {
-        console.log('[ProfileOverlay] Cache is fresh, no fetch needed');
+        Logger.debug('[ProfileOverlay] Cache is fresh, no fetch needed');
         return;
       }
       
       // If cache is slightly stale but within TTL, do a silent background refresh
       if (cacheAge < CHAT_IDENTITY_CACHE_TTL && !isFetchingIdentity) {
-        console.log('[ProfileOverlay] Cache slightly stale, silent background refresh');
+        Logger.debug('[ProfileOverlay] Cache slightly stale, silent background refresh');
         // Don't show loading spinner - badges are already visible
         const silentFetch = async () => {
           try {
@@ -444,7 +445,7 @@ const ProfileOverlay = ({ isOpen, onClose, anchorPosition }: ProfileOverlayProps
       
       // Cache is too old, still show cached but fetch fresh
       if (!isFetchingIdentity) {
-        console.log('[ProfileOverlay] Cache too old, fetching fresh data');
+        Logger.debug('[ProfileOverlay] Cache too old, fetching fresh data');
         fetchChatIdentity();
       }
       return;
@@ -452,7 +453,7 @@ const ProfileOverlay = ({ isOpen, onClose, anchorPosition }: ProfileOverlayProps
     
     // No cache - need to fetch (this will show loading spinner)
     if (!isFetchingIdentity) {
-      console.log('[ProfileOverlay] No cache, fetching chat identity badges');
+      Logger.debug('[ProfileOverlay] No cache, fetching chat identity badges');
       fetchChatIdentity();
     }
   }, [isOpen, isAuthenticated, currentUser, currentStream]);
@@ -592,7 +593,7 @@ const ProfileOverlay = ({ isOpen, onClose, anchorPosition }: ProfileOverlayProps
                   {/* Current 7TV Paint indicator */}
                   {seventvPaint && (
                     <div
-                      className="mt-1 px-1.5 py-px rounded text-[9px] font-bold inline-block cursor-pointer hover:scale-105 transition-transform relative overflow-hidden"
+                      className="mt-1 px-1.5 py-px rounded text-[9px] font-bold inline-block cursor-pointer hover:scale-105 hover:ring-1 hover:ring-accent/50 transition-all relative overflow-hidden"
                       style={{
                         ...computePaintStyle(seventvPaint as any, '#9146FF'),
                         WebkitBackgroundClip: 'padding-box',
@@ -600,8 +601,8 @@ const ProfileOverlay = ({ isOpen, onClose, anchorPosition }: ProfileOverlayProps
                         isolation: 'isolate',
                         contain: 'paint',
                       }}
-                      title={`Current Paint: ${seventvPaint.name}`}
-                      onClick={handleOpen7TVCosmetics}
+                      title={`Click to view paint details: ${seventvPaint.name}`}
+                      onClick={() => useAppStore.getState().openBadgesWithPaint(seventvPaint.id)}
                     >
                       <span
                         style={{
@@ -818,7 +819,7 @@ const ProfileOverlay = ({ isOpen, onClose, anchorPosition }: ProfileOverlayProps
                                   const { open } = await import('@tauri-apps/plugin-shell');
                                   await open(badge.link);
                                 } catch (err) {
-                                  console.error('Failed to open URL:', err);
+                                  Logger.error('Failed to open URL:', err);
                                 }
                               }
                             }}
@@ -850,9 +851,9 @@ const ProfileOverlay = ({ isOpen, onClose, anchorPosition }: ProfileOverlayProps
                         try {
                           await invoke('logout_seventv');
                           setSeventvAuthConnected(false);
-                          console.log('[ProfileOverlay] Disconnected from 7TV');
+                          Logger.debug('[ProfileOverlay] Disconnected from 7TV');
                         } catch (e) {
-                          console.error('[ProfileOverlay] Failed to disconnect from 7TV:', e);
+                          Logger.error('[ProfileOverlay] Failed to disconnect from 7TV:', e);
                         }
                       }}
                       className="w-full flex items-center justify-center gap-2 px-4 py-2.5 glass-button text-red-400 font-medium group hover:bg-red-500/10"
@@ -867,9 +868,9 @@ const ProfileOverlay = ({ isOpen, onClose, anchorPosition }: ProfileOverlayProps
                         try {
                           setIsConnecting7TV(true);
                           await invoke('open_seventv_login_window');
-                          console.log('[ProfileOverlay] Opening 7TV login window. After logging in, the token will be captured automatically.');
+                          Logger.debug('[ProfileOverlay] Opening 7TV login window. After logging in, the token will be captured automatically.');
                         } catch (e) {
-                          console.error('[ProfileOverlay] Failed to open 7TV login window:', e);
+                          Logger.error('[ProfileOverlay] Failed to open 7TV login window:', e);
                           setIsConnecting7TV(false);
                         }
                       }}

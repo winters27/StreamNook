@@ -2,6 +2,7 @@ import { X, Github } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { useEffect, useState } from 'react';
 
+import { Logger } from '../utils/logger';
 interface AboutWidgetProps {
   onClose: () => void;
 }
@@ -14,11 +15,11 @@ const AboutWidget = ({ onClose }: AboutWidgetProps) => {
     // Fetch app version from Cargo.toml
     invoke<string>('get_app_version')
       .then(version => setAppVersion(version))
-      .catch(err => console.error('Failed to get app version:', err));
+      .catch(err => Logger.error('Failed to get app version:', err));
 
     invoke<string>('get_app_name')
       .then(name => setAppName(name))
-      .catch(err => console.error('Failed to get app name:', err));
+      .catch(err => Logger.error('Failed to get app name:', err));
   }, []);
 
   return (

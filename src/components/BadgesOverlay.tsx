@@ -5,7 +5,9 @@ import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../stores/AppStore';
 import { getAllUserBadgesWithEarned } from '../services/badgeService';
 import { getProfileFromMemoryCache, getFullProfileWithFallback } from '../services/cosmeticsCache';
+import { getUlidTimestamp, getFormattedCreationDate } from '../utils/ulid';
 
+import { Logger } from '../utils/logger';
 // Tab navigation types
 type AttainableTab = 'twitch-badges' | '7tv-badges' | '7tv-paints';
 
@@ -86,9 +88,11 @@ interface SevenTVGlobalPaint {
 interface BadgesOverlayProps {
   onClose: () => void;
   onBadgeClick: (badge: BadgeVersion, setId: string) => void;
+  initialPaintId?: string | null;
+  initialBadgeId?: string | null;
 }
 
-const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
+const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }: BadgesOverlayProps) => {
   const { isAuthenticated, currentUser, currentStream } = useAppStore();
   
   // Tab state
@@ -116,6 +120,13 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
   const [seventvBadgesError, setSeventvBadgesError] = useState<string | null>(null);
   const [seventvPaintsError, setSeventvPaintsError] = useState<string | null>(null);
   
+  // 7TV sort state
+  const [seventvBadgeSortBy, setSeventvBadgeSortBy] = useState<'newest' | 'oldest' | 'name'>('newest');
+  const [seventvPaintSortBy, setSeventvPaintSortBy] = useState<'newest' | 'oldest' | 'name'>('newest');
+  
+  // 7TV paint filter state
+  const [seventvPaintFilter, setSeventvPaintFilter] = useState<'all' | 'animated' | 'static'>('all');
+  
   // Selected 7TV item for detail view
   const [selectedSeventvBadge, setSelectedSeventvBadge] = useState<SevenTVGlobalBadge | null>(null);
   const [selectedSeventvPaint, setSelectedSeventvPaint] = useState<SevenTVGlobalPaint | null>(null);
@@ -139,6 +150,38 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
     loadSeventvBadges();
     loadSeventvPaints();
   }, []);
+
+  // Handle deep link to specific paint
+  useEffect(() => {
+    if (!initialPaintId || loadingSeventvPaints) return;
+    
+    // Switch to 7TV paints tab
+    setActiveTab('7tv-paints');
+    
+    // Find the paint and open detail modal
+    const paint = seventvPaints.find(p => p.id === initialPaintId);
+    if (paint) {
+      setSelectedSeventvPaint(paint);
+      // Clear the initial paint ID in AppStore so it doesn't retrigger
+      useAppStore.getState().setShowBadgesOverlay(true);
+    }
+  }, [initialPaintId, seventvPaints, loadingSeventvPaints]);
+
+  // Handle deep link to specific 7TV badge
+  useEffect(() => {
+    if (!initialBadgeId || loadingSeventvBadges) return;
+    
+    // Switch to 7TV badges tab
+    setActiveTab('7tv-badges');
+    
+    // Find the badge and open detail modal
+    const badge = seventvBadges.find(b => b.id === initialBadgeId);
+    if (badge) {
+      setSelectedSeventvBadge(badge);
+      // Clear the initial badge ID in AppStore so it doesn't retrigger
+      useAppStore.getState().setShowBadgesOverlay(true);
+    }
+  }, [initialBadgeId, seventvBadges, loadingSeventvBadges]);
 
   // Load user's collected badges when authenticated
   useEffect(() => {
@@ -183,9 +226,9 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
       });
       
       setCollectedBadgeKeys(keys);
-      console.log(`[BadgesOverlay] User has ${keys.size} collected badges`);
+      Logger.debug(`[BadgesOverlay] User has ${keys.size} collected badges`);
     } catch (err) {
-      console.error('[BadgesOverlay] Failed to load user badges:', err);
+      Logger.error('[BadgesOverlay] Failed to load user badges:', err);
     } finally {
       setLoadingUserBadges(false);
     }
@@ -227,9 +270,9 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
       
       setUserOwned7TVBadgeIds(badgeIds);
       setUserOwned7TVPaintIds(paintIds);
-      console.log(`[BadgesOverlay] User owns ${badgeIds.size} 7TV badges and ${paintIds.size} 7TV paints`);
+      Logger.debug(`[BadgesOverlay] User owns ${badgeIds.size} 7TV badges and ${paintIds.size} 7TV paints`);
     } catch (err) {
-      console.error('[BadgesOverlay] Failed to load user 7TV cosmetics:', err);
+      Logger.error('[BadgesOverlay] Failed to load user 7TV cosmetics:', err);
     } finally {
       setLoadingUser7TVCosmetics(false);
     }
@@ -242,12 +285,12 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
     setLoadingSeventvBadges(true);
     setSeventvBadgesError(null);
     try {
-      console.log('[Attainables] Fetching 7TV badges...');
+      Logger.debug('[Attainables] Fetching 7TV badges...');
       const badges = await invoke<SevenTVGlobalBadge[]>('get_all_seventv_badges');
       setSeventvBadges(badges);
-      console.log(`[Attainables] Loaded ${badges.length} 7TV badges`);
+      Logger.debug(`[Attainables] Loaded ${badges.length} 7TV badges`);
     } catch (err) {
-      console.error('[Attainables] Failed to load 7TV badges:', err);
+      Logger.error('[Attainables] Failed to load 7TV badges:', err);
       setSeventvBadgesError('Failed to load 7TV badges');
     } finally {
       setLoadingSeventvBadges(false);
@@ -261,12 +304,12 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
     setLoadingSeventvPaints(true);
     setSeventvPaintsError(null);
     try {
-      console.log('[Attainables] Fetching 7TV paints...');
+      Logger.debug('[Attainables] Fetching 7TV paints...');
       const paints = await invoke<SevenTVGlobalPaint[]>('get_all_seventv_paints');
       setSeventvPaints(paints);
-      console.log(`[Attainables] Loaded ${paints.length} 7TV paints`);
+      Logger.debug(`[Attainables] Loaded ${paints.length} 7TV paints`);
     } catch (err) {
-      console.error('[Attainables] Failed to load 7TV paints:', err);
+      Logger.error('[Attainables] Failed to load 7TV paints:', err);
       setSeventvPaintsError('Failed to load 7TV paints');
     } finally {
       setLoadingSeventvPaints(false);
@@ -411,6 +454,53 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
   const isCollected = (badge: BadgeWithMetadata): boolean => {
     return collectedBadgeKeys.has(`${badge.set_id}_${badge.id}`);
   };
+
+  // Sort 7TV badges based on current sort option
+  const sortedSeventvBadges = useMemo(() => {
+    const filtered = seventvBadges.filter(badge => 
+      !searchQuery || badge.name.toLowerCase().includes(searchQuery.toLowerCase())
+    );
+    
+    return [...filtered].sort((a, b) => {
+      switch (seventvBadgeSortBy) {
+        case 'newest':
+          return getUlidTimestamp(b.id) - getUlidTimestamp(a.id);
+        case 'oldest':
+          return getUlidTimestamp(a.id) - getUlidTimestamp(b.id);
+        case 'name':
+          return a.name.localeCompare(b.name);
+        default:
+          return 0;
+      }
+    });
+  }, [seventvBadges, seventvBadgeSortBy, searchQuery]);
+
+  // Sort 7TV paints based on current sort option
+  const sortedSeventvPaints = useMemo(() => {
+    let filtered = seventvPaints.filter(paint => 
+      !searchQuery || paint.name.toLowerCase().includes(searchQuery.toLowerCase())
+    );
+    
+    // Apply animation filter
+    if (seventvPaintFilter === 'animated') {
+      filtered = filtered.filter(paint => isAnimatedPaint(paint));
+    } else if (seventvPaintFilter === 'static') {
+      filtered = filtered.filter(paint => !isAnimatedPaint(paint));
+    }
+    
+    return [...filtered].sort((a, b) => {
+      switch (seventvPaintSortBy) {
+        case 'newest':
+          return getUlidTimestamp(b.id) - getUlidTimestamp(a.id);
+        case 'oldest':
+          return getUlidTimestamp(a.id) - getUlidTimestamp(b.id);
+        case 'name':
+          return a.name.localeCompare(b.name);
+        default:
+          return 0;
+      }
+    });
+  }, [seventvPaints, seventvPaintSortBy, seventvPaintFilter, searchQuery]);
 
   // Badge set IDs that are NOT true global collectibles and shouldn't count towards collection
   // These badges are either: channel-specific, role-based, paid-only, or not earnable by regular users
@@ -754,7 +844,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
       setError(null);
 
       // Try to load from cache first
-      console.log('[BadgesOverlay] Checking for cached badges...');
+      Logger.debug('[BadgesOverlay] Checking for cached badges...');
       const cachedBadges = await invoke<{ data: BadgeSet[] } | null>('get_cached_global_badges');
 
       // Also check cache age
@@ -762,7 +852,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
       setCacheAge(age);
 
       if (cachedBadges && cachedBadges.data && cachedBadges.data.length > 0) {
-        console.log('[BadgesOverlay] Found cached badges, loading immediately');
+        Logger.debug('[BadgesOverlay] Found cached badges, loading immediately');
         setBadges(cachedBadges.data);
 
         // Flatten all badge versions
@@ -778,7 +868,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
           });
 
           if (allBadgeCache && Object.keys(allBadgeCache).length > 0) {
-            console.log(`[BadgesOverlay] Loaded ${Object.keys(allBadgeCache).length} cached badge entries in single call`);
+            Logger.debug(`[BadgesOverlay] Loaded ${Object.keys(allBadgeCache).length} cached badge entries in single call`);
             badgesWithPreloadedMetadata = flattened.map(badge => {
               const cacheKey = `metadata:${badge.set_id}-v${badge.id}`;
               const cached = allBadgeCache[cacheKey];
@@ -795,7 +885,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
             });
           }
         } catch (err) {
-          console.error('[BadgesOverlay] Failed to batch load cache:', err);
+          Logger.error('[BadgesOverlay] Failed to batch load cache:', err);
         }
 
         setBadgesWithMetadata(badgesWithPreloadedMetadata);
@@ -811,7 +901,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
       }
 
       // No cache available, fetch from API
-      console.log('[BadgesOverlay] No cached badges, fetching from API...');
+      Logger.debug('[BadgesOverlay] No cached badges, fetching from API...');
 
       // Get credentials
       const [clientId, token] = await invoke<[string, string]>('get_twitch_credentials');
@@ -834,7 +924,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
       // Fetch metadata for all badges in the background
       fetchAllBadgeMetadata(flattened);
     } catch (err) {
-      console.error('Failed to load badges:', err);
+      Logger.error('Failed to load badges:', err);
       setError('Failed to load badges. Please try again.');
     } finally {
       setLoading(false);
@@ -844,11 +934,11 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
   // Check for badges that don't have metadata and fetch from BadgeBase
   const checkAndFetchMissingMetadata = async () => {
     try {
-      console.log('[BadgesOverlay] Checking for badges missing metadata...');
+      Logger.debug('[BadgesOverlay] Checking for badges missing metadata...');
       const missing = await invoke<[string, string][]>('get_badges_missing_metadata');
 
       if (missing.length > 0) {
-        console.log(`[BadgesOverlay] Found ${missing.length} badges missing metadata, fetching...`);
+        Logger.debug(`[BadgesOverlay] Found ${missing.length} badges missing metadata, fetching...`);
         setNewBadgesCount(missing.length);
 
         // Fetch metadata for missing badges in batches
@@ -869,7 +959,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
           setNewBadgesCount(Math.max(0, missing.length - (i + batchSize)));
         }
 
-        console.log('[BadgesOverlay] Finished fetching missing badge metadata');
+        Logger.debug('[BadgesOverlay] Finished fetching missing badge metadata');
         setNewBadgesCount(0);
 
         // Reload metadata to update display
@@ -878,7 +968,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
         }
       }
     } catch (err) {
-      console.error('[BadgesOverlay] Error checking for missing metadata:', err);
+      Logger.error('[BadgesOverlay] Error checking for missing metadata:', err);
     }
   };
 
@@ -886,23 +976,23 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
   const forceRefreshBadges = async () => {
     try {
       setRefreshing(true);
-      console.log('[BadgesOverlay] Force refreshing badges from Twitch API...');
+      Logger.debug('[BadgesOverlay] Force refreshing badges from Twitch API...');
 
       const response = await invoke<{ data: BadgeSet[] }>('force_refresh_global_badges');
 
-      console.log(`[BadgesOverlay] Refreshed ${response.data.length} badge sets from Twitch API`);
+      Logger.debug(`[BadgesOverlay] Refreshed ${response.data.length} badge sets from Twitch API`);
 
       // Log all badge set IDs for debugging
       const badgeSetIds = response.data.map(s => s.set_id);
-      console.log('[BadgesOverlay] Badge set IDs received:', badgeSetIds);
+      Logger.debug('[BadgesOverlay] Badge set IDs received:', badgeSetIds);
 
       // Count total versions
       const totalVersions = response.data.reduce((acc, set) => acc + set.versions.length, 0);
-      console.log(`[BadgesOverlay] Total badge versions: ${totalVersions}`);
+      Logger.debug(`[BadgesOverlay] Total badge versions: ${totalVersions}`);
 
       // Log each badge set with its versions
       response.data.forEach(set => {
-        console.log(`[BadgesOverlay] Set "${set.set_id}": ${set.versions.length} versions - ${set.versions.map(v => v.title).join(', ')}`);
+        Logger.debug(`[BadgesOverlay] Set "${set.set_id}": ${set.versions.length} versions - ${set.versions.map(v => v.title).join(', ')}`);
       });
 
       setBadges(response.data);
@@ -913,7 +1003,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
         set.versions.map(version => ({ ...version, set_id: set.set_id } as BadgeWithMetadata))
       );
 
-      console.log(`[BadgesOverlay] Flattened to ${flattened.length} badge items`);
+      Logger.debug(`[BadgesOverlay] Flattened to ${flattened.length} badge items`);
 
       setBadgesWithMetadata(flattened);
 
@@ -924,7 +1014,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
       await checkAndFetchMissingMetadata();
 
     } catch (err) {
-      console.error('Failed to refresh badges:', err);
+      Logger.error('Failed to refresh badges:', err);
       setError('Failed to refresh badges. Please try again.');
     } finally {
       setRefreshing(false);
@@ -940,10 +1030,10 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
 
     // If force refresh, skip cache and fetch all badges fresh
     if (forceRefresh) {
-      console.log('[BadgesOverlay] Force refresh requested, fetching ALL badge metadata from BadgeBase...');
+      Logger.debug('[BadgesOverlay] Force refresh requested, fetching ALL badge metadata from BadgeBase...');
       uncachedBadges = [...badgeList];
     } else {
-      console.log('[BadgesOverlay] Batch loading all badge cache...');
+      Logger.debug('[BadgesOverlay] Batch loading all badge cache...');
       try {
         const allBadgeCache = await invoke<Record<string, { data: any; position?: number }>>('get_all_universal_cached_items', {
           cacheType: 'badge',
@@ -963,9 +1053,9 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
           }
         }
 
-        console.log(`[BadgesOverlay] Found ${Object.keys(metadataCache).length} badges in cache (batch), need to fetch ${uncachedBadges.length} from API`);
+        Logger.debug(`[BadgesOverlay] Found ${Object.keys(metadataCache).length} badges in cache (batch), need to fetch ${uncachedBadges.length} from API`);
       } catch (err) {
-        console.error('[BadgesOverlay] Failed to batch load cache, falling back to uncached:', err);
+        Logger.error('[BadgesOverlay] Failed to batch load cache, falling back to uncached:', err);
         // If batch load fails, treat all as uncached
         uncachedBadges.push(...badgeList);
       }
@@ -1471,7 +1561,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
 
   // Sort badges based on selected option - use useMemo to prevent re-sorting on every render
   const sortedBadges = useMemo(() => {
-    console.log(`[BadgesOverlay] Sorting ${badgesWithMetadata.length} badges by ${sortBy}`);
+    Logger.debug(`[BadgesOverlay] Sorting ${badgesWithMetadata.length} badges by ${sortBy}`);
 
     // Check if we can use pre-computed positions for date-newest sort
     // Only use positions if at least 90% of badges have them (to handle edge cases)
@@ -1484,7 +1574,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
       badgesWithPositions >= badgesWithMetadata.length * 0.9;
 
     if (canUsePositions) {
-      console.log(`[BadgesOverlay] Using pre-computed positions for sorting (${badgesWithPositions}/${badgesWithMetadata.length} badges have positions)`);
+      Logger.debug(`[BadgesOverlay] Using pre-computed positions for sorting (${badgesWithPositions}/${badgesWithMetadata.length} badges have positions)`);
       return [...badgesWithMetadata].sort((a, b) => {
         const aPos = (a.badgebase_info as any)?.position;
         const bPos = (b.badgebase_info as any)?.position;
@@ -1506,7 +1596,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
     // Log sample badge data for debugging
     if (badgesWithMetadata.length > 0) {
       const sample = badgesWithMetadata[0];
-      console.log('[BadgesOverlay] Sample badge:', {
+      Logger.debug('[BadgesOverlay] Sample badge:', {
         set_id: sample.set_id,
         id: sample.id,
         title: sample.title,
@@ -1931,10 +2021,50 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
               )}
 
               {!loadingSeventvBadges && !seventvBadgesError && seventvBadges.length > 0 && (
-                <div className="grid grid-cols-8 gap-2">
-                  {seventvBadges
-                    .filter(badge => !searchQuery || badge.name.toLowerCase().includes(searchQuery.toLowerCase()))
-                    .map((badge) => {
+                <>
+                  {/* Sort Controls */}
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-textSecondary">Sort:</span>
+                      <button
+                        onClick={() => setSeventvBadgeSortBy('newest')}
+                        className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
+                          seventvBadgeSortBy === 'newest' 
+                            ? 'bg-[#29b6f6] text-white' 
+                            : 'bg-glass text-textSecondary hover:text-textPrimary'
+                        }`}
+                      >
+                        Newest First
+                      </button>
+                      <button
+                        onClick={() => setSeventvBadgeSortBy('oldest')}
+                        className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
+                          seventvBadgeSortBy === 'oldest' 
+                            ? 'bg-[#29b6f6] text-white' 
+                            : 'bg-glass text-textSecondary hover:text-textPrimary'
+                        }`}
+                      >
+                        Oldest First
+                      </button>
+                      <button
+                        onClick={() => setSeventvBadgeSortBy('name')}
+                        className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
+                          seventvBadgeSortBy === 'name' 
+                            ? 'bg-[#29b6f6] text-white' 
+                            : 'bg-glass text-textSecondary hover:text-textPrimary'
+                        }`}
+                      >
+                        A-Z
+                      </button>
+                    </div>
+                    <span className="text-xs text-textSecondary">
+                      {sortedSeventvBadges.length} badge{sortedSeventvBadges.length !== 1 ? 's' : ''}
+                    </span>
+                  </div>
+
+                  {/* Badge Grid */}
+                  <div className="grid grid-cols-8 gap-2">
+                    {sortedSeventvBadges.map((badge) => {
                     const animated = isAnimatedBadge(badge);
                     const isOwned = userOwned7TVBadgeIds.has(badge.id);
                     return (
@@ -1971,7 +2101,8 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
                       </button>
                     );
                   })}
-                </div>
+                  </div>
+                </>
               )}
             </>
           )}
@@ -2009,60 +2140,114 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
               )}
 
               {!loadingSeventvPaints && !seventvPaintsError && seventvPaints.length > 0 && (
-                <div className="grid grid-cols-8 gap-2">
-                  {seventvPaints
-                    .filter(paint => !searchQuery || paint.name.toLowerCase().includes(searchQuery.toLowerCase()))
-                    .map((paint) => {
-                    const animated = isAnimatedPaint(paint);
-                    const animatedUrl = animated ? getAnimatedPaintImageUrl(paint) : null;
-                    const isOwned = userOwned7TVPaintIds.has(paint.id);
-                    
-                    return (
+                <>
+                  {/* Sort Controls */}
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-textSecondary">Sort:</span>
                       <button
-                        key={paint.id}
-                        onClick={() => setSelectedSeventvPaint(paint)}
-                        className={`flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-glass transition-all duration-200 group cursor-pointer relative ${
-                          isOwned ? 'ring-2 ring-[#29b6f6]/50 bg-[#29b6f6]/10' : ''
+                        onClick={() => setSeventvPaintSortBy('newest')}
+                        className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
+                          seventvPaintSortBy === 'newest' 
+                            ? 'bg-[#29b6f6] text-white' 
+                            : 'bg-glass text-textSecondary hover:text-textPrimary'
                         }`}
-                        title={paint.description || paint.name}
                       >
-                        {/* Owned indicator */}
-                        {isOwned && (
-                          <div className="absolute top-1 right-1 w-5 h-5 bg-[#29b6f6] rounded-full flex items-center justify-center shadow-lg z-10">
-                            <Check size={12} className="text-white" />
-                          </div>
-                        )}
-                        <div 
-                          className={`w-20 h-14 flex items-center justify-center rounded-lg group-hover:scale-110 transition-transform duration-200 overflow-hidden bg-secondary relative ${
-                            isOwned ? 'ring-1 ring-[#29b6f6]/30' : ''
+                        Newest First
+                      </button>
+                      <button
+                        onClick={() => setSeventvPaintSortBy('oldest')}
+                        className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
+                          seventvPaintSortBy === 'oldest' 
+                            ? 'bg-[#29b6f6] text-white' 
+                            : 'bg-glass text-textSecondary hover:text-textPrimary'
+                        }`}
+                      >
+                        Oldest First
+                      </button>
+                      <button
+                        onClick={() => setSeventvPaintSortBy('name')}
+                        className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
+                          seventvPaintSortBy === 'name' 
+                            ? 'bg-[#29b6f6] text-white' 
+                            : 'bg-glass text-textSecondary hover:text-textPrimary'
+                        }`}
+                      >
+                        A-Z
+                      </button>
+                      
+                      {/* Separator */}
+                      <div className="w-px h-4 bg-borderSubtle mx-1" />
+                      
+                      {/* Filter buttons */}
+                      <span className="text-xs text-textSecondary">Filter:</span>
+                      <button
+                        onClick={() => setSeventvPaintFilter('all')}
+                        className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
+                          seventvPaintFilter === 'all' 
+                            ? 'bg-[#29b6f6] text-white' 
+                            : 'bg-glass text-textSecondary hover:text-textPrimary'
+                        }`}
+                      >
+                        All
+                      </button>
+                      <button
+                        onClick={() => setSeventvPaintFilter('animated')}
+                        className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
+                          seventvPaintFilter === 'animated' 
+                            ? 'bg-[#29b6f6] text-white' 
+                            : 'bg-glass text-textSecondary hover:text-textPrimary'
+                        }`}
+                      >
+                        Animated
+                      </button>
+                      <button
+                        onClick={() => setSeventvPaintFilter('static')}
+                        className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
+                          seventvPaintFilter === 'static' 
+                            ? 'bg-[#29b6f6] text-white' 
+                            : 'bg-glass text-textSecondary hover:text-textPrimary'
+                        }`}
+                      >
+                        Static
+                      </button>
+                    </div>
+                    <span className="text-xs text-textSecondary">
+                      {sortedSeventvPaints.length} paint{sortedSeventvPaints.length !== 1 ? 's' : ''}
+                    </span>
+                  </div>
+
+                  {/* Paint Grid */}
+                  <div className="grid grid-cols-6 gap-4">
+                    {sortedSeventvPaints.map((paint) => {
+                      const isOwned = userOwned7TVPaintIds.has(paint.id);
+                    
+                      return (
+                        <button
+                          key={paint.id}
+                          onClick={() => setSelectedSeventvPaint(paint)}
+                          className={`flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-glass transition-all duration-200 group cursor-pointer relative ${
+                            isOwned ? 'ring-2 ring-[#29b6f6]/50 bg-[#29b6f6]/10' : ''
                           }`}
+                          title={paint.description || paint.name}
                         >
-                          {/* For animated image paints, show the animated image with text overlay */}
-                          {animated && animatedUrl ? (
-                            <>
-                              <img 
-                                src={animatedUrl} 
-                                alt="" 
-                                className="absolute inset-0 w-full h-full object-cover"
-                                style={{ 
-                                  maskImage: 'linear-gradient(black, black)',
-                                  WebkitMaskImage: 'linear-gradient(black, black)'
-                                }}
-                              />
-                              <span 
-                                className="text-base font-bold px-1 truncate relative z-10 mix-blend-overlay text-white"
-                                style={{ textShadow: '0 0 2px rgba(0,0,0,0.8)' }}
-                              >
-                                {paint.name}
-                              </span>
-                            </>
-                          ) : (
-                            /* For gradient paints, use background-clip text effect with shadow */
+                          {/* Owned indicator */}
+                          {isOwned && (
+                            <div className="absolute top-1 right-1 w-5 h-5 bg-[#29b6f6] rounded-full flex items-center justify-center shadow-lg z-10">
+                              <Check size={12} className="text-white" />
+                            </div>
+                          )}
+                          <div 
+                            className={`w-full h-14 flex items-center justify-center rounded-lg group-hover:scale-110 transition-transform duration-200 overflow-hidden bg-secondary relative ${
+                              isOwned ? 'ring-1 ring-[#29b6f6]/30' : ''
+                            }`}
+                          >
+                            {/* Use CSS background-image approach for ALL paint types per 7TV docs */}
                             <span 
-                              className="text-base font-bold px-1 truncate relative"
-                              data-text={paint.name}
+                              className="text-base font-bold px-2 truncate relative"
                               style={{ 
                                 background: generatePaintGradient(paint),
+                                backgroundSize: '100% 100%',
                                 backgroundClip: 'text',
                                 WebkitBackgroundClip: 'text',
                                 WebkitTextFillColor: 'transparent',
@@ -2071,17 +2256,17 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
                             >
                               {paint.name}
                             </span>
-                          )}
-                        </div>
-                        <span className={`text-xs text-center line-clamp-2 transition-colors font-medium ${
-                          isOwned ? 'text-[#29b6f6]' : 'text-textSecondary group-hover:text-textPrimary'
-                        }`}>
-                          {paint.name}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
+                          </div>
+                          <span className={`text-xs text-center line-clamp-2 transition-colors font-medium ${
+                            isOwned ? 'text-[#29b6f6]' : 'text-textSecondary group-hover:text-textPrimary'
+                          }`}>
+                            {paint.name}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </>
               )}
             </>
           )}
@@ -2129,7 +2314,11 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
                 </div>
               )}
               
-
+              {/* Date Added */}
+              <div>
+                <span className="text-xs text-textSecondary uppercase tracking-wider">Added</span>
+                <p className="text-textPrimary mt-1">{getFormattedCreationDate(selectedSeventvBadge.id)}</p>
+              </div>
               
               {isAnimatedBadge(selectedSeventvBadge) && (
                 <div className="flex items-center gap-2 text-[#29b6f6]">
@@ -2196,6 +2385,12 @@ const BadgesOverlay = ({ onClose, onBadgeClick }: BadgesOverlayProps) => {
                   <p className="text-textPrimary mt-1">{selectedSeventvPaint.description}</p>
                 </div>
               )}
+              
+              {/* Date Added */}
+              <div>
+                <span className="text-xs text-textSecondary uppercase tracking-wider">Added</span>
+                <p className="text-textPrimary mt-1">{getFormattedCreationDate(selectedSeventvPaint.id)}</p>
+              </div>
               
               {selectedSeventvPaint.tags.length > 0 && (
                 <div>

@@ -3,6 +3,7 @@ import { AlertTriangle, AlertCircle, RefreshCw, Trash2, Shield, MessageCircle, E
 import { useAppStore } from '../../stores/AppStore';
 import { getLogs, clearLogs, type LogEntry } from '../../services/logService';
 
+import { Logger } from '../../utils/logger';
 // Lanyard API types
 interface LanyardData {
     discord_user: {
@@ -49,7 +50,7 @@ const SupportSettings = () => {
                     setLanyardData(data.data);
                 }
             } catch (error) {
-                console.error('Failed to fetch Lanyard data:', error);
+                Logger.error('Failed to fetch Lanyard data:', error);
             } finally {
                 setLanyardLoading(false);
             }
@@ -161,7 +162,7 @@ const SupportSettings = () => {
             const { open } = await import('@tauri-apps/plugin-shell');
             await open(`https://discord.com/users/${DEVELOPER_DISCORD_ID}`);
         } catch (err) {
-            console.error('Failed to open Discord URL:', err);
+            Logger.error('Failed to open Discord URL:', err);
             // Fallback to window.open
             window.open(`https://discord.com/users/${DEVELOPER_DISCORD_ID}`, '_blank');
         }

@@ -1,4 +1,5 @@
 use anyhow::Result;
+use log::debug;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -62,7 +63,7 @@ impl SevenTVAuthService {
             .collect();
 
         fs::write(&path, encrypted)?;
-        println!("[7TV_AUTH] Token saved to file: {:?}", path);
+        debug!("[7TV_AUTH] Token saved to file: {:?}", path);
         Ok(())
     }
 
@@ -95,7 +96,7 @@ impl SevenTVAuthService {
         let path = Self::get_token_file_path()?;
         if path.exists() {
             fs::remove_file(&path)?;
-            println!("[7TV_AUTH] 7TV token file deleted: {:?}", path);
+            debug!("[7TV_AUTH] 7TV token file deleted: {:?}", path);
         }
         Ok(())
     }
@@ -120,7 +121,7 @@ impl SevenTVAuthService {
         let mut cached = SEVENTV_TOKEN.write().await;
         *cached = Some(storable_token);
 
-        println!("[7TV_AUTH] ✅ 7TV token stored successfully");
+        debug!("[7TV_AUTH] ✅ 7TV token stored successfully");
         Ok(())
     }
 
@@ -215,7 +216,7 @@ impl SevenTVAuthService {
 
         if !response.status().is_success() {
             // Token might be invalid, clear it
-            println!("[7TV_AUTH] Token validation failed - clearing stored token");
+            debug!("[7TV_AUTH] Token validation failed - clearing stored token");
             let _ = Self::logout().await;
             return Ok(false);
         }
@@ -240,7 +241,7 @@ impl SevenTVAuthService {
         let mut cached = SEVENTV_TOKEN.write().await;
         *cached = None;
 
-        println!("[7TV_AUTH] 7TV logout complete - token cleared");
+        debug!("[7TV_AUTH] 7TV logout complete - token cleared");
         Ok(())
     }
 
@@ -304,7 +305,7 @@ impl SevenTVCosmeticsService {
             return Err(anyhow::anyhow!("GraphQL errors: {:?}", result["errors"]));
         }
 
-        println!("[7TV] ✅ Paint changed successfully to: {:?}", paint_id);
+        debug!("[7TV] ✅ Paint changed successfully to: {:?}", paint_id);
         Ok(true)
     }
 
@@ -355,7 +356,7 @@ impl SevenTVCosmeticsService {
             return Err(anyhow::anyhow!("GraphQL errors: {:?}", result["errors"]));
         }
 
-        println!("[7TV] ✅ Badge changed successfully to: {:?}", badge_id);
+        debug!("[7TV] ✅ Badge changed successfully to: {:?}", badge_id);
         Ok(true)
     }
 }

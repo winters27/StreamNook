@@ -8,6 +8,7 @@ import { getAppleEmojiUrl } from '../services/emojiService';
 import WhisperImportWizard from './WhisperImportWizard';
 import type { WhisperConversation, Whisper, UserInfo } from '../types';
 
+import { Logger } from '../utils/logger';
 interface WhisperFromBackend {
     from_user_id: string;
     from_user_login: string;
@@ -93,9 +94,9 @@ const saveConversationsToDisk = async (conversations: Map<string, WhisperConvers
     try {
         const conversationsObj = mapToObject(conversations);
         await invoke('save_whisper_storage', { conversations: conversationsObj });
-        console.log('[Whispers] Saved to disk:', conversations.size, 'conversations');
+        Logger.debug('[Whispers] Saved to disk:', conversations.size, 'conversations');
     } catch (error) {
-        console.warn('[Whispers] Failed to save to disk:', error);
+        Logger.warn('[Whispers] Failed to save to disk:', error);
     }
 };
 
@@ -105,11 +106,11 @@ const loadConversationsFromDisk = async (): Promise<Map<string, WhisperConversat
         const storage = await invoke<{ conversations: Record<string, WhisperConversation>; version: number }>('load_whisper_storage');
         if (storage && storage.conversations) {
             const map = objectToMap(storage.conversations);
-            console.log('[Whispers] Loaded from disk:', map.size, 'conversations');
+            Logger.debug('[Whispers] Loaded from disk:', map.size, 'conversations');
             return map;
         }
     } catch (error) {
-        console.warn('[Whispers] Failed to load from disk:', error);
+        Logger.warn('[Whispers] Failed to load from disk:', error);
     }
     return new Map();
 };
@@ -135,7 +136,7 @@ const loadConversationsFromLocalStorage = (): Map<string, WhisperConversation> |
             return new Map(deduplicatedEntries);
         }
     } catch (error) {
-        console.warn('[Whispers] Failed to load from localStorage:', error);
+        Logger.warn('[Whispers] Failed to load from localStorage:', error);
     }
     return null;
 };
@@ -144,14 +145,14 @@ const loadConversationsFromLocalStorage = (): Map<string, WhisperConversation> |
 const migrateFromLocalStorage = async (): Promise<Map<string, WhisperConversation>> => {
     // Check if already migrated
     if (localStorage.getItem(WHISPERS_MIGRATED_KEY)) {
-        console.log('[Whispers] Already migrated, loading from disk');
+        Logger.debug('[Whispers] Already migrated, loading from disk');
         return loadConversationsFromDisk();
     }
 
     // Check if there's localStorage data to migrate
     const localStorageData = loadConversationsFromLocalStorage();
     if (localStorageData && localStorageData.size > 0) {
-        console.log('[Whispers] Migrating', localStorageData.size, 'conversations from localStorage to disk...');
+        Logger.debug('[Whispers] Migrating', localStorageData.size, 'conversations from localStorage to disk...');
         try {
             const conversationsObj = mapToObject(localStorageData);
             await invoke('migrate_whispers_from_localstorage', { conversations: conversationsObj });
@@ -159,10 +160,10 @@ const migrateFromLocalStorage = async (): Promise<Map<string, WhisperConversatio
             localStorage.setItem(WHISPERS_MIGRATED_KEY, 'true');
             // Clear localStorage data (optional - keep for safety)
             // localStorage.removeItem(WHISPERS_LOCALSTORAGE_KEY);
-            console.log('[Whispers] Migration complete');
+            Logger.debug('[Whispers] Migration complete');
             return localStorageData;
         } catch (error) {
-            console.error('[Whispers] Migration failed:', error);
+            Logger.error('[Whispers] Migration failed:', error);
             // Fall back to localStorage data
             return localStorageData;
         }
@@ -212,14 +213,14 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
             // Listen for the actual data object (emitted directly from backend)
             unlisten = await listen<{ version: number; exportedAt: string; myUserId: string | null; myUsername: string | null; conversations: any[] }>('whisper-data-ready', async (event) => {
                 const data = event.payload;
-                console.log('[Whispers] Auto-import data received directly:', data.conversations?.length, 'conversations');
+                Logger.debug('[Whispers] Auto-import data received directly:', data.conversations?.length, 'conversations');
 
                 try {
                     if (!data.version || !data.conversations || !Array.isArray(data.conversations)) {
                         throw new Error('Invalid data format.');
                     }
 
-                    console.log(`[Whispers] Auto-importing ${data.conversations.length} conversations...`);
+                    Logger.debug(`[Whispers] Auto-importing ${data.conversations.length} conversations...`);
 
                     const myUsername = currentUser?.login || currentUser?.username || data.myUsername || '';
                     const myUserId = currentUser?.user_id || data.myUserId || '';
@@ -271,7 +272,7 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
 
                     setConversations(newConversations);
                     const totalMessages = data.conversations.reduce((sum: number, conv: any) => sum + conv.messages.length, 0);
-                    console.log(`[Whispers] Auto-imported ${totalMessages} messages from ${data.conversations.length} conversations`);
+                    Logger.debug(`[Whispers] Auto-imported ${totalMessages} messages from ${data.conversations.length} conversations`);
                     setImportProgress(`✓ Auto-imported ${totalMessages} messages`);
 
                     // Resolve user IDs and fetch profile pictures for all imported users
@@ -283,7 +284,7 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
                     });
 
                     if (usersToResolve.length > 0) {
-                        console.log(`[Whispers] Resolving ${usersToResolve.length} user IDs and profile pictures...`);
+                        Logger.debug(`[Whispers] Resolving ${usersToResolve.length} user IDs and profile pictures...`);
                         setImportProgress(`Resolving ${usersToResolve.length} user IDs...`);
 
                         const resolvedConversations = new Map(newConversations);
@@ -294,7 +295,7 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
                                 const result = await invoke<[string, string, string, string | null] | null>('search_whisper_user', { username: conv.user_login });
                                 if (result && result[0]) {
                                     const [realUserId, , , profileUrl] = result;
-                                    console.log(`[Whispers] Resolved ${conv.user_login}: ${mapKey} -> ${realUserId}`);
+                                    Logger.debug(`[Whispers] Resolved ${conv.user_login}: ${mapKey} -> ${realUserId}`);
 
                                     // Update the conversation with resolved data
                                     conv.user_id = realUserId;
@@ -306,23 +307,23 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
                                     if (!/^\d+$/.test(mapKey)) {
                                         resolvedConversations.delete(mapKey);
                                         resolvedConversations.set(realUserId, conv);
-                                        console.log(`[Whispers] Migrated key from "${mapKey}" to "${realUserId}"`);
+                                        Logger.debug(`[Whispers] Migrated key from "${mapKey}" to "${realUserId}"`);
                                     }
                                 }
                             } catch (err) {
-                                console.warn(`[Whispers] Failed to resolve user ${conv.user_login}:`, err);
+                                Logger.warn(`[Whispers] Failed to resolve user ${conv.user_login}:`, err);
                             }
                         }
 
                         // Update state with resolved conversations
                         setConversations(resolvedConversations);
-                        console.log('[Whispers] User ID resolution complete');
+                        Logger.debug('[Whispers] User ID resolution complete');
                     }
 
                     setImportProgress(`✓ Auto-imported ${totalMessages} messages`);
                     setTimeout(() => setImportProgress(''), 3000);
                 } catch (err) {
-                    console.error('[Whispers] Failed to process auto-import data:', err);
+                    Logger.error('[Whispers] Failed to process auto-import data:', err);
                 }
             });
         };
@@ -374,7 +375,7 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
                 const loaded = await migrateFromLocalStorage();
                 setConversations(loaded);
             } catch (error) {
-                console.error('[Whispers] Failed to load conversations:', error);
+                Logger.error('[Whispers] Failed to load conversations:', error);
             } finally {
                 setIsLoading(false);
             }
@@ -421,7 +422,7 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
             oscillator.start(audioContext.currentTime);
             oscillator.stop(audioContext.currentTime + 0.25);
         } catch (err) {
-            console.warn('Could not play notification sound:', err);
+            Logger.warn('Could not play notification sound:', err);
         }
     }, []);
 
@@ -500,7 +501,7 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
                         // Remove old key and add with new numeric ID key
                         newConversations.delete(existingKey);
                         newConversations.set(data.from_user_id, existing);
-                        console.log(`[Whispers] Migrated conversation key from "${existingKey}" to "${data.from_user_id}"`);
+                        Logger.debug(`[Whispers] Migrated conversation key from "${existingKey}" to "${data.from_user_id}"`);
                     }
                 } else {
                     newConversations.set(data.from_user_id, {
@@ -544,7 +545,7 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
                     // Remove empty conversation
                     const newConversations = new Map(prev);
                     newConversations.delete(prevConvId);
-                    console.log('[Whispers] Removed empty conversation:', prevConvId);
+                    Logger.debug('[Whispers] Removed empty conversation:', prevConvId);
                     return newConversations;
                 }
                 return prev;
@@ -576,7 +577,7 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
                 if (conv && conv.messages.length === 0) {
                     const newConversations = new Map(prev);
                     newConversations.delete(activeConversation);
-                    console.log('[Whispers] Removed empty conversation on close:', activeConversation);
+                    Logger.debug('[Whispers] Removed empty conversation on close:', activeConversation);
                     return newConversations;
                 }
                 return prev;
@@ -680,11 +681,11 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
                             }
                             // Store with the real user ID as key
                             resolvedConversations.set(realUserId, conv);
-                            console.log(`[Whispers] Resolved ${conv.user_login}: ${originalKey} -> ${realUserId}`);
+                            Logger.debug(`[Whispers] Resolved ${conv.user_login}: ${originalKey} -> ${realUserId}`);
                         } else {
                             // Couldn't resolve, keep original (might not be able to send to this user)
                             resolvedConversations.set(originalKey, conv);
-                            console.warn(`[Whispers] Could not resolve user: ${conv.user_login}`);
+                            Logger.warn(`[Whispers] Could not resolve user: ${conv.user_login}`);
                         }
                     } else {
                         // Already has valid user_id, just copy over
@@ -693,7 +694,7 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
                 } catch (err) {
                     // Keep original on error
                     resolvedConversations.set(originalKey, conv);
-                    console.warn(`[Whispers] Error resolving ${conv.user_login}:`, err);
+                    Logger.warn(`[Whispers] Error resolving ${conv.user_login}:`, err);
                 }
             }
 
@@ -704,7 +705,7 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
             if (fileInputRef.current) fileInputRef.current.value = '';
             setTimeout(() => setImportProgress(''), 3000);
         } catch (err) {
-            console.error('[Whispers] Failed to import file:', err);
+            Logger.error('[Whispers] Failed to import file:', err);
             setError(err instanceof Error ? err.message : 'Failed to import');
             setImportProgress('');
         } finally {
@@ -759,7 +760,7 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
 
         // If user_id is not numeric, try to look it up by username
         if (!targetUserId || !/^\d+$/.test(targetUserId)) {
-            console.log('[Whispers] User ID not numeric, looking up by login:', conversation.user_login);
+            Logger.debug('[Whispers] User ID not numeric, looking up by login:', conversation.user_login);
             try {
                 const result = await invoke<[string, string, string, string | null] | null>('search_whisper_user', { username: conversation.user_login });
                 if (result && result[0]) {
@@ -776,13 +777,13 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
                         }
                         return updated;
                     });
-                    console.log('[Whispers] Found user ID:', targetUserId);
+                    Logger.debug('[Whispers] Found user ID:', targetUserId);
                 } else {
                     setError('Cannot send: User not found on Twitch.');
                     return;
                 }
             } catch (err) {
-                console.error('[Whispers] Failed to look up user:', err);
+                Logger.error('[Whispers] Failed to look up user:', err);
                 setError('Cannot send: Failed to look up user.');
                 return;
             }
@@ -819,7 +820,7 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
                 return n;
             });
         } catch (err) {
-            console.error('Failed to send whisper:', err);
+            Logger.error('Failed to send whisper:', err);
 
             // Parse the error to provide a more specific message
             const errorString = String(err);

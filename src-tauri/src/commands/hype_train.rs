@@ -1,3 +1,4 @@
+use log::debug;
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -344,7 +345,7 @@ pub async fn get_hype_train_status(
                                     let prog_total = prog.total.unwrap_or(0);
                                     let remaining = level_goal - current_progress;
 
-                                    println!(
+                                    debug!(
                                         "[HypeTrain] 🚂 Level {} - Progress: {}/{} (remaining: {}) on {}",
                                         train_status.level,
                                         current_progress,
@@ -367,7 +368,7 @@ pub async fn get_hype_train_status(
                             }
                         }
                         Err(e) => {
-                            println!("[HypeTrain] Parse error in detail response: {}", e);
+                            debug!("[HypeTrain] Parse error in detail response: {}", e);
                             (0, 0, 0, None, None)
                         }
                     }
@@ -380,7 +381,7 @@ pub async fn get_hype_train_status(
 
     // Log if we only got level (no progress details)
     if progress == 0 && goal == 0 {
-        println!(
+        debug!(
             "[HypeTrain] 🚂 Level {} active on {} (no progress details available)",
             train_status.level, channel_login
         );

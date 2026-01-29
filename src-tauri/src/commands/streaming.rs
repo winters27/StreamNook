@@ -2,6 +2,7 @@ use crate::models::settings::AppState;
 use crate::services::stream_server::StreamServer;
 use crate::services::streamlink_manager::{StreamlinkDiagnostics, StreamlinkManager};
 use anyhow::Result;
+use log::debug;
 use std::path::PathBuf;
 use tauri::State;
 
@@ -16,13 +17,13 @@ fn is_ttvlol_plugin_installed(custom_folder: Option<&str>) -> bool {
         if !folder.is_empty() {
             let custom_plugin = PathBuf::from(folder).join("plugins").join("twitch.py");
             if custom_plugin.exists() {
-                println!(
+                debug!(
                     "[Streaming] ✅ Found ttvlol plugin in custom folder: {:?}",
                     custom_plugin
                 );
                 return true;
             } else {
-                println!(
+                debug!(
                     "[Streaming] No ttvlol in custom folder {:?}, checking AppData...",
                     custom_plugin
                 );
@@ -38,13 +39,13 @@ fn is_ttvlol_plugin_installed(custom_folder: Option<&str>) -> bool {
             .join("plugins")
             .join("twitch.py");
         if appdata_plugin.exists() {
-            println!(
+            debug!(
                 "[Streaming] ✅ Found ttvlol plugin in AppData: {:?}",
                 appdata_plugin
             );
             return true;
         } else {
-            println!(
+            debug!(
                 "[Streaming] No ttvlol in AppData {:?}, checking bundled...",
                 appdata_plugin
             );
@@ -55,9 +56,9 @@ fn is_ttvlol_plugin_installed(custom_folder: Option<&str>) -> bool {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(exe_dir) = exe.parent() {
             let plugin_path = exe_dir.join("streamlink").join("plugins").join("twitch.py");
-            println!("[Streaming] Checking exe-relative path: {:?}", plugin_path);
+            debug!("[Streaming] Checking exe-relative path: {:?}", plugin_path);
             if plugin_path.exists() {
-                println!(
+                debug!(
                     "[Streaming] ✅ Found ttvlol plugin at exe dir: {:?}",
                     plugin_path
                 );
@@ -68,12 +69,12 @@ fn is_ttvlol_plugin_installed(custom_folder: Option<&str>) -> bool {
 
     // Development mode: check CWD and parent
     if let Ok(cwd) = std::env::current_dir() {
-        println!("[Streaming] CWD is: {:?}", cwd);
+        debug!("[Streaming] CWD is: {:?}", cwd);
 
         // Check CWD (project root)
         let cwd_plugin = cwd.join("streamlink").join("plugins").join("twitch.py");
         if cwd_plugin.exists() {
-            println!(
+            debug!(
                 "[Streaming] ✅ Found ttvlol plugin at CWD: {:?}",
                 cwd_plugin
             );
@@ -83,9 +84,9 @@ fn is_ttvlol_plugin_installed(custom_folder: Option<&str>) -> bool {
         // Check parent of CWD (for when CWD is src-tauri during dev)
         if let Some(parent) = cwd.parent() {
             let parent_plugin = parent.join("streamlink").join("plugins").join("twitch.py");
-            println!("[Streaming] Checking parent path: {:?}", parent_plugin);
+            debug!("[Streaming] Checking parent path: {:?}", parent_plugin);
             if parent_plugin.exists() {
-                println!(
+                debug!(
                     "[Streaming] ✅ Found ttvlol plugin at parent: {:?}",
                     parent_plugin
                 );
@@ -94,7 +95,7 @@ fn is_ttvlol_plugin_installed(custom_folder: Option<&str>) -> bool {
         }
     }
 
-    println!("[Streaming] ❌ ttvlol plugin NOT found in any location");
+    debug!("[Streaming] ❌ ttvlol plugin NOT found in any location");
     false
 }
 
@@ -104,7 +105,7 @@ pub async fn start_stream(
     quality: String,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
-    println!("[Streaming] start_stream called for URL: {}", url);
+    debug!("[Streaming] start_stream called for URL: {}", url);
 
     // Get settings values and determine which args to use
     let (streamlink_args, streamlink_settings, custom_path) = {
@@ -113,9 +114,9 @@ pub async fn start_stream(
 
         // Check if ttvlol plugin actually exists (not just enabled in settings)
         let ttvlol_installed = is_ttvlol_plugin_installed(custom.as_deref());
-        println!("[Streaming] ttvlol plugin installed: {}", ttvlol_installed);
+        debug!("[Streaming] ttvlol plugin installed: {}", ttvlol_installed);
 
-        println!(
+        debug!(
             "[Streaming] Settings: ttvlol_enabled={}, streamlink_args='{}', custom_path={:?}",
             settings.ttvlol_plugin.enabled, settings.streamlink_args, custom
         );
@@ -123,7 +124,7 @@ pub async fn start_stream(
         // Only use ttvlol args if BOTH enabled in settings AND the plugin file exists
         let args = if settings.ttvlol_plugin.enabled && ttvlol_installed {
             // Use the ttvlol plugin args
-            println!(
+            debug!(
                 "[Streaming] ✅ Using ttvlol plugin args: {}",
                 settings.streamlink_args
             );
@@ -131,18 +132,18 @@ pub async fn start_stream(
         } else {
             // Don't use any special args if plugin is disabled or not installed
             if settings.ttvlol_plugin.enabled && !ttvlol_installed {
-                println!(
+                debug!(
                     "[Streaming] ⚠️ WARNING: ttvlol enabled but plugin not installed, skipping ttvlol args"
                 );
             } else if !settings.ttvlol_plugin.enabled {
-                println!("[Streaming] ℹ️ ttvlol plugin is disabled in settings");
+                debug!("[Streaming] ℹ️ ttvlol plugin is disabled in settings");
             }
             String::new()
         };
         (args, settings.streamlink.clone(), custom)
     };
 
-    println!("[Streaming] Final args to be used: '{}'", streamlink_args);
+    debug!("[Streaming] Final args to be used: '{}'", streamlink_args);
 
     // Use the custom path if set, otherwise fallback to bundled/development paths
     let streamlink_path = StreamlinkManager::get_effective_path(custom_path.as_deref());
@@ -228,7 +229,7 @@ pub fn is_streamlink_available(state: State<'_, AppState>) -> bool {
     let path = std::path::Path::new(&effective_path);
 
     let available = path.exists();
-    println!(
+    debug!(
         "[Streaming] is_streamlink_available check: path={:?}, exists={}",
         effective_path, available
     );

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Activity, ExternalLink, Globe, RefreshCw, CheckCircle, AlertCircle } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
+import { Logger } from '../../utils/logger';
 import {
     isSupabaseConfigured,
     getOnlineCount,
@@ -22,7 +23,7 @@ export default function AnalyticsSettings() {
             const running = await invoke('is_dashboard_running') as boolean;
             setDashboardRunning(running);
         } catch (error) {
-            console.error('Failed to check dashboard status:', error);
+            Logger.error('Failed to check dashboard status:', error);
         }
     };
 
@@ -45,7 +46,7 @@ export default function AnalyticsSettings() {
             // Update dashboard running status
             await checkDashboardStatus();
         } catch (error) {
-            console.error('Failed to start dashboard:', error);
+            Logger.error('Failed to start dashboard:', error);
             // Still try to open the URL in case it's running
             window.open('http://localhost:5173', '_blank');
         } finally {
@@ -60,22 +61,22 @@ export default function AnalyticsSettings() {
                 // Check if we are in a dev environment
                 const devResult = await invoke('is_dev_environment') as boolean;
                 setIsDev(devResult);
-                console.log('[Analytics] isDev:', devResult);
+                Logger.debug('[Analytics] isDev:', devResult);
 
                 // Check if user is admin
                 const adminResult = await invoke('is_admin_user') as boolean;
                 setIsAdmin(adminResult);
-                console.log('[Analytics] isAdmin:', adminResult);
+                Logger.debug('[Analytics] isAdmin:', adminResult);
 
                 // Check if dashboard is available
                 const availableResult = await invoke('check_dashboard_available') as boolean;
                 setDashboardAvailable(availableResult);
-                console.log('[Analytics] dashboardAvailable:', availableResult);
+                Logger.debug('[Analytics] dashboardAvailable:', availableResult);
 
                 // Check if dashboard is running
                 await checkDashboardStatus();
             } catch (error) {
-                console.error('[Analytics] Error during init:', error);
+                Logger.error('[Analytics] Error during init:', error);
                 setIsDev(false);
                 setIsAdmin(false);
                 setDashboardAvailable(false);

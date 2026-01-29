@@ -54,6 +54,7 @@ interface ParsedMessage {
 
 import { EMOJI_CATEGORIES, EMOJI_KEYWORDS } from '../services/emojiCategories';
 
+import { Logger } from '../utils/logger';
 // Helper function to format time remaining for Hype Train
 const formatHypeTrainTimeRemaining = (expiresAt: string): string => {
   const now = Date.now();
@@ -366,7 +367,7 @@ const ChatWidget = () => {
           }
         }
       } catch (err) {
-        console.error('[ChatWidget] Failed to parse message:', err, message);
+        Logger.error('[ChatWidget] Failed to parse message:', err, message);
       }
     });
     lastProcessedCountRef.current = messages.length;
@@ -381,7 +382,7 @@ const ChatWidget = () => {
           const count = await fetchStreamViewerCount(currentStream.user_login, clientId, token);
           setViewerCount(count);
         } catch (err) {
-          console.error('[ChatWidget] Failed to fetch viewer count:', err);
+          Logger.error('[ChatWidget] Failed to fetch viewer count:', err);
           setViewerCount(null);
         }
       } else {
@@ -443,7 +444,7 @@ const ChatWidget = () => {
       
       // Timer expired - clear hype train immediately (don't wait for poll)
       if (diffMs === 0) {
-        console.log('[HypeTrain] Timer expired - clearing immediately');
+        Logger.debug('[HypeTrain] Timer expired - clearing immediately');
         useAppStore.getState().setCurrentHypeTrain(null);
         return;
       }
@@ -488,7 +489,7 @@ const ChatWidget = () => {
 
     if (pendingLevelUpRef.current) {
       const { from, to } = pendingLevelUpRef.current;
-      console.log(`[HypeTrain] 🎉 LEVEL UP! ${from} → ${to}`);
+      Logger.debug(`[HypeTrain] 🎉 LEVEL UP! ${from} → ${to}`);
       
       const randomMessage = HYPE_MESSAGES[Math.floor(Math.random() * HYPE_MESSAGES.length)];
       setCelebrationMessage(randomMessage);
@@ -539,7 +540,7 @@ const ChatWidget = () => {
       clearUsers(); // Clear mention autocomplete user list
       // PHASE 3: Clear Rust user message history when switching channels
       invoke('clear_user_message_history').catch(err => 
-        console.warn('[ChatWidget] Failed to clear Rust user history:', err)
+        Logger.warn('[ChatWidget] Failed to clear Rust user history:', err)
       );
       // Reset channel points when switching channels
       setChannelPoints(null);
@@ -564,7 +565,7 @@ const ChatWidget = () => {
     const maxRetries = 3;
     const retryDelayMs = 1000;
     
-    console.log('[ChatWidget] fetchChannelPoints - fetching for channel:', currentStream.user_login);
+    Logger.debug('[ChatWidget] fetchChannelPoints - fetching for channel:', currentStream.user_login);
     
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
@@ -573,7 +574,7 @@ const ChatWidget = () => {
           channelLogin: currentStream.user_login
         });
         
-        console.log('[ChatWidget] Raw GQL response:', JSON.stringify(result).substring(0, 500));
+        Logger.debug('[ChatWidget] Raw GQL response:', JSON.stringify(result).substring(0, 500));
         
         // Try multiple possible paths since the backend GQL query uses "community.channel" structure
         // Path 1: data.community.channel.self.communityPoints.balance
@@ -595,7 +596,7 @@ const ChatWidget = () => {
         if (communityPointsSettings) {
           const customName = communityPointsSettings.name;
           const customIconUrl = communityPointsSettings.image?.url;
-          console.log('[ChatWidget] Custom points settings:', { customName, customIconUrl });
+          Logger.debug('[ChatWidget] Custom points settings:', { customName, customIconUrl });
           setCustomPointsName(customName || null);
           setCustomPointsIconUrl(customIconUrl || null);
         } else {
@@ -604,7 +605,7 @@ const ChatWidget = () => {
         }
         
         if (typeof balance === 'number') {
-          console.log('[ChatWidget] ✅ Got channel points balance:', balance);
+          Logger.debug('[ChatWidget] ✅ Got channel points balance:', balance);
           setChannelPoints(balance);
           return;
         }
@@ -613,14 +614,14 @@ const ChatWidget = () => {
         const communityPoints = result?.data?.community?.channel?.self?.communityPoints 
           ?? result?.data?.user?.channel?.self?.communityPoints;
         if (communityPoints === null) {
-          console.log('[ChatWidget] Channel points not enabled or user not eligible for this channel');
+          Logger.debug('[ChatWidget] Channel points not enabled or user not eligible for this channel');
           setChannelPoints(null);
           return;
         }
         
-        console.warn(`[ChatWidget] Attempt ${attempt}/${maxRetries}: Could not parse balance from response`);
+        Logger.warn(`[ChatWidget] Attempt ${attempt}/${maxRetries}: Could not parse balance from response`);
       } catch (err) {
-        console.warn(`[ChatWidget] Attempt ${attempt}/${maxRetries} failed:`, err);
+        Logger.warn(`[ChatWidget] Attempt ${attempt}/${maxRetries} failed:`, err);
       }
       
       // Wait before retrying (except on last attempt)
@@ -629,7 +630,7 @@ const ChatWidget = () => {
       }
     }
     
-    console.log('[ChatWidget] All retries exhausted - will update via events');
+    Logger.debug('[ChatWidget] All retries exhausted - will update via events');
   }, [currentStream?.user_login]);
 
   // Automatically fetch channel points when entering a new channel
@@ -651,10 +652,10 @@ const ChatWidget = () => {
         });
         setResubNotification(notification);
         if (notification) {
-          console.log('[ChatWidget] Resub notification available:', notification.cumulative_tenure_months, 'months');
+          Logger.debug('[ChatWidget] Resub notification available:', notification.cumulative_tenure_months, 'months');
         }
       } catch (err) {
-        console.warn('[ChatWidget] Failed to fetch resub notification:', err);
+        Logger.warn('[ChatWidget] Failed to fetch resub notification:', err);
         setResubNotification(null);
       }
     };
@@ -667,19 +668,19 @@ const ChatWidget = () => {
     if (!currentStream?.user_id) return;
     
     const unlistenSpent = listen<{ channel_id?: string | null; points: number; balance: number }>('channel-points-spent', (event) => {
-      console.log('[ChatWidget] 💸 Points spent event:', event.payload, 'currentChannel:', currentStream.user_id);
+      Logger.debug('[ChatWidget] 💸 Points spent event:', event.payload, 'currentChannel:', currentStream.user_id);
       // Update if channel matches OR if no channel_id in event (prediction bets sometimes don't include it)
       if (!event.payload.channel_id || event.payload.channel_id === currentStream.user_id) {
-        console.log('[ChatWidget] ✅ Updating channel points to:', event.payload.balance);
+        Logger.debug('[ChatWidget] ✅ Updating channel points to:', event.payload.balance);
         setChannelPoints(event.payload.balance);
       }
     });
 
     const unlistenEarned = listen<{ channel_id?: string | null; points: number; balance: number }>('channel-points-earned', (event) => {
-      console.log('[ChatWidget] 💰 Points earned event:', event.payload, 'currentChannel:', currentStream.user_id);
+      Logger.debug('[ChatWidget] 💰 Points earned event:', event.payload, 'currentChannel:', currentStream.user_id);
       // Update if channel matches OR if no channel_id in event
       if (!event.payload.channel_id || event.payload.channel_id === currentStream.user_id) {
-        console.log('[ChatWidget] ✅ Updating channel points to:', event.payload.balance);
+        Logger.debug('[ChatWidget] ✅ Updating channel points to:', event.payload.balance);
         setChannelPoints(event.payload.balance);
       }
     });
@@ -724,7 +725,7 @@ const ChatWidget = () => {
           setIsMining(false);
         }
       } catch (err) {
-        console.warn('[ChatWidget] Could not load drops data:', err);
+        Logger.warn('[ChatWidget] Could not load drops data:', err);
         setDropsCampaign(null);
       } finally {
         setIsLoadingDrops(false);
@@ -744,7 +745,7 @@ const ChatWidget = () => {
           miningStatus.current_channel?.game_name?.toLowerCase();
         setIsMining(miningStatus.is_mining && miningGameName === gameName);
       } catch (err) {
-        console.warn('[ChatWidget] Failed to check mining status:', err);
+        Logger.warn('[ChatWidget] Failed to check mining status:', err);
       }
     };
 
@@ -756,7 +757,7 @@ const ChatWidget = () => {
         const { listen } = await import('@tauri-apps/api/event');
         unlisten = await listen('mining-status-changed', handleMiningStatusChange);
       } catch (err) {
-        console.warn('[ChatWidget] Failed to set up mining event listener:', err);
+        Logger.warn('[ChatWidget] Failed to set up mining event listener:', err);
       }
     };
     setupListener();
@@ -781,7 +782,7 @@ const ChatWidget = () => {
         setIsMining(false);
         useAppStore.getState().addToast(`Stopped mining drops for ${dropsCampaign.game_name}`, 'info');
       } catch (err) {
-        console.error('[ChatWidget] Failed to stop mining:', err);
+        Logger.error('[ChatWidget] Failed to stop mining:', err);
         useAppStore.getState().addToast('Failed to stop mining drops', 'error');
       }
     } else {
@@ -804,7 +805,7 @@ const ChatWidget = () => {
         setIsMining(true);
         useAppStore.getState().addToast(`Started mining drops for ${dropsCampaign.game_name}`, 'success');
       } catch (err) {
-        console.error('[ChatWidget] Failed to start mining:', err);
+        Logger.error('[ChatWidget] Failed to start mining:', err);
         useAppStore.getState().addToast('Failed to start mining drops', 'error');
       }
     }
@@ -850,13 +851,13 @@ const ChatWidget = () => {
   const scrollToMessage = useCallback((messageId: string, options?: { highlight?: boolean; align?: 'start' | 'center' | 'end' | 'auto' }) => {
     const { highlight = true, align = 'center' } = options || {};
 
-    console.log('[ChatWidget] scrollToMessage called:', { messageId, highlight, align });
+    Logger.debug('[ChatWidget] scrollToMessage called:', { messageId, highlight, align });
 
     // Find the message index
     const messageIndex = messages.findIndex(msg => getMessageId(msg) === messageId);
 
     if (messageIndex === -1) {
-      console.warn('[ChatWidget] Message not found in buffer. ID:', messageId);
+      Logger.warn('[ChatWidget] Message not found in buffer. ID:', messageId);
       return false;
     }
 
@@ -924,12 +925,12 @@ const ChatWidget = () => {
             behavior: 'smooth'
           });
           
-          console.log('[ChatWidget] Scrolled to message via container-aware scroll');
+          Logger.debug('[ChatWidget] Scrolled to message via container-aware scroll');
         } else {
-          console.warn('[ChatWidget] Could not find scrollable container for message');
+          Logger.warn('[ChatWidget] Could not find scrollable container for message');
         }
       } else {
-        console.warn('[ChatWidget] Could not find DOM element for message:', messageId);
+        Logger.warn('[ChatWidget] Could not find DOM element for message:', messageId);
       }
     });
 
@@ -942,7 +943,7 @@ const ChatWidget = () => {
   }, [messages, getMessageId, setBufferPaused]);
 
   const handleReplyClick = useCallback((parentMsgId: string) => {
-    console.log('[ChatWidget] handleReplyClick called for parentMsgId:', parentMsgId);
+    Logger.debug('[ChatWidget] handleReplyClick called for parentMsgId:', parentMsgId);
 
     const success = scrollToMessage(parentMsgId, { highlight: true, align: 'center' });
 
@@ -957,13 +958,13 @@ const ChatWidget = () => {
       // Start badge and third-party database loading in parallel (non-blocking)
       // These will populate caches in the background for future lookups
       preloadThirdPartyBadgeDatabases().catch(err =>
-        console.warn('[ChatWidget] Failed to preload third-party badge databases:', err)
+        Logger.warn('[ChatWidget] Failed to preload third-party badge databases:', err)
       );
 
       // Start badge initialization in the background (non-blocking)
       invoke<[string, string]>('get_twitch_credentials')
         .then(([clientId, token]) => initializeBadges(clientId, token, channelId))
-        .catch(err => console.warn('[ChatWidget] Badge init error (non-blocking):', err));
+        .catch(err => Logger.warn('[ChatWidget] Badge init error (non-blocking):', err));
 
       // PRIORITY: Fetch emotes first and display immediately
       // This is the critical path - emotes should appear ASAP
@@ -990,7 +991,7 @@ const ChatWidget = () => {
           const idsToFetch = Array.from(ownerIds).filter(id => !newCache.has(id));
           
           if (idsToFetch.length > 0) {
-            console.log(`[ChatWidget] Fetching ${idsToFetch.length} channel names for emote groups`);
+            Logger.debug(`[ChatWidget] Fetching ${idsToFetch.length} channel names for emote groups`);
             Promise.allSettled(
               idsToFetch.map(async (id) => {
                 const user = await invoke<{ display_name: string }>('get_user_by_id', { userId: id });
@@ -1015,10 +1016,10 @@ const ChatWidget = () => {
           const availableFavorites = getAvailableFavorites(allEmotes);
           setFavoriteEmotes(availableFavorites);
         }
-      }).catch(err => console.warn('[ChatWidget] Failed to load favorites:', err));
+      }).catch(err => Logger.warn('[ChatWidget] Failed to load favorites:', err));
 
     } catch (err) {
-      console.error('Failed to load emotes:', err);
+      Logger.error('Failed to load emotes:', err);
       setIsLoadingEmotes(false);
     }
   };
@@ -1054,11 +1055,11 @@ const ChatWidget = () => {
             try {
               await initializeBadges(clientId, token, sourceRoomId);
             } catch (err) {
-              console.warn('[ChatWidget] Failed to initialize badges for shared channel:', sourceRoomId, err);
+              Logger.warn('[ChatWidget] Failed to initialize badges for shared channel:', sourceRoomId, err);
             }
           }
         } catch (err) {
-          console.error('[ChatWidget] Failed to get credentials for shared channel badges:', err);
+          Logger.error('[ChatWidget] Failed to get credentials for shared channel badges:', err);
         }
       }
     };
@@ -1095,7 +1096,7 @@ const ChatWidget = () => {
             setMessageInput(messageToSend);
           }
         } catch (err) {
-          console.error('[ChatWidget] Failed to use resub token:', err);
+          Logger.error('[ChatWidget] Failed to use resub token:', err);
           useAppStore.getState().addToast('Failed to share resub notification', 'error');
           setMessageInput(messageToSend);
         }
@@ -1108,7 +1109,7 @@ const ChatWidget = () => {
           const userBadges = await invoke<string>('get_user_badges', { userId: currentUser.user_id, channelId: currentStream?.user_id });
           badgeString = userBadges;
         } catch (badgeErr) {
-          console.warn('[ChatWidget] Could not fetch user badges:', badgeErr);
+          Logger.warn('[ChatWidget] Could not fetch user badges:', badgeErr);
         }
         await sendMessage(messageToSend, {
           username: currentUser.login || currentUser.username,
@@ -1120,10 +1121,10 @@ const ChatWidget = () => {
 
         // Track message sent stat for analytics
         incrementStat(currentUser.user_id, 'messages_sent', 1).catch(err => {
-          console.warn('[ChatWidget] Failed to track message sent stat:', err);
+          Logger.warn('[ChatWidget] Failed to track message sent stat:', err);
         });
       } catch (err) {
-        console.error('Failed to send message:', err);
+        Logger.error('Failed to send message:', err);
         setMessageInput(messageToSend);
         useAppStore.getState().addToast('Failed to send message. Please try again.', 'error');
       }
@@ -1442,7 +1443,7 @@ const ChatWidget = () => {
       try {
         messageHistory = await invoke<any[]>('get_user_message_history', { userId });
       } catch (err) {
-        console.warn('[ChatWidget] Failed to fetch user history from Rust, using frontend cache:', err);
+        Logger.warn('[ChatWidget] Failed to fetch user history from Rust, using frontend cache:', err);
         messageHistory = userMessageHistory.current.get(userId) || [];
       }
       
@@ -1459,9 +1460,9 @@ const ChatWidget = () => {
         width: cardWidth, height: cardHeight, x, y,
         resizable: false, decorations: false, alwaysOnTop: true, skipTaskbar: true, transparent: true, focus: true
       });
-      profileWindow.once('tauri://error', (e) => console.error('Error opening profile window:', e));
+      profileWindow.once('tauri://error', (e) => Logger.error('Error opening profile window:', e));
     } catch (err) {
-      console.error('Failed to open profile window:', err);
+      Logger.error('Failed to open profile window:', err);
       setSelectedUser({ userId, username, displayName, color, badges, position: { x: event.clientX, y: event.clientY } });
     }
   };
@@ -1634,7 +1635,7 @@ const ChatWidget = () => {
                 onScroll={(distanceToBottom, isUserScroll) => {
                   // Debug logging - to be removed after verification
                   if (isUserScroll && distanceToBottom > 150) {
-                     console.log('[ChatWidget] Potential Pause Trigger:', { distanceToBottom, isUserScroll, isPaused });
+                     Logger.debug('[ChatWidget] Potential Pause Trigger:', { distanceToBottom, isUserScroll, isPaused });
                   }
                   
                   // Grace Periods:
@@ -1648,7 +1649,7 @@ const ChatWidget = () => {
                   // User scrolled up (away from bottom) - pause chat
                   // STRICT: Only pause if Child component confirms it was a USER interaction (isUserScroll)
                   if (isUserScroll && distanceToBottom > 150 && !isPaused) {
-                    console.log('[ChatWidget] PAUSING CHAT due to user scroll');
+                    Logger.debug('[ChatWidget] PAUSING CHAT due to user scroll');
                     setIsPaused(true);
                     setBufferPaused(true);
                   }
@@ -1793,7 +1794,7 @@ const ChatWidget = () => {
                                           useAppStore.getState().addToast(`Added ${emote.name} to favorites`, 'success');
                                         }
                                       } catch (err) {
-                                        console.error('Failed to toggle favorite:', err);
+                                        Logger.error('Failed to toggle favorite:', err);
                                         useAppStore.getState().addToast('Failed to update favorites', 'error');
                                       }
                                     }} className={`absolute top-0 right-0 p-1 rounded-bl transition-all ${isFavorited ? 'text-yellow-400 opacity-100' : 'text-textSecondary opacity-0 group-hover:opacity-100'} hover:text-yellow-400 hover:bg-glass`} title={isFavorited ? 'Remove from favorites' : 'Add to favorites'}>
@@ -1832,7 +1833,7 @@ const ChatWidget = () => {
                                     useAppStore.getState().addToast(`Added ${emote.name} to favorites`, 'success');
                                   }
                                 } catch (err) {
-                                  console.error('Failed to toggle favorite:', err);
+                                  Logger.error('Failed to toggle favorite:', err);
                                   useAppStore.getState().addToast('Failed to update favorites', 'error');
                                 }
                               }}

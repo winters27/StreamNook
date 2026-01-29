@@ -1,6 +1,7 @@
 use crate::services::cookie_jar_service::CookieJarService;
 use anyhow::Result;
 use chrono::{Duration as ChronoDuration, Utc};
+use log::{debug, error};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -81,7 +82,7 @@ impl DropsAuthService {
             .collect();
 
         fs::write(&path, encrypted)?;
-        println!("[DROPS_AUTH] Token saved to file: {:?}", path);
+        debug!("[DROPS_AUTH] Token saved to file: {:?}", path);
         Ok(())
     }
 
@@ -114,7 +115,7 @@ impl DropsAuthService {
         let path = Self::get_token_file_path()?;
         if path.exists() {
             fs::remove_file(&path)?;
-            println!("[DROPS_AUTH] Drops token file deleted: {:?}", path);
+            debug!("[DROPS_AUTH] Drops token file deleted: {:?}", path);
         }
         Ok(())
     }
@@ -126,7 +127,7 @@ impl DropsAuthService {
         cookie_jar
             .set_full_token_data(&token.access_token, &token.refresh_token, token.expires_at)
             .await?;
-        println!("[DROPS_AUTH] ✅ Full token data saved to cookies");
+        debug!("[DROPS_AUTH] ✅ Full token data saved to cookies");
         Ok(())
     }
 
@@ -152,7 +153,7 @@ impl DropsAuthService {
     async fn delete_cookies() -> Result<()> {
         let cookie_jar = CookieJarService::new_drops()?;
         cookie_jar.clear().await?;
-        println!("[DROPS_AUTH] Cookies deleted");
+        debug!("[DROPS_AUTH] Cookies deleted");
         Ok(())
     }
 
@@ -165,9 +166,9 @@ impl DropsAuthService {
             ("scopes", ""), // NO SCOPES - this is critical!
         ];
 
-        println!("[DROPS_AUTH] Starting device flow with Android app client ID");
-        println!("[DROPS_AUTH] Client ID: {}", DROPS_CLIENT_ID);
-        println!("[DROPS_AUTH] Scopes: (empty)");
+        debug!("[DROPS_AUTH] Starting device flow with Android app client ID");
+        debug!("[DROPS_AUTH] Client ID: {}", DROPS_CLIENT_ID);
+        debug!("[DROPS_AUTH] Scopes: (empty)");
 
         let response = client
             .post("https://id.twitch.tv/oauth2/device")
@@ -185,9 +186,9 @@ impl DropsAuthService {
 
         let device_response: DeviceCodeResponse = response.json().await?;
 
-        println!("[DROPS_AUTH] Device flow started successfully");
-        println!("[DROPS_AUTH] User code: {}", device_response.user_code);
-        println!(
+        debug!("[DROPS_AUTH] Device flow started successfully");
+        debug!("[DROPS_AUTH] User code: {}", device_response.user_code);
+        debug!(
             "[DROPS_AUTH] Verification URI: {}",
             device_response.verification_uri
         );
@@ -212,7 +213,7 @@ impl DropsAuthService {
         let expiry_time = start_time + expires_in;
         let mut poll_interval = interval;
 
-        println!("[DROPS_AUTH] Starting token polling...");
+        debug!("[DROPS_AUTH] Starting token polling...");
 
         loop {
             let current_time = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
@@ -250,28 +251,28 @@ impl DropsAuthService {
                 };
 
                 // Store token to both file and cookies for persistence
-                println!("[DROPS_AUTH] Storing token to file and cookies...");
+                debug!("[DROPS_AUTH] Storing token to file and cookies...");
                 let file_result = Self::store_token_to_file(&storable_token);
                 let cookie_result = Self::store_token_to_cookies(&storable_token).await;
 
                 match (file_result, cookie_result) {
                     (Ok(_), Ok(_)) => {
-                        println!("[DROPS_AUTH] ✅ Token stored successfully to file and cookies!");
+                        debug!("[DROPS_AUTH] ✅ Token stored successfully to file and cookies!");
                     }
                     (Ok(_), Err(e)) => {
-                        eprintln!(
+                        error!(
                             "[DROPS_AUTH] ⚠️ Token saved to file but cookies failed: {:?}",
                             e
                         );
                     }
                     (Err(e), Ok(_)) => {
-                        eprintln!(
+                        error!(
                             "[DROPS_AUTH] ⚠️ Token saved to cookies but file failed: {:?}",
                             e
                         );
                     }
                     (Err(file_err), Err(cookie_err)) => {
-                        eprintln!(
+                        error!(
                             "[DROPS_AUTH] ⚠️ Failed to store token! File: {:?}, Cookie: {:?}",
                             file_err, cookie_err
                         );
@@ -279,7 +280,7 @@ impl DropsAuthService {
                     }
                 }
 
-                println!(
+                debug!(
                     "[DROPS_AUTH] Access token (first 10 chars): {}...",
                     &token_response.access_token[..10.min(token_response.access_token.len())]
                 );
@@ -291,12 +292,12 @@ impl DropsAuthService {
 
             if error_text.contains("authorization_pending") {
                 // User hasn't authorized yet, continue polling
-                println!("[DROPS_AUTH] Waiting for user authorization...");
+                debug!("[DROPS_AUTH] Waiting for user authorization...");
                 continue;
             } else if error_text.contains("slow_down") {
                 // Twitch wants us to slow down
                 poll_interval += 2;
-                println!(
+                debug!(
                     "[DROPS_AUTH] Slowing down polling interval to {} seconds",
                     poll_interval
                 );
@@ -315,7 +316,7 @@ impl DropsAuthService {
     pub async fn logout() -> Result<()> {
         Self::delete_token_file()?;
         let _ = Self::delete_cookies().await;
-        println!("[DROPS_AUTH] Drops logout complete - all tokens cleared");
+        debug!("[DROPS_AUTH] Drops logout complete - all tokens cleared");
         Ok(())
     }
 
@@ -328,7 +329,7 @@ impl DropsAuthService {
             ("client_id", DROPS_CLIENT_ID),
         ];
 
-        println!("[DROPS_AUTH] Refreshing drops token...");
+        debug!("[DROPS_AUTH] Refreshing drops token...");
 
         let response = client
             .post("https://id.twitch.tv/oauth2/token")
@@ -343,8 +344,8 @@ impl DropsAuthService {
             // If refresh fails due to missing client secret or other OAuth issues,
             // delete the stored token so the user can re-authenticate
             if error_text.contains("client secret") || error_text.contains("invalid") {
-                eprintln!("[DROPS_AUTH] ⚠️ Token refresh failed - clearing stored tokens");
-                eprintln!("[DROPS_AUTH] Error: {}", error_text);
+                error!("[DROPS_AUTH] ⚠️ Token refresh failed - clearing stored tokens");
+                error!("[DROPS_AUTH] Error: {}", error_text);
                 let _ = Self::delete_token_file();
                 let _ = Self::delete_cookies().await;
                 return Err(anyhow::anyhow!(
@@ -371,7 +372,7 @@ impl DropsAuthService {
         // Store the refreshed token
         Self::store_token_to_file(&new_storable_token)?;
 
-        println!("[DROPS_AUTH] ✅ Token refreshed successfully");
+        debug!("[DROPS_AUTH] ✅ Token refreshed successfully");
 
         Ok(new_storable_token)
     }
@@ -390,7 +391,7 @@ impl DropsAuthService {
                 Ok(token.access_token)
             }
             Err(file_err) => {
-                println!(
+                debug!(
                     "[DROPS_AUTH] Could not read from file: {:?}, trying cookies...",
                     file_err
                 );
@@ -398,7 +399,7 @@ impl DropsAuthService {
                 // Try cookies as fallback
                 match Self::load_token_from_cookies().await {
                     Ok(cookie_token) => {
-                        println!("[DROPS_AUTH] ✅ Token retrieved from cookies");
+                        debug!("[DROPS_AUTH] ✅ Token retrieved from cookies");
 
                         // Save to file for next time
                         let _ = Self::store_token_to_file(&cookie_token);
@@ -434,7 +435,7 @@ impl DropsAuthService {
 
         if response.status() == 401 {
             // Token is invalid, delete it from both file and cookies
-            println!("[DROPS_AUTH] Token validation failed (401) - clearing stored tokens");
+            debug!("[DROPS_AUTH] Token validation failed (401) - clearing stored tokens");
             let _ = Self::delete_token_file();
             let _ = Self::delete_cookies().await;
             return Ok(false);

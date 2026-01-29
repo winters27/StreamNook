@@ -3,6 +3,7 @@
 // Thread-safe caching with memory management
 
 use anyhow::{Context, Result};
+use log::debug;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -183,14 +184,14 @@ impl ProfileCacheService {
             let cache = self.profiles.read().await;
             if let Some(cached) = cache.get(&user_id) {
                 if now - cached.timestamp < self.profile_cache_duration.as_secs() {
-                    println!("[ProfileCache] Cache hit for user {}", user_id);
+                    debug!("[ProfileCache] Cache hit for user {}", user_id);
                     return Ok(cached.profile.clone());
                 }
             }
         }
 
         // Cache miss or expired - fetch fresh data
-        println!(
+        debug!(
             "[ProfileCache] Cache miss for user {}, fetching fresh data",
             user_id
         );
@@ -206,7 +207,7 @@ impl ProfileCacheService {
         channel_id: Option<String>,
         channel_name: Option<String>,
     ) -> Result<()> {
-        println!("[ProfileCache] Background refresh for user {}", user_id);
+        debug!("[ProfileCache] Background refresh for user {}", user_id);
         self.fetch_and_cache_profile(user_id, username, channel_id, channel_name)
             .await?;
         Ok(())
@@ -218,12 +219,12 @@ impl ProfileCacheService {
         *self.ffz_database.write().await = None;
         *self.chatterino_database.write().await = None;
         *self.homies_database.write().await = None;
-        println!("[ProfileCache] All caches cleared");
+        debug!("[ProfileCache] All caches cleared");
     }
 
     /// Preload global badge databases (call on app startup)
     pub async fn preload_badge_databases(&self) -> Result<()> {
-        println!("[ProfileCache] Preloading badge databases...");
+        debug!("[ProfileCache] Preloading badge databases...");
 
         let (ffz_result, chatterino_result, homies_result) = tokio::join!(
             self.fetch_ffz_database(),
@@ -233,19 +234,19 @@ impl ProfileCacheService {
 
         // Log any errors but don't fail
         if let Err(e) = ffz_result {
-            println!("[ProfileCache] Failed to preload FFZ database: {}", e);
+            debug!("[ProfileCache] Failed to preload FFZ database: {}", e);
         }
         if let Err(e) = chatterino_result {
-            println!(
+            debug!(
                 "[ProfileCache] Failed to preload Chatterino database: {}",
                 e
             );
         }
         if let Err(e) = homies_result {
-            println!("[ProfileCache] Failed to preload Homies database: {}", e);
+            debug!("[ProfileCache] Failed to preload Homies database: {}", e);
         }
 
-        println!("[ProfileCache] Badge databases preloaded");
+        debug!("[ProfileCache] Badge databases preloaded");
         Ok(())
     }
 
@@ -267,7 +268,7 @@ impl ProfileCacheService {
         );
 
         let seventv_cosmetics = seventv_result.unwrap_or_else(|e| {
-            println!("[ProfileCache] Failed to fetch 7TV cosmetics: {}", e);
+            debug!("[ProfileCache] Failed to fetch 7TV cosmetics: {}", e);
             SevenTVCosmetics {
                 paints: vec![],
                 badges: vec![],
@@ -276,7 +277,7 @@ impl ProfileCacheService {
         });
 
         let third_party_badges = badges_result.unwrap_or_else(|e| {
-            println!("[ProfileCache] Failed to fetch third-party badges: {}", e);
+            debug!("[ProfileCache] Failed to fetch third-party badges: {}", e);
             vec![]
         });
 
@@ -504,7 +505,7 @@ impl ProfileCacheService {
             }
         }
 
-        println!("[ProfileCache] Fetching FFZ badge database");
+        debug!("[ProfileCache] Fetching FFZ badge database");
         let response = self
             .client
             .get("https://api.frankerfacez.com/v1/badges/ids")
@@ -539,7 +540,7 @@ impl ProfileCacheService {
         };
 
         *self.ffz_database.write().await = Some(database);
-        println!("[ProfileCache] FFZ badge database cached");
+        debug!("[ProfileCache] FFZ badge database cached");
         Ok(())
     }
 
@@ -612,7 +613,7 @@ impl ProfileCacheService {
             }
         }
 
-        println!("[ProfileCache] Fetching Chatterino badge database");
+        debug!("[ProfileCache] Fetching Chatterino badge database");
         let response = self
             .client
             .get("https://api.chatterino.com/badges")
@@ -641,7 +642,7 @@ impl ProfileCacheService {
         };
 
         *self.chatterino_database.write().await = Some(database);
-        println!("[ProfileCache] Chatterino badge database cached");
+        debug!("[ProfileCache] Chatterino badge database cached");
         Ok(())
     }
 
@@ -706,7 +707,7 @@ impl ProfileCacheService {
             }
         }
 
-        println!("[ProfileCache] Fetching Homies badge database");
+        debug!("[ProfileCache] Fetching Homies badge database");
 
         // Fetch both badge sources in parallel
         let (result1, result2) = tokio::join!(
@@ -769,7 +770,7 @@ impl ProfileCacheService {
         };
 
         *self.homies_database.write().await = Some(database);
-        println!("[ProfileCache] Homies badge database cached");
+        debug!("[ProfileCache] Homies badge database cached");
         Ok(())
     }
 

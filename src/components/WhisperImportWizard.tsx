@@ -18,6 +18,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { useAppStore } from '../stores/AppStore';
 
+import { Logger } from '../utils/logger';
 interface WhisperImportWizardProps {
     isOpen: boolean;
     onClose: () => void;
@@ -148,7 +149,7 @@ const WhisperImportWizard = ({ isOpen, onClose }: WhisperImportWizardProps) => {
             await invoke<{ success: boolean; message: string }>('scrape_whispers');
             // The actual completion will come via the event listener
         } catch (err) {
-            console.error('[WhisperImportWizard] Auto-import failed:', err);
+            Logger.error('[WhisperImportWizard] Auto-import failed:', err);
             setWhisperImportState({
                 isImporting: false,
                 error: err instanceof Error ? err.message : String(err)

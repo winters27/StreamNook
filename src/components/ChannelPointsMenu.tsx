@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../stores/AppStore';
 import { ChannelReward, RedemptionResult, UnlockedEmote } from '../types';
 
+import { Logger } from '../utils/logger';
 // Default channel points icon (Twitch style)
 const ChannelPointsIcon = ({ className = "", size = 14 }: { className?: string; size?: number }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" className={className} fill="currentColor">
@@ -94,7 +95,7 @@ const ChannelPointsMenu: React.FC<ChannelPointsMenuProps> = ({
         });
         setRewards(result);
       } catch (err) {
-        console.error('[ChannelPointsMenu] Failed to fetch rewards:', err);
+        Logger.error('[ChannelPointsMenu] Failed to fetch rewards:', err);
         setError(typeof err === 'string' ? err : 'Failed to load rewards');
       } finally {
         setIsLoading(false);
@@ -167,7 +168,7 @@ const ChannelPointsMenu: React.FC<ChannelPointsMenuProps> = ({
         });
         setModifiableEmotes(emotes);
       } catch (err) {
-        console.error('[ChannelPointsMenu] Failed to fetch modifiable emotes:', err);
+        Logger.error('[ChannelPointsMenu] Failed to fetch modifiable emotes:', err);
         useAppStore.getState().addToast('Failed to load emotes', 'error');
       } finally {
         setIsLoadingEmotes(false);
@@ -194,7 +195,7 @@ const ChannelPointsMenu: React.FC<ChannelPointsMenuProps> = ({
         // Map to simple emote list (just base emotes without modifications)
         setUnlockableEmotes(emotes.map(e => ({ id: e.id, token: e.token })));
       } catch (err) {
-        console.error('[ChannelPointsMenu] Failed to fetch unlockable emotes:', err);
+        Logger.error('[ChannelPointsMenu] Failed to fetch unlockable emotes:', err);
         useAppStore.getState().addToast('Failed to load emotes', 'error');
       } finally {
         setIsLoadingUnlockable(false);
@@ -218,7 +219,7 @@ const ChannelPointsMenu: React.FC<ChannelPointsMenuProps> = ({
         useAppStore.getState().addToast(result.error_message || 'Redemption failed', 'error');
       }
     } catch (err) {
-      console.error('[ChannelPointsMenu] Redemption error:', err);
+      Logger.error('[ChannelPointsMenu] Redemption error:', err);
       useAppStore.getState().addToast(typeof err === 'string' ? err : 'Redemption failed', 'error');
     } finally {
       setRedeemingId(null);
@@ -249,7 +250,7 @@ const ChannelPointsMenu: React.FC<ChannelPointsMenuProps> = ({
         useAppStore.getState().addToast(result.error_message || 'Failed to send', 'error');
       }
     } catch (err) {
-      console.error('[ChannelPointsMenu] Highlighted message error:', err);
+      Logger.error('[ChannelPointsMenu] Highlighted message error:', err);
       useAppStore.getState().addToast(typeof err === 'string' ? err : 'Failed to send', 'error');
     } finally {
       setRedeemingId(null);
@@ -285,7 +286,7 @@ const ChannelPointsMenu: React.FC<ChannelPointsMenuProps> = ({
         useAppStore.getState().addToast(result.error_message || 'Failed to unlock emote', 'error');
       }
     } catch (err) {
-      console.error('[ChannelPointsMenu] Random emote unlock error:', err);
+      Logger.error('[ChannelPointsMenu] Random emote unlock error:', err);
       useAppStore.getState().addToast(typeof err === 'string' ? err : 'Failed to unlock', 'error');
     } finally {
       setRedeemingId(null);
@@ -332,7 +333,7 @@ const ChannelPointsMenu: React.FC<ChannelPointsMenuProps> = ({
         useAppStore.getState().addToast(result.error_message || 'Failed to modify emote', 'error');
       }
     } catch (err) {
-      console.error('[ChannelPointsMenu] Modify emote error:', err);
+      Logger.error('[ChannelPointsMenu] Modify emote error:', err);
       useAppStore.getState().addToast(typeof err === 'string' ? err : 'Failed to modify emote', 'error');
     } finally {
       setRedeemingId(null);
@@ -378,7 +379,7 @@ const ChannelPointsMenu: React.FC<ChannelPointsMenuProps> = ({
         useAppStore.getState().addToast(result.error_message || 'Failed to unlock emote', 'error');
       }
     } catch (err) {
-      console.error('[ChannelPointsMenu] Choose emote error:', err);
+      Logger.error('[ChannelPointsMenu] Choose emote error:', err);
       useAppStore.getState().addToast(typeof err === 'string' ? err : 'Failed to unlock emote', 'error');
     } finally {
       setRedeemingId(null);

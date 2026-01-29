@@ -4,6 +4,7 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { FolderOpen, X, AlertTriangle, ExternalLink } from 'lucide-react';
 import { useAppStore } from '../stores/AppStore';
 
+import { Logger } from '../utils/logger';
 const StreamlinkMissingDialog = () => {
     const {
         showStreamlinkMissing,
@@ -31,7 +32,7 @@ const StreamlinkMissingDialog = () => {
                 setSelectedPath(selected);
             }
         } catch (error) {
-            console.error('Failed to open folder picker:', error);
+            Logger.error('Failed to open folder picker:', error);
             addToast('Failed to open folder picker', 'error');
         } finally {
             setIsSelecting(false);

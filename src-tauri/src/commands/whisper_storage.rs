@@ -1,6 +1,7 @@
 use crate::services::whisper_storage_service::{
     StoredConversation, StoredWhisper, WhisperStorage, WhisperStorageService,
 };
+use log::debug;
 use std::collections::HashMap;
 use tauri::AppHandle;
 
@@ -69,7 +70,7 @@ pub async fn migrate_whispers_from_localstorage(
     let existing = WhisperStorageService::load_whispers(&app_handle)?;
 
     if !existing.conversations.is_empty() {
-        println!(
+        debug!(
             "[WhisperStorage] Migration: Found {} existing conversations on disk, merging...",
             existing.conversations.len()
         );
@@ -119,7 +120,7 @@ pub async fn migrate_whispers_from_localstorage(
         WhisperStorageService::save_whispers(&app_handle, &storage)?;
     } else {
         // No existing data, just save the localStorage data
-        println!(
+        debug!(
             "[WhisperStorage] Migration: No existing data on disk, importing {} conversations from localStorage",
             conversations.len()
         );

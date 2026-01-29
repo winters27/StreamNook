@@ -15,11 +15,17 @@ import { queueBadgeForCaching, getCachedBadgeUrl } from '../services/badgeImageC
 
 // EmoteSegment type definition (migrated from emoteParser.ts)
 interface EmoteSegment {
-  type: 'text' | 'emote' | 'emoji';
+  type: 'text' | 'emote' | 'emoji' | 'cheermote';
   content: string;
   emoteId?: string;
   emoteUrl?: string;
   emojiUrl?: string;
+  // Cheermote-specific properties
+  cheermoteUrl?: string;
+  prefix?: string;
+  bits?: number;
+  tier?: string;
+  color?: string;
 }
 
 // Global cache for channel names and profile images to prevent re-fetching and flashing
@@ -73,6 +79,7 @@ function getTwitchBadgeUrl(badgeKey: string, badgeInfo: any): string {
 
 import { BackendChatMessage } from '../services/twitchChat';
 
+import { Logger } from '../utils/logger';
 interface ChatMessageProps {
   message: string | BackendChatMessage; // Raw IRC message or Backend Message Object
   messageIndex?: number; // For alternating backgrounds
@@ -177,7 +184,7 @@ const MentionSpan: React.FC<{
         );
       }
     } catch (err) {
-      console.warn('[MentionSpan] Could not look up mentioned user:', err);
+      Logger.warn('[MentionSpan] Could not look up mentioned user:', err);
     }
   };
   
@@ -269,6 +276,17 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
           return {
             type: 'text' as const,
             content: seg.content,
+          };
+        } else if (seg.type === 'cheermote') {
+          // Cheermote segment with animated GIF and bits amount
+          return {
+            type: 'cheermote' as const,
+            content: seg.content,
+            cheermoteUrl: seg.cheermote_url,
+            prefix: seg.prefix,
+            bits: seg.bits,
+            tier: seg.tier,
+            color: seg.color,
           };
         } else {
           return {
@@ -513,7 +531,6 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
             loading="lazy"
             className="inline-block h-7 w-auto max-w-[96px] align-middle mx-0.5 cursor-pointer hover:scale-110 transition-transform crisp-image"
             referrerPolicy="no-referrer"
-            crossOrigin="anonymous"
             title={`Right-click to copy: ${segment.content}`}
             onContextMenu={(e) => {
               e.preventDefault();
@@ -550,6 +567,34 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
         );
       }
 
+      // Handle cheermote segments (animated bits like Cheer500)
+      if (segment.type === 'cheermote') {
+        const bits = segment.bits ?? 0;
+        return (
+          <span key={`cheermote-${segment.content}-${index}`} className="inline-flex items-center gap-0.5 align-middle">
+            <img
+              src={segment.cheermoteUrl}
+              alt={segment.content}
+              loading="lazy"
+              className="inline-block h-7 w-auto align-middle crisp-image"
+              referrerPolicy="no-referrer"
+              title={`${bits.toLocaleString()} bits`}
+              onError={(e) => {
+                // Fallback to text if GIF fails to load
+                e.currentTarget.style.display = 'none';
+                e.currentTarget.insertAdjacentText('afterend', segment.content);
+              }}
+            />
+            <span 
+              className="font-bold text-sm" 
+              style={{ color: segment.color ?? '#979797' }}
+            >
+              {bits}
+            </span>
+          </span>
+        );
+      }
+
       // Parse text for URLs and make them clickable
       return <span key={index}>{parseTextWithLinks(segment.content)}</span>;
     });
@@ -581,7 +626,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
                 const { open } = await import('@tauri-apps/plugin-shell');
                 await open(url);
               } catch (err) {
-                console.error('[ChatMessage] Failed to open URL:', err);
+                Logger.error('[ChatMessage] Failed to open URL:', err);
               }
             }}
           >
@@ -701,7 +746,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
           }
         })
         .catch((err) => {
-          console.warn('[ChatMessage] Failed to fetch source channel info:', err);
+          Logger.warn('[ChatMessage] Failed to fetch source channel info:', err);
         });
     });
   }, [isFromSharedChat, sourceRoomId, fetchedChannelName, channelProfileImage]);
@@ -771,20 +816,25 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
                 className="w-5 h-5 inline-block cursor-pointer hover:scale-110 transition-transform crisp-image"
                 onClick={() => onBadgeClick?.(badge.key, badge.info)}
                 onError={(e) => {
-                  console.warn('[Badge] Failed to load badge:', badge.key, badge.info.image_url_1x);
+                  Logger.warn('[Badge] Failed to load badge:', badge.key, badge.info.image_url_1x);
                   e.currentTarget.style.display = 'none';
                 }}
               />
             );
           })}
           {seventvBadge && (
-            <FallbackImage
-              src={getBadgeImageUrl(seventvBadge)}
-              fallbackUrls={getBadgeFallbackUrls(seventvBadge.id).slice(1)}
-              alt={seventvBadge.description || seventvBadge.name}
-              title={seventvBadge.description || seventvBadge.name}
-              className="w-5 h-5 inline-block crisp-image"
-            />
+            <button
+              onClick={() => useAppStore.getState().openBadgesWithBadge(seventvBadge.id)}
+              className="inline-block cursor-pointer hover:scale-110 transition-transform"
+              title={`Click for details: ${seventvBadge.description || seventvBadge.name}`}
+            >
+              <FallbackImage
+                src={getBadgeImageUrl(seventvBadge)}
+                fallbackUrls={getBadgeFallbackUrls(seventvBadge.id).slice(1)}
+                alt={seventvBadge.description || seventvBadge.name}
+                className="w-5 h-5 inline-block crisp-image"
+              />
+            </button>
           )}
           {thirdPartyBadges.filter(badge => badge && badge.imageUrl).map((badge, idx) => (
             <img
@@ -901,20 +951,25 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
                 className="w-5 h-5 inline-block cursor-pointer hover:scale-110 transition-transform crisp-image"
                 onClick={() => onBadgeClick?.(badge.key, badge.info)}
                 onError={(e) => {
-                  console.warn('[Badge] Failed to load badge:', badge.key, badge.info.image_url_1x);
+                  Logger.warn('[Badge] Failed to load badge:', badge.key, badge.info.image_url_1x);
                   e.currentTarget.style.display = 'none';
                 }}
               />
             );
           })}
           {seventvBadge && (
-            <FallbackImage
-              src={getBadgeImageUrl(seventvBadge)}
-              fallbackUrls={getBadgeFallbackUrls(seventvBadge.id).slice(1)}
-              alt={seventvBadge.description || seventvBadge.name}
-              title={seventvBadge.description || seventvBadge.name}
-              className="w-5 h-5 inline-block crisp-image"
-            />
+            <button
+              onClick={() => useAppStore.getState().openBadgesWithBadge(seventvBadge.id)}
+              className="inline-block cursor-pointer hover:scale-110 transition-transform"
+              title={`Click for details: ${seventvBadge.description || seventvBadge.name}`}
+            >
+              <FallbackImage
+                src={getBadgeImageUrl(seventvBadge)}
+                fallbackUrls={getBadgeFallbackUrls(seventvBadge.id).slice(1)}
+                alt={seventvBadge.description || seventvBadge.name}
+                className="w-5 h-5 inline-block crisp-image"
+              />
+            </button>
           )}
           {thirdPartyBadges.filter(badge => badge && badge.imageUrl).map((badge, idx) => (
             <img
@@ -953,7 +1008,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
                       const { useAppStore } = await import('../stores/AppStore');
                       await useAppStore.getState().startStream(fetchedChannelName);
                     } catch (err) {
-                      console.error('[ChatMessage] Failed to switch to shared channel:', err);
+                      Logger.error('[ChatMessage] Failed to switch to shared channel:', err);
                       const { useAppStore } = await import('../stores/AppStore');
                       useAppStore.getState().addToast(`Failed to switch to ${fetchedChannelName}'s stream`, 'error');
                     }
@@ -1046,20 +1101,25 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
                 className="w-5 h-5 inline-block cursor-pointer hover:scale-110 transition-transform crisp-image"
                 onClick={() => onBadgeClick?.(badge.key, badge.info)}
                 onError={(e) => {
-                  console.warn('[Badge] Failed to load badge:', badge.key, badge.info.image_url_1x);
+                  Logger.warn('[Badge] Failed to load badge:', badge.key, badge.info.image_url_1x);
                   e.currentTarget.style.display = 'none';
                 }}
               />
             );
           })}
           {seventvBadge && (
-            <FallbackImage
-              src={getBadgeImageUrl(seventvBadge)}
-              fallbackUrls={getBadgeFallbackUrls(seventvBadge.id).slice(1)}
-              alt={seventvBadge.description || seventvBadge.name}
-              title={seventvBadge.description || seventvBadge.name}
-              className="w-5 h-5 inline-block crisp-image"
-            />
+            <button
+              onClick={() => useAppStore.getState().openBadgesWithBadge(seventvBadge.id)}
+              className="inline-block cursor-pointer hover:scale-110 transition-transform"
+              title={`Click for details: ${seventvBadge.description || seventvBadge.name}`}
+            >
+              <FallbackImage
+                src={getBadgeImageUrl(seventvBadge)}
+                fallbackUrls={getBadgeFallbackUrls(seventvBadge.id).slice(1)}
+                alt={seventvBadge.description || seventvBadge.name}
+                className="w-5 h-5 inline-block crisp-image"
+              />
+            </button>
           )}
           {thirdPartyBadges.filter(badge => badge && badge.imageUrl).map((badge, idx) => (
             <img
@@ -1178,20 +1238,25 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
                 className="w-5 h-5 inline-block cursor-pointer hover:scale-110 transition-transform crisp-image"
                 onClick={() => onBadgeClick?.(badge.key, badge.info)}
                 onError={(e) => {
-                  console.warn('[Badge] Failed to load badge:', badge.key, badge.info.image_url_1x);
+                  Logger.warn('[Badge] Failed to load badge:', badge.key, badge.info.image_url_1x);
                   e.currentTarget.style.display = 'none';
                 }}
               />
             );
           })}
           {seventvBadge && (
-            <FallbackImage
-              src={getBadgeImageUrl(seventvBadge)}
-              fallbackUrls={getBadgeFallbackUrls(seventvBadge.id).slice(1)}
-              alt={seventvBadge.description || seventvBadge.name}
-              title={seventvBadge.description || seventvBadge.name}
-              className="w-5 h-5 inline-block crisp-image"
-            />
+            <button
+              onClick={() => useAppStore.getState().openBadgesWithBadge(seventvBadge.id)}
+              className="inline-block cursor-pointer hover:scale-110 transition-transform"
+              title={`Click for details: ${seventvBadge.description || seventvBadge.name}`}
+            >
+              <FallbackImage
+                src={getBadgeImageUrl(seventvBadge)}
+                fallbackUrls={getBadgeFallbackUrls(seventvBadge.id).slice(1)}
+                alt={seventvBadge.description || seventvBadge.name}
+                className="w-5 h-5 inline-block crisp-image"
+              />
+            </button>
           )}
           {thirdPartyBadges.filter(badge => badge && badge.imageUrl).map((badge, idx) => (
             <img
@@ -1415,7 +1480,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
                       // Use the startStream method to switch to the shared channel
                       await useAppStore.getState().startStream(fetchedChannelName);
                     } catch (err) {
-                      console.error('[ChatMessage] Failed to switch to shared channel:', err);
+                      Logger.error('[ChatMessage] Failed to switch to shared channel:', err);
                       const { useAppStore } = await import('../stores/AppStore');
                       useAppStore.getState().addToast(`Failed to switch to ${fetchedChannelName}'s stream`, 'error');
                     }
@@ -1590,12 +1655,12 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
                         const { useAppStore } = await import('../stores/AppStore');
                         await useAppStore.getState().startStream(fetchedChannelName);
                       } catch (err) {
-                        console.error('[ChatMessage] Failed to switch to shared channel:', err);
+                        Logger.error('[ChatMessage] Failed to switch to shared channel:', err);
                       }
                     }
                   }}
                   onError={(e) => {
-                    console.warn('[Badge] Failed to load channel profile image');
+                    Logger.warn('[Badge] Failed to load channel profile image');
                     e.currentTarget.style.display = 'none';
                   }}
                 />
@@ -1612,20 +1677,25 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
                     onClick={() => onBadgeClick?.(badge.key, badge.info)}
                     onError={(e) => {
                       // Hide broken badge images
-                      console.warn('[Badge] Failed to load badge:', badge.key, badge.info.image_url_1x);
+                      Logger.warn('[Badge] Failed to load badge:', badge.key, badge.info.image_url_1x);
                       e.currentTarget.style.display = 'none';
                     }}
                   />
                 );
               })}
               {seventvBadge && (
-                <FallbackImage
-                  src={getBadgeImageUrl(seventvBadge)}
-                  fallbackUrls={getBadgeFallbackUrls(seventvBadge.id).slice(1)}
-                  alt={seventvBadge.description || seventvBadge.name}
-                  title={seventvBadge.description || seventvBadge.name}
-                  className="w-5 h-5 crisp-image"
-                />
+                <button
+                  onClick={() => useAppStore.getState().openBadgesWithBadge(seventvBadge.id)}
+                  className="inline-block cursor-pointer hover:scale-110 transition-transform"
+                  title={`Click for details: ${seventvBadge.description || seventvBadge.name}`}
+                >
+                  <FallbackImage
+                    src={getBadgeImageUrl(seventvBadge)}
+                    fallbackUrls={getBadgeFallbackUrls(seventvBadge.id).slice(1)}
+                    alt={seventvBadge.description || seventvBadge.name}
+                    className="w-5 h-5 crisp-image"
+                  />
+                </button>
               )}
               {/* Third-party badges (FFZ, Chatterino, Homies) */}
               {thirdPartyBadges.filter(badge => badge && badge.imageUrl).map((badge, idx) => (

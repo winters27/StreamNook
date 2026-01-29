@@ -4,6 +4,7 @@
 //! their subscription anniversary in chat with a custom message.
 
 use crate::services::drops_auth_service::DropsAuthService;
+use log::debug;
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -140,7 +141,7 @@ fn create_gql_headers(token: &str) -> HeaderMap {
 pub async fn get_resub_notification(
     channel_login: String,
 ) -> Result<Option<ResubNotification>, String> {
-    println!(
+    debug!(
         "[Resub] Checking resub notification for channel: {}",
         channel_login
     );
@@ -198,7 +199,7 @@ pub async fn get_resub_notification(
 
     match resub {
         Some(r) => {
-            println!(
+            debug!(
                 "[Resub] ✅ Found resub token! {} months cumulative, {} months streak",
                 r.cumulative_tenure_months, r.streak_tenure_months
             );
@@ -213,7 +214,7 @@ pub async fn get_resub_notification(
             }))
         }
         None => {
-            println!("[Resub] No resub notification available for this channel");
+            debug!("[Resub] No resub notification available for this channel");
             Ok(None)
         }
     }
@@ -228,7 +229,7 @@ pub async fn use_resub_token(
     include_streak: bool,
     token_id: Option<String>,
 ) -> Result<bool, String> {
-    println!(
+    debug!(
         "[Resub] Using resub token for channel: {}, message: {:?}, includeStreak: {}",
         channel_login, message, include_streak
     );
@@ -303,9 +304,9 @@ pub async fn use_resub_token(
         .unwrap_or(false);
 
     if is_success {
-        println!("[Resub] ✅ Resub notification sent successfully!");
+        debug!("[Resub] ✅ Resub notification sent successfully!");
     } else {
-        println!("[Resub] ❌ Failed to send resub notification");
+        debug!("[Resub] ❌ Failed to send resub notification");
     }
 
     Ok(is_success)

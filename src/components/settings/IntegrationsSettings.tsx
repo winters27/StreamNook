@@ -1,6 +1,7 @@
 import { useAppStore } from '../../stores/AppStore';
 import { useState, useEffect } from 'react';
 
+import { Logger } from '../../utils/logger';
 const IntegrationsSettings = () => {
   const { settings, updateSettings } = useAppStore();
   const [ttvlolInstalledVersion, setTtvlolInstalledVersion] = useState<string | null>(null);
@@ -42,7 +43,7 @@ const IntegrationsSettings = () => {
           });
         }
       } catch (error) {
-        console.error('Failed to get TTV LOL plugin version:', error);
+        Logger.error('Failed to get TTV LOL plugin version:', error);
         setTtvlolInstalledVersion(null);
       }
     };
@@ -76,7 +77,7 @@ const IntegrationsSettings = () => {
               ttvlol_plugin: { enabled: true, installed_version: version },
             });
           } catch (error) {
-            console.error('Failed to download plugin:', error);
+            Logger.error('Failed to download plugin:', error);
             addToast('Failed to download TTV LOL plugin: ' + error, 'error');
             return;
           }
@@ -87,7 +88,7 @@ const IntegrationsSettings = () => {
           });
         }
       } catch (error) {
-        console.error('Failed to check plugin:', error);
+        Logger.error('Failed to check plugin:', error);
       }
     } else {
       updateSettings({

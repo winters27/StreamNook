@@ -1,6 +1,7 @@
 use anyhow::Result;
 use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
+use log::{debug, error};
 use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
@@ -40,10 +41,10 @@ impl DropsWebSocketService {
                     .await
                 {
                     Ok(_) => {
-                        println!("🔌 WebSocket disconnected normally");
+                        debug!("🔌 WebSocket disconnected normally");
                     }
                     Err(e) => {
-                        eprintln!("❌ WebSocket error: {}", e);
+                        error!("❌ WebSocket error: {}", e);
                         // Emit error to frontend for Discord reporting
                         let _ = app_handle.emit(
                             "drops-error",
@@ -57,7 +58,7 @@ impl DropsWebSocketService {
                 }
 
                 // Wait before reconnecting
-                println!("🔄 Reconnecting WebSocket in 5 seconds...");
+                debug!("🔄 Reconnecting WebSocket in 5 seconds...");
                 tokio::time::sleep(Duration::from_secs(5)).await;
             }
         });
@@ -71,7 +72,7 @@ impl DropsWebSocketService {
         app_handle: &AppHandle,
         is_connected: &Arc<RwLock<bool>>,
     ) -> Result<()> {
-        println!("🔌 Connecting to Twitch PubSub WebSocket...");
+        debug!("🔌 Connecting to Twitch PubSub WebSocket...");
 
         let url = "wss://pubsub-edge.twitch.tv";
         let (ws_stream, _) = connect_async(url).await?;
@@ -82,7 +83,7 @@ impl DropsWebSocketService {
             *connected = true;
         }
 
-        println!("✅ WebSocket connected to Twitch PubSub");
+        debug!("✅ WebSocket connected to Twitch PubSub");
 
         // Generate a nonce for the LISTEN message
         let nonce = uuid::Uuid::new_v4().to_string();
@@ -102,7 +103,7 @@ impl DropsWebSocketService {
             }
         });
 
-        println!("📡 Subscribing to topics: {:?}", topics);
+        debug!("📡 Subscribing to topics: {:?}", topics);
         write
             .send(Message::Text(listen_message.to_string().into()))
             .await?;
@@ -119,29 +120,29 @@ impl DropsWebSocketService {
                         "type": "PING"
                     });
                     write.send(Message::Text(ping_message.to_string().into())).await?;
-                    println!("🏓 Sent PING to WebSocket");
+                    debug!("🏓 Sent PING to WebSocket");
                 }
 
                 msg = read.next() => {
                     match msg {
                         Some(Ok(Message::Text(text))) => {
-                            println!("📨 [DropsWS] Received raw message: {}", &text[..text.len().min(200)]);
+                            debug!("📨 [DropsWS] Received raw message: {}", &text[..text.len().min(200)]);
                             if let Ok(data) = serde_json::from_str::<serde_json::Value>(&text) {
                                 Self::handle_message(data, app_handle).await;
                             } else {
-                                println!("❌ [DropsWS] Failed to parse JSON message");
+                                debug!("❌ [DropsWS] Failed to parse JSON message");
                             }
                         }
                         Some(Ok(Message::Close(_))) => {
-                            println!("🔌 WebSocket closed by server");
+                            debug!("🔌 WebSocket closed by server");
                             break;
                         }
                         Some(Err(e)) => {
-                            eprintln!("❌ WebSocket error: {}", e);
+                            error!("❌ WebSocket error: {}", e);
                             break;
                         }
                         None => {
-                            println!("🔌 WebSocket stream ended");
+                            debug!("🔌 WebSocket stream ended");
                             break;
                         }
                         _ => {}
@@ -160,15 +161,15 @@ impl DropsWebSocketService {
 
     async fn handle_message(message: serde_json::Value, app_handle: &AppHandle) {
         let msg_type = message["type"].as_str().unwrap_or("");
-        println!("📬 [DropsWS] Message type: {}", msg_type);
+        debug!("📬 [DropsWS] Message type: {}", msg_type);
 
         match msg_type {
             "MESSAGE" => {
                 // Parse the actual message data
                 if let Some(topic) = message["data"]["topic"].as_str() {
-                    println!("📬 [DropsWS] MESSAGE on topic: {}", topic);
+                    debug!("📬 [DropsWS] MESSAGE on topic: {}", topic);
                     if let Some(message_str) = message["data"]["message"].as_str() {
-                        println!(
+                        debug!(
                             "📬 [DropsWS] Inner message: {}",
                             &message_str[..message_str.len().min(300)]
                         );
@@ -176,13 +177,13 @@ impl DropsWebSocketService {
                         {
                             Self::handle_topic_message(topic, msg_data, app_handle).await;
                         } else {
-                            println!("❌ [DropsWS] Failed to parse inner message JSON");
+                            debug!("❌ [DropsWS] Failed to parse inner message JSON");
                         }
                     } else {
-                        println!("⚠️ [DropsWS] No message field in data");
+                        debug!("⚠️ [DropsWS] No message field in data");
                     }
                 } else {
-                    println!(
+                    debug!(
                         "⚠️ [DropsWS] No topic field in MESSAGE: {:?}",
                         message["data"]
                     );
@@ -191,7 +192,7 @@ impl DropsWebSocketService {
             "RESPONSE" => {
                 if let Some(error) = message["error"].as_str() {
                     if !error.is_empty() {
-                        eprintln!("❌ WebSocket RESPONSE error: {}", error);
+                        error!("❌ WebSocket RESPONSE error: {}", error);
                         // Emit error to frontend for Discord reporting
                         let _ = app_handle.emit(
                             "drops-error",
@@ -202,19 +203,19 @@ impl DropsWebSocketService {
                             }),
                         );
                     } else {
-                        println!("✅ WebSocket subscription successful");
+                        debug!("✅ WebSocket subscription successful");
                     }
                 }
             }
             "PONG" => {
-                println!("🏓 Received PONG from WebSocket");
+                debug!("🏓 Received PONG from WebSocket");
             }
             "RECONNECT" => {
-                println!("🔄 Server requested reconnect");
+                debug!("🔄 Server requested reconnect");
                 // The loop will handle reconnection
             }
             _ => {
-                println!("🔍 Unknown WebSocket message type: {}", msg_type);
+                debug!("🔍 Unknown WebSocket message type: {}", msg_type);
             }
         }
     }
@@ -233,7 +234,7 @@ impl DropsWebSocketService {
                             .unwrap_or(0);
                         let drop_id = message["data"]["drop_id"].as_str().unwrap_or("");
 
-                        println!(
+                        debug!(
                             "📊 Drop progress update: {}/{} minutes for drop {}",
                             current_progress, required_progress, drop_id
                         );
@@ -254,7 +255,7 @@ impl DropsWebSocketService {
                         let drop_instance_id =
                             message["data"]["drop_instance_id"].as_str().unwrap_or("");
 
-                        println!(
+                        debug!(
                             "🎁 Drop ready to claim: {} (instance: {})",
                             drop_id, drop_instance_id
                         );
@@ -270,7 +271,7 @@ impl DropsWebSocketService {
                         );
                     }
                     _ => {
-                        println!("🔍 Unknown drop event type: {}", msg_type);
+                        debug!("🔍 Unknown drop event type: {}", msg_type);
                     }
                 }
             }
@@ -278,7 +279,7 @@ impl DropsWebSocketService {
             // Handle notifications (like drop ready reminders)
             if let Some(notification_type) = message["type"].as_str() {
                 if notification_type == "user_drop_reward_reminder_notification" {
-                    println!("🔔 Drop reward reminder notification received");
+                    debug!("🔔 Drop reward reminder notification received");
 
                     // Emit notification to frontend
                     let _ = app_handle.emit(

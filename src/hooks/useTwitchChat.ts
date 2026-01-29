@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../stores/AppStore';
 import { fetchRecentMessagesAsIRC } from '../services/ivrService';
 
+import { Logger } from '../utils/logger';
 // Hardcoded message limit for optimal performance and stability
 const CHAT_HISTORY_MAX = 100;
 // Buffer size to allow when chat is paused (scrolled up)
@@ -107,7 +108,7 @@ export const useTwitchChat = () => {
       ws.onopen = null;
 
       if (ws.readyState !== WebSocket.CLOSED && ws.readyState !== WebSocket.CLOSING) {
-        console.log('[Chat] Closing existing WebSocket connection');
+        Logger.debug('[Chat] Closing existing WebSocket connection');
         ws.close(1000, 'Cleanup'); // Normal closure
       }
 
@@ -119,7 +120,7 @@ export const useTwitchChat = () => {
     // during normal reconnection flows.
     if (stopBackend) {
       invoke('stop_chat').catch(err => {
-        console.warn('[Chat] Failed to stop backend chat service:', err);
+        Logger.warn('[Chat] Failed to stop backend chat service:', err);
       });
     }
   }, []);
@@ -127,11 +128,11 @@ export const useTwitchChat = () => {
   const connectChat = useCallback(async (channel: string, roomId?: string) => {
     // Prevent duplicate connection attempts to the same channel
     if (isConnectingRef.current && currentChannelRef.current === channel) {
-      console.log('[Chat] Already connecting to this channel, skipping duplicate request');
+      Logger.debug('[Chat] Already connecting to this channel, skipping duplicate request');
       return;
     }
 
-    console.log(`[Chat] Attempting to connect to channel: ${channel}`);
+    Logger.debug(`[Chat] Attempting to connect to channel: ${channel}`);
 
     // Mark as intentional disconnect before cleanup
     isIntentionalDisconnectRef.current = true;
@@ -153,11 +154,11 @@ export const useTwitchChat = () => {
     // This ensures historical messages have badges populated correctly
     if (roomId) {
       try {
-        console.log('[Chat] Initializing badge cache before fetching recent messages');
+        Logger.debug('[Chat] Initializing badge cache before fetching recent messages');
         const { initializeBadgeCache } = await import('../services/twitchBadges');
         await initializeBadgeCache(roomId);
       } catch (err) {
-        console.warn('[Chat] Failed to initialize badge cache:', err);
+        Logger.warn('[Chat] Failed to initialize badge cache:', err);
         // Continue anyway - badges may not display but chat will still work
       }
     }
@@ -166,10 +167,10 @@ export const useTwitchChat = () => {
     // Route through Rust backend for proper parsing and layout calculation
     if (roomId) {
       try {
-        console.log('[Chat] Fetching recent messages from IVR API for:', channel);
+        Logger.debug('[Chat] Fetching recent messages from IVR API for:', channel);
         const recentMessagesRaw = await fetchRecentMessagesAsIRC(channel, roomId);
         if (recentMessagesRaw.length > 0) {
-          console.log(`[Chat] Parsing ${recentMessagesRaw.length} recent messages through Rust backend`);
+          Logger.debug(`[Chat] Parsing ${recentMessagesRaw.length} recent messages through Rust backend`);
           
           // Parse historical messages through Rust for proper layout calculation
           // This ensures historical messages get the same accurate heights as live messages
@@ -183,7 +184,7 @@ export const useTwitchChat = () => {
               // Small delay on retries to allow Tauri IPC to initialize
               if (parseAttempts > 0) {
                 await new Promise(resolve => setTimeout(resolve, 200 * parseAttempts));
-                console.log(`[Chat] Retrying parse_historical_messages (attempt ${parseAttempts + 1}/${maxParseAttempts})`);
+                Logger.debug(`[Chat] Retrying parse_historical_messages (attempt ${parseAttempts + 1}/${maxParseAttempts})`);
               }
               
               parsedMessages = await invoke<any[]>('parse_historical_messages', { 
@@ -197,18 +198,18 @@ export const useTwitchChat = () => {
                                  parseErr?.toString?.().includes('Failed to fetch');
               
               if (isIpcError && parseAttempts < maxParseAttempts) {
-                console.warn(`[Chat] Tauri IPC not ready, will retry (attempt ${parseAttempts}/${maxParseAttempts})`);
+                Logger.warn(`[Chat] Tauri IPC not ready, will retry (attempt ${parseAttempts}/${maxParseAttempts})`);
                 continue;
               }
               
               // Final attempt failed or non-IPC error
-              console.warn('[Chat] Rust parsing failed, falling back to raw IRC strings:', parseErr);
+              Logger.warn('[Chat] Rust parsing failed, falling back to raw IRC strings:', parseErr);
               break;
             }
           }
           
           if (parsedMessages && parsedMessages.length > 0) {
-            console.log(`[Chat] Received ${parsedMessages.length} parsed messages from Rust backend`);
+            Logger.debug(`[Chat] Received ${parsedMessages.length} parsed messages from Rust backend`);
             // Add message IDs to seen set
             parsedMessages.forEach(msg => {
               if (msg.id) {
@@ -218,7 +219,7 @@ export const useTwitchChat = () => {
             setMessages(parsedMessages);
           } else {
             // Fallback to raw IRC strings if Rust parsing failed
-            console.log('[Chat] Using raw IRC strings as fallback');
+            Logger.debug('[Chat] Using raw IRC strings as fallback');
             recentMessagesRaw.forEach(msg => {
               const idMatch = msg.match(/(?:^|;)id=([^;]+)/);
               if (idMatch) {
@@ -229,7 +230,7 @@ export const useTwitchChat = () => {
           }
         }
       } catch (err) {
-        console.error('[Chat] Failed to fetch recent messages:', err);
+        Logger.error('[Chat] Failed to fetch recent messages:', err);
         // Continue without recent messages - not a critical failure
       }
     }
@@ -244,9 +245,9 @@ export const useTwitchChat = () => {
     isIntentionalDisconnectRef.current = false;
 
     try {
-      console.log('[Chat] Invoking start_chat command');
+      Logger.debug('[Chat] Invoking start_chat command');
       const port = await invoke<number>('start_chat', { channel });
-      console.log(`[Chat] Received port: ${port}`);
+      Logger.debug(`[Chat] Received port: ${port}`);
 
       // Retry logic for WebSocket connection
       const connectWithRetry = async (retries = 5): Promise<WebSocket> => {
@@ -254,7 +255,7 @@ export const useTwitchChat = () => {
           try {
             // Wait longer on each retry
             const delay = 500 + (i * 500);
-            console.log(`[Chat] Waiting ${delay}ms before connection attempt ${i + 1}/${retries}`);
+            Logger.debug(`[Chat] Waiting ${delay}ms before connection attempt ${i + 1}/${retries}`);
             await new Promise(resolve => setTimeout(resolve, delay));
 
             // Check if we've been cleaned up or channel changed
@@ -263,32 +264,32 @@ export const useTwitchChat = () => {
             }
 
             const wsUrl = `ws://localhost:${port}`;
-            console.log(`[Chat] Connecting to ${wsUrl}`);
+            Logger.debug(`[Chat] Connecting to ${wsUrl}`);
             const ws = new WebSocket(wsUrl);
 
             // Wait for connection to open or fail
             await new Promise<void>((resolve, reject) => {
               const timeout = setTimeout(() => {
-                console.log('[Chat] Connection timeout');
+                Logger.debug('[Chat] Connection timeout');
                 reject(new Error('Connection timeout'));
               }, 5000);
 
               ws.onopen = () => {
                 clearTimeout(timeout);
-                console.log('[Chat] WebSocket connected successfully');
+                Logger.debug('[Chat] WebSocket connected successfully');
                 resolve();
               };
 
               ws.onerror = (err) => {
                 clearTimeout(timeout);
-                console.error('[Chat] WebSocket connection error:', err);
+                Logger.error('[Chat] WebSocket connection error:', err);
                 reject(new Error('Connection failed'));
               };
             });
 
             return ws;
           } catch (err) {
-            console.error(`[Chat] Connection attempt ${i + 1} failed:`, err);
+            Logger.error(`[Chat] Connection attempt ${i + 1} failed:`, err);
             if (i === retries - 1) throw err;
           }
         }
@@ -301,7 +302,7 @@ export const useTwitchChat = () => {
       wsRef.current = newWs;
 
       // Set connected state immediately since connectWithRetry already waited for connection
-      console.log('[Chat] Setting connected state to true');
+      Logger.debug('[Chat] Setting connected state to true');
       setIsConnected(true);
       reconnectAttemptsRef.current = 0;
       lastMessageTimeRef.current = Date.now();
@@ -315,14 +316,14 @@ export const useTwitchChat = () => {
         // Handle connection warnings
         if (message.startsWith('CONNECTION_WARNING:')) {
           const warning = message.split(':')[1];
-          console.warn('[Chat] Connection warning:', warning);
+          Logger.warn('[Chat] Connection warning:', warning);
           setError(`Warning: ${warning}`);
           return;
         }
 
         // Handle reconnection notifications - silently in the background
         if (message === 'RECONNECTED') {
-          console.log('[Chat] Backend reconnected to Twitch IRC');
+          Logger.debug('[Chat] Backend reconnected to Twitch IRC');
           setIsConnected(true);
           setError(null);
           reconnectAttemptsRef.current = 0;
@@ -332,26 +333,26 @@ export const useTwitchChat = () => {
 
         if (message.startsWith('RECONNECTING:')) {
           const attempt = message.split(':')[1];
-          console.log(`[Chat] Backend attempting to reconnect (attempt ${attempt})`);
+          Logger.debug(`[Chat] Backend attempting to reconnect (attempt ${attempt})`);
           setIsConnected(false);
           return;
         }
 
         if (message.startsWith('RECONNECT_FAILED:')) {
           const attempt = message.split(':')[1];
-          console.log(`[Chat] Reconnection attempt ${attempt} failed`);
+          Logger.debug(`[Chat] Reconnection attempt ${attempt} failed`);
           return;
         }
 
         if (message === 'RECONNECT_STOPPED') {
-          console.log('[Chat] Reconnection stopped by backend');
+          Logger.debug('[Chat] Reconnection stopped by backend');
           setError('Connection stopped');
           setIsConnected(false);
           return;
         }
 
         if (message === 'RECONNECT_EXHAUSTED') {
-          console.log('[Chat] Max reconnection attempts reached');
+          Logger.debug('[Chat] Max reconnection attempts reached');
           setError('Unable to reconnect to chat. Please refresh.');
           setIsConnected(false);
           return;
@@ -360,7 +361,7 @@ export const useTwitchChat = () => {
         // Handle USER_BADGES message from backend - contains user's IRC badges
         if (message.startsWith('USER_BADGES:')) {
           const badges = message.substring('USER_BADGES:'.length);
-          console.log('[Chat] Received user badges from IRC:', badges);
+          Logger.debug('[Chat] Received user badges from IRC:', badges);
           userBadgesFromIrcRef.current = badges;
           return;
         }
@@ -376,14 +377,14 @@ export const useTwitchChat = () => {
 
         // Handle IRC_CONNECTED and IRC_RECONNECTING status messages
         if (message === 'IRC_CONNECTED') {
-          console.log('[Chat] IRC connection established');
+          Logger.debug('[Chat] IRC connection established');
           setIsConnected(true);
           setError(null);
           return;
         }
 
         if (message === 'IRC_RECONNECTING') {
-          console.log('[Chat] IRC reconnecting...');
+          Logger.debug('[Chat] IRC reconnecting...');
           setError('Reconnecting to chat...');
           return;
         }
@@ -395,7 +396,7 @@ export const useTwitchChat = () => {
 
             // Handle CLEARMSG event - single message deleted by mod
             if (parsed.type === 'CLEARMSG' && parsed.target_msg_id) {
-              console.log('[Chat] CLEARMSG: Message deleted by mod:', parsed.target_msg_id, 'user:', parsed.login);
+              Logger.debug('[Chat] CLEARMSG: Message deleted by mod:', parsed.target_msg_id, 'user:', parsed.login);
               setDeletedMessageIds(prev => {
                 const newSet = new Set(prev);
                 newSet.add(parsed.target_msg_id);
@@ -415,7 +416,7 @@ export const useTwitchChat = () => {
                     ? 'timeout' 
                     : 'ban';
                 
-                console.log(
+                Logger.debug(
                   '[Chat] CLEARCHAT:', 
                   moderationType === 'timeout' 
                     ? `User timed out for ${parsed.ban_duration}s:` 
@@ -434,7 +435,7 @@ export const useTwitchChat = () => {
                 });
               } else {
                 // Full chat clear - this is rare, usually mod action
-                console.log('[Chat] CLEARCHAT: Full chat clear');
+                Logger.debug('[Chat] CLEARCHAT: Full chat clear');
               }
               return;
             }
@@ -449,7 +450,7 @@ export const useTwitchChat = () => {
                 // We might want to match optimistic messages by content if possible?
                 // The current logic matches by "id=local-..." vs regex content.
                 // Let's keep simple duplicate check first.
-                console.log('[Chat] Duplicate JSON message', messageId);
+                Logger.debug('[Chat] Duplicate JSON message', messageId);
                 return;
               }
 
@@ -482,7 +483,7 @@ export const useTwitchChat = () => {
 
                   let updated;
                   if (optimisticIndex !== -1) {
-                    console.log('[Chat] Replacing optimistic string with backend object at index', optimisticIndex);
+                    Logger.debug('[Chat] Replacing optimistic string with backend object at index', optimisticIndex);
                     updated = [...prevMessages];
                     updated[optimisticIndex] = parsed;
                   } else {
@@ -512,12 +513,12 @@ export const useTwitchChat = () => {
               return;
             }
           } catch (e) {
-            console.error('[Chat] Failed to parse JSON message:', e);
+            Logger.error('[Chat] Failed to parse JSON message:', e);
           }
         }
 
         // Legacy/System message handling (strings)
-        console.log('[Chat] Received string message:', message);
+        Logger.debug('[Chat] Received string message:', message);
 
         // Check for USERNOTICE (subscription events) and dispatch custom event
         if (message.includes('USERNOTICE')) {
@@ -533,7 +534,7 @@ export const useTwitchChat = () => {
           // Check if this is a subscription-related event
           const subTypes = ['sub', 'resub', 'subgift', 'submysterygift', 'giftpaidupgrade', 'primepaidupgrade', 'anongiftpaidupgrade'];
           if (login && msgId && subTypes.includes(msgId)) {
-            console.log('[Chat] Detected subscription event:', { login, msgId, displayName });
+            Logger.debug('[Chat] Detected subscription event:', { login, msgId, displayName });
             
             // Dispatch a custom event for subscription detection
             const subscriptionEvent = new CustomEvent('twitch-subscription-detected', {
@@ -558,13 +559,13 @@ export const useTwitchChat = () => {
         // Handle our own messages from the server - replace optimistic version with server version
         // This ensures we get the correct badges from IRC
         if (userId && currentUserIdRef.current && userId === currentUserIdRef.current) {
-          console.log('[Chat] Received own message from server:', messageId);
+          Logger.debug('[Chat] Received own message from server:', messageId);
 
           // Extract badges from the server message and store for future optimistic updates
           const badgesMatch = message.match(/(?:^|;)badges=([^;]*)/);
           if (badgesMatch && badgesMatch[1]) {
             userBadgesFromIrcRef.current = badgesMatch[1];
-            console.log('[Chat] Stored user badges from IRC:', userBadgesFromIrcRef.current);
+            Logger.debug('[Chat] Stored user badges from IRC:', userBadgesFromIrcRef.current);
           }
 
           // Find and replace the optimistic message with the server message
@@ -589,7 +590,7 @@ export const useTwitchChat = () => {
               });
 
               if (optimisticIndex !== -1) {
-                console.log('[Chat] Replacing optimistic message at index', optimisticIndex, 'with server message');
+                Logger.debug('[Chat] Replacing optimistic message at index', optimisticIndex, 'with server message');
                 const updated = [...prevMessages];
                 updated[optimisticIndex] = message;
 
@@ -604,7 +605,7 @@ export const useTwitchChat = () => {
 
             // If no optimistic message found to replace, just add the server message
             // (This handles cases where the optimistic message was already removed)
-            console.log('[Chat] No optimistic message found to replace, adding server message');
+            Logger.debug('[Chat] No optimistic message found to replace, adding server message');
             if (messageId) {
               seenMessageIdsRef.current.add(messageId);
             }
@@ -617,12 +618,12 @@ export const useTwitchChat = () => {
         if (messageId) {
           // Check if we've seen this message before using ref
           if (seenMessageIdsRef.current.has(messageId)) {
-            console.log('[Chat] Duplicate message detected, skipping:', messageId);
+            Logger.debug('[Chat] Duplicate message detected, skipping:', messageId);
             return;
           }
 
           // New message - add to seen set
-          console.log('[Chat] New message:', messageId);
+          Logger.debug('[Chat] New message:', messageId);
           seenMessageIdsRef.current.add(messageId);
 
           // Keep seen IDs manageable
@@ -639,44 +640,44 @@ export const useTwitchChat = () => {
 
             if (updated.length > limit) {
               const trimmed = updated.slice(updated.length - limit);
-              console.log(`[Chat] Total messages: ${trimmed.length} (limit: ${limit})`);
+              Logger.debug(`[Chat] Total messages: ${trimmed.length} (limit: ${limit})`);
               return trimmed;
             }
-            console.log(`[Chat] Total messages: ${updated.length} (limit: ${limit})`);
+            Logger.debug(`[Chat] Total messages: ${updated.length} (limit: ${limit})`);
             return updated;
           });
         } else {
           // If no ID, just add it (shouldn't happen with Twitch messages)
-          console.log('[Chat] Message without ID, adding anyway');
+          Logger.debug('[Chat] Message without ID, adding anyway');
           setMessages(prev => [...prev, message]);
         }
       };
 
       newWs.onerror = (error) => {
-        console.error('[Chat] WebSocket error:', error);
+        Logger.error('[Chat] WebSocket error:', error);
         setError('Connection error - attempting to reconnect');
         setIsConnected(false);
       };
 
       newWs.onclose = (event) => {
-        console.log('[Chat] WebSocket closed:', event.code, event.reason);
+        Logger.debug('[Chat] WebSocket closed:', event.code, event.reason);
         setIsConnected(false);
 
         // Don't attempt to reconnect if this was an intentional disconnect
         if (isIntentionalDisconnectRef.current) {
-          console.log('[Chat] Intentional disconnect, not reconnecting');
+          Logger.debug('[Chat] Intentional disconnect, not reconnecting');
           return;
         }
 
         // Don't reconnect if channel has changed
         if (currentChannelRef.current !== channel) {
-          console.log('[Chat] Channel changed, not reconnecting to old channel');
+          Logger.debug('[Chat] Channel changed, not reconnecting to old channel');
           return;
         }
 
         // Attempt to reconnect the local WebSocket for abnormal closures
         if (event.code === 1006 || event.code === 1001) {
-          console.log('[Chat] Abnormal closure detected, attempting to reconnect local WebSocket');
+          Logger.debug('[Chat] Abnormal closure detected, attempting to reconnect local WebSocket');
 
           // Clear any existing reconnect timeout
           if (reconnectTimeoutRef.current) {
@@ -688,11 +689,11 @@ export const useTwitchChat = () => {
             reconnectAttemptsRef.current++;
             const backoffDelay = Math.min(1000 * Math.pow(2, reconnectAttemptsRef.current - 1), 30000);
 
-            console.log(`[Chat] Scheduling reconnect attempt ${reconnectAttemptsRef.current}/${maxReconnectAttempts} in ${backoffDelay}ms`);
+            Logger.debug(`[Chat] Scheduling reconnect attempt ${reconnectAttemptsRef.current}/${maxReconnectAttempts} in ${backoffDelay}ms`);
             setError(`Connection lost - reconnecting in ${Math.round(backoffDelay / 1000)}s (attempt ${reconnectAttemptsRef.current}/${maxReconnectAttempts})`);
 
             reconnectTimeoutRef.current = setTimeout(() => {
-              console.log('[Chat] Executing reconnect attempt');
+              Logger.debug('[Chat] Executing reconnect attempt');
               const channelToReconnect = currentChannelRef.current;
               if (channelToReconnect && !isIntentionalDisconnectRef.current) {
                 // Reset the connecting flag to allow reconnection
@@ -728,14 +729,14 @@ export const useTwitchChat = () => {
         // If no messages (including heartbeats) for 2 minutes, show warning
         // This should only happen if the WebSocket connection is actually broken
         if (timeSinceLastMessage > twoMinutes && timeSinceLastMessage <= threeMinutes) {
-          console.warn('[Chat] No messages/heartbeats received for 2 minutes, connection may be stale');
+          Logger.warn('[Chat] No messages/heartbeats received for 2 minutes, connection may be stale');
           setError(`Connection may be stale - no data for ${Math.floor(timeSinceLastMessage / 1000)}s`);
         }
 
         // If no messages (including heartbeats) for 3 minutes, the WebSocket is likely dead
         // Perform a silent stream check before deciding whether to reconnect chat or trigger offline
         if (timeSinceLastMessage > threeMinutes) {
-          console.log('[Chat] No messages/heartbeats for 3+ minutes, connection appears dead');
+          Logger.debug('[Chat] No messages/heartbeats for 3+ minutes, connection appears dead');
 
           const { handleStreamOffline, currentStream, isAutoSwitching } = useAppStore.getState();
 
@@ -749,7 +750,7 @@ export const useTwitchChat = () => {
             // Use IIFE to handle async code inside setInterval callback
             (async () => {
               try {
-                console.log('[Chat] Performing silent stream online check before triggering offline...');
+                Logger.debug('[Chat] Performing silent stream online check before triggering offline...');
                 const isOnline = await invoke<boolean>('check_stream_online', { 
                   channel: currentStream.user_login 
                 });
@@ -757,20 +758,20 @@ export const useTwitchChat = () => {
                 if (isOnline) {
                   // Stream is still online - this is just a chat connection issue
                   // Reconnect only the chat, don't trigger the full handleStreamOffline flow
-                  console.log('[Chat] Stream is still online but chat is dead. Reconnecting chat only...');
+                  Logger.debug('[Chat] Stream is still online but chat is dead. Reconnecting chat only...');
                   
                   // Reset connecting flag and reconnect to the same channel
                   isConnectingRef.current = false;
                   connectChat(currentStream.user_login, currentStream.user_id);
                 } else {
                   // Stream is actually offline - trigger the full offline handling
-                  console.log('[Chat] Stream confirmed offline. Triggering handleStreamOffline...');
+                  Logger.debug('[Chat] Stream confirmed offline. Triggering handleStreamOffline...');
                   handleStreamOffline();
                 }
               } catch (err) {
                 // If the check fails, fall back to reconnecting chat as a safe default
                 // This is better than potentially tearing down a working stream
-                console.warn('[Chat] Failed to check stream status, attempting chat reconnect:', err);
+                Logger.warn('[Chat] Failed to check stream status, attempting chat reconnect:', err);
                 isConnectingRef.current = false;
                 connectChat(currentStream.user_login, currentStream.user_id);
               }
@@ -779,10 +780,10 @@ export const useTwitchChat = () => {
         }
       }, 30000); // Check every 30 seconds
 
-      console.log('[Chat] Connection setup complete with health monitoring');
+      Logger.debug('[Chat] Connection setup complete with health monitoring');
     } catch (e) {
       const errorMsg = e instanceof Error ? e.message : String(e);
-      console.error('[Chat] Failed to connect to chat:', errorMsg);
+      Logger.error('[Chat] Failed to connect to chat:', errorMsg);
       setError(errorMsg);
       setIsConnected(false);
     } finally {
@@ -807,7 +808,7 @@ export const useTwitchChat = () => {
     const color = userInfo.color || '#8A2BE2';
     // Prefer provided badges (from fresh user info), fall back to IRC badges
     const badges = userInfo.badges || userBadgesFromIrcRef.current || '';
-    console.log('[Chat] Using badges for optimistic message:', badges, '(is fresh:', !!userInfo.badges, ')');
+    Logger.debug('[Chat] Using badges for optimistic message:', badges, '(is fresh:', !!userInfo.badges, ')');
 
     // Build reply tags synchronously if replying
     // Use messagesRef for synchronous access (setMessages callback is async)
@@ -870,9 +871,9 @@ export const useTwitchChat = () => {
         message: messageText,
         replyParentMsgId: replyParentMsgId || null
       });
-      console.log('[Chat] Message sent successfully:', messageText, replyParentMsgId ? `(replying to ${replyParentMsgId})` : '');
+      Logger.debug('[Chat] Message sent successfully:', messageText, replyParentMsgId ? `(replying to ${replyParentMsgId})` : '');
     } catch (err) {
-      console.error('[Chat] Failed to send message:', err);
+      Logger.error('[Chat] Failed to send message:', err);
 
       // Remove the optimistic message on error
       setMessages(prev => prev.filter(msg => {
@@ -892,13 +893,13 @@ export const useTwitchChat = () => {
   useEffect(() => {
     const handleVisibilityChange = () => {
       if (document.hidden) {
-        console.log('[Chat] App minimized/hidden - connection will be maintained');
+        Logger.debug('[Chat] App minimized/hidden - connection will be maintained');
       } else {
-        console.log('[Chat] App visible again');
+        Logger.debug('[Chat] App visible again');
         // Check if connection is still alive
         const ws = wsRef.current;
         if (ws && ws.readyState !== WebSocket.OPEN && currentChannelRef.current && !isIntentionalDisconnectRef.current) {
-          console.log('[Chat] Connection lost while hidden, reconnecting...');
+          Logger.debug('[Chat] Connection lost while hidden, reconnecting...');
           isConnectingRef.current = false;
           connectChat(currentChannelRef.current);
         }
@@ -915,7 +916,7 @@ export const useTwitchChat = () => {
   // Cleanup on unmount - pass true to also stop the backend IRC service
   useEffect(() => {
     return () => {
-      console.log('[Chat] Cleanup: unmounting');
+      Logger.debug('[Chat] Cleanup: unmounting');
       isIntentionalDisconnectRef.current = true;
       cleanupWebSocket(true); // Stop backend when component unmounts
     };
@@ -925,7 +926,7 @@ export const useTwitchChat = () => {
   const trimToLimit = useCallback(() => {
     setMessages(prev => {
       if (prev.length > CHAT_HISTORY_MAX) {
-        console.log(`[Chat] Trimming from ${prev.length} to ${CHAT_HISTORY_MAX} messages`);
+        Logger.debug(`[Chat] Trimming from ${prev.length} to ${CHAT_HISTORY_MAX} messages`);
         return prev.slice(prev.length - CHAT_HISTORY_MAX);
       }
       return prev;
@@ -934,7 +935,7 @@ export const useTwitchChat = () => {
 
   // Set pause state for buffering
   const setPaused = useCallback((paused: boolean) => {
-    console.log(`[Chat] Buffer pause state: ${paused}`);
+    Logger.debug(`[Chat] Buffer pause state: ${paused}`);
     setIsPausedForBuffer(paused);
 
     // If unpausing, trim messages back to limit

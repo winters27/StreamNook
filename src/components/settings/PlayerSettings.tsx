@@ -2,6 +2,7 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { FolderOpen, X } from 'lucide-react';
 import { useAppStore } from '../../stores/AppStore';
 
+import { Logger } from '../../utils/logger';
 const PlayerSettings = () => {
   const { settings, updateSettings } = useAppStore();
 
@@ -49,7 +50,7 @@ const PlayerSettings = () => {
         });
       }
     } catch (error) {
-      console.error('Failed to open folder picker:', error);
+      Logger.error('Failed to open folder picker:', error);
     }
   };
 

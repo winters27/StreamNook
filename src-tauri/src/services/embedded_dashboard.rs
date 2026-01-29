@@ -1,3 +1,4 @@
+use log::debug;
 use rust_embed::RustEmbed;
 use std::sync::atomic::{AtomicBool, Ordering};
 use warp::Filter;
@@ -36,7 +37,7 @@ pub async fn start_embedded_dashboard() -> Result<(), String> {
 
     // Spawn the server in a background task
     tokio::spawn(async move {
-        println!("[Dashboard] Starting embedded dashboard server on port 5173");
+        debug!("[Dashboard] Starting embedded dashboard server on port 5173");
         warp::serve(static_files).run(([127, 0, 0, 1], 5173)).await;
     });
 

@@ -16,6 +16,7 @@ import { clearUserCache as clear7TVCache } from '../services/seventvService';
 import { chatIdentityCache, setChatIdentityCache, CHAT_IDENTITY_CACHE_TTL, CHAT_IDENTITY_BACKGROUND_REFRESH_TTL } from './ProfileOverlay';
 import { invoke } from '@tauri-apps/api/core';
 
+import { Logger } from '../utils/logger';
 interface ProfileModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -129,7 +130,7 @@ const ProfileModal = ({ isOpen, onClose }: ProfileModalProps) => {
         );
         applyProfileData(profile);
       } catch (e) {
-        console.error('[ProfileModal] Failed to load profile:', e);
+        Logger.error('[ProfileModal] Failed to load profile:', e);
       }
       
       setIsLoadingBadges(false);
@@ -196,7 +197,7 @@ const ProfileModal = ({ isOpen, onClose }: ProfileModalProps) => {
     if (chatIdentityCache && 
         chatIdentityCache.userId === currentUser.user_id &&
         chatIdentityCache.badges.length > 0) {
-      console.log('[ProfileModal] Loading chat identity badges from shared cache:', chatIdentityCache.badges.length);
+      Logger.debug('[ProfileModal] Loading chat identity badges from shared cache:', chatIdentityCache.badges.length);
       setChatIdentityBadges(chatIdentityCache.badges);
       
       const cacheAge = Date.now() - chatIdentityCache.lastFetched;
@@ -248,10 +249,10 @@ const ProfileModal = ({ isOpen, onClose }: ProfileModalProps) => {
         setAllSeventvPaints(prev => prev.map(p => ({ ...p, selected: p.id === paintId })));
         // Clear cache so other components fetch fresh data
         clear7TVCache();
-        console.log('[ProfileModal] Paint updated, cache cleared');
+        Logger.debug('[ProfileModal] Paint updated, cache cleared');
       }
     } catch (e) {
-      console.error('[ProfileModal] Failed to update paint:', e);
+      Logger.error('[ProfileModal] Failed to update paint:', e);
     } finally {
       setUpdatingSeventvPaintId(null);
     }
@@ -269,10 +270,10 @@ const ProfileModal = ({ isOpen, onClose }: ProfileModalProps) => {
         setSeventvBadges(prev => prev.map(b => ({ ...b, selected: b.id === badgeId })));
         // Clear cache so other components fetch fresh data
         clear7TVCache();
-        console.log('[ProfileModal] Badge updated, cache cleared');
+        Logger.debug('[ProfileModal] Badge updated, cache cleared');
       }
     } catch (e) {
-      console.error('[ProfileModal] Failed to update badge:', e);
+      Logger.error('[ProfileModal] Failed to update badge:', e);
     } finally {
       setUpdatingSeventvBadgeId(null);
     }
@@ -379,12 +380,14 @@ const ProfileModal = ({ isOpen, onClose }: ProfileModalProps) => {
                     
                     {/* Current Paint Badge */}
                     {seventvPaint && (
-                      <div
-                        className="inline-block px-3 py-1 rounded-full text-xs font-bold"
+                      <button
+                        onClick={() => useAppStore.getState().openBadgesWithPaint(seventvPaint.id)}
+                        className="inline-block px-3 py-1 rounded-full text-xs font-bold cursor-pointer hover:ring-1 hover:ring-accent/50 transition-all"
                         style={computePaintStyle(seventvPaint as any, '#29b6f6')}
+                        title={`Click to view paint details: ${seventvPaint.name}`}
                       >
                         🎨 {seventvPaint.name}
-                      </div>
+                      </button>
                     )}
                   </div>
 

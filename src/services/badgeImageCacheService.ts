@@ -9,6 +9,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { convertFileSrc } from '@tauri-apps/api/core';
 
+import { Logger } from '../utils/logger';
 // Module-level registry of cached badge files (id -> localPath)
 const cachedBadgeFiles: Map<string, string> = new Map();
 
@@ -35,7 +36,7 @@ async function getBadgeCacheSettings(): Promise<{ enabled: boolean; expiryDays: 
     };
     return cachedSettings;
   } catch (e) {
-    console.warn('[BadgeImageCache] Failed to load settings:', e);
+    Logger.warn('[BadgeImageCache] Failed to load settings:', e);
     return { enabled: true, expiryDays: 30 };
   }
 }
@@ -53,7 +54,7 @@ async function processDownloadQueue() {
   try {
     await downloadBadgeIfNeeded(next.id, next.url);
   } catch (e) {
-    console.debug(`[BadgeImageCache] Error processing queue item ${next.id}:`, e);
+    Logger.debug(`[BadgeImageCache] Error processing queue item ${next.id}:`, e);
   } finally {
     activeDownloads--;
     processDownloadQueue();
@@ -87,7 +88,7 @@ async function downloadBadgeIfNeeded(id: string, url: string): Promise<string | 
       }
       return null;
     } catch (e) {
-      console.debug(`[BadgeImageCache] Failed to cache badge ${id}:`, e);
+      Logger.debug(`[BadgeImageCache] Failed to cache badge ${id}:`, e);
       return null;
     } finally {
       pendingDownloads.delete(id);
@@ -169,12 +170,12 @@ export async function initializeBadgeImageCache(): Promise<void> {
 
   initializationPromise = (async () => {
     try {
-      console.log('[BadgeImageCache] Initializing badge file cache...');
+      Logger.debug('[BadgeImageCache] Initializing badge file cache...');
       const files = await invoke('get_cached_files', { cacheType: 'badge' }) as Record<string, string>;
       Object.entries(files).forEach(([id, path]) => cachedBadgeFiles.set(id, path));
-      console.log(`[BadgeImageCache] Badge file cache initialized with ${cachedBadgeFiles.size} entries`);
+      Logger.debug(`[BadgeImageCache] Badge file cache initialized with ${cachedBadgeFiles.size} entries`);
     } catch (e) {
-      console.warn('[BadgeImageCache] Failed to init badge file cache:', e);
+      Logger.warn('[BadgeImageCache] Failed to init badge file cache:', e);
     } finally {
       initializationPromise = null;
     }
@@ -188,7 +189,7 @@ export async function initializeBadgeImageCache(): Promise<void> {
  */
 export async function clearBadgeImageCache(): Promise<void> {
   cachedBadgeFiles.clear();
-  console.log('[BadgeImageCache] Cleared in-memory badge cache');
+  Logger.debug('[BadgeImageCache] Cleared in-memory badge cache');
 }
 
 /**
