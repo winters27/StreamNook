@@ -30,7 +30,7 @@ use commands::{
     app::*, automation::*, badge_metadata::*, badge_service::*, badges::*, bandwidth_test::*,
     cache::*, chat::*, chat_identity::*, components::*, cosmetics_cache::*, diagnostic_logging::*,
     discord::*, drops::*, emoji::*, emotes::*, eventsub::*, hype_train::*, layout::*, logs::*,
-    profile_cache::*, resub::*, settings::*, seventv::*, seventv_cosmetics::*,
+    profile_cache::*, proxy_health::*, resub::*, settings::*, seventv::*, seventv_cosmetics::*,
     seventv_cosmetics_fetch::*, streaming::*, twitch::*, universal_cache::*, user_profile::*,
     whisper_storage::*,
 };
@@ -397,6 +397,7 @@ fn main() {
             prefetch_third_party_badges,
             clear_badge_cache_unified,
             clear_channel_badge_cache_unified,
+            get_global_badge_collection,
             // Badge Metadata commands
             fetch_badge_metadata,
             // Cache commands
@@ -566,6 +567,10 @@ fn main() {
             // Diagnostic Logging commands
             set_diagnostics_enabled,
             is_diagnostics_enabled,
+            // Proxy Health commands
+            get_proxy_list,
+            check_proxy_health,
+            generate_optimal_proxy_args,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

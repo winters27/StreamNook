@@ -280,7 +280,7 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
       const endDay = parseInt(fullDateRangeMatch[5], 10);
       const endYear = parseInt(fullDateRangeMatch[6], 10);
 
-      if (fullMonths.hasOwnProperty(startMonthName) && fullMonths.hasOwnProperty(endMonthName)) {
+      if (Object.hasOwn(fullMonths, startMonthName) && Object.hasOwn(fullMonths, endMonthName)) {
         const startDate = new Date(startYear, fullMonths[startMonthName], startDay, 0, 0, 0);
         const endDate = new Date(endYear, fullMonths[endMonthName], endDay, 23, 59, 59);
 
@@ -298,11 +298,11 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
       const endMonthAbbrev = eventDurationMatch[3];
       const endDay = parseInt(eventDurationMatch[4], 10);
 
-      if (months.hasOwnProperty(startMonthAbbrev) && months.hasOwnProperty(endMonthAbbrev)) {
+      if (Object.hasOwn(months, startMonthAbbrev) && Object.hasOwn(months, endMonthAbbrev)) {
         const startMonthNum = months[startMonthAbbrev];
         const endMonthNum = months[endMonthAbbrev];
 
-        let startYear = currentYear;
+        const startYear = currentYear;
         let endYear = currentYear;
         if (startMonthNum > endMonthNum) {
           endYear = currentYear + 1;
@@ -324,7 +324,7 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
       const startDay = parseInt(eventDurationSameMonthMatch[2], 10);
       const endDay = parseInt(eventDurationSameMonthMatch[3], 10);
 
-      if (months.hasOwnProperty(monthAbbrev)) {
+      if (Object.hasOwn(months, monthAbbrev)) {
         const monthNum = months[monthAbbrev];
         const startDate = new Date(currentYear, monthNum, startDay, 0, 0, 0);
         const endDate = new Date(currentYear, monthNum, endDay, 23, 59, 59);
@@ -343,7 +343,7 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
       const endMonthAbbrev = fullRangeMatch[3];
       const endDay = parseInt(fullRangeMatch[4], 10);
 
-      if (months.hasOwnProperty(startMonthAbbrev) && months.hasOwnProperty(endMonthAbbrev)) {
+      if (Object.hasOwn(months, startMonthAbbrev) && Object.hasOwn(months, endMonthAbbrev)) {
         const startMonthNum = months[startMonthAbbrev];
         const endMonthNum = months[endMonthAbbrev];
         // Start at beginning of the day, end at end of the day
@@ -363,7 +363,7 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
       const startDay = parseInt(shortRangeMatch[2], 10);
       const endDay = parseInt(shortRangeMatch[3], 10);
 
-      if (months.hasOwnProperty(monthAbbrev)) {
+      if (Object.hasOwn(months, monthAbbrev)) {
         const monthNum = months[monthAbbrev];
         // Start at beginning of the day, end at end of the day
         const startDate = new Date(currentYear, monthNum, startDay, 0, 0, 0);
@@ -487,7 +487,7 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
       const endDay = parseInt(fullDateRangeMatch[5], 10);
       const endYear = parseInt(fullDateRangeMatch[6], 10);
 
-      if (fullMonths.hasOwnProperty(startMonthName) && fullMonths.hasOwnProperty(endMonthName)) {
+      if (Object.hasOwn(fullMonths, startMonthName) && Object.hasOwn(fullMonths, endMonthName)) {
         const startDate = new Date(startYear, fullMonths[startMonthName], startDay, 0, 0, 0);
         const endDate = new Date(endYear, fullMonths[endMonthName], endDay, 23, 59, 59);
 
@@ -542,7 +542,7 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
       const endMonthAbbrev = fullRangeMatch[3];
       const endDay = parseInt(fullRangeMatch[4], 10);
 
-      if (months.hasOwnProperty(startMonthAbbrev) && months.hasOwnProperty(endMonthAbbrev)) {
+      if (Object.hasOwn(months, startMonthAbbrev) && Object.hasOwn(months, endMonthAbbrev)) {
         const startMonthNum = months[startMonthAbbrev];
         const endMonthNum = months[endMonthAbbrev];
         const startDate = new Date(currentYear, startMonthNum, startDay, 0, 0, 0);
@@ -598,7 +598,7 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
       const startDay = parseInt(shortRangeMatch[2], 10);
       const endDay = parseInt(shortRangeMatch[3], 10);
 
-      if (months.hasOwnProperty(monthAbbrev)) {
+      if (Object.hasOwn(months, monthAbbrev)) {
         const monthNum = months[monthAbbrev];
         const startDate = new Date(currentYear, monthNum, startDay, 0, 0, 0);
         const endDate = new Date(currentYear, monthNum, endDay, 23, 59, 59);

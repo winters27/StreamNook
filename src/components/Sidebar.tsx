@@ -356,7 +356,7 @@ const Sidebar = () => {
                 // Always fully expanded
                 return { visible: true, width: expandedWidth, showExpanded: true, isOverlay: false };
 
-            case 'compact':
+            case 'compact': {
                 // Show compact, expand on hover if enabled, or if manually expanded
                 const shouldExpand = isManuallyExpanded || (expandOnHover && isHovered);
                 // When expand-on-hover is enabled, always use overlay mode (whether hovering or not)
@@ -368,8 +368,9 @@ const Sidebar = () => {
                     showExpanded: shouldExpand,
                     isOverlay: isCompactOverlay
                 };
+            }
 
-            case 'hidden':
+            case 'hidden': {
                 // Hidden until edge hover, then fully expanded
                 // Keep visible while resizing to allow drag to complete
                 const isVisible = isEdgeHovered || isHovered || isResizing;
@@ -379,6 +380,7 @@ const Sidebar = () => {
                     showExpanded: isVisible,
                     isOverlay: true
                 };
+            }
 
             case 'disabled':
                 // Completely disabled - never show

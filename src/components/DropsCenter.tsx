@@ -15,6 +15,7 @@ import DropsStatsTab from './drops/DropsStatsTab';
 import DropsSettingsTab from './drops/DropsSettingsTab';
 import DropsInventoryTab from './drops/DropsInventoryTab';
 import ChannelPickerModal from './drops/ChannelPickerModal';
+import { getAllUserBadgesWithEarned } from '../services/badgeService';
 
 import { Logger } from '../utils/logger';
 // Twitch SVG Icon Component
@@ -51,8 +52,10 @@ export default function DropsCenter() {
     const [completedDrops, setCompletedDrops] = useState<CompletedDrop[]>([]);
     const [statistics, setStatistics] = useState<DropsStatistics | null>(null);
     const [progress, setProgress] = useState<DropProgress[]>([]);
+    const [earnedBadgeIds, setEarnedBadgeIds] = useState<Set<string>>(new Set());
+    const [earnedBadgeTitles, setEarnedBadgeTitles] = useState<Set<string>>(new Set());
     const [isLoading, setIsLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [_error, setError] = useState<string | null>(null);
 
     // Auth State
     const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -66,8 +69,10 @@ export default function DropsCenter() {
     const [activeTab, setActiveTab] = useState<Tab>('games');
     const [searchTerm, setSearchTerm] = useState('');
     const [selectedGame, setSelectedGame] = useState<UnifiedGame | null>(null);
-    const [isLoadingGameDetail, setIsLoadingGameDetail] = useState(false);
-    const { addToast, setShowDropsOverlay } = useAppStore();
+    const [_isLoadingGameDetail, setIsLoadingGameDetail] = useState(false);
+    const { addToast, setShowDropsOverlay, currentUser } = useAppStore();
+    
+
 
     // Channel Picker State
     const [channelPickerOpen, setChannelPickerOpen] = useState(false);
@@ -132,6 +137,46 @@ export default function DropsCenter() {
             return a.name.localeCompare(b.name);
         });
     }, [unifiedGames, searchTerm, dropsSettings?.favorite_games]);
+
+    // Fetch earned badges on mount for badge drop ownership verification
+    useEffect(() => {
+        const fetchEarnedBadges = async () => {
+            if (!currentUser?.user_id || !currentUser?.login) return;
+            
+            try {
+                Logger.debug('[DropsCenter] Fetching earned badges for user:', currentUser.login);
+                const badges = await getAllUserBadgesWithEarned(
+                    currentUser.user_id,
+                    currentUser.login,
+                    currentUser.user_id, // Use user's own channel ID
+                    currentUser.login // Use user's own channel name
+                );
+                
+                // Extract earned badge IDs from the flat badge structure
+                const earnedIds = new Set<string>();
+                const badgeTitles = new Set<string>();
+                badges.earnedBadges?.forEach((badge) => {
+                    if (badge.id) earnedIds.add(badge.id);
+                    if (badge.title) badgeTitles.add(badge.title.toLowerCase());
+                });
+                // Also include third-party badges
+                badges.thirdPartyBadges?.forEach((badge) => {
+                    if (badge.id) earnedIds.add(badge.id);
+                    if (badge.title) badgeTitles.add(badge.title.toLowerCase());
+                });
+                
+                setEarnedBadgeIds(earnedIds);
+                setEarnedBadgeTitles(badgeTitles);
+                Logger.debug('[DropsCenter] Loaded earned badge IDs:', earnedIds.size);
+                Logger.debug('[DropsCenter] Loaded earned badge titles:', badgeTitles.size);
+                Logger.debug('[DropsCenter] Sample badge titles:', Array.from(badgeTitles).slice(0, 5));
+            } catch (err) {
+                Logger.error('[DropsCenter] Failed to fetch earned badges:', err);
+            }
+        };
+        
+        fetchEarnedBadges();
+    }, [currentUser?.user_id, currentUser?.login]);
 
     // ---- Authentication Logic ----
     const checkAuthentication = async () => {
@@ -205,7 +250,7 @@ export default function DropsCenter() {
             try {
                 const loginWindow = await WebviewWindow.getByLabel('drops-login');
                 if (loginWindow) await loginWindow.close();
-            } catch { }
+            } catch { /* Window may not exist */ }
         }
     };
 
@@ -314,7 +359,7 @@ export default function DropsCenter() {
             try {
                 const status = await invoke<MiningStatus>('get_mining_status');
                 setMiningStatus(status);
-            } catch { }
+            } catch { /* Mining status not available */ }
         }
     };
 
@@ -1657,14 +1702,16 @@ export default function DropsCenter() {
                             <GameDetailPanel
                                 game={selectedGame}
                                 allGames={unifiedGames}
-                                progress={progress}
                                 completedDrops={completedDrops}
+                                progress={progress}
+                                earnedBadgeTitles={earnedBadgeTitles}
                                 miningStatus={miningStatus}
+                                onClaimDrop={handleClaimDrop}
+
                                 isOpen={!!selectedGame}
                                 onClose={() => setSelectedGame(null)}
                                 onStartMining={handleStartMining}
                                 onStopMining={handleStopMining}
-                                onClaimDrop={handleClaimDrop}
                             />
                         )}
                     </div>

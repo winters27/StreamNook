@@ -47,7 +47,7 @@ const parseWhisperDate = (dateStr: string): number => {
     // Fallback: try to extract date components manually
     const match = dateStr.match(/(\d{1,2})\/(\d{1,2})\/(\d{4}),?\s*(\d{1,2}):(\d{2}):?(\d{2})?\s*(AM|PM)?/i);
     if (match) {
-        let [, month, day, year, hours, minutes, seconds, ampm] = match;
+        const [, month, day, year, hours, minutes, seconds, ampm] = match;
         let h = parseInt(hours);
         if (ampm) {
             if (ampm.toUpperCase() === 'PM' && h < 12) h += 12;

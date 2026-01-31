@@ -136,7 +136,7 @@ const ThemeCreator = ({ editingTheme, onClose, onSave, onDelete }: ThemeCreatorP
       palette,
     };
     applyTheme(customThemeToTheme(previewTheme));
-    setHasChanges(true);
+    queueMicrotask(() => setHasChanges(true));
   }, [palette]);
 
   // Restore original theme on unmount or cancel

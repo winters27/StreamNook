@@ -4,7 +4,7 @@ import Plyr from 'plyr';
 import 'plyr/dist/plyr.css';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { invoke } from '@tauri-apps/api/core';
-import { Loader2 } from 'lucide-react';
+import { Loader2, RefreshCcw } from 'lucide-react';
 import { Heart, HeartBreak } from 'phosphor-react';
 import { useAppStore } from '../stores/AppStore';
 
@@ -15,7 +15,7 @@ const VideoPlayer = () => {
   const hlsRef = useRef<Hls | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const progressUpdateIntervalRef = useRef<number | null>(null);
-  const { streamUrl, settings, getAvailableQualities, changeStreamQuality, handleStreamOffline, isAutoSwitching, currentStream, currentUser, stopStream } = useAppStore();
+  const { streamUrl, settings, getAvailableQualities, changeStreamQuality, handleStreamOffline, isAutoSwitching, currentStream, currentUser, stopStream, restartStream } = useAppStore();
   const playerSettings = settings.video_player;
   // Store settings in a ref so createPlayer doesn't need to depend on them
   // This prevents player recreation when volume/muted settings change
@@ -45,6 +45,9 @@ const VideoPlayer = () => {
   const [hasSubHistory, setHasSubHistory] = useState<boolean>(false);
   const [cumulativeMonths, setCumulativeMonths] = useState<number>(0);
   const [subscriberBadgeUrl, setSubscriberBadgeUrl] = useState<string | null>(null);
+
+  // Restart stream state
+  const [isRestarting, setIsRestarting] = useState(false);
 
   // Track consecutive fatal errors to determine when stream is truly offline
   const fatalErrorCountRef = useRef<number>(0);
@@ -1145,6 +1148,29 @@ const VideoPlayer = () => {
             : 'opacity-0 -translate-y-2 pointer-events-none'
             }`}
         >
+          {/* Restart Stream Button */}
+          <button
+            onClick={async () => {
+              setIsRestarting(true);
+              try {
+                await restartStream();
+              } finally {
+                setIsRestarting(false);
+              }
+            }}
+            disabled={isRestarting}
+            className={`flex items-center justify-center p-2.5 rounded-full transition-all duration-200 hover:scale-110 bg-background/60 backdrop-blur-md ${
+              isRestarting ? 'cursor-wait opacity-70' : 'hover:bg-accent/20'
+            }`}
+            title="Refresh"
+          >
+            {isRestarting ? (
+              <Loader2 className="w-5 h-5 text-accent animate-spin" />
+            ) : (
+              <RefreshCcw className="w-5 h-5 text-textSecondary hover:text-accent" />
+            )}
+          </button>
+          
           {/* Follow Button - Icon Only with Glow */}
           <button
             onClick={handleFollowClick}

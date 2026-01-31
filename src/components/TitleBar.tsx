@@ -9,18 +9,18 @@ import DynamicIsland from './DynamicIsland';
 import ErrorBoundary from './ErrorBoundary';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { themes, themeCategories, getThemeById, applyTheme, Theme, getThemeByIdWithCustom, customThemeToTheme } from '../themes';
+import { themes, themeCategories, getThemeById, applyTheme, getThemeByIdWithCustom, customThemeToTheme } from '../themes';
 import { getSelectedCompactViewPreset } from '../constants/compactViewPresets';
-import type { MiningStatus } from '../types';
+import type { MiningStatus, DropsSettings } from '../types';
 
 import { Logger } from '../utils/logger';
 const TitleBar = () => {
   const store = useAppStore();
   const { openSettings, setShowProfileOverlay, setShowDropsOverlay, setShowBadgesOverlay, setShowWhispersOverlay, showProfileOverlay, isAuthenticated, currentUser, isMiningActive, isTheaterMode, toggleTheaterMode, streamUrl, settings, updateSettings, isHomeActive, toggleHome, whisperImportState } = store;
   const [showAbout, setShowAbout] = useState(false);
-  const [showSplash, setShowSplash] = useState(false);
+  const [, setShowSplash] = useState(false);
   const [showThemePicker, setShowThemePicker] = useState(false);
-  const [dropsSettings, setDropsSettings] = useState<any>(null);
+  const [dropsSettings, setDropsSettings] = useState<DropsSettings | null>(null);
   const [isMaximized, setIsMaximized] = useState(false);
   const prevMiningActive = useRef(isMiningActive);
   const themePickerRef = useRef<HTMLDivElement>(null);
@@ -33,7 +33,7 @@ const TitleBar = () => {
 
   // Safely get current theme with fallback
   const currentThemeId = settings?.theme || 'winters-glass';
-  const customThemes = settings?.custom_themes || [];
+  const customThemes = useMemo(() => settings?.custom_themes || [], [settings?.custom_themes]);
   const currentTheme = useMemo(() => {
     try {
       return getThemeByIdWithCustom(currentThemeId, customThemes) || getThemeById('winters-glass') || themes[0];
@@ -106,7 +106,7 @@ const TitleBar = () => {
   useEffect(() => {
     const loadDropsSettings = async () => {
       try {
-        const settings = await invoke<any>('get_drops_settings');
+        const settings = await invoke<DropsSettings>('get_drops_settings');
         setDropsSettings(settings);
       } catch (err) {
         Logger.error('Failed to get drops settings:', err);
@@ -129,7 +129,7 @@ const TitleBar = () => {
       try {
         const status = await invoke<MiningStatus>('get_mining_status');
         setMiningStatus(status);
-      } catch (err) {
+      } catch {
         // Silently fail - not critical for title bar
       }
     };
@@ -141,7 +141,7 @@ const TitleBar = () => {
       });
 
       // Listen for progress updates (more frequent)
-      unlistenProgress = await listen<any>('drops-progress-update', (event) => {
+      unlistenProgress = await listen<{ drop_id: string; current_minutes: number; required_minutes: number; campaign_id?: string; drop_name?: string }>('drops-progress-update', (event) => {
         setMiningStatus((prev) => {
           if (!prev || !prev.is_mining) return prev;
           
@@ -232,7 +232,7 @@ const TitleBar = () => {
   useEffect(() => {
     // Detect when mining stops
     if (prevMiningActive.current && !isMiningActive) {
-      setShowSplash(true);
+      queueMicrotask(() => setShowSplash(true));
       setTimeout(() => setShowSplash(false), 600);
     }
     prevMiningActive.current = isMiningActive;

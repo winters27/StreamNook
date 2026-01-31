@@ -642,31 +642,42 @@ impl BadgeService {
 
     /// Fetch ALL global badges a user has earned from Twitch GQL
     /// This uses the globalBadgeCollection query to get the full list of earned badges
-    async fn fetch_global_badge_collection_from_gql(
+    pub async fn fetch_global_badge_collection_from_gql(
         &self,
         username: &str,
+        token: &str,
     ) -> Result<Vec<String>, String> {
-        let request = BadgeCollectionGQLRequest {
-            operation_name: "ViewerCardBadgeSelectorPage".to_string(),
-            variables: BadgeCollectionVariables {
-                login: username.to_string(),
-            },
-            extensions: GQLExtensions {
-                persisted_query: PersistedQuery {
-                    version: 1,
-                    sha256_hash: "6ae8bcfef52e1b19f14f2ba5be2d5ea18fda74ab10e1c66f6a2d7c40fcd4219f"
-                        .to_string(),
-                },
-            },
-        };
+        // Use full query text instead of persisted query hash (matches working pattern in drops.rs)
+        let query = r#"
+        query GetGlobalBadgeCollection($login: String!) {
+            user(login: $login) {
+                globalBadgeCollection {
+                    badge {
+                        setID
+                        version
+                        title
+                    }
+                }
+            }
+        }
+        "#;
 
-        // Use anonymous mode with public Twitch client ID
+        let request_body = serde_json::json!({
+            "operationName": "GetGlobalBadgeCollection",
+            "query": query,
+            "variables": {
+                "login": username.to_lowercase()
+            }
+        });
+
+        // Use authenticated mode with OAuth token for accessing badge collection
         let response = self
             .http_client
             .post("https://gql.twitch.tv/gql")
             .header("Accept-Language", "en-US")
-            .header("Client-ID", "kimne78kx3ncx6brgo4mv6wki5h1ko")
-            .json(&vec![request])
+            .header("Client-Id", "kimne78kx3ncx6brgo4mv6wki5h1ko")
+            .header("Authorization", format!("OAuth {}", token))
+            .json(&request_body)
             .send()
             .await
             .map_err(|e| format!("Failed to send GQL request: {}", e))?;
@@ -683,21 +694,27 @@ impl BadgeService {
             .await
             .map_err(|e| format!("Failed to read GQL response: {}", e))?;
 
-        // Parse response - it's an array with one item
-        let gql_responses: Vec<BadgeCollectionGQLResponse> = serde_json::from_str(&response_text)
+        log::debug!(
+            "[BadgeService] Badge collection GQL raw response (first 500 chars): {}",
+            &response_text[..500.min(response_text.len())]
+        );
+
+        // Parse response - single object (not array) when using inline query
+        let gql_response: BadgeCollectionGQLResponse = serde_json::from_str(&response_text)
             .map_err(|e| {
+                format!(
+                    "Failed to parse GQL badge collection response: {} - Raw: {}",
+                    e,
+                    &response_text[..500.min(response_text.len())]
+                )
+            })?;
+
+        let gql_data = gql_response.data.ok_or_else(|| {
             format!(
-                "Failed to parse GQL badge collection response: {} - Raw: {}",
-                e,
+                "No data in GQL badge collection response. Raw: {}",
                 &response_text[..500.min(response_text.len())]
             )
         })?;
-
-        let gql_data = gql_responses
-            .into_iter()
-            .next()
-            .and_then(|r| r.data)
-            .ok_or_else(|| "No data in GQL badge collection response".to_string())?;
 
         let earned_badges: Vec<String> = gql_data
             .user
@@ -710,6 +727,11 @@ impl BadgeService {
             })
             .unwrap_or_default();
 
+        log::debug!(
+            "[BadgeService] Fetched {} global earned badges for user",
+            earned_badges.len()
+        );
+
         Ok(earned_badges)
     }
 
@@ -721,6 +743,7 @@ impl BadgeService {
         channel_earned_ids: Vec<String>,
         username: &str,
         channel_id: &str,
+        token: &str,
     ) -> Vec<UserBadge> {
         let mut all_badge_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
 
@@ -730,7 +753,10 @@ impl BadgeService {
         }
 
         // 2. Fetch global badge collection (ALL earned global badges)
-        match self.fetch_global_badge_collection_from_gql(username).await {
+        match self
+            .fetch_global_badge_collection_from_gql(username, token)
+            .await
+        {
             Ok(global_badge_ids) => {
                 for badge_id in global_badge_ids {
                     all_badge_ids.insert(badge_id);
@@ -864,7 +890,7 @@ impl BadgeService {
 
         // Fetch all earned badges (merges channel + global)
         let earned_badges = self
-            .fetch_all_earned_badges(channel_earned_ids, username, channel_id)
+            .fetch_all_earned_badges(channel_earned_ids, username, channel_id, token)
             .await;
 
         // Fetch third-party badges

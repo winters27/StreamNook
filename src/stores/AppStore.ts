@@ -143,6 +143,7 @@ interface AppState {
   loadMoreRecommendedStreams: () => Promise<void>;
   startStream: (channel: string, streamInfo?: TwitchStream) => Promise<void>;
   stopStream: () => Promise<void>;
+  restartStream: () => Promise<void>;  // Restart current stream (stops and starts again)
   getAvailableQualities: () => Promise<string[]>;
   changeStreamQuality: (quality: string) => Promise<void>;
   openSettings: (initialTab?: SettingsTab) => void;
@@ -688,6 +689,52 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
     } catch (e) {
       Logger.error('Failed to stop stream:', e);
+    }
+  },
+
+  restartStream: async () => {
+    const { currentStream, settings } = get();
+    if (!currentStream) {
+      Logger.warn('[Stream] Cannot restart: no current stream');
+      return;
+    }
+    
+    Logger.info(`[Stream] Restarting stream for ${currentStream.user_login}...`);
+    trackActivity('Restarted stream');
+    
+    // Save current stream info
+    const channel = currentStream.user_login;
+    const streamInfo = { ...currentStream };
+    const quality = settings.quality;
+    
+    try {
+      // Stop the current stream (but don't clean up everything)
+      await invoke('stop_stream');
+      
+      // Small delay to ensure clean stop
+      await new Promise(resolve => setTimeout(resolve, 300));
+      
+      // Restart with the same channel
+      const url = `https://twitch.tv/${channel}`;
+      Logger.debug(`[Stream] Restarting: ${url} at quality: ${quality}`);
+      
+      const newStreamUrl = await invoke<string>('start_stream', { url, quality });
+      Logger.debug('[Stream] Restarted successfully:', newStreamUrl);
+      
+      set({ streamUrl: newStreamUrl, currentStream: streamInfo });
+      
+      // Show toast notification
+      get().addToast('Stream restarted with new settings', 'success');
+    } catch (e) {
+      Logger.error('[Stream] Failed to restart:', e);
+      get().addToast('Failed to restart stream', 'error');
+      
+      // Try to recover by starting fresh
+      try {
+        await get().startStream(channel, streamInfo);
+      } catch (retryError) {
+        Logger.error('[Stream] Retry also failed:', retryError);
+      }
     }
   },
 

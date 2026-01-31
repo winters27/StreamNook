@@ -116,19 +116,36 @@ pub async fn start_stream(
         let ttvlol_installed = is_ttvlol_plugin_installed(custom.as_deref());
         debug!("[Streaming] ttvlol plugin installed: {}", ttvlol_installed);
 
+        // Determine the proxy args to use:
+        // 1. If use_proxy is enabled in streamlink settings, use proxy_playlist
+        // 2. Fall back to the legacy streamlink_args field
+        let proxy_args =
+            if settings.streamlink.use_proxy && !settings.streamlink.proxy_playlist.is_empty() {
+                debug!(
+                    "[Streaming] Using streamlink.proxy_playlist: {}",
+                    settings.streamlink.proxy_playlist
+                );
+                settings.streamlink.proxy_playlist.clone()
+            } else if !settings.streamlink_args.is_empty() {
+                debug!(
+                    "[Streaming] Using legacy streamlink_args: {}",
+                    settings.streamlink_args
+                );
+                settings.streamlink_args.clone()
+            } else {
+                String::new()
+            };
+
         debug!(
-            "[Streaming] Settings: ttvlol_enabled={}, streamlink_args='{}', custom_path={:?}",
-            settings.ttvlol_plugin.enabled, settings.streamlink_args, custom
+            "[Streaming] Settings: ttvlol_enabled={}, use_proxy={}, proxy_args='{}', custom_path={:?}",
+            settings.ttvlol_plugin.enabled, settings.streamlink.use_proxy, proxy_args, custom
         );
 
         // Only use ttvlol args if BOTH enabled in settings AND the plugin file exists
         let args = if settings.ttvlol_plugin.enabled && ttvlol_installed {
-            // Use the ttvlol plugin args
-            debug!(
-                "[Streaming] ✅ Using ttvlol plugin args: {}",
-                settings.streamlink_args
-            );
-            settings.streamlink_args.clone()
+            // Use the ttvlol plugin args (proxy args)
+            debug!("[Streaming] ✅ Using ttvlol plugin args: {}", proxy_args);
+            proxy_args
         } else {
             // Don't use any special args if plugin is disabled or not installed
             if settings.ttvlol_plugin.enabled && !ttvlol_installed {

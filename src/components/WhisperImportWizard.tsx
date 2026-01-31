@@ -47,7 +47,7 @@ const WhisperImportWizard = ({ isOpen, onClose }: WhisperImportWizardProps) => {
     // Countdown timer effect - ticks every second
     useEffect(() => {
         if (!estimatedEndTime || !isImporting) {
-            setTimeRemaining(null);
+            queueMicrotask(() => setTimeRemaining(null));
             return;
         }
 
@@ -77,7 +77,7 @@ const WhisperImportWizard = ({ isOpen, onClose }: WhisperImportWizardProps) => {
                 (event) => {
                     const { step, status, detail, current, total } = event.payload;
                     setWhisperImportState({
-                        progress: { step, status: status as any, detail, current, total }
+                        progress: { step, status: status as 'pending' | 'running' | 'complete' | 'error', detail, current, total }
                     });
 
                     // Track export progress for step 3

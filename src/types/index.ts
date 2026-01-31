@@ -369,6 +369,8 @@ export interface DropBenefit {
   id: string;
   name: string;
   image_url: string;
+  /** Distribution type - "BADGE" for Twitch chat badges, "DIRECT_ENTITLEMENT" for in-game items */
+  distribution_type?: string;
 }
 
 export interface DropProgress {
@@ -732,3 +734,44 @@ export interface BandwidthTestHistoryEntry {
   network_stability: 'excellent' | 'good' | 'fair' | 'poor';
   had_throttling: boolean;
 }
+
+// ===== Proxy Health Types =====
+
+/** A proxy server entry from the bundled list */
+export interface ProxyServer {
+  id: string;
+  url: string;
+  name: string;
+  region: string;    // e.g., 'NA', 'EU', 'AS', 'SA', 'RU'
+  provider: string;  // e.g., 'TTV-LOL-PRO', 'luminous-ttv', 'community'
+  priority: number;
+}
+
+/** Result of a health check on a single proxy */
+export interface ProxyHealthResult {
+  id: string;
+  url: string;
+  name: string;
+  region: string;
+  is_healthy: boolean;
+  latency_ms: number | null;
+  error: string | null;
+  checked_at: string;
+}
+
+/** Aggregated proxy health check response */
+export interface ProxyHealthCheckResponse {
+  results: ProxyHealthResult[];
+  best_proxy: ProxyHealthResult | null;
+  check_duration_ms: number;
+  total_checked: number;
+  healthy_count: number;
+}
+
+/** Bundled proxy list structure */
+export interface ProxyList {
+  version: string;
+  lastUpdated: string;
+  proxies: ProxyServer[];
+}
+

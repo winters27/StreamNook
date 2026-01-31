@@ -1,22 +1,22 @@
 import { useAppStore } from '../../stores/AppStore';
 import ColorWheelPicker from '../ColorWheelPicker';
 
+// Toggle component for reuse
+const Toggle = ({ enabled, onChange }: { enabled: boolean; onChange: () => void }) => (
+  <button
+    onClick={onChange}
+    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors flex-shrink-0 ${enabled ? 'bg-accent' : 'bg-gray-600'
+      }`}
+  >
+    <span
+      className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${enabled ? 'translate-x-6' : 'translate-x-1'
+        }`}
+    />
+  </button>
+);
+
 const ChatSettings = () => {
   const { settings, updateSettings } = useAppStore();
-
-  // Toggle component for reuse
-  const Toggle = ({ enabled, onChange }: { enabled: boolean; onChange: () => void }) => (
-    <button
-      onClick={onChange}
-      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors flex-shrink-0 ${enabled ? 'bg-accent' : 'bg-gray-600'
-        }`}
-    >
-      <span
-        className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${enabled ? 'translate-x-6' : 'translate-x-1'
-          }`}
-      />
-    </button>
-  );
 
   return (
     <div className="space-y-6">

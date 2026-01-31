@@ -38,7 +38,7 @@ export default function DashboardWidget({ isOpen, onClose }: DashboardWidgetProp
     useEffect(() => {
         if (!isOpen || !configured) return;
 
-        setIsLoading(true);
+        queueMicrotask(() => setIsLoading(true));
 
         // Get initial counts
         const fetchInitialData = async () => {

@@ -101,18 +101,25 @@ export default function GameCard({
         // PRIMARY: Use miningStatus.current_drop if available (has freshest data from backend)
         if (miningStatus?.current_drop) {
             const { drop_id, current_minutes, required_minutes, drop_name, drop_image } = miningStatus.current_drop;
-            // Use drop_image directly from miningStatus if available, fallback to globalDropMap
-            const metadata = globalDropMap.get(drop_id);
-            const benefitImage = drop_image || metadata?.benefitImage || '';
-            const benefitName = drop_name || metadata?.benefitName || 'Drop';
+            
+            // SKIP subscription drops (0 required minutes) - they can't be mined
+            // This prevents flickering when the backend sends updates for non-mineable drops
+            if (!required_minutes || required_minutes <= 0) {
+                // Fall through to the fallback logic instead
+            } else {
+                // Use drop_image directly from miningStatus if available, fallback to globalDropMap
+                const metadata = globalDropMap.get(drop_id);
+                const benefitImage = drop_image || metadata?.benefitImage || '';
+                const benefitName = drop_name || metadata?.benefitName || 'Drop';
 
-            return {
-                dropId: drop_id,
-                current: current_minutes ?? 0,
-                required: required_minutes ?? 1,
-                benefitImage,
-                benefitName
-            };
+                return {
+                    dropId: drop_id,
+                    current: Math.min(current_minutes ?? 0, required_minutes), // Cap at required
+                    required: required_minutes,
+                    benefitImage,
+                    benefitName
+                };
+            }
         }
 
         // FALLBACK: Get all active (not claimed, not complete) progress entries

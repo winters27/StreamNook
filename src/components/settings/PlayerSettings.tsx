@@ -1,24 +1,27 @@
 import { open } from '@tauri-apps/plugin-dialog';
 import { FolderOpen, X } from 'lucide-react';
 import { useAppStore } from '../../stores/AppStore';
+import ProxyHealthChecker from './ProxyHealthChecker';
 
 import { Logger } from '../../utils/logger';
+
+
+// Toggle component for reuse
+const Toggle = ({ enabled, onChange }: { enabled: boolean; onChange: () => void }) => (
+  <button
+    onClick={onChange}
+    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors flex-shrink-0 ${enabled ? 'bg-accent' : 'bg-gray-600'
+      }`}
+  >
+    <span
+      className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${enabled ? 'translate-x-6' : 'translate-x-1'
+        }`}
+    />
+  </button>
+);
+
 const PlayerSettings = () => {
   const { settings, updateSettings } = useAppStore();
-
-  // Toggle component for reuse
-  const Toggle = ({ enabled, onChange }: { enabled: boolean; onChange: () => void }) => (
-    <button
-      onClick={onChange}
-      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors flex-shrink-0 ${enabled ? 'bg-accent' : 'bg-gray-600'
-        }`}
-    >
-      <span
-        className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${enabled ? 'translate-x-6' : 'translate-x-1'
-          }`}
-      />
-    </button>
-  );
 
   // Default values for streamlink settings
   const streamlinkDefaults = {
@@ -404,27 +407,40 @@ const PlayerSettings = () => {
           />
         </div>
 
-        {/* Proxy Playlist Args */}
+        {/* Proxy Health Checker & Settings */}
         {streamlink.use_proxy && (
-          <div>
-            <label className="block text-sm font-medium text-textPrimary mb-2">
-              Proxy Arguments
-            </label>
-            <input
-              type="text"
-              value={streamlink.proxy_playlist}
-              onChange={(e) =>
-                updateSettings({
-                  ...settings,
-                  streamlink: { ...streamlink, proxy_playlist: e.target.value },
-                })
-              }
-              className="w-full glass-input text-textPrimary text-sm px-3 py-2 font-mono"
-              placeholder="--twitch-proxy-playlist=https://..."
-            />
-            <p className="text-xs text-textSecondary mt-1">
-              Custom proxy playlist arguments (used with ttvlol plugin)
-            </p>
+          <div className="space-y-4">
+            {/* Proxy Health Checker */}
+            <ProxyHealthChecker />
+            
+            {/* Advanced: Manual Proxy Args */}
+            <details className="group">
+              <summary className="cursor-pointer text-sm font-medium text-textSecondary hover:text-textPrimary transition-colors flex items-center gap-2">
+                <span className="transform transition-transform group-open:rotate-90">▶</span>
+                Advanced: Manual Proxy Configuration
+              </summary>
+              <div className="mt-3 p-3 bg-glass rounded-lg">
+                <label className="block text-sm font-medium text-textPrimary mb-2">
+                  Proxy Arguments
+                </label>
+                <input
+                  type="text"
+                  value={streamlink.proxy_playlist}
+                  onChange={(e) =>
+                    updateSettings({
+                      ...settings,
+                      streamlink: { ...streamlink, proxy_playlist: e.target.value },
+                    })
+                  }
+                  className="w-full glass-input text-textPrimary text-sm px-3 py-2 font-mono"
+                  placeholder="--twitch-proxy-playlist=https://..."
+                />
+                <p className="text-xs text-textSecondary mt-1">
+                  Custom proxy playlist arguments. Use the health checker above to auto-generate optimal settings,
+                  or manually specify proxy URLs here.
+                </p>
+              </div>
+            </details>
           </div>
         )}
 

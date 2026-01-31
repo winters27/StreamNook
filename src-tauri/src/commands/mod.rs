@@ -19,6 +19,7 @@ pub mod hype_train;
 pub mod layout;
 pub mod logs;
 pub mod profile_cache;
+pub mod proxy_health;
 pub mod resub;
 pub mod settings;
 pub mod seventv;

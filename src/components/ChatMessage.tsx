@@ -1,17 +1,22 @@
 import React, { useMemo, useState, useEffect, memo } from 'react';
 import { Gift } from 'lucide-react';
-import { parseMessage, MessageSegment } from '../services/twitchChat';
+import { parseMessage } from '../services/twitchChat';
 import { queueEmoteForCaching, EmoteSet, Emote } from '../services/emoteService';
 import { getCachedEmojiUrl, parseEmojisSync } from '../services/emojiService';
 import { calculateHalfPadding } from '../utils/chatLayoutUtils';
 import { computePaintStyle, getBadgeImageUrl, getBadgeFallbackUrls, queueCosmeticForCaching } from '../services/seventvService';
 import { FallbackImage } from './FallbackImage';
 import { getCosmeticsWithFallback, getThirdPartyBadgesFromMemoryCache, getCosmeticsFromMemoryCache, getTwitchBadgesWithFallback } from '../services/cosmeticsCache';
-import { ThirdPartyBadge } from '../services/thirdPartyBadges';
-import { SevenTVBadge, SevenTVPaint } from '../types';
+import type { ThirdPartyBadge as ThirdPartyBadgeType } from '../services/thirdPartyBadges';
 import { useAppStore } from '../stores/AppStore';
 import { useChatUserStore } from '../stores/chatUserStore';
 import { queueBadgeForCaching, getCachedBadgeUrl } from '../services/badgeImageCacheService';
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+// 7TV cosmetics have complex dynamic structures that vary by API version
+// Using 'any' is pragmatic here given the API complexity
+type SevenTVPaintWithSelection = any;
+type SevenTVBadgeWithSelection = any;
 
 // EmoteSegment type definition (migrated from emoteParser.ts)
 interface EmoteSegment {
@@ -44,7 +49,7 @@ const CHANNEL_SPECIFIC_BADGE_SETS = new Set([
  * - Channel-specific badges (subscriber, bits, etc.) are never cached to avoid cross-channel pollution
  * - Global badges are cached locally for faster loading
  */
-function getTwitchBadgeUrl(badgeKey: string, badgeInfo: any): string {
+function getTwitchBadgeUrl(badgeKey: string, badgeInfo: { localUrl?: string; url?: string; image_url_4x?: string; image_url_2x?: string; image_url_1x?: string }): string {
   // If already has a local URL, use it
   if (badgeInfo.localUrl) {
     return badgeInfo.localUrl;
@@ -88,7 +93,8 @@ interface ChatMessageProps {
     username: string,
     displayName: string,
     color: string,
-    badges: Array<{ key: string; info: any }>,
+    badges: Array<{ key: string; info: { url?: string; image_url_4x?: string } }>,
+
     event: React.MouseEvent
   ) => void;
   onReplyClick?: (parentMsgId: string) => void;
@@ -96,7 +102,7 @@ interface ChatMessageProps {
   moderationContext?: { type: 'timeout' | 'ban' | 'deleted'; duration?: number } | null; // Moderation context from CLEARMSG/CLEARCHAT
   onEmoteRightClick?: (emoteName: string) => void;
   onUsernameRightClick?: (messageId: string, username: string) => void;
-  onBadgeClick?: (badgeKey: string, badgeInfo: any) => void;
+  onBadgeClick?: (badgeKey: string, badgeInfo: { url?: string; image_url_4x?: string }) => void;
   emotes?: EmoteSet | null;
 }
 
@@ -111,13 +117,11 @@ const MentionSpan: React.FC<{
   const cachedUser = useChatUserStore((state) => state.getUserByUsername(username));
   
   // Local state for users not in chat store (fallback API lookup)
-  const [apiUserColor, setApiUserColor] = useState<string | null>(null);
-  const [apiUserPaint, setApiUserPaint] = useState<any>(null);
+  const [apiUserPaint, setApiUserPaint] = useState<SevenTVPaintWithSelection | null>(null);
   
   // If user is in chat store, use their data directly
-  const userColor = cachedUser?.color || apiUserColor || '#9147FF';
+  const userColor = cachedUser?.color || '#9147FF';
   const userPaint = cachedUser?.paint || apiUserPaint;
-  const userId = cachedUser?.userId;
   
   // Only do API lookup if user is NOT in the chat store
   useEffect(() => {
@@ -131,7 +135,7 @@ const MentionSpan: React.FC<{
             // Try to get cosmetics for this user (includes paint)
             getCosmeticsWithFallback(user.id).then((cosmetics) => {
               if (cosmetics) {
-                const selectedPaint = cosmetics.paints?.find((p: any) => p.selected);
+                const selectedPaint = cosmetics.paints?.find((p: SevenTVPaintWithSelection) => p.selected);
                 if (selectedPaint) {
                   setApiUserPaint(selectedPaint);
                 }
@@ -251,6 +255,39 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
   }, [message]);
 
   const isAction = parsed.isAction || false;
+
+  // PHASE 3.1 - THE ENDGAME: Use pre-formatted timestamps from Rust
+  // Zero Date parsing on main thread!
+  // IMPORTANT: This useMemo MUST be at the top before any conditional returns
+  const formattedTimestamp = useMemo(() => {
+    if (!chatDesign?.show_timestamps) return null;
+
+    // Use pre-computed timestamps from Rust metadata
+    if (parsed.metadata) {
+      return chatDesign?.show_timestamp_seconds
+        ? parsed.metadata.formatted_timestamp_with_seconds
+        : parsed.metadata.formatted_timestamp;
+    }
+
+    // Fallback: compute locally if metadata not available (legacy messages)
+    const tmiSentTs = parsed.tags.get('tmi-sent-ts');
+    if (!tmiSentTs) return null;
+
+    try {
+      const date = new Date(parseInt(tmiSentTs, 10));
+      const options: Intl.DateTimeFormatOptions = {
+        hour: 'numeric',
+        minute: '2-digit',
+      };
+      if (chatDesign?.show_timestamp_seconds) {
+        options.second = '2-digit';
+      }
+      return date.toLocaleTimeString(navigator.language || undefined, options);
+    } catch {
+      return null;
+    }
+  }, [chatDesign?.show_timestamps, chatDesign?.show_timestamp_seconds, parsed.metadata, parsed.tags]);
+
   const [contentWithEmotes, setContentWithEmotes] = useState<EmoteSegment[]>([]);
 
   // PHASE 3.1 - THE ENDGAME: Use pre-parsed segments from Rust
@@ -363,24 +400,24 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
   }, [parsed.segments, parsed.content, emotes]);
 
   // Extract userId once to prevent re-renders
-  const userId = useMemo(() => parsed.tags.get('user-id'), [message]);
+  const userId = useMemo(() => parsed.tags.get('user-id'), [parsed.tags]);
 
   // Initialize state from synchronous memory cache (avoids null -> data flash)
-  const [seventvBadge, setSeventvBadge] = useState<any>(() => {
+  const [seventvBadge, setSeventvBadge] = useState<SevenTVBadgeWithSelection | null>(() => {
     if (!userId) return null;
     const cached = getCosmeticsFromMemoryCache(userId);
-    return cached?.badges.find((b: any) => b.selected) || null;
+    return cached?.badges.find((b: SevenTVBadgeWithSelection) => b.selected) || null;
   });
-  const [seventvPaint, setSeventvPaint] = useState<any>(() => {
+  const [seventvPaint, setSeventvPaint] = useState<SevenTVPaintWithSelection | null>(() => {
     if (!userId) return null;
     const cached = getCosmeticsFromMemoryCache(userId);
-    return cached?.paints.find((p: any) => p.selected) || null;
+    return cached?.paints.find((p: SevenTVPaintWithSelection) => p.selected) || null;
   });
-  const [thirdPartyBadges, setThirdPartyBadges] = useState<any[]>(() => {
+  const [thirdPartyBadges, setThirdPartyBadges] = useState<ThirdPartyBadgeType[]>(() => {
     if (!userId) return [];
     return getThirdPartyBadgesFromMemoryCache(userId) || [];
   });
-  const [broadcasterType, setBroadcasterType] = useState<string | null>(null);
+  const [broadcasterType] = useState<string | null>(null);
   const [isMentioned, setIsMentioned] = useState(false);
   const [isReplyToMe, setIsReplyToMe] = useState(false);
 
@@ -472,6 +509,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId]);
 
   // Reactive caching for 7TV cosmetics
@@ -604,7 +642,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
   const parseTextWithLinks = (text: string) => {
     // Combined regex: URLs and @mentions
     // @mentions: @username (alphanumeric + underscores, 1-25 chars per Twitch rules)
-    const combinedRegex = /(https?:\/\/[^\s]+|www\.[^\s]+|@[a-zA-Z0-9_]{1,25})(?=\s|$|[.,!?:;'")>\]}\-])/g;
+    const combinedRegex = /(https?:\/\/[^\s]+|www\.[^\s]+|@[a-zA-Z0-9_]{1,25})(?=\s|$|[.,!?:;'")\]}>-])/g;
     const parts = text.split(combinedRegex);
 
     return parts.map((part, index) => {
@@ -1186,40 +1224,12 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
     const subMsgId = parsed.tags.get('msg-id');
     const msgParamRecipientDisplayName = parsed.tags.get('msg-param-recipient-display-name');
     const msgParamSubPlan = parsed.tags.get('msg-param-sub-plan');
-    const msgParamSubPlanName = parsed.tags.get('msg-param-sub-plan-name')?.replace(/\\s/g, ' ');
     const msgParamMonths = parsed.tags.get('msg-param-cumulative-months') || parsed.tags.get('msg-param-months');
     const msgParamMassGiftCount = parsed.tags.get('msg-param-mass-gift-count');
-    const msgParamSenderCount = parsed.tags.get('msg-param-sender-count');
 
     // Check if this is a shared chat notice (from another channel)
     const isSharedChat = subMsgId === 'sharedchatnotice';
     const isFromDifferentChannel = isSharedChat && isFromSharedChat;
-
-    // Helper function to render username as clickable
-    const renderClickableUsername = (username: string, displayName?: string) => {
-      const userIdForClick = userId; // Use the userId from the message
-      return (
-        <span
-          className="font-bold cursor-pointer hover:underline"
-          style={usernameStyle}
-          onClick={(e) => {
-            if (userIdForClick && onUsernameClick) {
-              onUsernameClick(
-                userIdForClick,
-                username,
-                displayName || username,
-                parsed.color,
-                parsed.badges,
-                e
-              );
-            }
-          }}
-          title="Click to view profile"
-        >
-          {displayName || username}
-        </span>
-      );
-    };
 
     // Helper function to render badges
     const renderBadges = () => {
@@ -1285,7 +1295,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
       displayName?: string;
     }) => {
       const [userCosmetics, setUserCosmetics] = useState<{ badges: any[]; paints: any[] } | null>(null);
-      const [userBadges, setUserBadges] = useState<Array<{ key: string; info: any }>>([]);
+      const [userBadges] = useState<Array<{ key: string; info: any }>>([]);
 
       useEffect(() => {
         if (!userIdProp) return;
@@ -1521,36 +1531,6 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
     );
   }
 
-  // PHASE 3.1 - THE ENDGAME: Use pre-formatted timestamps from Rust
-  // Zero Date parsing on main thread!
-  const formattedTimestamp = useMemo(() => {
-    if (!chatDesign?.show_timestamps) return null;
-
-    // Use pre-computed timestamps from Rust metadata
-    if (parsed.metadata) {
-      return chatDesign?.show_timestamp_seconds
-        ? parsed.metadata.formatted_timestamp_with_seconds
-        : parsed.metadata.formatted_timestamp;
-    }
-
-    // Fallback: compute locally if metadata not available (legacy messages)
-    const tmiSentTs = parsed.tags.get('tmi-sent-ts');
-    if (!tmiSentTs) return null;
-
-    try {
-      const date = new Date(parseInt(tmiSentTs, 10));
-      const options: Intl.DateTimeFormatOptions = {
-        hour: 'numeric',
-        minute: '2-digit',
-      };
-      if (chatDesign?.show_timestamp_seconds) {
-        options.second = '2-digit';
-      }
-      return date.toLocaleTimeString(navigator.language || undefined, options);
-    } catch {
-      return null;
-    }
-  }, [chatDesign?.show_timestamps, chatDesign?.show_timestamp_seconds, parsed.metadata, parsed.tags]);
 
   // Build dynamic styles based on chat design settings
   // Use consistent padding on container - spacing between messages is handled via py classes

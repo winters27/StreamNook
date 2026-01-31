@@ -23,8 +23,10 @@ export const FallbackImage: React.FC<FallbackImageProps> = ({
 
   // Reset state when src changes
   useEffect(() => {
-    setCurrentSrc(src);
-    setFallbackIndex(0);
+    queueMicrotask(() => {
+      setCurrentSrc(src);
+      setFallbackIndex(0);
+    });
   }, [src]);
 
   const handleError = (e: React.SyntheticEvent<HTMLImageElement>) => {

@@ -1,4 +1,4 @@
-import { X, Gift, Package, Check, Pause, Play, Clock, Zap, Star, Ban, ExternalLink } from 'lucide-react';
+import { X, Gift, Package, Check, Pause, Play, Clock, Star, Ban, ExternalLink } from 'lucide-react';
 import type { UnifiedGame, DropProgress, MiningStatus, DropCampaign, TimeBasedDrop, InventoryItem, CompletedDrop } from '../../types';
 
 import { Logger } from '../../utils/logger';
@@ -80,7 +80,9 @@ interface GameDetailPanelProps {
     allGames: UnifiedGame[]; // All games for global drop metadata lookup
     progress: DropProgress[];
     completedDrops: CompletedDrop[]; // List of all completed drops from inventory
+    earnedBadgeTitles: Set<string>; // Set of earned badge titles (lowercase) for name-based matching
     miningStatus: MiningStatus | null;
+
     isOpen: boolean;
     onClose: () => void;
     onStartMining: (campaignId: string, campaignName: string, gameName: string) => void;
@@ -141,7 +143,9 @@ export default function GameDetailPanel({
     allGames,
     progress,
     completedDrops,
+    earnedBadgeTitles,
     miningStatus,
+
     isOpen,
     onClose,
     onStartMining,
@@ -187,7 +191,7 @@ export default function GameDetailPanel({
     // Calculate mining progress for this game
     let miningProgress = 0;
     let miningDropName = '';
-    let miningTimeRemaining = '';
+
     let miningDropImage = '';
     let miningBenefitName = '';
     let miningCurrentMins = 0;
@@ -202,8 +206,7 @@ export default function GameDetailPanel({
 
         miningProgress = miningRequiredMins > 0 ? (miningCurrentMins / miningRequiredMins) * 100 : 0;
         miningDropName = drop_name || '';
-        const remainingMinutes = Math.max(0, miningRequiredMins - miningCurrentMins);
-        miningTimeRemaining = `${Math.floor(remainingMinutes)}m remaining`;
+
 
         // Find the actual drop object to get its benefit image
         const miningDrop = game.active_campaigns
@@ -282,6 +285,7 @@ export default function GameDetailPanel({
                         const dropsFromCampaigns = game.active_campaigns.flatMap(c => c.time_based_drops);
 
                         // ALSO get drops from inventory_items (which updates immediately with progress)
+
                         const dropsFromInventory = game.inventory_items.flatMap(item =>
                             item.campaign.time_based_drops
                         );
@@ -321,8 +325,7 @@ export default function GameDetailPanel({
                             });
                         });
 
-                        // Build a set of drop IDs that belong to this game (for reference)
-                        const gameDropIds = new Set(allDropsForGame.map(d => d.id));
+
 
                         // DEBUG: Log all IDs for comparison
                         Logger.debug('[GameDetailPanel] Game:', game.name);
@@ -337,7 +340,7 @@ export default function GameDetailPanel({
                         // - NOT yet 100% complete (still mining)
                         // - NOT claimed
                         // Drops at 100% go to "Your Collection" section instead
-                        const activeProgress = progress.filter(p =>
+                        const _totalMinutesWatched = progress.filter(p =>
                             p.current_minutes_watched > 0 &&
                             !p.is_claimed &&
                             p.current_minutes_watched < p.required_minutes_watched // Not yet 100%
@@ -345,7 +348,7 @@ export default function GameDetailPanel({
 
                         // ONLY show progress for drops that belong to the SPECIFIC CAMPAIGN being mined
                         // This prevents showing drops from other campaigns in the same game
-                        const progressForThisGame = activeProgress.filter(p => {
+                        const progressForThisGame = _totalMinutesWatched.filter(p => {
                             // First check if this drop belongs to this game
                             const localLookup = localDropMap.get(p.drop_id);
                             const globalLookup = globalDropMap.get(p.drop_id);
@@ -551,28 +554,24 @@ export default function GameDetailPanel({
                         // This catches drops from expired campaigns that aren't in the backend's completedDrops list
                         allGames.forEach(g => {
                             g.inventory_items.forEach(item => {
-                                item.campaign.time_based_drops.forEach((drop, dropIndex) => {
+                                item.campaign.time_based_drops.forEach((drop) => {
                                     const dropProgress = drop.progress;
                                     
-                                    // Check if this drop is claimed
-                                    const isClaimed = dropProgress?.is_claimed || false;
-                                    const isClaimedByIndex = dropIndex < item.claimed_drops;
-                                    
-                                    // Check if 100% complete
-                                    const isCompleteByProgress = dropProgress &&
-                                        dropProgress.current_minutes_watched >= dropProgress.required_minutes_watched &&
-                                        dropProgress.required_minutes_watched > 0;
-                                    const isCompleteByDropMinutes = dropProgress &&
-                                        dropProgress.current_minutes_watched >= drop.required_minutes_watched &&
-                                        drop.required_minutes_watched > 0;
-                                    const isComplete = isCompleteByProgress || isCompleteByDropMinutes;
-                                    
-                                    // Add to completed drop IDs set if claimed or 100% complete
-                                    if (isClaimed || isClaimedByIndex || isComplete) {
+                                    // ONLY trust explicit is_claimed flag from backend
+                                    // Do NOT use index-based or completeness-based calculations
+                                    if (dropProgress?.is_claimed === true) {
                                         completedDropIds.add(drop.id);
                                     }
                                 });
                             });
+                        });
+                        
+                        // CRITICAL: Also add drops from the progress array (includes real-time claim updates)
+                        // This ensures that when handleClaimDrop updates progress state, it's immediately reflected
+                        progress.forEach(p => {
+                            if (p.is_claimed === true) {
+                                completedDropIds.add(p.drop_id);
+                            }
                         });
                         
                         // Helper function to check if a drop is completed by comparing its benefit IDs
@@ -583,37 +582,129 @@ export default function GameDetailPanel({
                             return drop.benefit_edges.some(benefit => completedBenefitIds.has(benefit.id));
                         };
                         
-                        Logger.debug('[Active Campaigns] Completed benefit IDs (from gameEventDrops):', completedBenefitIds.size);
-                        Logger.debug('[Active Campaigns] Completed drop IDs (from inventory progress):', completedDropIds.size);
-                        Logger.debug('[Active Campaigns] Backend completedDrops:', completedDrops.length);
+
+                        
+                        // DEBUG: Check for badge drops specifically in progress
+                        const _badgeDropsInProgress = progress.filter(p => {
+                            // Find the corresponding drop to check if it's a badge
+                            const drop = mergedCampaigns.flatMap(c => c.time_based_drops).find(d => d.id === p.drop_id);
+                            return drop?.benefit_edges?.some(b => b.distribution_type === 'BADGE');
+                        });
+
+                        _badgeDropsInProgress.forEach(p => {
+                            Logger.debug(`[Active Campaigns] Badge drop in progress: ${p.drop_id}, is_claimed: ${p.is_claimed}, current: ${p.current_minutes_watched}/${p.required_minutes_watched}`);
+                        });
+
+                        
+                        // DEBUG: Find all badge drops in campaigns and check if they're in progress
+                        const badgeDropsInCampaigns = mergedCampaigns.flatMap(c => c.time_based_drops).filter(drop => {
+                            return drop.benefit_edges?.some(b => b.distribution_type === 'BADGE');
+                        });
+
+                        badgeDropsInCampaigns.forEach(drop => {
+                            const hasProgress = progress.some(p => p.drop_id === drop.id);
+                            const hasEmbeddedProgress = !!drop.progress;
+                            Logger.debug(`[Active Campaigns] Badge "${drop.name}" (${drop.id}): hasProgress=${hasProgress}, hasEmbeddedProgress=${hasEmbeddedProgress}, is_claimed=${drop.progress?.is_claimed}`);
+                        });
+                        
+                        // DEBUG: Log all drop benefit IDs in the campaigns we're filtering
+                        let matchingDropsCount = 0;
+                        mergedCampaigns.forEach(campaign => {
+                            campaign.time_based_drops.forEach(drop => {
+                                if (drop.benefit_edges && drop.benefit_edges.length > 0) {
+                                    const benefitIds = drop.benefit_edges.map(b => b.id);
+                                    const isOwned = isDropCompletedByBenefit(drop);
+                                    if (isOwned) {
+                                        matchingDropsCount++;
+                                        Logger.debug(`[Active Campaigns] ✅ OWNED Drop "${drop.name}" benefit IDs:`, benefitIds);
+                                    } else {
+                                        Logger.debug(`[Active Campaigns] ❌ Not owned: "${drop.name}" benefit IDs:`, benefitIds);
+                                    }
+                                }
+                            });
+                        });
+                        Logger.debug(`[Active Campaigns] Total drops with matching benefit IDs:`, matchingDropsCount);
                         
                         // Filter campaigns: show only incomplete campaigns in this section
                         // A campaign is shown here if it has ANY drop that:
-                        // - Is NOT completed (benefit not in completedBenefitIds)
-                        // - Is NOT claimed
+                        // - Is NOT claimed (priority check - works for ALL drop types including badges)
+                        // - Is NOT completed via benefit ID (works for time-based DIRECT_ENTITLEMENT drops)
                         // - Is NOT 100% complete (or has no progress data yet)
                         // - Has required_minutes > 0 (is a time-based mineable drop)
                         const incompleteCampaigns = mergedCampaigns.filter(campaign => {
+                            // DEBUG: Track how many drops are checked vs how many are incomplete
+                            const totalDrops = campaign.time_based_drops.length;
+                            let incompleteDrops = 0;
+                            
                             // A campaign is incomplete if ANY drop is still earnable
-                            return campaign.time_based_drops.some(drop => {
-                                // FIRST: Check if this drop's BENEFIT is in the completedBenefitIds set
-                                if (isDropCompletedByBenefit(drop)) {
-                                    Logger.debug('[Active Campaigns] Drop', drop.name, 'has completed benefit, skipping');
-                                    return false; // This drop's reward was already claimed
-                                }
-                                
-                                // SECOND: Check if this drop's ID is in the completedDropIds set (from inventory)
-                                if (completedDropIds.has(drop.id)) {
-                                    Logger.debug('[Active Campaigns] Drop', drop.name, 'is in completed drops (inventory), skipping');
-                                    return false;
-                                }
-                                
-                                // Then check embedded progress (from inventory API - most reliable)
+                            const hasIncompleteDrops = campaign.time_based_drops.some(drop => {
                                 const dropProgress = drop.progress || progress.find(p => p.drop_id === drop.id);
                                 
-                                // Check if drop is claimed
-                                const isClaimed = dropProgress?.is_claimed || false;
-                                if (isClaimed) return false; // This drop is done, check others
+                                // ✅ PRIORITY 1: Check is_claimed flag (works for ALL drop types including badge drops)
+                                // This MUST be checked first because badge drops don't appear in completedBenefitIds
+                                if (dropProgress?.is_claimed === true) {
+                                    Logger.debug(`[Active Campaigns] Drop "${drop.name}" is claimed`);
+                                    return false; // This drop is complete
+                                }
+                                
+                                // ✅ PRIORITY 2: Check if drop ID is in completedDropIds (from inventory scan + progress)
+                                // This catches drops claimed in the current session before backend refresh
+                                if (completedDropIds.has(drop.id)) {
+                                    Logger.debug(`[Active Campaigns] Drop "${drop.name}" in completedDropIds`);
+                                    return false; // This drop is complete
+                                }
+                                
+                                // ✅ PRIORITY 3: Check benefit ID (works for time-based DIRECT_ENTITLEMENT drops)
+                                // Badge drops don't reliably appear in gameEventDrops, so this is a fallback
+                                if (isDropCompletedByBenefit(drop)) {
+                                    Logger.debug(`[Active Campaigns] Drop "${drop.name}" benefit in completedBenefitIds`);
+                                    return false; // This drop is complete
+                                }
+                                
+                                // DEBUG: Log badge drops specifically (non-mineable drops)
+                                if ((drop.required_minutes_watched || 0) <= 0) {
+                                    Logger.debug(`[Active Campaigns] Badge drop "${drop.name}": is_claimed=${dropProgress?.is_claimed}, has_progress=${!!dropProgress}, progress=`, dropProgress);
+                                }
+                                
+                                // ✅ PRIORITY 4: Badge name matching fallback
+                                // Check if this drop has a benefit name that matches an earned badge title
+                                if (drop.benefit_edges && drop.benefit_edges.length > 0) {
+                                    const benefitName = drop.benefit_edges[0]?.name.toLowerCase().trim() || '';
+                                    
+                                    if (benefitName) {
+                                        // Try exact match first
+                                        let hasBadgeNameMatch = earnedBadgeTitles.has(benefitName);
+                                        
+                                        // If no exact match, try fuzzy word-based matching
+                                        if (!hasBadgeNameMatch) {
+                                            const benefitWords = benefitName.split(/\s+/).filter(w => w.length > 0);
+                                            
+                                            for (const badgeTitle of earnedBadgeTitles) {
+                                                const badgeTitleWords = badgeTitle.split(/\s+/).filter(w => w.length > 0);
+                                                
+                                                if (benefitWords.length >= 2 && badgeTitleWords.length >= 2) {
+                                                    const wordsToCheck = benefitWords.slice(0, -1);
+                                                    const badgeTitlePrefix = badgeTitleWords.slice(0, wordsToCheck.length);
+                                                    
+                                                    const allWordsMatch = wordsToCheck.every((word, idx) => 
+                                                        badgeTitlePrefix[idx] === word
+                                                    );
+                                                    
+                                                    if (allWordsMatch && wordsToCheck.length > 0) {
+                                                        hasBadgeNameMatch = true;
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        
+                                        if (hasBadgeNameMatch) {
+                                            Logger.debug(`[Active Campaigns] Badge drop "${drop.name}" - owned via badge name match`);
+                                            return false; // This badge is owned
+                                        }
+                                    }
+                                }
+                                
                                 
                                 // Check if drop has required minutes (is mineable)
                                 const requiredMins = dropProgress?.required_minutes_watched || drop.required_minutes_watched || 0;
@@ -624,9 +715,17 @@ export default function GameDetailPanel({
                                 const isComplete = currentMins >= requiredMins;
                                 
                                 // Drop is incomplete (still earnable) if not complete
-                                return !isComplete;
+                                const incomplete = !isComplete;
+                                if (incomplete) incompleteDrops++;
+                                return incomplete;
                             });
+                            
+                            Logger.debug(`[Active Campaigns] Campaign "${campaign.name}": ${incompleteDrops}/${totalDrops} incomplete drops, showing=${hasIncompleteDrops}`);
+                            return hasIncompleteDrops;
                         });
+
+                        Logger.debug(`[Active Campaigns] incompleteCampaigns array length: ${incompleteCampaigns.length}`);
+                        Logger.debug(`[Active Campaigns] incompleteCampaigns names:`, incompleteCampaigns.map(c => c.name));
 
                         if (incompleteCampaigns.length === 0) return null;
 
@@ -667,23 +766,21 @@ export default function GameDetailPanel({
                         // Create a Set of completed BENEFIT IDs for fast lookup (not drop IDs!)
                         const completedBenefitIds = new Set(completedDrops.map(d => d.id));
                         
-                        // Helper function to check if a drop is completed by its benefit ID
-                        const isDropCompletedByBenefit = (drop: TimeBasedDrop): boolean => {
-                            if (!drop.benefit_edges || drop.benefit_edges.length === 0) return false;
-                            return drop.benefit_edges.some(benefit => completedBenefitIds.has(benefit.id));
-                        };
+
                         
                         // Filter campaigns: show only 100% complete campaigns here
+                        // IMPORTANT: Only show campaigns where drops have ACTUAL progress/claim data
+                        // Drops completed via benefit ID matching (no progress) should appear in "Your Collection" instead
                         const completedCampaigns = mergedCampaigns.filter(campaign => {
-                            // A campaign is complete if ALL drops are 100% complete or claimed
+                            // A campaign is complete if ALL drops are 100% complete or claimed WITH actual progress data
                             if (campaign.time_based_drops.length === 0) return false;
                             
                             return campaign.time_based_drops.every(drop => {
-                                // First check if benefit is in the completed set
-                                if (isDropCompletedByBenefit(drop)) return true;
-                                
                                 const dropProgress = drop.progress || progress.find(p => p.drop_id === drop.id);
-                                if (!dropProgress) return false; // No progress = not complete
+                                
+                                // Require actual progress data to show in this section
+                                // Drops without progress (benefit-only matches) will show in "Your Collection" instead
+                                if (!dropProgress) return false;
                                 
                                 // Check if drop is complete (100% watched or claimed)
                                 const isComplete = dropProgress.current_minutes_watched >= dropProgress.required_minutes_watched &&
@@ -750,14 +847,12 @@ export default function GameDetailPanel({
                         const addedDropIds = new Set<string>();
 
                         // DEBUG: Log what we're receiving
-                        Logger.debug('[Your Collection] Game:', game.name);
-                        Logger.debug('[Your Collection] inventory_items count:', game.inventory_items.length);
-                        Logger.debug('[Your Collection] progress array count:', progress.length);
+
 
                         // 1. Check inventory_items for completed/claimed drops
                         // Each inventory item has its own progress data
                         game.inventory_items.forEach(item => {
-                            Logger.debug('[Your Collection] Inventory item:', item.campaign.name, 'claimed_drops:', item.claimed_drops, 'total_drops:', item.total_drops);
+
 
                             item.campaign.time_based_drops.forEach((drop, dropIndex) => {
                                 // Check if this drop has internal progress data showing it's complete
@@ -788,7 +883,7 @@ export default function GameDetailPanel({
                                 Logger.debug('  - isComplete:', isComplete, 'isClaimed:', isClaimed, 'isClaimedByIndex:', isClaimedByIndex);
 
                                 // Include if: (a) complete based on progress, or (b) claimed based on index
-                                if (isComplete || isClaimedByIndex) {
+                                if (isComplete || (dropProgress?.is_claimed === true)) {
                                     if (!addedDropIds.has(drop.id)) {
                                         addedDropIds.add(drop.id);
                                         localCompletedDrops.push({
@@ -850,9 +945,96 @@ export default function GameDetailPanel({
                                                 isClaimed,
                                                 isMineable: isDropMineable(drop, game.inventory_items),
                                             });
-                                            Logger.debug('[Your Collection] Added from active campaign:', drop.name, 'claimed:', isClaimed);
+
                                         }
                                     }
+                                }
+                            });
+                        });
+
+                        // 4. ALSO check for drops completed via benefit ID matching (from backend completedDrops)
+                        // These are drops that are "owned" but have no progress data, so they didn't appear in previous checks
+                        // Create a completed benefit IDs set from backend data
+                        const completedBenefitIds = new Set(completedDrops.map(d => d.id));
+                        
+                        // Scan all campaigns for drops with matching benefit IDs
+                        const allCampaigns = [...game.active_campaigns, ...game.inventory_items.map(item => item.campaign)];
+
+                        
+                        allCampaigns.forEach(campaign => {
+
+                            campaign.time_based_drops.forEach(drop => {
+                                // Skip if already added
+                                if (addedDropIds.has(drop.id)) {
+
+                                    return;
+                                }
+                                
+
+                                
+                                // Check if this drop's benefit ID matches a completed benefit
+                                const hasBenefitMatch = drop.benefit_edges?.some(
+                                    benefit => completedBenefitIds.has(benefit.id)
+                                );
+                                
+                                // ALSO check if this is a badge drop with a matching earned badge via NAME matching
+                                // We can't rely on distribution_type (it's null in the frontend data)
+                                // So we check if the benefit name matches any earned badge title
+                                
+                                let hasBadgeNameMatch = false;
+                                if (drop.benefit_edges && drop.benefit_edges.length > 0) {
+                                    // Use benefit.name directly - it matches the exact badge title
+                                    const benefitName = drop.benefit_edges[0]?.name.toLowerCase().trim() || '';
+                                    
+                                    if (benefitName) {
+                                        // First try exact match (case-insensitive)
+                                        hasBadgeNameMatch = earnedBadgeTitles.has(benefitName);
+                                        
+                                        // If no exact match, try fuzzy matching with word-based comparison
+                                        // This handles cases like "Bungie Foundation Sub" matching "Bungie Foundation Supporter"
+                                        if (!hasBadgeNameMatch) {
+
+                                            
+                                            // Split benefit name into words
+                                            const benefitWords = benefitName.split(/\s+/).filter(w => w.length > 0);
+                                            
+                                            for (const badgeTitle of earnedBadgeTitles) {
+                                                const badgeTitleWords = badgeTitle.split(/\s+/).filter(w => w.length > 0);
+                                                
+                                                // Check if the badge title starts with the same words as the benefit name
+                                                // For "Bungie Foundation Sub" → check if badge starts with "Bungie Foundation"
+                                                // This will match "Bungie Foundation Supporter"
+                                                if (benefitWords.length >= 2 && badgeTitleWords.length >= 2) {
+                                                    // Compare the first N-1 words (or all words if only 2 words total)
+                                                    const wordsToCheck = benefitWords.slice(0, -1); // All but last word
+                                                    const badgeTitlePrefix = badgeTitleWords.slice(0, wordsToCheck.length);
+                                                    
+                                                    const allWordsMatch = wordsToCheck.every((word, idx) => 
+                                                        badgeTitlePrefix[idx] === word
+                                                    );
+                                                    
+                                                    if (allWordsMatch && wordsToCheck.length > 0) {
+                                                        hasBadgeNameMatch = true;
+
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                if (hasBenefitMatch || hasBadgeNameMatch) {
+                                    // This drop is owned via benefit ID (e.g., badge drop or item drop from expired campaign)
+                                    addedDropIds.add(drop.id);
+                                    localCompletedDrops.push({
+                                        dropId: drop.id,
+                                        benefitImage: drop.benefit_edges?.[0]?.image_url || '',
+                                        benefitName: drop.benefit_edges?.[0]?.name || drop.name,
+                                        isClaimed: true, // Treat benefit-matched drops as claimed
+                                        isMineable: false, // No progress data means not currently mineable
+                                    });
+
                                 }
                             });
                         });
@@ -1059,22 +1241,7 @@ function CampaignCard({
         0
     );
 
-    // Calculate total progress (minutes watched)
-    const totalMinutesWatched = campaign.time_based_drops.reduce((sum, drop) => {
-        const dropProgress = resolveDropProgress(drop.id, drop.progress);
-        if (!dropProgress) return sum;
 
-        const required = dropProgress.required_minutes_watched || drop.required_minutes_watched || 0;
-        const current = dropProgress.is_claimed ? required : (dropProgress.current_minutes_watched || 0);
-
-        return sum + (required > 0 ? Math.min(current, required) : 0);
-    }, 0);
-
-    // Count claimed drops
-    const claimedCount = campaign.time_based_drops.filter(drop => {
-        const dropProgress = resolveDropProgress(drop.id, drop.progress);
-        return !!dropProgress?.is_claimed;
-    }).length;
 
     // Get all drop rewards with their images - directly from drops
     const dropRewards = campaign.time_based_drops.map(drop => {
@@ -1083,7 +1250,10 @@ function CampaignCard({
 
         // Check if this drop is in the global completed drops list (either by drop ID or benefit ID)
         const isCompletedByDropId = completedDropIds?.has(drop.id) || false;
-        const isCompletedByBenefitId = completedBenefitIds && benefit ? completedBenefitIds.has(benefit.id) : false;
+        // Only mark as "already owned" by benefit ID if this drop has NO progress (meaning it was claimed in a different campaign)
+        // If the drop has any progress data, it's being tracked in this session and is not "already owned"
+        const hasCurrentProgress = dropProgress && (dropProgress.current_minutes_watched > 0 || dropProgress.is_claimed);
+        const isCompletedByBenefitId = !hasCurrentProgress && completedBenefitIds && benefit ? completedBenefitIds.has(benefit.id) : false;
         const isGloballyCompleted = isCompletedByDropId || isCompletedByBenefitId;
 
         const required = dropProgress?.required_minutes_watched || drop.required_minutes_watched || 0;
@@ -1099,9 +1269,9 @@ function CampaignCard({
             requiredMinutes: drop.required_minutes_watched,
             imageUrl: benefit?.image_url || '',
             benefitName: benefit?.name || drop.name,
-            isClaimed: dropProgress?.is_claimed || isGloballyCompleted, // Mark as claimed if in global completed list
-            progressPercent: isGloballyCompleted ? 100 : progressPercent, // Show 100% if globally completed
-            isInProgress: !isGloballyCompleted && progressPercent > 0 && progressPercent < 100,
+            isClaimed: dropProgress?.is_claimed || false, // Only trust actual claim status, not benefit ID matching
+            progressPercent, // Show actual progress, not forced 100%
+            isInProgress: progressPercent > 0 && progressPercent < 100 && !dropProgress?.is_claimed,
             isMineable: isDropMineable(drop, inventoryItems), // Track if drop is mineable - check inventory as fallback
             isGloballyCompleted, // Track if this drop was earned from a previous/expired campaign
         };
@@ -1253,7 +1423,7 @@ function CampaignCard({
                                         {/* Minutes Progress */}
                                                 <div className="flex items-center justify-between">
                                                     <span className={`text-[10px] font-mono ${reward.isClaimed ? 'text-green-400' : reward.isInProgress ? 'text-accent' : 'text-textMuted'}`}>
-                                                        {reward.isGloballyCompleted ? `${reward.requiredMinutes}/${reward.requiredMinutes}m` : `${currentMins}/${reward.requiredMinutes}m`}
+                                                        {`${currentMins}/${reward.requiredMinutes}m`}
                                                     </span>
                                                     {/* Show Claim button for 100% complete drops that haven't been claimed */}
                                                     {!reward.isClaimed && reward.progressPercent >= 100 ? (
@@ -1277,7 +1447,7 @@ function CampaignCard({
                                         ) : (
                                             <p className="text-[10px] text-yellow-500 flex items-center gap-1 mt-1">
                                                 <Ban size={10} />
-                                                Event only - cannot auto-mine
+                                                Event only - subscribe or gift sub to earn
                                             </p>
                                         )}
                                     </div>

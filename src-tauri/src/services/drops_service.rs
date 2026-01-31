@@ -404,6 +404,9 @@ impl DropsService {
                                         .as_str()
                                         .unwrap_or("")
                                         .to_string(),
+                                    distribution_type: benefit["distributionType"]
+                                        .as_str()
+                                        .map(|s| s.to_string()),
                                 });
                             }
                         }
@@ -441,12 +444,12 @@ impl DropsService {
                         });
                     } else {
                         // Check claimed_benefits to determine if claimed
+                        // If a benefit was EVER claimed (exists in claimed_benefits),
+                        // mark the drop as claimed - this handles badge drops and re-run campaigns
                         for benefit in &benefit_edges {
-                            if let Some(awarded_at) = claimed_benefits.get(&benefit.id) {
-                                if start_at <= *awarded_at && *awarded_at < end_at {
-                                    is_claimed = true;
-                                    break;
-                                }
+                            if claimed_benefits.contains_key(&benefit.id) {
+                                is_claimed = true;
+                                break;
                             }
                         }
                     }
@@ -835,6 +838,9 @@ impl DropsService {
                                             .as_str()
                                             .unwrap_or("")
                                             .to_string(),
+                                        distribution_type: benefit["distributionType"]
+                                            .as_str()
+                                            .map(|s| s.to_string()),
                                     });
                                 }
                             }
@@ -1875,6 +1881,7 @@ impl DropsService {
                                 id: edge.benefit.id.clone(),
                                 name: edge.benefit.name.clone(),
                                 image_url: edge.benefit.image_asset_url.clone(),
+                                distribution_type: None, // GQL struct doesn't have this field
                             })
                             .collect(),
                         progress: None,

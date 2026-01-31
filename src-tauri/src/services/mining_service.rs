@@ -202,14 +202,21 @@ impl MiningService {
                                     
                                     if let Some(new_drop_info) = found_drop_info {
                                         debug!("✅ Found metadata for mismatched drop: {} ({})", new_drop_info.drop_name, new_drop_info.game_name);
-                                        let mut status = mining_status.write().await;
-                                        status.current_drop = Some(new_drop_info);
-                                        status.last_update = Utc::now();
                                         
-                                        // Emit
-                                        let current_status = status.clone();
-                                        drop(status);
-                                        let _ = app_handle.emit("mining-status-update", &current_status);
+                                        // ONLY update current_drop if this is a mineable drop (required_minutes > 0)
+                                        // Subscription drops (0 required minutes) should NOT override the current mining target
+                                        if new_drop_info.required_minutes > 0 {
+                                            let mut status = mining_status.write().await;
+                                            status.current_drop = Some(new_drop_info);
+                                            status.last_update = Utc::now();
+                                            
+                                            // Emit
+                                            let current_status = status.clone();
+                                            drop(status);
+                                            let _ = app_handle.emit("mining-status-update", &current_status);
+                                        } else {
+                                            debug!("⏭️ Skipping subscription drop (0 required minutes) - not updating current_drop");
+                                        }
                                     } else {
                                         // This is normal - the drop might be from a different campaign in the same game
                                         // The inventory polling will provide accurate data for all drops
@@ -263,14 +270,21 @@ impl MiningService {
                                 
                                 if let Some(new_drop_info) = found_drop_info {
                                     debug!("✅ Recovered drop info from scratch: {} ({})", new_drop_info.drop_name, new_drop_info.game_name);
-                                    let mut status = mining_status.write().await;
-                                    status.current_drop = Some(new_drop_info);
-                                    status.last_update = Utc::now();
                                     
-                                     // Emit
-                                    let current_status = status.clone();
-                                    drop(status);
-                                    let _ = app_handle.emit("mining-status-update", &current_status);
+                                    // ONLY update current_drop if this is a mineable drop (required_minutes > 0)
+                                    // Subscription drops (0 required minutes) should NOT be set as current mining target
+                                    if new_drop_info.required_minutes > 0 {
+                                        let mut status = mining_status.write().await;
+                                        status.current_drop = Some(new_drop_info);
+                                        status.last_update = Utc::now();
+                                        
+                                         // Emit
+                                        let current_status = status.clone();
+                                        drop(status);
+                                        let _ = app_handle.emit("mining-status-update", &current_status);
+                                    } else {
+                                        debug!("⏭️ Skipping subscription drop (0 required minutes) - not setting as current_drop");
+                                    }
                                 }
                              }
                         }
@@ -824,11 +838,15 @@ impl MiningService {
                                                         let required_minutes =
                                                             time_drop.required_minutes_watched;
 
+                                                        // Skip subscription drops (0 required minutes) - they can't be mined
+                                                        if required_minutes == 0 {
+                                                            debug!("📊 Skipping subscription drop: {} (0 required minutes)", 
+                                                                time_drop.name);
+                                                            continue;
+                                                        }
+
                                                         // Skip drops that are already complete (100%+)
-                                                        // Only skip if required_minutes > 0 to avoid division issues
-                                                        if required_minutes > 0
-                                                            && current_minutes >= required_minutes
-                                                        {
+                                                        if current_minutes >= required_minutes {
                                                             debug!("📊 Skipping completed drop: {} ({}/{} minutes)", 
                                                                 time_drop.name, current_minutes, required_minutes);
                                                             continue;

@@ -374,7 +374,6 @@ const ChatWidget = () => {
   }, [messages, addUser]);
 
   useEffect(() => {
-    let intervalId: NodeJS.Timeout;
     const getViewerCount = async () => {
       if (currentStream?.user_login) {
         try {
@@ -390,12 +389,11 @@ const ChatWidget = () => {
       }
     };
     getViewerCount();
-    intervalId = setInterval(getViewerCount, 180000);
+    const intervalId = setInterval(getViewerCount, 180000);
     return () => clearInterval(intervalId);
   }, [currentStream?.user_login]);
 
   useEffect(() => {
-    let intervalId: NodeJS.Timeout;
     let headerElement: HTMLElement | null = null;
     const updateUptime = () => {
       if (currentStream?.started_at) {
@@ -421,7 +419,7 @@ const ChatWidget = () => {
       }
     };
     updateUptime();
-    intervalId = setInterval(updateUptime, 1000);
+    const intervalId = setInterval(updateUptime, 1000);
     return () => clearInterval(intervalId);
   }, [currentStream?.started_at]);
 
@@ -579,7 +577,7 @@ const ChatWidget = () => {
         // Try multiple possible paths since the backend GQL query uses "community.channel" structure
         // Path 1: data.community.channel.self.communityPoints.balance
         let balance = result?.data?.community?.channel?.self?.communityPoints?.balance;
-        let channel = result?.data?.community?.channel || result?.data?.user?.channel;
+        const channel = result?.data?.community?.channel || result?.data?.user?.channel;
         
         // Path 2: data.user.channel.self.communityPoints.balance (alternative structure)
         if (balance === undefined) {
@@ -1433,7 +1431,7 @@ const ChatWidget = () => {
       const cardHeight = 600;
       const gap = 10;
       let x = mainPosition.x - cardWidth - gap;
-      let y = mainPosition.y;
+      const y = mainPosition.y;
       if (x < 0) x = mainPosition.x + mainSize.width + gap;
       const windowLabel = `profile-${userId}-${Date.now()}`;
       
@@ -1474,6 +1472,7 @@ const ChatWidget = () => {
         <PredictionOverlay
           channelId={currentStream?.user_id}
           channelLogin={currentStream?.user_login}
+          isHypeTrainActive={!!currentHypeTrain}
         />
 
         {/* Chat header - transforms when Hype Train active */}

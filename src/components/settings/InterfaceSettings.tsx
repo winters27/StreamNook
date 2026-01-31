@@ -34,8 +34,10 @@ const InterfaceSettings = () => {
     // Load settings on mount
     useEffect(() => {
         const settings = getSidebarSettings();
-        setSidebarMode(settings.mode);
-        setExpandOnHover(settings.expandOnHover);
+        queueMicrotask(() => {
+            setSidebarMode(settings.mode);
+            setExpandOnHover(settings.expandOnHover);
+        });
     }, []);
 
     const handleModeChange = (mode: SidebarMode) => {

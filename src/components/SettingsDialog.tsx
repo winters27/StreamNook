@@ -53,15 +53,17 @@ const SettingsDialog = () => {
   // Update active tab when initial tab changes
   useEffect(() => {
     if (settingsInitialTab) {
-      setActiveTab(settingsInitialTab);
+      queueMicrotask(() => setActiveTab(settingsInitialTab));
     }
   }, [settingsInitialTab]);
 
   // Reset when dialog closes
   useEffect(() => {
     if (!isSettingsOpen) {
-      setActiveTab('Player');
-      setActiveSection(null);
+      queueMicrotask(() => {
+        setActiveTab('Player');
+        setActiveSection(null);
+      });
     }
   }, [isSettingsOpen]);
 

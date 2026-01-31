@@ -34,9 +34,10 @@ interface PredictionData {
 interface PredictionOverlayProps {
   channelId?: string;
   channelLogin?: string;
+  isHypeTrainActive?: boolean;
 }
 
-const PredictionOverlay = ({ channelId, channelLogin }: PredictionOverlayProps) => {
+const PredictionOverlay = ({ channelId, channelLogin, isHypeTrainActive = false }: PredictionOverlayProps) => {
   const [activePrediction, setActivePrediction] = useState<PredictionData | null>(null);
   const [selectedOutcome, setSelectedOutcome] = useState<string | null>(null);
   const [betAmount, setBetAmount] = useState<number>(10);
@@ -465,7 +466,7 @@ const PredictionOverlay = ({ channelId, channelLogin }: PredictionOverlayProps) 
   if (!activePrediction) return null;
 
   return (
-    <div className="absolute top-10 left-2 right-2 z-40 transition-all duration-300 ease-in-out">
+    <div className={`absolute ${isHypeTrainActive ? 'top-16' : 'top-10'} left-2 right-2 z-40 transition-all duration-300 ease-in-out`}>
       {/* Floating overlay with shadow effect */}
       <div className="bg-background rounded-lg border border-border shadow-lg shadow-black/30 overflow-hidden">
         {/* Header - Always visible with channel points */}

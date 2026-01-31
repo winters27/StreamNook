@@ -56,7 +56,7 @@ const ThemeColorPicker = ({ label, color, onChange, showOpacity = true }: ThemeC
 
     if (color.value.startsWith('#') && color.value.length >= 7) {
       hexToHsl(color.value);
-      setHexInput(color.value);
+      queueMicrotask(() => setHexInput(color.value));
     }
   }, [color.value]);
 

@@ -67,21 +67,6 @@ interface ChannelPointsEarnedEvent {
     balance: number;
 }
 
-// Individual channel points event for history
-interface ChannelPointsHistoryEvent {
-    id: string;
-    points: number;
-    reason: string;
-    channel_name: string | null;
-    timestamp: number;
-}
-
-// Extended notification data for channel points with stacking
-interface ChannelPointsStackData extends ChannelPointsNotificationData {
-    history: ChannelPointsHistoryEvent[];
-    latestEvent: ChannelPointsHistoryEvent | null;
-}
-
 // Clustering state for channel points (batching rapid events)
 interface ClusteredChannelPoints {
     totalPoints: number;
@@ -95,16 +80,13 @@ interface ClusteredChannelPoints {
     lastBalance?: number; // Track the most recent balance
 }
 
-// Cache key for channel points stack
-const CHANNEL_POINTS_STACK_KEY = 'streamnook_channel_points_stack';
-
 // Cache helpers
 const loadCachedNotifications = (): DynamicIslandNotification[] => {
     try {
         const cached = localStorage.getItem(CACHE_KEY);
         if (!cached) return [];
 
-        const { notifications, timestamp } = JSON.parse(cached);
+        const { notifications } = JSON.parse(cached);
         const expiryTime = CACHE_EXPIRY_DAYS * 24 * 60 * 60 * 1000;
 
         // Filter out notifications older than expiry time
@@ -139,8 +121,16 @@ const DynamicIsland = () => {
     const islandRef = useRef<HTMLDivElement>(null);
     const previewTimeoutRef = useRef<NodeJS.Timeout | null>(null);
     const updateCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
+    
+    // Track current time for "X ago" formatting - updated every 30 seconds
+    // This avoids calling Date.now() during render (impure function)
+    const [now, setNow] = useState(() => Date.now());
+    useEffect(() => {
+        const interval = setInterval(() => setNow(Date.now()), 30000);
+        return () => clearInterval(interval);
+    }, []);
 
-    const { startStream, settings, setShowWhispersOverlay, openWhisperWithUser, openSettings, addToast, setShowDropsOverlay, setShowBadgesOverlay } = useAppStore();
+    const { startStream, settings, openWhisperWithUser, openSettings, addToast, setShowDropsOverlay, setShowBadgesOverlay } = useAppStore();
 
     const soundEnabled = settings.live_notifications?.play_sound ?? true;
     const notificationsEnabled = settings.live_notifications?.enabled ?? true;
@@ -235,7 +225,6 @@ const DynamicIsland = () => {
     }, []);
 
     // Send native Windows desktop notification (disabled - plugin not installed)
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const sendNativeNotification = useCallback(async (_title: string, _body: string) => {
         // Native notifications are disabled - the tauri-plugin-notification is not installed
         // To re-enable, add the plugin to Cargo.toml and re-import the functions
@@ -606,7 +595,6 @@ const DynamicIsland = () => {
 
         // Create a summary of the clustered events
         const totalPoints = cluster.totalPoints;
-        const eventCount = cluster.events.length;
 
         // Get unique channel names
         const uniqueChannels = [...new Set(cluster.events.map(e => e.channel_name).filter(Boolean))];
@@ -1029,9 +1017,9 @@ const DynamicIsland = () => {
         setHasUnread(unreadCount > 0);
     }, [unreadCount]);
 
-    // Format time ago
+    // Format time ago - uses 'now' state (updated every 30s) to avoid impure function calls during render
     const formatTimeAgo = (timestamp: number) => {
-        const seconds = Math.floor((Date.now() - timestamp) / 1000);
+        const seconds = Math.floor((now - timestamp) / 1000);
         if (seconds < 60) return 'Just now';
         const minutes = Math.floor(seconds / 60);
         if (minutes < 60) return `${minutes}m ago`;

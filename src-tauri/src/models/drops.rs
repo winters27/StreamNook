@@ -67,6 +67,10 @@ pub struct DropBenefit {
     /// Image URL for the benefit. Twitch API returns as "imageAssetURL" (camelCase)
     #[serde(alias = "imageAssetURL", default)]
     pub image_url: String,
+    /// Distribution type - "BADGE" for Twitch chat badges, "DIRECT_ENTITLEMENT" for in-game items
+    /// Badge drops cannot be verified via gameEventDrops API, only in-game items can
+    #[serde(default)]
+    pub distribution_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

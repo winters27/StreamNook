@@ -742,7 +742,7 @@ body {
 }
 
 .animate-hype-marquee {
-  animation: hype-marquee 7s linear forwards;
+  animation: hype-marquee 12s linear forwards;
 }
 
 /* Confetti falling animation */

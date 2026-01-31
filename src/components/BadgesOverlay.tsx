@@ -1140,7 +1140,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
         const monthName = fullMatch[2];
         const year = parseInt(fullMatch[3], 10);
 
-        if (months.hasOwnProperty(monthName)) {
+        if (Object.hasOwn(months, monthName)) {
           const date = new Date(year, months[monthName], day);
           if (!isNaN(date.getTime())) {
             return date.getTime();
@@ -1156,7 +1156,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
         // Use current year since it's not provided
         const currentYear = new Date().getFullYear();
 
-        if (months.hasOwnProperty(monthAbbrev)) {
+        if (Object.hasOwn(months, monthAbbrev)) {
           const date = new Date(currentYear, months[monthAbbrev], startDay);
           if (!isNaN(date.getTime())) {
             return date.getTime();
@@ -1171,7 +1171,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
         const monthName = monthYearMatch[1];
         const year = parseInt(monthYearMatch[2], 10);
 
-        if (months.hasOwnProperty(monthName)) {
+        if (Object.hasOwn(months, monthName)) {
           // Use the 1st day of the month for sorting (earliest possible date in that month)
           const date = new Date(year, months[monthName], 1);
           if (!isNaN(date.getTime())) {
@@ -1187,7 +1187,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
         const day = parseInt(singleDayMatch[2], 10);
         const currentYear = new Date().getFullYear();
 
-        if (months.hasOwnProperty(monthAbbrev)) {
+        if (Object.hasOwn(months, monthAbbrev)) {
           const date = new Date(currentYear, months[monthAbbrev], day);
           if (!isNaN(date.getTime())) {
             return date.getTime();
@@ -1270,12 +1270,12 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
       const endMonthAbbrev = eventDurationMatch[3];
       const endDay = parseInt(eventDurationMatch[4], 10);
 
-      if (months.hasOwnProperty(startMonthAbbrev) && months.hasOwnProperty(endMonthAbbrev)) {
+      if (Object.hasOwn(months, startMonthAbbrev) && Object.hasOwn(months, endMonthAbbrev)) {
         const startMonthNum = months[startMonthAbbrev];
         const endMonthNum = months[endMonthAbbrev];
 
         // Determine year - if end month is before start month, it crosses into next year
-        let startYear = currentYear;
+        const startYear = currentYear;
         let endYear = currentYear;
 
         // If event starts in Dec and ends in Jan, the end is in next year
@@ -1299,7 +1299,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
       const startDay = parseInt(eventDurationSameMonthMatch[2], 10);
       const endDay = parseInt(eventDurationSameMonthMatch[3], 10);
 
-      if (months.hasOwnProperty(monthAbbrev)) {
+      if (Object.hasOwn(months, monthAbbrev)) {
         const monthNum = months[monthAbbrev];
         const startDate = new Date(currentYear, monthNum, startDay, 0, 0, 0);
         const endDate = new Date(currentYear, monthNum, endDay, 23, 59, 59);
@@ -1366,7 +1366,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
         if (meridiem.toUpperCase() === 'PM' && h !== 12) h += 12;
         else if (meridiem.toUpperCase() === 'AM' && h === 12) h = 0;
 
-        if (fullMonths.hasOwnProperty(monthName)) {
+        if (Object.hasOwn(fullMonths, monthName)) {
           return new Date(y, fullMonths[monthName], d, h, m, 0);
         }
         return null;
@@ -1404,7 +1404,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
         hours = 0;
       }
 
-      if (fullMonths.hasOwnProperty(monthName)) {
+      if (Object.hasOwn(fullMonths, monthName)) {
         const monthNum = fullMonths[monthName];
         const startDate = new Date(year, monthNum, day, hours, minutes, 0);
 
@@ -1439,7 +1439,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
       const endMonthAbbrev = fullRangeMatch[3];
       const endDay = parseInt(fullRangeMatch[4], 10);
 
-      if (months.hasOwnProperty(startMonthAbbrev) && months.hasOwnProperty(endMonthAbbrev)) {
+      if (Object.hasOwn(months, startMonthAbbrev) && Object.hasOwn(months, endMonthAbbrev)) {
         const startMonthNum = months[startMonthAbbrev];
         const endMonthNum = months[endMonthAbbrev];
         // Start at beginning of the day, end at end of the day
@@ -1459,7 +1459,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
       const startDay = parseInt(shortRangeMatch[2], 10);
       const endDay = parseInt(shortRangeMatch[3], 10);
 
-      if (months.hasOwnProperty(monthAbbrev)) {
+      if (Object.hasOwn(months, monthAbbrev)) {
         const monthNum = months[monthAbbrev];
         // Start at beginning of the day, end at end of the day
         const startDate = new Date(currentYear, monthNum, startDay, 0, 0, 0);
