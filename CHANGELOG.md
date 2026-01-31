@@ -1,3 +1,21 @@
+## [6.9.0] - 2026-01-30
+### ✨ Features
+- **Proxy Health & Auto-Selection**: StreamNook now includes a robust proxy health checker! Test various proxy servers, see their real-time latency, and automatically select the fastest one for your region to improve stream stability.
+- **Stream Restart**: Encounter a stuttering stream? You can now manually restart the current stream without closing and reopening the application.
+- **Badge Drop Verification**: Improved logic for verifying ownership of Twitch badge drops by comparing against your earned badge collection.
+- **Enhanced Drops Mining**: Subscription-only drops are now correctly handled, preventing them from interfering with active mining progress. Completed drops from expired campaigns are also more reliably displayed.
+
+### 🐛 Bug Fixes
+- **7TV Emote Display**: Fixed an issue where certain 7TV emotes and paints might not display correctly.
+- **Date Parsing for Badges**: Improved accuracy in parsing badge metadata dates for better display.
+- **Chat Timestamp Accuracy**: Ensured chat timestamps are displayed correctly, leveraging backend data where available.
+- **Proxy Settings**: Addressed issues with manual proxy argument input and improved the handling of applying optimal proxy settings.
+- **UI State Updates**: Optimized various UI components to use `queueMicrotask` for state updates, preventing rendering glitches and ensuring smoother transitions.
+
+### 🔧 Maintenance
+- **Dependency Updates**: Updated `lucide-react` for newer icons.
+- **Code Refactoring**: Cleaned up various internal components for better maintainability and performance, including improvements to chat message rendering and sidebar logic.
+
 ## [6.8.0] - 2026-01-29
 ### ✨ Features
 - **7TV Cosmetics Deep Linking**: You can now open the Badges Overlay directly to a specific 7TV paint or badge using deep links.
@@ -962,6 +980,7 @@ ATTENTION: ALL USERS LOG OUT OF TWITCH THEN LOG BACK IN FOR SOME CHANGES OT TAKE
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
