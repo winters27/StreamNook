@@ -16,13 +16,13 @@
     "update-deps:auto": "powershell -ExecutionPolicy Bypass -File ./scripts/update-dependencies.ps1 -Auto"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.93.3",
-    "@tauri-apps/api": "^2.9.0",
+    "@supabase/supabase-js": "^2.95.3",
+    "@tauri-apps/api": "^2.10.1",
     "@tauri-apps/plugin-dialog": "^2.6.0",
     "@tauri-apps/plugin-notification": "^2.3.3",
-    "@tauri-apps/plugin-shell": "^2.3.4",
+    "@tauri-apps/plugin-shell": "^2.3.5",
     "autoprefixer": "^10.4.24",
-    "framer-motion": "^12.30.0",
+    "framer-motion": "^12.34.0",
     "hls.js": "^1.5.17",
     "lucide-react": "^0.563.0",
     "phosphor-react": "^1.4.1",
