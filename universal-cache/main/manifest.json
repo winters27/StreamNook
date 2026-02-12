@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "last_sync": 1770792712,
+  "last_sync": 1770879061,
   "entries": {
     "global_badges": {
       "id": "global_badges",
@@ -1792,7 +1792,7 @@
                   "image_url_2x": "https://static-cdn.jtvnw.net/badges/v1/f299577c-8b51-4cb1-ad7c-11faca0c32e9/2",
                   "image_url_4x": "https://static-cdn.jtvnw.net/badges/v1/f299577c-8b51-4cb1-ad7c-11faca0c32e9/3",
                   "title": "JasonTheWeen 7 Day Survival",
-                  "description": "This badge was earned by watching 30 minutes of jasontheween's 7 day survival stream!",
+                  "description": "This badge was earned by watching 30 minutes of JasonTheWeen's 7 day survival stream!",
                   "click_action": "visit_url",
                   "click_url": "https://twitch.tv/jasontheween"
                 }
@@ -4450,10 +4450,10 @@
             }
           ]
         },
-        "cached_at": 1770792707
+        "cached_at": 1770879058
       },
       "metadata": {
-        "timestamp": 1770792707,
+        "timestamp": 1770879058,
         "expiry_days": 7,
         "source": "twitch",
         "version": 1
@@ -9761,10 +9761,10 @@
       "data": {
         "date_added": "4 February 2026",
         "usage_stats": null,
-        "more_info": "The BingBongLove badge is a limited-time global chat badge dedicated to PEAK. To earn it, you needed to watch 15 minutes of any stream in the PEAK category. Event duration: Feb 13 &#8211; 28 The badge is awarded through Twitch Drops, so it will automatically appear in your Drops Inventory once you have met the requirement."
+        "more_info": "The BingBongLove badge is a limited-time global chat badge dedicated to PEAK. To earn it, you needed to watch 15 minutes of any stream in the PEAK category. Event duration: 2026-02-13T18:00:00Z &#8211; 2026-03-01T08:58:00Z The badge is awarded through Twitch Drops, so it will automatically appear in your Drops Inventory once you have met the requirement."
       },
       "metadata": {
-        "timestamp": 1770273922,
+        "timestamp": 1770879060,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -9777,10 +9777,10 @@
       "data": {
         "date_added": "4 February 2026",
         "usage_stats": null,
-        "more_info": "The Diablo 30th Anniversary badge is a limited-time global chat badge dedicated to the Diablo 30th Anniversary. To earn it, you need to subscribe or gift a subscription (Prime subs doesn’t count) to streamer in the Diablo IV category. Event time: to be confirmed The badge is distributed via Twitch Drops and granted automatically after meeting the requirement."
+        "more_info": "The Diablo 30th Anniversary badge is a limited-time global chat badge dedicated to the Diablo 30th Anniversary. To earn it, you need to subscribe or gift a subscription (Prime subs doesn’t count) to streamer in the Diablo IV category. Event time: 2026-02-11T22:00:00Z &#8211; 2026-02-26T07:58:00Z The badge is distributed via Twitch Drops and granted automatically after meeting the requirement."
       },
       "metadata": {
-        "timestamp": 1770273923,
+        "timestamp": 1770879061,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
