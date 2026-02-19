@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "last_sync": 1771397462,
+  "last_sync": 1771483764,
   "entries": {
     "global_badges": {
       "id": "global_badges",
@@ -4495,10 +4495,10 @@
             }
           ]
         },
-        "cached_at": 1771397460
+        "cached_at": 1771483758
       },
       "metadata": {
-        "timestamp": 1771397460,
+        "timestamp": 1771483758,
         "expiry_days": 7,
         "source": "twitch",
         "version": 1
@@ -9761,7 +9761,7 @@
         "more_info": "The Lost Ark Anniversary badge is a limited-time global chat badge dedicated to the Lost Ark Anniversary. To earn it, you need to watch 6 hours of any live stream in the Lost Ark category during the campaign. Event Duration: from 2026-02-04T16:00:00Z to 2026-03-03T15:58:00Z The badge is distributed via Twitch Drops and granted automatically after meeting the requirement."
       },
       "metadata": {
-        "timestamp": 1770792711,
+        "timestamp": 1771483761,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -9777,7 +9777,7 @@
         "more_info": "The Scampuss badge is a limited-time global chat badge dedicated to Nioh 3 game launch. To earn it, you need to subscribe or gift a subscription (Prime subs doesn’t count) to streamer in the Nioh 3 category. Event time: 2026-02-06T08:00:00Z &#8211; 2026-02-14T07:58:00Z The badge is distributed via Twitch Drops and granted automatically after the requirement is met."
       },
       "metadata": {
-        "timestamp": 1770792712,
+        "timestamp": 1771483762,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -9793,7 +9793,7 @@
         "more_info": "Yellow Noob is a limited-time global Twitch chat badge released as part of Bloxfest, a month-long Roblox event hosted exclusively on Twitch. To earn it, you needed to subscribe or gift a subscription (Prime subs excluded) to any streamer in the ROBLOX category during the event period. Event time: 2026-02-05T08:01:00Z &#8211; 2026-02-28T07:59:00Z The badge is distributed via Twitch Drops and granted automatically after the requirement is met. Notably, Yellow Noob is the second Roblox-themed Twitch chat badge. The first one, Purple Noob , was available for free in December 2025 and could be earned simply by watching Roblox streams."
       },
       "metadata": {
-        "timestamp": 1770792712,
+        "timestamp": 1771483764,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -9838,10 +9838,10 @@
       "data": {
         "date_added": "10 February 2026",
         "usage_stats": null,
-        "more_info": null
+        "more_info": "JasonTheWeen 7 Day Survival is a limited-time global Twitch chat badge tied to jasontheween’s 24/7 survival marathon. To earn the badge, viewers needed to watch 30 minutes of the “7 Day Survival” stream on Jasontheween’s channel . Event duration: 2026-02-15T18:00:00Z &#8211; 2026-02-22T05:00:00Z While the badge is technically issued as a global Twitch chat badge, its concept is more similar to a special channel event badge (such as Kai Cenat’s Mafiathon). &nbsp;"
       },
       "metadata": {
-        "timestamp": 1770792710,
+        "timestamp": 1771483760,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
