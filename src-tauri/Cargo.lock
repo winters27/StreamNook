@@ -914,9 +914,9 @@ dependencies = [
 
 [[package]]
 name = "cosmic-text"
-version = "0.17.1"
+version = "0.18.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8c5c9868e64aa6c5410629a83450e142c80e721c727a5bc0fb18107af6c2d66b"
+checksum = "bbe782a9e7520cc7de2232c957a47f99d3a35e855552677d07a557bc1a3b66ed"
 dependencies = [
  "bitflags 2.10.0",
  "fontdb",
