@@ -31,7 +31,7 @@ reqwest = { version = "0.13.2", features = ["json", "gzip", "cookies", "multipar
 cookie_store = "0.22.1"
 oauth2 = "5.0.0"
 discord-rich-presence = "1.1.0"
-anyhow = "1.0.101"
+anyhow = "1.0.102"
 confy = "2.0.0"
 warp = { version = "0.4.2", features = ["server", "websocket"] }
 futures = "0.3"
@@ -48,7 +48,7 @@ regex = "1.12.3"
 strsim = "0.11.1"
 uuid = { version = "1.21.0", features = ["v4"] }
 urlencoding = "2.1.3"
-chrono = { version = "0.4.43", features = ["serde"] }
+chrono = { version = "0.4.44", features = ["serde"] }
 scraper = "0.25.0"
 once_cell = "1.21.3"
 sevenz-rust = "0.6"
@@ -58,7 +58,7 @@ rust-embed = "8.11"
 mime_guess = "2.0"
 phf = "0.11"
 lru = "0.12"
-cfspeedtest = "2.1"
+cfspeedtest = "2.2"
 log = "0.4"
 env_logger = "0.11"
 
