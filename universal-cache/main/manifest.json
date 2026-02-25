@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "last_sync": 1771915692,
+  "last_sync": 1772002314,
   "entries": {
     "global_badges": {
       "id": "global_badges",
@@ -4510,10 +4510,10 @@
             }
           ]
         },
-        "cached_at": 1771915692
+        "cached_at": 1772002311
       },
       "metadata": {
-        "timestamp": 1771915692,
+        "timestamp": 1772002311,
         "expiry_days": 7,
         "source": "twitch",
         "version": 1
@@ -9901,10 +9901,10 @@
       "data": {
         "date_added": "17 February 2026",
         "usage_stats": null,
-        "more_info": "The Seek&#8217;s Eye badge is a limited-time global chat badge dedicated to Bloxfest, a Roblox event on Twitch. This is the 3/4 badges in the series. To earn it, you needed to watch 30 minutes of any stream in the ROBLOX category. Event duration: 2026-02-17T23:59:00Z &#8211; 2026-02-19T23:58:00Z The badge is awarded through Twitch Drops, so it will automatically appear in your Drops Inventory once you have met the requirement."
+        "more_info": "The Seek&#8217;s Eye badge is a limited-time global chat badge dedicated to Bloxfest, a Roblox event on Twitch. This is the 3/4 badges in the series. To earn it, you needed to watch 30 minutes of any stream in the ROBLOX category. Event duration: 2026-02-17T23:59:00Z &#8211; 2026-02-19T19:59:00Z The badge is awarded through Twitch Drops, so it will automatically appear in your Drops Inventory once you have met the requirement."
       },
       "metadata": {
-        "timestamp": 1771397462,
+        "timestamp": 1772002314,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
