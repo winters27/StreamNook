@@ -30,9 +30,9 @@ use commands::{
     app::*, automation::*, badge_metadata::*, badge_service::*, badges::*, bandwidth_test::*,
     cache::*, chat::*, chat_identity::*, components::*, cosmetics_cache::*, diagnostic_logging::*,
     discord::*, drops::*, emoji::*, emotes::*, eventsub::*, hype_train::*, layout::*, logs::*,
-    profile_cache::*, proxy_health::*, resub::*, settings::*, seventv::*, seventv_cosmetics::*,
-    seventv_cosmetics_fetch::*, streaming::*, twitch::*, universal_cache::*, user_profile::*,
-    whisper_storage::*,
+    magne::*, profile_cache::*, proxy_health::*, resub::*, settings::*, seventv::*,
+    seventv_cosmetics::*, seventv_cosmetics_fetch::*, streaming::*, twitch::*, universal_cache::*,
+    user_profile::*, whisper_storage::*,
 };
 use log::{debug, error};
 use models::settings::{AppState, Settings};
@@ -150,6 +150,7 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_deep_link::init())
         .manage(live_notification_service.clone())
         .manage(whisper_service.clone())
         .manage(layout_service.clone())
@@ -158,6 +159,13 @@ fn main() {
         .setup(move |app| {
             let app_handle = app.handle().clone();
             let live_notif_service = live_notification_service.clone();
+
+            // Register deep link scheme on Windows
+            #[cfg(windows)]
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                let _ = app.deep_link().register_all();
+            }
 
             // Create and manage the background service correctly within the setup hook
             let background_service = Arc::new(TokioMutex::new(BackgroundService::new(
@@ -361,6 +369,12 @@ fn main() {
             set_idle_discord_presence,
             update_discord_presence,
             clear_discord_presence,
+            // Magne commands
+            connect_magne,
+            disconnect_magne,
+            set_idle_magne_presence,
+            update_magne_presence,
+            clear_magne_presence,
             // Settings commands
             load_settings,
             save_settings,

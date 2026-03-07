@@ -52,6 +52,7 @@ impl Default for CacheSettings {
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct TtvlolPluginSettings {
+    #[serde(default = "default_true")]
     pub enabled: bool,
     pub installed_version: Option<String>,
 }
@@ -59,7 +60,7 @@ pub struct TtvlolPluginSettings {
 impl Default for TtvlolPluginSettings {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             installed_version: None,
         }
     }
@@ -68,12 +69,13 @@ impl Default for TtvlolPluginSettings {
 #[derive(Serialize, Deserialize, Clone)]
 pub struct StreamlinkSettings {
     pub low_latency_enabled: bool,
-    pub hls_live_edge: u32,     // Segments from live edge (1-10)
-    pub stream_timeout: u32,    // Timeout in seconds (30-120)
-    pub retry_streams: u32,     // Auto-retry on errors (0-5)
-    pub disable_hosting: bool,  // Avoid hosted streams
-    pub skip_ssl_verify: bool,  // Skip SSL verification
-    pub use_proxy: bool,        // Use proxy servers
+    pub hls_live_edge: u32,    // Segments from live edge (1-10)
+    pub stream_timeout: u32,   // Timeout in seconds (30-120)
+    pub retry_streams: u32,    // Auto-retry on errors (0-5)
+    pub disable_hosting: bool, // Avoid hosted streams
+    pub skip_ssl_verify: bool, // Skip SSL verification
+    #[serde(default = "default_true")]
+    pub use_proxy: bool, // Use proxy servers
     pub proxy_playlist: String, // Proxy playlist URLs
     #[serde(default)]
     pub custom_streamlink_path: Option<String>, // Custom folder path for portable/installed Streamlink
@@ -253,6 +255,7 @@ pub struct Settings {
     pub discord_rpc_enabled: bool,
     pub video_player: VideoPlayerSettings,
     pub cache: CacheSettings,
+    #[serde(default)]
     pub ttvlol_plugin: TtvlolPluginSettings,
     #[serde(default)]
     pub streamlink: StreamlinkSettings,

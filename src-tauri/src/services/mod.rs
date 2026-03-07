@@ -20,6 +20,7 @@ pub mod irc_service;
 pub mod layout_service;
 pub mod live_notification_service;
 pub mod log_service;
+pub mod magne_service;
 pub mod mining_service;
 pub mod profile_cache_service;
 pub mod proxy_health;

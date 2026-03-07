@@ -250,14 +250,28 @@ pub async fn force_refresh_global_badges() -> Result<HelixBadgesResponse, String
 }
 
 /// Get badge cache age in days (returns None if not cached)
-/// This returns the age of the BadgeBase manifest (synced from GitHub daily),
-/// NOT the Twitch API badge cache.
+/// Reports the age of whichever is fresher: the local badge data or the GitHub manifest sync.
+/// After a local force-refresh, this will show "0 days" instead of the stale GitHub sync age.
 #[tauri::command]
 pub async fn get_badge_cache_age() -> Result<Option<u64>, String> {
     use crate::services::universal_cache_service::load_manifest;
 
     let manifest = load_manifest().map_err(|e| format!("Failed to load manifest: {}", e))?;
 
+    // Check if locally-cached badge data is newer than the last GitHub sync
+    let cache_key = "global_badges";
+    if let Some(entry) = manifest.entries.get(cache_key) {
+        let badge_timestamp = entry.metadata.timestamp;
+        let manifest_sync = manifest.last_sync.unwrap_or(0);
+
+        // If badge data is newer than last GitHub sync, report badge data age
+        if badge_timestamp > manifest_sync {
+            let cache_age_days = (get_current_timestamp() - badge_timestamp) / (24 * 60 * 60);
+            return Ok(Some(cache_age_days));
+        }
+    }
+
+    // Fall back to manifest sync age
     match manifest.last_sync {
         Some(last_sync) => {
             let cache_age_days = (get_current_timestamp() - last_sync) / (24 * 60 * 60);

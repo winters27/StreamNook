@@ -18,6 +18,7 @@ pub mod eventsub;
 pub mod hype_train;
 pub mod layout;
 pub mod logs;
+pub mod magne;
 pub mod profile_cache;
 pub mod proxy_health;
 pub mod resub;

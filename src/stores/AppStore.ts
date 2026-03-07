@@ -209,6 +209,9 @@ const saveUserContextToLocalStorage = (currentUser: TwitchUser | null, currentSt
   }
 };
 
+// Magne reconnect interval — polls every 5s to reconnect if Magne launches after StreamNook
+let magneReconnectInterval: ReturnType<typeof setInterval> | null = null;
+
 export const useAppStore = create<AppState>((set, get) => ({
   settings: {} as Settings,
   followedStreams: [],
@@ -529,6 +532,29 @@ export const useAppStore = create<AppState>((set, get) => ({
         Logger.warn('Could not connect to Discord:', e);
       }
     }
+
+    // Always connect to Magne (independent of Discord toggle)
+    // Start a reconnect loop so Magne picks up activity even if launched later
+    invoke('connect_magne').catch(() => {});
+    if (!magneReconnectInterval) {
+      magneReconnectInterval = setInterval(() => {
+        const currentStream = get().currentStream;
+        if (currentStream) {
+          // Re-send the watching presence
+          invoke('update_magne_presence', {
+            details: `Watching ${currentStream.user_name}`,
+            activityState: currentStream.title || 'Live on Twitch',
+            largeImage: '',
+            smallImage: '',
+            startTime: Date.now(),
+            gameName: currentStream.game_name || '',
+            streamUrl: `https://twitch.tv/${currentStream.user_login}`,
+          }).catch(() => {});
+        } else {
+          invoke('connect_magne').catch(() => {});
+        }
+      }, 5000);
+    }
   },
   updateSettings: async (newSettings) => {
     const oldSettings = get().settings;
@@ -554,14 +580,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     // Handle Discord enable/disable toggle
     if (newSettings.discord_rpc_enabled !== oldSettings.discord_rpc_enabled) {
       if (newSettings.discord_rpc_enabled) {
-        // Connect to Discord
         try {
           await invoke('connect_discord');
         } catch (e) {
           Logger.warn('Could not connect to Discord:', e);
         }
       } else {
-        // Disconnect from Discord
         try {
           await invoke('disconnect_discord');
         } catch (e) {
@@ -687,6 +711,11 @@ export const useAppStore = create<AppState>((set, get) => ({
           Logger.warn('Could not set idle Discord presence:', e);
         }
       }
+
+      // Always set idle Magne presence
+      invoke('set_idle_magne_presence').catch((e) => {
+        Logger.warn('Could not set idle Magne presence:', e);
+      });
     } catch (e) {
       Logger.error('Failed to stop stream:', e);
     }
@@ -887,6 +916,16 @@ export const useAppStore = create<AppState>((set, get) => ({
 
       // Update Discord with game matching (don't await - let it run in background)
       if (get().settings.discord_rpc_enabled) {
+        const presenceArgs = {
+          details: `Watching ${info.user_name}`,
+          activityState: info.title || 'Live on Twitch',
+          largeImage: 'icon_256x256',
+          smallImage: 'twitch_logo',
+          startTime: Date.now(),
+          gameName: info.game_name || '',
+          streamUrl: `https://twitch.tv/${channel}`,
+        };
+
         Logger.debug('[Discord] Updating presence for stream:', {
           user: info.user_name,
           title: info.title,
@@ -894,21 +933,27 @@ export const useAppStore = create<AppState>((set, get) => ({
           channel: channel
         });
 
-        invoke('update_discord_presence', {
-          details: `Watching ${info.user_name}`,
-          activityState: info.title || 'Live on Twitch',
-          largeImage: 'icon_256x256', // Fallback image
-          smallImage: 'twitch_logo', // Twitch logo as small image
-          startTime: Date.now(),
-          gameName: info.game_name || '', // Pass game name for matching
-          streamUrl: `https://twitch.tv/${channel}`,
-        }).then(() => {
+        invoke('update_discord_presence', presenceArgs).then(() => {
           Logger.debug('[Discord] Presence updated successfully');
         }).catch((e) => {
-          // Discord errors are non-critical - log as warning, don't show to user
           Logger.warn('[Discord] Could not update presence (Discord may not be running):', e);
         });
       }
+
+      // Always update Magne presence (independent of Discord toggle)
+      invoke('update_magne_presence', {
+        details: `Watching ${info.user_name}`,
+        activityState: info.title || 'Live on Twitch',
+        largeImage: 'icon_256x256',
+        smallImage: 'twitch_logo',
+        startTime: Date.now(),
+        gameName: info.game_name || '',
+        streamUrl: `https://twitch.tv/${channel}`,
+      }).then(() => {
+        Logger.debug('[Magne] Presence updated successfully');
+      }).catch((e) => {
+        Logger.warn('[Magne] Could not update presence (Magne may not be running):', e);
+      });
 
       // Connect to EventSub for real-time events (only if authenticated)
       const channelId = info.user_id;

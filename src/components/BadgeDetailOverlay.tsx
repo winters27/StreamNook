@@ -385,74 +385,59 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
 
     const now = Date.now();
 
-    // First, try to parse abbreviated date range format (e.g., "Dec 1-12")
-    const dateRange = parseDateRange(moreInfo);
-    if (dateRange) {
-      const startTime = dateRange.start.getTime();
-      const endTime = dateRange.end.getTime();
+    // Helper to classify a date range into a status
+    const classifyRange = (startTime: number, endTime: number): 'available' | 'coming-soon' | 'expired' => {
+      if (now < startTime) return 'coming-soon';
+      if (now >= startTime && now <= endTime) return 'available';
+      return 'expired';
+    };
 
-      if (now < startTime) {
-        return 'coming-soon';
-      } else if (now >= startTime && now <= endTime) {
-        return 'available';
-      } else {
-        return 'expired';
-      }
-    }
-
-    // Fallback: Extract ISO timestamps from the more_info text
+    // PRIORITY 1: Try ISO timestamps first — they carry explicit years and are always accurate.
+    // This prevents year-less abbreviated formats (e.g., "Oct 18–20") from being parsed with
+    // currentYear and incorrectly categorizing past events as "coming soon".
     const isoRegex = /(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?(?:Z)?)/g;
     const timestamps = moreInfo.match(isoRegex);
 
-    if (!timestamps || timestamps.length === 0) return null;
+    if (timestamps && timestamps.length > 0) {
+      try {
+        if (timestamps.length === 1) {
+          const startTime = new Date(timestamps[0]).getTime();
+          let endTime: number;
 
-    try {
-      if (timestamps.length === 1) {
-        // Single timestamp - assume it's the start time
-        const startTime = new Date(timestamps[0]).getTime();
-        let endTime: number;
-
-        // Try to find duration hint (e.g., "60 minutes", "2 hours")
-        const durationMatch = moreInfo.match(/(\d+)\s+(minute|hour)s?/i);
-        if (durationMatch) {
-          const duration = parseInt(durationMatch[1], 10);
-          const unit = durationMatch[2].toLowerCase();
-          const startDate = new Date(timestamps[0]);
-          if (unit === 'minute') {
-            startDate.setMinutes(startDate.getMinutes() + duration);
-          } else if (unit === 'hour') {
-            startDate.setHours(startDate.getHours() + duration);
+          const durationMatch = moreInfo.match(/(\d+)\s+(minute|hour)s?/i);
+          if (durationMatch) {
+            const duration = parseInt(durationMatch[1], 10);
+            const unit = durationMatch[2].toLowerCase();
+            const startDate = new Date(timestamps[0]);
+            if (unit === 'minute') {
+              startDate.setMinutes(startDate.getMinutes() + duration);
+            } else if (unit === 'hour') {
+              startDate.setHours(startDate.getHours() + duration);
+            }
+            endTime = startDate.getTime();
+          } else {
+            const startDate = new Date(timestamps[0]);
+            endTime = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate(), 23, 59, 59).getTime();
           }
-          endTime = startDate.getTime();
-        } else {
-          // No duration found, assume event lasts until end of that day
-          const startDate = new Date(timestamps[0]);
-          endTime = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate(), 23, 59, 59).getTime();
-        }
 
-        if (now < startTime) {
-          return 'coming-soon';
-        } else if (now >= startTime && now <= endTime) {
-          return 'available';
+          return classifyRange(startTime, endTime);
         } else {
-          return 'expired';
+          const startTime = new Date(timestamps[0]).getTime();
+          const endTime = new Date(timestamps[timestamps.length - 1]).getTime();
+          return classifyRange(startTime, endTime);
         }
-      } else {
-        // Multiple timestamps - assume first is start, last is end
-        const startTime = new Date(timestamps[0]).getTime();
-        const endTime = new Date(timestamps[timestamps.length - 1]).getTime();
-
-        if (now < startTime) {
-          return 'coming-soon';
-        } else if (now >= startTime && now <= endTime) {
-          return 'available';
-        } else {
-          return 'expired';
-        }
+      } catch {
+        // Fall through to parseDateRange
       }
-    } catch {
-      return null;
     }
+
+    // PRIORITY 2: Try parseDateRange for abbreviated/natural formats.
+    const dateRange = parseDateRange(moreInfo);
+    if (dateRange) {
+      return classifyRange(dateRange.start.getTime(), dateRange.end.getTime());
+    }
+
+    return null;
   };
 
   const badgeStatus = getBadgeStatus();

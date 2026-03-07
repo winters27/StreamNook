@@ -32,6 +32,12 @@ export interface ModerationContext {
   username?: string; // affected user
 }
 
+// Internal tracking for CLEARCHAT — scopes moderation to specific messages
+interface ClearedUserEntry {
+  context: ModerationContext;
+  affectedMessageIds: Set<string>;
+}
+
 export const useTwitchChat = () => {
   const [messages, setMessages] = useState<any[]>([]);
   const [isPausedForBuffer, setIsPausedForBuffer] = useState(false);
@@ -39,8 +45,17 @@ export const useTwitchChat = () => {
   const [error, setError] = useState<string | null>(null);
   // Track deleted message IDs for showing "[deleted]" styling
   const [deletedMessageIds, setDeletedMessageIds] = useState<Set<string>>(new Set());
-  // Track users whose messages are cleared (timeout/ban) with moderation context
-  const [clearedUserContexts, setClearedUserContexts] = useState<Map<string, ModerationContext>>(new Map());
+  // Track users whose messages are cleared (timeout/ban) with per-message scoping
+  const [clearedUserContexts, setClearedUserContexts] = useState<Map<string, ClearedUserEntry>>(new Map());
+
+  // Room state tracking (followers-only, subs-only, slow, etc.)
+  const [roomState, setRoomState] = useState<{
+    followersOnly: number; // -1 = off, 0 = all followers, >0 = minutes
+    slow: number;
+    subsOnly: boolean;
+    emoteOnly: boolean;
+    r9k: boolean;
+  }>({ followersOnly: -1, slow: 0, subsOnly: false, emoteOnly: false, r9k: false });
 
   // Use refs for all mutable state that needs to be accessed in callbacks
   const wsRef = useRef<WebSocket | null>(null);
@@ -65,6 +80,8 @@ export const useTwitchChat = () => {
   const healthCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const lastMessageTimeRef = useRef<number>(Date.now());
   const isConnectedRef = useRef(false);
+  // Ref for the NOTICE error auto-clear timer (prevents stale timer leaks)
+  const noticeErrorTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   // Keep ref in sync with state
   useEffect(() => {
@@ -114,6 +131,9 @@ export const useTwitchChat = () => {
 
       wsRef.current = null;
     }
+
+    // Reset room state on cleanup (channel switch / disconnect)
+    setRoomState({ followersOnly: -1, slow: 0, subsOnly: false, emoteOnly: false, r9k: false });
 
     // Only stop the backend IRC service when explicitly requested (e.g., channel switch or app cleanup)
     // The Rust start_chat already calls stop() at its beginning, so we don't need to call it
@@ -424,12 +444,30 @@ export const useTwitchChat = () => {
                   parsed.target_user
                 );
                 
+                // Snapshot current message IDs belonging to this user
+                // so only pre-existing messages get the moderation overlay
+                const affectedIds = new Set<string>();
+                for (const msg of messagesRef.current) {
+                  const msgUserId = typeof msg !== 'string'
+                    ? msg.user_id
+                    : msg.match?.(/user-id=([^;]+)/)?.[1];
+                  const msgId = typeof msg !== 'string'
+                    ? msg.id
+                    : msg.match?.(/(?:^|;)id=([^;]+)/)?.[1];
+                  if (msgUserId === parsed.target_user_id && msgId) {
+                    affectedIds.add(msgId);
+                  }
+                }
+
                 setClearedUserContexts(prev => {
                   const newMap = new Map(prev);
                   newMap.set(parsed.target_user_id, {
-                    type: moderationType,
-                    duration: parsed.ban_duration,
-                    username: parsed.target_user,
+                    context: {
+                      type: moderationType,
+                      duration: parsed.ban_duration,
+                      username: parsed.target_user,
+                    },
+                    affectedMessageIds: affectedIds,
                   });
                   return newMap;
                 });
@@ -437,6 +475,63 @@ export const useTwitchChat = () => {
                 // Full chat clear - this is rare, usually mod action
                 Logger.debug('[Chat] CLEARCHAT: Full chat clear');
               }
+              return;
+            }
+
+            // Handle NOTICE events (e.g. followers-only rejection, sub-only, duplicate)
+            if (parsed.type === 'NOTICE') {
+              Logger.debug('[Chat] NOTICE:', parsed.msg_id, parsed.message);
+
+              // Only remove optimistic messages for known rejection msg-ids
+              const rejectionIds = new Set([
+                'msg_followersonly', 'msg_followersonly_followed', 'msg_followersonly_zero',
+                'msg_subsonly', 'msg_slowmode', 'msg_r9k', 'msg_verified_email',
+                'msg_ratelimit', 'msg_duplicate', 'msg_banned', 'msg_timedout',
+                'msg_rejected', 'msg_rejected_mandatory', 'msg_requires_verified_phone_number',
+              ]);
+
+              if (parsed.msg_id && rejectionIds.has(parsed.msg_id)) {
+                // Remove the most recent optimistic message (sent within last 5s as safety bound)
+                const cutoff = Date.now() - 5000;
+                setMessages(prev => {
+                  for (let i = prev.length - 1; i >= 0; i--) {
+                    const msg = prev[i];
+                    if (typeof msg === 'string' && msg.includes('id=local-')) {
+                      const tsMatch = msg.match(/tmi-sent-ts=(\d+)/);
+                      const ts = tsMatch ? parseInt(tsMatch[1], 10) : 0;
+                      if (ts >= cutoff) {
+                        Logger.debug('[Chat] Removing rejected optimistic message at index', i);
+                        const updated = [...prev];
+                        updated.splice(i, 1);
+                        return updated;
+                      }
+                    }
+                  }
+                  return prev;
+                });
+              }
+
+              // Surface the notice text as a timed error
+              if (parsed.message) {
+                if (noticeErrorTimerRef.current) {
+                  clearTimeout(noticeErrorTimerRef.current);
+                }
+                setError(parsed.message);
+                noticeErrorTimerRef.current = setTimeout(() => setError(null), 6000);
+              }
+              return;
+            }
+
+            // Handle ROOMSTATE events — MERGE, don't overwrite (partial updates)
+            if (parsed.type === 'ROOMSTATE') {
+              Logger.debug('[Chat] ROOMSTATE update:', parsed);
+              setRoomState(prev => ({
+                followersOnly: parsed.followers_only ?? prev.followersOnly,
+                slow: parsed.slow ?? prev.slow,
+                subsOnly: parsed.subs_only ?? prev.subsOnly,
+                emoteOnly: parsed.emote_only ?? prev.emoteOnly,
+                r9k: parsed.r9k ?? prev.r9k,
+              }));
               return;
             }
 
@@ -918,6 +1013,9 @@ export const useTwitchChat = () => {
     return () => {
       Logger.debug('[Chat] Cleanup: unmounting');
       isIntentionalDisconnectRef.current = true;
+      if (noticeErrorTimerRef.current) {
+        clearTimeout(noticeErrorTimerRef.current);
+      }
       cleanupWebSocket(true); // Stop backend when component unmounts
     };
   }, [cleanupWebSocket]);
@@ -944,5 +1042,5 @@ export const useTwitchChat = () => {
     }
   }, [trimToLimit]);
 
-  return { messages, connectChat, sendMessage, isConnected, error, setPaused, deletedMessageIds, clearedUserContexts };
+  return { messages, connectChat, sendMessage, isConnected, error, setPaused, deletedMessageIds, clearedUserContexts, roomState };
 };

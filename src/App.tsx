@@ -224,6 +224,12 @@ function App() {
         autoSyncUniversalCacheIfStale();
       });
 
+      // Auto-optimize proxy routing on every launch
+      // Ensures proxy is enabled, runs health check, and applies fastest proxy
+      import('./services/proxyAutoOptimizer').then(({ runProxyOptimization }) => {
+        runProxyOptimization();
+      });
+
       // Pre-fetch cosmetics for current user
       const { currentUser, isAuthenticated } = useAppStore.getState();
       if (isAuthenticated && currentUser?.user_id) {
@@ -341,6 +347,29 @@ function App() {
         addToast('Reserved stream went offline - token returned to rotation', 'info');
       });
 
+      // Listen for streamnook:// deep links (e.g. from Magne's "Watch Stream" button)
+      let unlistenDeepLink: (() => void) | null = null;
+      try {
+        const { onOpenUrl } = await import('@tauri-apps/plugin-deep-link');
+        unlistenDeepLink = await onOpenUrl((urls: string[]) => {
+          for (const url of urls) {
+            Logger.debug('[App] Deep link received:', url);
+            // Parse streamnook://watch/{channel}
+            const match = url.match(/^streamnook:\/\/watch\/(.+)$/i);
+            if (match) {
+              const channel = match[1].replace(/\/$/, ''); // strip trailing slash
+              Logger.info(`[App] Deep link: opening stream for ${channel}`);
+              const { startStream } = useAppStore.getState();
+              startStream(channel);
+              // Bring window to front
+              getCurrentWindow().setFocus().catch(() => {});
+            }
+          }
+        });
+      } catch (e) {
+        Logger.warn('[App] Deep link plugin not available:', e);
+      }
+
       // Set up periodic auth check to detect session expiry while watching
       // Check every 5 minutes
       const authCheckInterval = setInterval(async () => {
@@ -363,6 +392,7 @@ function App() {
         unlistenWhisperProgress();
         unlistenWhisperComplete();
         unlistenReservedOffline();
+        if (unlistenDeepLink) unlistenDeepLink();
         clearInterval(authCheckInterval);
       };
     };

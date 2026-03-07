@@ -498,6 +498,39 @@ impl IrcService {
             // Room state updates (slow mode, sub-only, etc.)
             debug!("[IRC Chat] Room state update: {}", trimmed);
 
+            // Forward room state to frontend — only include tags actually present
+            // Twitch sends FULL roomstate on join, PARTIAL on setting changes
+            let mut room_state = serde_json::Map::new();
+            room_state.insert("type".into(), serde_json::json!("ROOMSTATE"));
+
+            if let Some(v) = Self::extract_tag_value(trimmed, "followers-only") {
+                if let Ok(n) = v.parse::<i64>() {
+                    room_state.insert("followers_only".into(), serde_json::json!(n));
+                }
+            }
+            if let Some(v) = Self::extract_tag_value(trimmed, "slow") {
+                if let Ok(n) = v.parse::<u64>() {
+                    room_state.insert("slow".into(), serde_json::json!(n));
+                }
+            }
+            if let Some(v) = Self::extract_tag_value(trimmed, "subs-only") {
+                if let Ok(n) = v.parse::<u8>() {
+                    room_state.insert("subs_only".into(), serde_json::json!(n == 1));
+                }
+            }
+            if let Some(v) = Self::extract_tag_value(trimmed, "emote-only") {
+                if let Ok(n) = v.parse::<u8>() {
+                    room_state.insert("emote_only".into(), serde_json::json!(n == 1));
+                }
+            }
+            if let Some(v) = Self::extract_tag_value(trimmed, "r9k") {
+                if let Ok(n) = v.parse::<u8>() {
+                    room_state.insert("r9k".into(), serde_json::json!(n == 1));
+                }
+            }
+
+            let _ = tx.send(serde_json::Value::Object(room_state).to_string());
+
             // Check for shared chat information
             if let Some(room_id) = Self::extract_tag_value(trimmed, "room-id") {
                 Self::check_shared_chat_status(&room_id).await;
@@ -565,8 +598,24 @@ impl IrcService {
             });
             let _ = tx.send(clear_event.to_string());
         } else if trimmed.contains("NOTICE") {
-            // System notices
+            // System notices — forward to frontend for user-facing handling
             debug!("[IRC Chat] Notice: {}", trimmed);
+
+            // Extract the msg-id tag (e.g. "msg_followersonly", "msg_subsonly")
+            // Present when twitch.tv/tags capability is active (requested at connect)
+            let msg_id = Self::extract_tag_value(trimmed, "msg-id");
+
+            // Extract the human-readable notice text after the last " :"
+            let notice_text = trimmed
+                .rfind(" :")
+                .map(|idx| trimmed[idx + 2..].trim().to_string());
+
+            let notice_event = serde_json::json!({
+                "type": "NOTICE",
+                "msg_id": msg_id,
+                "message": notice_text,
+            });
+            let _ = tx.send(notice_event.to_string());
         }
 
         Ok(())

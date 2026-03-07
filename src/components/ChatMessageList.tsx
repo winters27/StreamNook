@@ -23,7 +23,7 @@ interface ChatMessageListProps {
   onBadgeClick: (badgeKey: string, badgeInfo: any) => void;
   highlightedMessageId: string | null;
   deletedMessageIds: Set<string>;
-  clearedUserContexts: Map<string, ModerationContext>;
+  clearedUserContexts: Map<string, { context: ModerationContext; affectedMessageIds: Set<string> }>;
   emotes: EmoteSet | null;
   getMessageId: (message: string | BackendChatMessage) => string | null;
 }
@@ -227,12 +227,15 @@ const ChatMessageList = memo(function ChatMessageList({
           if (messageId && deletedMessageIds.has(messageId)) {
             // Single message deleted by mod
             moderationContext = { type: 'deleted' };
-          } else {
+          } else if (messageId) {
             const userId = typeof message !== 'string'
               ? message.user_id
               : message.match(/user-id=([^;]+)/)?.[1];
             if (userId && clearedUserContexts.has(userId)) {
-              moderationContext = clearedUserContexts.get(userId)!;
+              const entry = clearedUserContexts.get(userId)!;
+              if (entry.affectedMessageIds.has(messageId)) {
+                moderationContext = entry.context;
+              }
             }
           }
 

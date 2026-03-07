@@ -241,10 +241,16 @@ async fn download_universal_manifest() -> Result<bool> {
 
             let mut local_manifest = load_manifest()?;
 
-            // Only add entries that don't exist locally or are from "badgebase" source
+            // Only add badgebase entries from remote if they are newer than local
             for (key, entry) in remote_manifest.entries {
                 if entry.metadata.source == "badgebase" {
-                    local_manifest.entries.insert(key, entry);
+                    let should_replace = match local_manifest.entries.get(&key) {
+                        Some(local) => entry.metadata.timestamp > local.metadata.timestamp,
+                        None => true, // New entry not present locally, always insert
+                    };
+                    if should_replace {
+                        local_manifest.entries.insert(key, entry);
+                    }
                 }
             }
 
@@ -355,6 +361,7 @@ pub async fn save_cached_item(entry: UniversalCacheEntry) -> Result<()> {
 }
 
 /// Save a new item to cache with metadata
+/// Preserves existing position if the entry already exists (avoids losing sort order)
 pub async fn cache_item(
     cache_type: CacheType,
     id: String,
@@ -362,6 +369,11 @@ pub async fn cache_item(
     source: String,
     expiry_days: u32,
 ) -> Result<()> {
+    // Preserve existing position if the entry already has one
+    let existing_position = load_manifest()
+        .ok()
+        .and_then(|m| m.entries.get(&id).and_then(|e| e.position));
+
     let entry = UniversalCacheEntry {
         id: id.clone(),
         cache_type,
@@ -372,7 +384,7 @@ pub async fn cache_item(
             source,
             version: CACHE_VERSION,
         },
-        position: None,
+        position: existing_position,
     };
 
     save_cached_item(entry).await

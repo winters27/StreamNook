@@ -369,7 +369,8 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
   };
 
   // Get animated paint image URL (prefer animated webp)
-  const getAnimatedPaintImageUrl = (paint: SevenTVGlobalPaint): string | null => {
+  // preferScale: lower = less decode overhead. Use 1 for grid thumbnails, 2-3 for detail modal.
+  const getAnimatedPaintImageUrl = (paint: SevenTVGlobalPaint, preferScale: 1 | 2 | 3 | 4 = 4): string | null => {
     if (!paint.data?.layers?.[0]?.ty) return null;
     const layerType = paint.data.layers[0].ty;
     if (layerType.__typename !== 'PaintLayerTypeImage' || !layerType.images) return null;
@@ -383,16 +384,22 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
     
     if (animatedImages.length === 0) return null;
     
-    // Prefer highest scale
-    const scale4 = animatedImages.find((img: any) => img.scale === 4);
-    const scale3 = animatedImages.find((img: any) => img.scale === 3);
-    const scale2 = animatedImages.find((img: any) => img.scale === 2);
-    
-    return scale4?.url || scale3?.url || scale2?.url || animatedImages[0]?.url || null;
+    // Select by preferred scale (lower = less decode overhead for small cards)
+    for (let s = preferScale; s >= 1; s--) {
+      const match = animatedImages.find((img: any) => img.scale === s);
+      if (match?.url) return match.url;
+    }
+    // Fallback: try scales above preferred
+    for (let s = preferScale + 1; s <= 4; s++) {
+      const match = animatedImages.find((img: any) => img.scale === s);
+      if (match?.url) return match.url;
+    }
+    return animatedImages[0]?.url || null;
   };
 
   // Generate CSS gradient from 7TV paint layers
-  const generatePaintGradient = (paint: SevenTVGlobalPaint): string => {
+  // preferScale: controls animated image resolution. Use 1 for grid, 2 for detail modal.
+  const generatePaintGradient = (paint: SevenTVGlobalPaint, preferScale: 1 | 2 | 3 | 4 = 4): string => {
     if (!paint.data || !paint.data.layers || paint.data.layers.length === 0) {
       return 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)'; // Default fallback
     }
@@ -424,7 +431,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
 
     if (layerType.__typename === 'PaintLayerTypeImage' && layerType.images?.[0]?.url) {
       // For image paints, prefer animated webp if available
-      const animatedUrl = getAnimatedPaintImageUrl(paint);
+      const animatedUrl = getAnimatedPaintImageUrl(paint, preferScale);
       return `url(${animatedUrl || layerType.images[0].url})`;
     }
 
@@ -1481,74 +1488,62 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
 
     const now = Date.now();
 
-    // Try to parse date range from more_info (supports multiple formats)
-    const dateRange = parseDateRange(moreInfo);
-    if (dateRange) {
-      const startTime = dateRange.start.getTime();
-      const endTime = dateRange.end.getTime();
+    // Helper to classify a date range into a status
+    const classifyRange = (startTime: number, endTime: number): 'available' | 'coming-soon' | 'expired' => {
+      if (now < startTime) return 'coming-soon';
+      if (now >= startTime && now <= endTime) return 'available';
+      return 'expired';
+    };
 
-      if (now < startTime) {
-        return 'coming-soon';
-      } else if (now >= startTime && now <= endTime) {
-        return 'available';
-      } else {
-        return 'expired';
-      }
-    }
-
-    // Fallback: Extract ISO timestamps from the more_info text
+    // PRIORITY 1: Try ISO timestamps first — they carry explicit years and are always accurate.
+    // This prevents year-less abbreviated formats (e.g., "Oct 18–20") from being parsed with
+    // currentYear and incorrectly categorizing past events as "coming soon".
     const isoRegex = /(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?(?:Z)?)/g;
     const timestamps = moreInfo.match(isoRegex);
 
-    if (!timestamps || timestamps.length === 0) return null;
+    if (timestamps && timestamps.length > 0) {
+      try {
+        if (timestamps.length === 1) {
+          const startTime = new Date(timestamps[0]).getTime();
+          let endTime: number;
 
-    try {
-      if (timestamps.length === 1) {
-        // Single timestamp - assume it's the start time
-        const startTime = new Date(timestamps[0]).getTime();
-        let endTime: number;
-
-        // Try to find duration hint (e.g., "60 minutes", "2 hours")
-        const durationMatch = moreInfo.match(/(\d+)\s+(minute|hour)s?/i);
-        if (durationMatch) {
-          const duration = parseInt(durationMatch[1], 10);
-          const unit = durationMatch[2].toLowerCase();
-          const startDate = new Date(timestamps[0]);
-          if (unit === 'minute') {
-            startDate.setMinutes(startDate.getMinutes() + duration);
-          } else if (unit === 'hour') {
-            startDate.setHours(startDate.getHours() + duration);
+          // Try to find duration hint (e.g., "60 minutes", "2 hours")
+          const durationMatch = moreInfo.match(/(\d+)\s+(minute|hour)s?/i);
+          if (durationMatch) {
+            const duration = parseInt(durationMatch[1], 10);
+            const unit = durationMatch[2].toLowerCase();
+            const startDate = new Date(timestamps[0]);
+            if (unit === 'minute') {
+              startDate.setMinutes(startDate.getMinutes() + duration);
+            } else if (unit === 'hour') {
+              startDate.setHours(startDate.getHours() + duration);
+            }
+            endTime = startDate.getTime();
+          } else {
+            const startDate = new Date(timestamps[0]);
+            endTime = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate(), 23, 59, 59).getTime();
           }
-          endTime = startDate.getTime();
-        } else {
-          // No duration found, assume event lasts until end of that day
-          const startDate = new Date(timestamps[0]);
-          endTime = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate(), 23, 59, 59).getTime();
-        }
 
-        if (now < startTime) {
-          return 'coming-soon';
-        } else if (now >= startTime && now <= endTime) {
-          return 'available';
+          return classifyRange(startTime, endTime);
         } else {
-          return 'expired';
+          const startTime = new Date(timestamps[0]).getTime();
+          const endTime = new Date(timestamps[timestamps.length - 1]).getTime();
+          return classifyRange(startTime, endTime);
         }
-      } else {
-        // Multiple timestamps - assume first is start, last is end
-        const startTime = new Date(timestamps[0]).getTime();
-        const endTime = new Date(timestamps[timestamps.length - 1]).getTime();
-
-        if (now < startTime) {
-          return 'coming-soon';
-        } else if (now >= startTime && now <= endTime) {
-          return 'available';
-        } else {
-          return 'expired';
-        }
+      } catch {
+        // Fall through to parseDateRange
       }
-    } catch {
-      return null;
     }
+
+    // PRIORITY 2: Try parseDateRange for abbreviated/natural formats.
+    // These may use currentYear for year-less dates, which is acceptable
+    // when no ISO timestamps are available.
+    const dateRange = parseDateRange(moreInfo);
+    if (dateRange) {
+      return classifyRange(dateRange.start.getTime(), dateRange.end.getTime());
+    }
+
+    return null;
   };
 
   const isBadgeAvailable = (badge: BadgeWithMetadata): boolean => {
@@ -2230,6 +2225,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
                             isOwned ? 'ring-2 ring-[#29b6f6]/50 bg-[#29b6f6]/10' : ''
                           }`}
                           title={paint.description || paint.name}
+                          style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 100px' }}
                         >
                           {/* Owned indicator */}
                           {isOwned && (
@@ -2246,7 +2242,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
                             <span 
                               className="text-base font-bold px-2 truncate relative"
                               style={{ 
-                                background: generatePaintGradient(paint),
+                                background: generatePaintGradient(paint, 1),
                                 backgroundSize: '100% 100%',
                                 backgroundClip: 'text',
                                 WebkitBackgroundClip: 'text',
@@ -2359,7 +2355,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
                 <span 
                   className="text-3xl font-bold"
                   style={{ 
-                    background: generatePaintGradient(selectedSeventvPaint),
+                    background: generatePaintGradient(selectedSeventvPaint, 2),
                     backgroundClip: 'text',
                     WebkitBackgroundClip: 'text',
                     WebkitTextFillColor: 'transparent',
@@ -2374,7 +2370,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
             {/* Paint gradient preview bar */}
             <div 
               className="h-8 rounded-lg mb-6"
-              style={{ background: generatePaintGradient(selectedSeventvPaint) }}
+              style={{ background: generatePaintGradient(selectedSeventvPaint, 2) }}
             />
             
             {/* Paint info */}
