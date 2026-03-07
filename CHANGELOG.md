@@ -1,3 +1,19 @@
+## [6.10.0] - 2026-03-06
+### ✨ Features
+- **Magne Rich Presence**: StreamNook now integrates with Magne, a Discord-like rich presence client. Your watching activity will be displayed automatically, including stream details, game, and a "Watch Stream" button that opens the stream directly in StreamNook. We have kept Discord RPC functionality, but will be shifting focus toward Magne, our new project, with ambitions of pursing a privacy-focused social platform that doesn't want to sell your identity.
+- **Deep Link Support**: You can now open specific streams directly from external applications or the command line using `streamnook://watch/<channel>` URLs.
+- **Automatic Proxy Optimization**: On startup, StreamNook will automatically check available proxy servers, select the fastest one, and configure your streamlink settings for optimal performance. This ensures you always have the best connection without manual intervention.
+- **Enhanced Chat Moderation**: The chat now visually reflects moderation actions like timeouts and bans, clarifying which messages are affected. You'll also see timely notifications for chat room state changes (e.g., slow mode, sub-only).
+
+### 🐛 Bug Fixes
+- **Accurate Badge Cache Age**: The displayed age of your badge cache now correctly reflects the freshness of your local data, not just the last manifest sync.
+- **Improved Date Parsing**: Badge availability dates are parsed more reliably, correctly identifying upcoming, active, and expired events.
+- **Streamlink Proxy Stability**: Resolved issues with proxy configuration, ensuring more reliable streaming performance.
+- **Chat Message Scoping**: Moderation actions in chat are now accurately scoped to the specific messages they affect.
+
+### 🔧 Maintenance
+- Updated dependencies and internal libraries for improved stability and performance.
+
 ## [6.9.0] - 2026-01-30
 ### ✨ Features
 - **Proxy Health & Auto-Selection**: StreamNook now includes a robust proxy health checker! Test various proxy servers, see their real-time latency, and automatically select the fastest one for your region to improve stream stability.
@@ -980,6 +996,7 @@ ATTENTION: ALL USERS LOG OUT OF TWITCH THEN LOG BACK IN FOR SOME CHANGES OT TAKE
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
