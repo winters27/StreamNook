@@ -263,7 +263,7 @@ impl MagneService {
         let mut guard = MAGNE_STATE.lock().await;
 
         // Dedup: skip if pipe is connected and same activity was already sent
-        let activity_key = format!("{}|{}", details, state);
+        let activity_key = format!("{}|{}|{}", details, state, game_name);
         if guard.pipe.is_some() {
             if let Some(ref last) = guard.last_activity_key {
                 if *last == activity_key {

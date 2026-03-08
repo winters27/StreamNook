@@ -1010,13 +1010,33 @@ export const useAppStore = create<AppState>((set, get) => ({
             const currentStream = get().currentStream;
             if (currentStream) {
               Logger.debug(`[EventSub] Channel updated: "${updateData.title}" - ${updateData.category_name}`);
-              set({
-                currentStream: {
-                  ...currentStream,
-                  title: updateData.title,
-                  game_name: updateData.category_name,
-                  game_id: updateData.category_id,
-                }
+              const updatedStream = {
+                ...currentStream,
+                title: updateData.title,
+                game_name: updateData.category_name,
+                game_id: updateData.category_id,
+              };
+              set({ currentStream: updatedStream });
+
+              // Re-broadcast rich presence with updated metadata
+              const presenceArgs = {
+                details: `Watching ${updatedStream.user_name}`,
+                activityState: updatedStream.title || 'Live on Twitch',
+                largeImage: '',
+                smallImage: '',
+                startTime: Date.now(),
+                gameName: updatedStream.game_name || '',
+                streamUrl: `https://twitch.tv/${updatedStream.user_login}`,
+              };
+
+              if (get().settings.discord_rpc_enabled) {
+                invoke('update_discord_presence', presenceArgs).catch((e) => {
+                  Logger.warn('[Discord] Could not update presence on channel change:', e);
+                });
+              }
+
+              invoke('update_magne_presence', presenceArgs).catch((e) => {
+                Logger.warn('[Magne] Could not update presence on channel change:', e);
               });
             }
           });
