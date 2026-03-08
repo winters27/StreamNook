@@ -1,3 +1,10 @@
+## [6.10.1] - 2026-03-08
+### ✨ Features
+- **Rich Presence Enhancements**: StreamNook now provides more detailed information for Discord and Magne presence, including the stream's title, category, and the game being played. This offers a richer experience for others viewing your activity.
+
+### 🐛 Bug Fixes
+- **Accurate Presence Updates**: Fixed an issue where the activity key for presence updates was not comprehensive, potentially leading to duplicate or inaccurate status displays. The presence will now correctly reflect the current stream details.
+
 ## [6.10.0] - 2026-03-06
 ### ✨ Features
 - **Magne Rich Presence**: StreamNook now integrates with Magne, a Discord-like rich presence client. Your watching activity will be displayed automatically, including stream details, game, and a "Watch Stream" button that opens the stream directly in StreamNook. We have kept Discord RPC functionality, but will be shifting focus toward Magne, our new project, with ambitions of pursing a privacy-focused social platform that doesn't want to sell your identity.
@@ -996,6 +1003,7 @@ ATTENTION: ALL USERS LOG OUT OF TWITCH THEN LOG BACK IN FOR SOME CHANGES OT TAKE
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
