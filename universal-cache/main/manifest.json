@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "last_sync": 1773816684,
+  "last_sync": 1773902721,
   "entries": {
     "global_badges": {
       "id": "global_badges",
@@ -4750,10 +4750,10 @@
             }
           ]
         },
-        "cached_at": 1773816682
+        "cached_at": 1773902719
       },
       "metadata": {
-        "timestamp": 1773816682,
+        "timestamp": 1773902719,
         "expiry_days": 7,
         "source": "twitch",
         "version": 1
@@ -10336,7 +10336,7 @@
         "more_info": "The Crimson Butterfly badge is a limited-time global chat badge dedicated to the release of the FATAL FRAME II: Crimson Butterfly REMAKE. To earn it, you need to subscribe or gift a subscription (Prime subs doesn’t count) to streamer in the FATAL FRAME II: Crimson Butterfly REMAKE category during the event period. Event time: 2026-03-12T07:00:00Z &#8211; 2026-03-23T05:59:00Z The badge is distributed via Twitch Drops and granted automatically after the requirement is met."
       },
       "metadata": {
-        "timestamp": 1773297693,
+        "timestamp": 1773902721,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
