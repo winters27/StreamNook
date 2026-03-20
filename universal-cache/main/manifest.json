@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "last_sync": 1773902721,
+  "last_sync": 1773988932,
   "entries": {
     "global_badges": {
       "id": "global_badges",
@@ -4750,10 +4750,10 @@
             }
           ]
         },
-        "cached_at": 1773902719
+        "cached_at": 1773988927
       },
       "metadata": {
-        "timestamp": 1773902719,
+        "timestamp": 1773988927,
         "expiry_days": 7,
         "source": "twitch",
         "version": 1
@@ -10381,10 +10381,10 @@
       "data": {
         "date_added": "12 March 2026",
         "usage_stats": null,
-        "more_info": null
+        "more_info": "The First Stand 2026 Supporter badge is a limited-time global chat badge dedicated to the League of Legends First Stand 2026 event. To earn it, you need to subscribe or gift a subscription (Prime subs doesn’t count) to one of a lolesports or approved participating channel during the event period. Some of approved channels: Riot Games , CBLOL , lolesportsla , lolesportstw , LeagueofLegendsJP . Or just find the channel with drops enabled Event time: 2026-03-13T23:00:00Z &#8211; 2026-03-23T10:59:00Z The badge is distributed via Twitch Drops and granted automatically after the requirement is met."
       },
       "metadata": {
-        "timestamp": 1773383975,
+        "timestamp": 1773988928,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -10397,10 +10397,10 @@
       "data": {
         "date_added": "12 March 2026",
         "usage_stats": null,
-        "more_info": null
+        "more_info": "The First Stand 2026 Viewer badge is a limited-time global chat badge dedicated to the League of Legends First Stand 2026 event. To earn it, you need to watch for 45 minutes one of a lolesports or approved participating channel during the event period. Some of approved channels: Riot Games , CBLOL , lolesportsla , lolesportstw , LeagueofLegendsJP . Or just find the channel with drops enabled Event time: 2026-03-13T23:00:00Z &#8211; 2026-03-23T10:59:00Z The badge is distributed via Twitch Drops and granted automatically after the requirement is met."
       },
       "metadata": {
-        "timestamp": 1773383976,
+        "timestamp": 1773988930,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -10413,10 +10413,10 @@
       "data": {
         "date_added": "12 March 2026",
         "usage_stats": null,
-        "more_info": null
+        "more_info": "The QSMP2 badge is a limited-time global chat badge. To earn it, you need to watch 1 hours of livestream on one of the participating channels during the campaign. Participating channels: QSMP QuackityToo Quackity Progress is only counted while the stream is in the QSMP category Event Duration: 2026-03-14T18:00:00Z &#8211; 2026-07-01T02:59:00Z The badge is distributed via Twitch Drops and granted automatically after meeting the requirement."
       },
       "metadata": {
-        "timestamp": 1773383977,
+        "timestamp": 1773988931,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -10429,10 +10429,10 @@
       "data": {
         "date_added": "12 March 2026",
         "usage_stats": null,
-        "more_info": null
+        "more_info": "The Rudy badge is a limited-time global chat badge dedicated to the Monster Hunter Stories 3: Twisted Reflection launch. To earn it, you need to subscribe or gift a subscription (Prime subs doesn’t count) to streamer in the Monster Hunter Stories 3: Twisted Reflection category during the event period. Event time: 2026-03-13T04:00:00Z &#8211; 2026-03-27T03:59:00Z The badge is distributed via Twitch Drops and granted automatically after the requirement is met."
       },
       "metadata": {
-        "timestamp": 1773383978,
+        "timestamp": 1773988932,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
