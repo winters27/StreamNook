@@ -19,4 +19,6 @@ pub struct TwitchStream {
     pub has_shared_chat: Option<bool>,
     #[serde(default)]
     pub profile_image_url: Option<String>,
+    #[serde(default)]
+    pub is_live: Option<bool>,
 }

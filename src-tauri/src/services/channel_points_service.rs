@@ -3,7 +3,6 @@ use anyhow::Result;
 use base64::{engine::general_purpose, Engine as _};
 use chrono::{DateTime, Utc};
 use log::{debug, error};
-use regex::Regex;
 use reqwest::Client;
 use serde_json::json;
 use std::collections::HashMap;
@@ -16,6 +15,8 @@ const WEB_CLIENT_ID: &str = "kimne78kx3ncx6brgo4mv6wki5h1ko";
 const ANDROID_CLIENT_ID: &str = "kd1unb4b3q4t58fwlpcbzcbnm76a8fp"; // Same as drops token
 const CLIENT_URL: &str = "https://www.twitch.tv";
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+/// Stable Twitch tracking endpoint — proven working in mining_service.rs
+const SPADE_URL: &str = "https://spade.twitch.tv/track";
 
 pub struct ChannelPointsService {
     client: Client,
@@ -31,7 +32,6 @@ pub struct WatchingStream {
     pub channel_id: String,
     pub channel_login: String,
     pub broadcast_id: String,
-    pub spade_url: Option<String>,
     #[allow(dead_code)]
     pub started_at: DateTime<Utc>,
     pub last_payload_sent: DateTime<Utc>,
@@ -475,27 +475,38 @@ impl ChannelPointsService {
         Ok(None)
     }
 
+    /// Check if a stream is already being watched (prevents counter-reset on re-add)
+    pub async fn is_watching(&self, channel_id: &str) -> bool {
+        self.watching_streams.read().await.contains_key(channel_id)
+    }
+
     /// Start watching a stream to earn channel points
+    /// Uses the stable spade.twitch.tv/track endpoint (proven in mining_service.rs)
     pub async fn start_watching_stream(
         &self,
         channel_id: &str,
         channel_login: &str,
         token: &str,
     ) -> Result<()> {
+        // Guard: don't reset counters if already watching this stream
+        if self.is_watching(channel_id).await {
+            debug!(
+                "ℹ️ Already watching {} — skipping re-add to preserve counters",
+                channel_login
+            );
+            return Ok(());
+        }
+
         // Get broadcast ID
         let broadcast_id = self
             .get_broadcast_id(channel_id, token)
             .await?
             .ok_or_else(|| anyhow::anyhow!("Channel {} is not live", channel_login))?;
 
-        // Get spade URL
-        let spade_url = self.get_spade_url(channel_login).await.ok();
-
         let watching_stream = WatchingStream {
             channel_id: channel_id.to_string(),
             channel_login: channel_login.to_string(),
             broadcast_id,
-            spade_url,
             started_at: Utc::now(),
             last_payload_sent: Utc::now(),
             minutes_watched: 0,
@@ -505,7 +516,10 @@ impl ChannelPointsService {
         let mut watching = self.watching_streams.write().await;
         watching.insert(channel_id.to_string(), watching_stream);
 
-        debug!("👀 Started watching {} for channel points", channel_login);
+        debug!(
+            "👀 Started watching {} for channel points (using spade.twitch.tv/track)",
+            channel_login
+        );
         Ok(())
     }
 
@@ -523,7 +537,12 @@ impl ChannelPointsService {
 
     /// Send minute-watched payload for all currently watching streams
     /// Rotates through streams to maximize point farming across multiple channels
-    pub async fn send_minute_watched_for_streams(&self, token: &str) -> Result<()> {
+    /// The reserved_channel_id (if set) always gets priority in the send queue
+    pub async fn send_minute_watched_for_streams(
+        &self,
+        token: &str,
+        reserved_channel_id: Option<&str>,
+    ) -> Result<()> {
         let user_id = self.get_user_id(token).await?;
         let mut watching = self.watching_streams.write().await;
 
@@ -541,47 +560,76 @@ impl ChannelPointsService {
         all_streams.sort_by_key(|s| s.last_payload_sent);
 
         // Twitch allows earning points on 2 streams concurrently
-        // But we rotate through all streams to maximize total points
         const MAX_CONCURRENT_STREAMS: usize = 2;
-        let streams_to_send = all_streams.iter_mut().take(MAX_CONCURRENT_STREAMS);
 
-        for stream in streams_to_send {
-            // Only send if we have spade URL
-            if let Some(ref spade_url) = stream.spade_url {
-                match self
-                    .send_watch_payload(
-                        spade_url,
-                        &stream.channel_id,
-                        &stream.channel_login,
-                        &stream.broadcast_id,
-                        &user_id,
-                    )
-                    .await
-                {
-                    Ok(true) => {
-                        stream.last_payload_sent = Utc::now();
-                        stream.minutes_watched += 1;
-                        // Estimate points earned (roughly 10 points per 5 minutes)
-                        if stream.minutes_watched % 5 == 0 {
-                            stream.points_earned += 10;
-                        }
-                        debug!(
-                            "✅ Sent minute-watched for {} ({} minutes, {} total watching)",
-                            stream.channel_login, stream.minutes_watched, total_streams
-                        );
+        // Build the send queue: reserved stream always gets priority
+        let mut streams_to_send: Vec<&mut WatchingStream> =
+            Vec::with_capacity(MAX_CONCURRENT_STREAMS);
+
+        // 1. Reserved stream first (if set and present in watching set)
+        if let Some(reserved_id) = reserved_channel_id {
+            if let Some(pos) = all_streams.iter().position(|s| s.channel_id == reserved_id) {
+                streams_to_send.push(all_streams.remove(pos));
+                debug!(
+                    "🔒 [SEND] Reserved stream {} prioritized in send queue",
+                    reserved_id
+                );
+            } else {
+                debug!(
+                    "⚠️ [SEND] Reserved stream {} NOT in watching set!",
+                    reserved_id
+                );
+            }
+        }
+
+        // 2. Fill remaining slots from the sorted rotation
+        for stream in all_streams.into_iter() {
+            if streams_to_send.len() >= MAX_CONCURRENT_STREAMS {
+                break;
+            }
+            streams_to_send.push(stream);
+        }
+
+        // Diagnostic: log the final send queue
+        let send_names: Vec<String> = streams_to_send
+            .iter()
+            .map(|s| format!("{}({})", s.channel_login, s.channel_id))
+            .collect();
+        debug!("📤 [SEND] Sending payloads to: {:?}", send_names);
+
+        for stream in &mut streams_to_send {
+            match self
+                .send_watch_payload(
+                    &stream.channel_id,
+                    &stream.channel_login,
+                    &stream.broadcast_id,
+                    &user_id,
+                )
+                .await
+            {
+                Ok(true) => {
+                    stream.last_payload_sent = Utc::now();
+                    stream.minutes_watched += 1;
+                    // Estimate points earned (roughly 10 points per 5 minutes)
+                    if stream.minutes_watched % 5 == 0 {
+                        stream.points_earned += 10;
                     }
-                    Ok(false) => {
-                        debug!(
-                            "⚠️ Failed to send minute-watched for {}",
-                            stream.channel_login
-                        );
-                    }
-                    Err(e) => {
-                        error!(
-                            "❌ Error sending minute-watched for {}: {}",
-                            stream.channel_login, e
-                        );
-                    }
+                    debug!(
+                        "✅ Sent minute-watched for {} ({} minutes, {} total watching)",
+                        stream.channel_login, stream.minutes_watched, total_streams
+                    );
+                }
+                Ok(false) => {
+                    debug!(
+                        "⚠️ Failed to send minute-watched for {}",
+                        stream.channel_login
+                    );
+                }
+                Err(e) => {
+                    error!(
+                        "❌ Error sending minute-watched for {}: {}",
+                        stream.channel_login, e
+                    );
                 }
             }
         }
@@ -636,66 +684,16 @@ impl ChannelPointsService {
         Ok(None)
     }
 
-    /// Extract spade URL from channel page
-    async fn get_spade_url(&self, channel_name: &str) -> Result<String> {
-        let channel_url = format!("https://www.twitch.tv/{}", channel_name);
-
-        // Fetch the channel page HTML
-        let response = self
-            .client
-            .get(&channel_url)
-            .header("User-Agent", USER_AGENT)
-            .send()
-            .await?;
-
-        let html = response.text().await?;
-
-        // Try to find spade URL directly in the HTML
-        let spade_pattern =
-            Regex::new(r#""spade_?url":\s*"(https://video-edge-[.\w\-/]+\.ts(?:\?[^"]*)?)"#)?;
-
-        if let Some(captures) = spade_pattern.captures(&html) {
-            if let Some(url) = captures.get(1) {
-                return Ok(url.as_str().to_string());
-            }
-        }
-
-        // If not found directly, look for settings JS file
-        let settings_pattern =
-            Regex::new(r#"src="(https://[\w.]+/config/settings\.[0-9a-f]{32}\.js)"#)?;
-
-        if let Some(captures) = settings_pattern.captures(&html) {
-            if let Some(settings_url) = captures.get(1) {
-                // Fetch the settings JS file
-                let settings_response = self.client.get(settings_url.as_str()).send().await?;
-
-                let settings_js = settings_response.text().await?;
-
-                // Look for spade URL in settings
-                if let Some(captures) = spade_pattern.captures(&settings_js) {
-                    if let Some(url) = captures.get(1) {
-                        return Ok(url.as_str().to_string());
-                    }
-                }
-            }
-        }
-
-        Err(anyhow::anyhow!(
-            "Could not find spade URL for channel {}",
-            channel_name
-        ))
-    }
-
     /// Send watch payload to earn channel points
+    /// Uses the stable spade.twitch.tv/track endpoint (ported from mining_service.rs)
     async fn send_watch_payload(
         &self,
-        spade_url: &str,
         channel_id: &str,
         channel_login: &str,
         broadcast_id: &str,
         user_id: &str,
     ) -> Result<bool> {
-        // Create the minute-watched payload
+        // Create the minute-watched payload (same format as mining_service.rs)
         let payload_data = json!([{
             "event": "minute-watched",
             "properties": {
@@ -716,16 +714,38 @@ impl ChannelPointsService {
         let payload_str = serde_json::to_string(&payload_data)?;
         let encoded = general_purpose::STANDARD.encode(payload_str.as_bytes());
 
-        // Send the watch payload
-        let response = self
+        // Send to stable Twitch tracking endpoint with timeout (matching mining_service.rs)
+        let response_result = self
             .client
-            .post(spade_url)
+            .post(SPADE_URL)
             .form(&[("data", encoded)])
+            .timeout(std::time::Duration::from_secs(15))
             .send()
-            .await?;
+            .await;
 
-        let status = response.status();
-        Ok(status.as_u16() == 204)
+        match response_result {
+            Ok(response) => {
+                let status = response.status();
+                if status.as_u16() == 204 {
+                    Ok(true)
+                } else {
+                    debug!(
+                        "⚠️ Watch payload returned HTTP {} for {}",
+                        status.as_u16(),
+                        channel_login
+                    );
+                    Ok(false)
+                }
+            }
+            Err(e) => {
+                if e.is_timeout() {
+                    debug!("⏱️ Watch payload TIMEOUT for {}", channel_login);
+                } else {
+                    debug!("❌ Watch payload error for {}: {}", channel_login, e);
+                }
+                Ok(false)
+            }
+        }
     }
 
     /// Get user ID from token

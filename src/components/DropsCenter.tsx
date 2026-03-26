@@ -43,6 +43,7 @@ interface DropsSettings {
     // Watch token allocation settings
     reserve_token_for_current_stream?: boolean;
     auto_reserve_on_watch?: boolean;
+    priority_farm_channels?: Array<{ channel_id: string; channel_login: string; display_name: string }>;
 }
 
 export default function DropsCenter() {
@@ -388,6 +389,7 @@ export default function DropsCenter() {
                 priority_mode: 'PriorityOnly' as const,
                 watch_interval_seconds: 20,
                 favorite_games: [],
+                priority_farm_channels: [],
             };
             const updatedSettings = { ...current, ...newSettings };
 

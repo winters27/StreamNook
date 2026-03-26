@@ -28,11 +28,11 @@
 
 use commands::{
     app::*, automation::*, badge_metadata::*, badge_service::*, badges::*, bandwidth_test::*,
-    cache::*, chat::*, chat_identity::*, components::*, cosmetics_cache::*, diagnostic_logging::*,
-    discord::*, drops::*, emoji::*, emotes::*, eventsub::*, hype_train::*, layout::*, logs::*,
-    magne::*, profile_cache::*, proxy_health::*, resub::*, settings::*, seventv::*,
-    seventv_cosmetics::*, seventv_cosmetics_fetch::*, streaming::*, twitch::*, universal_cache::*,
-    user_profile::*, whisper_storage::*,
+    cache::*, channel_panels::*, chat::*, chat_identity::*, components::*, cosmetics_cache::*,
+    diagnostic_logging::*, discord::*, drops::*, emoji::*, emotes::*, eventsub::*, hype_train::*,
+    layout::*, logs::*, magne::*, profile_cache::*, proxy_health::*, resub::*, settings::*,
+    seventv::*, seventv_cosmetics::*, seventv_cosmetics_fetch::*, streaming::*, twitch::*,
+    universal_cache::*, user_profile::*, whisper_storage::*,
 };
 use log::{debug, error};
 use models::settings::{AppState, Settings};
@@ -540,8 +540,7 @@ fn main() {
             // 7TV Global Cosmetics commands
             get_all_seventv_badges,
             get_all_seventv_paints,
-            // Automation commands
-            automate_connection,
+            // Automation commands (whisper scraper only — follow/unfollow migrated to GQL)
             scrape_whispers,
             receive_whisper_export,
             emit_whisper_progress,
@@ -578,6 +577,10 @@ fn main() {
             // Resub notification commands
             get_resub_notification,
             use_resub_token,
+            // Channel Panels commands
+            get_channel_about_data,
+            // Pinned Chat commands
+            get_pinned_chat_messages,
             // Diagnostic Logging commands
             set_diagnostics_enabled,
             is_diagnostics_enabled,

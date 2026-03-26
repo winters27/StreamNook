@@ -968,9 +968,9 @@ const VideoPlayer = () => {
     checkSubscriptionStatus();
   }, [currentStream?.user_id, currentStream?.user_login, currentUser?.login]);
 
-  // Handle follow/unfollow action using browser automation
+  // Handle follow/unfollow action via GQL mutations
   const handleFollowClick = useCallback(async () => {
-    if (followLoading || !currentStream?.user_login) return;
+    if (followLoading || !currentStream?.user_id) return;
 
     const action = isFollowing ? 'unfollow' : 'follow';
 
@@ -983,48 +983,16 @@ const VideoPlayer = () => {
     }
 
     setFollowLoading(true);
-    Logger.debug(`[VideoPlayer] Initiating ${action} for ${currentStream.user_login}`);
+    Logger.debug(`[VideoPlayer] Initiating ${action} for ${currentStream.user_login} (ID: ${currentStream.user_id})`);
 
     try {
-      const result = await invoke<{ success: boolean; message: string; action: string }>('automate_connection', {
-        channel: currentStream.user_login,
-        action: action
-      });
+      const command = isFollowing ? 'unfollow_channel' : 'follow_channel';
+      await invoke(command, { targetUserId: currentStream.user_id });
 
-      Logger.debug('[VideoPlayer] Automation result:', result);
-
-      if (result.success) {
-        setIsFollowing(prev => !prev);
-        Logger.debug(`[VideoPlayer] Successfully ${action}ed ${currentStream.user_login}`);
-      } else {
-        Logger.error(`[VideoPlayer] ${action} failed:`, result.message);
-
-        // Check if user is not logged in
-        if (result.message.includes('NOT_LOGGED_IN')) {
-          // Open subscribe window so user can log in
-          const webview = new WebviewWindow(`login-${Date.now()}`, {
-            url: `https://www.twitch.tv/login`,
-            title: 'Log in to Twitch',
-            width: 500,
-            height: 700,
-            center: true,
-            resizable: true,
-          });
-
-          webview.once('tauri://error', (e) => {
-            Logger.error('Error opening login window:', e);
-          });
-        } else {
-          // Show helpful toast message for other failures
-          useAppStore.getState().addToast(
-            `Follow/Unfollow failed. Try logging out and back in via Settings to re-authenticate.`,
-            'error'
-          );
-        }
-      }
+      setIsFollowing(prev => !prev);
+      Logger.debug(`[VideoPlayer] Successfully ${action}ed ${currentStream.user_login}`);
     } catch (err: any) {
       Logger.error(`[VideoPlayer] ${action} error:`, err);
-      // Show helpful error message
       useAppStore.getState().addToast(
         `Follow/Unfollow failed. Try logging out and back in via Settings to re-authenticate.`,
         'error'
@@ -1032,7 +1000,7 @@ const VideoPlayer = () => {
     } finally {
       setFollowLoading(false);
     }
-  }, [currentStream?.user_login, isFollowing, followLoading]);
+  }, [currentStream?.user_login, currentStream?.user_id, isFollowing, followLoading]);
 
   // Track the subscribe window reference for auto-close on successful subscription
   const subscribeWindowRef = useRef<WebviewWindow | null>(null);

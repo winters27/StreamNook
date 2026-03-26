@@ -43,6 +43,12 @@ export interface RecoverySettings {
   max_recovery_attempts?: number;
 }
 
+export interface FarmChannel {
+  channel_id: string;
+  channel_login: string;
+  display_name: string;
+}
+
 export interface DropsSettings {
   auto_claim_drops: boolean;
   auto_claim_channel_points: boolean;
@@ -59,6 +65,7 @@ export interface DropsSettings {
   // Watch token allocation settings
   reserve_token_for_current_stream?: boolean; // Reserve one watch token for current stream (default: true)
   auto_reserve_on_watch?: boolean; // Automatically reserve token when starting a stream (default: true)
+  priority_farm_channels?: FarmChannel[]; // Channels to prioritize for channel points farming
   // Recovery settings
   recovery_settings?: RecoverySettings;
 }

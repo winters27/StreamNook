@@ -1,17 +1,11 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { X, Star, UserPlus, UserMinus, Loader2 } from 'lucide-react';
 import { useAppStore } from '../stores/AppStore';
-
 import { Logger } from '../utils/logger';
+
 interface SubscribeOverlayProps {
   channel: string;
-}
-
-interface AutomationResult {
-  success: boolean;
-  message: string;
-  action: string;
 }
 
 const SubscribeOverlay = ({ channel }: SubscribeOverlayProps) => {
@@ -19,23 +13,26 @@ const SubscribeOverlay = ({ channel }: SubscribeOverlayProps) => {
   const [isFollowing, setIsFollowing] = useState<boolean | null>(null);
   const [followLoading, setFollowLoading] = useState(false);
   const [checkingFollowStatus, setCheckingFollowStatus] = useState(true);
+  const resolvedUserIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     const timer = setTimeout(() => setVisible(true), 500);
     return () => clearTimeout(timer);
   }, []);
 
-  // Check initial follow status using the existing API
+  // Resolve channel login → user_id, then check follow status
   useEffect(() => {
     const checkFollowStatus = async () => {
       try {
         setCheckingFollowStatus(true);
-        // Use the existing check_following_status command
-        const result = await invoke<boolean>('check_following_status', { channel });
+        // Resolve channel login to user_id
+        const userInfo = await invoke<{ id: string; login: string }>('get_user_by_login', { login: channel });
+        resolvedUserIdRef.current = userInfo.id;
+        // Check follow status with the resolved user_id
+        const result = await invoke<boolean>('check_following_status', { targetUserId: userInfo.id });
         setIsFollowing(result);
       } catch (err) {
         Logger.error('[SubscribeOverlay] Failed to check follow status:', err);
-        // Default to showing "Follow" if we can't determine status
         setIsFollowing(false);
       } finally {
         setCheckingFollowStatus(false);
@@ -47,38 +44,23 @@ const SubscribeOverlay = ({ channel }: SubscribeOverlayProps) => {
     }
   }, [channel]);
 
-  // Handle follow/unfollow action using browser automation
+  // Handle follow/unfollow action via GQL mutations
   const handleFollowAction = useCallback(async () => {
-    if (followLoading) return;
+    if (followLoading || !resolvedUserIdRef.current) return;
 
     setFollowLoading(true);
 
     const action = isFollowing ? 'unfollow' : 'follow';
-    Logger.debug(`[SubscribeOverlay] Initiating ${action} for ${channel}`);
+    Logger.debug(`[SubscribeOverlay] Initiating ${action} for ${channel} (ID: ${resolvedUserIdRef.current})`);
 
     try {
-      const result = await invoke<AutomationResult>('automate_connection', {
-        channel: channel,
-        action: action
-      });
+      const command = isFollowing ? 'unfollow_channel' : 'follow_channel';
+      await invoke(command, { targetUserId: resolvedUserIdRef.current });
 
-      Logger.debug('[SubscribeOverlay] Automation result:', result);
-
-      if (result.success) {
-        // Toggle the follow state
-        setIsFollowing(prev => !prev);
-        Logger.debug(`[SubscribeOverlay] Successfully ${action}ed ${channel}`);
-      } else {
-        Logger.error(`[SubscribeOverlay] ${action} failed:`, result.message);
-        // Show helpful toast message
-        useAppStore.getState().addToast(
-          `Follow/Unfollow failed. Try logging out and back in via Settings to re-authenticate.`,
-          'error'
-        );
-      }
+      setIsFollowing(prev => !prev);
+      Logger.debug(`[SubscribeOverlay] Successfully ${action}ed ${channel}`);
     } catch (err: any) {
       Logger.error(`[SubscribeOverlay] ${action} error:`, err);
-      // Show helpful error message
       useAppStore.getState().addToast(
         `Follow/Unfollow failed. Try logging out and back in via Settings to re-authenticate.`,
         'error'

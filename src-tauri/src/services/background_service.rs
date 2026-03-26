@@ -255,17 +255,28 @@ impl BackgroundService {
             let mut stream_watch_history: HashMap<String, DateTime<Utc>> = HashMap::new();
             let mut current_rotation_index: usize = 0; // Track where we are in the rotation
 
+            // Track configuration state to force immediate rotation when settings change
+            let mut last_priority_list: Vec<String> = {
+                let s = settings_watch.read().await;
+                s.drops
+                    .priority_farm_channels
+                    .iter()
+                    .map(|c| c.channel_id.clone())
+                    .collect()
+            };
+
             debug!("🔄 [CP-WATCH] Channel points watch loop started");
 
             while *is_running_watch.read().await {
                 watch_interval.tick().await;
                 minutes_since_rotation += 1;
 
-                let (auto_claim_enabled, reserve_token_enabled) = {
+                let (auto_claim_enabled, reserve_token_enabled, priority_farm_channels) = {
                     let s = settings_watch.read().await;
                     (
                         s.drops.auto_claim_channel_points,
                         s.drops.reserve_token_for_current_stream,
+                        s.drops.priority_farm_channels.clone(),
                     )
                 };
 
@@ -285,6 +296,17 @@ impl BackgroundService {
                     continue;
                 }
 
+                // Check if priority configuration has changed, force rotation if so
+                let current_priority_ids: Vec<String> = priority_farm_channels
+                    .iter()
+                    .map(|c| c.channel_id.clone())
+                    .collect();
+                if current_priority_ids != last_priority_list {
+                    debug!("⚙️ [CP-WATCH] Priority farm channels configuration changed — forcing immediate rotation");
+                    minutes_since_rotation = ROTATION_INTERVAL_MINUTES; // Force rotation
+                    last_priority_list = current_priority_ids;
+                }
+
                 // Get token for watch payloads
                 let token = match DropsAuthService::get_token().await {
                     Ok(token) => token,
@@ -293,6 +315,27 @@ impl BackgroundService {
                         continue;
                     }
                 };
+
+                // Read the current reservation (used throughout this tick)
+                let reserved = reserved_slot_watch.read().await;
+                let reserved_id = if reserve_token_enabled {
+                    reserved.channel_id.clone()
+                } else {
+                    None
+                };
+                let reserved_login = if reserve_token_enabled {
+                    reserved.channel_login.clone()
+                } else {
+                    None
+                };
+                drop(reserved); // Release read lock early
+
+                // Diagnostic: log reservation state every tick
+                if let (Some(ref rid), Some(ref rlogin)) = (&reserved_id, &reserved_login) {
+                    debug!("🔒 [CP-WATCH] Reservation active: {} (ID: {})", rlogin, rid);
+                } else if reserve_token_enabled {
+                    debug!("🔓 [CP-WATCH] No reservation set (reserve_token_enabled=true)");
+                }
 
                 // Get current live streams
                 let live_streams =
@@ -304,8 +347,8 @@ impl BackgroundService {
                         }
                     };
 
-                if live_streams.is_empty() {
-                    // No streams live, clear watching
+                if live_streams.is_empty() && reserved_id.is_none() {
+                    // No streams live and no reservation, clear watching
                     let cps = cps_watch.lock().await;
                     let watching = cps.get_watching_streams().await;
                     for stream in watching {
@@ -315,7 +358,20 @@ impl BackgroundService {
                 }
 
                 // Check if it's time to rotate streams
-                if minutes_since_rotation >= ROTATION_INTERVAL_MINUTES {
+                let cps = cps_watch.lock().await;
+                let currently_watching = cps.get_watching_streams().await;
+
+                if minutes_since_rotation >= ROTATION_INTERVAL_MINUTES
+                    || currently_watching.is_empty()
+                {
+                    // Rotation needed OR cold-start (no streams watching yet) — act immediately
+                    if currently_watching.is_empty()
+                        && minutes_since_rotation < ROTATION_INTERVAL_MINUTES
+                    {
+                        debug!(
+                            "⚡ [CP-WATCH] Cold-start: no streams watching, starting immediately"
+                        );
+                    }
                     minutes_since_rotation = 0; // Reset counter
 
                     let total_streams = live_streams.len();
@@ -324,58 +380,123 @@ impl BackgroundService {
                         total_streams
                     );
 
-                    let cps = cps_watch.lock().await;
-
-                    // Stop watching current streams
-                    let currently_watching = cps.get_watching_streams().await;
+                    // Stop watching NON-RESERVED streams only (protect the reserved stream)
                     for stream in &currently_watching {
-                        // Record when we last watched this stream
-                        stream_watch_history.insert(stream.channel_id.clone(), Utc::now());
-                        let _ = cps.stop_watching_stream(&stream.channel_id).await;
+                        let is_reserved = reserved_id
+                            .as_ref()
+                            .is_some_and(|rid| stream.channel_id == *rid);
+                        if !is_reserved {
+                            // Record when we last watched this stream
+                            stream_watch_history.insert(stream.channel_id.clone(), Utc::now());
+                            let _ = cps.stop_watching_stream(&stream.channel_id).await;
+                        }
                     }
 
                     // Select next streams using round-robin rotation
-                    // This ensures we cycle through ALL streams, not just top 2
                     let mut streams_to_watch: Vec<_> = Vec::new();
-
-                    // Check for reserved slot first (if token reservation is enabled)
-                    let reserved = reserved_slot_watch.read().await;
                     let mut reserved_stream_id: Option<String> = None;
 
-                    if reserve_token_enabled {
-                        if let Some(ref reserved_id) = reserved.channel_id {
-                            // Find the reserved stream in live_streams
-                            if let Some(reserved_stream) =
-                                live_streams.iter().find(|s| s.user_id == *reserved_id)
+                    // 1. Reserved stream always gets a slot
+                    if let Some(ref res_id) = reserved_id {
+                        // Check if reserved stream is in the followed live list
+                        if let Some(reserved_stream) =
+                            live_streams.iter().find(|s| s.user_id == *res_id)
+                        {
+                            streams_to_watch.push(reserved_stream.clone());
+                            reserved_stream_id = Some(res_id.clone());
+                            debug!(
+                                "  🔒 Reserved slot: {} (for gifted sub eligibility)",
+                                reserved_stream.user_name
+                            );
+                        } else if let Some(ref res_login) = reserved_login {
+                            // Stream not in followed list — try to start watching directly
+                            // (handles non-followed channels the user navigated to)
+                            debug!(
+                                "  🔒 Reserved stream {} not in followed list — starting directly",
+                                res_login
+                            );
+                            if let Err(e) =
+                                cps.start_watching_stream(res_id, res_login, &token).await
                             {
-                                streams_to_watch.push(reserved_stream);
-                                reserved_stream_id = Some(reserved_id.clone());
                                 debug!(
-                                    "  🔒 Reserved slot: {} (for gifted sub eligibility)",
-                                    reserved_stream.user_name
+                                    "  ⚠️ Could not start reserved stream {}: {} (may be offline)",
+                                    res_login, e
                                 );
                             } else {
-                                // Reserved stream went offline - emit event to frontend
-                                debug!("  ⚠️ Reserved stream went offline, clearing reservation");
-                                let _ = app_handle_watch.emit("reserved-stream-offline", ());
+                                reserved_stream_id = Some(res_id.clone());
                             }
                         }
                     }
-                    drop(reserved); // Release read lock
 
                     // Calculate how many slots are available for rotation
-                    let rotation_slots = MAX_CONCURRENT_STREAMS - streams_to_watch.len();
+                    let rotation_slots = MAX_CONCURRENT_STREAMS
+                        - streams_to_watch.len()
+                        - if reserved_stream_id.is_some() && streams_to_watch.is_empty() {
+                            1
+                        } else {
+                            0
+                        };
 
-                    // Sort remaining streams by when they were last watched (oldest first)
-                    // Streams that have never been watched get priority
-                    let mut stream_priority: Vec<_> = live_streams
+                    // Determine the rotation pool:
+                    // If user has a priority farm list, only rotate through those channels
+                    // Otherwise, rotate through all followed live streams
+                    let priority_ids: Vec<String> = priority_farm_channels
                         .iter()
-                        .filter(|s| {
-                            // Exclude the reserved stream from rotation pool
-                            reserved_stream_id
-                                .as_ref()
-                                .is_none_or(|rid| s.user_id != *rid)
-                        })
+                        .map(|c| c.channel_id.clone())
+                        .collect();
+                    let has_priority_list = !priority_ids.is_empty();
+
+                    let rotation_pool: Vec<_> = if has_priority_list {
+                        // Filter to only priority channels that are currently live
+                        let filtered: Vec<_> = live_streams
+                            .iter()
+                            .filter(|s| priority_ids.contains(&s.user_id))
+                            .filter(|s| {
+                                reserved_stream_id
+                                    .as_ref()
+                                    .is_none_or(|rid| s.user_id != *rid)
+                            })
+                            .cloned()
+                            .collect();
+
+                        if filtered.is_empty() {
+                            // None of the priority channels are live — fall back to all
+                            debug!(
+                                "  ⚠️ No priority farm channels live, falling back to all followed"
+                            );
+                            live_streams
+                                .iter()
+                                .filter(|s| {
+                                    reserved_stream_id
+                                        .as_ref()
+                                        .is_none_or(|rid| s.user_id != *rid)
+                                })
+                                .cloned()
+                                .collect()
+                        } else {
+                            debug!(
+                                "  🎯 Priority farm list active: {} of {} channels live",
+                                filtered.len(),
+                                priority_ids.len()
+                            );
+                            filtered
+                        }
+                    } else {
+                        // No priority list — use all followed streams
+                        live_streams
+                            .iter()
+                            .filter(|s| {
+                                reserved_stream_id
+                                    .as_ref()
+                                    .is_none_or(|rid| s.user_id != *rid)
+                            })
+                            .cloned()
+                            .collect()
+                    };
+
+                    // Sort rotation pool by when they were last watched (oldest first)
+                    let mut stream_priority: Vec<_> = rotation_pool
+                        .iter()
                         .map(|s| {
                             let last_watched = stream_watch_history
                                 .get(&s.user_id)
@@ -388,9 +509,9 @@ impl BackgroundService {
                     // Sort by last watched time (oldest/never watched first)
                     stream_priority.sort_by(|a, b| a.1.cmp(&b.1));
 
-                    // Take the streams that were watched longest ago (or never) for remaining slots
+                    // Take the streams that were watched longest ago (or never)
                     for (stream, last_watched) in stream_priority.iter().take(rotation_slots) {
-                        streams_to_watch.push(*stream);
+                        streams_to_watch.push((*stream).clone());
                         let time_since = if *last_watched == DateTime::<Utc>::MIN_UTC {
                             "never watched".to_string()
                         } else {
@@ -407,7 +528,7 @@ impl BackgroundService {
                     current_rotation_index =
                         (current_rotation_index + MAX_CONCURRENT_STREAMS) % total_streams.max(1);
 
-                    // Start watching the selected streams
+                    // Start watching the selected streams (is_watching guard prevents counter-reset)
                     for stream in &streams_to_watch {
                         let channel_id = &stream.user_id;
                         let channel_login = &stream.user_login;
@@ -439,10 +560,22 @@ impl BackgroundService {
                             total_streams, MAX_CONCURRENT_STREAMS, rotation_cycle
                         );
                     }
+                } else {
+                    // Not a rotation tick — but ensure reserved stream is always in watching set
+                    if let (Some(ref res_id), Some(ref res_login)) = (&reserved_id, &reserved_login)
+                    {
+                        if !cps.is_watching(res_id).await {
+                            debug!("🔒 [CP-WATCH] Reserved stream {} not in watching set, adding immediately", res_login);
+                            if let Err(e) =
+                                cps.start_watching_stream(res_id, res_login, &token).await
+                            {
+                                debug!("  ⚠️ Could not add reserved stream {}: {}", res_login, e);
+                            }
+                        }
+                    }
                 }
 
-                // Send minute-watched payloads for current streams
-                let cps = cps_watch.lock().await;
+                // Send minute-watched payloads for current streams (with reserved priority)
                 let watching = cps.get_watching_streams().await;
                 if !watching.is_empty() {
                     debug!(
@@ -450,16 +583,12 @@ impl BackgroundService {
                         watching.len(),
                         live_streams.len()
                     );
-                    if let Err(e) = cps.send_minute_watched_for_streams(&token).await {
+                    if let Err(e) = cps
+                        .send_minute_watched_for_streams(&token, reserved_id.as_deref())
+                        .await
+                    {
                         error!("Error sending minute-watched payloads: {}", e);
                     }
-                } else if !live_streams.is_empty() {
-                    // We have live streams but aren't watching any - start immediately
-                    debug!(
-                        "⚠️ Have {} live streams but not watching any, starting immediately",
-                        live_streams.len()
-                    );
-                    minutes_since_rotation = ROTATION_INTERVAL_MINUTES; // Force rotation on next tick
                 }
             }
             debug!("Stream watching loop stopped.");

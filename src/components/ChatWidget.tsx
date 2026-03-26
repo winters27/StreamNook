@@ -20,11 +20,13 @@ import ChatMessage from './ChatMessage';
 import UserProfileCard from './UserProfileCard';
 import ErrorBoundary from './ErrorBoundary';
 import PredictionOverlay from './PredictionOverlay';
+import StreamerAboutPanel from './StreamerAboutPanel';
 import ChannelPointsMenu from './ChannelPointsMenu';
 import ResubNotificationBanner, { ResubNotification } from './ResubNotificationBanner';
 import { fetchAllEmotes, Emote, EmoteSet, preloadChannelEmotes, queueEmoteForCaching } from '../services/emoteService';
 import { preloadThirdPartyBadgeDatabases } from '../services/thirdPartyBadges';
 import { initializeBadges, getBadgeInfo } from '../services/twitchBadges';
+import { parseBadges } from '../services/twitchBadges';
 import { initializeBadgeImageCache } from '../services/badgeImageCacheService';
 import { parseMessage } from '../services/twitchChat';
 import { fetchStreamViewerCount } from '../services/twitchService';
@@ -236,6 +238,7 @@ const ChatWidget = () => {
   
   // UI state
   const [messageInput, setMessageInput] = useState('');
+  const [activeView, setActiveView] = useState<'chat' | 'about'>('chat');
   const [showEmotePicker, setShowEmotePicker] = useState(false);
   const [emotes, setEmotes] = useState<EmoteSet | null>(null);
   const [selectedProvider, setSelectedProvider] = useState<'twitch' | 'bttv' | '7tv' | 'ffz' | 'favorites' | 'emoji'>('twitch');
@@ -307,6 +310,26 @@ const ChatWidget = () => {
   const [isLoadingChannelPoints, setIsLoadingChannelPoints] = useState(false);
   const [customPointsName, setCustomPointsName] = useState<string | null>(null);
   const [customPointsIconUrl, setCustomPointsIconUrl] = useState<string | null>(null);
+
+  // Pinned chat state
+  interface PinnedMessage {
+    id: string;
+    type: string;
+    message_text: string;
+    sender_id: string;
+    sender_name: string;
+    sender_color: string;
+    sender_avatar: string;
+    sender_badges: Array<{ set_id: string; version: string }>;
+    pinned_by: string;
+    pinned_by_id: string;
+    pinned_by_avatar: string;
+    started_at: string;
+  }
+  const [pinnedMessages, setPinnedMessages] = useState<PinnedMessage[]>([]);
+  const [isPinnedExpanded, setIsPinnedExpanded] = useState(true);
+  const seenPinIdRef = useRef<string | null>(null);
+  const pinnedContentRef = useRef<HTMLDivElement>(null);
 
   // Cache for channel names (broadcaster ID -> display name) used in emote picker grouping
   const [channelNameCache, setChannelNameCache] = useState<Map<string, string>>(new Map());
@@ -550,11 +573,35 @@ const ChatWidget = () => {
       setIsResubMode(false);
       setIncludeStreak(false);
       setResubDismissed(false);
+      // Reset pinned chat state when switching channels
+      setPinnedMessages([]);
+      setIsPinnedExpanded(true);
+      // Reset to chat view when switching channels
+      setActiveView('chat');
     }
     return () => {
       if (currentStream?.user_login !== connectedChannelRef.current) connectedChannelRef.current = null;
     };
   }, [currentStream?.user_login, currentStream?.user_id]);
+
+  // Force unpause chat when returning from About view
+  useEffect(() => {
+    if (activeView === 'chat') {
+      // Re-trigger the scroll stabilization grace period so the sudden remount
+      // doesn't falsely trigger a user scroll-up event
+      mountTimeRef.current = Date.now();
+      
+      // Small delay to let the chat container remount before interacting with it
+      const timer = setTimeout(() => {
+        setIsPaused(false);
+        setBufferPaused(false);
+        if ((window as any).__chatScrollToBottom) {
+          (window as any).__chatScrollToBottom();
+        }
+      }, 50);
+      return () => clearTimeout(timer);
+    }
+  }, [activeView, setBufferPaused]);
 
   // Fetch channel points for current channel using direct GQL query with retry logic
   const fetchChannelPoints = useCallback(async () => {
@@ -660,6 +707,33 @@ const ChatWidget = () => {
     
     fetchResubNotification();
   }, [currentStream?.user_login, resubDismissed]);
+
+  // Fetch pinned chat messages for current channel
+  useEffect(() => {
+    const fetchPinnedMessages = async () => {
+      if (!currentStream?.user_id) {
+        setPinnedMessages([]);
+        return;
+      }
+      try {
+        const messages = await invoke<PinnedMessage[]>('get_pinned_chat_messages', {
+          channelId: currentStream.user_id,
+        });
+        setPinnedMessages(messages || []);
+        if (messages && messages.length > 0) {
+          Logger.debug('[ChatWidget] Pinned messages:', messages.length);
+        }
+      } catch (err) {
+        Logger.warn('[ChatWidget] Failed to fetch pinned messages:', err);
+        setPinnedMessages([]);
+      }
+    };
+
+    fetchPinnedMessages();
+    // Poll every 5s for near-realtime pin updates
+    const pollInterval = setInterval(fetchPinnedMessages, 5000);
+    return () => clearInterval(pollInterval);
+  }, [currentStream?.user_id]);
 
   // Listen for channel points updates from backend events
   useEffect(() => {
@@ -1482,7 +1556,7 @@ const ChatWidget = () => {
           backgroundColor: currentHypeTrain ? 'var(--color-background)' : 'rgba(12, 12, 13, 0.9)',
           boxShadow: currentHypeTrain ? '0 4px 20px color-mix(in srgb, var(--color-highlight-purple) 30%, transparent), 0 2px 8px color-mix(in srgb, var(--color-highlight-purple) 20%, transparent)' : undefined
         }}>
-          {currentHypeTrain ? (
+          {currentHypeTrain && (
             // Hype Train Mode - entire header is the progress bar
             (() => {
               // Guard against NaN when goal is 0 or undefined
@@ -1518,8 +1592,8 @@ const ChatWidget = () => {
                       transition: 'left 0.5s ease-out, width 0.5s ease-out'
                     }}
                   />
-                  {/* Absolutely centered content - celebration or percentage */}
-                  <div className="absolute inset-0 flex items-center justify-center z-20 pointer-events-none">
+                  {/* Percentage/celebration content - pinned to top so it doesn't clip behind pinned message */}
+                  <div className="absolute inset-x-0 top-0 h-10 flex items-center justify-center z-20 pointer-events-none">
                     {isLevelUpCelebration ? (
                       <>
                         {/* White flash effect */}
@@ -1591,35 +1665,216 @@ const ChatWidget = () => {
                 </>
               );
             })()
-          ) : (
-            // Normal Mode
-            <div className="flex items-center gap-2">
-              <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-red-400'}`}></div>
-              <p className={`text-xs font-semibold ${isSharedChat ? 'iridescent-title' : 'text-textPrimary'}`}>
-                {isConnected ? (isSharedChat ? 'SHARED STREAM CHAT' : 'STREAM CHAT') : 'DISCONNECTED'}
-              </p>
-              <div className="flex items-center gap-3 ml-auto">
-                {viewerCount !== null && (
-                  <div className="flex items-center gap-1">
-                    <svg className="w-3 h-3 text-textSecondary" fill="currentColor" viewBox="0 0 20 20"><path d="M10 12a2 2 0 100-4 2 2 0 000 4z" /><path fillRule="evenodd" d="M.458 10C1.732 5.943 5.522 3 10 3s8.268 2.943 9.542 7c-1.274 4.057-5.064 7-9.542 7S1.732 14.057.458 10zM14 10a4 4 0 11-8 0 4 4 0 018 0z" clipRule="evenodd" /></svg>
-                    <span className="text-xs text-textSecondary">{viewerCount.toLocaleString()}</span>
-                  </div>
-                )}
-                {currentStream?.started_at && (
-                  <div className="flex items-center gap-1">
-                    <svg className="w-3 h-3 text-textSecondary" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                    <span id="stream-uptime-display" className="text-xs text-textSecondary">{streamUptimeRef.current}</span>
-                  </div>
-                )}
-              </div>
-            </div>
           )}
+          {/* Normal header — always visible */}
+          <div
+            className={`relative z-10 ${currentHypeTrain ? 'mt-2 rounded-lg px-2.5 py-1.5' : ''}`}
+            style={currentHypeTrain ? {
+              background: 'rgba(12, 12, 13, 0.75)',
+              backdropFilter: 'blur(24px)',
+            } : undefined}
+          >
+              <div
+                className={`flex items-center gap-2 ${pinnedMessages.length > 0 ? 'pointer-events-auto cursor-pointer' : ''}`}
+                onClick={pinnedMessages.length > 0 ? () => {
+                  const currentPinId = pinnedMessages[0]?.id || '';
+                  const next = !isPinnedExpanded;
+                  setIsPinnedExpanded(next);
+                  if (next) {
+                    seenPinIdRef.current = currentPinId;
+                  }
+                } : undefined}
+              >
+                <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-red-400'}`}></div>
+                {/* Carousel toggle — cycles between STREAM CHAT and ABOUT */}
+                <button
+                  className="pointer-events-auto flex items-center gap-1.5 group/toggle"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setActiveView(activeView === 'about' ? 'chat' : 'about');
+                  }}
+                  title={activeView === 'about' ? 'Back to chat' : 'About this streamer'}
+                >
+                  <div className="relative h-4 overflow-hidden" style={{ width: activeView === 'about' ? '44px' : (isSharedChat ? '135px' : '88px') }}>
+                    <div
+                      className="absolute w-full transition-transform duration-300 ease-in-out"
+                      style={{ transform: activeView === 'about' ? 'translateY(-100%)' : 'translateY(0)' }}
+                    >
+                      <p className={`text-xs font-semibold leading-4 whitespace-nowrap ${isSharedChat ? 'iridescent-title' : 'text-textPrimary'}`}>
+                        {isConnected ? (isSharedChat ? 'SHARED STREAM CHAT' : 'STREAM CHAT') : 'DISCONNECTED'}
+                      </p>
+                    </div>
+                    <div
+                      className="absolute w-full transition-transform duration-300 ease-in-out"
+                      style={{ transform: activeView === 'about' ? 'translateY(0)' : 'translateY(100%)' }}
+                    >
+                      <p className="text-xs font-semibold leading-4 whitespace-nowrap text-accent">
+                        ABOUT
+                      </p>
+                    </div>
+                  </div>
+                  {/* Up/Down chevron arrows */}
+                  <div className="flex flex-col -space-y-1 text-textSecondary/50 group-hover/toggle:text-textSecondary transition-colors">
+                    <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={3}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 15l7-7 7 7" />
+                    </svg>
+                    <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={3}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                    </svg>
+                  </div>
+                </button>
+                <div className="flex items-center gap-3 ml-auto">
+                  {viewerCount !== null && (
+                    <div className="flex items-center gap-1">
+                      <svg className="w-3 h-3 text-textSecondary" fill="currentColor" viewBox="0 0 20 20"><path d="M10 12a2 2 0 100-4 2 2 0 000 4z" /><path fillRule="evenodd" d="M.458 10C1.732 5.943 5.522 3 10 3s8.268 2.943 9.542 7c-1.274 4.057-5.064 7-9.542 7S1.732 14.057.458 10zM14 10a4 4 0 11-8 0 4 4 0 018 0z" clipRule="evenodd" /></svg>
+                      <span className="text-xs text-textSecondary">{viewerCount.toLocaleString()}</span>
+                    </div>
+                  )}
+                  {currentStream?.started_at && (
+                    <div className="flex items-center gap-1">
+                      <svg className="w-3 h-3 text-textSecondary" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                      <span id="stream-uptime-display" className="text-xs text-textSecondary">{streamUptimeRef.current}</span>
+                    </div>
+                  )}
+                  {/* Pin icon + chevron indicator */}
+                  {pinnedMessages.length > 0 && (() => {
+                    const currentPinId = pinnedMessages[0]?.id || '';
+                    const isUnseen = currentPinId !== seenPinIdRef.current;
+                    return (
+                      <div className="flex items-center gap-1">
+                        <svg className={`w-3.5 h-3.5 text-accent ${isUnseen ? 'animate-pulse drop-shadow-[0_0_4px_var(--color-accent)]' : ''}`} fill="currentColor" viewBox="0 0 16 16">
+                          <path d="M4.146.146A.5.5 0 0 1 4.5 0h7a.5.5 0 0 1 .5.5c0 .68-.342 1.174-.646 1.479-.126.125-.25.224-.354.298v4.431l.078.048c.203.127.476.314.751.555C12.36 7.775 13 8.527 13 9.5a.5.5 0 0 1-.5.5h-4v4.5a.5.5 0 0 1-1 0V10h-4A.5.5 0 0 1 3 9.5c0-.973.64-1.725 1.17-2.189A5.921 5.921 0 0 1 5 6.708V2.277a2.77 2.77 0 0 1-.354-.298C4.342 1.674 4 1.179 4 .5a.5.5 0 0 1 .146-.354z"/>
+                        </svg>
+                        <svg className={`w-2.5 h-2.5 text-textSecondary transition-transform duration-200 ${isPinnedExpanded ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                        </svg>
+                      </div>
+                    );
+                  })()}
+
+                </div>
+              </div>
+              {/* Expandable pinned message section */}
+              {pinnedMessages.length > 0 && (
+                <div
+                  ref={pinnedContentRef}
+                  className="overflow-hidden transition-all duration-300 ease-in-out"
+                  style={{
+                    maxHeight: isPinnedExpanded ? `${pinnedContentRef.current?.scrollHeight || 300}px` : '0px',
+                    opacity: isPinnedExpanded ? 1 : 0,
+                  }}
+                >
+                  {pinnedMessages.map((pin) => (
+                    <div
+                      key={pin.id}
+                      className="mt-3 rounded-lg p-3 border border-white/[0.06]"
+                      style={{
+                        background: 'rgba(12, 12, 13, 0.75)',
+                        backdropFilter: 'blur(24px)',
+                      }}
+                    >
+                      {/* Sender row: avatar + badges + name + message */}
+                      <div className="flex items-start gap-2.5">
+                        {/* Sender avatar */}
+                        {pin.sender_avatar ? (
+                          <img
+                            src={pin.sender_avatar}
+                            alt={pin.sender_name}
+                            className="w-8 h-8 rounded-full flex-shrink-0 object-cover"
+                          />
+                        ) : (
+                          <div
+                            className="w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center text-xs font-bold text-white"
+                            style={{ backgroundColor: pin.sender_color }}
+                          >
+                            {pin.sender_name.charAt(0).toUpperCase()}
+                          </div>
+                        )}
+                        <div className="flex-1 min-w-0">
+                          {/* Name + badges row */}
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            {/* Badges — resolved from in-memory badge cache */}
+                            {(() => {
+                              const badgeStr = pin.sender_badges?.map(b => `${b.set_id}/${b.version}`).join(',') || '';
+                              if (!badgeStr) return null;
+                              const resolved = parseBadges(badgeStr, currentStream?.user_id);
+                              return resolved.map((badge: { key: string; info: { image_url_1x?: string; image_url_2x?: string; title?: string } | null }, i: number) => (
+                                badge.info?.image_url_1x ? (
+                                  <img
+                                    key={`${badge.key}-${i}`}
+                                    src={badge.info.image_url_2x || badge.info.image_url_1x}
+                                    alt={badge.info.title || badge.key}
+                                    title={badge.info.title || badge.key}
+                                    className="w-[18px] h-[18px] flex-shrink-0"
+                                  />
+                                ) : null
+                              ));
+                            })()}
+                            <span
+                              className="text-sm font-semibold"
+                              style={{ color: pin.sender_color }}
+                            >
+                              {pin.sender_name}
+                            </span>
+                          </div>
+                          {/* Message text with clickable links */}
+                          <p className="text-[13px] text-textPrimary/90 mt-1.5 break-words" style={{ lineHeight: '1.6' }}>
+                            {pin.message_text.split(/(https?:\/\/\S+)/g).map((part, i) =>
+                              /^https?:\/\//.test(part) ? (
+                                <a
+                                  key={i}
+                                  className="text-accent hover:underline pointer-events-auto cursor-pointer"
+                                  onClick={() => {
+                                    import('@tauri-apps/plugin-shell').then(({ open }) => open(part));
+                                  }}
+                                >
+                                  {part.length > 50 ? part.slice(0, 50) + '…' : part}
+                                </a>
+                              ) : (
+                                <span key={i}>{part}</span>
+                              )
+                            )}
+                          </p>
+                        </div>
+                      </div>
+                      {/* Pinned by footer — visually separated */}
+                      {pin.pinned_by && (
+                        <div className="flex items-center gap-1.5 mt-2.5 pt-2 border-t border-white/[0.05] ml-[42px]">
+                          <svg className="w-2.5 h-2.5 text-accent" fill="currentColor" viewBox="0 0 16 16">
+                            <path d="M4.146.146A.5.5 0 0 1 4.5 0h7a.5.5 0 0 1 .5.5c0 .68-.342 1.174-.646 1.479-.126.125-.25.224-.354.298v4.431l.078.048c.203.127.476.314.751.555C12.36 7.775 13 8.527 13 9.5a.5.5 0 0 1-.5.5h-4v4.5a.5.5 0 0 1-1 0V10h-4A.5.5 0 0 1 3 9.5c0-.973.64-1.725 1.17-2.189A5.921 5.921 0 0 1 5 6.708V2.277a2.77 2.77 0 0 1-.354-.298C4.342 1.674 4 1.179 4 .5a.5.5 0 0 1 .146-.354z"/>
+                          </svg>
+                          {pin.pinned_by_avatar && (
+                            <img
+                              src={pin.pinned_by_avatar}
+                              alt={pin.pinned_by}
+                              className="w-3.5 h-3.5 rounded-full object-cover"
+                            />
+                          )}
+                          <span className="text-[10px] text-textSecondary">
+                            Pinned by <span className="font-medium text-textPrimary/70">{pin.pinned_by}</span>
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+          </div>
         </div>
 
         {/* Staging area removed - using direct rendering with ResizeObserver */}
 
+        {/* About panel - replaces chat when active */}
+        {activeView === 'about' && currentStream && (
+          <div className={`flex-1 overflow-hidden animate-panel-slide-up ${currentHypeTrain ? 'pt-24' : 'pt-10'}`}>
+            <StreamerAboutPanel
+              channelLogin={currentStream.user_login}
+            />
+          </div>
+        )}
+
         {/* Chat messages area - flex-1 to take remaining space */}
-        <div className="flex-1 overflow-hidden"
+        {activeView === 'chat' && <div className="flex-1 overflow-hidden animate-panel-slide-down"
           onMouseEnter={() => { isHoveringChatRef.current = true; }}
           onMouseLeave={() => { isHoveringChatRef.current = false; }}>
           {visibleMessages.length === 0 ? (
@@ -1670,10 +1925,10 @@ const ChatWidget = () => {
               />
             </ErrorBoundary>
           )}
-        </div>
+        </div>}
 
         {/* Chat Paused indicator - positioned above input */}
-        {isPaused && (
+        {activeView === 'chat' && isPaused && (
           <div className="absolute bottom-[60px] left-1/2 transform -translate-x-1/2 z-50 pointer-events-auto">
             <button onClick={handleResume} className="flex items-center gap-2 px-4 py-2 glass-button text-white text-sm font-medium rounded-full shadow-lg bg-black/95">
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
@@ -1683,7 +1938,8 @@ const ChatWidget = () => {
           </div>
         )}
 
-        {/* Input container - static flex item at bottom */}
+        {/* Input container - static flex item at bottom (hidden when About view active) */}
+        {activeView === 'chat' &&
         <div className="flex-shrink-0 border-t border-borderSubtle backdrop-blur-ultra" style={{ backgroundColor: 'rgba(12, 12, 13, 0.9)' }}>
           <div className="p-2">
             <div className="relative">
@@ -1996,7 +2252,7 @@ const ChatWidget = () => {
             </div>
             {!isConnected && <p className="text-xs text-yellow-400 mt-2">Chat is not connected. Messages cannot be sent.</p>}
           </div>
-        </div>
+        </div>}
       </div>
       {
         selectedUser && (

@@ -1345,7 +1345,7 @@ impl TwitchService {
         let client = Client::new();
 
         let url = format!(
-            "https://api.twitch.tv/helix/search/channels?query={}&live_only=true&first=20",
+            "https://api.twitch.tv/helix/search/channels?query={}&first=20",
             urlencoding::encode(query)
         );
 
@@ -1404,7 +1404,7 @@ impl TwitchService {
                             viewer_count: 0, // Will be populated from streams API
                             game_id: String::new(), // Will be populated from streams API
                             game_name: game_name.to_string(),
-                            thumbnail_url,
+                            thumbnail_url: thumbnail_url.clone(),
                             started_at: channel
                                 .get("started_at")
                                 .and_then(|v| v.as_str())
@@ -1412,7 +1412,8 @@ impl TwitchService {
                                 .to_string(),
                             broadcaster_type,
                             has_shared_chat: None, // Will be populated later
-                            profile_image_url: None,
+                            profile_image_url: Some(thumbnail_url.clone()), // Preserve the actual profile picture from search
+                            is_live: channel.get("is_live").and_then(|v| v.as_bool()),
                         });
                     }
                 }
@@ -1497,61 +1498,300 @@ impl TwitchService {
         }
     }
 
+    /// Follow a channel via Twitch GQL persisted mutation (FollowButton_FollowUser)
+    /// Hash captured live from Twitch web client on 2025-03-25
     pub async fn follow_channel(target_user_id: &str) -> Result<()> {
-        let token = Self::get_token().await?;
+        use crate::services::drops_auth_service::DropsAuthService;
+
+        // GQL mutations require token + Client-Id to match.
+        // DropsAuthService provides a token issued for the Android client ID.
+        let token = DropsAuthService::get_token().await?;
         let client = Client::new();
 
-        // Get the current user's ID
-        let user_info = Self::get_user_info().await?;
+        // Twitch Android app client ID — matches the DropsAuthService token
+        const GQL_CLIENT_ID: &str = "kd1unb4b3q4t58fwlpcbzcbnm76a8fp";
 
-        let url = format!(
-            "https://api.twitch.tv/helix/users/follows?from_id={}&to_id={}",
-            user_info.id, target_user_id
+        let payload = serde_json::json!({
+            "operationName": "FollowButton_FollowUser",
+            "variables": {
+                "input": {
+                    "disableNotifications": false,
+                    "targetID": target_user_id
+                }
+            },
+            "extensions": {
+                "persistedQuery": {
+                    "version": 1,
+                    "sha256Hash": "800e7346bdf7e5278a3c1d3f21b2b56e2639928f86815677a7126b093b2fdd08"
+                }
+            }
+        });
+
+        debug!(
+            "[follow_channel] Sending GQL FollowButton_FollowUser for target: {}",
+            target_user_id
         );
 
         let response = client
-            .post(&url)
-            .header(AUTHORIZATION, format!("Bearer {}", token))
-            .header("Client-Id", CLIENT_ID)
+            .post("https://gql.twitch.tv/gql")
+            .header("Client-Id", GQL_CLIENT_ID)
+            .header(AUTHORIZATION, format!("OAuth {}", token))
+            .header(ACCEPT, "*/*")
+            .json(&payload)
             .send()
             .await?;
 
-        if !response.status().is_success() {
-            let error_text = response.text().await?;
-            return Err(anyhow::anyhow!("Failed to follow channel: {}", error_text));
-        }
-
-        Ok(())
-    }
-
-    pub async fn unfollow_channel(target_user_id: &str) -> Result<()> {
-        let token = Self::get_token().await?;
-        let client = Client::new();
-
-        // Get the current user's ID
-        let user_info = Self::get_user_info().await?;
-
-        let url = format!(
-            "https://api.twitch.tv/helix/users/follows?from_id={}&to_id={}",
-            user_info.id, target_user_id
-        );
-
-        let response = client
-            .delete(&url)
-            .header(AUTHORIZATION, format!("Bearer {}", token))
-            .header("Client-Id", CLIENT_ID)
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
+        let status = response.status();
+        if !status.is_success() {
             let error_text = response.text().await?;
             return Err(anyhow::anyhow!(
-                "Failed to unfollow channel: {}",
+                "GQL follow failed (HTTP {}): {}",
+                status,
                 error_text
             ));
         }
 
+        let body: serde_json::Value = response.json().await?;
+
+        // Check for GQL-level errors
+        if let Some(errors) = body.get("errors") {
+            return Err(anyhow::anyhow!("GQL follow errors: {:?}", errors));
+        }
+
+        debug!(
+            "[follow_channel] Successfully followed user {}",
+            target_user_id
+        );
         Ok(())
+    }
+
+    /// Unfollow a channel via Twitch GQL persisted mutation (FollowButton_UnfollowUser)
+    /// Hash captured live from Twitch web client on 2025-03-25
+    pub async fn unfollow_channel(target_user_id: &str) -> Result<()> {
+        use crate::services::drops_auth_service::DropsAuthService;
+
+        let token = DropsAuthService::get_token().await?;
+        let client = Client::new();
+
+        const GQL_CLIENT_ID: &str = "kd1unb4b3q4t58fwlpcbzcbnm76a8fp";
+
+        let payload = serde_json::json!({
+            "operationName": "FollowButton_UnfollowUser",
+            "variables": {
+                "input": {
+                    "targetID": target_user_id
+                }
+            },
+            "extensions": {
+                "persistedQuery": {
+                    "version": 1,
+                    "sha256Hash": "f7dae976ebf41c755ae2d758546bfd176b4eeb856656098bb40e0a672ca0d880"
+                }
+            }
+        });
+
+        debug!(
+            "[unfollow_channel] Sending GQL FollowButton_UnfollowUser for target: {}",
+            target_user_id
+        );
+
+        let response = client
+            .post("https://gql.twitch.tv/gql")
+            .header("Client-Id", GQL_CLIENT_ID)
+            .header(AUTHORIZATION, format!("OAuth {}", token))
+            .header(ACCEPT, "*/*")
+            .json(&payload)
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let error_text = response.text().await?;
+            return Err(anyhow::anyhow!(
+                "GQL unfollow failed (HTTP {}): {}",
+                status,
+                error_text
+            ));
+        }
+
+        let body: serde_json::Value = response.json().await?;
+
+        if let Some(errors) = body.get("errors") {
+            return Err(anyhow::anyhow!("GQL unfollow errors: {:?}", errors));
+        }
+
+        debug!(
+            "[unfollow_channel] Successfully unfollowed user {}",
+            target_user_id
+        );
+        Ok(())
+    }
+
+    /// Fetch pinned chat messages for a channel via Twitch GQL (GetPinnedChat)
+    /// Hash captured live from Twitch web client on 2026-03-25
+    pub async fn get_pinned_chat_messages(channel_id: &str) -> Result<Vec<serde_json::Value>> {
+        use crate::services::drops_auth_service::DropsAuthService;
+
+        let token = DropsAuthService::get_token().await?;
+        let client = Client::new();
+
+        const GQL_CLIENT_ID: &str = "kd1unb4b3q4t58fwlpcbzcbnm76a8fp";
+
+        let payload = serde_json::json!({
+            "operationName": "GetPinnedChat",
+            "variables": {
+                "channelID": channel_id,
+                "count": 10
+            },
+            "extensions": {
+                "persistedQuery": {
+                    "version": 1,
+                    "sha256Hash": "2d099d4c9b6af80a07d8440140c4f3dbb04d516b35c401aab7ce8f60765308d5"
+                }
+            }
+        });
+
+        debug!(
+            "[get_pinned_chat] Fetching pinned messages for channel: {}",
+            channel_id
+        );
+
+        let response = client
+            .post("https://gql.twitch.tv/gql")
+            .header("Client-Id", GQL_CLIENT_ID)
+            .header(AUTHORIZATION, format!("OAuth {}", token))
+            .header(ACCEPT, "*/*")
+            .json(&payload)
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let error_text = response.text().await?;
+            return Err(anyhow::anyhow!(
+                "GQL GetPinnedChat failed (HTTP {}): {}",
+                status,
+                error_text
+            ));
+        }
+
+        let body: serde_json::Value = response.json().await?;
+
+        if let Some(errors) = body.get("errors") {
+            return Err(anyhow::anyhow!("GQL GetPinnedChat errors: {:?}", errors));
+        }
+
+        // Parse pinned messages and collect unique user IDs for avatar lookup
+        let mut raw_pins = Vec::new();
+        let mut user_ids = std::collections::HashSet::new();
+
+        if let Some(edges) = body
+            .pointer("/data/channel/pinnedChatMessages/edges")
+            .and_then(|v| v.as_array())
+        {
+            for edge in edges {
+                if let Some(node) = edge.get("node") {
+                    let sender_id = node
+                        .pointer("/pinnedMessage/sender/id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let pinned_by_id = node
+                        .pointer("/pinnedBy/id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+
+                    if !sender_id.is_empty() {
+                        user_ids.insert(sender_id.to_string());
+                    }
+                    if !pinned_by_id.is_empty() {
+                        user_ids.insert(pinned_by_id.to_string());
+                    }
+
+                    // Extract badges array
+                    let badges: Vec<serde_json::Value> = node
+                        .pointer("/pinnedMessage/sender/displayBadges")
+                        .and_then(|v| v.as_array())
+                        .map(|arr| {
+                            arr.iter().map(|b| {
+                            serde_json::json!({
+                                "set_id": b.get("setID").and_then(|v| v.as_str()).unwrap_or(""),
+                                "version": b.get("version").and_then(|v| v.as_str()).unwrap_or("1"),
+                            })
+                        }).collect()
+                        })
+                        .unwrap_or_default();
+
+                    raw_pins.push((
+                        node.clone(),
+                        sender_id.to_string(),
+                        pinned_by_id.to_string(),
+                        badges,
+                    ));
+                }
+            }
+        }
+
+        // Batch fetch profile images via Helix API for all unique user IDs
+        let mut avatar_map: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        if !user_ids.is_empty() {
+            if let Ok(helix_token) = Self::get_token().await {
+                let ids: Vec<&str> = user_ids.iter().map(|s| s.as_str()).collect();
+                let mut url = String::from("https://api.twitch.tv/helix/users?");
+                for (i, id) in ids.iter().enumerate() {
+                    if i > 0 {
+                        url.push('&');
+                    }
+                    url.push_str(&format!("id={}", id));
+                }
+
+                if let Ok(resp) = client
+                    .get(&url)
+                    .header("Client-ID", CLIENT_ID)
+                    .header(AUTHORIZATION, format!("Bearer {}", helix_token))
+                    .send()
+                    .await
+                {
+                    if let Ok(data) = resp.json::<serde_json::Value>().await {
+                        if let Some(users) = data.get("data").and_then(|v| v.as_array()) {
+                            for user in users {
+                                if let (Some(id), Some(img)) = (
+                                    user.get("id").and_then(|v| v.as_str()),
+                                    user.get("profile_image_url").and_then(|v| v.as_str()),
+                                ) {
+                                    avatar_map.insert(id.to_string(), img.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Build final response with avatars
+        let pinned_messages: Vec<serde_json::Value> = raw_pins.iter().map(|(node, sender_id, pinned_by_id, badges)| {
+            serde_json::json!({
+                "id": node.get("id").and_then(|v| v.as_str()).unwrap_or(""),
+                "type": node.get("type").and_then(|v| v.as_str()).unwrap_or("MOD"),
+                "message_text": node.pointer("/pinnedMessage/content/text").and_then(|v| v.as_str()).unwrap_or(""),
+                "sender_id": sender_id,
+                "sender_name": node.pointer("/pinnedMessage/sender/displayName").and_then(|v| v.as_str()).unwrap_or("Unknown"),
+                "sender_color": node.pointer("/pinnedMessage/sender/chatColor").and_then(|v| v.as_str()).unwrap_or("#FFFFFF"),
+                "sender_avatar": avatar_map.get(sender_id).cloned().unwrap_or_default(),
+                "sender_badges": badges,
+                "pinned_by": node.pointer("/pinnedBy/displayName").and_then(|v| v.as_str()).unwrap_or(""),
+                "pinned_by_id": pinned_by_id,
+                "pinned_by_avatar": avatar_map.get(pinned_by_id).cloned().unwrap_or_default(),
+                "started_at": node.get("startsAt").and_then(|v| v.as_str()).unwrap_or(""),
+            })
+        }).collect();
+
+        debug!(
+            "[get_pinned_chat] Found {} pinned messages for channel {}",
+            pinned_messages.len(),
+            channel_id
+        );
+        Ok(pinned_messages)
     }
 
     pub async fn check_following_status(target_user_id: &str) -> Result<bool> {

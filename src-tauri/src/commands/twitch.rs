@@ -281,6 +281,15 @@ pub async fn check_following_status(target_user_id: String) -> Result<bool, Stri
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+pub async fn get_pinned_chat_messages(
+    channel_id: String,
+) -> Result<Vec<serde_json::Value>, String> {
+    TwitchService::get_pinned_chat_messages(&channel_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Verify the current token's health and return detailed status
 /// This should be called on app startup to proactively check/refresh the token
 #[tauri::command]

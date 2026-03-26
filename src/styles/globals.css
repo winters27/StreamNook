@@ -2238,3 +2238,37 @@ body {
     transform: translateY(0);
   }
 }
+
+/* ============================================
+   Chat / About Panel Slide Transitions
+   ============================================ */
+
+@keyframes panel-slide-down-in {
+  0% {
+    opacity: 0;
+    transform: translateY(-12px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes panel-slide-up-in {
+  0% {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-panel-slide-down {
+  animation: panel-slide-down-in 0.25s ease-out;
+}
+
+.animate-panel-slide-up {
+  animation: panel-slide-up-in 0.25s ease-out;
+}

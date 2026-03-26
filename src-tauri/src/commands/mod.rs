@@ -5,6 +5,7 @@ pub mod badge_service;
 pub mod badges;
 pub mod bandwidth_test;
 pub mod cache;
+pub mod channel_panels;
 pub mod chat;
 pub mod chat_identity;
 pub mod components;

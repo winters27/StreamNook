@@ -191,6 +191,13 @@ pub struct ReservedStreamSlot {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FarmChannel {
+    pub channel_id: String,
+    pub channel_login: String,
+    pub display_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DropsSettings {
     pub auto_claim_drops: bool,
     pub auto_claim_channel_points: bool,
@@ -219,6 +226,10 @@ pub struct DropsSettings {
     /// When FALSE, user must manually trigger reservation
     #[serde(default = "default_true")]
     pub auto_reserve_on_watch: bool,
+    /// Channels the user wants to prioritize for channel points farming
+    /// When non-empty, rotation only selects from this list (falls back to all if none are live)
+    #[serde(default)]
+    pub priority_farm_channels: Vec<FarmChannel>,
     // Recovery settings
     #[serde(default)]
     pub recovery_settings: RecoverySettings,
@@ -255,6 +266,8 @@ impl Default for DropsSettings {
             // Watch token allocation defaults (ON by default - matches Twitch native behavior)
             reserve_token_for_current_stream: true,
             auto_reserve_on_watch: true,
+            // Priority farm channels defaults (empty = rotate all followed)
+            priority_farm_channels: Vec::new(),
             // Recovery defaults
             recovery_settings: RecoverySettings::default(),
         }

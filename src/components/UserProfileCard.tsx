@@ -329,7 +329,7 @@ const UserProfileCard = ({
 
   const isStandaloneWindow = window.location.hash.startsWith('#/profile');
 
-  // Handle follow/unfollow action using browser automation
+  // Handle follow/unfollow action via GQL mutations
   const handleFollowAction = useCallback(async () => {
     if (followLoading) return;
 
@@ -337,27 +337,14 @@ const UserProfileCard = ({
     setFollowError(null);
 
     const action = isFollowing ? 'unfollow' : 'follow';
-    Logger.debug(`[UserProfileCard] Initiating ${action} for ${username}`);
+    Logger.debug(`[UserProfileCard] Initiating ${action} for ${username} (ID: ${userId})`);
 
     try {
-      const result = await invoke<{ success: boolean; message: string; action: string }>('automate_connection', {
-        channel: username,
-        action: action
-      });
+      const command = isFollowing ? 'unfollow_channel' : 'follow_channel';
+      await invoke(command, { targetUserId: userId });
 
-      Logger.debug('[UserProfileCard] Automation result:', result);
-
-      if (result.success) {
-        setIsFollowing(prev => !prev);
-        Logger.debug(`[UserProfileCard] Successfully ${action}ed ${username}`);
-      } else {
-        setFollowError(result.message);
-        Logger.error(`[UserProfileCard] ${action} failed:`, result.message);
-        useAppStore.getState().addToast(
-          `Follow/Unfollow failed. Try logging out and back in via Settings to re-authenticate.`,
-          'error'
-        );
-      }
+      setIsFollowing(prev => !prev);
+      Logger.debug(`[UserProfileCard] Successfully ${action}ed ${username}`);
     } catch (err: any) {
       Logger.error(`[UserProfileCard] ${action} error:`, err);
       setFollowError(err?.message || `Failed to ${action}`);
@@ -368,7 +355,7 @@ const UserProfileCard = ({
     } finally {
       setFollowLoading(false);
     }
-  }, [username, isFollowing, followLoading]);
+  }, [userId, username, isFollowing, followLoading]);
 
   // Categorized badges - prefer cached profile for instant display
   const { twitchBadges, seventvBadges, thirdPartyBadges, totalBadgeCount } = useMemo(() => {

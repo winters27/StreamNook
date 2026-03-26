@@ -1,5 +1,6 @@
 import { useAppStore } from '../../stores/AppStore';
 import { useState, useEffect } from 'react';
+import { FarmChannel } from '../../types';
 
 import { Logger } from '../../utils/logger';
 const DropsSettings = () => {
@@ -8,6 +9,7 @@ const DropsSettings = () => {
   const [isInitializing, setIsInitializing] = useState(false);
   const [showPrioritySettings, setShowPrioritySettings] = useState(false);
   const [showRecoverySettings, setShowRecoverySettings] = useState(false);
+  const [showFarmChannels, setShowFarmChannels] = useState(false);
 
   // Toggle component for reuse
   const Toggle = ({ enabled, onChange, disabled = false }: { enabled: boolean; onChange: () => void; disabled?: boolean }) => (
@@ -113,6 +115,7 @@ const DropsSettings = () => {
         // Watch token allocation settings (default ON)
         reserve_token_for_current_stream: settings.drops?.reserve_token_for_current_stream ?? true,
         auto_reserve_on_watch: settings.drops?.auto_reserve_on_watch ?? true,
+        priority_farm_channels: settings.drops?.priority_farm_channels ?? [],
         ...newSettings,
       };
       await invoke('update_drops_settings', { settings: updatedSettings });
@@ -631,6 +634,110 @@ const DropsSettings = () => {
             />
           </div>
         </div>
+
+        {/* Configure Farm Channels */}
+        <button
+          onClick={() => setShowFarmChannels(!showFarmChannels)}
+          className="w-full px-4 py-2 bg-accent hover:bg-accent/80 text-white rounded-md text-sm font-medium transition-colors"
+        >
+          {showFarmChannels ? 'Hide' : 'Configure'} Farm Channels
+        </button>
+
+        {showFarmChannels && (
+          <div className="mt-4 p-4 bg-background border border-border rounded-md">
+            <h4 className="text-sm font-semibold text-textPrimary mb-3">Priority Farm Channels</h4>
+            <p className="text-xs text-textSecondary mb-3">
+              Add channels you want to prioritize for channel points farming. When set, the rotation slot will only cycle through these channels instead of all followed streams. If none are live, it falls back to all followed.
+            </p>
+
+            {/* Farm Channels List */}
+            <div className="space-y-2 mb-3">
+              {(settings.drops?.priority_farm_channels ?? []).map((channel: FarmChannel, index: number) => (
+                <div key={channel.channel_id} className="flex items-center gap-2 bg-backgroundSecondary p-2 rounded">
+                  <span className="text-xs text-textSecondary w-6">{index + 1}.</span>
+                  <div className="flex-1">
+                    <span className="text-sm text-textPrimary">{channel.display_name}</span>
+                    <span className="text-xs text-textSecondary ml-1">({channel.channel_login})</span>
+                  </div>
+                  <button
+                    onClick={() => {
+                      const newChannels = [...(settings.drops?.priority_farm_channels ?? [])];
+                      newChannels.splice(index, 1);
+                      updateDropsSettings({ priority_farm_channels: newChannels });
+                    }}
+                    className="text-red-500 hover:text-red-400 text-xs px-2 py-1"
+                  >
+                    Remove
+                  </button>
+                </div>
+              ))}
+              {(settings.drops?.priority_farm_channels ?? []).length === 0 && (
+                <p className="text-xs text-textSecondary italic">No priority channels — rotation uses all followed streams</p>
+              )}
+            </div>
+
+            {/* Add Farm Channel */}
+            <div className="flex gap-2">
+              <input
+                type="text"
+                placeholder="Enter channel name..."
+                id="farm-channel-input"
+                className="flex-1 px-3 py-2 bg-background border border-border rounded-md text-textPrimary text-sm"
+                onKeyDown={async (e) => {
+                  if (e.key === 'Enter') {
+                    const input = e.currentTarget;
+                    const channelName = input.value.trim().toLowerCase();
+                    if (!channelName) return;
+                    const existing = (settings.drops?.priority_farm_channels ?? []);
+                    if (existing.some((c: FarmChannel) => c.channel_login === channelName)) return;
+                    try {
+                      const { invoke } = await import('@tauri-apps/api/core');
+                      const info = await invoke('get_user_by_login', { login: channelName }) as { id: string; login: string; display_name: string };
+                      const newChannel = {
+                        channel_id: info.id,
+                        channel_login: info.login,
+                        display_name: info.display_name,
+                      };
+                      await updateDropsSettings({
+                        priority_farm_channels: [...existing, newChannel]
+                      });
+                      input.value = '';
+                    } catch (err) {
+                      Logger.error('Could not find channel:', err);
+                    }
+                  }
+                }}
+              />
+              <button
+                onClick={async () => {
+                  const input = document.getElementById('farm-channel-input') as HTMLInputElement;
+                  const channelName = input.value.trim().toLowerCase();
+                  if (!channelName) return;
+                  const existing = (settings.drops?.priority_farm_channels ?? []);
+                  if (existing.some((c: FarmChannel) => c.channel_login === channelName)) return;
+                  try {
+                    const { invoke } = await import('@tauri-apps/api/core');
+                    const info = await invoke('get_user_by_login', { login: channelName }) as { id: string; login: string; display_name: string };
+                    const newChannel = {
+                      channel_id: info.id,
+                      channel_login: info.login,
+                      display_name: info.display_name,
+                    };
+                    await updateDropsSettings({
+                      priority_farm_channels: [...existing, newChannel]
+                    });
+                    input.value = '';
+                  } catch (err) {
+                    Logger.error('Could not find channel:', err);
+                  }
+                }}
+                className="px-4 py-2 bg-accent hover:bg-accent/80 text-white rounded-md text-sm"
+              >
+                Add
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Notifications Section */}
