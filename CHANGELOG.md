@@ -1,3 +1,19 @@
+## [6.11.0] - 2026-03-26
+### ✨ Features
+- **Streamer Info Panels**: You can now view detailed streamer information, including bio, social media links, and custom panels, directly within the app when switching to the 'About' view in the chat panel.
+- **Pinned Chat Messages**: See important pinned messages at the top of the chat, providing crucial context or announcements from the streamer.
+- **Improved Follow/Unfollow**: Follow and unfollow channels directly from the app using StreamNook's new GQL integration, offering a more seamless experience.
+- **Enhanced Drops Mining**: Configure dedicated 'Priority Farm Channels' to ensure specific streams are always targeted for drops mining, giving you more control over your campaigns. The mining logic has also been refined for better recovery and stability.
+
+### 🐛 Bug Fixes
+- **Chat Layout Stability**: Addressed issues with chat widget layout, ensuring smoother transitions when switching between chat and the new streamer info panels.
+- **Follow Action Reliability**: Fixed potential issues with follow/unfollow actions not completing due to changes in Twitch's backend automation.
+
+### 🔧 Maintenance
+- **GQL Integration for Follow/Unfollow**: Replaced outdated browser automation for follow/unfollow actions with more robust and efficient GQL mutations.
+- **Stream Watching Logic Refinement**: Optimized the background channel points watching service for better performance and more reliable point earning.
+- **UI Animation Polish**: Introduced new slide animations for smoother transitions between chat and streamer info views.
+
 ## [6.10.1] - 2026-03-08
 ### ✨ Features
 - **Rich Presence Enhancements**: StreamNook now provides more detailed information for Discord and Magne presence, including the stream's title, category, and the game being played. This offers a richer experience for others viewing your activity.
@@ -1003,6 +1019,7 @@ ATTENTION: ALL USERS LOG OUT OF TWITCH THEN LOG BACK IN FOR SOME CHANGES OT TAKE
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
