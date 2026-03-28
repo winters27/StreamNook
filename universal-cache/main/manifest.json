@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "last_sync": 1774595007,
+  "last_sync": 1774680375,
   "entries": {
     "global_badges": {
       "id": "global_badges",
@@ -2972,7 +2972,7 @@
                   "image_url_2x": "https://static-cdn.jtvnw.net/badges/v1/0ff76959-0c05-4406-b18a-779fd6debdd6/2",
                   "image_url_4x": "https://static-cdn.jtvnw.net/badges/v1/0ff76959-0c05-4406-b18a-779fd6debdd6/3",
                   "title": "PUACL2026 FINALS Charizard",
-                  "description": "This badge was earned by subscribing or gifting a sub during the Pokémon UNITE Asia Champions League 2026.\n",
+                  "description": "This badge was earned by subscribing or gifting a sub during the Pokémon UNITE Asia Champions League 2026.",
                   "click_action": null,
                   "click_url": null
                 }
@@ -4795,10 +4795,10 @@
             }
           ]
         },
-        "cached_at": 1774594584
+        "cached_at": 1774680375
       },
       "metadata": {
-        "timestamp": 1774594584,
+        "timestamp": 1774680375,
         "expiry_days": 7,
         "source": "twitch",
         "version": 1
