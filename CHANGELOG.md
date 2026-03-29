@@ -1,3 +1,31 @@
+## [7.0.0] - 2026-03-28
+### ✨ Features
+- **Multi-Stream Viewing**: Introducing MultiNook! Watch and manage multiple streams simultaneously.
+- **Unified Chat**: View and send messages across multiple chat channels in a single widget.
+- **Watch Streak Sharing**: Share your watch streak progress directly in chat.
+- **Improved Player**: Enhanced HLS playback with better buffering, adaptive quality, and more robust error handling.
+- **Proxy Optimization**: Automatically detects and applies the fastest proxy for ad-free viewing.
+- **Customizable UI**: Expanded theme creator with more options and refined appearance.
+- **Context Menus**: Added right-click menus for chat messages and streams.
+- **Settings Improvements**: Redesigned settings pages with better organization and new options for MultiNook and proxy management.
+
+### 🐛 Bug Fixes
+- Fixed issues with stream playback freezing when switching quality.
+- Resolved crashes related to WebSocket connections and chat participant updates.
+- Improved stability of the automatic stream offline detection.
+- Addressed various layout glitches and visual inconsistencies across the application.
+- Fixed an issue where the custom Streamlink path setting was not always respected.
+
+### 🔧 Maintenance
+- Updated dependencies across frontend and backend for improved performance and security.
+- Refactored various components for better code organization and maintainability.
+- Added new scripts for diagnostic HLS analysis and SVG to PNG conversion.
+
+### ⚡ Performance
+- Optimized emote and badge rendering for significantly faster chat display.
+- Improved caching strategies for emotes, badges, and profile data to enhance offline support and load times.
+- Reduced application memory footprint for a lighter desktop experience.
+
 ## [6.11.0] - 2026-03-26
 ### ✨ Features
 - **Streamer Info Panels**: You can now view detailed streamer information, including bio, social media links, and custom panels, directly within the app when switching to the 'About' view in the chat panel.
@@ -1019,6 +1047,7 @@ ATTENTION: ALL USERS LOG OUT OF TWITCH THEN LOG BACK IN FOR SOME CHANGES OT TAKE
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
