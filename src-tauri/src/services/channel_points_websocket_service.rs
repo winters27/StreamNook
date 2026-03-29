@@ -5,7 +5,7 @@ use log::{debug, error};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::RwLock;
@@ -33,6 +33,8 @@ pub struct ChannelPointsWebSocketService {
     app_handle: Option<AppHandle>,
     // Mapping of channel_id to channel info (login and display_name) for resolving channel names in events
     channel_mappings: Arc<RwLock<HashMap<String, ChannelMapping>>>,
+    // Set of channel IDs the user is currently watching
+    active_viewing_channels: Arc<RwLock<HashSet<String>>>,
 }
 
 #[derive(Debug)]
@@ -70,6 +72,7 @@ impl ChannelPointsWebSocketService {
             user_id: Arc::new(RwLock::new(String::new())),
             app_handle: None,
             channel_mappings: Arc::new(RwLock::new(HashMap::new())),
+            active_viewing_channels: Arc::new(RwLock::new(HashSet::new())),
         }
     }
 
@@ -91,6 +94,26 @@ impl ChannelPointsWebSocketService {
         debug!(
             "📝 Registered channel mapping: {} -> {} ({})",
             channel_id, channel_login, channel_display_name
+        );
+    }
+
+    /// Register a channel as currently being watched
+    pub async fn register_active_channel(&self, channel_id: &str) {
+        let mut active = self.active_viewing_channels.write().await;
+        active.insert(channel_id.to_string());
+        debug!(
+            "👀 Registered active watching channel for predictions: {}",
+            channel_id
+        );
+    }
+
+    /// Unregister a channel that is no longer being watched
+    pub async fn unregister_active_channel(&self, channel_id: &str) {
+        let mut active = self.active_viewing_channels.write().await;
+        active.remove(channel_id);
+        debug!(
+            "👀 Unregistered active watching channel for predictions: {}",
+            channel_id
         );
     }
 
@@ -176,6 +199,7 @@ impl ChannelPointsWebSocketService {
             let app_handle_clone = app_handle.clone();
             let connections = self.connections.clone();
             let channel_mappings = self.channel_mappings.clone();
+            let active_viewing_channels = self.active_viewing_channels.clone();
 
             tokio::spawn(async move {
                 if let Err(e) = Self::handle_connection(
@@ -186,6 +210,7 @@ impl ChannelPointsWebSocketService {
                     app_handle_clone,
                     index,
                     channel_mappings,
+                    active_viewing_channels,
                 )
                 .await
                 {
@@ -234,6 +259,7 @@ impl ChannelPointsWebSocketService {
         app_handle: AppHandle,
         index: usize,
         channel_mappings: Arc<RwLock<HashMap<String, ChannelMapping>>>,
+        active_viewing_channels: Arc<RwLock<HashSet<String>>>,
     ) -> Result<()> {
         debug!(
             "🔗 Connecting WebSocket #{} with {} topics",
@@ -316,6 +342,7 @@ impl ChannelPointsWebSocketService {
                             &connection_id,
                             index,
                             &channel_mappings,
+                            &active_viewing_channels,
                         )
                         .await;
                     }
@@ -359,6 +386,7 @@ impl ChannelPointsWebSocketService {
                 app_handle,
                 index,
                 channel_mappings,
+                active_viewing_channels,
             ))
             .await
         } else {
@@ -374,6 +402,7 @@ impl ChannelPointsWebSocketService {
         connection_id: &str,
         index: usize,
         channel_mappings: &Arc<RwLock<HashMap<String, ChannelMapping>>>,
+        active_viewing_channels: &Arc<RwLock<HashSet<String>>>,
     ) {
         match msg.msg_type.as_str() {
             "MESSAGE" => {
@@ -399,11 +428,7 @@ impl ChannelPointsWebSocketService {
                                 .await;
                             }
                             "video-playback-by-id" => {
-                                Self::handle_stream_event(message_data, app_handle, channel_id)
-                                    .await;
-                            }
-                            "raid" => {
-                                Self::handle_raid_event(message_data, app_handle, channel_id).await;
+                                // Dead event (frontend uses EventSub), but topic is still needed for internal Twitch drops tracking
                             }
                             "predictions-channel-v1" => {
                                 Self::handle_prediction_event(
@@ -411,6 +436,7 @@ impl ChannelPointsWebSocketService {
                                     app_handle,
                                     channel_id,
                                     channel_mappings,
+                                    active_viewing_channels,
                                 )
                                 .await;
                             }
@@ -607,56 +633,20 @@ impl ChannelPointsWebSocketService {
         }
     }
 
-    /// Handle stream up/down events
-    async fn handle_stream_event(
-        message_data: Value,
-        app_handle: &AppHandle,
-        channel_id: Option<String>,
-    ) {
-        if let Some(event_type) = message_data["type"].as_str() {
-            match event_type {
-                "stream-up" => {
-                    debug!("📺 Stream went live: {:?}", channel_id);
-                    let _ = app_handle.emit(
-                        "stream-up",
-                        json!({
-                            "channel_id": channel_id
-                        }),
-                    );
-                }
-                "stream-down" => {
-                    debug!("📴 Stream went offline: {:?}", channel_id);
-                    let _ = app_handle.emit(
-                        "stream-down",
-                        json!({
-                            "channel_id": channel_id
-                        }),
-                    );
-                }
-                _ => {}
-            }
-        }
-    }
-
-    /// Handle raid events
-    async fn handle_raid_event(
-        message_data: Value,
-        _app_handle: &AppHandle,
-        channel_id: Option<String>,
-    ) {
-        if let Some(raid_id) = message_data["raid"]["id"].as_str() {
-            let target = message_data["raid"]["target_login"].as_str().unwrap_or("");
-            debug!("🎯 Raid detected from {:?} to {}", channel_id, target);
-        }
-    }
-
     /// Handle prediction events
     async fn handle_prediction_event(
         message_data: Value,
         app_handle: &AppHandle,
         channel_id: Option<String>,
         channel_mappings: &Arc<RwLock<HashMap<String, ChannelMapping>>>,
+        active_viewing_channels: &Arc<RwLock<HashSet<String>>>,
     ) {
+        // Fast path: if we aren't currently watching this channel, don't process prediction events
+        if let Some(ref cid) = channel_id {
+            if !active_viewing_channels.read().await.contains(cid) {
+                return;
+            }
+        }
         // Resolve channel name from mapping or API
         let channel_name = if let Some(ref cid) = channel_id {
             let mapping = channel_mappings.read().await;

@@ -5,6 +5,7 @@ import { ChannelPointsBalance } from '../types';
 import { useAppStore } from '../stores/AppStore';
 
 import { Logger } from '../utils/logger';
+import { Tooltip } from './ui/Tooltip';
 interface ChannelPointsLeaderboardProps {
   onStreamClick?: (channelName: string) => void;
 }
@@ -213,14 +214,15 @@ const ChannelPointsLeaderboard = ({ onStreamClick }: ChannelPointsLeaderboardPro
 
               {/* Streamer Info */}
               <div className="flex-1 min-w-0">
-                <button
-                  onClick={() => handleStreamClick(balance.channel_name)}
-                  className="text-textPrimary text-sm font-medium hover:text-accent transition-colors truncate block w-full text-left group-hover:underline"
-                  title={`Watch ${balance.channel_name}`}
-                >
-                  {balance.channel_name}
-                  <ExternalLink className="inline-block w-3 h-3 ml-1 opacity-0 group-hover:opacity-100 transition-opacity" />
-                </button>
+                <Tooltip content={`Watch ${balance.channel_name}`} side="top">
+                  <button
+                    onClick={() => handleStreamClick(balance.channel_name)}
+                    className="text-textPrimary text-sm font-medium hover:text-accent transition-colors truncate block w-full text-left group-hover:underline"
+                  >
+                    {balance.channel_name}
+                    <ExternalLink className="inline-block w-3 h-3 ml-1 opacity-0 group-hover:opacity-100 transition-opacity" />
+                  </button>
+                </Tooltip>
                 {streamerInfo.isLive && (
                   <span className="text-xs text-green-400">Live</span>
                 )}

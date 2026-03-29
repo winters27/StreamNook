@@ -129,6 +129,9 @@ pub struct ChatMessage {
     pub badges: Vec<Badge>,
     pub timestamp: String,
     pub content: String,
+    /// Source channel name for multi-stream chat routing
+    #[serde(default)]
+    pub channel: String,
     /// Legacy field for backwards compatibility - will be deprecated
     #[serde(default)]
     pub emotes: Vec<EmotePos>,

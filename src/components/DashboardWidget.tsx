@@ -8,6 +8,7 @@ import {
     subscribeToTotalUsers
 } from '../services/supabaseService';
 import { useAppStore } from '../stores/AppStore';
+import { Tooltip } from './ui/Tooltip';
 
 // Admin user ID - Only this Twitch channel ID can access the analytics dashboard
 // Set via VITE_ADMIN_USER_ID environment variable (baked in at build time from GitHub secrets)
@@ -91,14 +92,15 @@ export default function DashboardWidget({ isOpen, onClose }: DashboardWidgetProp
                         <h2 className="text-lg font-semibold text-textPrimary">Analytics Dashboard</h2>
                     </div>
                     <div className="flex items-center gap-2">
+                        <Tooltip content="Refresh data" side="top">
                         <button
                             onClick={handleRefresh}
                             disabled={isLoading || !configured}
                             className="p-1.5 rounded-lg hover:bg-borderSubtle transition-colors disabled:opacity-50"
-                            title="Refresh data"
                         >
                             <RefreshCw className={`w-4 h-4 text-textSecondary ${isLoading ? 'animate-spin' : ''}`} />
                         </button>
+                        </Tooltip>
                         <button
                             onClick={onClose}
                             className="p-1.5 rounded-lg hover:bg-borderSubtle transition-colors"

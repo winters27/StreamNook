@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState, useMemo, useCallback, memo } from 'react';
+import { createPortal } from 'react-dom';
 import ChatMessageList from './ChatMessageList';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -23,6 +24,7 @@ import PredictionOverlay from './PredictionOverlay';
 import StreamerAboutPanel from './StreamerAboutPanel';
 import ChannelPointsMenu from './ChannelPointsMenu';
 import ResubNotificationBanner, { ResubNotification } from './ResubNotificationBanner';
+import WatchStreakBanner, { WatchStreakMilestone } from './WatchStreakBanner';
 import { fetchAllEmotes, Emote, EmoteSet, preloadChannelEmotes, queueEmoteForCaching } from '../services/emoteService';
 import { preloadThirdPartyBadgeDatabases } from '../services/thirdPartyBadges';
 import { initializeBadges, getBadgeInfo } from '../services/twitchBadges';
@@ -44,6 +46,7 @@ import { useChatUserStore } from '../stores/chatUserStore';
 import MentionAutocomplete from './MentionAutocomplete';
 
 import { BackendChatMessage } from '../services/twitchChat';
+import { Tooltip } from './ui/Tooltip';
 
 interface ParsedMessage {
   username: string;
@@ -55,6 +58,8 @@ interface ParsedMessage {
 }
 
 import { EMOJI_CATEGORIES, EMOJI_KEYWORDS } from '../services/emojiCategories';
+import { usemultiNookStore } from '../stores/multiNookStore';
+import type { TwitchStream } from '../types';
 
 import { Logger } from '../utils/logger';
 // Helper function to format time remaining for Hype Train
@@ -68,6 +73,65 @@ const formatHypeTrainTimeRemaining = (expiresAt: string): string => {
     return `${minutes}:${seconds.toString().padStart(2, '0')}`;
   }
   return `${seconds}s`;
+};
+
+// Channel Points hover tooltip — portalled to document.body to escape overflow-hidden
+const ChannelPointsTooltip = ({ anchorRef, customPointsIconUrl, customPointsName, isLoadingChannelPoints, channelPoints }: {
+  anchorRef: React.RefObject<HTMLDivElement>;
+  customPointsIconUrl: string | null;
+  customPointsName: string | null;
+  isLoadingChannelPoints: boolean;
+  channelPoints: number | null;
+}) => {
+  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
+
+  useEffect(() => {
+    const el = anchorRef.current;
+    if (!el) return;
+    const update = () => {
+      const rect = el.getBoundingClientRect();
+      setPos({ left: rect.left + rect.width / 2, top: rect.top - 8 });
+    };
+    // Measure immediately
+    update();
+  }, [anchorRef]);
+
+  if (!pos) return null;
+
+  return createPortal(
+    <div
+      className="fixed px-3 py-1.5 bg-black/95 border border-border rounded-lg shadow-lg z-[9999] min-w-max pointer-events-none"
+      style={{
+        left: pos.left,
+        top: pos.top,
+        transform: 'translate(-50%, -100%)',
+      }}
+    >
+      <div className="flex items-center gap-1.5">
+        {customPointsIconUrl ? (
+          <img 
+            src={customPointsIconUrl} 
+            alt={customPointsName || "Channel Points"} 
+            className="w-[14px] h-[14px] flex-shrink-0"
+          />
+        ) : (
+          <ChannelPointsIcon size={14} className="text-accent-neon flex-shrink-0" />
+        )}
+        {isLoadingChannelPoints ? (
+          <span className="text-sm text-textSecondary">Loading...</span>
+        ) : channelPoints !== null ? (
+          <span className="text-sm font-bold text-accent-neon">{channelPoints.toLocaleString()}</span>
+        ) : (
+          <span className="text-sm text-textSecondary">--</span>
+        )}
+        {customPointsName && channelPoints !== null && (
+          <span className="text-xs text-textSecondary">{customPointsName}</span>
+        )}
+      </div>
+      <div className="absolute top-full left-1/2 -translate-x-1/2 w-0 h-0 border-l-4 border-r-4 border-t-4 border-transparent border-t-black/95" />
+    </div>,
+    document.body
+  );
 };
 
 // Emote Grid Item - TRUE lazy loading with IntersectionObserver
@@ -234,19 +298,64 @@ const HYPE_MESSAGES = [
 
 const ChatWidget = () => {
   const { messages, connectChat, sendMessage, isConnected, error, setPaused: setBufferPaused, deletedMessageIds, clearedUserContexts } = useTwitchChat();
-  const { currentStream, currentUser, currentHypeTrain } = useAppStore();
+  const { currentStream: rawCurrentStream, currentUser, currentHypeTrain } = useAppStore();
+  const { isMultiNookActive, activeChatChannelId, slots } = usemultiNookStore();
+  
+  const currentStream = useMemo(() => {
+    if (isMultiNookActive && activeChatChannelId) {
+      const activeSlot = slots.find(s => s.channelId === activeChatChannelId || s.channelLogin === activeChatChannelId);
+      if (activeSlot) {
+        return {
+          id: activeSlot.channelId || activeSlot.id,
+          user_id: activeSlot.channelId || '',
+          user_login: activeSlot.channelLogin,
+          user_name: activeSlot.channelName || activeSlot.channelLogin,
+          game_id: '',
+          game_name: 'multi-nook',
+          type: 'live',
+          title: `multi-nook: ${activeSlot.channelName || activeSlot.channelLogin}`,
+          viewer_count: 0,
+          started_at: new Date().toISOString(),
+          language: 'en',
+          thumbnail_url: '',
+          tag_ids: [],
+          is_mature: false
+        } as TwitchStream;
+      }
+    }
+    return rawCurrentStream;
+  }, [rawCurrentStream, isMultiNookActive, activeChatChannelId, slots]);
   
   // UI state
   const [messageInput, setMessageInput] = useState('');
   const [activeView, setActiveView] = useState<'chat' | 'about'>('chat');
   const [showEmotePicker, setShowEmotePicker] = useState(false);
   const [emotes, setEmotes] = useState<EmoteSet | null>(null);
+
+  // Dynamic smiley icon — cycles on unhover with crossfade animation
+  const smileyPool = useMemo(() => ['😀', '😄', '😁', '😆', '🤣', '😂', '😊', '😇', '🙂', '😉', '😌', '😍', '🥰', '😜', '🤪', '😎', '🤩', '🥳', '😏', '😋', '🤗', '🫠', '🫡', '😺'], []);
+  const [currentSmiley, setCurrentSmiley] = useState(() => '😀');
+  const [isSmileyTransitioning, setIsSmileyTransitioning] = useState(false);
+  const cycleEmoteSmiley = useCallback(() => {
+    // Phase 1: fade out (100ms)
+    setIsSmileyTransitioning(true);
+    setTimeout(() => {
+      // Phase 2: swap src while invisible
+      setCurrentSmiley(prev => {
+        const filtered = smileyPool.filter(s => s !== prev);
+        return filtered[Math.floor(Math.random() * filtered.length)];
+      });
+      // Phase 3: fade back in
+      setIsSmileyTransitioning(false);
+    }, 110);
+  }, [smileyPool]);
   const [selectedProvider, setSelectedProvider] = useState<'twitch' | 'bttv' | '7tv' | 'ffz' | 'favorites' | 'emoji'>('twitch');
   const [searchQuery, setSearchQuery] = useState('');
   const [isLoadingEmotes, setIsLoadingEmotes] = useState(false);
   const [favoriteEmotes, setFavoriteEmotes] = useState<Emote[]>([]);
   const emoteScrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const channelPointsRef = useRef<HTMLDivElement>(null);
   const [isPaused, setIsPaused] = useState(false);
   const [pausedMessageCount, setPausedMessageCount] = useState(0);
   const isHoveringChatRef = useRef<boolean>(false);
@@ -297,6 +406,11 @@ const ChatWidget = () => {
   const [isResubMode, setIsResubMode] = useState(false);
   const [includeStreak, setIncludeStreak] = useState(false);
   const [resubDismissed, setResubDismissed] = useState(false);
+
+  // Watch streak state
+  const [watchStreak, setWatchStreak] = useState<WatchStreakMilestone | null>(null);
+  const [isWatchStreakMode, setIsWatchStreakMode] = useState(false);
+  const [watchStreakDismissed, setWatchStreakDismissed] = useState(false);
 
   // Drops mining state
   const [dropsCampaign, setDropsCampaign] = useState<{ id: string; name: string; game_name: string } | null>(null);
@@ -573,6 +687,10 @@ const ChatWidget = () => {
       setIsResubMode(false);
       setIncludeStreak(false);
       setResubDismissed(false);
+      // Reset watch streak state when switching channels
+      setWatchStreak(null);
+      setIsWatchStreakMode(false);
+      setWatchStreakDismissed(false);
       // Reset pinned chat state when switching channels
       setPinnedMessages([]);
       setIsPinnedExpanded(true);
@@ -707,6 +825,28 @@ const ChatWidget = () => {
     
     fetchResubNotification();
   }, [currentStream?.user_login, resubDismissed]);
+
+  // Fetch watch streak milestone when entering a new channel
+  useEffect(() => {
+    const fetchWatchStreak = async () => {
+      if (!currentStream?.user_id || watchStreakDismissed) return;
+
+      try {
+        const milestone = await invoke<WatchStreakMilestone | null>('get_watch_streak', {
+          channelId: currentStream.user_id,
+        });
+        setWatchStreak(milestone);
+        if (milestone) {
+          Logger.debug('[ChatWidget] Watch streak available:', milestone.streak_count, 'streams, bonus:', milestone.copo_bonus);
+        }
+      } catch (err) {
+        Logger.warn('[ChatWidget] Failed to fetch watch streak:', err);
+        setWatchStreak(null);
+      }
+    };
+
+    fetchWatchStreak();
+  }, [currentStream?.user_id, watchStreakDismissed]);
 
   // Fetch pinned chat messages for current channel
   useEffect(() => {
@@ -1170,6 +1310,31 @@ const ChatWidget = () => {
         } catch (err) {
           Logger.error('[ChatWidget] Failed to use resub token:', err);
           useAppStore.getState().addToast('Failed to share resub notification', 'error');
+          setMessageInput(messageToSend);
+        }
+        return;
+      }
+
+      // Handle watch streak mode - send watch streak share
+      if (isWatchStreakMode && watchStreak && currentStream?.user_id) {
+        setIsWatchStreakMode(false);
+        try {
+          const success = await invoke<boolean>('share_watch_streak', {
+            channelId: currentStream.user_id,
+            milestoneId: watchStreak.milestone_id,
+            message: messageToSend || null,
+          });
+          if (success) {
+            setWatchStreak(null); // Milestone consumed
+            setWatchStreakDismissed(true);
+            useAppStore.getState().addToast('Watch streak shared!', 'success');
+          } else {
+            useAppStore.getState().addToast('Failed to share watch streak', 'error');
+            setMessageInput(messageToSend);
+          }
+        } catch (err) {
+          Logger.error('[ChatWidget] Failed to share watch streak:', err);
+          useAppStore.getState().addToast('Failed to share watch streak', 'error');
           setMessageInput(messageToSend);
         }
         return;
@@ -1687,13 +1852,13 @@ const ChatWidget = () => {
               >
                 <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-red-400'}`}></div>
                 {/* Carousel toggle — cycles between STREAM CHAT and ABOUT */}
+                <Tooltip content={activeView === 'about' ? 'Back to chat' : 'About this streamer'} side="top">
                 <button
                   className="pointer-events-auto flex items-center gap-1.5 group/toggle"
                   onClick={(e) => {
                     e.stopPropagation();
                     setActiveView(activeView === 'about' ? 'chat' : 'about');
                   }}
-                  title={activeView === 'about' ? 'Back to chat' : 'About this streamer'}
                 >
                   <div className="relative h-4 overflow-hidden" style={{ width: activeView === 'about' ? '44px' : (isSharedChat ? '135px' : '88px') }}>
                     <div
@@ -1723,6 +1888,7 @@ const ChatWidget = () => {
                     </svg>
                   </div>
                 </button>
+                </Tooltip>
                 <div className="flex items-center gap-3 ml-auto">
                   {viewerCount !== null && (
                     <div className="flex items-center gap-1">
@@ -1952,23 +2118,33 @@ const ChatWidget = () => {
                       <button onClick={() => setSelectedProvider('favorites')} className={`flex-1 py-1.5 text-xs rounded transition-all flex items-center justify-center gap-1 ${selectedProvider === 'favorites' ? 'glass-button text-white' : 'bg-glass text-textSecondary hover:bg-glass-hover'}`} title={`Favorites (${favoriteEmotes.length})`}>
                         <span className="text-yellow-400">★</span><span className="text-[10px] opacity-70">{favoriteEmotes.length}</span>
                       </button>
-                      <button onClick={() => setSelectedProvider('emoji')} className={`flex-1 py-1.5 text-xs rounded transition-all flex items-center justify-center ${selectedProvider === 'emoji' ? 'glass-button text-white' : 'bg-glass text-textSecondary hover:bg-glass-hover'}`} title="Emoji"><img src={getAppleEmojiUrl('😀')} alt="😀" className="w-4 h-4" /></button>
-                      <button onClick={() => setSelectedProvider('twitch')} className={`flex-1 py-1.5 text-xs rounded transition-all flex items-center justify-center gap-1 ${selectedProvider === 'twitch' ? 'glass-button text-white' : 'bg-glass text-textSecondary hover:bg-glass-hover'}`} title={`Twitch (${emotes?.twitch.length || 0})`}>
+                      <Tooltip content="Emoji" side="top">
+                      <button onClick={() => setSelectedProvider('emoji')} className={`flex-1 py-1.5 text-xs rounded transition-all flex items-center justify-center ${selectedProvider === 'emoji' ? 'glass-button text-white' : 'bg-glass text-textSecondary hover:bg-glass-hover'}`}><img src={getAppleEmojiUrl('😀')} alt="😀" className="w-4 h-4" /></button>
+                      </Tooltip>
+                      <Tooltip content={`Twitch (${emotes?.twitch.length || 0})`} side="top">
+                      <button onClick={() => setSelectedProvider('twitch')} className={`flex-1 py-1.5 text-xs rounded transition-all flex items-center justify-center gap-1 ${selectedProvider === 'twitch' ? 'glass-button text-white' : 'bg-glass text-textSecondary hover:bg-glass-hover'}`}>
                         <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M11.571 4.714h1.715v5.143H11.57zm4.715 0H18v5.143h-1.714zM6 0L1.714 4.286v15.428h5.143V24l4.286-4.286h3.428L22.286 12V0zm14.571 11.143l-3.428 3.428h-3.429l-3 3v-3H6.857V1.714h13.714Z" /></svg>
                         <span className="text-[10px] opacity-70">{emotes?.twitch.length || 0}</span>
                       </button>
-                      <button onClick={() => setSelectedProvider('bttv')} className={`flex-1 py-1.5 text-xs rounded transition-all flex items-center justify-center gap-1 ${selectedProvider === 'bttv' ? 'glass-button text-white' : 'bg-glass text-textSecondary hover:bg-glass-hover'}`} title={`BetterTTV (${emotes?.bttv.length || 0})`}>
+                      </Tooltip>
+                      <Tooltip content={`BetterTTV (${emotes?.bttv.length || 0})`} side="top">
+                      <button onClick={() => setSelectedProvider('bttv')} className={`flex-1 py-1.5 text-xs rounded transition-all flex items-center justify-center gap-1 ${selectedProvider === 'bttv' ? 'glass-button text-white' : 'bg-glass text-textSecondary hover:bg-glass-hover'}`}>
                         <svg className="w-4 h-4" viewBox="0 0 300 300" fill="currentColor"><path fill="transparent" d="M249.771 150A99.771 99.922 0 0 1 150 249.922 99.771 99.922 0 0 1 50.229 150 99.771 99.922 0 0 1 150 50.078 99.771 99.922 0 0 1 249.771 150Z" /><path d="M150 1.74C68.409 1.74 1.74 68.41 1.74 150S68.41 298.26 150 298.26h148.26V150.17h-.004c0-.057.004-.113.004-.17C298.26 68.409 231.59 1.74 150 1.74zm0 49c55.11 0 99.26 44.15 99.26 99.26 0 55.11-44.15 99.26-99.26 99.26-55.11 0-99.26-44.15-99.26-99.26 0-55.11 44.15-99.26 99.26-99.26z" /><path d="M161.388 70.076c-10.662 0-19.42 7.866-19.42 17.67 0 9.803 8.758 17.67 19.42 17.67 10.662 0 19.42-7.867 19.42-17.67 0-9.804-8.758-17.67-19.42-17.67zm45.346 24.554-.02.022-.004.002c-5.402 2.771-11.53 6.895-18.224 11.978l-.002.002-.004.002c-25.943 19.766-60.027 54.218-80.344 80.33h-.072l-1.352 1.768c-5.114 6.69-9.267 12.762-12.098 18.006l-.082.082.022.021v.002l.004.002.174.176.052-.053.102.053-.07.072c30.826 30.537 81.213 30.431 111.918-.273 30.783-30.784 30.8-81.352.04-112.152l-.005-.004zM87.837 142.216c-9.803 0-17.67 8.758-17.67 19.42 0 10.662 7.867 19.42 17.67 19.42 9.804 0 17.67-8.758 17.67-19.42 0-10.662-7.866-19.42-17.67-19.42z" /></svg>
                         <span className="text-[10px] opacity-70">{emotes?.bttv.length || 0}</span>
                       </button>
-                      <button onClick={() => setSelectedProvider('7tv')} className={`flex-1 py-1.5 text-xs rounded transition-all flex items-center justify-center gap-1 ${selectedProvider === '7tv' ? 'glass-button text-white' : 'bg-glass text-textSecondary hover:bg-glass-hover'}`} title={`7TV (${emotes?.['7tv'].length || 0})`}>
+                      </Tooltip>
+                      <Tooltip content={`7TV (${emotes?.['7tv'].length || 0})`} side="top">
+                      <button onClick={() => setSelectedProvider('7tv')} className={`flex-1 py-1.5 text-xs rounded transition-all flex items-center justify-center gap-1 ${selectedProvider === '7tv' ? 'glass-button text-white' : 'bg-glass text-textSecondary hover:bg-glass-hover'}`}>
                         <svg className="w-4 h-4" viewBox="0 0 28 21" fill="currentColor"><path d="M20.7465 5.48825L21.9799 3.33745L22.646 2.20024L21.4125 0.0494437V0H14.8259L17.2928 4.3016L17.9836 5.48825H20.7465Z" /><path d="M7.15395 19.9258L14.5546 7.02104L15.4673 5.43884L13.0004 1.13724L12.3097 0.0247596H1.8995L0.666057 2.17556L0 3.31276L1.23344 5.46356V5.51301H9.12745L2.96025 16.267L2.09685 17.7998L3.33029 19.9506V20H7.15395" /><path d="M17.4655 19.9257H21.2398L26.1736 11.3225L27.037 9.83924L25.8036 7.68844V7.63899H22.0046L19.5377 11.9406L19.365 12.262L16.8981 7.96038L16.7255 7.63899L14.2586 11.9406L13.5679 13.1272L17.2682 19.5796L17.4655 19.9257Z" /></svg>
                         <span className="text-[10px] opacity-70">{emotes?.['7tv'].length || 0}</span>
                       </button>
-                      <button onClick={() => setSelectedProvider('ffz')} className={`flex-1 py-1.5 text-xs rounded transition-all flex items-center justify-center gap-1 ${selectedProvider === 'ffz' ? 'glass-button text-white' : 'bg-glass text-textSecondary hover:bg-glass-hover'}`} title={`FrankerFaceZ (${emotes?.ffz.length || 0})`}>
+                      </Tooltip>
+                      <Tooltip content={`FrankerFaceZ (${emotes?.ffz.length || 0})`} side="top">
+                      <button onClick={() => setSelectedProvider('ffz')} className={`flex-1 py-1.5 text-xs rounded transition-all flex items-center justify-center gap-1 ${selectedProvider === 'ffz' ? 'glass-button text-white' : 'bg-glass text-textSecondary hover:bg-glass-hover'}`}>
                         <svg className="w-4 h-4" viewBox="-0.5 -0.5 40 30" fill="currentColor"><path d="M 15.5,-0.5 C 17.8333,-0.5 20.1667,-0.5 22.5,-0.5C 24.6552,3.13905 26.8218,6.80572 29,10.5C 29.691,7.40943 31.5243,6.24276 34.5,7C 36.585,9.68221 38.2517,12.5155 39.5,15.5C 39.5,17.5 39.5,19.5 39.5,21.5C 34.66,25.2533 29.3267,27.92 23.5,29.5C 20.5,29.5 17.5,29.5 14.5,29.5C 9.11466,27.3005 4.11466,24.3005 -0.5,20.5C -0.5,17.5 -0.5,14.5 -0.5,11.5C 4.17691,4.45967 7.34358,5.12633 9,13.5C 10.6047,10.3522 11.6047,7.01889 12,3.5C 12.6897,1.64977 13.8564,0.316435 15.5,-0.5 Z" /></svg>
                         <span className="text-[10px] opacity-70">{emotes?.ffz.length || 0}</span>
                       </button>
+                      </Tooltip>
                     </div>
                   </div>
                   <div ref={emoteScrollRef} className="flex-1 overflow-y-auto p-3 scrollbar-thin">
@@ -2136,87 +2312,108 @@ const ChatWidget = () => {
                   }}
                 />
               )}
-              {replyingTo && !isResubMode && (
+              {/* Watch Streak Banner - shows when user has a shareable watch streak */}
+              {watchStreak && !watchStreakDismissed && currentStream && (
+                <WatchStreakBanner
+                  milestone={watchStreak}
+                  isStreakMode={isWatchStreakMode}
+                  onActivateShare={() => {
+                    setIsWatchStreakMode(true);
+                    setIsResubMode(false); // Can't be in both modes
+                    setReplyingTo(null);
+                    inputRef.current?.focus();
+                  }}
+                  onDismiss={() => {
+                    setWatchStreakDismissed(true);
+                    setIsWatchStreakMode(false);
+                  }}
+                  onCancelShare={() => {
+                    setIsWatchStreakMode(false);
+                    setMessageInput('');
+                  }}
+                />
+              )}
+              {replyingTo && !isResubMode && !isWatchStreakMode && (
                 <div className="mb-2 flex items-center gap-2 px-3 py-2 bg-glass rounded-lg border border-borderSubtle">
                   <svg className="w-4 h-4 text-accent flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" /></svg>
                   <span className="text-xs text-textSecondary flex-1">Replying to <span className="text-accent font-semibold">{replyingTo.username}</span></span>
-                  <button onClick={() => setReplyingTo(null)} className="text-textSecondary hover:text-textPrimary transition-colors" title="Cancel reply">
+                  <Tooltip content="Cancel reply" side="top">
+                  <button onClick={() => setReplyingTo(null)} className="text-textSecondary hover:text-textPrimary transition-colors">
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
                   </button>
+                  </Tooltip>
                 </div>
               )}
 
               <div className="flex items-center gap-2 min-w-0">
-                <button onClick={() => setShowEmotePicker(!showEmotePicker)} className="flex-shrink-0 p-2 text-textSecondary hover:text-textPrimary hover:bg-glass rounded transition-all" title="Emotes">
-                  <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM7 9a1 1 0 100-2 1 1 0 000 2zm7-1a1 1 0 11-2 0 1 1 0 012 0zm-.464 5.535a1 1 0 10-1.415-1.414 3 3 0 01-4.242 0 1 1 0 00-1.415 1.414 5 5 0 007.072 0z" clipRule="evenodd" /></svg>
-                </button>
                 {/* Channel Points button - click to open rewards menu, hover for balance */}
                 <div 
-                  className="relative flex-shrink-0"
+                  ref={channelPointsRef}
+                  className="relative flex-shrink-0 self-center flex items-center"
                   onMouseEnter={() => setChannelPointsHovered(true)}
                   onMouseLeave={() => setChannelPointsHovered(false)}
                 >
                   <button
                     onClick={() => setShowChannelPointsMenu(!showChannelPointsMenu)}
-                    className={`p-2 rounded transition-all hover:bg-glass ${showChannelPointsMenu ? 'bg-glass text-accent-neon' : channelPoints !== null ? 'text-accent-neon' : 'text-textSecondary hover:text-accent-neon'}`}
-                    title={customPointsName || "Channel Points"}
+                    className={`group flex items-center justify-center w-9 h-9 transition-all duration-200 ${showChannelPointsMenu ? 'text-accent-neon' : channelPoints !== null ? 'text-accent-neon' : 'text-textSecondary hover:text-accent-neon'}`}
                   >
                     {customPointsIconUrl ? (
                       <img 
                         src={customPointsIconUrl} 
                         alt={customPointsName || "Channel Points"} 
-                        className="w-[18px] h-[18px]"
+                        className="w-[18px] h-[18px] transition-all duration-200 group-hover:drop-shadow-[0_0_6px_rgba(200,224,232,0.85)]"
                       />
                     ) : (
-                      <ChannelPointsIcon size={18} />
+                      <ChannelPointsIcon size={18} className="transition-all duration-200 group-hover:drop-shadow-[0_0_6px_rgba(200,224,232,0.85)]" />
                     )}
                   </button>
-                  {/* Points tooltip - visible on hover when menu is closed */}
+                  {/* Points tooltip - fixed position to escape overflow-hidden parents */}
                   {channelPointsHovered && !showChannelPointsMenu && (
-                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-black/95 border border-border rounded-lg shadow-lg z-50 min-w-max">
-                      <div className="flex items-center gap-1.5">
-                        {customPointsIconUrl ? (
-                          <img 
-                            src={customPointsIconUrl} 
-                            alt={customPointsName || "Channel Points"} 
-                            className="w-[14px] h-[14px] flex-shrink-0"
-                          />
-                        ) : (
-                          <ChannelPointsIcon size={14} className="text-accent-neon flex-shrink-0" />
-                        )}
-                        {isLoadingChannelPoints ? (
-                          <span className="text-sm text-textSecondary">Loading...</span>
-                        ) : channelPoints !== null ? (
-                          <span className="text-sm font-bold text-accent-neon">{channelPoints.toLocaleString()}</span>
-                        ) : (
-                          <span className="text-sm text-textSecondary">--</span>
-                        )}
-                        {/* Show custom points name if available */}
-                        {customPointsName && channelPoints !== null && (
-                          <span className="text-xs text-textSecondary">{customPointsName}</span>
-                        )}
-                      </div>
-                      {/* Arrow pointing down */}
-                      <div className="absolute top-full left-1/2 -translate-x-1/2 w-0 h-0 border-l-4 border-r-4 border-t-4 border-transparent border-t-black/95" />
-                    </div>
+                    <ChannelPointsTooltip
+                      anchorRef={channelPointsRef}
+                      customPointsIconUrl={customPointsIconUrl}
+                      customPointsName={customPointsName}
+                      isLoadingChannelPoints={isLoadingChannelPoints}
+                      channelPoints={channelPoints}
+                    />
                   )}
                 </div>
                 {/* Drops mining button - only shows if current game has active drops */}
                 {dropsCampaign && (
+                  <Tooltip content={isMining ? `Stop mining drops for ${dropsCampaign.game_name}` : `Start mining drops for ${dropsCampaign.game_name}`} side="top">
                   <button
                     onClick={handleToggleMining}
                     disabled={isLoadingDrops}
-                    className={`flex-shrink-0 p-2 rounded transition-all hover:bg-glass ${isMining
+                    className={`group flex-shrink-0 flex items-center justify-center self-center w-9 h-9 transition-all duration-200 ${isMining
                       ? 'text-green-400 hover:text-red-400'
                       : 'text-textSecondary hover:text-accent'
                       }`}
-                    title={isMining ? `Stop mining drops for ${dropsCampaign.game_name}` : `Start mining drops for ${dropsCampaign.game_name}`}
                   >
-                    <Pickaxe size={18} className={isMining ? 'animate-pulse' : ''} />
+                    <Pickaxe size={18} className={`transition-all duration-200 group-hover:drop-shadow-[0_0_6px_rgba(200,224,232,0.85)] ${isMining ? 'animate-pulse' : ''}`} />
                   </button>
+                  </Tooltip>
                 )}
-                {/* Input container with mention autocomplete */}
-                <div className="relative flex-1 min-w-0">
+                {/* Input container with emoji button inset on the left */}
+                <div className="relative flex-1 min-w-0 flex items-center">
+                  {/* Emoji button — inset left inside the input */}
+                  <Tooltip content="Emotes" side="top">
+                  <button
+                    onClick={() => setShowEmotePicker(!showEmotePicker)}
+                    onMouseLeave={cycleEmoteSmiley}
+                    className="group absolute left-1 top-1/2 -translate-y-1/2 z-10 flex items-center justify-center w-7 h-7 text-textSecondary hover:text-textPrimary transition-colors duration-200"
+                  >
+                    <img
+                      src={getAppleEmojiUrl(currentSmiley)}
+                      alt={currentSmiley}
+                      draggable={false}
+                      className={`w-4 h-4 object-contain transition-all ease-in-out group-hover:drop-shadow-[0_0_5px_rgba(200,224,232,0.8)] ${
+                        isSmileyTransitioning
+                          ? 'opacity-0 scale-50 duration-100'
+                          : 'opacity-100 scale-100 duration-150'
+                      }`}
+                    />
+                  </button>
+                  </Tooltip>
                   {/* @ Mention Autocomplete */}
                   {showMentionAutocomplete && (
                     <MentionAutocomplete
@@ -2231,11 +2428,19 @@ const ChatWidget = () => {
                     value={messageInput} 
                     onChange={handleInputChange} 
                     onKeyDown={handleKeyPress}
-                    placeholder="Send a message" 
-                    className="w-full glass-input text-textPrimary text-sm px-3 py-2 placeholder-textSecondary resize-none overflow-hidden scrollbar-thin"
+                    placeholder={isWatchStreakMode ? "Add a message (optional)..." : "Send a message"} 
+                    className={`w-full glass-input text-textPrimary text-sm placeholder-textSecondary resize-none overflow-hidden scrollbar-thin leading-[1.4] self-center transition-all duration-300 ${
+                      isWatchStreakMode 
+                        ? 'ring-2 ring-amber-500/50 bg-amber-500/5 shadow-[0_0_15px_rgba(245,158,11,0.15)] placeholder-amber-500/60' 
+                        : ''
+                    }`}
                     style={{ 
                       minHeight: '36px',
                       maxHeight: '120px',
+                      paddingTop: '8px',
+                      paddingBottom: '8px',
+                      paddingLeft: '36px',
+                      paddingRight: '12px',
                     }}
                     rows={1}
                     disabled={!isConnected}
@@ -2245,9 +2450,19 @@ const ChatWidget = () => {
                     }}
                   />
                 </div>
-                <button onClick={handleSendMessage} disabled={!messageInput.trim() || !isConnected} className="flex-shrink-0 p-2 glass-button text-white rounded disabled:opacity-50 disabled:cursor-not-allowed" title="Send message">
+                <Tooltip content={isWatchStreakMode ? "Share Watch Streak" : "Send message"} side="top">
+                <button 
+                  onClick={handleSendMessage} 
+                  disabled={(!messageInput.trim() && !isWatchStreakMode) || !isConnected} 
+                  className={`flex-shrink-0 flex items-center justify-center self-center w-9 h-9 text-white rounded transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed ${
+                    isWatchStreakMode 
+                      ? 'bg-amber-500 hover:bg-amber-400 shadow-[0_0_12px_rgba(245,158,11,0.3)]' 
+                      : 'glass-button'
+                  }`}
+                >
                   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" /></svg>
                 </button>
+                </Tooltip>
               </div>
             </div>
             {!isConnected && <p className="text-xs text-yellow-400 mt-2">Chat is not connected. Messages cannot be sent.</p>}
@@ -2266,3 +2481,4 @@ const ChatWidget = () => {
 };
 
 export default ChatWidget;
+

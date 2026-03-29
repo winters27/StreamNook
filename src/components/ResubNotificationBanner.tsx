@@ -1,4 +1,5 @@
 import React from 'react';
+import { Tooltip } from './ui/Tooltip';
 
 // Types
 export interface ResubNotification {
@@ -84,24 +85,26 @@ const ResubNotificationBanner: React.FC<ResubNotificationBannerProps> = ({
         
         {/* Include streak checkbox */}
         {streakMonths > 0 && (
+          <Tooltip content={includeStreak ? "Streak will be shown" : "Click to include streak"} side="top">
           <button
             onClick={onToggleStreak}
             className="flex items-center gap-1.5 text-xs text-textSecondary hover:text-textPrimary transition-colors"
-            title={includeStreak ? "Streak will be shown" : "Click to include streak"}
           >
             <CheckboxIcon checked={includeStreak} size={14} className="text-accent" />
             <span>Streak ({streakMonths}mo)</span>
           </button>
+          </Tooltip>
         )}
         
         {/* Cancel button */}
+        <Tooltip content="Cancel share" side="top">
         <button 
           onClick={onCancelShare} 
           className="text-textSecondary hover:text-textPrimary transition-colors" 
-          title="Cancel share"
         >
           <CloseIcon size={16} />
         </button>
+        </Tooltip>
       </div>
     );
   }
@@ -132,13 +135,14 @@ const ResubNotificationBanner: React.FC<ResubNotificationBannerProps> = ({
       </button>
       
       {/* Dismiss button */}
+      <Tooltip content="Dismiss" side="top">
       <button 
         onClick={onDismiss} 
         className="text-textTertiary hover:text-textSecondary transition-colors" 
-        title="Dismiss"
       >
         <CloseIcon size={14} />
       </button>
+      </Tooltip>
     </div>
   );
 };

@@ -1,5 +1,6 @@
 import React, { useMemo, useState, useEffect, memo } from 'react';
 import { Gift } from 'lucide-react';
+import { Tooltip } from './ui/Tooltip';
 import { parseMessage } from '../services/twitchChat';
 import { queueEmoteForCaching, EmoteSet, Emote } from '../services/emoteService';
 import { getCachedEmojiUrl, parseEmojisSync } from '../services/emojiService';
@@ -193,14 +194,15 @@ const MentionSpan: React.FC<{
   };
   
   return (
-    <span
-      className="inline-flex items-center px-1.5 py-0.5 rounded bg-accent/15 font-medium cursor-pointer hover:bg-accent/25 transition-colors"
-      style={nameStyle}
-      title={`View ${username}'s profile`}
-      onClick={handleClick}
-    >
-      @{username}
-    </span>
+    <Tooltip content={`View ${username}'s profile`} side="top">
+      <span
+        className="inline-flex items-center px-1.5 py-0.5 rounded bg-accent/15 font-medium cursor-pointer hover:bg-accent/25 transition-colors"
+        style={nameStyle}
+        onClick={handleClick}
+      >
+        @{username}
+      </span>
+    </Tooltip>
   );
 };
 
@@ -562,26 +564,26 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
         }
 
         return (
-          <img
-            key={`${segment.emoteId || segment.content}-${index}`}
-            src={emoteUrl}
-            alt={segment.content}
-            loading="lazy"
-            className="inline-block h-7 w-auto max-w-[96px] align-middle mx-0.5 cursor-pointer hover:scale-110 transition-transform crisp-image"
-            referrerPolicy="no-referrer"
-            title={`Right-click to copy: ${segment.content}`}
-            onContextMenu={(e) => {
-              e.preventDefault();
-              if (onEmoteRightClick) {
-                onEmoteRightClick(segment.content);
-              }
-            }}
-            onError={(e) => {
-              // Fallback to text if image fails to load
-              e.currentTarget.style.display = 'none';
-              e.currentTarget.insertAdjacentText('afterend', segment.content);
-            }}
-          />
+          <Tooltip key={`${segment.emoteId || segment.content}-${index}`} content={`Right-click to copy: ${segment.content}`} side="top">
+            <img
+              src={emoteUrl}
+              alt={segment.content}
+              loading="lazy"
+              className="inline-block h-7 w-auto max-w-[96px] align-middle mx-0.5 cursor-pointer hover:scale-110 transition-transform crisp-image"
+              referrerPolicy="no-referrer"
+              onContextMenu={(e) => {
+                e.preventDefault();
+                if (onEmoteRightClick) {
+                  onEmoteRightClick(segment.content);
+                }
+              }}
+              onError={(e) => {
+                // Fallback to text if image fails to load
+                e.currentTarget.style.display = 'none';
+                e.currentTarget.insertAdjacentText('afterend', segment.content);
+              }}
+            />
+          </Tooltip>
         );
       }
 
@@ -589,19 +591,19 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
         // Get cached/proxied URL to bypass tracking prevention
         const emojiSrc = getCachedEmojiUrl(segment.content, segment.emojiUrl);
         return (
-          <img
-            key={`emoji-${segment.content}-${index}`}
-            src={emojiSrc}
-            alt={segment.content}
-            loading="lazy"
-            className="inline h-5 w-5 align-middle mx-0.5 crisp-image"
-            title={segment.content}
-            onError={(e) => {
-              // Fallback to native emoji if image fails to load
-              e.currentTarget.style.display = 'none';
-              e.currentTarget.insertAdjacentText('afterend', segment.content);
-            }}
-          />
+          <Tooltip key={`emoji-${segment.content}-${index}`} content={segment.content} side="top">
+            <img
+              src={emojiSrc}
+              alt={segment.content}
+              loading="lazy"
+              className="inline h-5 w-5 align-middle mx-0.5 crisp-image"
+              onError={(e) => {
+                // Fallback to native emoji if image fails to load
+                e.currentTarget.style.display = 'none';
+                e.currentTarget.insertAdjacentText('afterend', segment.content);
+              }}
+            />
+          </Tooltip>
         );
       }
 
@@ -609,27 +611,28 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
       if (segment.type === 'cheermote') {
         const bits = segment.bits ?? 0;
         return (
-          <span key={`cheermote-${segment.content}-${index}`} className="inline-flex items-center gap-0.5 align-middle">
-            <img
-              src={segment.cheermoteUrl}
-              alt={segment.content}
-              loading="lazy"
-              className="inline-block h-7 w-auto align-middle crisp-image"
-              referrerPolicy="no-referrer"
-              title={`${bits.toLocaleString()} bits`}
-              onError={(e) => {
-                // Fallback to text if GIF fails to load
-                e.currentTarget.style.display = 'none';
-                e.currentTarget.insertAdjacentText('afterend', segment.content);
-              }}
-            />
-            <span 
-              className="font-bold text-sm" 
-              style={{ color: segment.color ?? '#979797' }}
-            >
-              {bits}
+          <Tooltip key={`cheermote-${segment.content}-${index}`} content={`${bits.toLocaleString()} bits`} side="top">
+            <span className="inline-flex items-center gap-0.5 align-middle">
+              <img
+                src={segment.cheermoteUrl}
+                alt={segment.content}
+                loading="lazy"
+                className="inline-block h-7 w-auto align-middle crisp-image"
+                referrerPolicy="no-referrer"
+                onError={(e) => {
+                  // Fallback to text if GIF fails to load
+                  e.currentTarget.style.display = 'none';
+                  e.currentTarget.insertAdjacentText('afterend', segment.content);
+                }}
+              />
+              <span 
+                className="font-bold text-sm" 
+                style={{ color: segment.color ?? '#979797' }}
+              >
+                {bits}
+              </span>
             </span>
-          </span>
+          </Tooltip>
         );
       }
 
@@ -813,25 +816,26 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
     const renderClickableUsername = (username: string, displayName?: string) => {
       const userIdForClick = userId;
       return (
-        <span
-          className="font-bold cursor-pointer hover:underline"
-          style={usernameStyle}
-          onClick={(e) => {
-            if (userIdForClick && onUsernameClick) {
-              onUsernameClick(
-                userIdForClick,
-                username,
-                displayName || username,
-                parsed.color,
-                parsed.badges,
-                e
-              );
-            }
-          }}
-          title="Click to view profile"
-        >
-          {displayName || username}
-        </span>
+        <Tooltip content="Click to view profile" side="top">
+          <span
+            className="font-bold cursor-pointer hover:underline"
+            style={usernameStyle}
+            onClick={(e) => {
+              if (userIdForClick && onUsernameClick) {
+                onUsernameClick(
+                  userIdForClick,
+                  username,
+                  displayName || username,
+                  parsed.color,
+                  parsed.badges,
+                  e
+                );
+              }
+            }}
+          >
+            {displayName || username}
+          </span>
+        </Tooltip>
       );
     };
 
@@ -845,46 +849,47 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
             // Handle both old format (key/info) and new format (name/version)
             if (!badge.info) return null;
             return (
-              <img
-                key={`bits-badge-${badge.key}-${idx}`}
-                src={getTwitchBadgeUrl(badge.key, badge.info)}
-                alt={badge.info.title}
-                loading="lazy"
-                title={badge.info.title}
-                className="w-5 h-5 inline-block cursor-pointer hover:scale-110 transition-transform crisp-image"
-                onClick={() => onBadgeClick?.(badge.key, badge.info)}
-                onError={(e) => {
-                  Logger.warn('[Badge] Failed to load badge:', badge.key, badge.info.image_url_1x);
-                  e.currentTarget.style.display = 'none';
-                }}
-              />
+              <Tooltip key={`bits-badge-${badge.key}-${idx}`} content={badge.info.title} side="top">
+                <img
+                  src={getTwitchBadgeUrl(badge.key, badge.info)}
+                  alt={badge.info.title}
+                  loading="lazy"
+                  className="w-5 h-5 inline-block cursor-pointer hover:scale-110 transition-transform crisp-image"
+                  onClick={() => onBadgeClick?.(badge.key, badge.info)}
+                  onError={(e) => {
+                    Logger.warn('[Badge] Failed to load badge:', badge.key, badge.info.image_url_1x);
+                    e.currentTarget.style.display = 'none';
+                  }}
+                />
+              </Tooltip>
             );
           })}
           {seventvBadge && (
-            <button
-              onClick={() => useAppStore.getState().openBadgesWithBadge(seventvBadge.id)}
-              className="inline-block cursor-pointer hover:scale-110 transition-transform"
-              title={`Click for details: ${seventvBadge.description || seventvBadge.name}`}
-            >
-              <FallbackImage
-                src={getBadgeImageUrl(seventvBadge)}
-                fallbackUrls={getBadgeFallbackUrls(seventvBadge.id).slice(1)}
-                alt={seventvBadge.description || seventvBadge.name}
-                className="w-5 h-5 inline-block crisp-image"
-              />
-            </button>
+            <Tooltip content={`Click for details: ${seventvBadge.description || seventvBadge.name}`} side="top">
+              <button
+                onClick={() => useAppStore.getState().openBadgesWithBadge(seventvBadge.id)}
+                className="inline-block cursor-pointer hover:scale-110 transition-transform"
+              >
+                <FallbackImage
+                  src={getBadgeImageUrl(seventvBadge)}
+                  fallbackUrls={getBadgeFallbackUrls(seventvBadge.id).slice(1)}
+                  alt={seventvBadge.description || seventvBadge.name}
+                  className="w-5 h-5 inline-block crisp-image"
+                />
+              </button>
+            </Tooltip>
           )}
           {thirdPartyBadges.filter(badge => badge && badge.imageUrl).map((badge, idx) => (
-            <img
-              key={`bits-tp-badge-${badge.id}-${idx}`}
-              src={badge.imageUrl}
-              alt={badge.title}
-              title={`${badge.title} (${badge.provider.toUpperCase()})`}
-              className="w-5 h-5 inline-block crisp-image"
-              onError={(e) => {
-                e.currentTarget.style.display = 'none';
-              }}
-            />
+            <Tooltip key={`bits-tp-badge-${badge.id}-${idx}`} content={`${badge.title} (${badge.provider.toUpperCase()})`} side="top">
+              <img
+                src={badge.imageUrl}
+                alt={badge.title}
+                className="w-5 h-5 inline-block crisp-image"
+                onError={(e) => {
+                  e.currentTarget.style.display = 'none';
+                }}
+              />
+            </Tooltip>
           ))}
         </span>
       );
@@ -949,25 +954,26 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
     const renderClickableUsername = (username: string, displayName?: string) => {
       const userIdForClick = userId;
       return (
-        <span
-          className="font-bold cursor-pointer hover:underline"
-          style={usernameStyle}
-          onClick={(e) => {
-            if (userIdForClick && onUsernameClick) {
-              onUsernameClick(
-                userIdForClick,
-                username,
-                displayName || username,
-                parsed.color,
-                parsed.badges,
-                e
-              );
-            }
-          }}
-          title="Click to view profile"
-        >
-          {displayName || username}
-        </span>
+        <Tooltip content="Click to view profile" side="top">
+          <span
+            className="font-bold cursor-pointer hover:underline"
+            style={usernameStyle}
+            onClick={(e) => {
+              if (userIdForClick && onUsernameClick) {
+                onUsernameClick(
+                  userIdForClick,
+                  username,
+                  displayName || username,
+                  parsed.color,
+                  parsed.badges,
+                  e
+                );
+              }
+            }}
+          >
+            {displayName || username}
+          </span>
+        </Tooltip>
       );
     };
 
@@ -980,46 +986,47 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
           {parsed.badges.map((badge, idx) => {
             if (!badge.info) return null;
             return (
-              <img
-                key={`donation-badge-${badge.key}-${idx}`}
-                src={getTwitchBadgeUrl(badge.key, badge.info)}
-                alt={badge.info.title}
-                loading="lazy"
-                title={badge.info.title}
-                className="w-5 h-5 inline-block cursor-pointer hover:scale-110 transition-transform crisp-image"
-                onClick={() => onBadgeClick?.(badge.key, badge.info)}
-                onError={(e) => {
-                  Logger.warn('[Badge] Failed to load badge:', badge.key, badge.info.image_url_1x);
-                  e.currentTarget.style.display = 'none';
-                }}
-              />
+              <Tooltip key={`donation-badge-${badge.key}-${idx}`} content={badge.info.title} side="top">
+                <img
+                  src={getTwitchBadgeUrl(badge.key, badge.info)}
+                  alt={badge.info.title}
+                  loading="lazy"
+                  className="w-5 h-5 inline-block cursor-pointer hover:scale-110 transition-transform crisp-image"
+                  onClick={() => onBadgeClick?.(badge.key, badge.info)}
+                  onError={(e) => {
+                    Logger.warn('[Badge] Failed to load badge:', badge.key, badge.info.image_url_1x);
+                    e.currentTarget.style.display = 'none';
+                  }}
+                />
+              </Tooltip>
             );
           })}
           {seventvBadge && (
-            <button
-              onClick={() => useAppStore.getState().openBadgesWithBadge(seventvBadge.id)}
-              className="inline-block cursor-pointer hover:scale-110 transition-transform"
-              title={`Click for details: ${seventvBadge.description || seventvBadge.name}`}
-            >
-              <FallbackImage
-                src={getBadgeImageUrl(seventvBadge)}
-                fallbackUrls={getBadgeFallbackUrls(seventvBadge.id).slice(1)}
-                alt={seventvBadge.description || seventvBadge.name}
-                className="w-5 h-5 inline-block crisp-image"
-              />
-            </button>
+            <Tooltip content={`Click for details: ${seventvBadge.description || seventvBadge.name}`} side="top">
+              <button
+                onClick={() => useAppStore.getState().openBadgesWithBadge(seventvBadge.id)}
+                className="inline-block cursor-pointer hover:scale-110 transition-transform"
+              >
+                <FallbackImage
+                  src={getBadgeImageUrl(seventvBadge)}
+                  fallbackUrls={getBadgeFallbackUrls(seventvBadge.id).slice(1)}
+                  alt={seventvBadge.description || seventvBadge.name}
+                  className="w-5 h-5 inline-block crisp-image"
+                />
+              </button>
+            </Tooltip>
           )}
           {thirdPartyBadges.filter(badge => badge && badge.imageUrl).map((badge, idx) => (
-            <img
-              key={`donation-tp-badge-${badge.id}-${idx}`}
-              src={badge.imageUrl}
-              alt={badge.title}
-              title={`${badge.title} (${badge.provider.toUpperCase()})`}
-              className="w-5 h-5 inline-block crisp-image"
-              onError={(e) => {
-                e.currentTarget.style.display = 'none';
-              }}
-            />
+            <Tooltip key={`donation-tp-badge-${badge.id}-${idx}`} content={`${badge.title} (${badge.provider.toUpperCase()})`} side="top">
+              <img
+                src={badge.imageUrl}
+                alt={badge.title}
+                className="w-5 h-5 inline-block crisp-image"
+                onError={(e) => {
+                  e.currentTarget.style.display = 'none';
+                }}
+              />
+            </Tooltip>
           ))}
         </span>
       );
@@ -1040,22 +1047,23 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
             {fetchedChannelName && (
               <>
                 <span className="text-xs text-textSecondary">-</span>
-                <button
-                  onClick={async () => {
-                    try {
-                      const { useAppStore } = await import('../stores/AppStore');
-                      await useAppStore.getState().startStream(fetchedChannelName);
-                    } catch (err) {
-                      Logger.error('[ChatMessage] Failed to switch to shared channel:', err);
-                      const { useAppStore } = await import('../stores/AppStore');
-                      useAppStore.getState().addToast(`Failed to switch to ${fetchedChannelName}'s stream`, 'error');
-                    }
-                  }}
-                  className="text-xs text-blue-400 font-semibold hover:underline cursor-pointer"
-                  title={`Switch to ${fetchedChannelName}'s stream`}
-                >
-                  {fetchedChannelName}
-                </button>
+                <Tooltip content={`Switch to ${fetchedChannelName}'s stream`} side="top">
+                  <button
+                    onClick={async () => {
+                      try {
+                        const { useAppStore } = await import('../stores/AppStore');
+                        await useAppStore.getState().startStream(fetchedChannelName);
+                      } catch (err) {
+                        Logger.error('[ChatMessage] Failed to switch to shared channel:', err);
+                        const { useAppStore } = await import('../stores/AppStore');
+                        useAppStore.getState().addToast(`Failed to switch to ${fetchedChannelName}'s stream`, 'error');
+                      }
+                    }}
+                    className="text-xs text-blue-400 font-semibold hover:underline cursor-pointer"
+                  >
+                    {fetchedChannelName}
+                  </button>
+                </Tooltip>
               </>
             )}
           </div>
@@ -1100,25 +1108,26 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
     const renderClickableUsername = (username: string, displayNameProp?: string) => {
       const userIdForClick = userId;
       return (
-        <span
-          className="font-bold cursor-pointer hover:underline"
-          style={usernameStyle}
-          onClick={(e) => {
-            if (userIdForClick && onUsernameClick) {
-              onUsernameClick(
-                userIdForClick,
-                username,
-                displayNameProp || username,
-                parsed.color,
-                parsed.badges,
-                e
-              );
-            }
-          }}
-          title="Click to view profile"
-        >
-          {displayNameProp || username}
-        </span>
+        <Tooltip content="Click to view profile" side="top">
+          <span
+            className="font-bold cursor-pointer hover:underline"
+            style={usernameStyle}
+            onClick={(e) => {
+              if (userIdForClick && onUsernameClick) {
+                onUsernameClick(
+                  userIdForClick,
+                  username,
+                  displayNameProp || username,
+                  parsed.color,
+                  parsed.badges,
+                  e
+                );
+              }
+            }}
+          >
+            {displayNameProp || username}
+          </span>
+        </Tooltip>
       );
     };
 
@@ -1131,45 +1140,46 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
           {parsed.badges.map((badge, idx) => {
             if (!badge.info) return null;
             return (
-              <img
-                key={`watchstreak-badge-${badge.key}-${idx}`}
-                src={getTwitchBadgeUrl(badge.key, badge.info)}
-                alt={badge.info.title}
-                title={badge.info.title}
-                className="w-5 h-5 inline-block cursor-pointer hover:scale-110 transition-transform crisp-image"
-                onClick={() => onBadgeClick?.(badge.key, badge.info)}
-                onError={(e) => {
-                  Logger.warn('[Badge] Failed to load badge:', badge.key, badge.info.image_url_1x);
-                  e.currentTarget.style.display = 'none';
-                }}
-              />
+              <Tooltip key={`watchstreak-badge-${badge.key}-${idx}`} content={badge.info.title} side="top">
+                <img
+                  src={getTwitchBadgeUrl(badge.key, badge.info)}
+                  alt={badge.info.title}
+                  className="w-5 h-5 inline-block cursor-pointer hover:scale-110 transition-transform crisp-image"
+                  onClick={() => onBadgeClick?.(badge.key, badge.info)}
+                  onError={(e) => {
+                    Logger.warn('[Badge] Failed to load badge:', badge.key, badge.info.image_url_1x);
+                    e.currentTarget.style.display = 'none';
+                  }}
+                />
+              </Tooltip>
             );
           })}
           {seventvBadge && (
-            <button
-              onClick={() => useAppStore.getState().openBadgesWithBadge(seventvBadge.id)}
-              className="inline-block cursor-pointer hover:scale-110 transition-transform"
-              title={`Click for details: ${seventvBadge.description || seventvBadge.name}`}
-            >
-              <FallbackImage
-                src={getBadgeImageUrl(seventvBadge)}
-                fallbackUrls={getBadgeFallbackUrls(seventvBadge.id).slice(1)}
-                alt={seventvBadge.description || seventvBadge.name}
-                className="w-5 h-5 inline-block crisp-image"
-              />
-            </button>
+            <Tooltip content={`Click for details: ${seventvBadge.description || seventvBadge.name}`} side="top">
+              <button
+                onClick={() => useAppStore.getState().openBadgesWithBadge(seventvBadge.id)}
+                className="inline-block cursor-pointer hover:scale-110 transition-transform"
+              >
+                <FallbackImage
+                  src={getBadgeImageUrl(seventvBadge)}
+                  fallbackUrls={getBadgeFallbackUrls(seventvBadge.id).slice(1)}
+                  alt={seventvBadge.description || seventvBadge.name}
+                  className="w-5 h-5 inline-block crisp-image"
+                />
+              </button>
+            </Tooltip>
           )}
           {thirdPartyBadges.filter(badge => badge && badge.imageUrl).map((badge, idx) => (
-            <img
-              key={`watchstreak-tp-badge-${badge.id}-${idx}`}
-              src={badge.imageUrl}
-              alt={badge.title}
-              title={`${badge.title} (${badge.provider.toUpperCase()})`}
-              className="w-5 h-5 inline-block crisp-image"
-              onError={(e) => {
-                e.currentTarget.style.display = 'none';
-              }}
-            />
+            <Tooltip key={`watchstreak-tp-badge-${badge.id}-${idx}`} content={`${badge.title} (${badge.provider.toUpperCase()})`} side="top">
+              <img
+                src={badge.imageUrl}
+                alt={badge.title}
+                className="w-5 h-5 inline-block crisp-image"
+                onError={(e) => {
+                  e.currentTarget.style.display = 'none';
+                }}
+              />
+            </Tooltip>
           ))}
         </span>
       );
@@ -1240,45 +1250,46 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
           {parsed.badges.map((badge, idx) => {
             if (!badge.info) return null;
             return (
-              <img
-                key={`sub-badge-${badge.key}-${idx}`}
-                src={getTwitchBadgeUrl(badge.key, badge.info)}
-                alt={badge.info.title}
-                title={badge.info.title}
-                className="w-5 h-5 inline-block cursor-pointer hover:scale-110 transition-transform crisp-image"
-                onClick={() => onBadgeClick?.(badge.key, badge.info)}
-                onError={(e) => {
-                  Logger.warn('[Badge] Failed to load badge:', badge.key, badge.info.image_url_1x);
-                  e.currentTarget.style.display = 'none';
-                }}
-              />
+              <Tooltip key={`sub-badge-${badge.key}-${idx}`} content={badge.info.title} side="top">
+                <img
+                  src={getTwitchBadgeUrl(badge.key, badge.info)}
+                  alt={badge.info.title}
+                  className="w-5 h-5 inline-block cursor-pointer hover:scale-110 transition-transform crisp-image"
+                  onClick={() => onBadgeClick?.(badge.key, badge.info)}
+                  onError={(e) => {
+                    Logger.warn('[Badge] Failed to load badge:', badge.key, badge.info.image_url_1x);
+                    e.currentTarget.style.display = 'none';
+                  }}
+                />
+              </Tooltip>
             );
           })}
           {seventvBadge && (
-            <button
-              onClick={() => useAppStore.getState().openBadgesWithBadge(seventvBadge.id)}
-              className="inline-block cursor-pointer hover:scale-110 transition-transform"
-              title={`Click for details: ${seventvBadge.description || seventvBadge.name}`}
-            >
-              <FallbackImage
-                src={getBadgeImageUrl(seventvBadge)}
-                fallbackUrls={getBadgeFallbackUrls(seventvBadge.id).slice(1)}
-                alt={seventvBadge.description || seventvBadge.name}
-                className="w-5 h-5 inline-block crisp-image"
-              />
-            </button>
+            <Tooltip content={`Click for details: ${seventvBadge.description || seventvBadge.name}`} side="top">
+              <button
+                onClick={() => useAppStore.getState().openBadgesWithBadge(seventvBadge.id)}
+                className="inline-block cursor-pointer hover:scale-110 transition-transform"
+              >
+                <FallbackImage
+                  src={getBadgeImageUrl(seventvBadge)}
+                  fallbackUrls={getBadgeFallbackUrls(seventvBadge.id).slice(1)}
+                  alt={seventvBadge.description || seventvBadge.name}
+                  className="w-5 h-5 inline-block crisp-image"
+                />
+              </button>
+            </Tooltip>
           )}
           {thirdPartyBadges.filter(badge => badge && badge.imageUrl).map((badge, idx) => (
-            <img
-              key={`sub-tp-badge-${badge.id}-${idx}`}
-              src={badge.imageUrl}
-              alt={badge.title}
-              title={`${badge.title} (${badge.provider.toUpperCase()})`}
-              className="w-5 h-5 inline-block crisp-image"
-              onError={(e) => {
-                e.currentTarget.style.display = 'none';
-              }}
-            />
+            <Tooltip key={`sub-tp-badge-${badge.id}-${idx}`} content={`${badge.title} (${badge.provider.toUpperCase()})`} side="top">
+              <img
+                src={badge.imageUrl}
+                alt={badge.title}
+                className="w-5 h-5 inline-block crisp-image"
+                onError={(e) => {
+                  e.currentTarget.style.display = 'none';
+                }}
+              />
+            </Tooltip>
           ))}
         </span>
       );
@@ -1330,36 +1341,38 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
         <span className="inline-flex items-center align-middle">
           {userBadge && (
             <span className="inline-flex items-center align-middle gap-1 mr-1">
-              <img
-                src={getBadgeImageUrl(userBadge)}
-                alt={userBadge.description || userBadge.name}
-                title={userBadge.description || userBadge.name}
-                className="w-5 h-5 inline-block crisp-image"
-                onError={(e) => {
-                  e.currentTarget.style.display = 'none';
-                }}
-              />
+              <Tooltip content={userBadge.description || userBadge.name} side="top">
+                <img
+                  src={getBadgeImageUrl(userBadge)}
+                  alt={userBadge.description || userBadge.name}
+                  className="w-5 h-5 inline-block crisp-image"
+                  onError={(e) => {
+                    e.currentTarget.style.display = 'none';
+                  }}
+                />
+              </Tooltip>
             </span>
           )}
-          <span
-            className="font-bold cursor-pointer hover:underline"
-            style={userStyle}
-            onClick={(e) => {
-              if (userIdProp && onUsernameClick) {
-                onUsernameClick(
-                  userIdProp,
-                  username,
-                  displayName || username,
-                  userStyle.color as string || '#9147FF',
-                  userBadges,
-                  e
-                );
-              }
-            }}
-            title="Click to view profile"
-          >
-            {displayName || username}
-          </span>
+          <Tooltip content="Click to view profile" side="top">
+            <span
+              className="font-bold cursor-pointer hover:underline"
+              style={userStyle}
+              onClick={(e) => {
+                if (userIdProp && onUsernameClick) {
+                  onUsernameClick(
+                    userIdProp,
+                    username,
+                    displayName || username,
+                    userStyle.color as string || '#9147FF',
+                    userBadges,
+                    e
+                  );
+                }
+              }}
+            >
+              {displayName || username}
+            </span>
+          </Tooltip>
         </span>
       );
     };
@@ -1402,25 +1415,26 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
               className="inline-flex items-center align-middle"
             >
               {renderBadges()}
-              <span
-                className="font-bold cursor-pointer hover:underline"
-                style={usernameStyle}
-                onClick={(e) => {
-                  if (userId && onUsernameClick) {
-                    onUsernameClick(
-                      userId,
-                      parsed.username,
-                      parsed.tags.get('display-name') || parsed.username,
-                      parsed.color,
-                      parsed.badges,
-                      e
-                    );
-                  }
-                }}
-                title="Click to view profile"
-              >
-                {matchedName}
-              </span>
+              <Tooltip content="Click to view profile" side="top">
+                <span
+                  className="font-bold cursor-pointer hover:underline"
+                  style={usernameStyle}
+                  onClick={(e) => {
+                    if (userId && onUsernameClick) {
+                      onUsernameClick(
+                        userId,
+                        parsed.username,
+                        parsed.tags.get('display-name') || parsed.username,
+                        parsed.color,
+                        parsed.badges,
+                        e
+                      );
+                    }
+                  }}
+                >
+                  {matchedName}
+                </span>
+              </Tooltip>
             </span>
           );
         } else if (isRecipient && recipientUserId) {
@@ -1597,19 +1611,20 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
       )}
       {/* Reply indicator */}
       {parsed.replyInfo && (
-        <div
-          className="mb-1.5 pl-2 border-l-2 border-textSecondary/40 cursor-pointer hover:border-textSecondary/60 transition-colors"
-          onClick={() => onReplyClick?.(parsed.replyInfo!.parentMsgId)}
-          title="Click to view parent message"
-        >
-          <div className="flex items-center gap-1.5 text-xs text-textSecondary">
-            <svg className="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
-            </svg>
-            <span className="font-semibold">{parsed.replyInfo.parentDisplayName}</span>
-            <span className="truncate flex-1">{parsed.replyInfo.parentMsgBody}</span>
+        <Tooltip content="Click to view parent message" side="top">
+          <div
+            className="mb-1.5 pl-2 border-l-2 border-textSecondary/40 cursor-pointer hover:border-textSecondary/60 transition-colors"
+            onClick={() => onReplyClick?.(parsed.replyInfo!.parentMsgId)}
+          >
+            <div className="flex items-center gap-1.5 text-xs text-textSecondary">
+              <svg className="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
+              </svg>
+              <span className="font-semibold">{parsed.replyInfo.parentDisplayName}</span>
+              <span className="truncate flex-1">{parsed.replyInfo.parentMsgBody}</span>
+            </div>
           </div>
-        </div>
+        </Tooltip>
       )}
 
       <div className="flex items-start">
@@ -1624,71 +1639,73 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
             <span className="inline-flex items-center gap-1 mr-1.5 align-middle">
               {/* Shared chat channel profile image badge */}
               {isFromSharedChat && channelProfileImage && (
-                <img
-                  src={channelProfileImage}
-                  alt={`${fetchedChannelName || 'Channel'} profile`}
-                  title={`Chatting from ${fetchedChannelName || 'shared channel'}`}
-                  className="w-5 h-5 cursor-pointer hover:scale-110 transition-transform object-cover crisp-image"
-                  onClick={async () => {
-                    if (fetchedChannelName) {
-                      try {
-                        const { useAppStore } = await import('../stores/AppStore');
-                        await useAppStore.getState().startStream(fetchedChannelName);
-                      } catch (err) {
-                        Logger.error('[ChatMessage] Failed to switch to shared channel:', err);
+                <Tooltip content={`Chatting from ${fetchedChannelName || 'shared channel'}`} side="top">
+                  <img
+                    src={channelProfileImage}
+                    alt={`${fetchedChannelName || 'Channel'} profile`}
+                    className="w-5 h-5 cursor-pointer hover:scale-110 transition-transform object-cover crisp-image"
+                    onClick={async () => {
+                      if (fetchedChannelName) {
+                        try {
+                          const { useAppStore } = await import('../stores/AppStore');
+                          await useAppStore.getState().startStream(fetchedChannelName);
+                        } catch (err) {
+                          Logger.error('[ChatMessage] Failed to switch to shared channel:', err);
+                        }
                       }
-                    }
-                  }}
-                  onError={(e) => {
-                    Logger.warn('[Badge] Failed to load channel profile image');
-                    e.currentTarget.style.display = 'none';
-                  }}
-                />
+                    }}
+                    onError={(e) => {
+                      Logger.warn('[Badge] Failed to load channel profile image');
+                      e.currentTarget.style.display = 'none';
+                    }}
+                  />
+                </Tooltip>
               )}
               {parsed.badges.map((badge, idx) => {
                 if (!badge.info) return null;
                 return (
-                  <img
-                    key={`${badge.key}-${idx}`}
-                    src={getTwitchBadgeUrl(badge.key, badge.info)}
-                    alt={badge.info.title}
-                    title={badge.info.title}
-                    className="w-5 h-5 cursor-pointer hover:scale-110 transition-transform crisp-image"
-                    onClick={() => onBadgeClick?.(badge.key, badge.info)}
-                    onError={(e) => {
-                      // Hide broken badge images
-                      Logger.warn('[Badge] Failed to load badge:', badge.key, badge.info.image_url_1x);
-                      e.currentTarget.style.display = 'none';
-                    }}
-                  />
+                  <Tooltip key={`${badge.key}-${idx}`} content={badge.info.title} side="top">
+                    <img
+                      src={getTwitchBadgeUrl(badge.key, badge.info)}
+                      alt={badge.info.title}
+                      className="w-5 h-5 cursor-pointer hover:scale-110 transition-transform crisp-image"
+                      onClick={() => onBadgeClick?.(badge.key, badge.info)}
+                      onError={(e) => {
+                        // Hide broken badge images
+                        Logger.warn('[Badge] Failed to load badge:', badge.key, badge.info.image_url_1x);
+                        e.currentTarget.style.display = 'none';
+                      }}
+                    />
+                  </Tooltip>
                 );
               })}
               {seventvBadge && (
-                <button
-                  onClick={() => useAppStore.getState().openBadgesWithBadge(seventvBadge.id)}
-                  className="inline-block cursor-pointer hover:scale-110 transition-transform"
-                  title={`Click for details: ${seventvBadge.description || seventvBadge.name}`}
-                >
-                  <FallbackImage
-                    src={getBadgeImageUrl(seventvBadge)}
-                    fallbackUrls={getBadgeFallbackUrls(seventvBadge.id).slice(1)}
-                    alt={seventvBadge.description || seventvBadge.name}
-                    className="w-5 h-5 crisp-image"
-                  />
-                </button>
+                <Tooltip content={`Click for details: ${seventvBadge.description || seventvBadge.name}`} side="top">
+                  <button
+                    onClick={() => useAppStore.getState().openBadgesWithBadge(seventvBadge.id)}
+                    className="inline-block cursor-pointer hover:scale-110 transition-transform"
+                  >
+                    <FallbackImage
+                      src={getBadgeImageUrl(seventvBadge)}
+                      fallbackUrls={getBadgeFallbackUrls(seventvBadge.id).slice(1)}
+                      alt={seventvBadge.description || seventvBadge.name}
+                      className="w-5 h-5 crisp-image"
+                    />
+                  </button>
+                </Tooltip>
               )}
               {/* Third-party badges (FFZ, Chatterino, Homies) */}
               {thirdPartyBadges.filter(badge => badge && badge.imageUrl).map((badge, idx) => (
-                <img
-                  key={`tp-badge-${badge.id}-${idx}`}
-                  src={badge.imageUrl}
-                  alt={badge.title}
-                  title={`${badge.title} (${badge.provider.toUpperCase()})`}
-                  className="w-5 h-5 crisp-image"
-                  onError={(e) => {
-                    e.currentTarget.style.display = 'none';
-                  }}
-                />
+                <Tooltip key={`tp-badge-${badge.id}-${idx}`} content={`${badge.title} (${badge.provider.toUpperCase()})`} side="top">
+                  <img
+                    src={badge.imageUrl}
+                    alt={badge.title}
+                    className="w-5 h-5 crisp-image"
+                    onError={(e) => {
+                      e.currentTarget.style.display = 'none';
+                    }}
+                  />
+                </Tooltip>
               ))}
             </span>
           ) : null}
@@ -1704,87 +1721,89 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
             {isAction ? (
               // ACTION messages: entire content in username color
               <span style={{ ...usernameStyle, fontWeight: 300 }} className="break-words italic">
-                <span
-                  style={{ fontWeight: 700 }}
-                  className="cursor-pointer hover:underline inline-flex items-center gap-1"
-                  onClick={(e) => {
-                    const userId = parsed.tags.get('user-id');
-                    const displayName = parsed.tags.get('display-name') || parsed.username;
-                    if (userId && onUsernameClick) {
-                      onUsernameClick(
-                        userId,
-                        parsed.username,
-                        displayName,
-                        parsed.color,
-                        parsed.badges,
-                        e
-                      );
-                    }
-                  }}
-                  onContextMenu={(e) => {
-                    e.preventDefault();
-                    const messageId = parsed.tags.get('id');
-                    if (messageId && onUsernameRightClick) {
-                      onUsernameRightClick(messageId, parsed.username);
-                    }
-                  }}
-                  title="Right-click to reply"
-                >
-                  {parsed.username}
-                  {broadcasterType === 'partner' && (
-                    <svg
-                      className="w-3.5 h-3.5 inline-block flex-shrink-0"
-                      viewBox="0 0 16 16"
-                      fill="#9146FF"
-                      style={{ verticalAlign: 'middle' }}
-                    >
-                      <path fillRule="evenodd" d="M12.5 3.5 8 2 3.5 3.5 2 8l1.5 4.5L8 14l4.5-1.5L14 8l-1.5-4.5ZM7 11l4.5-4.5L10 5 7 8 5.5 6.5 4 8l3 3Z" clipRule="evenodd"></path>
-                    </svg>
-                  )}
-                </span>
+                <Tooltip content="Right-click to reply" side="top">
+                  <span
+                    style={{ fontWeight: 700 }}
+                    className="cursor-pointer hover:underline inline-flex items-center gap-1"
+                    onClick={(e) => {
+                      const userId = parsed.tags.get('user-id');
+                      const displayName = parsed.tags.get('display-name') || parsed.username;
+                      if (userId && onUsernameClick) {
+                        onUsernameClick(
+                          userId,
+                          parsed.username,
+                          displayName,
+                          parsed.color,
+                          parsed.badges,
+                          e
+                        );
+                      }
+                    }}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      const messageId = parsed.tags.get('id');
+                      if (messageId && onUsernameRightClick) {
+                        onUsernameRightClick(messageId, parsed.username);
+                      }
+                    }}
+                  >
+                    {parsed.username}
+                    {broadcasterType === 'partner' && (
+                      <svg
+                        className="w-3.5 h-3.5 inline-block flex-shrink-0"
+                        viewBox="0 0 16 16"
+                        fill="#9146FF"
+                        style={{ verticalAlign: 'middle' }}
+                      >
+                        <path fillRule="evenodd" d="M12.5 3.5 8 2 3.5 3.5 2 8l1.5 4.5L8 14l4.5-1.5L14 8l-1.5-4.5ZM7 11l4.5-4.5L10 5 7 8 5.5 6.5 4 8l3 3Z" clipRule="evenodd"></path>
+                      </svg>
+                    )}
+                  </span>
+                </Tooltip>
                 {' '}{renderContent(contentWithEmotes)}
               </span>
             ) : (
               // Regular messages: username in color, content in default color
               <>
-                <span
-                  style={{ ...usernameStyle, fontWeight: 700 }}
-                  className="cursor-pointer hover:underline inline-flex items-center gap-1"
-                  onClick={(e) => {
-                    const userId = parsed.tags.get('user-id');
-                    const displayName = parsed.tags.get('display-name') || parsed.username;
-                    if (userId && onUsernameClick) {
-                      onUsernameClick(
-                        userId,
-                        parsed.username,
-                        displayName,
-                        parsed.color,
-                        parsed.badges,
-                        e
-                      );
-                    }
-                  }}
-                  onContextMenu={(e) => {
-                    e.preventDefault();
-                    const messageId = parsed.tags.get('id');
-                    if (messageId && onUsernameRightClick) {
-                      onUsernameRightClick(messageId, parsed.username);
-                    }
-                  }}
-                  title="Right-click to reply"
-                >
-                  {parsed.username}
-                  {broadcasterType === 'partner' && (
-                    <svg
-                      className="w-3.5 h-3.5 inline-block flex-shrink-0"
-                      viewBox="0 0 16 16"
-                      fill="#9146FF"
-                      style={{ verticalAlign: 'middle' }}
-                    >
-                      <path fillRule="evenodd" d="M12.5 3.5 8 2 3.5 3.5 2 8l1.5 4.5L8 14l4.5-1.5L14 8l-1.5-4.5ZM7 11l4.5-4.5L10 5 7 8 5.5 6.5 4 8l3 3Z" clipRule="evenodd"></path>
-                    </svg>
-                  )}
-                </span>
+                <Tooltip content="Right-click to reply" side="top">
+                  <span
+                    style={{ ...usernameStyle, fontWeight: 700 }}
+                    className="cursor-pointer hover:underline inline-flex items-center gap-1"
+                    onClick={(e) => {
+                      const userId = parsed.tags.get('user-id');
+                      const displayName = parsed.tags.get('display-name') || parsed.username;
+                      if (userId && onUsernameClick) {
+                        onUsernameClick(
+                          userId,
+                          parsed.username,
+                          displayName,
+                          parsed.color,
+                          parsed.badges,
+                          e
+                        );
+                      }
+                    }}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      const messageId = parsed.tags.get('id');
+                      if (messageId && onUsernameRightClick) {
+                        onUsernameRightClick(messageId, parsed.username);
+                      }
+                    }}
+                  >
+                    {parsed.username}
+                    {broadcasterType === 'partner' && (
+                      <svg
+                        className="w-3.5 h-3.5 inline-block flex-shrink-0"
+                        viewBox="0 0 16 16"
+                        fill="#9146FF"
+                        style={{ verticalAlign: 'middle' }}
+                      >
+                        <path fillRule="evenodd" d="M12.5 3.5 8 2 3.5 3.5 2 8l1.5 4.5L8 14l4.5-1.5L14 8l-1.5-4.5ZM7 11l4.5-4.5L10 5 7 8 5.5 6.5 4 8l3 3Z" clipRule="evenodd"></path>
+                      </svg>
+                    )}
+                  </span>
+                </Tooltip>
                 <span style={{ fontWeight: 300 }} className="text-textPrimary break-words">
                   {' '}{renderContent(contentWithEmotes)}
                   {moderationContext && (

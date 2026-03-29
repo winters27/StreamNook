@@ -27,12 +27,12 @@
 #![allow(clippy::collapsible_match)]
 
 use commands::{
-    app::*, automation::*, badge_metadata::*, badge_service::*, badges::*, bandwidth_test::*,
-    cache::*, channel_panels::*, chat::*, chat_identity::*, components::*, cosmetics_cache::*,
+    app::*, automation::*, badge_metadata::*, badge_service::*, badges::*, cache::*,
+    channel_panels::*, chat::*, chat_identity::*, components::*, cosmetics_cache::*,
     diagnostic_logging::*, discord::*, drops::*, emoji::*, emotes::*, eventsub::*, hype_train::*,
-    layout::*, logs::*, magne::*, profile_cache::*, proxy_health::*, resub::*, settings::*,
-    seventv::*, seventv_cosmetics::*, seventv_cosmetics_fetch::*, streaming::*, twitch::*,
-    universal_cache::*, user_profile::*, whisper_storage::*,
+    layout::*, logs::*, magne::*, multi_nook::*, profile_cache::*, proxy_health::*, resub::*,
+    settings::*, seventv::*, seventv_cosmetics::*, seventv_cosmetics_fetch::*, streaming::*,
+    twitch::*, universal_cache::*, user_profile::*, watch_streak::*, whisper_storage::*,
 };
 use log::{debug, error};
 use models::settings::{AppState, Settings};
@@ -45,6 +45,7 @@ use services::mining_service::MiningService;
 use services::whisper_service::WhisperService;
 use std::sync::{Arc, Mutex};
 use tauri::{Builder, Manager};
+use tauri_plugin_clipboard_manager::ClipboardExt;
 use tokio::sync::Mutex as TokioMutex;
 
 mod commands;
@@ -85,6 +86,11 @@ fn cleanup_update_artifacts() {
             }
         }
     }
+}
+
+#[tauri::command]
+fn read_clipboard_text_native(app: tauri::AppHandle) -> Result<String, String> {
+    app.clipboard().read_text().map_err(|e| e.to_string())
 }
 
 fn main() {
@@ -151,6 +157,7 @@ fn main() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .manage(live_notification_service.clone())
         .manage(whisper_service.clone())
         .manage(layout_service.clone())
@@ -317,6 +324,7 @@ fn main() {
             is_dashboard_running,
             auto_start_dashboard_for_admin,
             get_emoji_image,
+            read_clipboard_text_native,
             // Twitch commands
             twitch_login,
             twitch_start_device_login,
@@ -358,10 +366,20 @@ fn main() {
             change_stream_quality,
             get_streamlink_diagnostics,
             is_streamlink_available,
+            // Multi-stream commands
+            start_multi_nook,
+            stop_multi_nook,
+            stop_all_multi_nooks,
+            get_active_multi_nooks,
+            register_active_channel,
+            unregister_active_channel,
             // Chat commands
             start_chat,
             stop_chat,
             send_chat_message,
+            join_chat_channel,
+            leave_chat_channel,
+            start_multi_chat,
             parse_historical_messages,
             // Discord commands
             connect_discord,
@@ -572,8 +590,7 @@ fn main() {
             // Hype Train commands
             get_hype_train_status,
             get_bulk_hype_train_status,
-            // Bandwidth Test commands
-            run_baseline_speed_test,
+
             // Resub notification commands
             get_resub_notification,
             use_resub_token,
@@ -584,6 +601,10 @@ fn main() {
             // Diagnostic Logging commands
             set_diagnostics_enabled,
             is_diagnostics_enabled,
+            // Watch Streak commands
+            get_watch_streak,
+            get_watch_streaks_batch,
+            share_watch_streak,
             // Proxy Health commands
             get_proxy_list,
             check_proxy_health,

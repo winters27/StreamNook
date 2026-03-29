@@ -779,13 +779,20 @@ impl IrcService {
         }
     }
 
-    pub async fn send_message(message: &str, reply_parent_msg_id: Option<&str>) -> Result<()> {
+    pub async fn send_message(
+        message: &str,
+        reply_parent_msg_id: Option<&str>,
+        target_channel: Option<&str>,
+    ) -> Result<()> {
         let channels = get_current_channels().lock().await;
         if channels.is_empty() {
             return Err(anyhow::anyhow!("No active chat connection"));
         }
 
-        let channel = channels.iter().next().unwrap().clone();
+        let channel = match target_channel {
+            Some(c) => c.to_string(),
+            None => channels.iter().next().unwrap().clone(),
+        };
         drop(channels);
 
         let writer_lock = get_irc_writer().lock().await;
@@ -1469,23 +1476,36 @@ impl IrcService {
             system_message,
         };
 
+        // Extract channel
+        let channel = if let Some(idx) = raw.find(" PRIVMSG #") {
+            let rest = &raw[idx + 10..];
+            if let Some(space_idx) = rest.find(' ') {
+                rest[..space_idx].to_string()
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        };
+
         Some(ChatMessage {
             id,
+            user_id,
             username,
             display_name,
             color,
-            user_id,
+            badges,
             timestamp,
             content: content_for_segments,
-            badges,
+            channel,
             emotes: emotes_adjusted,
+            tags: tags_owned,
             layout: LayoutResult {
                 height: 0.0,
                 width: 0.0,
                 has_reply: metadata.reply_info.is_some(),
                 is_first_message: metadata.is_first_message,
             },
-            tags: tags_owned,
             segments,
             metadata,
         })
@@ -1661,23 +1681,38 @@ impl IrcService {
             system_message,
         };
 
+        // Extract channel
+        let channel = if let Some(idx) = raw.find(" USERNOTICE #") {
+            let rest = &raw[idx + 13..];
+            if let Some(space_idx) = rest.find(' ') {
+                rest[..space_idx].to_string()
+            } else if let Some(colon_idx) = rest.find(" :") {
+                rest[..colon_idx].to_string()
+            } else {
+                rest.trim().to_string()
+            }
+        } else {
+            String::new()
+        };
+
         Some(ChatMessage {
             id,
+            user_id,
             username,
             display_name,
             color,
-            user_id,
+            badges,
             timestamp,
             content,
-            badges,
+            channel,
             emotes,
+            tags: tags_owned,
             layout: LayoutResult {
                 height: 0.0,
                 width: 0.0,
                 has_reply: false,
                 is_first_message: false,
             },
-            tags: tags_owned,
             segments,
             metadata,
         })

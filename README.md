@@ -1,6 +1,6 @@
 <div align="center">
 <p align="center">
-  <img src="src-tauri/images/logo.png" alt="Stream Nook Logo" width="200"/>
+  <img src="src-tauri/images/logo.png" alt="StreamNook Logo" width="200"/>
 </p>
 <div style="margin: 20px 0;">
   <h1>StreamNook: The Lightweight Twitch Desktop App
@@ -92,97 +92,96 @@ Built from the ground up with Rust and React, StreamNook delivers a buttery-smoo
 
 ## Key Features
 
-### Native Video Playback
+### 🎬 Native Video Playback
 - Built-in player powered by Plyr, HLS.js, and Streamlink
-- Adaptive quality selection (because your internet isn't always cooperating)
+- Adaptive quality selection with custom presets
 - Picture-in-picture support for true multitasking
 - Low-latency streaming that keeps you in sync with chat
-- Theater mode with automatic 16:9 aspect ratio
+- Theater mode and compact view with configurable window presets
+- **Jump to live edge** on stream load
+- Auto-switch to another stream when the current one goes offline
 
-### First-Class Chat Experience
-- Full Twitch chat integration with native IRC support
-- 7TV, BetterTTV, and FrankerFaceZ emote support (all the emotes, all the time)
-- **Animated 7TV emotes** - Full support for animated emotes and zero-width overlays
-- Badge rendering for subs, mods, and VIPs
-- Third-party badge integration (show off those achievements)
-- Smooth scrolling and message rendering that doesn't stutter
-- **Apple-style emoji rendering** - Consistent emoji display across all platforms
-- Native emoji picker for easy emoji selection
-- Bits cheers display with animated icons and tier colors
-- **Chat timestamps** - Optional message timestamps with seconds support
-- **Moderator tools** - Delete messages, timeouts, and bans reflected in chat
+### 🛡️ Ad-Free Streaming
+- **Integrated TTV LOL PRO** — Playlist proxy routing for ad-free playback, bundled out of the box
+- **Proxy Health Checker** — Real-time latency and status dashboard for all available proxy regions
+- **Auto Proxy Optimizer** — Automatically selects the fastest proxy on first launch and persists your choice
+- Zero-config — the setup wizard handles everything
 
-### Home Screen & Discovery
+### 💬 First-Class Chat Experience
+- Full Twitch IRC integration with smooth scrolling and performant message rendering
+- **7TV, BetterTTV, and FrankerFaceZ** emote support with animated emotes and zero-width overlays
+- **Predictions** — Real-time interactive overlay with outcome voting, channel points balance, countdown timer, and win/loss resolution states
+- **Hype Train** — Live progress bar with level tracking, contribution stats, and celebration animations
+- **Pinned Chat Messages** — GQL-backed pinned message display with automatic 5-second polling
+- **Resub & Watch Streak Banners** — In-chat notification banners for resubscriptions and shareable watch streak milestones
+- Badge rendering for subs, mods, VIPs, and third-party badges with detailed info overlays
+- **7TV cosmetics** — Paint and badge cosmetics rendered natively
+- **Apple-style emoji rendering** with native emoji picker
+- Bits cheers with animated icons and tier-colored displays
+- **Chat timestamps** with optional seconds precision
+- **Moderator tools** — Message deletion, timeouts, and bans reflected in real time
+- **Mention autocomplete** — @-mention suggestions as you type
+
+### 📺 Home Screen & Discovery
 - Browse followed and recommended streams
 - Explore Twitch categories and games
 - Search for channels
+- **Streamer About Panel** — Channel panels and social links in a slide-in view with carousel header toggle
 - Picture-in-picture mode while browsing
 
-### Automated Farming & Rewards
-- **Auto Channel Points Mining** - Automatically collect channel points from your favorite streamers
-- **Auto Drops Farming** - Never miss a Twitch Drop again with automated campaign tracking
-- **In-App Drops Login** - Secure in-app browser window for drops authentication
-- **Quick Mining Toggle** - Start/stop mining drops directly from the chat window
-- **Channel Points Leaderboard** - Track your channel points across all streamers you watch
-- **Twitch Inventory Viewer** - View and manage all your earned drops and rewards in one place
-- **Manual Channel Selection** - Choose specific channels for drops mining
-- **Badge Quick Actions** - View linked drops campaigns directly from badge details
-- Set it and forget it - StreamNook handles the grinding while you sleep
+### 🤖 Automated Farming & Rewards
+- **Auto Channel Points Mining** — Collect channel points automatically across all watched channels
+- **Auto Drops Farming** — Automated campaign tracking and progress monitoring
+- **In-App Drops Login** — Secure browser window for drops authentication
+- **Quick Mining Toggle** — Start/stop mining directly from the chat window
+- **Channel Points Leaderboard** — Track points across all streamers
+- **Twitch Inventory Viewer** — Manage all earned drops and rewards in one place
+- **Manual Channel Selection** — Choose specific channels for drops mining
+- **Badge Quick Actions** — View linked campaigns directly from badge details
 
-### Channel Automation
-- **Follow/Unfollow from App** - Follow and unfollow channels directly from StreamNook
-- **Raid Auto-Follow** - Automatically follow raids to keep up with the action
-- Uses secure in-app browser automation - no manual intervention needed
+### 🔗 Channel Automation
+- **Follow/Unfollow from App** — Manage follows directly from StreamNook
+- **Raid Auto-Follow** — Automatically follow raids to keep up with the action
+- Secure in-app browser automation — no manual intervention needed
 
-### Live Notifications
-- Desktop notifications when your favorite streamers go live
-- Customizable notification settings with sound options
-- Stream preview thumbnails
-- Quick-launch to any live channel
+### 🔔 Notifications
+- **Desktop Notifications** — Go-live alerts with stream preview thumbnails, customizable sounds, and quick-launch
+- **Dynamic Island** — macOS-inspired notification center for real-time drops progress, channel points, live alerts, and update availability
+- **Toast System** — In-app toast notifications for predictions, bets, errors, and system events
+- **Changelog Overlay** — What's new display on version updates
 
-### Dynamic Island Notification Center
-- macOS-inspired notification center built into the app
-- Real-time updates for drops progress, channel points earned, and live streams
-- Update notifications when new versions are available
-- Compact, non-intrusive design that stays out of your way
-- Customizable notification types
+### 💬 Whisper Messaging
+- Full send/receive functionality with dedicated chat windows per conversation
+- Complete history retrieval via Twitch GraphQL API
+- Real-time notifications via EventSub WebSocket
+- **History import tool** — Export and view your entire Twitch whisper history
 
-### Whisper Messaging System
-- Full whisper functionality with message sending and receiving
-- Complete whisper history retrieval using Twitch's GraphQL API
-- Real-time whisper notifications via EventSub WebSocket
-- Dedicated whisper chat windows for each conversation
-- Import tool for exporting and viewing your whisper history
-
-### Rich Integrations
-- Discord Rich Presence (flex what you're watching)
-- Profile cards with detailed streamer stats
+### 🔌 Integrations
+- **Discord Rich Presence** — Show what you're watching with stream details
+- **Profile Cards** — Detailed streamer stats with follow age, account info, and social links
 - Subscribe overlay for easy sub management
 - Badge collection and display system with detailed badge info
-- 7TV cosmetics support
+- **7TV cosmetics** — Paints, badges, and animated emotes
 
-### Theming & Customization
-- Multiple built-in themes (Night Owl, Synthwave '84, Material Theme, and more)
-- Dynamic theme switching
-- Customizable interface settings
+### 🎨 Theming & Customization
+- **15+ built-in themes** — Night Owl, Synthwave '84, Material Theme, Winter's Glass, and more
+- **Custom Theme Creator** — Build your own themes with a full color picker and live preview
+- Dynamic theme switching from the title bar
+- **Compact View Mode** — Configurable window presets for multi-monitor setups
 
-### Power User Features
+### ⚡ Power User Features
 - Universal caching system for blazing-fast load times
 - Granular settings for every aspect of the app
-- Custom quality presets
-- Advanced Streamlink settings (low-latency, HLS live edge, proxy)
-- **Custom Streamlink path** - Use your own Streamlink installation
-- **Jump to live edge** - Skip to live on stream load
-- Auto-switch to another stream when current goes offline
+- Advanced Streamlink configuration (low-latency, HLS live edge, custom path, proxy)
 - Automatic updates with optional auto-install
-- **Whisper history import** - Import your entire Twitch whisper history
+- First-time setup wizard with guided configuration
+- Bundled Streamlink — no external dependencies required
 
-### Lightweight Architecture
-- Built with Rust for maximum performance
-- React frontend for smooth, responsive UI
-- Native desktop integration via Tauri
+### 🦀 Lightweight Architecture
+- Built with **Rust** for maximum performance
+- **React** frontend for smooth, responsive UI
+- Native desktop integration via **Tauri**
 - Minimal memory footprint (~500MB vs. browser's 1.5GB+)
-- Bundled Streamlink - no external dependencies required
 - No Electron bloat in sight
 
 ---
@@ -192,27 +191,29 @@ Built from the ground up with Rust and React, StreamNook delivers a buttery-smoo
 StreamNook is built on a modern, performance-first stack:
 
 ### Frontend
-- **React 18** - UI framework
-- **TypeScript** - Type safety and developer experience
-- **Vite** - Lightning-fast build tooling
-- **Tailwind CSS** - Utility-first styling
-- **Plyr + HLS.js** - Professional-grade video playback
-- **Zustand** - Lightweight state management
+- **React 18** — UI framework
+- **TypeScript** — Type safety and developer experience
+- **Vite** — Lightning-fast build tooling
+- **Tailwind CSS** — Utility-first styling
+- **Plyr + HLS.js** — Professional-grade video playback
+- **Zustand** — Lightweight state management
 
 ### Backend
-- **Rust** - Systems programming language for performance
-- **Tauri** - Native desktop framework (Electron's cooler cousin)
-- **Tokio** - Async runtime for concurrent operations
-- **Reqwest** - HTTP client for API calls
-- **Serde** - Serialization/deserialization
+- **Rust** — Systems programming language for performance
+- **Tauri** — Native desktop framework (Electron's cooler cousin)
+- **Tokio** — Async runtime for concurrent operations
+- **Reqwest** — HTTP client for API calls
+- **Serde** — Serialization/deserialization
 
 ### Services & APIs
-- **Twitch API** - Stream data, user info, and Drops
-- **Twitch IRC** - Real-time chat integration
-- **Twitch EventSub** - Live notifications and whispers via WebSocket
-- **Streamlink** - Stream URL resolution and quality selection (bundled)
-- **7TV API** - Extended emote support
-- **Discord RPC** - Rich presence integration
+- **Twitch Helix API** — Stream data, user info, and Drops
+- **Twitch GQL** — Predictions, channel points, pinned chat, and watch streaks
+- **Twitch IRC** — Real-time chat integration
+- **Twitch EventSub** — Live notifications, whispers, and hype trains via WebSocket
+- **Twitch PubSub** — Channel points and prediction events
+- **Streamlink + TTV LOL PRO** — Stream resolution, quality selection, and ad-free proxy (bundled)
+- **7TV API** — Extended emotes and cosmetics
+- **Discord RPC** — Rich presence integration
 
 ---
 
@@ -231,44 +232,56 @@ That's it. StreamNook comes with everything bundled—no external dependencies o
 
 ## Roadmap
 
-We're constantly improving StreamNook. Here's what's on the horizon:
+### 🔮 Planned
+| Feature | Description |
+|---------|-------------|
+| Multi-stream viewing | Watch multiple streams simultaneously in a tiled layout |
+| VOD playback | Watch past broadcasts with synchronized chat replay |
+| Clip creation | Create, manage, and share clips directly from the app |
 
-### In Progress
-- Multi-stream viewing (watch multiple streams simultaneously)
-- VOD playback with chat replay
+### ✅ Recently Shipped
+- **Predictions overlay** — Interactive betting UI with real-time odds, channel points balance, and win/loss states
+- **Hype Train integration** — Live progress tracking with level indicators and celebration animations
+- **Pinned chat messages** — GQL-backed pinned message display with automatic polling
+- **Streamer About panel** — Channel info with panels and social links in a slide-in view
+- **Watch Streak sharing** — Share milestone banners directly from the chat interface
+- **Resub notification banners** — Visual banners for resubscription events
+- **Ad-blocking proxy** — TTV LOL PRO integration with auto-optimized proxy selection
+- **Custom Theme Creator** — Full theme editor with color picker and live preview
+- **Compact View mode** — Configurable window presets for multi-monitor setups
 
-### Planned
-- Clip creation and management
-- Predictions and polls integration
-- Stream analytics and statistics
-- Moderation tools
+- **Mention autocomplete** — @-mention suggestions while typing in chat
 
-### Recently Completed
-- ✅ **Animated 7TV emotes** with zero-width overlay support
-- ✅ **Follow/Unfollow automation** directly from the app
-- ✅ **Raid auto-follow** for seamless raid tracking
-- ✅ **Whisper history import** - import your entire DM history
-- ✅ **In-app drops login** with secure browser window
-- ✅ **Chat timestamps** with optional seconds display
-- ✅ **Moderator tools** - bans/timeouts reflected in chat
-- ✅ **Apple-style emoji rendering** across all platforms
-- ✅ **Custom Streamlink path** support
-- ✅ **Quick mining toggle** from chat window
-- ✅ Home screen with stream browsing and discovery
-- ✅ Picture-in-picture mode
-- ✅ Sidebar navigation
-- ✅ Whisper functionality with history
-- ✅ Theming system with multiple themes
-- ✅ Bundled Streamlink distribution (no manual install)
-- ✅ Auto-update with optional auto-install
-- ✅ Desktop notifications with sounds
-- ✅ Dynamic Island notifications
-- ✅ First-time setup wizard
-- ✅ Drops automation and tracking
-- ✅ Channel points automation
-- ✅ Inventory management system
-- ✅ Channel points leaderboard
-- ✅ Auto-switch when stream goes offline
+### 📦 Foundation (Shipped)
+<details>
+<summary>Core features that ship with every release</summary>
+
+- Native video playback with Plyr, HLS.js, and Streamlink
+- Full Twitch chat with 7TV, BTTV, and FFZ emote support
+- Animated 7TV emotes with zero-width overlays
+- Apple-style emoji rendering across all platforms
+- Home screen with stream browsing and discovery
+- Sidebar navigation and picture-in-picture mode
+- Auto channel points mining and drops farming
+- In-app drops login with secure browser window
+- Quick mining toggle from chat window
+- Channel points leaderboard and inventory management
+- Follow/unfollow and raid auto-follow automation
+- Desktop notifications with sounds and thumbnails
+- Dynamic Island notification center
+- Whisper messaging with history and import tool
+- Chat timestamps with optional seconds display
+- Moderator tools — bans/timeouts reflected in chat
+- Discord Rich Presence integration
+- 15+ built-in themes with dynamic switching
+- Bundled Streamlink distribution
+- Auto-update with optional auto-install
+- First-time setup wizard
+- Auto-switch when stream goes offline
+- 7TV cosmetics — paints, badges, and animated emotes
+- Universal caching system
+
+</details>
 
 ---
 
@@ -324,4 +337,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
   </div>
 </div>
 
-<!-- Build: 2025.12.08 -->
+<!-- Build: 2026.03.27 -->

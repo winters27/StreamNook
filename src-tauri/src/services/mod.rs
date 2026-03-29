@@ -1,7 +1,7 @@
 pub mod background_service;
 pub mod badge_polling_service;
 pub mod badge_service;
-pub mod baseline_speed_service;
+
 pub mod cache_service;
 pub mod channel_points_service;
 pub mod channel_points_websocket_service;
@@ -22,6 +22,7 @@ pub mod live_notification_service;
 pub mod log_service;
 pub mod magne_service;
 pub mod mining_service;
+pub mod multi_nook_server;
 pub mod profile_cache_service;
 pub mod proxy_health;
 pub mod seventv_auth_service;

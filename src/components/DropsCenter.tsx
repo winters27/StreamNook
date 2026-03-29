@@ -1,4 +1,5 @@
 import { useEffect, useState, useMemo, useRef } from 'react';
+import { motion, LayoutGroup } from 'framer-motion';
 import { invoke } from '@tauri-apps/api/core';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { useAppStore } from '../stores/AppStore';
@@ -16,6 +17,7 @@ import DropsSettingsTab from './drops/DropsSettingsTab';
 import DropsInventoryTab from './drops/DropsInventoryTab';
 import ChannelPickerModal from './drops/ChannelPickerModal';
 import { getAllUserBadgesWithEarned } from '../services/badgeService';
+import { Tooltip } from './ui/Tooltip';
 
 import { Logger } from '../utils/logger';
 // Twitch SVG Icon Component
@@ -53,10 +55,10 @@ export default function DropsCenter() {
     const [completedDrops, setCompletedDrops] = useState<CompletedDrop[]>([]);
     const [statistics, setStatistics] = useState<DropsStatistics | null>(null);
     const [progress, setProgress] = useState<DropProgress[]>([]);
-    const [earnedBadgeIds, setEarnedBadgeIds] = useState<Set<string>>(new Set());
+    const [, setEarnedBadgeIds] = useState<Set<string>>(new Set());
     const [earnedBadgeTitles, setEarnedBadgeTitles] = useState<Set<string>>(new Set());
     const [isLoading, setIsLoading] = useState(true);
-    const [_error, setError] = useState<string | null>(null);
+    const [, setError] = useState<string | null>(null);
 
     // Auth State
     const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -70,7 +72,7 @@ export default function DropsCenter() {
     const [activeTab, setActiveTab] = useState<Tab>('games');
     const [searchTerm, setSearchTerm] = useState('');
     const [selectedGame, setSelectedGame] = useState<UnifiedGame | null>(null);
-    const [_isLoadingGameDetail, setIsLoadingGameDetail] = useState(false);
+    const [, setIsLoadingGameDetail] = useState(false);
     const { addToast, setShowDropsOverlay, currentUser } = useAppStore();
     
 
@@ -1205,7 +1207,7 @@ export default function DropsCenter() {
                 loadDropsData();
             });
 
-            unlistenProgress = await listen<any>('drops-progress-update', (event) => {
+            unlistenProgress = await listen<{ drop_id: string; current_minutes: number; required_minutes: number; timestamp: number; campaign_id?: string; }>('drops-progress-update', (event) => {
                 Logger.debug('[DropsCenter] Received drops-progress-update:', event.payload);
 
                 // Update progress state
@@ -1218,7 +1220,7 @@ export default function DropsCenter() {
                             ...newProg[idx],
                             current_minutes_watched: event.payload.current_minutes,
                             required_minutes_watched: event.payload.required_minutes,
-                            last_updated: event.payload.timestamp
+                            last_updated: event.payload.timestamp.toString()
                         };
                         Logger.debug('[DropsCenter] Updated existing progress:', newProg[idx]);
                         return newProg;
@@ -1230,7 +1232,7 @@ export default function DropsCenter() {
                             current_minutes_watched: event.payload.current_minutes,
                             required_minutes_watched: event.payload.required_minutes,
                             is_claimed: false,
-                            last_updated: event.payload.timestamp
+                            last_updated: event.payload.timestamp.toString()
                         };
                         Logger.debug('[DropsCenter] Added new progress entry:', newEntry);
                         return [...prev, newEntry];
@@ -1266,7 +1268,7 @@ export default function DropsCenter() {
                                 current_minutes: currentMinutes,
                                 required_minutes: requiredMinutes
                             },
-                            last_update: event.payload.timestamp
+                            last_update: event.payload.timestamp.toString()
                         };
                     }
 
@@ -1307,7 +1309,7 @@ export default function DropsCenter() {
                                 current_minutes: currentMinutes,
                                 game_name: prev.current_channel?.game_name || prev.current_drop?.game_name || 'Unknown Game'
                             },
-                            last_update: event.payload.timestamp
+                            last_update: event.payload.timestamp.toString()
                         };
                     }
 
@@ -1323,7 +1325,8 @@ export default function DropsCenter() {
             if (unlistenComplete) unlistenComplete();
             if (unlistenNoChannels) unlistenNoChannels();
         };
-    }, []);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [addToast]);
 
     // Mine All Queue - detect campaign completion and start next campaign
     useEffect(() => {
@@ -1368,6 +1371,7 @@ export default function DropsCenter() {
 
             return () => clearTimeout(timer);
         }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [mineAllQueue, progress, unifiedGames, miningStatus]);
 
     // Update games' is_mining flag when miningStatus changes
@@ -1423,7 +1427,7 @@ export default function DropsCenter() {
                 return a.name.localeCompare(b.name);
             });
         });
-    }, [miningStatus]);
+    }, [miningStatus, unifiedGames.length]);
 
     // Notification effect: Detect new campaigns from favorite games
     useEffect(() => {
@@ -1578,49 +1582,87 @@ export default function DropsCenter() {
 
             {/* Header with Tabs */}
             <div className="flex items-center justify-center gap-2 px-4 py-3 bg-backgroundSecondary border-b border-borderLight shrink-0 relative">
-                {/* Tab Navigation - Glass Panel Style (Centered) */}
+                {/* Tab Navigation - Framer Motion Sliding Highlight Style (Centered) */}
+                <LayoutGroup>
                 <div className="flex items-center glass-panel px-1.5 py-1 rounded-xl">
                     <button
                         onClick={() => setActiveTab('games')}
-                        className={`flex items-center gap-2 px-3 py-1.5 text-sm font-medium rounded-lg transition-all ${activeTab === 'games'
-                            ? 'glass-button text-white'
-                            : 'text-textSecondary hover:text-textPrimary hover:bg-glass-hover'
+                        className={`group relative flex items-center gap-2 px-3 py-1.5 text-sm font-medium rounded-lg transition-all duration-300 whitespace-nowrap ${activeTab === 'games'
+                            ? 'text-white'
+                            : 'text-textSecondary hover:text-textPrimary'
                             }`}
                     >
-                        <MonitorPlay size={16} />
-                        <span>Campaigns</span>
+                        {activeTab === 'games' && (
+                            <motion.div
+                                layoutId="dropsTabHighlight"
+                                className="absolute inset-0 glass-button-static rounded-lg"
+                                transition={{ type: "spring", stiffness: 350, damping: 30 }}
+                            />
+                        )}
+                        <span className={`relative z-10 flex items-center gap-2 transition-all duration-300 ${activeTab !== 'games' ? 'group-hover:drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]' : ''}`}>
+                            <MonitorPlay size={16} />
+                            <span>Campaigns</span>
+                        </span>
                     </button>
                     <button
                         onClick={() => setActiveTab('inventory')}
-                        className={`flex items-center gap-2 px-3 py-1.5 text-sm font-medium rounded-lg transition-all ${activeTab === 'inventory'
-                            ? 'glass-button text-white'
-                            : 'text-textSecondary hover:text-textPrimary hover:bg-glass-hover'
+                        className={`group relative flex items-center gap-2 px-3 py-1.5 text-sm font-medium rounded-lg transition-all duration-300 whitespace-nowrap ${activeTab === 'inventory'
+                            ? 'text-white'
+                            : 'text-textSecondary hover:text-textPrimary'
                             }`}
                     >
-                        <Package size={16} />
-                        <span>Inventory</span>
+                        {activeTab === 'inventory' && (
+                            <motion.div
+                                layoutId="dropsTabHighlight"
+                                className="absolute inset-0 glass-button-static rounded-lg"
+                                transition={{ type: "spring", stiffness: 350, damping: 30 }}
+                            />
+                        )}
+                        <span className={`relative z-10 flex items-center gap-2 transition-all duration-300 ${activeTab !== 'inventory' ? 'group-hover:drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]' : ''}`}>
+                            <Package size={16} />
+                            <span>Inventory</span>
+                        </span>
                     </button>
                     <button
                         onClick={() => setActiveTab('stats')}
-                        className={`flex items-center gap-2 px-3 py-1.5 text-sm font-medium rounded-lg transition-all ${activeTab === 'stats'
-                            ? 'glass-button text-white'
-                            : 'text-textSecondary hover:text-textPrimary hover:bg-glass-hover'
+                        className={`group relative flex items-center gap-2 px-3 py-1.5 text-sm font-medium rounded-lg transition-all duration-300 whitespace-nowrap ${activeTab === 'stats'
+                            ? 'text-white'
+                            : 'text-textSecondary hover:text-textPrimary'
                             }`}
                     >
-                        <BarChart3 size={16} />
-                        <span>Stats</span>
+                        {activeTab === 'stats' && (
+                            <motion.div
+                                layoutId="dropsTabHighlight"
+                                className="absolute inset-0 glass-button-static rounded-lg"
+                                transition={{ type: "spring", stiffness: 350, damping: 30 }}
+                            />
+                        )}
+                        <span className={`relative z-10 flex items-center gap-2 transition-all duration-300 ${activeTab !== 'stats' ? 'group-hover:drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]' : ''}`}>
+                            <BarChart3 size={16} />
+                            <span>Stats</span>
+                        </span>
                     </button>
                     <button
                         onClick={() => setActiveTab('settings')}
-                        className={`flex items-center gap-2 px-3 py-1.5 text-sm font-medium rounded-lg transition-all ${activeTab === 'settings'
-                            ? 'glass-button text-white'
-                            : 'text-textSecondary hover:text-textPrimary hover:bg-glass-hover'
+                        className={`group relative flex items-center gap-2 px-3 py-1.5 text-sm font-medium rounded-lg transition-all duration-300 whitespace-nowrap ${activeTab === 'settings'
+                            ? 'text-white'
+                            : 'text-textSecondary hover:text-textPrimary'
                             }`}
                     >
-                        <SettingsIcon size={16} />
-                        <span>Settings</span>
+                        {activeTab === 'settings' && (
+                            <motion.div
+                                layoutId="dropsTabHighlight"
+                                className="absolute inset-0 glass-button-static rounded-lg"
+                                transition={{ type: "spring", stiffness: 350, damping: 30 }}
+                            />
+                        )}
+                        <span className={`relative z-10 flex items-center gap-2 transition-all duration-300 ${activeTab !== 'settings' ? 'group-hover:drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]' : ''}`}>
+                            <SettingsIcon size={16} />
+                            <span>Settings</span>
+                        </span>
                     </button>
                 </div>
+                </LayoutGroup>
 
                 {/* Right side: Search + Logout (Absolutely positioned) */}
                 <div className="absolute right-4 flex items-center gap-3">
@@ -1631,18 +1673,19 @@ export default function DropsCenter() {
                                 placeholder="Search games..."
                                 value={searchTerm}
                                 onChange={(e) => setSearchTerm(e.target.value)}
-                                className="bg-background border border-borderLight rounded-lg pl-8 pr-4 py-1.5 text-sm w-48 focus:w-64 transition-all focus:border-accent focus:outline-none"
+                                className="glass-input pl-8 pr-4 py-1.5 text-sm w-48 focus:w-64 transition-all focus:outline-none"
                             />
                             <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-textSecondary" />
                         </div>
                     )}
-                    <button
-                        className="px-3 py-1.5 text-xs font-medium rounded-lg glass-panel text-textSecondary hover:text-red-400 hover:bg-red-500/10 hover:border-red-500/30 border border-transparent transition-all"
-                        onClick={handleDropsLogout}
-                        title="Logout from Drops (Android Client)"
-                    >
-                        Logout
-                    </button>
+                    <Tooltip content="Logout from Drops (Android Client)" side="bottom">
+                        <button
+                            className="px-3 py-1.5 text-xs font-medium rounded-lg glass-panel text-textSecondary hover:text-red-400 hover:bg-red-500/10 hover:border-red-500/30 border border-transparent transition-all"
+                            onClick={handleDropsLogout}
+                        >
+                            Logout
+                        </button>
+                    </Tooltip>
                 </div>
             </div>
 

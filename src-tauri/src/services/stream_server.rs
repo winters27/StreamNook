@@ -1,4 +1,5 @@
 use anyhow::Result;
+use log::error;
 use once_cell::sync::Lazy;
 use rand::Rng;
 use reqwest::Client;
@@ -13,6 +14,16 @@ static SERVER_HANDLE: Lazy<Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>> =
     Lazy::new(|| Arc::new(Mutex::new(None)));
 static PROXY_URL: Lazy<Arc<Mutex<Option<String>>>> = Lazy::new(|| Arc::new(Mutex::new(None)));
 static CURRENT_PORT: Lazy<Arc<Mutex<Option<u16>>>> = Lazy::new(|| Arc::new(Mutex::new(None)));
+
+/// Global HTTP client with optimized connection pooling
+static HTTP_CLIENT: Lazy<Client> = Lazy::new(|| {
+    Client::builder()
+        .tcp_keepalive(std::time::Duration::from_secs(15))
+        .pool_idle_timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .expect("Failed to build global HTTP client")
+});
 
 impl StreamServer {
     pub async fn start_proxy_server(stream_url: String) -> Result<u16> {
@@ -54,64 +65,98 @@ impl StreamServer {
 
     async fn proxy_handler_with_url(
         proxy_url: Arc<Mutex<Option<String>>>,
-    ) -> Result<impl warp::Reply, warp::Rejection> {
+    ) -> Result<warp::http::Response<Vec<u8>>, warp::Rejection> {
         let url = proxy_url
             .lock()
             .await
             .clone()
             .ok_or_else(|| warp::reject::not_found())?;
-        let client = Client::new();
-        let response = client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|_| warp::reject::not_found())?;
 
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|_| warp::reject::not_found())?
-            .to_vec();
+        let response = match HTTP_CLIENT.get(&url).send().await {
+            Ok(res) => res,
+            Err(e) => {
+                error!("[StreamServer] Upstream request failed: {}", e);
+                return Ok(warp::http::Response::builder()
+                    .status(502)
+                    .header("Access-Control-Allow-Origin", "*")
+                    .body(vec![])
+                    .unwrap());
+            }
+        };
 
-        Ok(warp::reply::with_header(
-            warp::reply::with_header(
-                warp::reply::with_header(bytes, "Content-Type", "application/x-mpegURL"),
-                "Access-Control-Allow-Origin",
-                "*",
-            ),
-            "Access-Control-Allow-Methods",
-            "GET, OPTIONS",
-        ))
+        let status = response.status();
+        let bytes = match response.bytes().await {
+            Ok(b) => b.to_vec(),
+            Err(e) => {
+                error!("[StreamServer] Failed to read body bytes: {}", e);
+                return Ok(warp::http::Response::builder()
+                    .status(502)
+                    .header("Access-Control-Allow-Origin", "*")
+                    .body(vec![])
+                    .unwrap());
+            }
+        };
+
+        Ok(warp::http::Response::builder()
+            .status(status)
+            .header("Content-Type", "application/x-mpegURL")
+            .header("Access-Control-Allow-Origin", "*")
+            .header("Access-Control-Allow-Methods", "GET, OPTIONS")
+            .header(
+                "Cache-Control",
+                "no-cache, no-store, must-revalidate, max-age=0",
+            )
+            .header("Pragma", "no-cache")
+            .header("Expires", "0")
+            .body(bytes)
+            .unwrap())
     }
 
-    async fn proxy_handler() -> Result<impl warp::Reply, warp::Rejection> {
+    async fn proxy_handler() -> Result<warp::http::Response<Vec<u8>>, warp::Rejection> {
         let url = PROXY_URL
             .lock()
             .await
             .clone()
             .ok_or_else(|| warp::reject::not_found())?;
-        let client = Client::new();
-        let response = client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|_| warp::reject::not_found())?;
 
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|_| warp::reject::not_found())?
-            .to_vec();
+        let response = match HTTP_CLIENT.get(&url).send().await {
+            Ok(res) => res,
+            Err(e) => {
+                error!("[StreamServer] Upstream request failed: {}", e);
+                return Ok(warp::http::Response::builder()
+                    .status(502)
+                    .header("Access-Control-Allow-Origin", "*")
+                    .body(vec![])
+                    .unwrap());
+            }
+        };
 
-        Ok(warp::reply::with_header(
-            warp::reply::with_header(
-                warp::reply::with_header(bytes, "Content-Type", "application/x-mpegURL"),
-                "Access-Control-Allow-Origin",
-                "*",
-            ),
-            "Access-Control-Allow-Methods",
-            "GET, OPTIONS",
-        ))
+        let status = response.status();
+        let bytes = match response.bytes().await {
+            Ok(b) => b.to_vec(),
+            Err(e) => {
+                error!("[StreamServer] Failed to read body bytes: {}", e);
+                return Ok(warp::http::Response::builder()
+                    .status(502)
+                    .header("Access-Control-Allow-Origin", "*")
+                    .body(vec![])
+                    .unwrap());
+            }
+        };
+
+        Ok(warp::http::Response::builder()
+            .status(status)
+            .header("Content-Type", "application/x-mpegURL")
+            .header("Access-Control-Allow-Origin", "*")
+            .header("Access-Control-Allow-Methods", "GET, OPTIONS")
+            .header(
+                "Cache-Control",
+                "no-cache, no-store, must-revalidate, max-age=0",
+            )
+            .header("Pragma", "no-cache")
+            .header("Expires", "0")
+            .body(bytes)
+            .unwrap())
     }
 
     pub async fn stop() -> Result<()> {

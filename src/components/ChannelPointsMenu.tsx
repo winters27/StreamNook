@@ -584,7 +584,7 @@ const ChannelPointsMenu: React.FC<ChannelPointsMenuProps> = ({
               placeholder="Type your highlighted message..."
               maxLength={500}
               autoFocus
-              className="flex-1 w-full bg-glass border border-border rounded-lg px-3 py-2 text-sm text-textPrimary placeholder-textMuted resize-none focus:outline-none focus:border-accent/50"
+              className="flex-1 w-full glass-input px-3 py-2 text-sm text-textPrimary placeholder-textMuted resize-none focus:outline-none"
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey) {
                   e.preventDefault();

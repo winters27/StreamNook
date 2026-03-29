@@ -1,62 +1,18 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { useAppStore, HomeTab } from '../stores/AppStore';
-import { Search, ArrowLeft, Heart, Maximize2, X, Gift, Pickaxe, Check } from 'lucide-react';
+import { createPortal } from 'react-dom';
+import { Search, ArrowLeft, Heart, Maximize2, X, Gift, Pickaxe, LayoutGrid, Flame, ArrowUpRight, Undo2 } from 'lucide-react';
+import { motion, LayoutGroup } from 'framer-motion';
+import { usemultiNookStore } from '../stores/multiNookStore';
+
 import { invoke } from '@tauri-apps/api/core';
 import type { TwitchStream, TwitchCategory } from '../types';
 import LoadingWidget from './LoadingWidget';
-import { parseEmojisProxied, EmojiSegment } from '../services/emojiService';
+import StreamTitleWithEmojis from './StreamTitleWithEmojis';
+import { useContextMenuStore } from '../stores/contextMenuStore';
+import { Tooltip } from './ui/Tooltip';
 
 import { Logger } from '../utils/logger';
-// Component to render stream title with Apple-style emojis (inline)
-const StreamTitleWithEmojis = ({ title }: { title: string }) => {
-    const [segments, setSegments] = useState<EmojiSegment[]>([]);
-    const [isLoading, setIsLoading] = useState(true);
-
-    useEffect(() => {
-        let mounted = true;
-
-        parseEmojisProxied(title)
-            .then((result) => {
-                if (mounted) {
-                    setSegments(result);
-                    setIsLoading(false);
-                }
-            })
-            .catch(() => {
-                if (mounted) {
-                    setSegments([{ type: 'text', content: title }]);
-                    setIsLoading(false);
-                }
-            });
-
-        return () => {
-            mounted = false;
-        };
-    }, [title]);
-
-    if (isLoading) {
-        return <>{title}</>;
-    }
-
-    return (
-        <>
-            {segments.map((segment, idx) =>
-                segment.type === 'emoji' && segment.emojiUrl && segment.emojiUrl.startsWith('data:') ? (
-                    <img
-                        key={idx}
-                        src={segment.emojiUrl}
-                        alt={segment.content}
-                        className="inline-block w-4 h-4 object-contain align-text-bottom mx-px"
-                        style={{ verticalAlign: '-3px' }}
-                        loading="lazy"
-                    />
-                ) : (
-                    <span key={idx}>{segment.content}</span>
-                )
-            )}
-        </>
-    );
-};
 
 // Types for drops data
 interface DropCampaign {
@@ -95,6 +51,223 @@ interface MiningStatus {
     last_update: string;
 }
 
+const FlyingDot = ({ startX, startY, targetX, targetY }: { startX: number, startY: number, targetX: number, targetY: number }) => {
+    const [isFlying, setIsFlying] = useState(false);
+
+    useEffect(() => {
+        const timer = setTimeout(() => setIsFlying(true), 10);
+        return () => clearTimeout(timer);
+    }, []);
+
+    return (
+        <div 
+            className="fixed z-[9999] pointer-events-none flex h-5 w-5 items-center justify-center rounded-full bg-red-500 shadow-[0_0_15px_rgba(239,68,68,0.8)]"
+            style={{
+                left: isFlying ? targetX : startX,
+                top: isFlying ? targetY : startY,
+                opacity: isFlying ? 0.3 : 1,
+                transform: isFlying ? 'scale(0.3)' : 'scale(1)',
+                transition: 'all 500ms cubic-bezier(0.25, 1, 0.5, 1)'
+            }}
+        >
+           <LayoutGrid size={12} className="text-white" />
+        </div>
+    );
+};
+
+const ReverseFlyingDot = ({ startX, startY, targetX, targetY }: { startX: number, startY: number, targetX: number, targetY: number }) => {
+    const [isFlying, setIsFlying] = useState(false);
+
+    useEffect(() => {
+        const timer = setTimeout(() => setIsFlying(true), 10);
+        return () => clearTimeout(timer);
+    }, []);
+
+    return (
+        <div 
+            className="fixed z-[9999] pointer-events-none flex h-5 w-5 items-center justify-center rounded-full bg-accent shadow-[0_0_15px_rgba(var(--color-accent-rgb),0.8)]"
+            style={{
+                left: isFlying ? targetX : startX,
+                top: isFlying ? targetY : startY,
+                opacity: isFlying ? 1 : 0.3,
+                transform: isFlying ? 'scale(1)' : 'scale(0.3)',
+                transition: 'all 500ms cubic-bezier(0.25, 1, 0.5, 1)'
+            }}
+        >
+           <Undo2 size={10} className="text-white" />
+        </div>
+    );
+};
+
+const MultiNookToggle = () => {
+    const { isMultiNookActive, toggleMultiNook, slots, flyingAnimation, recallAnimation } = usemultiNookStore();
+    const { toggleHome } = useAppStore();
+    const [animateBadge, setAnimateBadge] = useState(false);
+    const buttonRef = useRef<HTMLButtonElement>(null);
+    const [flyingDots, setFlyingDots] = useState<Array<{ id: number, startX: number, startY: number, targetX: number, targetY: number }>>([]);
+    const [reverseDots, setReverseDots] = useState<Array<{ id: number, startX: number, startY: number, targetX: number, targetY: number }>>([]);
+
+    useEffect(() => {
+        if (flyingAnimation && buttonRef.current) {
+            const rect = buttonRef.current.getBoundingClientRect();
+            // Target is the top right of the button where the badge will sit
+            const targetX = rect.right - 10;
+            const targetY = rect.top - 5;
+            
+            const newDot = {
+                id: flyingAnimation.id,
+                startX: flyingAnimation.x,
+                startY: flyingAnimation.y,
+                targetX,
+                targetY
+            };
+            
+            setFlyingDots(prev => [...prev, newDot]);
+            
+            setTimeout(() => {
+                setFlyingDots(prev => prev.filter(d => d.id !== newDot.id));
+                setAnimateBadge(true);
+                setTimeout(() => setAnimateBadge(false), 200);
+            }, 500); 
+        }
+    }, [flyingAnimation]);
+
+    // Handle reverse recall animation — dot flies from badge to card
+    useEffect(() => {
+        if (recallAnimation) {
+            const newDot = {
+                id: recallAnimation.id,
+                startX: recallAnimation.sourceX,
+                startY: recallAnimation.sourceY,
+                targetX: recallAnimation.targetX,
+                targetY: recallAnimation.targetY,
+            };
+            
+            queueMicrotask(() => setReverseDots(prev => [...prev, newDot]));
+            
+            setTimeout(() => {
+                setReverseDots(prev => prev.filter(d => d.id !== newDot.id));
+            }, 600);
+        }
+    }, [recallAnimation]);
+
+    return (
+        <>
+            <Tooltip content={isMultiNookActive ? 'Return to MultiNook' : 'Enter MultiNook'} side="bottom">
+                <button
+                    id="multinook-return-button"
+                    ref={buttonRef}
+                    onClick={() => {
+                        if (isMultiNookActive) {
+                            toggleHome();
+                        } else {
+                            toggleMultiNook();
+                        }
+                    }}
+                    className={`relative px-3 py-1.5 text-sm font-medium rounded-lg transition-all whitespace-nowrap mr-0.5 ${
+                        isMultiNookActive
+                            ? 'glass-button text-accent shadow-[0_0_15px_rgba(var(--color-accent-rgb),0.3)]'
+                            : 'text-textSecondary hover:text-textPrimary'
+                    }`}
+                >
+                    {isMultiNookActive ? 'Return' : 'MultiNook'}
+                    {!isMultiNookActive && slots.length > 0 && (
+                        <span 
+                            className={`absolute -top-1.5 -right-1.5 flex h-4 w-4 items-center justify-center rounded-full glass-button !bg-red-500/30 text-[9px] font-extrabold text-white !shadow-[0_2px_10px_rgba(239,68,68,0.4),inset_0_1px_rgba(255,255,255,0.2)] z-50 ${
+                                animateBadge ? 'scale-150 ring-2 ring-red-500 transition-transform duration-200' : 'scale-100 transition-transform duration-500'
+                            }`}
+                        >
+                            {slots.length}
+                        </span>
+                    )}
+                </button>
+            </Tooltip>
+            {flyingDots.length > 0 && typeof document !== 'undefined' && createPortal(
+                flyingDots.map(dot => (
+                    <FlyingDot key={dot.id} {...dot} />
+                )),
+                document.body
+            )}
+            {reverseDots.length > 0 && typeof document !== 'undefined' && createPortal(
+                reverseDots.map(dot => (
+                    <ReverseFlyingDot key={dot.id} {...dot} />
+                )),
+                document.body
+            )}
+        </>
+    );
+};
+
+const QuickAddButton = ({ stream }: { stream: TwitchStream }) => {
+    const { addSlot, slots, triggerAddAnimation } = usemultiNookStore();
+    const [rotation, setRotation] = useState(0); 
+    const buttonRef = useRef<HTMLButtonElement>(null);
+
+    // Compute the dynamic rotation pointing toward the return button
+    const handleHover = () => {
+        if (!buttonRef.current) return;
+        const targetBtn = document.getElementById('multinook-return-button');
+        if (targetBtn) {
+            const targetRect = targetBtn.getBoundingClientRect();
+            const sourceRect = buttonRef.current.getBoundingClientRect();
+            
+            const targetX = targetRect.left + (targetRect.width / 2);
+            const targetY = targetRect.top + (targetRect.height / 2);
+            const sourceX = sourceRect.left + (sourceRect.width / 2);
+            const sourceY = sourceRect.top + (sourceRect.height / 2);
+            
+            const angle = Math.atan2(targetY - sourceY, targetX - sourceX) * (180 / Math.PI);
+            // ArrowUpRight points initially to top right (-45 Cartesian). Offset sets it naturally.
+            setRotation(angle + 45);
+        }
+    };
+
+    useEffect(() => {
+        handleHover(); // Initial calculation
+
+        // Attach a listener to the parent card so angle calculates perfectly when the card is hovered
+        const groupAncestor = buttonRef.current?.closest('.group');
+        if (groupAncestor) {
+            groupAncestor.addEventListener('mouseenter', handleHover);
+            return () => groupAncestor.removeEventListener('mouseenter', handleHover);
+        }
+    }, []);
+
+    // Also update on resize to ensure arrow points perfectly in different window dimensions
+    useEffect(() => {
+        const resizeListener = () => handleHover();
+        window.addEventListener('resize', resizeListener);
+        return () => window.removeEventListener('resize', resizeListener);
+    }, []);
+
+    if (slots.some(s => s.channelLogin.toLowerCase() === stream.user_login.toLowerCase())) return null;
+
+    return (
+        <div 
+            className="absolute -top-2.5 -right-2.5 z-20 opacity-0 group-hover:opacity-100 transition-all duration-300 scale-90 group-hover:scale-100 group-hover:-translate-y-1 group-hover:translate-x-1"
+            onMouseEnter={handleHover}    
+        >
+            <Tooltip content="Quick Add to MultiNook" side="top">
+                <button
+                    ref={buttonRef}
+                    onClick={(e) => {
+                        e.stopPropagation();
+                        triggerAddAnimation(e.clientX, e.clientY, stream.user_login);
+                        addSlot(stream.user_login);
+                    }}
+                    className="flex items-center justify-center glass-button !rounded-full aspect-square !p-1.5 text-white shadow-[0_4px_10px_rgba(0,0,0,0.5)]"
+                >
+                    <ArrowUpRight 
+                        size={14} 
+                        strokeWidth={2} 
+                        style={{ transform: `rotate(${rotation}deg)`, transition: 'transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1)' }}
+                    />
+                </button>
+            </Tooltip>
+        </div>
+    );
+};
+
 const Home = () => {
     const {
         followedStreams,
@@ -120,7 +293,22 @@ const Home = () => {
         // Hype Train status for stream badges
         activeHypeTrainChannels,
         refreshHypeTrainStatuses,
+        watchStreaks,
     } = useAppStore();
+
+    // MultiNook ghost card state
+    const multiNookSlots = usemultiNookStore(s => s.slots);
+    const isMultiNookActive = usemultiNookStore(s => s.isMultiNookActive);
+    const suckUpLogin = usemultiNookStore(s => s.suckUpLogin);
+    const materializingLogin = usemultiNookStore(s => s.materializingLogin);
+    const triggerRecallAnimation = usemultiNookStore(s => s.triggerRecallAnimation);
+    
+    // Determine if Home is acting as an overlay over a playing stream/multinook
+    const isOverlayMode = !!streamUrl || isMultiNookActive;
+    const isInMultiNook = useCallback((login: string) => 
+        multiNookSlots.some(s => s.channelLogin.toLowerCase() === login.toLowerCase()), 
+        [multiNookSlots]
+    );
 
     // Use store state directly
     const activeTab = homeActiveTab;
@@ -148,7 +336,6 @@ const Home = () => {
     const [dropsGameIds, setDropsGameIds] = useState<Map<string, DropCampaign>>(new Map());
     // Drops by game name (for stream cards which have game_name)
     const [dropsGameNames, setDropsGameNames] = useState<Map<string, DropCampaign>>(new Map());
-    const [isLoadingDrops, setIsLoadingDrops] = useState(false);
 
     const scrollContainerRef = useRef<HTMLDivElement>(null);
     const loadingRef = useRef(false);
@@ -160,12 +347,18 @@ const Home = () => {
     const [hasInitialized, setHasInitialized] = useState(false);
 
     useEffect(() => {
-        loadFollowedStreams();
-        loadRecommendedStreams();
-        // Load drops data early so we can show indicators on stream cards
-        loadActiveDrops();
-        // Mark as initialized after first load attempt
+        // Mark as initialized immediately so we render cached store data if available
         setHasInitialized(true);
+
+        // Delay background fetches to allow AnimatePresence fade-in to complete smoothly
+        // and prevent HTTP connection pool starvation for active HLS video streams.
+        const initTimer = setTimeout(() => {
+            loadFollowedStreams();
+            loadRecommendedStreams();
+            loadActiveDrops(); // Load drops data so we can show indicators on stream cards
+        }, 300);
+
+        return () => clearTimeout(initTimer);
     }, [loadFollowedStreams, loadRecommendedStreams]);
 
     // Auto-select the appropriate tab based on auth status on initial mount only
@@ -213,7 +406,7 @@ const Home = () => {
         }
     };
 
-    const loadMoreTopGames = async () => {
+    const loadMoreTopGames = useCallback(async () => {
         if (!hasMoreGames || isLoadingMoreGames || !gamesCursor) return;
 
         setIsLoadingMoreGames(true);
@@ -230,11 +423,10 @@ const Home = () => {
         } finally {
             setIsLoadingMoreGames(false);
         }
-    };
+    }, [hasMoreGames, isLoadingMoreGames, gamesCursor]);
 
     // Load active drops campaigns and build maps for both game_id and game_name lookup
     const loadActiveDrops = async () => {
-        setIsLoadingDrops(true);
         try {
             // Use get_active_drop_campaigns for ALL active campaigns (not just inventory)
             const campaigns = await invoke<DropCampaign[]>('get_active_drop_campaigns');
@@ -281,8 +473,6 @@ const Home = () => {
             Logger.error('Failed to load active drops:', e);
             setDropsGameIds(new Map());
             setDropsGameNames(new Map());
-        } finally {
-            setIsLoadingDrops(false);
         }
     };
 
@@ -303,13 +493,13 @@ const Home = () => {
         searchResults.forEach(s => channelIds.add(s.user_id));
         
         if (channelIds.size > 0) {
-            // Debounce the refresh to avoid rapid API calls
+            // Debounce the refresh to avoid rapid API calls and network starvation
             if (hypeTrainRefreshTimeoutRef.current) {
                 clearTimeout(hypeTrainRefreshTimeoutRef.current);
             }
             hypeTrainRefreshTimeoutRef.current = setTimeout(() => {
                 refreshHypeTrainStatuses(Array.from(channelIds));
-            }, 500);
+            }, 2000); // 2000ms delay to prioritize HLS segments
         }
         
         return () => {
@@ -357,7 +547,7 @@ const Home = () => {
                         return prev;
                     });
                 }
-            } catch (e) {
+            } catch {
                 // Silently fail - might not be authenticated or backend not ready
             }
         };
@@ -374,7 +564,7 @@ const Home = () => {
             try {
                 const { listen } = await import('@tauri-apps/api/event');
                 unlisten = await listen('mining-status-changed', syncMiningStatus);
-            } catch (err) {
+            } catch {
                 // Event listener not available
             }
         };
@@ -384,7 +574,7 @@ const Home = () => {
             clearInterval(interval);
             if (unlisten) unlisten();
         };
-    }, []);
+    }, [dropsGameNames]);
 
     // Update campaign name-to-ID map when drops data loads
     useEffect(() => {
@@ -542,7 +732,6 @@ const Home = () => {
 
     const handleStreamClick = (stream: TwitchStream) => {
         startStream(stream.user_login, stream);
-        toggleHome();
     };
 
     const handleFavoriteClick = (e: React.MouseEvent, userId: string) => {
@@ -623,95 +812,150 @@ const Home = () => {
 
     return (
         <div className="flex flex-col h-full">
+            {/* Global SVG Definitions for Liquid Glass Heart */}
+            <svg width="0" height="0" className="absolute pointer-events-none">
+                <defs>
+                    <linearGradient id="glass-heart-fill" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="rgba(255, 255, 255, 0.4)" />
+                        <stop offset="30%" stopColor="rgba(236, 72, 153, 0.2)" />
+                        <stop offset="100%" stopColor="rgba(236, 72, 153, 0.6)" />
+                    </linearGradient>
+                    <linearGradient id="glass-heart-stroke" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="rgba(255, 255, 255, 0.8)" />
+                        <stop offset="100%" stopColor="rgba(255, 255, 255, 0.1)" />
+                    </linearGradient>
+                </defs>
+            </svg>
+
             {/* Compact Header */}
             <div className="flex items-center justify-center gap-3 px-4 py-2.5 border-b border-borderSubtle relative min-h-[48px]">
                 {/* Category back button and name - absolute left with proper spacing */}
                 {activeTab === 'category' && selectedCategory && (
                     <div className="absolute left-4 flex items-center gap-2 max-w-[40%]">
+                        <Tooltip content="Back to Browse" side="top">
                         <button
                             onClick={handleBackToBrowse}
                             className="p-2 glass-panel hover:bg-glass-hover rounded-lg transition-all group flex-shrink-0"
-                            title="Back to Browse"
                         >
                             <ArrowLeft size={18} className="text-textSecondary group-hover:text-textPrimary transition-colors" />
                         </button>
+                        </Tooltip>
                         <span className="text-textPrimary font-medium text-sm truncate">
                             {selectedCategory.name}
                         </span>
                     </div>
                 )}
 
+
+
                 {/* Centered Navigation - All tabs and search together */}
                 {!(activeTab === 'category' && selectedCategory) && (
-                    <div className="relative flex items-center glass-panel px-1.5 py-1 rounded-xl overflow-hidden">
+                    <div className="relative flex items-center glass-panel px-1.5 py-1 rounded-xl">
                         {/* Navigation buttons - fade out when search is expanded */}
+                        <LayoutGroup>
                         <div className={`flex items-center gap-1 transition-opacity duration-300 ${isSearchExpanded ? 'opacity-0' : 'opacity-100'}`}>
+                            <MultiNookToggle />
+                            <div className="border-l border-borderSubtle h-5 mx-0.5" />
                             {isAuthenticated && (
                                 <button
                                     onClick={() => { setActiveTab('following'); setIsSearchExpanded(false); }}
-                                    className={`px-3 py-1.5 text-sm font-medium rounded-lg transition-all whitespace-nowrap ${activeTab === 'following'
-                                        ? 'glass-button text-white'
-                                        : 'text-textSecondary hover:text-textPrimary hover:bg-glass-hover'
+                                    className={`group relative px-3 py-1.5 text-sm font-medium rounded-lg transition-all duration-300 whitespace-nowrap ${activeTab === 'following'
+                                        ? 'text-white'
+                                        : 'text-textSecondary hover:text-textPrimary'
                                         }`}
                                 >
-                                    Following
-                                    {followedStreams.length > 0 && (
-                                        <span className="ml-1.5 text-xs opacity-80">
-                                            {followedStreams.length}
-                                        </span>
+                                    {activeTab === 'following' && (
+                                        <motion.div
+                                            layoutId="homeTabHighlight"
+                                            className="absolute inset-0 glass-button-static rounded-lg"
+                                            transition={{ type: "spring", stiffness: 350, damping: 30 }}
+                                        />
                                     )}
+                                    <span className={`relative z-10 flex items-center transition-all duration-300 ${activeTab !== 'following' ? 'group-hover:drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]' : ''}`}>
+                                        Following
+                                        {followedStreams.length > 0 && (
+                                            <span className="ml-1.5 text-xs opacity-80">
+                                                {followedStreams.length}
+                                            </span>
+                                        )}
+                                    </span>
                                 </button>
                             )}
                             <button
                                 onClick={() => { setActiveTab('recommended'); setIsSearchExpanded(false); }}
-                                className={`px-3 py-1.5 text-sm font-medium rounded-lg transition-all whitespace-nowrap ${activeTab === 'recommended'
-                                    ? 'glass-button text-white'
-                                    : 'text-textSecondary hover:text-textPrimary hover:bg-glass-hover'
+                                className={`group relative px-3 py-1.5 text-sm font-medium rounded-lg transition-all duration-300 whitespace-nowrap ${activeTab === 'recommended'
+                                    ? 'text-white'
+                                    : 'text-textSecondary hover:text-textPrimary'
                                     }`}
                             >
-                                Discover
+                                {activeTab === 'recommended' && (
+                                    <motion.div
+                                        layoutId="homeTabHighlight"
+                                        className="absolute inset-0 glass-button-static rounded-lg"
+                                        transition={{ type: "spring", stiffness: 350, damping: 30 }}
+                                    />
+                                )}
+                                <span className={`relative z-10 inline-block transition-all duration-300 ${activeTab !== 'recommended' ? 'group-hover:drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]' : ''}`}>Discover</span>
                             </button>
                             <button
                                 onClick={handleBrowseClick}
-                                className={`px-3 py-1.5 text-sm font-medium rounded-lg transition-all whitespace-nowrap ${activeTab === 'browse'
-                                    ? 'glass-button text-white'
-                                    : 'text-textSecondary hover:text-textPrimary hover:bg-glass-hover'
+                                className={`group relative px-3 py-1.5 text-sm font-medium rounded-lg transition-all duration-300 whitespace-nowrap ${activeTab === 'browse'
+                                    ? 'text-white'
+                                    : 'text-textSecondary hover:text-textPrimary'
                                     }`}
                             >
-                                Categories
+                                {activeTab === 'browse' && (
+                                    <motion.div
+                                        layoutId="homeTabHighlight"
+                                        className="absolute inset-0 glass-button-static rounded-lg"
+                                        transition={{ type: "spring", stiffness: 350, damping: 30 }}
+                                    />
+                                )}
+                                <span className={`relative z-10 inline-block transition-all duration-300 ${activeTab !== 'browse' ? 'group-hover:drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]' : ''}`}>Categories</span>
                             </button>
                             {searchResults.length > 0 && (
                                 <button
                                     onClick={() => setActiveTab('search')}
-                                    className={`px-3 py-1.5 text-sm font-medium rounded-lg transition-all whitespace-nowrap ${activeTab === 'search'
-                                        ? 'glass-button text-white'
-                                        : 'text-textSecondary hover:text-textPrimary hover:bg-glass-hover'
+                                    className={`group relative px-3 py-1.5 text-sm font-medium rounded-lg transition-all duration-300 whitespace-nowrap ${activeTab === 'search'
+                                        ? 'text-white'
+                                        : 'text-textSecondary hover:text-textPrimary'
                                         }`}
                                 >
-                                    Results
-                                    <span className="ml-1 text-xs opacity-80">{searchResults.length}</span>
+                                    {activeTab === 'search' && (
+                                        <motion.div
+                                            layoutId="homeTabHighlight"
+                                            className="absolute inset-0 glass-button-static rounded-lg"
+                                            transition={{ type: "spring", stiffness: 350, damping: 30 }}
+                                        />
+                                    )}
+                                    <span className={`relative z-10 flex items-center transition-all duration-300 ${activeTab !== 'search' ? 'group-hover:drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]' : ''}`}>
+                                        Results
+                                        <span className="ml-1 text-xs opacity-80">{searchResults.length}</span>
+                                    </span>
                                 </button>
                             )}
                             <div className="border-l border-borderSubtle h-6 ml-1" />
                             {/* Search button - opens search */}
+                            <Tooltip content="Search channels" side="top">
                             <button
                                 onClick={() => setIsSearchExpanded(true)}
-                                className="p-1.5 text-textSecondary hover:text-textPrimary hover:bg-glass rounded-lg transition-all ml-0.5"
-                                title="Search channels"
+                                className="p-1.5 text-textSecondary hover:text-textPrimary rounded-lg transition-all ml-0.5"
                             >
                                 <Search size={16} />
                             </button>
+                            </Tooltip>
                         </div>
+                        </LayoutGroup>
 
                         {/* Search overlay - expands from right to cover buttons */}
                         <div
-                            className={`absolute inset-0 flex items-center transition-all duration-300 ease-out ${isSearchExpanded
+                            className={`absolute inset-0 flex items-center rounded-xl transition-all duration-300 ease-out bg-surface/30 backdrop-blur-3xl ${isSearchExpanded
                                 ? 'opacity-100 visible'
                                 : 'opacity-0 invisible pointer-events-none'
                                 }`}
                         >
                             <div className="flex items-center gap-1.5 w-full px-1.5 py-1">
-                                <div className="flex-1 flex items-center glass-button rounded-lg hover:shadow-none">
+                                <div className="flex-1 flex items-center glass-panel rounded-lg shadow-sm border border-transparent">
                                     <input
                                         ref={searchInputRef}
                                         type="text"
@@ -722,6 +966,7 @@ const Home = () => {
                                         className="flex-1 bg-transparent text-white text-sm px-3 py-1.5 focus:outline-none placeholder:text-white/60"
                                     />
                                     {/* Toggle button: X when empty, Search when has text */}
+                                    <Tooltip content={searchQuery.trim() ? "Search" : "Close"} side="top">
                                     <button
                                         onClick={() => {
                                             if (searchQuery.trim()) {
@@ -736,7 +981,6 @@ const Home = () => {
                                             ? 'text-white hover:bg-white/20'
                                             : 'text-white/60 hover:text-white hover:bg-white/10'
                                             } ${isSearching ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
-                                        title={searchQuery.trim() ? "Search" : "Close"}
                                     >
                                         {searchQuery.trim() ? (
                                             <Search size={16} className={isSearching ? 'animate-pulse' : ''} />
@@ -744,6 +988,7 @@ const Home = () => {
                                             <X size={16} />
                                         )}
                                     </button>
+                                    </Tooltip>
                                 </div>
                             </div>
                         </div>
@@ -752,14 +997,15 @@ const Home = () => {
 
                 {/* Return to Stream Button - absolute right */}
                 {streamUrl && (
+                    <Tooltip content="Return to Stream" side="bottom">
                     <button
                         onClick={toggleHome}
-                        className="absolute right-4 flex items-center gap-1.5 px-3 py-1.5 bg-accent text-white text-sm font-medium rounded-lg transition-all hover:bg-accent/90"
-                        title="Return to Stream"
+                        className="absolute right-4 flex items-center gap-1.5 px-3 py-1.5 glass-button text-accent shadow-[0_0_15px_rgba(var(--color-accent-rgb),0.2)] text-sm font-medium rounded-lg transition-all hover:text-white"
                     >
                         <Maximize2 size={14} />
                         <span className="hidden sm:inline">Return</span>
                     </button>
+                    </Tooltip>
                 )}
             </div>
 
@@ -797,12 +1043,13 @@ const Home = () => {
                                         return (
                                             <div
                                                 key={game.id}
-                                                className={`glass-panel cursor-pointer hover:bg-glass-hover transition-all duration-200 group overflow-hidden relative ${hasDrops ? 'ring-2 ring-accent shadow-accent/40' : ''}`}
+                                                className={`glass-panel cursor-pointer hover:bg-glass-hover transition-all duration-200 group overflow-hidden relative ${isOverlayMode ? '!bg-black/40 !border-white/5' : ''} ${hasDrops ? 'ring-2 ring-accent shadow-accent/40' : ''}`}
                                                 style={hasDrops ? { boxShadow: '0 0 15px var(--color-accent-muted)' } : undefined}
                                                 onClick={() => handleCategoryClick(game)}
                                             >
                                                 <div className="relative overflow-hidden">
                                                     <img
+                                                        loading="lazy"
                                                         src={getGameBoxArt(game.box_art_url)}
                                                         alt={game.name}
                                                         className="w-full aspect-[3/4] object-cover group-hover:scale-105 transition-transform duration-200"
@@ -822,13 +1069,13 @@ const Home = () => {
                                                     )}
                                                     {/* Mine Drops Button - Toggle start/stop mining */}
                                                     {hasDrops && (
+                                                        <Tooltip content={activeMiningIds.has(dropsCampaign.id) ? `Click to stop mining ${dropsCampaign.name}` : `Start mining ${dropsCampaign.name}`} side="top">
                                                         <button
                                                             onClick={(e) => handleToggleMining(e, dropsCampaign)}
-                                                            className={`absolute bottom-2 right-2 left-2 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md text-white text-xs font-semibold transition-all shadow-lg ${activeMiningIds.has(dropsCampaign.id)
-                                                                ? 'bg-green-600 hover:bg-red-600 hover:scale-105'
-                                                                : 'bg-accent hover:bg-accent-hover hover:scale-105'
+                                                            className={`absolute bottom-2 right-2 left-2 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md text-xs font-semibold transition-all duration-300 glass-button ${activeMiningIds.has(dropsCampaign.id)
+                                                                ? '!bg-green-500/20 text-green-400 border-green-500/30 !shadow-[0_2px_10px_rgba(34,197,94,0.3),inset_0_1px_rgba(255,255,255,0.2)] ring-1 ring-green-500/20 hover:!bg-red-500/30 hover:text-red-400 hover:border-red-500/30 hover:ring-red-500/30 hover:!shadow-[0_2px_10px_rgba(239,68,68,0.3),inset_0_1px_rgba(255,255,255,0.2)]'
+                                                                : '!bg-accent/30 text-white border-accent/40 !shadow-[0_2px_10px_rgba(var(--color-accent-rgb),0.4),inset_0_1px_rgba(255,255,255,0.2)] ring-1 ring-accent/20 hover:!bg-accent/50 hover:scale-[1.02]'
                                                                 }`}
-                                                            title={activeMiningIds.has(dropsCampaign.id) ? `Click to stop mining ${dropsCampaign.name}` : `Start mining ${dropsCampaign.name}`}
                                                         >
                                                             {activeMiningIds.has(dropsCampaign.id) ? (
                                                                 <>
@@ -838,16 +1085,17 @@ const Home = () => {
                                                             ) : (
                                                                 <>
                                                                     <Pickaxe size={14} />
-                                                                    <span>Start Mining</span>
+                                                                    <span>Mine Drops</span>
                                                                 </>
                                                             )}
                                                         </button>
+                                                        </Tooltip>
                                                     )}
                                                 </div>
                                                 <div className="p-2">
-                                                    <h3 className="text-textPrimary font-medium text-sm line-clamp-2 group-hover:text-accent transition-colors">
+                                                    <Tooltip content={game.name} side="bottom"><h3 className="text-textPrimary font-medium text-sm line-clamp-2 group-hover:text-accent transition-colors">
                                                         {game.name}
-                                                    </h3>
+                                                    </h3></Tooltip>
                                                     {game.viewer_count !== undefined && (
                                                         <p className="text-textSecondary text-xs mt-0.5">
                                                             {game.viewer_count.toLocaleString()} viewers
@@ -903,59 +1151,116 @@ const Home = () => {
                                         : (selectedCategory?.name ? dropsGameNames.get(selectedCategory.name.toLowerCase()) : undefined);
                                     const hasDrops = !!categoryDropsCampaign;
 
-                                    return (
-                                        <div
-                                            key={stream.id}
-                                            className={`glass-panel p-2.5 cursor-pointer hover:bg-glass-hover transition-all duration-200 group ${hasDrops ? 'ring-2 ring-accent/60' : ''}`}
-                                            style={hasDrops ? { boxShadow: '0 0 12px var(--color-accent-muted)' } : undefined}
-                                            onClick={() => handleStreamClick(stream)}
-                                        >
-                                            <div className="relative mb-2 overflow-hidden rounded">
-                                                <img
-                                                    src={getThumbnailUrl(stream.thumbnail_url)}
-                                                    alt={stream.title}
-                                                    className="w-full aspect-video object-cover group-hover:scale-105 transition-transform duration-200"
-                                                />
-                                                <div className="absolute top-1.5 left-1.5 flex items-center gap-1">
-                                                    <div className="live-dot text-xs px-1.5 py-0.5">
-                                                        LIVE
+                                    return (() => {
+                                        const isQueued = isInMultiNook(stream.user_login);
+                                        const isSuckingUp = suckUpLogin === stream.user_login.toLowerCase();
+                                        const isMaterializing = materializingLogin === stream.user_login.toLowerCase();
+
+                                        return (
+                                            <motion.div
+                                                layout
+                                                transition={{ type: "spring", stiffness: 350, damping: 25 }}
+                                                key={stream.id}
+                                                className={`p-2.5 transition-all duration-200 group relative ${
+                                                    isQueued && !isSuckingUp
+                                                        ? 'ghost-card rounded-lg cursor-default'
+                                                        : isQueued && isSuckingUp
+                                                            ? `glass-panel cursor-default ${isOverlayMode ? '!bg-black/40 !border-white/5' : ''}`
+                                                            : `glass-panel cursor-pointer hover:bg-glass-hover ${isOverlayMode ? '!bg-black/40 !border-white/5' : ''} ${hasDrops ? 'ring-2 ring-accent/60' : ''}`
+                                                }`}
+                                                style={!isQueued && hasDrops ? { boxShadow: '0 0 12px var(--color-accent-muted)' } : undefined}
+                                                onClick={() => !isQueued && handleStreamClick(stream)}
+                                                onContextMenu={(e) => !isQueued && useContextMenuStore.getState().openMenu(e, stream)}
+                                            >
+                                                {isQueued && !isSuckingUp ? (
+                                                    /* Ghost state — recall button + label */
+                                                    <>
+                                                        <div className="invisible">
+                                                            <div className="relative mb-2 overflow-hidden rounded aspect-video" />
+                                                            <div className="space-y-0.5">
+                                                                <div className="h-4" />
+                                                                <div className="h-3" />
+                                                            </div>
+                                                        </div>
+                                                        <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 animate-ghost-label">
+                                                            <LayoutGrid size={18} className="text-accent/50" />
+                                                            <span className="text-accent text-xs font-semibold truncate max-w-[80%]">{stream.user_name}</span>
+                                                            <span className="text-textSecondary text-[10px]">Queued in MultiNook</span>
+                                                            <Tooltip content="Recall from MultiNook" side="bottom">
+                                                                <button
+                                                                    onClick={(e) => {
+                                                                        e.stopPropagation();
+                                                                        const card = (e.currentTarget as HTMLElement).closest('.ghost-card');
+                                                                        const rect = card?.getBoundingClientRect();
+                                                                        const cx = rect ? rect.left + rect.width / 2 : e.clientX;
+                                                                        const cy = rect ? rect.top + rect.height / 2 : e.clientY;
+                                                                        triggerRecallAnimation(stream.user_login, cx, cy);
+                                                                    }}
+                                                                    className="glass-button !rounded-full !p-1.5 mt-1 text-textSecondary hover:text-accent transition-colors"
+                                                                >
+                                                                    <Undo2 size={14} strokeWidth={2} />
+                                                                </button>
+                                                            </Tooltip>
+                                                        </div>
+                                                    </>
+                                                ) : (
+                                                    /* Normal content, suck-up, or materialize animation */
+                                                    <div className={isSuckingUp ? 'animate-multinook-suck-up' : isMaterializing ? 'animate-multinook-materialize' : undefined}>
+                                                        {!isSuckingUp && <QuickAddButton stream={stream} />}
+                                                        <div className="relative mb-2 overflow-hidden rounded">
+                                                            <img
+                                                                loading="lazy"
+                                                                src={getThumbnailUrl(stream.thumbnail_url)}
+                                                                alt={stream.title}
+                                                                className="w-full aspect-video object-cover group-hover:scale-105 transition-transform duration-200"
+                                                            />
+                                                            <div className="absolute top-1.5 left-1.5 flex items-center gap-1">
+                                                                <div className="live-dot text-xs px-1.5 py-0.5">LIVE</div>
+                                                                {watchStreaks[stream.user_id] > 0 && (
+                                                                    <Tooltip content={`${watchStreaks[stream.user_id]} Stream Watch Streak`} side="top">
+                                                                    <div className="flex items-center gap-1 font-bold text-[10px] leading-tight px-1.5 py-0.5 rounded shadow-[0_0_10px_rgba(245,158,11,0.25)] bg-amber-500/10 text-amber-400 border border-amber-500/30 backdrop-blur-md">
+                                                                        <Flame size={10} className="stroke-[2.5]" />
+                                                                        <span>{watchStreaks[stream.user_id]}</span>
+                                                                    </div>
+                                                                    </Tooltip>
+                                                                )}
+                                                                {hasDrops && (
+                                                                    <div className="drops-badge-glass">
+                                                                        <Gift size={10} />
+                                                                        <span>DROPS</span>
+                                                                    </div>
+                                                                )}
+                                                                {activeHypeTrainChannels.get(stream.user_id) && (
+                                                                    <div className={activeHypeTrainChannels.get(stream.user_id)?.isGolden ? 'hype-train-badge-glass-golden' : 'hype-train-badge-glass'}>
+                                                                        <svg className="w-2.5 h-2.5" viewBox="0 0 15 13" fill="none">
+                                                                            <path fillRule="evenodd" clipRule="evenodd" d="M4.10001 0.549988H2.40001V4.79999H0.700012V10.75H1.55001C1.55001 11.6889 2.31113 12.45 3.25001 12.45C4.1889 12.45 4.95001 11.6889 4.95001 10.75H5.80001C5.80001 11.6889 6.56113 12.45 7.50001 12.45C8.4389 12.45 9.20001 11.6889 9.20001 10.75H10.05C10.05 11.6889 10.8111 12.45 11.75 12.45C12.6889 12.45 13.45 11.6889 13.45 10.75H14.3V0.549988H6.65001V2.24999H7.50001V4.79999H4.10001V0.549988ZM12.6 9.04999V6.49999H2.40001V9.04999H12.6ZM9.20001 4.79999H12.6V2.24999H9.20001V4.79999Z" fill="currentColor" />
+                                                                        </svg>
+                                                                        <span>LVL {activeHypeTrainChannels.get(stream.user_id)?.level}</span>
+                                                                    </div>
+                                                                )}
+                                                            </div>
+                                                            <div className="absolute bottom-1.5 left-1.5 px-2 py-0.5 glass-badge text-white text-xs font-medium rounded">
+                                                                {stream.viewer_count.toLocaleString()} viewers
+                                                            </div>
+                                                        </div>
+                                                        <div className="space-y-0.5">
+                                                            <h3 className="text-textPrimary font-medium text-sm line-clamp-1 group-hover:text-accent transition-colors">
+                                                                <StreamTitleWithEmojis title={stream.title} />
+                                                            </h3>
+                                                            <div className="flex items-center gap-1">
+                                                                <p className="text-textSecondary text-xs">{stream.user_name}</p>
+                                                                {stream.broadcaster_type === 'partner' && (
+                                                                    <svg className="w-3 h-3 flex-shrink-0" viewBox="0 0 16 16" fill="#9146FF">
+                                                                        <path fillRule="evenodd" d="M12.5 3.5 8 2 3.5 3.5 2 8l1.5 4.5L8 14l4.5-1.5L14 8l-1.5-4.5ZM7 11l4.5-4.5L10 5 7 8 5.5 6.5 4 8l3 3Z" clipRule="evenodd"></path>
+                                                                    </svg>
+                                                                )}
+                                                            </div>
+                                                        </div>
                                                     </div>
-                                                    {/* Drops indicator badge */}
-                                                    {hasDrops && (
-                                                        <div className="drops-badge-glass">
-                                                            <Gift size={10} />
-                                                            <span>DROPS</span>
-                                                        </div>
-                                                    )}
-                                                    {/* Hype Train indicator badge */}
-                                                    {activeHypeTrainChannels.get(stream.user_id) && (
-                                                        <div className={activeHypeTrainChannels.get(stream.user_id)?.isGolden ? 'hype-train-badge-glass-golden' : 'hype-train-badge-glass'}>
-                                                            <svg className="w-2.5 h-2.5" viewBox="0 0 15 13" fill="none">
-                                                                <path fillRule="evenodd" clipRule="evenodd" d="M4.10001 0.549988H2.40001V4.79999H0.700012V10.75H1.55001C1.55001 11.6889 2.31113 12.45 3.25001 12.45C4.1889 12.45 4.95001 11.6889 4.95001 10.75H5.80001C5.80001 11.6889 6.56113 12.45 7.50001 12.45C8.4389 12.45 9.20001 11.6889 9.20001 10.75H10.05C10.05 11.6889 10.8111 12.45 11.75 12.45C12.6889 12.45 13.45 11.6889 13.45 10.75H14.3V0.549988H6.65001V2.24999H7.50001V4.79999H4.10001V0.549988ZM12.6 9.04999V6.49999H2.40001V9.04999H12.6ZM9.20001 4.79999H12.6V2.24999H9.20001V4.79999Z" fill="currentColor" />
-                                                            </svg>
-                                                            <span>LVL {activeHypeTrainChannels.get(stream.user_id)?.level}</span>
-                                                        </div>
-                                                    )}
-                                                </div>
-                                                <div className="absolute bottom-1.5 left-1.5 px-2 py-0.5 glass-button text-white text-xs font-medium rounded">
-                                                    {stream.viewer_count.toLocaleString()} viewers
-                                                </div>
-                                            </div>
-                                            <div className="space-y-0.5">
-                                                <h3 className="text-textPrimary font-medium text-sm line-clamp-1 group-hover:text-accent transition-colors">
-                                                    <StreamTitleWithEmojis title={stream.title} />
-                                                </h3>
-                                                <div className="flex items-center gap-1">
-                                                    <p className="text-textSecondary text-xs">{stream.user_name}</p>
-                                                    {stream.broadcaster_type === 'partner' && (
-                                                        <svg className="w-3 h-3 flex-shrink-0" viewBox="0 0 16 16" fill="#9146FF">
-                                                            <path fillRule="evenodd" d="M12.5 3.5 8 2 3.5 3.5 2 8l1.5 4.5L8 14l4.5-1.5L14 8l-1.5-4.5ZM7 11l4.5-4.5L10 5 7 8 5.5 6.5 4 8l3 3Z" clipRule="evenodd"></path>
-                                                        </svg>
-                                                    )}
-                                                </div>
-                                            </div>
-                                        </div>
-                                    );
+                                                )}
+                                            </motion.div>
+                                        );
+                                    })();
                                 })}
                             </div>
                         )}
@@ -1036,80 +1341,143 @@ const Home = () => {
                                         // Check if stream's game has active drops
                                         const streamDropsCampaign = stream.game_name ? dropsGameNames.get(stream.game_name.toLowerCase()) : undefined;
                                         const hasDrops = !!streamDropsCampaign;
-                                        return (
-                                            <div
-                                                key={stream.id}
-                                                className={`glass-panel p-2.5 cursor-pointer hover:bg-glass-hover transition-all duration-200 group relative ${stream.has_shared_chat === true ? 'iridescent-border' : ''}`}
-                                                onClick={() => handleStreamClick(stream)}
-                                            >
-                                                <div className="relative mb-2 overflow-hidden rounded">
-                                                    <img
-                                                        src={getThumbnailUrl(stream.thumbnail_url)}
-                                                        alt={stream.title}
-                                                        className="w-full aspect-video object-cover group-hover:scale-105 transition-transform duration-200"
-                                                    />
-                                                    <div className="absolute top-1.5 left-1.5 flex items-center gap-1">
-                                                        <div className="live-dot text-xs px-1.5 py-0.5">
-                                                            LIVE
+                                        return (() => {
+                                            const isQueued = isInMultiNook(stream.user_login);
+                                            const isSuckingUp = suckUpLogin === stream.user_login.toLowerCase();
+                                            const isMaterializing = materializingLogin === stream.user_login.toLowerCase();
+
+                                            return (
+                                                <motion.div
+                                                    layout
+                                                    transition={{ type: "spring", stiffness: 350, damping: 25 }}
+                                                    key={stream.id}
+                                                    className={`p-2.5 transition-all duration-200 group relative ${
+                                                        isQueued && !isSuckingUp
+                                                            ? 'ghost-card rounded-lg cursor-default'
+                                                            : isQueued && isSuckingUp
+                                                                ? `glass-panel cursor-default ${isOverlayMode ? '!bg-black/40 !border-white/5' : ''}`
+                                                                : `glass-panel cursor-pointer hover:bg-glass-hover ${isOverlayMode ? '!bg-black/40 !border-white/5' : ''} ${stream.has_shared_chat === true ? 'iridescent-border' : ''}`
+                                                    }`}
+                                                    onClick={() => !isQueued && handleStreamClick(stream)}
+                                                    onContextMenu={(e) => !isQueued && useContextMenuStore.getState().openMenu(e, stream)}
+                                                >
+                                                    {isQueued && !isSuckingUp ? (
+                                                        /* Ghost state — recall button + label */
+                                                        <>
+                                                            <div className="invisible">
+                                                                <div className="relative mb-2 overflow-hidden rounded aspect-video" />
+                                                                <div className="flex items-end justify-between mt-1">
+                                                                    <div className="space-y-0.5 flex-1 min-w-0 pr-2 pb-1">
+                                                                        <div className="h-4" />
+                                                                        <div className="h-3" />
+                                                                        <div className="h-3" />
+                                                                    </div>
+                                                                </div>
+                                                            </div>
+                                                            <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 animate-ghost-label">
+                                                                <LayoutGrid size={18} className="text-accent/50" />
+                                                                <span className="text-accent text-xs font-semibold truncate max-w-[80%]">{stream.user_name}</span>
+                                                                <span className="text-textSecondary text-[10px]">Queued in MultiNook</span>
+                                                                <Tooltip content="Recall from MultiNook" side="bottom">
+                                                                    <button
+                                                                        onClick={(e) => {
+                                                                            e.stopPropagation();
+                                                                            const card = (e.currentTarget as HTMLElement).closest('.ghost-card');
+                                                                            const rect = card?.getBoundingClientRect();
+                                                                            const cx = rect ? rect.left + rect.width / 2 : e.clientX;
+                                                                            const cy = rect ? rect.top + rect.height / 2 : e.clientY;
+                                                                            triggerRecallAnimation(stream.user_login, cx, cy);
+                                                                        }}
+                                                                        className="glass-button !rounded-full !p-1.5 mt-1 text-textSecondary hover:text-accent transition-colors"
+                                                                    >
+                                                                        <Undo2 size={14} strokeWidth={2} />
+                                                                    </button>
+                                                                </Tooltip>
+                                                            </div>
+                                                        </>
+                                                    ) : (
+                                                        /* Normal content, suck-up, or materialize animation */
+                                                        <div className={isSuckingUp ? 'animate-multinook-suck-up' : isMaterializing ? 'animate-multinook-materialize' : undefined}>
+                                                            {!isSuckingUp && <QuickAddButton stream={stream} />}
+                                                            <div className="relative mb-2 overflow-hidden rounded">
+                                                                <img
+                                                                    loading="lazy"
+                                                                    src={getThumbnailUrl(stream.thumbnail_url)}
+                                                                    alt={stream.title}
+                                                                    className="w-full aspect-video object-cover group-hover:scale-105 transition-transform duration-200"
+                                                                />
+                                                                <div className="absolute top-1.5 left-1.5 flex items-center gap-1">
+                                                                    <div className="live-dot text-xs px-1.5 py-0.5">LIVE</div>
+                                                                    {watchStreaks[stream.user_id] > 0 && (
+                                                                        <Tooltip content={`${watchStreaks[stream.user_id]} Stream Watch Streak`} side="top">
+                                                                        <div className="flex items-center gap-1 font-bold text-[10px] leading-tight px-1.5 py-0.5 rounded shadow-[0_0_10px_rgba(245,158,11,0.25)] bg-amber-500/10 text-amber-400 border border-amber-500/30 backdrop-blur-md">
+                                                                            <Flame size={10} className="stroke-[2.5]" />
+                                                                            <span>{watchStreaks[stream.user_id]}</span>
+                                                                        </div>
+                                                                        </Tooltip>
+                                                                    )}
+                                                                    {hasDrops && (
+                                                                        <div className="drops-badge-glass">
+                                                                            <Gift size={10} />
+                                                                            <span>DROPS</span>
+                                                                        </div>
+                                                                    )}
+                                                                    {activeHypeTrainChannels.get(stream.user_id) && (
+                                                                        <div className={activeHypeTrainChannels.get(stream.user_id)?.isGolden ? 'hype-train-badge-glass-golden' : 'hype-train-badge-glass'}>
+                                                                            <svg className="w-2.5 h-2.5" viewBox="0 0 15 13" fill="none">
+                                                                                <path fillRule="evenodd" clipRule="evenodd" d="M4.10001 0.549988H2.40001V4.79999H0.700012V10.75H1.55001C1.55001 11.6889 2.31113 12.45 3.25001 12.45C4.1889 12.45 4.95001 11.6889 4.95001 10.75H5.80001C5.80001 11.6889 6.56113 12.45 7.50001 12.45C8.4389 12.45 9.20001 11.6889 9.20001 10.75H10.05C10.05 11.6889 10.8111 12.45 11.75 12.45C12.6889 12.45 13.45 11.6889 13.45 10.75H14.3V0.549988H6.65001V2.24999H7.50001V4.79999H4.10001V0.549988ZM12.6 9.04999V6.49999H2.40001V9.04999H12.6ZM9.20001 4.79999H12.6V2.24999H9.20001V4.79999Z" fill="currentColor" />
+                                                                            </svg>
+                                                                            <span>LVL {activeHypeTrainChannels.get(stream.user_id)?.level}</span>
+                                                                        </div>
+                                                                    )}
+                                                                </div>
+                                                                <div className="absolute bottom-1.5 left-1.5 px-2 py-0.5 glass-badge text-white text-xs font-medium rounded">
+                                                                    {stream.viewer_count.toLocaleString()} viewers
+                                                                </div>
+                                                            </div>
+                                                            <div className="flex items-end justify-between mt-1">
+                                                                <div className="space-y-0.5 flex-1 min-w-0 pr-2 pb-1">
+                                                                    <h3 className="text-textPrimary font-medium text-sm line-clamp-1 group-hover:text-accent transition-colors">
+                                                                        <StreamTitleWithEmojis title={stream.title} />
+                                                                    </h3>
+                                                                    <div className="flex items-center gap-1">
+                                                                        <p className="text-textSecondary text-xs">{stream.user_name}</p>
+                                                                        {stream.broadcaster_type === 'partner' && (
+                                                                            <svg className="w-3 h-3 flex-shrink-0" viewBox="0 0 16 16" fill="#9146FF">
+                                                                                <path fillRule="evenodd" d="M12.5 3.5 8 2 3.5 3.5 2 8l1.5 4.5L8 14l4.5-1.5L14 8l-1.5-4.5ZM7 11l4.5-4.5L10 5 7 8 5.5 6.5 4 8l3 3Z" clipRule="evenodd"></path>
+                                                                            </svg>
+                                                                        )}
+                                                                    </div>
+                                                                    <div className="flex items-center gap-1">
+                                                                        <p className="text-textSecondary text-xs line-clamp-1">{stream.game_name}</p>
+                                                                        {hasDrops && (
+                                                                            <Gift size={10} className="text-accent flex-shrink-0" />
+                                                                        )}
+                                                                    </div>
+                                                                </div>
+
+                                                                {activeTab === 'following' && (
+                                                                    <Tooltip content={isFavorite ? 'Remove from favorites' : 'Add to favorites'} side="top">
+                                                                    <button
+                                                                        onClick={(e) => handleFavoriteClick(e, stream.user_id)}
+                                                                        className={`p-1 flex items-center justify-center bg-transparent transition-transform duration-300 hover:scale-110 active:scale-95`}
+                                                                    >
+                                                                        <Heart
+                                                                            size={16}
+                                                                            fill={isFavorite ? "url(#glass-heart-fill)" : "none"}
+                                                                            stroke={isFavorite ? "url(#glass-heart-stroke)" : "currentColor"}
+                                                                            strokeWidth={isFavorite ? 1.5 : 2}
+                                                                            className={`transition-all duration-300 ${isFavorite ? 'drop-shadow-[0_4px_8px_rgba(236,72,153,0.5)]' : 'text-textSecondary hover:text-white'} ${animatingHearts.has(stream.user_id) ? 'animate-heart-break' : ''}`}
+                                                                        />
+                                                                    </button>
+                                                                    </Tooltip>
+                                                                )}
+                                                            </div>
                                                         </div>
-                                                        {/* Drops indicator badge */}
-                                                        {hasDrops && (
-                                                            <div className="drops-badge-glass">
-                                                                <Gift size={10} />
-                                                                <span>DROPS</span>
-                                                            </div>
-                                                        )}
-                                                        {/* Hype Train indicator badge */}
-                                                        {activeHypeTrainChannels.get(stream.user_id) && (
-                                                            <div className={activeHypeTrainChannels.get(stream.user_id)?.isGolden ? 'hype-train-badge-glass-golden' : 'hype-train-badge-glass'}>
-                                                                <svg className="w-2.5 h-2.5" viewBox="0 0 15 13" fill="none">
-                                                                    <path fillRule="evenodd" clipRule="evenodd" d="M4.10001 0.549988H2.40001V4.79999H0.700012V10.75H1.55001C1.55001 11.6889 2.31113 12.45 3.25001 12.45C4.1889 12.45 4.95001 11.6889 4.95001 10.75H5.80001C5.80001 11.6889 6.56113 12.45 7.50001 12.45C8.4389 12.45 9.20001 11.6889 9.20001 10.75H10.05C10.05 11.6889 10.8111 12.45 11.75 12.45C12.6889 12.45 13.45 11.6889 13.45 10.75H14.3V0.549988H6.65001V2.24999H7.50001V4.79999H4.10001V0.549988ZM12.6 9.04999V6.49999H2.40001V9.04999H12.6ZM9.20001 4.79999H12.6V2.24999H9.20001V4.79999Z" fill="currentColor" />
-                                                                </svg>
-                                                                <span>LVL {activeHypeTrainChannels.get(stream.user_id)?.level}</span>
-                                                            </div>
-                                                        )}
-                                                    </div>
-                                                    <div className="absolute bottom-1.5 left-1.5 px-2 py-0.5 glass-button text-white text-xs font-medium rounded">
-                                                        {stream.viewer_count.toLocaleString()} viewers
-                                                    </div>
-                                                    {activeTab === 'following' && (
-                                                        <button
-                                                            onClick={(e) => handleFavoriteClick(e, stream.user_id)}
-                                                            className={`absolute bottom-1.5 right-1.5 p-1.5 rounded transition-all ${isFavorite
-                                                                ? 'text-pink-500 hover:text-pink-600'
-                                                                : 'bg-black/50 text-white hover:bg-black/70'
-                                                                }`}
-                                                            title={isFavorite ? 'Remove from favorites' : 'Add to favorites'}
-                                                        >
-                                                            <Heart
-                                                                size={14}
-                                                                fill="none"
-                                                                className={animatingHearts.has(stream.user_id) ? 'animate-heart-break' : ''}
-                                                            />
-                                                        </button>
                                                     )}
-                                                </div>
-                                                <div className="space-y-0.5">
-                                                    <h3 className="text-textPrimary font-medium text-sm line-clamp-1 group-hover:text-accent transition-colors">
-                                                        <StreamTitleWithEmojis title={stream.title} />
-                                                    </h3>
-                                                    <div className="flex items-center gap-1">
-                                                        <p className="text-textSecondary text-xs">{stream.user_name}</p>
-                                                        {stream.broadcaster_type === 'partner' && (
-                                                            <svg className="w-3 h-3 flex-shrink-0" viewBox="0 0 16 16" fill="#9146FF">
-                                                                <path fillRule="evenodd" d="M12.5 3.5 8 2 3.5 3.5 2 8l1.5 4.5L8 14l4.5-1.5L14 8l-1.5-4.5ZM7 11l4.5-4.5L10 5 7 8 5.5 6.5 4 8l3 3Z" clipRule="evenodd"></path>
-                                                            </svg>
-                                                        )}
-                                                    </div>
-                                                    <div className="flex items-center gap-1">
-                                                        <p className="text-textSecondary text-xs line-clamp-1">{stream.game_name}</p>
-                                                        {hasDrops && (
-                                                            <Gift size={10} className="text-accent flex-shrink-0" />
-                                                        )}
-                                                    </div>
-                                                </div>
-                                            </div>
-                                        );
+                                                </motion.div>
+                                            );
+                                        })();
                                     })}
                                 </div>
                                 {activeTab === 'recommended' && isLoadingMore && (
@@ -1151,3 +1519,4 @@ const Home = () => {
 };
 
 export default Home;
+

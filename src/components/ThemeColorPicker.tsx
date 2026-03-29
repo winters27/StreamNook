@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { Copy, Check, ChevronDown, ChevronUp } from 'lucide-react';
+import { Tooltip } from './ui/Tooltip';
 import type { CustomThemeColor } from '../types';
 
 interface ThemeColorPickerProps {
@@ -288,13 +289,14 @@ const ThemeColorPicker = ({ label, color, onChange, showOpacity = true }: ThemeC
             />
 
             {/* Copy Button */}
+            <Tooltip content="Copy color" side="top">
             <button
               onClick={handleCopy}
               className="px-3 py-2 glass-button text-textSecondary hover:text-textPrimary"
-              title="Copy color"
             >
               {copied ? <Check size={14} /> : <Copy size={14} />}
             </button>
+            </Tooltip>
           </div>
 
           {/* Preset Colors */}
@@ -302,16 +304,16 @@ const ThemeColorPicker = ({ label, color, onChange, showOpacity = true }: ThemeC
             <p className="text-xs text-textSecondary mb-2">Quick Select</p>
             <div className="grid grid-cols-12 gap-1">
               {presetColors.map((preset) => (
+                <Tooltip key={preset} content={preset} side="top">
                 <button
-                  key={preset}
                   onClick={() => {
                     setHexInput(preset);
                     onChange({ ...color, value: preset });
                   }}
                   className="w-full aspect-square rounded border border-borderSubtle hover:scale-110 transition-transform"
                   style={{ backgroundColor: preset }}
-                  title={preset}
                 />
+                </Tooltip>
               ))}
             </div>
           </div>

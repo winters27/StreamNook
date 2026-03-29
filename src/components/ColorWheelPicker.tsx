@@ -1,6 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
-
-interface ColorWheelPickerProps {
+import { Tooltip } from './ui/Tooltip';interface ColorWheelPickerProps {
   color: string;
   onChange: (color: string) => void;
   label?: string;
@@ -222,16 +221,16 @@ const ColorWheelPicker = ({ color, onChange, label }: ColorWheelPickerProps) => 
               <p className="text-xs text-textSecondary mb-2">Quick Select</p>
               <div className="grid grid-cols-8 gap-1">
                 {presetColors.map((preset) => (
-                  <button
-                    key={preset}
-                    onClick={() => {
-                      onChange(preset);
-                      setIsOpen(false);
-                    }}
-                    className="w-7 h-7 rounded border border-borderSubtle hover:scale-110 transition-transform"
-                    style={{ backgroundColor: preset }}
-                    title={preset}
-                  />
+                  <Tooltip key={preset} content={preset} side="top">
+                    <button
+                      onClick={() => {
+                        onChange(preset);
+                        setIsOpen(false);
+                      }}
+                      className="w-7 h-7 rounded border border-borderSubtle hover:scale-110 transition-transform"
+                      style={{ backgroundColor: preset }}
+                    />
+                  </Tooltip>
                 ))}
               </div>
             </div>

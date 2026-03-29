@@ -429,7 +429,7 @@ export default function DropsSettingsTab({
                                                 addPriorityGame();
                                             }
                                         }}
-                                        className="flex-1 px-4 py-2.5 bg-background border border-borderLight rounded-lg text-textPrimary text-sm placeholder:text-textSecondary focus:border-accent focus:outline-none"
+                                        className="flex-1 px-4 py-2.5 glass-input text-textPrimary text-sm placeholder:text-textSecondary focus:outline-none"
                                     />
                                     <button
                                         onClick={addPriorityGame}
@@ -493,7 +493,7 @@ export default function DropsSettingsTab({
                                                 addExcludedGame();
                                             }
                                         }}
-                                        className="flex-1 px-4 py-2.5 bg-background border border-borderLight rounded-lg text-textPrimary text-sm placeholder:text-textSecondary focus:border-accent focus:outline-none"
+                                        className="flex-1 px-4 py-2.5 glass-input text-textPrimary text-sm placeholder:text-textSecondary focus:outline-none"
                                     />
                                     <button
                                         onClick={addExcludedGame}
@@ -795,7 +795,7 @@ export default function DropsSettingsTab({
                                                             }
                                                         }
                                                     }}
-                                                    className="w-full px-4 py-2.5 bg-background border border-borderLight rounded-lg text-textPrimary text-sm placeholder:text-textSecondary focus:border-accent focus:outline-none"
+                                                    className="w-full px-4 py-2.5 glass-input text-textPrimary text-sm placeholder:text-textSecondary focus:outline-none"
                                                 />
                                                 {isSearching && (
                                                     <div className="absolute right-3 top-0 bottom-0 flex items-center">
@@ -807,7 +807,7 @@ export default function DropsSettingsTab({
 
                                         {/* Dropdown Results */}
                                         {showDropdown && farmChannelInput.trim() && (
-                                            <div className="absolute z-50 left-0 right-0 mt-2 bg-[#1a1d1e] border border-borderLight rounded-lg shadow-xl overflow-hidden backdrop-blur-xl">
+                                            <div className="absolute z-50 left-0 right-0 mt-2 glass-panel overflow-hidden drop-shadow-2xl">
                                                 {isSearching && searchResults.length === 0 ? (
                                                     <div className="p-4 text-center text-xs text-textSecondary italic">Searching Twitch...</div>
                                                 ) : searchResults.length > 0 ? (
@@ -835,7 +835,7 @@ export default function DropsSettingsTab({
                                                                         setFarmChannelInput('');
                                                                         setShowDropdown(false);
                                                                     }}
-                                                                    className="w-full px-4 py-3 text-left hover:bg-accent/10 focus:bg-accent/10 transition-colors flex items-center gap-3 group border-b border-borderLight/30 last:border-0"
+                                                                    className="w-full px-4 py-3 text-left hover:bg-glass-hover focus:bg-glass-hover transition-colors flex items-center gap-3 group"
                                                                 >
                                                                     {result.profile_image_url || result.thumbnail_url ? (
                                                                         <img 

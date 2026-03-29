@@ -1,6 +1,7 @@
 import { useRef, useEffect, useState } from 'react';
 import { Check, Clock, Package, Square, Play, Heart, DollarSign } from 'lucide-react';
 import type { UnifiedGame, DropProgress, MiningStatus, DropCampaign } from '../../types';
+import { Tooltip } from '../ui/Tooltip';
 
 // Helper to check if a campaign is mineable (has time-based drops that require watching)
 function isCampaignMineable(campaign: DropCampaign): boolean {
@@ -316,24 +317,25 @@ export default function GameCard({
                 {/* Top-Right: Favorite heart + Inventory badge */}
                 <div className="absolute top-2 right-2 z-10 flex flex-col gap-1.5">
                     {/* Favorite heart button */}
-                    <button
-                        onClick={(e) => {
-                            e.stopPropagation();
-                            if (onToggleFavorite) onToggleFavorite(game.name);
-                        }}
-                        className={`w-7 h-7 rounded-full glass-panel flex items-center justify-center border transition-all ${
-                            isFavorite 
-                                ? 'border-red-500/70 bg-red-500/30 hover:bg-red-500/50' 
-                                : 'border-borderLight/40 bg-glass hover:bg-glass-hover hover:border-red-500/40'
-                        }`}
-                        title={isFavorite ? 'Remove from favorites' : 'Add to favorites'}
-                    >
-                        <Heart 
-                            size={14} 
-                            className={isFavorite ? 'text-red-400' : 'text-textSecondary'} 
-                            fill={isFavorite ? 'currentColor' : 'none'}
-                        />
-                    </button>
+                    <Tooltip content={isFavorite ? 'Remove from favorites' : 'Add to favorites'} delay={200} side="top">
+                        <button
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                if (onToggleFavorite) onToggleFavorite(game.name);
+                            }}
+                            className={`w-7 h-7 rounded-full glass-panel flex items-center justify-center border transition-all ${
+                                isFavorite 
+                                    ? 'border-red-500/70 bg-red-500/30 hover:bg-red-500/50' 
+                                    : 'border-borderLight/40 bg-glass hover:bg-glass-hover hover:border-red-500/40'
+                            }`}
+                        >
+                            <Heart 
+                                size={14} 
+                                className={isFavorite ? 'text-red-400' : 'text-textSecondary'} 
+                                fill={isFavorite ? 'currentColor' : 'none'}
+                            />
+                        </button>
+                    </Tooltip>
                     {/* Inventory badge */}
                     {game.inventory_items.length > 0 && (
                         <div className="w-7 h-7 rounded-full glass-panel flex items-center justify-center border border-purple-500/40 bg-purple-500/30">
@@ -346,14 +348,15 @@ export default function GameCard({
             {/* Chin Section */}
             <div className="p-2" ref={containerRef}>
                 {/* Game Name - dynamic font sizing, no wrapping */}
-                <h3
-                    ref={titleRef}
-                    className="text-textPrimary font-medium whitespace-nowrap overflow-hidden group-hover:text-accent transition-colors"
-                    style={{ fontSize: `${fontSize}px` }}
-                    title={game.name}
-                >
-                    {game.name}
-                </h3>
+                <Tooltip content={game.name} delay={400} side="bottom">
+                    <h3
+                        ref={titleRef}
+                        className="text-textPrimary font-medium whitespace-nowrap overflow-hidden group-hover:text-accent transition-colors block"
+                        style={{ fontSize: `${fontSize}px` }}
+                    >
+                        {game.name}
+                    </h3>
+                </Tooltip>
 
                 {/* Mining State: Show progress info with drop reward */}
                 {isMining ? (
@@ -370,9 +373,11 @@ export default function GameCard({
                             )}
                             <div className="flex-1 min-w-0 space-y-1">
                                 {/* Drop name */}
-                                <p className="text-[10px] text-accent-neon truncate" title={miningDropBenefitName}>
-                                    {miningDropBenefitName}
-                                </p>
+                                <Tooltip content={miningDropBenefitName} delay={300} side="top">
+                                    <p className="text-[10px] text-accent-neon truncate w-fit max-w-full">
+                                        {miningDropBenefitName}
+                                    </p>
+                                </Tooltip>
                                 {/* Progress bar with stop button */}
                                 <div className="flex items-center gap-1.5">
                                     <div className="flex-1 h-1.5 bg-black/30 rounded-full overflow-hidden">
@@ -382,16 +387,17 @@ export default function GameCard({
                                         />
                                     </div>
                                     {/* Stop button */}
-                                    <button
-                                        onClick={(e) => {
-                                            e.stopPropagation();
-                                            if (onStopMining) onStopMining();
-                                        }}
-                                        className="w-5 h-5 flex items-center justify-center rounded bg-red-500/20 hover:bg-red-500/40 border border-red-500/40 hover:border-red-500/60 transition-all shrink-0"
-                                        title="Stop mining"
-                                    >
-                                        <Square size={10} className="text-red-400" fill="currentColor" />
-                                    </button>
+                                    <Tooltip content="Stop mining" delay={200} side="top">
+                                        <button
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                if (onStopMining) onStopMining();
+                                            }}
+                                            className="w-5 h-5 flex items-center justify-center rounded bg-red-500/20 hover:bg-red-500/40 border border-red-500/40 hover:border-red-500/60 transition-all shrink-0"
+                                        >
+                                            <Square size={10} className="text-red-400" fill="currentColor" />
+                                        </button>
+                                    </Tooltip>
                                 </div>
                             </div>
                         </div>
@@ -428,26 +434,32 @@ export default function GameCard({
 
                             {/* In Progress indicator (time-based drops with progress) */}
                             {inProgressCount > 0 && (
-                                <span className="flex items-center gap-0.5 text-yellow-400" title="Drops in progress">
-                                    <Clock size={10} />
-                                    {inProgressCount}
-                                </span>
+                                <Tooltip content="Drops in progress" delay={200} side="bottom">
+                                    <span className="flex items-center gap-0.5 text-yellow-400">
+                                        <Clock size={10} />
+                                        {inProgressCount}
+                                    </span>
+                                </Tooltip>
                             )}
 
                             {/* Time-based drops indicator (only show if not showing in-progress) */}
                             {inProgressCount === 0 && timeBasedDropCount > 0 && (
-                                <span className="flex items-center gap-0.5 text-blue-400" title={`${timeBasedDropCount} time-based drop${timeBasedDropCount !== 1 ? 's' : ''}`}>
-                                    <Clock size={10} />
-                                    {timeBasedDropCount}
-                                </span>
+                                <Tooltip content={`${timeBasedDropCount} time-based drop${timeBasedDropCount !== 1 ? 's' : ''}`} delay={200} side="bottom">
+                                    <span className="flex items-center gap-0.5 text-blue-400">
+                                        <Clock size={10} />
+                                        {timeBasedDropCount}
+                                    </span>
+                                </Tooltip>
                             )}
 
                             {/* Paid/subscription drops indicator */}
                             {paidDropCount > 0 && (
-                                <span className="flex items-center gap-0.5 text-green-400" title={`${paidDropCount} subscription/paid drop${paidDropCount !== 1 ? 's' : ''}`}>
-                                    <DollarSign size={10} />
-                                    {paidDropCount}
-                                </span>
+                                <Tooltip content={`${paidDropCount} subscription/paid drop${paidDropCount !== 1 ? 's' : ''}`} delay={200} side="bottom">
+                                    <span className="flex items-center gap-0.5 text-green-400">
+                                        <DollarSign size={10} />
+                                        {paidDropCount}
+                                    </span>
+                                </Tooltip>
                             )}
 
                             {/* Claimed count (only show if no active drops) */}

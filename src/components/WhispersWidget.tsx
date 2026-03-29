@@ -1,11 +1,12 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { motion } from 'framer-motion';
-import { X, MessageCircle, Send, Search, Plus, ArrowLeft, Loader2, Users, Upload, ChevronDown, Smile, SortAsc, User, Trash2, Clock, Download, Sparkles } from 'lucide-react';
+import { X, MessageCircle, Send, Search, Plus, ArrowLeft, Loader2, Users, ChevronDown, Smile, SortAsc, User, Trash2, Clock, Download } from 'lucide-react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../stores/AppStore';
 import { getAppleEmojiUrl } from '../services/emojiService';
 import WhisperImportWizard from './WhisperImportWizard';
+import { Tooltip } from './ui/Tooltip';
 import type { WhisperConversation, Whisper, UserInfo } from '../types';
 
 import { Logger } from '../utils/logger';
@@ -18,6 +19,27 @@ interface WhisperFromBackend {
     to_user_name: string;
     whisper_id: string;
     text: string;
+}
+
+interface ExportedMessage {
+    id: string;
+    fromUserId?: string;
+    fromUserLogin?: string;
+    fromUserName?: string;
+    content: string;
+    sentAt: string;
+    isSent?: boolean;
+}
+
+interface ExportedConversation {
+    user: {
+        id?: string;
+        login: string;
+        displayName: string;
+        profileImageURL?: string;
+    };
+    messages: ExportedMessage[];
+    lastMessageAt?: string;
 }
 
 interface WhispersWidgetProps {
@@ -211,7 +233,7 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
 
         const setupListener = async () => {
             // Listen for the actual data object (emitted directly from backend)
-            unlisten = await listen<{ version: number; exportedAt: string; myUserId: string | null; myUsername: string | null; conversations: any[] }>('whisper-data-ready', async (event) => {
+            unlisten = await listen<{ version: number; exportedAt: string; myUserId: string | null; myUsername: string | null; conversations: ExportedConversation[] }>('whisper-data-ready', async (event) => {
                 const data = event.payload;
                 Logger.debug('[Whispers] Auto-import data received directly:', data.conversations?.length, 'conversations');
 
@@ -231,7 +253,7 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
                     for (const conv of data.conversations) {
                         const userId = conv.user.id || conv.user.login.toLowerCase();
                         const existing = newConversations.get(userId);
-                        const importedMessages: Whisper[] = conv.messages.map((msg: any) => {
+                        const importedMessages: Whisper[] = conv.messages.map((msg: ExportedMessage) => {
                             const isSent = msg.isSent === true || (msg.fromUserName && myUsername && msg.fromUserName.toLowerCase() === myUsername.toLowerCase());
                             return {
                                 id: msg.id,
@@ -243,7 +265,7 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
                                 to_user_name: isSent ? conv.user.displayName : myDisplayName,
                                 message: msg.content,
                                 timestamp: parseWhisperDate(msg.sentAt),
-                                is_sent: isSent,
+                                is_sent: Boolean(isSent),
                             };
                         });
 
@@ -262,7 +284,7 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
                                 user_id: userId,
                                 user_login: conv.user.login,
                                 user_name: conv.user.displayName,
-                                profile_image_url: conv.user.profileImageURL || null,
+                                profile_image_url: conv.user.profileImageURL || undefined,
                                 messages: importedMessages.sort((a, b) => a.timestamp - b.timestamp),
                                 last_message_timestamp: conv.lastMessageAt ? parseWhisperDate(conv.lastMessageAt) : Date.now(),
                                 unread_count: 0,
@@ -271,7 +293,7 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
                     }
 
                     setConversations(newConversations);
-                    const totalMessages = data.conversations.reduce((sum: number, conv: any) => sum + conv.messages.length, 0);
+                    const totalMessages = data.conversations.reduce((sum: number, conv: ExportedConversation) => sum + conv.messages.length, 0);
                     Logger.debug(`[Whispers] Auto-imported ${totalMessages} messages from ${data.conversations.length} conversations`);
                     setImportProgress(`✓ Auto-imported ${totalMessages} messages`);
 
@@ -611,7 +633,7 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
             for (const conv of data.conversations) {
                 const userId = conv.user.id || conv.user.login.toLowerCase();
                 const existing = newConversations.get(userId);
-                const importedMessages: Whisper[] = conv.messages.map((msg: any) => {
+                const importedMessages: Whisper[] = conv.messages.map((msg: ExportedMessage) => {
                     const isSent = msg.isSent === true || (msg.fromUserName && myUsername && msg.fromUserName.toLowerCase() === myUsername.toLowerCase());
                     return {
                         id: msg.id,
@@ -623,7 +645,7 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
                         to_user_name: isSent ? conv.user.displayName : myDisplayName,
                         message: msg.content,
                         timestamp: parseWhisperDate(msg.sentAt),
-                        is_sent: isSent,
+                        is_sent: Boolean(isSent),
                     };
                 });
                 if (existing) {
@@ -656,7 +678,7 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
             }
 
             setConversations(newConversations);
-            const totalMessages = data.conversations.reduce((sum: number, conv: any) => sum + conv.messages.length, 0);
+            const totalMessages = data.conversations.reduce((sum: number, conv: ExportedConversation) => sum + conv.messages.length, 0);
             setImportProgress(`✓ Imported ${totalMessages} messages`);
 
             // Second pass: Resolve user IDs and fetch profile pictures
@@ -726,8 +748,8 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
                     return;
                 }
             } catch { /* fallback */ }
-            const results = await invoke<any[]>('search_channels', { query: searchQuery });
-            setSearchResults(results.slice(0, 10).map((r: any) => ({ id: r.user_id || r.id, login: r.user_login || r.login, display_name: r.user_name || r.display_name, profile_image_url: r.profile_image_url })).filter(r => r.id && r.login));
+            const results = await invoke<Record<string, unknown>[]>('search_channels', { query: searchQuery });
+            setSearchResults(results.slice(0, 10).map((r: Record<string, unknown>) => ({ id: (r.user_id || r.id) as string, login: (r.user_login || r.login) as string, display_name: (r.user_name || r.display_name) as string, profile_image_url: r.profile_image_url as string | undefined })).filter(r => r.id && r.login));
         } catch { setSearchResults([]); }
         finally { setIsSearching(false); }
     };
@@ -925,10 +947,10 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
                             <input type="file" ref={fileInputRef} onChange={handleFileImport} accept=".json" className="hidden" />
                             {/* Background Import Indicator */}
                             {whisperImportState.isImporting && (
+                                <Tooltip content="Click to view import progress" side="bottom">
                                 <button
                                     onClick={() => setShowImportWizard(true)}
                                     className="flex items-center gap-2 px-2 py-1.5 bg-purple-500/20 hover:bg-purple-500/30 border border-purple-500/30 rounded-lg transition-colors animate-pulse"
-                                    title="Click to view import progress"
                                 >
                                     <Loader2 size={14} className="text-purple-400 animate-spin" />
                                     <span className="text-purple-400 text-xs font-medium">
@@ -937,25 +959,28 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
                                             : 'Importing...'}
                                     </span>
                                 </button>
+                                </Tooltip>
                             )}
                             {/* Import Button (only show when not importing) */}
                             {!whisperImportState.isImporting && (
+                                <Tooltip content="Import whisper history" side="bottom">
                                 <button
                                     onClick={() => setShowImportWizard(true)}
                                     disabled={isImportingAll}
                                     className="p-2 text-textSecondary hover:text-purple-400 hover:bg-glass rounded-lg transition-colors disabled:opacity-50"
-                                    title="Import whisper history"
                                 >
                                     {isImportingAll ? <Loader2 size={18} className="animate-spin" /> : <Download size={18} />}
                                 </button>
+                                </Tooltip>
                             )}
+                            <Tooltip content="New conversation" side="bottom">
                             <button
                                 onClick={() => setShowNewConversation(true)}
                                 className="p-2 text-textSecondary hover:text-purple-400 hover:bg-glass rounded-lg transition-colors"
-                                title="New conversation"
                             >
                                 <Plus size={18} />
                             </button>
+                            </Tooltip>
                             <button onClick={handleClose} className="p-2 text-textSecondary hover:text-textPrimary hover:bg-glass rounded-lg transition-colors md:hidden">
                                 <X size={18} />
                             </button>
@@ -1035,6 +1060,7 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
                                     </div>
                                     <div className="flex items-center gap-2 flex-shrink-0">
                                         <span className="text-textMuted text-[10px] group-hover:hidden">{formatTime(conv.last_message_timestamp)}</span>
+                                        <Tooltip content="Delete conversation" side="top">
                                         <button
                                             onClick={(e) => {
                                                 e.stopPropagation();
@@ -1050,10 +1076,10 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
                                                 }
                                             }}
                                             className="hidden group-hover:flex p-1.5 text-textMuted hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"
-                                            title="Delete conversation"
                                         >
                                             <Trash2 size={14} />
                                         </button>
+                                        </Tooltip>
                                     </div>
                                 </div>
                             ))
@@ -1192,14 +1218,14 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
                                         <div className="p-3 overflow-y-auto scrollbar-thin" style={{ height: 'calc(100% - 90px)' }}>
                                             <div className="grid grid-cols-8 gap-1">
                                                 {getFilteredEmojis().map((emoji, idx) => (
+                                                    <Tooltip key={`${emoji}-${idx}`} content={emoji} side="top">
                                                     <button
-                                                        key={`${emoji}-${idx}`}
                                                         onClick={() => insertEmoji(emoji)}
                                                         className="flex items-center justify-center p-2 hover:bg-glass rounded-lg transition-colors"
-                                                        title={emoji}
                                                     >
                                                         <img src={getAppleEmojiUrl(emoji)} alt={emoji} className="w-6 h-6 object-contain" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; (e.target as HTMLImageElement).insertAdjacentText('afterend', emoji); }} />
                                                     </button>
+                                                    </Tooltip>
                                                 ))}
                                             </div>
                                         </div>

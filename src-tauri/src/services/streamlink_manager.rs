@@ -156,7 +156,24 @@ impl StreamlinkManager {
         if let Some(folder) = custom_folder {
             if !folder.is_empty() {
                 let custom_path = PathBuf::from(folder);
-                let custom_exe = custom_path.join("bin").join("streamlinkw.exe");
+
+                // Smart path resolution to handle users pointing to different levels
+                let custom_exe = if custom_path.is_file() {
+                    // User pointed directly to the executable
+                    custom_path
+                } else if custom_path.ends_with("bin") {
+                    // User pointed to the bin directory
+                    custom_path.join("streamlinkw.exe")
+                } else if custom_path.join("bin").join("streamlinkw.exe").exists() {
+                    // User pointed to the root streamlink directory (standard)
+                    custom_path.join("bin").join("streamlinkw.exe")
+                } else if custom_path.join("streamlinkw.exe").exists() {
+                    // Fallback to searching the directory itself
+                    custom_path.join("streamlinkw.exe")
+                } else {
+                    // Default fallback
+                    custom_path.join("bin").join("streamlinkw.exe")
+                };
 
                 debug!("[StreamlinkManager] Checking custom path: {:?}", custom_exe);
 
@@ -292,18 +309,40 @@ impl StreamlinkManager {
         // Step 1: Check custom folder plugins (for Portable versions)
         if let Some(folder) = custom_folder {
             if !folder.is_empty() {
-                let custom_plugins = PathBuf::from(folder).join("plugins");
-                if custom_plugins.exists() {
-                    debug!(
-                        "[StreamlinkManager] Found plugins in custom folder: {:?}",
-                        custom_plugins
-                    );
-                    return Some(custom_plugins.to_string_lossy().to_string());
+                let user_path = PathBuf::from(folder);
+
+                // Determine the base streamlink directory from the provided path
+                let base_dir = if user_path.is_file() {
+                    // C:/.../streamlink/bin/streamlinkw.exe -> C:/.../streamlink
+                    user_path.parent().and_then(|p| {
+                        if p.ends_with("bin") {
+                            p.parent()
+                        } else {
+                            Some(p)
+                        }
+                    })
+                } else if user_path.ends_with("bin") {
+                    // C:/.../streamlink/bin -> C:/.../streamlink
+                    user_path.parent()
                 } else {
-                    debug!(
-                        "[StreamlinkManager] No plugins in custom folder {:?}, checking AppData...",
-                        custom_plugins
-                    );
+                    // C:/.../streamlink
+                    Some(user_path.as_path())
+                };
+
+                if let Some(base) = base_dir {
+                    let custom_plugins = base.join("plugins");
+                    if custom_plugins.exists() {
+                        debug!(
+                            "[StreamlinkManager] Found plugins in custom folder: {:?}",
+                            custom_plugins
+                        );
+                        return Some(custom_plugins.to_string_lossy().to_string());
+                    } else {
+                        debug!(
+                            "[StreamlinkManager] No plugins in custom folder {:?}, checking AppData...",
+                            custom_plugins
+                        );
+                    }
                 }
             }
         }

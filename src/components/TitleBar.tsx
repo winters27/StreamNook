@@ -1,7 +1,8 @@
 import { Window } from '@tauri-apps/api/window';
-import { Home, Gift, User, Settings, Proportions, Palette, Check, MessageCircle, Pickaxe, Clock, Tv } from 'lucide-react';
+import { Home, Gift, User, Settings, Proportions, MessageCircle, Pickaxe, Clock, Tv, LogOut } from 'lucide-react';
 import { Minus, X, CornersOut, CornersIn, Medal } from 'phosphor-react';
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 import { useAppStore } from '../stores/AppStore';
 import PenroseLogo from './PenroseLogo';
 import AboutWidget from './AboutWidget';
@@ -9,21 +10,22 @@ import DynamicIsland from './DynamicIsland';
 import ErrorBoundary from './ErrorBoundary';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { themes, themeCategories, getThemeById, applyTheme, getThemeByIdWithCustom, customThemeToTheme } from '../themes';
 import { getSelectedCompactViewPreset } from '../constants/compactViewPresets';
 import type { MiningStatus, DropsSettings } from '../types';
 
+
 import { Logger } from '../utils/logger';
+import { Tooltip } from './ui/Tooltip';
+
 const TitleBar = () => {
   const store = useAppStore();
-  const { openSettings, setShowProfileOverlay, setShowDropsOverlay, setShowBadgesOverlay, setShowWhispersOverlay, showProfileOverlay, isAuthenticated, currentUser, isMiningActive, isTheaterMode, toggleTheaterMode, streamUrl, settings, updateSettings, isHomeActive, toggleHome, whisperImportState } = store;
+
+  const { openSettings, setShowProfileOverlay, setShowDropsOverlay, setShowBadgesOverlay, setShowWhispersOverlay, showProfileOverlay, isAuthenticated, currentUser, isMiningActive, isTheaterMode, toggleTheaterMode, streamUrl, settings, isHomeActive, toggleHome, exitStream, whisperImportState } = store;
   const [showAbout, setShowAbout] = useState(false);
   const [, setShowSplash] = useState(false);
-  const [showThemePicker, setShowThemePicker] = useState(false);
   const [dropsSettings, setDropsSettings] = useState<DropsSettings | null>(null);
   const [isMaximized, setIsMaximized] = useState(false);
   const prevMiningActive = useRef(isMiningActive);
-  const themePickerRef = useRef<HTMLDivElement>(null);
   
   // Mining status state for progress badge and hover preview
   const [miningStatus, setMiningStatus] = useState<MiningStatus | null>(null);
@@ -31,17 +33,11 @@ const TitleBar = () => {
   const dropsButtonRef = useRef<HTMLDivElement>(null);
   const previewTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Safely get current theme with fallback
-  const currentThemeId = settings?.theme || 'winters-glass';
-  const customThemes = useMemo(() => settings?.custom_themes || [], [settings?.custom_themes]);
-  const currentTheme = useMemo(() => {
-    try {
-      return getThemeByIdWithCustom(currentThemeId, customThemes) || getThemeById('winters-glass') || themes[0];
-    } catch (error) {
-      Logger.error('[TitleBar] Error getting theme:', error);
-      return themes[0]; // Return first theme as ultimate fallback
-    }
-  }, [currentThemeId, customThemes]);
+  // Dynamic badge icon state
+  const [badgeImages, setBadgeImages] = useState<string[]>([]);
+  const [currentBadgeUrl, setCurrentBadgeUrl] = useState<string | null>(null);
+  const badgeIndexRef = useRef(0);
+
 
   // Track window maximize state
   useEffect(() => {
@@ -63,44 +59,7 @@ const TitleBar = () => {
     };
   }, []);
 
-  // Close theme picker on click outside
-  useEffect(() => {
-    if (!showThemePicker) {
-      Logger.debug('Theme picker closed, removing listener');
-      return;
-    }
 
-    Logger.debug('Theme picker opened, will add listener in 100ms');
-
-    const handleClickOutside = (event: MouseEvent) => {
-      Logger.debug('Click outside detected', event.target);
-      if (themePickerRef.current && !themePickerRef.current.contains(event.target as Node)) {
-        Logger.debug('Closing theme picker via click outside');
-        setShowThemePicker(false);
-      }
-    };
-
-    // Add listener after a delay to ensure state has updated
-    const timeoutId = setTimeout(() => {
-      Logger.debug('Adding mousedown listener');
-      document.addEventListener('mousedown', handleClickOutside);
-    }, 100);
-
-    return () => {
-      Logger.debug('Cleanup: removing listener and timeout');
-      clearTimeout(timeoutId);
-      document.removeEventListener('mousedown', handleClickOutside);
-    };
-  }, [showThemePicker]);
-
-  const handleThemeChange = (themeId: string) => {
-    if (!settings) return;
-    const theme = getThemeByIdWithCustom(themeId, customThemes);
-    if (theme) {
-      applyTheme(theme);
-      updateSettings({ ...settings, theme: themeId });
-    }
-  };
 
   // Load drops settings
   useEffect(() => {
@@ -200,6 +159,52 @@ const TitleBar = () => {
     };
   }, []);
 
+  // Load global badge images for the dynamic badge icon
+  useEffect(() => {
+    const loadBadgeImages = async () => {
+      try {
+        const cachedBadges = await invoke<{ data: Array<{ set_id: string; versions: Array<{ image_url_2x: string }> }> } | null>('get_cached_global_badges');
+        if (cachedBadges?.data && cachedBadges.data.length > 0) {
+          
+          const isExcludedBadge = (setId: string) => {
+            const s = setId.toLowerCase();
+            return s.includes('sub') || s.includes('found') || 
+                   s.includes('predict') || s.includes('mod') || 
+                   s.includes('gift') || s.includes('broadcaster') || 
+                   s.includes('partner') || s.includes('verified') || 
+                   s.includes('bit') || s.includes('cheer') ||
+                   s.includes('develop') || s.includes('audio') || 
+                   s.includes('video') || s.includes('listen');
+          };
+          
+          const filteredSets = cachedBadges.data.filter(set => !isExcludedBadge(set.set_id));
+          
+          const urls = filteredSets
+            .flatMap(set => set.versions.map(v => v.image_url_2x))
+            .filter(Boolean);
+          if (urls.length > 0) {
+            // Shuffle the URLs for variety
+            const shuffled = [...urls].sort(() => Math.random() - 0.5);
+            setBadgeImages(shuffled);
+            setCurrentBadgeUrl(shuffled[0]);
+            badgeIndexRef.current = 0;
+          }
+        }
+      } catch {
+        // Silently fail — Medal icon fallback is fine
+      }
+    };
+    loadBadgeImages();
+  }, []);
+
+  // Cycle to next badge on unhover
+  const cycleBadgeIcon = useCallback(() => {
+    if (badgeImages.length === 0) return;
+    const nextIndex = (badgeIndexRef.current + 1) % badgeImages.length;
+    badgeIndexRef.current = nextIndex;
+    setCurrentBadgeUrl(badgeImages[nextIndex]);
+  }, [badgeImages]);
+
   // Calculate progress percentage
   const progressPercent = useMemo(() => {
     if (!miningStatus?.is_mining || !miningStatus?.current_drop) return 0;
@@ -271,15 +276,26 @@ const TitleBar = () => {
           {/* Penrose Logo */}
           <PenroseLogo onClick={() => setShowAbout(true)} />
 
-          {/* Home Button - only show when stream is playing */}
+          {/* Home / Exit Stream - only show when stream is playing */}
           {streamUrl && (
-            <button
-              onClick={toggleHome}
-              className={`p-1.5 hover:bg-glass rounded transition-all duration-200 ${isHomeActive ? 'text-accent bg-glass' : 'text-textSecondary hover:text-textPrimary'}`}
-              title={isHomeActive ? "Return to Stream" : "Home"}
-            >
-              <Home size={16} />
-            </button>
+            <>
+              <Tooltip content={isHomeActive ? "Return to Stream" : "Home"} delay={200}>
+                <button
+                  onClick={toggleHome}
+                  className={`p-1.5 rounded transition-all duration-200 ${isHomeActive ? 'text-accent glass-badge shadow-[0_0_10px_rgba(var(--color-accent-rgb),0.3)]' : 'text-textSecondary hover:text-textPrimary'}`}
+                >
+                  <Home size={16} />
+                </button>
+              </Tooltip>
+              <Tooltip content="Exit Stream" delay={200}>
+                <button
+                  onClick={exitStream}
+                  className="p-1.5 text-textSecondary hover:text-red-400 rounded transition-all duration-200"
+                >
+                  <LogOut size={16} />
+                </button>
+              </Tooltip>
+            </>
           )}
 
           {/* Drops Button with Inline Progress Badge */}
@@ -313,21 +329,22 @@ const TitleBar = () => {
               const isAnyMiningActive = isMiningActive || isChannelPointsMining;
 
               return (
-                <button
-                  onClick={() => setShowDropsOverlay(true)}
-                  className={`p-1.5 text-textSecondary hover:text-textPrimary hover:bg-glass rounded transition-all duration-200 ${showProgressBadge ? 'flex items-center gap-1' : ''}`}
-                  title={title}
-                >
-                  {showProgressBadge ? (
-                    // Replace icon with inline progress percentage badge when mining
-                    <span className="drops-progress-inline">
-                      {progressPercent}%
-                    </span>
-                  ) : (
-                    // Normal Gift icon when not mining drops
-                    <Gift size={16} className={isAnyMiningActive ? giftClass : ''} />
-                  )}
-                </button>
+                <Tooltip content={title} delay={200}>
+                  <button
+                    onClick={() => setShowDropsOverlay(true)}
+                    className={`p-1.5 text-textSecondary hover:text-textPrimary rounded transition-all duration-200 ${showProgressBadge ? 'flex items-center gap-1' : ''}`}
+                  >
+                    {showProgressBadge ? (
+                      // Replace icon with inline progress percentage badge when mining
+                      <span className="drops-progress-inline">
+                        {progressPercent}%
+                      </span>
+                    ) : (
+                      // Normal Gift icon when not mining drops
+                      <Gift size={16} className={isAnyMiningActive ? giftClass : ''} />
+                    )}
+                  </button>
+                </Tooltip>
               );
             })()}
 
@@ -401,210 +418,128 @@ const TitleBar = () => {
             )}
           </div>
 
-          {/* Badges Button */}
-          <button
-            onClick={() => setShowBadgesOverlay(true)}
-            className="p-1.5 text-textSecondary hover:text-textPrimary hover:bg-glass rounded transition-all duration-200"
-            title="Global Badges"
-          >
-            <Medal size={16} />
-          </button>
-
-          {/* Theme Picker Button */}
-          <div className="relative" ref={themePickerRef}>
+          {/* Badges Button — dynamic badge icon that cycles on unhover */}
+          <Tooltip content="Global Badges" delay={200}>
             <button
-              onClick={() => {
-                Logger.debug('Theme picker clicked, current state:', showThemePicker);
-                setShowThemePicker(!showThemePicker);
-              }}
-              className={`p-1.5 hover:bg-glass rounded transition-all duration-200 ${showThemePicker ? 'text-accent bg-glass' : 'text-textSecondary hover:text-textPrimary'
-                }`}
-              title="Theme"
+              onClick={() => setShowBadgesOverlay(true)}
+              onMouseLeave={cycleBadgeIcon}
+              className="w-7 h-7 flex items-center justify-center text-textSecondary hover:text-textPrimary rounded transition-colors duration-200"
             >
-              <Palette size={16} />
+              <AnimatePresence mode="popLayout" initial={false}>
+                {currentBadgeUrl ? (
+                  <motion.img
+                    key={currentBadgeUrl}
+                    initial={{ opacity: 0, scale: 0.8, y: 5 }}
+                    animate={{ opacity: 1, scale: 1, y: 0 }}
+                    exit={{ opacity: 0, scale: 0.8, y: -5 }}
+                    transition={{ duration: 0.15 }}
+                    src={currentBadgeUrl}
+                    alt="Badge"
+                    className="w-4 h-4 object-contain"
+                    draggable={false}
+                  />
+                ) : (
+                  <motion.div
+                    key="medal"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                  >
+                    <Medal size={16} />
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </button>
+          </Tooltip>
 
-            {/* Theme Picker Dropdown */}
-            {showThemePicker && (
-              <div
-                className="absolute top-full left-0 mt-1 w-72 max-h-96 overflow-y-auto glass-panel rounded-lg shadow-xl border border-borderLight scrollbar-thin"
-                style={{
-                  zIndex: 9999,
-                  backgroundColor: currentTheme.palette.background
-                }}
-              >
-                <div className="p-2">
-                  <div className="text-xs font-semibold text-textMuted uppercase tracking-wider px-2 py-1 mb-1">
-                    Themes
-                  </div>
-                  {/* Custom Themes */}
-                  {customThemes.length > 0 && (
-                    <div className="mb-2">
-                      <div className="text-xs text-textMuted px-2 py-1 flex items-center gap-1">
-                        Your Themes
-                        <span className="text-[10px] text-accent">✨</span>
-                      </div>
-                      {customThemes.map((custom) => {
-                        const theme = customThemeToTheme(custom);
-                        return (
-                          <button
-                            key={theme.id}
-                            onClick={() => handleThemeChange(theme.id)}
-                            className={`w-full flex items-center gap-2 px-2 py-1.5 rounded text-left text-sm transition-colors ${currentThemeId === theme.id
-                              ? 'bg-accent/20 text-accent'
-                              : 'text-textPrimary hover:bg-glass'
-                              }`}
-                          >
-                            <div className="flex gap-0.5">
-                              <div
-                                className="w-2.5 h-2.5 rounded-full"
-                                style={{ backgroundColor: theme.palette.accent }}
-                              />
-                              <div
-                                className="w-2.5 h-2.5 rounded-full"
-                                style={{ backgroundColor: theme.palette.highlight.purple }}
-                              />
-                              <div
-                                className="w-2.5 h-2.5 rounded-full"
-                                style={{ backgroundColor: theme.palette.highlight.green }}
-                              />
-                            </div>
-                            <span className="flex-1 truncate">{theme.name}</span>
-                            {currentThemeId === theme.id && (
-                              <Check size={14} className="text-accent" />
-                            )}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )}
-                  {/* Built-in Themes */}
-                  {themeCategories.map((category) => {
-                    const categoryThemes = themes.filter((t) => t.category === category.id);
-                    if (categoryThemes.length === 0) return null;
 
-                    return (
-                      <div key={category.id} className="mb-2">
-                        <div className="text-xs text-textMuted px-2 py-1">
-                          {category.name}
-                        </div>
-                        {categoryThemes.map((theme) => (
-                          <button
-                            key={theme.id}
-                            onClick={() => {
-                              handleThemeChange(theme.id);
-                            }}
-                            className={`w-full flex items-center gap-2 px-2 py-1.5 rounded text-left text-sm transition-colors ${currentThemeId === theme.id
-                              ? 'bg-accent/20 text-accent'
-                              : 'text-textPrimary hover:bg-glass'
-                              }`}
-                          >
-                            {/* Color dots */}
-                            <div className="flex gap-0.5">
-                              <div
-                                className="w-2.5 h-2.5 rounded-full"
-                                style={{ backgroundColor: theme.palette.accent }}
-                              />
-                              <div
-                                className="w-2.5 h-2.5 rounded-full"
-                                style={{ backgroundColor: theme.palette.highlight.purple }}
-                              />
-                              <div
-                                className="w-2.5 h-2.5 rounded-full"
-                                style={{ backgroundColor: theme.palette.highlight.green }}
-                              />
-                            </div>
-                            <span className="flex-1 truncate">{theme.name}</span>
-                            {currentThemeId === theme.id && (
-                              <Check size={14} className="text-accent" />
-                            )}
-                          </button>
-                        ))}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-          </div>
 
           {/* Settings Button */}
-          <button
-            onClick={() => openSettings()}
-            className="p-1.5 text-textSecondary hover:text-textPrimary hover:bg-glass rounded transition-all duration-200"
-            title="Settings"
-          >
-            <Settings size={16} />
-          </button>
+          <Tooltip content="Settings" delay={200}>
+            <button
+              onClick={() => openSettings()}
+              className="settings-gear-btn p-1.5 text-textSecondary hover:text-textPrimary rounded transition-all duration-200"
+            >
+              <Settings size={16} />
+            </button>
+          </Tooltip>
         </div>
 
         <div className="flex space-x-1" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
           {/* Whispers Button */}
-          <button
-            onClick={() => setShowWhispersOverlay(true)}
-            className="relative p-1.5 text-textSecondary hover:text-textPrimary hover:bg-glass rounded transition-all duration-200"
-            title="Whispers"
-          >
-            <MessageCircle size={16} />
-            {/* Import indicator */}
-            {whisperImportState.isImporting && (
-              <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-purple-500 rounded-full animate-pulse" />
-            )}
-          </button>
+          <Tooltip content="Whispers" delay={200}>
+            <button
+              onClick={() => setShowWhispersOverlay(true)}
+              className="relative p-1.5 text-textSecondary hover:text-textPrimary rounded transition-all duration-200"
+            >
+              <MessageCircle size={16} />
+              {/* Import indicator */}
+              {whisperImportState.isImporting && (
+                <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-purple-500 rounded-full animate-pulse" />
+              )}
+            </button>
+          </Tooltip>
 
           {/* Profile Button */}
-          <button
-            onClick={() => setShowProfileOverlay(!showProfileOverlay)}
-            className="p-1.5 text-textSecondary hover:text-textPrimary hover:bg-glass rounded transition-all duration-200"
-            title={isAuthenticated ? 'Profile' : 'Login'}
-          >
-            {isAuthenticated && currentUser?.profile_image_url ? (
-              <img
-                src={currentUser.profile_image_url}
-                alt="Profile"
-                className="w-4 h-4 rounded-full object-cover"
-              />
-            ) : (
-              <User size={16} />
-            )}
-          </button>
+          <Tooltip content={isAuthenticated ? 'Profile' : 'Login'} delay={200}>
+            <button
+              onClick={() => setShowProfileOverlay(!showProfileOverlay)}
+              className="p-1.5 text-textSecondary hover:text-textPrimary rounded transition-all duration-200"
+            >
+              {isAuthenticated && currentUser?.profile_image_url ? (
+                <img
+                  src={currentUser.profile_image_url}
+                  alt="Profile"
+                  className="w-4 h-4 rounded-full object-cover"
+                />
+              ) : (
+                <User size={16} />
+              )}
+            </button>
+          </Tooltip>
 
           {/* Compact View Button - only show when stream is playing */}
           {streamUrl && (
-            <button
-              onClick={toggleTheaterMode}
-              className={`p-1.5 hover:bg-glass rounded transition-all duration-200 ${isTheaterMode ? 'text-accent' : 'text-textSecondary hover:text-textPrimary'
-                }`}
-              title={isTheaterMode ? 'Exit Compact View' : `Compact View (${getSelectedCompactViewPreset(settings?.compact_view?.selectedPresetId, settings?.compact_view?.customPresets).name})`}
-            >
-              <Proportions size={16} />
-            </button>
+            <Tooltip content={isTheaterMode ? 'Exit Compact View' : `Compact View (${getSelectedCompactViewPreset(settings?.compact_view?.selectedPresetId, settings?.compact_view?.customPresets).name})`} delay={200}>
+              <button
+                onClick={toggleTheaterMode}
+                className={`p-1.5 rounded transition-all duration-200 ${isTheaterMode ? 'text-accent glass-badge shadow-[0_0_10px_rgba(var(--color-accent-rgb),0.3)]' : 'text-textSecondary hover:text-textPrimary'
+                  }`}
+              >
+                <Proportions size={16} />
+              </button>
+            </Tooltip>
           )}
-          <button
-            onClick={handleMinimize}
-            className="p-1.5 text-textSecondary hover:text-textPrimary hover:bg-glass rounded transition-all duration-200"
-            title="Minimize"
-          >
-            <Minus size={16} />
-          </button>
-          <button
-            onClick={handleMaximize}
-            className="p-1.5 text-textSecondary hover:text-textPrimary hover:bg-glass rounded transition-all duration-200"
-            title={isMaximized ? "Restore" : "Maximize"}
-          >
-            {isMaximized ? (
-              <CornersIn size={16} />
-            ) : (
-              <CornersOut size={16} />
-            )}
-          </button>
-          <button
-            onClick={handleClose}
-            className="p-1.5 text-textSecondary hover:text-red-400 hover:bg-glass rounded transition-all duration-200"
-            title="Close"
-          >
-            <X size={16} />
-          </button>
+
+
+          <Tooltip content="Minimize" delay={200}>
+            <button
+              onClick={handleMinimize}
+              className="p-1.5 text-textSecondary hover:text-textPrimary rounded transition-all duration-200"
+            >
+              <Minus size={16} />
+            </button>
+          </Tooltip>
+          <Tooltip content={isMaximized ? "Restore" : "Maximize"} delay={200}>
+            <button
+              onClick={handleMaximize}
+              className="p-1.5 text-textSecondary hover:text-textPrimary rounded transition-all duration-200"
+            >
+              {isMaximized ? (
+                <CornersIn size={16} />
+              ) : (
+                <CornersOut size={16} />
+              )}
+            </button>
+          </Tooltip>
+          <Tooltip content="Close" delay={200}>
+            <button
+              onClick={handleClose}
+              className="p-1.5 text-textSecondary hover:text-red-400 rounded transition-all duration-200"
+            >
+              <X size={16} />
+            </button>
+          </Tooltip>
         </div>
       </div>
 

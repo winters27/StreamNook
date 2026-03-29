@@ -1,5 +1,5 @@
 {
-  "productName": "Stream Nook",
+  "productName": "StreamNook",
   "version": "2.1.0",
   "identifier": "com.streamnook.dev",
   "build": {
@@ -31,7 +31,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Stream Nook",
+        "title": "StreamNook",
         "width": 1600,
         "height": 1000,
         "minWidth": 800,

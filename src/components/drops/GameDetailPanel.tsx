@@ -1,5 +1,6 @@
 import { X, Gift, Package, Check, Pause, Play, Clock, Star, Ban, ExternalLink } from 'lucide-react';
 import type { UnifiedGame, DropProgress, MiningStatus, DropCampaign, TimeBasedDrop, InventoryItem, CompletedDrop } from '../../types';
+import { Tooltip } from '../ui/Tooltip';
 
 import { Logger } from '../../utils/logger';
 // Helper to check if a drop is mineable
@@ -295,7 +296,7 @@ export default function GameDetailPanel({
 
                         // Build a LOCAL map: drop_id -> { drop, campaignName }
                         // Include campaign name so we can filter by specific campaign
-                        const localDropMap = new Map<string, { drop: typeof allDropsForGame[0]; campaignName: string }>();
+                        const localDropMap = new Map<string, { drop: typeof dropsFromCampaigns[0]; campaignName: string }>();
                         game.active_campaigns.forEach(campaign => {
                             campaign.time_based_drops.forEach(drop => {
                                 localDropMap.set(drop.id, { drop, campaignName: campaign.name });
@@ -484,9 +485,11 @@ export default function GameDetailPanel({
 
                                                     {/* Drop Info */}
                                                     <div className="flex-1 min-w-0">
-                                                        <p className="text-xs font-medium text-textPrimary truncate" title={benefitName}>
-                                                            {benefitName}
-                                                        </p>
+                                                        <Tooltip content={benefitName} delay={300} side="top">
+                                                            <span className="text-xs font-medium text-textPrimary truncate block">
+                                                                {benefitName}
+                                                            </span>
+                                                        </Tooltip>
                                                         <div className="h-2 w-full bg-background rounded-full mt-1.5 overflow-hidden border border-borderSubtle">
                                                             <div
                                                                 className="h-full rounded-full animate-progress-shimmer"
@@ -517,9 +520,11 @@ export default function GameDetailPanel({
                                             />
                                         )}
                                         <div className="flex-1 min-w-0">
-                                            <p className="text-sm font-medium text-textPrimary truncate" title={miningBenefitName || miningDropName}>
-                                                {miningBenefitName || miningDropName || 'Starting...'}
-                                            </p>
+                                            <Tooltip content={miningBenefitName || miningDropName} delay={300} side="top">
+                                                <span className="text-sm font-medium text-textPrimary truncate block">
+                                                    {miningBenefitName || miningDropName || 'Starting...'}
+                                                </span>
+                                            </Tooltip>
                                             <div className="h-2 w-full bg-background rounded-full mt-1.5 overflow-hidden">
                                                 <div
                                                     className="h-full rounded-full animate-progress-shimmer"
@@ -1117,9 +1122,11 @@ export default function GameDetailPanel({
 
                                                 {/* Drop Info */}
                                                 <div className="flex-1 min-w-0">
-                                                    <p className="text-xs font-medium text-textPrimary truncate" title={benefitName}>
-                                                        {benefitName}
-                                                    </p>
+                                                    <Tooltip content={benefitName} delay={300} side="top">
+                                                        <span className="text-xs font-medium text-textPrimary truncate block">
+                                                            {benefitName}
+                                                        </span>
+                                                    </Tooltip>
                                                     <p className="text-[10px] text-yellow-400 font-semibold mt-0.5">
                                                         Ready to claim!
                                                     </p>
@@ -1141,10 +1148,9 @@ export default function GameDetailPanel({
                                 {claimedDrops.length > 0 && (
                                     <div className="grid grid-cols-4 gap-4">
                                         {claimedDrops.map(({ dropId, benefitImage, benefitName }) => (
+                                            <Tooltip key={dropId} content={benefitName} delay={200} side="top">
                                             <div
-                                                key={dropId}
                                                 className="group relative pt-1 pr-1"
-                                                title={benefitName}
                                             >
                                                 {/* Drop Reward Image Container */}
                                                 <div className="w-full aspect-square rounded-lg border border-purple-500/40 bg-purple-500/10 p-1">
@@ -1174,6 +1180,7 @@ export default function GameDetailPanel({
                                                     </span>
                                                 </div>
                                             </div>
+                                            </Tooltip>
                                         ))}
                                     </div>
                                 )}

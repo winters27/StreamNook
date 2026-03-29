@@ -19,7 +19,7 @@ export interface Toast {
   createdAt: number;
 }
 
-export type SettingsTab = 'Interface' | 'Player' | 'Chat' | 'Theme' | 'Network' | 'Integrations' | 'Notifications' | 'Cache' | 'Support' | 'Updates' | 'Analytics';
+export type SettingsTab = 'Interface' | 'Player' | 'Chat' | 'Theme' | 'Integrations' | 'Notifications' | 'Cache' | 'Support' | 'Updates' | 'Analytics';
 
 export type HomeTab = 'following' | 'recommended' | 'browse' | 'search' | 'category';
 
@@ -138,6 +138,7 @@ interface AppState {
   removeToast: (id: number) => void;
   loadSettings: () => Promise<void>;
   updateSettings: (newSettings: Settings) => Promise<void>;
+  watchStreaks: Record<string, number>;
   loadFollowedStreams: () => Promise<void>;
   loadRecommendedStreams: () => Promise<void>;
   loadMoreRecommendedStreams: () => Promise<void>;
@@ -165,6 +166,7 @@ interface AppState {
   toggleFavoriteStreamer: (userId: string) => Promise<void>;
   isFavoriteStreamer: (userId: string) => boolean;
   toggleHome: () => void;
+  exitStream: () => Promise<void>;
   // Navigation actions for deep linking
   setHomeActiveTab: (tab: HomeTab) => void;
   setHomeSelectedCategory: (category: TwitchCategory | null) => void;
@@ -215,6 +217,7 @@ let magneReconnectInterval: ReturnType<typeof setInterval> | null = null;
 export const useAppStore = create<AppState>((set, get) => ({
   settings: {} as Settings,
   followedStreams: [],
+  watchStreaks: {},
   recommendedStreams: [],
   recommendedCursor: null,
   hasMoreRecommended: true,
@@ -537,9 +540,68 @@ export const useAppStore = create<AppState>((set, get) => ({
     // Start a reconnect loop so Magne picks up activity even if launched later
     invoke('connect_magne').catch(() => {});
     if (!magneReconnectInterval) {
-      magneReconnectInterval = setInterval(() => {
+      magneReconnectInterval = setInterval(async () => {
         const currentStream = get().currentStream;
-        if (currentStream) {
+        
+        let multiNookModule;
+        try {
+          multiNookModule = await import('./multiNookStore');
+        } catch {
+          // Module not loaded yet
+        }
+        
+        const multiNookState = multiNookModule ? multiNookModule.usemultiNookStore.getState() : null;
+        
+        if (multiNookState && multiNookState.isMultiNookActive && multiNookState.slots.length > 0) {
+          const allSlots = multiNookState.slots;
+          
+          let maxGame = '';
+          let maxCount = 0;
+          const gameCounts: Record<string, number> = {};
+          
+          for (const slot of allSlots) {
+            if (slot.gameName && slot.gameName.trim() !== '') {
+              gameCounts[slot.gameName] = (gameCounts[slot.gameName] || 0) + 1;
+              if (gameCounts[slot.gameName] > maxCount) {
+                maxCount = gameCounts[slot.gameName];
+                maxGame = slot.gameName;
+              }
+            }
+          }
+
+          const phraseHash = allSlots.reduce((acc, s) => acc + s.channelLogin.length, 0);
+          const phrases = [
+            `Watching ${allSlots.length} Streams`,
+            `Multi-POV: ${allSlots.length} Streams`,
+            `MultiNook \u2014 ${allSlots.length} Streams`
+          ];
+          const detailsPhrase = phrases[phraseHash % phrases.length];
+
+          const details = allSlots.length === 1
+            ? `Watching ${allSlots[0].channelName || allSlots[0].channelLogin}`
+            : detailsPhrase;
+
+          const separators = [', ', ' \u00B7 ', ' | '];
+          const separator = separators[(phraseHash + 1) % separators.length];
+
+          let streamerNames = allSlots
+            .map(s => s.channelName || s.channelLogin)
+            .join(separator);
+          
+          if (streamerNames.length > 120) {
+            streamerNames = streamerNames.substring(0, 110) + `... +${allSlots.length} more`; 
+          }
+
+          invoke('update_magne_presence', {
+            details,
+            activityState: allSlots.length === 1 ? 'MultiNook' : streamerNames,
+            largeImage: '',
+            smallImage: '',
+            startTime: Date.now(),
+            gameName: maxGame,
+            streamUrl: 'https://github.com/winters27/StreamNook/',
+          }).catch(() => {});
+        } else if (currentStream) {
           // Re-send the watching presence
           invoke('update_magne_presence', {
             details: `Watching ${currentStream.user_name}`,
@@ -553,7 +615,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         } else {
           invoke('connect_magne').catch(() => {});
         }
-      }, 5000);
+      }, 30000); // Changed from 5s to 30s heartbeat
     }
   },
   updateSettings: async (newSettings) => {
@@ -582,6 +644,27 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (newSettings.discord_rpc_enabled) {
         try {
           await invoke('connect_discord');
+          
+          let multiNookModule;
+          try { multiNookModule = await import('./multiNookStore'); } catch { /* ignore */ }
+          const multiNookState = multiNookModule ? multiNookModule.usemultiNookStore.getState() : null;
+          
+          if (multiNookState && multiNookState.isMultiNookActive && multiNookState.slots.length > 0) {
+            multiNookModule?.broadcastMultiNookPresence(multiNookState.slots);
+          } else if (get().currentStream) {
+            const currentStream = get().currentStream!;
+            invoke('update_discord_presence', {
+              details: `Watching ${currentStream.user_name}`,
+              activityState: currentStream.title || 'Live on Twitch',
+              largeImage: '',
+              smallImage: '',
+              startTime: Date.now(),
+              gameName: currentStream.game_name || '',
+              streamUrl: `https://twitch.tv/${currentStream.user_login}`,
+            }).catch(() => {});
+          } else {
+             invoke('set_idle_discord_presence').catch(() => {});
+          }
         } catch (e) {
           Logger.warn('Could not connect to Discord:', e);
         }
@@ -598,6 +681,28 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const streams = await invoke('get_followed_streams') as TwitchStream[];
       set({ followedStreams: streams });
+
+      // Fetch batched watch streaks for live followed streams
+      if (streams.length > 0) {
+        const channelIds = streams.map(s => s.user_id);
+        invoke('get_watch_streaks_batch', { channelIds })
+          .then(res => {
+            const streakData = res as Record<string, { streak_count: number; share_status: string }>;
+            Logger.debug('[WatchStreak] Batched response data:', streakData);
+            const formattedStreaks: Record<string, number> = {};
+            for (const [id, summary] of Object.entries(streakData)) {
+              if (summary.streak_count > 0) {
+                formattedStreaks[id] = summary.streak_count;
+              }
+            }
+            // Merge with existing streaks to avoid clearing others
+            set(state => ({ watchStreaks: { ...state.watchStreaks, ...formattedStreaks } }));
+          })
+          .catch(e => {
+            Logger.debug('[Sidebar] Failed to fetch batched watch streaks:', e);
+          });
+      }
+
     } catch (e) {
       Logger.warn('Could not load followed streams:', e);
       // User is not authenticated, this is expected on first launch
@@ -681,6 +786,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         Logger.debug('🛑 Stopped drops monitoring');
       } catch (e) {
         Logger.warn('Could not stop drops monitoring:', e);
+      }
+
+      const currentStream = get().currentStream;
+      if (currentStream?.user_id) {
+         invoke('unregister_active_channel', { channelId: currentStream.user_id }).catch(() => {});
       }
 
       // Clean up EventSub listeners
@@ -839,36 +949,48 @@ export const useAppStore = create<AppState>((set, get) => ({
 
       // Use the provided stream info, or find it from followed streams, or fetch it
       let info: TwitchStream;
-      if (providedStreamInfo) {
+      
+      // First try to find it in followed streams as it has the most complete, live data
+      const followedStreamInfo = get().followedStreams.find(s => s.user_login.toLowerCase() === channel.toLowerCase());
+      
+      if (followedStreamInfo) {
+        info = followedStreamInfo;
+      } else if (providedStreamInfo && providedStreamInfo.user_id) {
+        // If provided info has user_id, it's complete enough
         info = providedStreamInfo;
       } else {
-        // Find the stream info from our followed streams list
-        const followedStreamInfo = get().followedStreams.find(s => s.user_login === channel);
-        if (followedStreamInfo) {
-          info = followedStreamInfo;
-        } else {
-          // Fallback: try to get channel info (for manually entered channels)
-          try {
-            info = await invoke('get_channel_info', { channelName: channel }) as TwitchStream;
-          } catch (e) {
-            // If that fails too, create a minimal info object
-            Logger.warn('Could not get channel info:', e);
-            info = {
-              id: '',
-              user_id: '',
-              user_name: channel,
-              user_login: channel,
-              title: `Watching ${channel}`,
-              viewer_count: 0,
-              game_name: '',
-              thumbnail_url: '',
-              started_at: new Date().toISOString(),
-            };
-          }
+        // Fallback: get channel info to get the user_id and other details
+        try {
+          const rawInfo: any = await invoke('get_channel_info', { channelName: channel });
+          info = {
+            id: providedStreamInfo?.id || '',
+            user_id: rawInfo.broadcaster_id || '',
+            user_name: rawInfo.broadcaster_name || providedStreamInfo?.user_name || channel,
+            user_login: channel.toLowerCase(),
+            title: rawInfo.title || providedStreamInfo?.title || `Watching ${channel}`,
+            viewer_count: providedStreamInfo?.viewer_count || 0,
+            game_name: rawInfo.game_name || providedStreamInfo?.game_name || '',
+            thumbnail_url: providedStreamInfo?.thumbnail_url || '',
+            profile_image_url: providedStreamInfo?.profile_image_url || '',
+            started_at: providedStreamInfo?.started_at || new Date().toISOString(),
+          };
+        } catch (e) {
+          Logger.warn('Could not get channel info:', e);
+          info = providedStreamInfo || {
+            id: '',
+            user_id: '',
+            user_name: channel,
+            user_login: channel.toLowerCase(),
+            title: `Watching ${channel}`,
+            viewer_count: 0,
+            game_name: '',
+            thumbnail_url: '',
+            started_at: new Date().toISOString(),
+          };
         }
       }
 
-      set({ streamUrl: url, currentStream: info });
+      set({ streamUrl: url, currentStream: info, isHomeActive: false });
 
       // Save user context for error reporting
       saveUserContextToLocalStorage(get().currentUser, info);
@@ -892,6 +1014,8 @@ export const useAppStore = create<AppState>((set, get) => ({
             channelName
           });
           Logger.debug('🎮 Started drops monitoring for', channelName);
+          
+          invoke('register_active_channel', { channelId }).catch(() => {});
 
           // Auto-reserve watch token for this stream (if enabled in settings)
           // This ensures the user is "present" in chat for gifted sub eligibility
@@ -1455,6 +1579,17 @@ export const useAppStore = create<AppState>((set, get) => ({
     const newHomeActive = !state.isHomeActive;
     trackActivity(newHomeActive ? 'Opened Home' : 'Closed Home');
     set({ isHomeActive: newHomeActive });
+  },
+
+  exitStream: async () => {
+    trackActivity('Exited stream');
+    const state = get();
+    // Exit theater mode if active so window restores to normal size
+    if (state.isTheaterMode) {
+      state.toggleTheaterMode();
+    }
+    await state.stopStream();
+    set({ isHomeActive: true });
   },
 
   // Navigation actions for deep linking

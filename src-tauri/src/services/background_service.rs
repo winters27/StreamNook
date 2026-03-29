@@ -17,7 +17,7 @@ use chrono::{DateTime, Utc};
 pub struct BackgroundService {
     is_running: Arc<RwLock<bool>>,
     channel_points_service: Arc<Mutex<ChannelPointsService>>,
-    websocket_service: Arc<Mutex<ChannelPointsWebSocketService>>,
+    pub websocket_service: Arc<Mutex<ChannelPointsWebSocketService>>,
     drops_service: Arc<Mutex<DropsService>>,
     settings: Arc<RwLock<Settings>>,
     app_handle: AppHandle,

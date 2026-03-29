@@ -16,6 +16,8 @@ scripts/fetch-7tv-badges.mjs
 scripts/explore-7tv-badges.mjs
 scripts/twitch-gql-server.js
 scripts/*.json
+scripts/hls-diag.mjs
+scripts/svg2png.mjs
 
 # Documentation
 docs/

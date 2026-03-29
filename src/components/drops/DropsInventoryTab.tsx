@@ -1,6 +1,7 @@
 import { useState, useMemo, useCallback } from 'react';
 import { Package, Gift, Check, Clock, AlertCircle, ChevronDown, ChevronRight, Search, Filter, Sparkles, Ban, Star } from 'lucide-react';
 import type { InventoryItem, DropProgress, CampaignStatus, CompletedDrop, TimeBasedDrop } from '../../types';
+import { Tooltip } from '../ui/Tooltip';
 
 // Helper to check if a drop is mineable (time-based with watch requirement)
 // Drops with required_minutes_watched = 0 are event-based, gift-based, or sub-based
@@ -364,10 +365,9 @@ export default function DropsInventoryTab({
                             <div className="border-t border-green-500/20 bg-background/50 p-3">
                                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
                                     {completedDrops.map(drop => (
+                                        <Tooltip key={drop.id} content={`${drop.name}${drop.game_name ? ` - ${drop.game_name}` : ''}${drop.total_count > 1 ? ` (x${drop.total_count})` : ''}`} delay={200} side="top">
                                         <div
-                                            key={drop.id}
                                             className="group glass-panel border border-green-500/20 hover:border-green-500/40 rounded-lg overflow-hidden transition-all hover:scale-105"
-                                            title={`${drop.name}${drop.game_name ? ` - ${drop.game_name}` : ''}${drop.total_count > 1 ? ` (x${drop.total_count})` : ''}`}
                                         >
                                             {/* Drop Image */}
                                             <div className="relative aspect-square bg-backgroundSecondary">
@@ -392,9 +392,11 @@ export default function DropsInventoryTab({
                                             </div>
                                             {/* Drop Info */}
                                             <div className="p-2">
-                                                <p className="text-xs font-medium text-textPrimary truncate" title={drop.name}>
-                                                    {drop.name}
-                                                </p>
+                                                <Tooltip content={drop.name} delay={300} side="bottom">
+                                                    <span className="text-xs font-medium text-textPrimary truncate block">
+                                                        {drop.name}
+                                                    </span>
+                                                </Tooltip>
                                                 {drop.game_name && (
                                                     <p className="text-[10px] text-textSecondary truncate mt-0.5">
                                                         {drop.game_name}
@@ -402,6 +404,7 @@ export default function DropsInventoryTab({
                                                 )}
                                             </div>
                                         </div>
+                                        </Tooltip>
                                     ))}
                                 </div>
                             </div>
@@ -456,6 +459,7 @@ export default function DropsInventoryTab({
                                                     {group.claimableDrops} to claim
                                                 </span>
                                                 {/* Claim All Button */}
+                                                <Tooltip content={`Claim all ${group.claimableDrops} drops for ${group.gameName}`} delay={200} side="top">
                                                 <button
                                                     onClick={(e) => {
                                                         e.stopPropagation();
@@ -467,7 +471,6 @@ export default function DropsInventoryTab({
                                                             ? 'bg-green-600/50 text-green-200 cursor-wait'
                                                             : 'bg-green-500 hover:bg-green-400 active:bg-green-600 text-white hover:shadow-lg hover:shadow-green-500/20 transform hover:scale-105 active:scale-95'
                                                         }`}
-                                                    title={`Claim all ${group.claimableDrops} drops for ${group.gameName}`}
                                                 >
                                                     {claimingGameId === group.gameId ? (
                                                         <>
@@ -481,6 +484,7 @@ export default function DropsInventoryTab({
                                                         </>
                                                     )}
                                                 </button>
+                                                </Tooltip>
                                             </>
                                         )}
                                         {group.inProgressDrops > 0 && (
@@ -635,9 +639,11 @@ function CampaignSection({ item, progress, onClaimDrop, getStatusBadge }: Campai
 
                             {/* Drop Info */}
                             <div className="flex-1 min-w-0">
-                                <p className="text-xs font-medium text-textPrimary truncate" title={benefit?.name || drop.name}>
-                                    {benefit?.name || drop.name}
-                                </p>
+                                <Tooltip content={benefit?.name || drop.name} delay={300} side="top">
+                                    <span className="text-xs font-medium text-textPrimary truncate block">
+                                        {benefit?.name || drop.name}
+                                    </span>
+                                </Tooltip>
                                 <div className="flex items-center gap-2 mt-0.5">
                                     {isClaimed ? (
                                         <span className="text-[10px] text-green-400 font-medium">Claimed</span>
@@ -688,9 +694,11 @@ function CampaignSection({ item, progress, onClaimDrop, getStatusBadge }: Campai
 
                             {/* Expired Warning for Claimable */}
                             {isExpired && isClaimable && (
-                                <div className="flex items-center gap-1 text-orange-400" title="Campaign expired - claim before it's gone!">
-                                    <AlertCircle size={14} />
-                                </div>
+                                <Tooltip content="Campaign expired - claim before it's gone!" delay={200} side="top">
+                                    <div className="flex items-center gap-1 text-orange-400">
+                                        <AlertCircle size={14} />
+                                    </div>
+                                </Tooltip>
                             )}
                         </div>
                     );

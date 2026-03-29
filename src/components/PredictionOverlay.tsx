@@ -607,7 +607,7 @@ const PredictionOverlay = ({ channelId, channelLogin, isHypeTrainActive = false 
                       setBetAmount(clamped);
                       setBetAmountInput(clamped.toString());
                     }}
-                    className="w-24 px-2 py-1.5 bg-background border border-border rounded-md text-textPrimary text-sm font-medium focus:outline-none focus:ring-2 focus:ring-purple-500/50 focus:border-purple-500"
+                    className="w-24 px-2 py-1.5 glass-input text-textPrimary text-sm font-medium focus:outline-none"
                     placeholder="Amount"
                   />
                   

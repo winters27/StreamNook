@@ -1,15 +1,18 @@
 import { X, Github } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { useEffect, useState } from 'react';
+import { Tooltip } from './ui/Tooltip';
 
 import { Logger } from '../utils/logger';
+import streamnookLogo from '../assets/streamnook-logo.png';
+
 interface AboutWidgetProps {
   onClose: () => void;
 }
 
 const AboutWidget = ({ onClose }: AboutWidgetProps) => {
   const [appVersion, setAppVersion] = useState('1.0.0');
-  const [appName, setAppName] = useState('Stream Nook');
+  const [appName, setAppName] = useState('StreamNook');
 
   useEffect(() => {
     // Fetch app version from Cargo.toml
@@ -33,56 +36,27 @@ const AboutWidget = ({ onClose }: AboutWidgetProps) => {
       <div className="glass-panel p-6 w-96 max-w-[90vw] shadow-2xl relative z-10">
         {/* Header */}
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-bold text-textPrimary">About Stream Nook</h2>
+          <h2 className="text-lg font-bold text-textPrimary">About {appName}</h2>
+          <Tooltip content="Close" side="top">
           <button
             onClick={onClose}
             className="p-1 text-textSecondary hover:text-textPrimary hover:bg-glass rounded transition-all duration-200"
-            title="Close"
           >
             <X size={18} />
           </button>
+          </Tooltip>
         </div>
 
         {/* Content */}
         <div className="space-y-4 text-textSecondary text-sm">
           {/* Logo Section */}
           <div className="flex justify-center mb-4">
-            <svg
-              viewBox="0 0 526.364 477.037"
-              className="w-20 h-20"
-            >
-              <g transform="translate(-91.424,-253.587)">
-                {/* Top/Right piece - White */}
-                <path
-                  d="M 312.324,254.293 L 497.878,584.552 L 291.613,584.667 L 252.049,655.38 L 617.267,655.437 L 394.465,254.087 L 312.324,254.293 z"
-                  fill="#97b1b9"
-                  stroke="#000000"
-                  strokeWidth="1"
-                  strokeLinecap="butt"
-                  strokeLinejoin="round"
-                />
-
-                {/* Left piece - Gray */}
-                <path
-                  d="M 312.314,254.266 L 91.924,655.372 L 132.33,728.103 L 315.168,396.773 L 417.193,584.662 L 498.005,584.662 L 312.314,254.266 z"
-                  fill="#8aa3ac"
-                  stroke="#000000"
-                  strokeWidth="1"
-                  strokeLinecap="butt"
-                  strokeLinejoin="round"
-                />
-
-                {/* Bottom piece - Black */}
-                <path
-                  d="M 315.21,396.836 L 355.501,471.055 L 251.873,655.434 L 617.288,655.624 L 578.817,730.124 L 132.346,728.077 L 315.21,396.836 z"
-                  fill="#6b8a94"
-                  stroke="#000000"
-                  strokeWidth="1"
-                  strokeLinecap="butt"
-                  strokeLinejoin="round"
-                />
-              </g>
-            </svg>
+            <img
+              src={streamnookLogo}
+              alt="StreamNook"
+              className="w-20 h-20 object-contain"
+              draggable={false}
+            />
           </div>
 
           {/* Description */}
@@ -112,45 +86,49 @@ const AboutWidget = ({ onClose }: AboutWidgetProps) => {
           <div className="text-center py-2 px-4 bg-glass/30 rounded-lg">
             <p className="text-textSecondary text-xs mb-2">Special thanks and love to</p>
             <div className="flex items-center justify-center gap-3 flex-wrap">
+              <Tooltip content="7TV" side="top">
               <a
                 href="https://7tv.app"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="text-textPrimary hover:text-[#00A8FC] transition-colors font-medium text-sm"
-                title="7TV"
               >
                 7TV
               </a>
+              </Tooltip>
               <span className="text-textSecondary">•</span>
+              <Tooltip content="BetterTTV" side="top">
               <a
                 href="https://betterttv.com"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="text-textPrimary hover:text-[#D50014] transition-colors font-medium text-sm"
-                title="BetterTTV"
               >
                 BTTV
               </a>
+              </Tooltip>
               <span className="text-textSecondary">•</span>
+              <Tooltip content="FrankerFaceZ" side="top">
               <a
                 href="https://www.frankerfacez.com"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="text-textPrimary hover:text-[#52A747] transition-colors font-medium text-sm"
-                title="FrankerFaceZ"
               >
                 FFZ
               </a>
+              </Tooltip>
               <span className="text-textSecondary">•</span>
+              <Tooltip content="Twitch" side="top">
               <a
                 href="https://www.twitch.tv"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="text-textPrimary hover:text-[#9146FF] transition-colors font-medium text-sm"
-                title="Twitch"
               >
                 Twitch
               </a>
+              </Tooltip>
             </div>
           </div>
 
@@ -221,15 +199,16 @@ const AboutWidget = ({ onClose }: AboutWidgetProps) => {
               <p className="text-xs text-textSecondary">
                 Version {appVersion}
               </p>
+              <Tooltip content="View on GitHub" side="top">
               <a
                 href="https://github.com/winters27"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="p-2 text-textSecondary hover:text-textPrimary hover:bg-glass rounded transition-all duration-200"
-                title="View on GitHub"
               >
                 <Github size={18} />
               </a>
+              </Tooltip>
             </div>
           </div>
         </div>

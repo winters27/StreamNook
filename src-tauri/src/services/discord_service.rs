@@ -177,11 +177,11 @@ impl DiscordService {
                 .assets(
                     Assets::new()
                         .large_image(DISCORD_LARGE_IMAGE)
-                        .large_text("Stream Nook"),
+                        .large_text("StreamNook"),
                 )
                 .timestamps(Timestamps::new().start(timestamp))
                 .buttons(vec![Button::new(
-                    "Download Stream Nook",
+                    "Download StreamNook",
                     "https://github.com/winters27/StreamNook/",
                 )]);
 
@@ -258,7 +258,7 @@ impl DiscordService {
         } else {
             // Fallback to StreamNook icon if game not found
             assets = assets.large_image(DISCORD_LARGE_IMAGE);
-            assets = assets.large_text("Stream Nook");
+            assets = assets.large_text("StreamNook");
         }
 
         // Add Twitch logo as small image
@@ -277,7 +277,7 @@ impl DiscordService {
             activity = activity.buttons(vec![
                 Button::new("Watch Stream", stream_url),
                 Button::new(
-                    "Download Stream Nook",
+                    "Download StreamNook",
                     "https://github.com/winters27/StreamNook/",
                 ),
             ]);

@@ -1,0 +1,313 @@
+import React, { useMemo, useState, useCallback, useRef, useEffect } from 'react';
+import {
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  DragEndEvent,
+  DragStartEvent,
+  pointerWithin,
+  rectIntersection,
+  CollisionDetection,
+  useDroppable,
+} from '@dnd-kit/core';
+import {
+  arrayMove,
+  SortableContext,
+  sortableKeyboardCoordinates,
+  rectSortingStrategy,
+} from '@dnd-kit/sortable';
+import { ArrowUpFromLine } from 'lucide-react';
+import { MultiNookCell } from './MultiNookCell';
+import MultiNookToolbar from './MultiNookToolbar';
+import { usemultiNookStore } from '../../stores/multiNookStore';
+import { Logger } from '../../utils/logger';
+import { useMultiNookSync } from './useMultiNookSync';
+
+const DOCK_DROP_ID = 'dock-drop-zone';
+const UNDOCK_DROP_ID = 'undock-drop-zone';
+
+// Prefix for draggable docked pill IDs to distinguish from sortable grid cells
+const DOCKED_PREFIX = 'docked::';
+
+export const MultiNookView: React.FC = () => {
+  const { slots, reorderSlots, dockSlot, undockSlot } = usemultiNookStore();
+  const visibleSlots = useMemo(() => slots.filter((s) => !s.isMinimized), [slots]);
+  const minimizedSlots = useMemo(() => slots.filter((s) => s.isMinimized), [slots]);
+
+  // Mount the global Co-Stream Sync Controller
+  useMultiNookSync();
+
+  // Track drag state: which type of item is being dragged
+  const [dragSource, setDragSource] = useState<'visible' | 'docked' | null>(null);
+
+  // Build a map of slot id -> visual order index for CSS-based reordering.
+  const orderMap = useMemo(() => {
+    const map = new Map<string, number>();
+    visibleSlots.forEach((s, i) => map.set(s.id, i));
+    return map;
+  }, [visibleSlots]);
+
+  // Stable DOM order: sort visible slots by id so DOM nodes never move on reorder.
+  const stableDomSlots = useMemo(
+    () => [...visibleSlots].sort((a, b) => a.id.localeCompare(b.id)),
+    [visibleSlots]
+  );
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: {
+        distance: 8,
+      },
+    }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    })
+  );
+
+  // Custom collision detection: prioritize drop zones over grid cells
+  const collisionDetection: CollisionDetection = useCallback((args) => {
+    const pointerCollisions = pointerWithin(args);
+
+    // Prioritize dock/undock zones
+    const dockHit = pointerCollisions.find((c) => c.id === DOCK_DROP_ID);
+    if (dockHit) return [dockHit];
+
+    const undockHit = pointerCollisions.find((c) => c.id === UNDOCK_DROP_ID);
+    if (undockHit) return [undockHit];
+
+    // Fall back to standard grid collision for reordering
+    return rectIntersection(args);
+  }, []);
+
+  const handleDragStart = (event: DragStartEvent) => {
+    const id = event.active.id as string;
+    if (id.startsWith(DOCKED_PREFIX)) {
+      setDragSource('docked');
+    } else {
+      setDragSource('visible');
+    }
+  };
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    const currentSource = dragSource;
+    setDragSource(null);
+    const { active, over } = event;
+
+    if (!over) return;
+
+    const activeId = active.id as string;
+
+    // Dragging a visible cell → dock zone = dock it
+    if (over.id === DOCK_DROP_ID && currentSource === 'visible') {
+      Logger.debug(`Docking slot ${activeId} via drag gesture`);
+      dockSlot(activeId);
+      return;
+    }
+
+    // Dragging a docked pill → undock zone = undock it
+    if (over.id === UNDOCK_DROP_ID && currentSource === 'docked') {
+      const realId = activeId.replace(DOCKED_PREFIX, '');
+      Logger.debug(`Undocking slot ${realId} via drag gesture`);
+      undockSlot(realId);
+      return;
+    }
+
+    // Reorder (only for visible cells)
+    if (currentSource === 'visible' && active.id !== over.id) {
+      Logger.debug(`Reordering slot ${active.id} to ${over.id}`);
+      const oldIndex = slots.findIndex((s) => s.id === active.id);
+      const newIndex = slots.findIndex((s) => s.id === over.id);
+      reorderSlots(arrayMove(slots, oldIndex, newIndex));
+    }
+  };
+
+  const handleDragCancel = () => {
+    setDragSource(null);
+  };
+
+  // ResizeObserver for Dynamic Flexbox Grid Math
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+    const observer = new ResizeObserver((entries) => {
+      // Use requestAnimationFrame to avoid "ResizeObserver loop limit exceeded" warning
+      window.requestAnimationFrame(() => {
+        if (!Array.isArray(entries) || !entries.length) return;
+        setDimensions({
+          width: entries[0].contentRect.width,
+          height: entries[0].contentRect.height,
+        });
+      });
+    });
+    observer.observe(containerRef.current);
+    return () => observer.disconnect();
+  }, [visibleSlots.length]); // re-bind if the entire component shifts dramatically
+
+  // Flexbox Optimal Layout Engine
+  const { cellWidth, cellHeight, optimalCols = 1 } = useMemo(() => {
+    const len = visibleSlots.length;
+    if (len === 0 || dimensions.width === 0 || dimensions.height === 0) {
+      return { cellWidth: '100%', cellHeight: '100%' };
+    }
+
+    const W = dimensions.width;
+    const H = dimensions.height;
+    const gap = 8; // 8px (Tailwind gap-2)
+    const ratio = 16 / 9;
+
+    let bestArea = 0;
+    let bestW = 0;
+    let bestH = 0;
+    let bestCols = 1;
+
+    for (let cols = 1; cols <= len; cols++) {
+      const rows = Math.ceil(len / cols);
+
+      // Max width bounded
+      const cellW_w = (W - (cols - 1) * gap) / cols;
+      const cellH_w = cellW_w / ratio;
+
+      // Max height bounded
+      const cellH_h = (H - (rows - 1) * gap) / rows;
+      const cellW_h = cellH_h * ratio;
+
+      let cellW = cellW_w;
+      let cellH = cellH_w;
+
+      // If width-bounded height exceeds container height, we are constrained by height
+      if (cellH * rows + (rows - 1) * gap > H) {
+        cellW = cellW_h;
+        cellH = cellH_h;
+      }
+
+      const area = cellW * cellH;
+      if (area > bestArea) {
+        bestArea = area;
+        bestW = cellW;
+        bestH = cellH;
+        bestCols = cols;
+      }
+    }
+
+    // Return as absolute floored pixels to completely avoid sub-pixel DOM wrapping bugs
+    return {
+      cellWidth: `${Math.floor(bestW)}px`,
+      cellHeight: `${Math.floor(bestH)}px`,
+      optimalCols: bestCols,
+    };
+  }, [visibleSlots.length, dimensions]);
+
+  // Show dock zone only when dragging a visible cell
+  const showDockZone = dragSource === 'visible';
+  // Show undock zone only when dragging a docked pill
+  const showUndockZone = dragSource === 'docked';
+
+  return (
+    <div className="flex flex-col h-full bg-background relative overflow-hidden">
+      <DndContext
+        sensors={sensors}
+        collisionDetection={collisionDetection}
+        onDragStart={handleDragStart}
+        onDragEnd={handleDragEnd}
+        onDragCancel={handleDragCancel}
+      >
+        <MultiNookToolbar
+          isDragging={showDockZone}
+          dockDropId={DOCK_DROP_ID}
+          dockedPrefix={DOCKED_PREFIX}
+        />
+
+        <div className="flex-1 w-full p-2 relative overflow-hidden" ref={containerRef}>
+          {visibleSlots.length === 0 && !showUndockZone ? (
+            <div className="w-full h-full flex flex-col items-center justify-center text-textMuted border-2 border-dashed border-borderSubtle bg-glass/20 rounded-xl px-4 text-center">
+              <p className="text-sm">Right-click any stream to add it from the context menu, or use the <strong className="text-textPrimary">+</strong> search button in the top right.</p>
+            </div>
+          ) : (
+            <div className="w-full h-full relative">
+              {/* Undock drop zone — overlays the grid when dragging a docked pill */}
+              {showUndockZone && (
+                <UndockDropZone dropId={UNDOCK_DROP_ID} />
+              )}
+
+              <div className="w-full h-full flex flex-wrap justify-center content-center gap-2">
+                <SortableContext
+                  items={visibleSlots.map((s) => s.id)}
+                  strategy={rectSortingStrategy}
+                >
+                  {stableDomSlots.map((slot) => {
+                    const cssOrder = orderMap.get(slot.id) ?? 0;
+                    return (
+                      <MultiNookCell 
+                        key={slot.id} 
+                        slot={slot} 
+                        cssOrder={cssOrder * 2} 
+                        customStyle={{ width: cellWidth, height: cellHeight }}
+                      />
+                    );
+                  })}
+                </SortableContext>
+                
+                {/* The user wants odd leftover streams on top (an upward-pointing pyramid). */}
+                {/* Flexbox naturally flows left-to-right, putting leftovers on the bottom. */}
+                {/* We reverse the pyramid visually by inserting a flex break with an exact CSS order */}
+                {/* that forces the first visual row to carry the deficit. */}
+                {(visibleSlots.length % optimalCols) > 0 && (
+                  <div 
+                    style={{ 
+                      flexBasis: '100%', 
+                      height: 0, 
+                      margin: 0, 
+                      order: (visibleSlots.length % optimalCols) * 2 - 1 
+                    }} 
+                    aria-hidden="true" 
+                  />
+                )}
+                
+                {/* Keep minimized streams mounted in the DOM to avoid HLS cold-start buffering */}
+                {minimizedSlots.map((slot) => (
+                  <div key={slot.id} className="hidden">
+                    <MultiNookCell slot={slot} />
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </DndContext>
+    </div>
+  );
+};
+
+/** Undock droppable overlay that appears over the grid when dragging a docked stream */
+const UndockDropZone: React.FC<{ dropId: string }> = ({ dropId }) => {
+  const { setNodeRef, isOver } = useDroppable({ id: dropId });
+
+  return (
+    <div
+      ref={setNodeRef}
+      className={`
+        absolute inset-0 z-20 flex items-center justify-center rounded-xl
+        transition-all duration-200 pointer-events-auto
+        ${isOver
+          ? 'bg-accent/10 border-2 border-accent/40 shadow-[0_0_30px_rgba(167,139,250,0.1)]'
+          : 'bg-glass/5 border-2 border-dashed border-borderSubtle'
+        }
+      `}
+    >
+      <div className={`flex items-center gap-2 transition-all duration-200 ${isOver ? 'scale-105' : ''}`}>
+        <ArrowUpFromLine
+          size={18}
+          className={`transition-colors duration-200 ${isOver ? 'text-accent' : 'text-textMuted'}`}
+        />
+        <span className={`text-sm font-semibold uppercase tracking-wider transition-colors duration-200 ${isOver ? 'text-accent' : 'text-textMuted'}`}>
+          {isOver ? 'Release to restore' : 'Drop here to restore to grid'}
+        </span>
+      </div>
+    </div>
+  );
+};
+

@@ -1,9 +1,12 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { useAppStore } from '../stores/AppStore';
-import { ChevronLeft, ChevronRight, Users, Sparkles, Radio, Heart, Gift } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Users, Sparkles, Radio, Heart, Gift, Flame } from 'lucide-react';
 import type { TwitchStream } from '../types';
 import { invoke } from '@tauri-apps/api/core';
 import { getSidebarSettings, type SidebarMode } from './settings/InterfaceSettings';
+
+import { useContextMenuStore } from '../stores/contextMenuStore';
+import { Tooltip } from './ui/Tooltip';
 
 import { Logger } from '../utils/logger';
 // Width constants
@@ -59,7 +62,9 @@ const Sidebar = () => {
         // Hype Train status for stream badges
         activeHypeTrainChannels,
         refreshHypeTrainStatuses,
+        watchStreaks,
     } = useAppStore();
+
 
     // Sidebar mode from settings
     const [sidebarMode, setSidebarMode] = useState<SidebarMode>(() => {
@@ -230,21 +235,40 @@ const Sidebar = () => {
     // Track previous "sidebar visible" state to detect rising edge (opening)
     const prevSidebarVisibleRef = useRef(false);
 
-    // Refresh streams exactly once when sidebar opens, not while it's open
+    // Background Sync & Layout Shift Prevention
+    // Instead of fetching on OPEN (which causes a 500ms delay followed by an instant layout jump
+    // as stream arrays reshuffle), we fetch on CLOSE and via a slow background interval.
     useEffect(() => {
         const isSidebarVisible = isHovered || isEdgeHovered || isManuallyExpanded;
         const wasVisible = prevSidebarVisibleRef.current;
         prevSidebarVisibleRef.current = isSidebarVisible;
 
-        // Only refresh on rising edge (sidebar just opened)
-        if (isSidebarVisible && !wasVisible) {
-            Logger.debug('[Sidebar] Refreshing streams on sidebar open');
+        // Refresh on falling edge (sidebar just closed)
+        if (!isSidebarVisible && wasVisible) {
+            Logger.debug('[Sidebar] Refreshing streams on sidebar close (Layout Shift Prevention)');
             if (isAuthenticated) {
                 loadFollowedStreams();
             }
             loadRecommendedStreams();
         }
     }, [isHovered, isEdgeHovered, isManuallyExpanded, isAuthenticated, loadFollowedStreams, loadRecommendedStreams]);
+
+    // Constant background freshness (every 3 minutes)
+    // Ensures sidebar is fresh even if user hasn't opened/closed it in hours
+    useEffect(() => {
+        const interval = setInterval(() => {
+            const isSidebarVisible = isHovered || isEdgeHovered || isManuallyExpanded;
+            // Only sync in background if sidebar is currently HIDDEN to prevent mid-reading layout shifts
+            if (!isSidebarVisible) {
+                Logger.debug('[Sidebar] Background stream sync');
+                if (isAuthenticated) {
+                    loadFollowedStreams();
+                }
+            }
+        }, 3 * 60 * 1000);
+        
+        return () => clearInterval(interval);
+    }, [isHovered, isEdgeHovered, isManuallyExpanded, isAuthenticated, loadFollowedStreams]);
 
     // Infinite scroll for recommended streams
     useEffect(() => {
@@ -457,6 +481,8 @@ const Sidebar = () => {
         }
     };
 
+
+
     const formatViewerCount = (count: number): string => {
         if (count >= 1000000) {
             return (count / 1000000).toFixed(1) + 'M';
@@ -471,20 +497,22 @@ const Sidebar = () => {
         const isFavorite = isFavoriteStreamer(stream.user_id);
         const hasDrops = stream.game_name ? dropsGameNames.has(stream.game_name.toLowerCase()) : false;
         const hypeTrainStatus = activeHypeTrainChannels.get(stream.user_id);
+        const watchStreak = watchStreaks[stream.user_id];
 
         return (
-            <div
-                className={`
-                    flex items-center px-2 py-1.5 cursor-pointer rounded transition-all duration-200
-                    ${isCurrentStream
-                        ? 'bg-surface-active border-l-2 border-accent'
-                        : 'hover:bg-surface-hover border-l-2 border-transparent'
-                    }
-                    ${showExpanded ? 'gap-2 justify-start' : 'gap-0 justify-center'}
-                `}
-                onClick={() => handleStreamClick(stream)}
-                title={showExpanded ? undefined : `${stream.user_name} - ${stream.game_name}${hasDrops ? ' (Drops enabled)' : ''}`}
-            >
+            <Tooltip content={showExpanded ? null : `${stream.user_name} - ${stream.game_name}${hasDrops ? ' (Drops enabled)' : ''}`} delay={300} side="right">
+                <div
+                    className={`group
+                        flex items-center px-2 py-1.5 cursor-pointer rounded transition-all duration-200
+                        ${isCurrentStream
+                            ? 'bg-surface-active border-l-2 border-accent'
+                            : 'hover:bg-surface-hover border-l-2 border-transparent'
+                        }
+                        ${showExpanded ? 'gap-2 justify-start' : 'gap-0 justify-center'}
+                    `}
+                    onClick={() => handleStreamClick(stream)}
+                    onContextMenu={(e) => useContextMenuStore.getState().openMenu(e, stream)}
+                >
                 {/* Avatar with live indicator */}
                 <div className="relative flex-shrink-0 transition-all duration-200">
                     <img
@@ -504,11 +532,13 @@ const Sidebar = () => {
                     )}
                     {/* Hype Train indicator on avatar - only show in compact mode when no drops */}
                     {hypeTrainStatus && !showExpanded && !hasDrops && (
-                        <div className={`absolute -top-1 -right-1 w-4 h-4 rounded-full flex items-center justify-center border border-background ${hypeTrainStatus.isGolden ? 'bg-yellow-500' : 'bg-purple-600'}`} title={`Hype Train LVL ${hypeTrainStatus.level}`}>
-                            <svg className="w-2.5 h-2.5 text-white" viewBox="0 0 15 13" fill="none">
-                                <path fillRule="evenodd" clipRule="evenodd" d="M4.10001 0.549988H2.40001V4.79999H0.700012V10.75H1.55001C1.55001 11.6889 2.31113 12.45 3.25001 12.45C4.1889 12.45 4.95001 11.6889 4.95001 10.75H5.80001C5.80001 11.6889 6.56113 12.45 7.50001 12.45C8.4389 12.45 9.20001 11.6889 9.20001 10.75H10.05C10.05 11.6889 10.8111 12.45 11.75 12.45C12.6889 12.45 13.45 11.6889 13.45 10.75H14.3V0.549988H6.65001V2.24999H7.50001V4.79999H4.10001V0.549988ZM12.6 9.04999V6.49999H2.40001V9.04999H12.6ZM9.20001 4.79999H12.6V2.24999H9.20001V4.79999Z" fill="currentColor" />
-                            </svg>
-                        </div>
+                        <Tooltip content={`Hype Train LVL ${hypeTrainStatus.level}`} delay={100} side="right">
+                            <div className={`absolute -top-1 -right-1 w-4 h-4 rounded-full flex items-center justify-center border border-background ${hypeTrainStatus.isGolden ? 'bg-yellow-500' : 'bg-purple-600'}`}>
+                                <svg className="w-2.5 h-2.5 text-white" viewBox="0 0 15 13" fill="none">
+                                    <path fillRule="evenodd" clipRule="evenodd" d="M4.10001 0.549988H2.40001V4.79999H0.700012V10.75H1.55001C1.55001 11.6889 2.31113 12.45 3.25001 12.45C4.1889 12.45 4.95001 11.6889 4.95001 10.75H5.80001C5.80001 11.6889 6.56113 12.45 7.50001 12.45C8.4389 12.45 9.20001 11.6889 9.20001 10.75H10.05C10.05 11.6889 10.8111 12.45 11.75 12.45C12.6889 12.45 13.45 11.6889 13.45 10.75H14.3V0.549988H6.65001V2.24999H7.50001V4.79999H4.10001V0.549988ZM12.6 9.04999V6.49999H2.40001V9.04999H12.6ZM9.20001 4.79999H12.6V2.24999H9.20001V4.79999Z" fill="currentColor" />
+                                </svg>
+                            </div>
+                        </Tooltip>
                     )}
                 </div>
 
@@ -524,22 +554,34 @@ const Sidebar = () => {
                                     <path fillRule="evenodd" d="M12.5 3.5 8 2 3.5 3.5 2 8l1.5 4.5L8 14l4.5-1.5L14 8l-1.5-4.5ZM7 11l4.5-4.5L10 5 7 8 5.5 6.5 4 8l3 3Z" clipRule="evenodd" />
                                 </svg>
                             )}
+                            {watchStreak > 0 && (
+                                <Tooltip content={`${watchStreak} Watch Streak`} delay={200} side="top">
+                                    <div className="flex items-center gap-[2px] ml-0.5 text-orange-400 opacity-90 transition-opacity hover:opacity-100 cursor-default">
+                                        <span className="text-[10px] font-bold leading-none translate-y-[0.5px]">{watchStreak}</span>
+                                        <Flame size={12} strokeWidth={2.5} className="text-orange-500 fill-orange-500/20" />
+                                    </div>
+                                </Tooltip>
+                            )}
                         </div>
                         <div className="flex items-center gap-1 text-xs text-textMuted truncate">
                             <span className="truncate">{stream.game_name || 'Just Chatting'}</span>
                             {/* Drops indicator - show next to game name */}
                             {hasDrops && (
-                                <span title="Drops enabled">
-                                    <Gift size={10} className="text-accent flex-shrink-0" />
-                                </span>
+                                <Tooltip content="Drops enabled" delay={100} side="top">
+                                    <span>
+                                        <Gift size={10} className="text-accent flex-shrink-0" />
+                                    </span>
+                                </Tooltip>
                             )}
                             {/* Hype Train indicator - show next to game name */}
                             {hypeTrainStatus && (
-                                <span title={`Hype Train LVL ${hypeTrainStatus.level}`} className={`flex items-center gap-0.5 ${hypeTrainStatus.isGolden ? 'text-yellow-400' : 'text-purple-400'} flex-shrink-0`}>
-                                    <svg className="w-2.5 h-2.5" viewBox="0 0 15 13" fill="none">
-                                        <path fillRule="evenodd" clipRule="evenodd" d="M4.10001 0.549988H2.40001V4.79999H0.700012V10.75H1.55001C1.55001 11.6889 2.31113 12.45 3.25001 12.45C4.1889 12.45 4.95001 11.6889 4.95001 10.75H5.80001C5.80001 11.6889 6.56113 12.45 7.50001 12.45C8.4389 12.45 9.20001 11.6889 9.20001 10.75H10.05C10.05 11.6889 10.8111 12.45 11.75 12.45C12.6889 12.45 13.45 11.6889 13.45 10.75H14.3V0.549988H6.65001V2.24999H7.50001V4.79999H4.10001V0.549988ZM12.6 9.04999V6.49999H2.40001V9.04999H12.6ZM9.20001 4.79999H12.6V2.24999H9.20001V4.79999Z" fill="currentColor" />
-                                    </svg>
-                                </span>
+                                <Tooltip content={`Hype Train LVL ${hypeTrainStatus.level}`} delay={100} side="top">
+                                    <span className={`flex items-center gap-0.5 ${hypeTrainStatus.isGolden ? 'text-yellow-400' : 'text-purple-400'} flex-shrink-0`}>
+                                        <svg className="w-2.5 h-2.5" viewBox="0 0 15 13" fill="none">
+                                            <path fillRule="evenodd" clipRule="evenodd" d="M4.10001 0.549988H2.40001V4.79999H0.700012V10.75H1.55001C1.55001 11.6889 2.31113 12.45 3.25001 12.45C4.1889 12.45 4.95001 11.6889 4.95001 10.75H5.80001C5.80001 11.6889 6.56113 12.45 7.50001 12.45C8.4389 12.45 9.20001 11.6889 9.20001 10.75H10.05C10.05 11.6889 10.8111 12.45 11.75 12.45C12.6889 12.45 13.45 11.6889 13.45 10.75H14.3V0.549988H6.65001V2.24999H7.50001V4.79999H4.10001V0.549988ZM12.6 9.04999V6.49999H2.40001V9.04999H12.6ZM9.20001 4.79999H12.6V2.24999H9.20001V4.79999Z" fill="currentColor" />
+                                        </svg>
+                                    </span>
+                                </Tooltip>
                             )}
                         </div>
                     </div>
@@ -553,24 +595,26 @@ const Sidebar = () => {
                             <span>{formatViewerCount(stream.viewer_count)}</span>
                         </div>
                         {showFavorite && (
-                            <button
-                                onClick={(e) => handleFavoriteClick(e, stream.user_id)}
-                                className={`p-1 rounded transition-all ${isFavorite
-                                    ? 'text-pink-500 hover:text-pink-600'
-                                    : 'text-textMuted hover:text-pink-400 opacity-0 group-hover:opacity-100'
-                                    }`}
-                                title={isFavorite ? 'Remove from favorites' : 'Add to favorites'}
-                            >
-                                <Heart
-                                    size={12}
-                                    fill={isFavorite ? 'currentColor' : 'none'}
-                                    className={animatingHearts.has(stream.user_id) ? 'animate-heart-break' : ''}
-                                />
-                            </button>
+                            <Tooltip content={isFavorite ? 'Remove from favorites' : 'Add to favorites'} delay={200} side="top">
+                                <button
+                                    onClick={(e) => handleFavoriteClick(e, stream.user_id)}
+                                    className={`p-1 flex items-center justify-center bg-transparent transition-transform duration-300 hover:scale-110 active:scale-95`}
+                                >
+                                    <Heart
+                                        size={14}
+                                        fill={isFavorite ? 'url(#glass-heart-fill)' : 'none'}
+                                        stroke={isFavorite ? 'url(#glass-heart-stroke)' : 'currentColor'}
+                                        strokeWidth={isFavorite ? 1.5 : 2}
+                                        className={`transition-all duration-300 ${isFavorite ? 'drop-shadow-[0_4px_8px_rgba(236,72,153,0.5)]' : 'text-textMuted hover:text-white opacity-0 group-hover:opacity-100'} ${animatingHearts.has(stream.user_id) ? 'animate-heart-break' : ''}`}
+                                    />
+                                </button>
+                            </Tooltip>
                         )}
+
                     </div>
                 )}
             </div>
+        </Tooltip>
         );
     };
 
@@ -591,6 +635,21 @@ const Sidebar = () => {
 
     return (
         <>
+            {/* SVG Definitions for Liquid Glass Heart */}
+            <svg width="0" height="0" className="absolute pointer-events-none">
+                <defs>
+                    <linearGradient id="glass-heart-fill" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="rgba(255, 255, 255, 0.4)" />
+                        <stop offset="30%" stopColor="rgba(236, 72, 153, 0.2)" />
+                        <stop offset="100%" stopColor="rgba(236, 72, 153, 0.6)" />
+                    </linearGradient>
+                    <linearGradient id="glass-heart-stroke" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="rgba(255, 255, 255, 0.8)" />
+                        <stop offset="100%" stopColor="rgba(255, 255, 255, 0.1)" />
+                    </linearGradient>
+                </defs>
+            </svg>
+
             {/* Edge trigger zone for hidden mode */}
             {sidebarMode === 'hidden' && !visible && (
                 <div
@@ -651,15 +710,16 @@ const Sidebar = () => {
             >
                 {/* Resize handle - only show when expanded */}
                 {showExpanded && (
-                    <div
-                        className={`
-                            absolute right-0 top-0 w-1 h-full cursor-ew-resize z-10
-                            hover:bg-accent/50 active:bg-accent transition-colors
-                            ${isResizing ? 'bg-accent' : 'bg-transparent'}
-                        `}
-                        onMouseDown={handleResizeStart}
-                        title="Drag to resize sidebar"
-                    />
+                    <Tooltip content="Drag to resize sidebar" delay={500} side="right">
+                        <div
+                            className={`
+                                absolute right-0 top-0 w-1 h-full cursor-ew-resize z-10
+                                hover:bg-accent/50 active:bg-accent transition-colors
+                                ${isResizing ? 'bg-accent' : 'bg-transparent'}
+                            `}
+                            onMouseDown={handleResizeStart}
+                        />
+                    </Tooltip>
                 )}
 
                 {/* Header */}
@@ -672,13 +732,14 @@ const Sidebar = () => {
                     )}
                     {/* Show toggle button in compact mode when expand-on-hover is disabled */}
                     {sidebarMode === 'compact' && !expandOnHover && (
-                        <button
-                            onClick={() => setIsManuallyExpanded(!isManuallyExpanded)}
-                            className="p-1.5 rounded hover:bg-surface-hover text-textSecondary hover:text-textPrimary transition-all"
-                            title={isManuallyExpanded ? 'Collapse sidebar' : 'Expand sidebar'}
-                        >
-                            {isManuallyExpanded ? <ChevronLeft size={16} /> : <ChevronRight size={16} />}
-                        </button>
+                        <Tooltip content={isManuallyExpanded ? 'Collapse sidebar' : 'Expand sidebar'} delay={200} side="right">
+                            <button
+                                onClick={() => setIsManuallyExpanded(!isManuallyExpanded)}
+                                className="p-1.5 rounded hover:bg-surface-hover text-textSecondary hover:text-textPrimary transition-all"
+                            >
+                                {isManuallyExpanded ? <ChevronLeft size={16} /> : <ChevronRight size={16} />}
+                            </button>
+                        </Tooltip>
                     )}
                 </div>
 

@@ -6,6 +6,8 @@ import { useAppStore } from '../stores/AppStore';
 import { getAllUserBadgesWithEarned } from '../services/badgeService';
 import { getProfileFromMemoryCache, getFullProfileWithFallback } from '../services/cosmeticsCache';
 import { getUlidTimestamp, getFormattedCreationDate } from '../utils/ulid';
+import { Tooltip } from './ui/Tooltip';
+import { motion } from 'framer-motion';
 
 import { Logger } from '../utils/logger';
 // Tab navigation types
@@ -132,7 +134,24 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
   const [selectedSeventvPaint, setSelectedSeventvPaint] = useState<SevenTVGlobalPaint | null>(null);
   
   // User's collected global badges (Set of "setId_version" keys)
-  const [collectedBadgeKeys, setCollectedBadgeKeys] = useState<Set<string>>(new Set());
+  const [collectedBadgeKeys, setCollectedBadgeKeys] = useState<Set<string>>(() => {
+    try {
+      const user = useAppStore.getState().currentUser;
+      if (user?.user_id) {
+        const cached = localStorage.getItem(`streamnook_collected_badges_${user.user_id}`);
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          if (Array.isArray(parsed)) {
+            Logger.debug(`[BadgesOverlay] Optimistically loaded ${parsed.length} collected badges from local storage`);
+            return new Set(parsed);
+          }
+        }
+      }
+    } catch (e) {
+      Logger.error('[BadgesOverlay] Failed to parse cached collected badges:', e);
+    }
+    return new Set();
+  });
   const [loadingUserBadges, setLoadingUserBadges] = useState(false);
   
   // Search state
@@ -226,6 +245,14 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
       });
       
       setCollectedBadgeKeys(keys);
+      try {
+        localStorage.setItem(
+          `streamnook_collected_badges_${currentUser.user_id}`,
+          JSON.stringify(Array.from(keys))
+        );
+      } catch (e) {
+        Logger.error('[BadgesOverlay] Failed to cache collected badges:', e);
+      }
       Logger.debug(`[BadgesOverlay] User has ${keys.size} collected badges`);
     } catch (err) {
       Logger.error('[BadgesOverlay] Failed to load user badges:', err);
@@ -1660,14 +1687,27 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
   }, [badgesWithMetadata, sortBy]);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm group">
+    <motion.div 
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.15 }}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm group"
+    >
       {/* Hover-sensitive background overlay */}
       <div
         className="absolute inset-0 group-hover:pointer-events-none"
         onClick={onClose}
       />
 
-      <div className="bg-secondary border border-borderSubtle rounded-lg shadow-2xl w-[90vw] h-[85vh] max-w-7xl flex flex-col relative z-10">
+      <motion.div 
+        initial={{ opacity: 0, scale: 0.95, y: 15 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.95, y: 15 }}
+        transition={{ type: "spring", stiffness: 350, damping: 25 }}
+        style={{ willChange: "transform, opacity" }}
+        className="bg-secondary border border-borderSubtle rounded-lg shadow-2xl w-[90vw] h-[85vh] max-w-7xl flex flex-col relative z-10"
+      >
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-borderSubtle">
           <div className="flex items-center gap-4">
@@ -1677,8 +1717,8 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
                 onClick={() => setActiveTab('twitch-badges')}
                 className={`px-4 py-2 rounded-lg transition-all flex items-center gap-2 ${
                   activeTab === 'twitch-badges'
-                    ? 'bg-[#9147ff] text-white shadow-lg shadow-[#9147ff]/30'
-                    : 'bg-glass text-textSecondary hover:bg-glass/80 hover:text-textPrimary'
+                    ? 'glass-button text-[#b983ff] shadow-[0_0_15px_rgba(185,131,255,0.25)]'
+                    : 'text-textSecondary hover:text-textPrimary'
                 }`}
               >
                 <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
@@ -1692,8 +1732,8 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
                 onClick={() => setActiveTab('7tv-badges')}
                 className={`px-4 py-2 rounded-lg transition-all flex items-center gap-2 ${
                   activeTab === '7tv-badges'
-                    ? 'bg-[#29b6f6] text-white shadow-lg shadow-[#29b6f6]/30'
-                    : 'bg-glass text-textSecondary hover:bg-glass/80 hover:text-textPrimary'
+                    ? 'glass-button text-[#29b6f6] shadow-[0_0_15px_rgba(41,182,246,0.3)]'
+                    : 'text-textSecondary hover:text-textPrimary'
                 }`}
               >
                 <svg className="w-4 h-4" viewBox="0 0 28 21" fill="currentColor">
@@ -1709,8 +1749,8 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
                 onClick={() => setActiveTab('7tv-paints')}
                 className={`px-4 py-2 rounded-lg transition-all flex items-center gap-2 ${
                   activeTab === '7tv-paints'
-                    ? 'bg-[#29b6f6] text-white shadow-lg shadow-[#29b6f6]/30'
-                    : 'bg-glass text-textSecondary hover:bg-glass/80 hover:text-textPrimary'
+                    ? 'glass-button text-[#29b6f6] shadow-[0_0_15px_rgba(41,182,246,0.3)]'
+                    : 'text-textSecondary hover:text-textPrimary'
                 }`}
               >
                 <svg className="w-4 h-4" viewBox="0 0 28 21" fill="currentColor">
@@ -1730,7 +1770,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   placeholder={`Search ${activeTab === 'twitch-badges' ? 'badges' : activeTab === '7tv-badges' ? '7TV badges' : '7TV paints'}...`}
-                  className="w-48 pl-9 pr-3 py-2 bg-glass border border-borderSubtle rounded-lg text-sm text-textPrimary placeholder-textSecondary focus:outline-none focus:border-accent transition-colors"
+                  className="w-48 pl-9 pr-3 py-2 glass-input text-sm text-textPrimary placeholder-textSecondary focus:outline-none transition-colors"
                 />
               </div>
             </div>
@@ -1740,7 +1780,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
               <>
                 {/* Twitch Badges Counter */}
                 {activeTab === 'twitch-badges' && totalGlobalBadges > 0 && (
-                  <div className="flex items-center gap-2 px-3 py-1.5 bg-glass rounded-lg border border-borderSubtle">
+                  <div className="flex items-center gap-2 px-3 py-1.5 glass-badge">
                     <Check size={14} className="text-green-400" />
                     {loadingUserBadges ? (
                       <div className="w-4 h-4 border-2 border-t-transparent border-accent rounded-full animate-spin" />
@@ -1755,7 +1795,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
                 
                 {/* 7TV Badges Counter */}
                 {activeTab === '7tv-badges' && seventvBadges.length > 0 && (
-                  <div className="flex items-center gap-2 px-3 py-1.5 bg-glass rounded-lg border border-borderSubtle">
+                  <div className="flex items-center gap-2 px-3 py-1.5 glass-badge">
                     <Check size={14} className="text-[#29b6f6]" />
                     {loadingUser7TVCosmetics ? (
                       <div className="w-4 h-4 border-2 border-t-transparent border-[#29b6f6] rounded-full animate-spin" />
@@ -1770,7 +1810,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
                 
                 {/* 7TV Paints Counter */}
                 {activeTab === '7tv-paints' && seventvPaints.length > 0 && (
-                  <div className="flex items-center gap-2 px-3 py-1.5 bg-glass rounded-lg border border-borderSubtle">
+                  <div className="flex items-center gap-2 px-3 py-1.5 glass-badge">
                     <Check size={14} className="text-[#29b6f6]" />
                     {loadingUser7TVCosmetics ? (
                       <div className="w-4 h-4 border-2 border-t-transparent border-[#29b6f6] rounded-full animate-spin" />
@@ -1785,13 +1825,14 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
               </>
             )}
           </div>
-          <button
-            onClick={onClose}
-            className="p-2 hover:bg-glass rounded-lg transition-colors"
-            title="Close"
-          >
-            <X size={20} className="text-textSecondary" />
-          </button>
+          <Tooltip content="Close" side="bottom">
+            <button
+              onClick={onClose}
+              className="p-2 hover:bg-white/5 rounded-lg transition-colors"
+            >
+              <X size={20} className="text-textSecondary" />
+            </button>
+          </Tooltip>
         </div>
 
         {/* Content */}
@@ -1814,7 +1855,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
                     <p className="text-red-400 mb-4">{error}</p>
                     <button
                       onClick={loadBadges}
-                      className="px-4 py-2 bg-accent hover:bg-accent/80 rounded-lg transition-colors"
+                      className="px-4 py-2 glass-button text-white"
                     >
                       Retry
                     </button>
@@ -1840,8 +1881,8 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
                   <button
                     onClick={() => setSortBy('date-newest')}
                     className={`px-3 py-1.5 rounded-lg text-sm transition-colors ${sortBy === 'date-newest'
-                      ? 'bg-accent text-white'
-                      : 'bg-glass text-textSecondary hover:bg-glass/80'
+                      ? 'glass-button text-accent shadow-[0_0_10px_rgba(var(--color-accent-rgb),0.3)]'
+                      : 'hover:bg-white/5 text-textSecondary hover:text-white'
                       }`}
                   >
                     Newest First
@@ -1849,8 +1890,8 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
                   <button
                     onClick={() => setSortBy('date-oldest')}
                     className={`px-3 py-1.5 rounded-lg text-sm transition-colors ${sortBy === 'date-oldest'
-                      ? 'bg-accent text-white'
-                      : 'bg-glass text-textSecondary hover:bg-glass/80'
+                      ? 'glass-button text-accent shadow-[0_0_10px_rgba(var(--color-accent-rgb),0.3)]'
+                      : 'hover:bg-white/5 text-textSecondary hover:text-white'
                       }`}
                   >
                     Oldest First
@@ -1858,8 +1899,8 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
                   <button
                     onClick={() => setSortBy('usage-high')}
                     className={`px-3 py-1.5 rounded-lg text-sm transition-colors ${sortBy === 'usage-high'
-                      ? 'bg-accent text-white'
-                      : 'bg-glass text-textSecondary hover:bg-glass/80'
+                      ? 'glass-button text-accent shadow-[0_0_10px_rgba(var(--color-accent-rgb),0.3)]'
+                      : 'hover:bg-white/5 text-textSecondary hover:text-white'
                       }`}
                   >
                     Most Used
@@ -1867,8 +1908,8 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
                   <button
                     onClick={() => setSortBy('usage-low')}
                     className={`px-3 py-1.5 rounded-lg text-sm transition-colors ${sortBy === 'usage-low'
-                      ? 'bg-accent text-white'
-                      : 'bg-glass text-textSecondary hover:bg-glass/80'
+                      ? 'glass-button text-accent shadow-[0_0_10px_rgba(var(--color-accent-rgb),0.3)]'
+                      : 'hover:bg-white/5 text-textSecondary hover:text-white'
                       }`}
                   >
                     Least Used
@@ -1876,8 +1917,8 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
                   <button
                     onClick={() => setSortBy('available')}
                     className={`px-3 py-1.5 rounded-lg text-sm transition-colors flex items-center gap-2 ${sortBy === 'available'
-                      ? 'bg-green-600 text-white'
-                      : 'bg-glass text-textSecondary hover:bg-glass/80'
+                      ? 'glass-button text-green-400 border-green-500/30 shadow-[0_0_10px_rgba(34,197,94,0.3)]'
+                      : 'hover:bg-white/5 text-textSecondary hover:text-white'
                       }`}
                   >
                     <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
@@ -1886,8 +1927,8 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
                   <button
                     onClick={() => setSortBy('coming-soon')}
                     className={`px-3 py-1.5 rounded-lg text-sm transition-colors flex items-center gap-2 ${sortBy === 'coming-soon'
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-glass text-textSecondary hover:bg-glass/80'
+                      ? 'glass-button text-blue-400 border-blue-500/30 shadow-[0_0_10px_rgba(59,130,246,0.3)]'
+                      : 'hover:bg-white/5 text-textSecondary hover:text-white'
                       }`}
                   >
                     <span className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></span>
@@ -1913,15 +1954,16 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
                         Cache age: {cacheAge} day{cacheAge !== 1 ? 's' : ''}
                       </span>
                     )}
-                    <button
-                      onClick={forceRefreshBadges}
-                      disabled={refreshing}
-                      className="flex items-center gap-1 px-2 py-1 bg-glass hover:bg-glass/80 rounded text-xs text-textSecondary hover:text-textPrimary transition-colors disabled:opacity-50"
-                      title="Force refresh badges from Twitch API"
-                    >
-                      <RefreshCw size={12} className={refreshing ? 'animate-spin' : ''} />
-                      {refreshing ? 'Refreshing...' : 'Refresh'}
-                    </button>
+                    <Tooltip content="Force refresh badges from Twitch API" side="top">
+                      <button
+                        onClick={forceRefreshBadges}
+                        disabled={refreshing}
+                        className="flex items-center gap-1 px-2 py-1 glass-button-static rounded text-xs text-textSecondary hover:text-textPrimary transition-colors disabled:opacity-50"
+                      >
+                        <RefreshCw size={12} className={refreshing ? 'animate-spin' : ''} />
+                        {refreshing ? 'Refreshing...' : 'Refresh'}
+                      </button>
+                    </Tooltip>
                   </div>
                 )}
               </div>
@@ -1933,20 +1975,19 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
                   const isComingSoon = isBadgeComingSoon(badge);
                   const hasCollected = isAuthenticated && isCollected(badge);
                   return (
-                    <button
-                      key={`${badge.set_id}-${badge.id}-${index}`}
-                      onClick={() => onBadgeClick(badge, badge.set_id)}
-                      className={`flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-glass transition-all duration-200 group relative ${
-                        hasCollected ? 'ring-2 ring-[#d4a84b]/50 bg-[#d4a84b]/5' :
-                        isAvailable ? 'ring-2 ring-green-500/50' : 
-                        isComingSoon ? 'ring-2 ring-blue-500/50' : ''
-                      }`}
-                      title={hasCollected ? `${badge.title} (Collected!)` : badge.title}
-                    >
-                      <div className={`w-18 h-18 flex items-center justify-center bg-glass rounded-lg group-hover:scale-110 transition-transform duration-200 relative ${
-                        hasCollected ? 'shadow-[0_0_20px_rgba(212,168,75,0.35)]' :
-                        isAvailable ? 'shadow-[0_0_20px_rgba(34,197,94,0.4)]' :
-                        isComingSoon ? 'shadow-[0_0_20px_rgba(59,130,246,0.4)]' : ''
+                    <Tooltip key={`${badge.set_id}-${badge.id}-${index}`} content={hasCollected ? `${badge.title} (Collected!)` : badge.title} side="bottom">
+                      <button
+                        onClick={() => onBadgeClick(badge, badge.set_id)}
+                        className={`flex flex-col items-center gap-2 p-3 transition-all duration-300 group relative ${
+                          hasCollected ? 'rounded-xl bg-gradient-to-br from-[#d4a84b]/15 to-[#b8860b]/5 border border-[#d4a84b]/30 shadow-[inset_0_1px_1px_rgba(255,255,255,0.1),0_4px_20px_rgba(212,168,75,0.15)] backdrop-blur-md hover:bg-[#d4a84b]/20 hover:border-[#d4a84b]/50' :
+                          isAvailable ? 'rounded-lg hover:bg-white/5 ring-2 ring-green-500/50' : 
+                          isComingSoon ? 'rounded-lg hover:bg-white/5 ring-2 ring-blue-500/50' : 'rounded-lg hover:bg-white/5'
+                        }`}
+                      >
+                      <div className={`w-18 h-18 flex items-center justify-center bg-transparent group-hover:scale-110 transition-transform duration-300 relative ${
+                        hasCollected ? 'drop-shadow-[0_0_15px_rgba(212,168,75,0.4)]' :
+                        isAvailable ? 'drop-shadow-[0_0_15px_rgba(34,197,94,0.4)]' :
+                        isComingSoon ? 'drop-shadow-[0_0_15px_rgba(59,130,246,0.4)]' : ''
                       }`}>
                         <img
                           src={badge.image_url_4x}
@@ -1957,10 +1998,10 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
                       </div>
                       {/* Collected indicator - takes priority over other indicators */}
                       {hasCollected && (
-                        <span className="absolute top-1 right-1 w-5 h-5 bg-gradient-to-br from-[#d4a84b] via-[#f0d78c] to-[#b8860b] rounded-full flex items-center justify-center shadow-lg overflow-hidden">
-                          <div className="absolute inset-0 bg-gradient-to-tr from-transparent via-white/30 to-transparent" />
-                          <Check size={12} className="text-[#2a1a0a] relative z-10" strokeWidth={3} />
-                        </span>
+                        <div className="absolute -top-1 -right-1 w-6 h-6 rounded-full flex items-center justify-center bg-black/40 backdrop-blur-md border border-[#d4a84b]/60 shadow-[0_0_15px_rgba(212,168,75,0.4)] overflow-hidden">
+                          <div className="absolute inset-0 bg-gradient-to-br from-[#d4a84b]/30 to-transparent pointer-events-none" />
+                          <Check size={13} className="text-[#f0d78c] drop-shadow-[0_0_3px_rgba(212,168,75,0.8)] z-10" strokeWidth={2.5} />
+                        </div>
                       )}
                       {/* Status indicators - only show if not collected */}
                       {!hasCollected && isAvailable && (
@@ -1969,12 +2010,13 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
                       {!hasCollected && isComingSoon && (
                         <span className="absolute top-1 right-1 w-2 h-2 bg-blue-500 rounded-full animate-pulse"></span>
                       )}
-                      <span className={`text-xs text-center line-clamp-2 transition-colors font-medium ${
-                        hasCollected ? 'bg-gradient-to-r from-[#d4a84b] via-[#f0d78c] to-[#c9a227] bg-clip-text text-transparent' : 'text-textSecondary group-hover:text-textPrimary'
+                      <span className={`text-xs text-center line-clamp-2 transition-all duration-300 font-medium ${
+                        hasCollected ? 'text-[#f0d78c] drop-shadow-[0_0_8px_rgba(212,168,75,0.3)]' : 'text-textSecondary group-hover:text-textPrimary'
                       }`}>
                         {badge.title}
                       </span>
                     </button>
+                    </Tooltip>
                   );
                 })}
               </div>
@@ -2001,7 +2043,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
                     <p className="text-red-400 mb-4">{seventvBadgesError}</p>
                     <button
                       onClick={() => { setSeventvBadges([]); loadSeventvBadges(); }}
-                      className="px-4 py-2 bg-[#29b6f6] hover:bg-[#29b6f6]/80 rounded-lg transition-colors text-white"
+                      className="px-4 py-2 glass-button text-[#29b6f6]"
                     >
                       Retry
                     </button>
@@ -2025,8 +2067,8 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
                         onClick={() => setSeventvBadgeSortBy('newest')}
                         className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
                           seventvBadgeSortBy === 'newest' 
-                            ? 'bg-[#29b6f6] text-white' 
-                            : 'bg-glass text-textSecondary hover:text-textPrimary'
+                            ? 'glass-button text-[#29b6f6] shadow-[0_0_10px_rgba(41,182,246,0.3)]' 
+                            : 'hover:bg-white/5 text-textSecondary hover:text-white'
                         }`}
                       >
                         Newest First
@@ -2035,8 +2077,8 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
                         onClick={() => setSeventvBadgeSortBy('oldest')}
                         className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
                           seventvBadgeSortBy === 'oldest' 
-                            ? 'bg-[#29b6f6] text-white' 
-                            : 'bg-glass text-textSecondary hover:text-textPrimary'
+                            ? 'glass-button text-[#29b6f6] shadow-[0_0_10px_rgba(41,182,246,0.3)]' 
+                            : 'hover:bg-white/5 text-textSecondary hover:text-white'
                         }`}
                       >
                         Oldest First
@@ -2045,8 +2087,8 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
                         onClick={() => setSeventvBadgeSortBy('name')}
                         className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
                           seventvBadgeSortBy === 'name' 
-                            ? 'bg-[#29b6f6] text-white' 
-                            : 'bg-glass text-textSecondary hover:text-textPrimary'
+                            ? 'glass-button text-[#29b6f6] shadow-[0_0_10px_rgba(41,182,246,0.3)]' 
+                            : 'hover:bg-white/5 text-textSecondary hover:text-white'
                         }`}
                       >
                         A-Z
@@ -2066,7 +2108,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
                       <button
                         key={badge.id}
                         onClick={() => setSelectedSeventvBadge(badge)}
-                        className={`flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-glass transition-all duration-200 group cursor-pointer relative ${
+                        className={`flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-white/5 transition-all duration-200 group cursor-pointer relative ${
                           isOwned ? 'ring-2 ring-[#29b6f6]/50 bg-[#29b6f6]/10' : ''
                         }`}
                         title={badge.description || badge.name}
@@ -2077,7 +2119,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
                             <Check size={12} className="text-white" />
                           </div>
                         )}
-                        <div className={`w-18 h-18 flex items-center justify-center bg-glass rounded-lg group-hover:scale-110 transition-transform duration-200 ${
+                        <div className={`w-18 h-18 flex items-center justify-center bg-transparent group-hover:scale-110 transition-transform duration-200 ${
                           isOwned ? 'ring-1 ring-[#29b6f6]/30' : ''
                         }`}>
                           <img
@@ -2120,7 +2162,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
                     <p className="text-red-400 mb-4">{seventvPaintsError}</p>
                     <button
                       onClick={() => { setSeventvPaints([]); loadSeventvPaints(); }}
-                      className="px-4 py-2 bg-[#29b6f6] hover:bg-[#29b6f6]/80 rounded-lg transition-colors text-white"
+                      className="px-4 py-2 glass-button text-[#29b6f6]"
                     >
                       Retry
                     </button>
@@ -2144,8 +2186,8 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
                         onClick={() => setSeventvPaintSortBy('newest')}
                         className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
                           seventvPaintSortBy === 'newest' 
-                            ? 'bg-[#29b6f6] text-white' 
-                            : 'bg-glass text-textSecondary hover:text-textPrimary'
+                            ? 'glass-button text-[#29b6f6] shadow-[0_0_10px_rgba(41,182,246,0.3)]' 
+                            : 'hover:bg-white/5 text-textSecondary hover:text-white'
                         }`}
                       >
                         Newest First
@@ -2154,8 +2196,8 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
                         onClick={() => setSeventvPaintSortBy('oldest')}
                         className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
                           seventvPaintSortBy === 'oldest' 
-                            ? 'bg-[#29b6f6] text-white' 
-                            : 'bg-glass text-textSecondary hover:text-textPrimary'
+                            ? 'glass-button text-[#29b6f6] shadow-[0_0_10px_rgba(41,182,246,0.3)]' 
+                            : 'hover:bg-white/5 text-textSecondary hover:text-white'
                         }`}
                       >
                         Oldest First
@@ -2164,8 +2206,8 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
                         onClick={() => setSeventvPaintSortBy('name')}
                         className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
                           seventvPaintSortBy === 'name' 
-                            ? 'bg-[#29b6f6] text-white' 
-                            : 'bg-glass text-textSecondary hover:text-textPrimary'
+                            ? 'glass-button text-[#29b6f6] shadow-[0_0_10px_rgba(41,182,246,0.3)]' 
+                            : 'hover:bg-white/5 text-textSecondary hover:text-white'
                         }`}
                       >
                         A-Z
@@ -2180,8 +2222,8 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
                         onClick={() => setSeventvPaintFilter('all')}
                         className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
                           seventvPaintFilter === 'all' 
-                            ? 'bg-[#29b6f6] text-white' 
-                            : 'bg-glass text-textSecondary hover:text-textPrimary'
+                            ? 'glass-button text-[#29b6f6] shadow-[0_0_10px_rgba(41,182,246,0.3)]' 
+                            : 'hover:bg-white/5 text-textSecondary hover:text-white'
                         }`}
                       >
                         All
@@ -2190,8 +2232,8 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
                         onClick={() => setSeventvPaintFilter('animated')}
                         className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
                           seventvPaintFilter === 'animated' 
-                            ? 'bg-[#29b6f6] text-white' 
-                            : 'bg-glass text-textSecondary hover:text-textPrimary'
+                            ? 'glass-button text-[#29b6f6] shadow-[0_0_10px_rgba(41,182,246,0.3)]' 
+                            : 'hover:bg-white/5 text-textSecondary hover:text-white'
                         }`}
                       >
                         Animated
@@ -2200,8 +2242,8 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
                         onClick={() => setSeventvPaintFilter('static')}
                         className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
                           seventvPaintFilter === 'static' 
-                            ? 'bg-[#29b6f6] text-white' 
-                            : 'bg-glass text-textSecondary hover:text-textPrimary'
+                            ? 'glass-button text-[#29b6f6] shadow-[0_0_10px_rgba(41,182,246,0.3)]' 
+                            : 'hover:bg-white/5 text-textSecondary hover:text-white'
                         }`}
                       >
                         Static
@@ -2221,7 +2263,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
                         <button
                           key={paint.id}
                           onClick={() => setSelectedSeventvPaint(paint)}
-                          className={`flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-glass transition-all duration-200 group cursor-pointer relative ${
+                          className={`flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-white/5 transition-all duration-200 group cursor-pointer relative ${
                             isOwned ? 'ring-2 ring-[#29b6f6]/50 bg-[#29b6f6]/10' : ''
                           }`}
                           title={paint.description || paint.name}
@@ -2234,7 +2276,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
                             </div>
                           )}
                           <div 
-                            className={`w-full h-14 flex items-center justify-center rounded-lg group-hover:scale-110 transition-transform duration-200 overflow-hidden bg-secondary relative ${
+                            className={`w-full h-14 flex items-center justify-center rounded-lg group-hover:scale-110 transition-transform duration-200 overflow-hidden bg-transparent relative ${
                               isOwned ? 'ring-1 ring-[#29b6f6]/30' : ''
                             }`}
                           >
@@ -2267,7 +2309,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
             </>
           )}
         </div>
-      </div>
+      </motion.div>
       
       {/* 7TV Badge Detail Modal */}
       {selectedSeventvBadge && createPortal(
@@ -2284,7 +2326,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
               <h3 className="text-xl font-bold text-textPrimary">{selectedSeventvBadge.name}</h3>
               <button
                 onClick={() => setSelectedSeventvBadge(null)}
-                className="p-1 hover:bg-glass rounded-lg transition-colors"
+                className="p-1 hover:bg-white/5 rounded-lg transition-colors"
               >
                 <X size={18} className="text-textSecondary" />
               </button>
@@ -2292,7 +2334,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
             
             {/* Large badge preview */}
             <div className="flex justify-center mb-6">
-              <div className={`w-32 h-32 flex items-center justify-center bg-glass rounded-xl ${isAnimatedBadge(selectedSeventvBadge) ? 'ring-4 ring-[#29b6f6]/50' : ''}`}>
+              <div className={`w-32 h-32 flex items-center justify-center bg-transparent rounded-xl ${isAnimatedBadge(selectedSeventvBadge) ? 'ring-4 ring-[#29b6f6]/50' : ''}`}>
                 <img
                   src={getSeventvBadgeImageUrl(selectedSeventvBadge)}
                   alt={selectedSeventvBadge.name}
@@ -2343,7 +2385,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
               <h3 className="text-xl font-bold text-textPrimary">{selectedSeventvPaint.name}</h3>
               <button
                 onClick={() => setSelectedSeventvPaint(null)}
-                className="p-1 hover:bg-glass rounded-lg transition-colors"
+                className="p-1 hover:bg-white/5 rounded-lg transition-colors"
               >
                 <X size={18} className="text-textSecondary" />
               </button>
@@ -2351,7 +2393,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
             
             {/* Large paint preview with user's name */}
             <div className="flex justify-center mb-6">
-              <div className="px-8 py-6 bg-glass rounded-xl border border-borderSubtle">
+              <div className="px-8 py-6 bg-transparent rounded-xl">
                 <span 
                   className="text-3xl font-bold"
                   style={{ 
@@ -2406,7 +2448,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
         </div>,
         document.body
       )}
-    </div>
+    </motion.div>
   );
 };
 

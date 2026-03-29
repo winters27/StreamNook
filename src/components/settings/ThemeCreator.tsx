@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { ChevronDown, ChevronRight, Palette, Trash2, Save, X, Wand2 } from 'lucide-react';
 import { useAppStore } from '../../stores/AppStore';
 import ThemeColorPicker from '../ThemeColorPicker';
+import { Tooltip } from '../ui/Tooltip';
 import {
   themes,
   getThemeById,
@@ -289,14 +290,15 @@ const ThemeCreator = ({ editingTheme, onClose, onSave, onDelete }: ThemeCreatorP
                 </option>
               ))}
             </select>
+            <Tooltip content="Reset to base theme" side="top">
             <button
               onClick={() => handleBaseThemeChange(baseThemeId)}
               className="px-4 py-2.5 glass-button text-textSecondary hover:text-textPrimary flex items-center gap-2"
-              title="Reset to base theme"
             >
               <Wand2 size={16} />
               Reset
             </button>
+            </Tooltip>
           </div>
         </div>
       )}

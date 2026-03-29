@@ -396,7 +396,17 @@ async function main() {
     metadataEntries.sort((a, b) => {
       const dateA = parseDate(a.entry.data?.date_added);
       const dateB = parseDate(b.entry.data?.date_added);
-      return dateB - dateA;
+      const dateCompare = dateB - dateA;
+      
+      if (dateCompare !== 0) return dateCompare;
+
+      // Secondary sort: identical to React's locale string comparison
+      // id formats: metadata:set_id-v1
+      // We strip 'metadata:' and '-v' to mimic `${set_id}-${version_id}`
+      const idA = a.id.replace('metadata:', '').replace('-v', '-');
+      const idB = b.id.replace('metadata:', '').replace('-v', '-');
+      
+      return idA.localeCompare(idB);
     });
 
     // Assign positions

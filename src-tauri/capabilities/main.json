@@ -36,6 +36,7 @@
     "shell:allow-open",
     "deep-link:default",
     "dialog:default",
+    "clipboard-manager:default",
     {
       "identifier": "http:default",
       "scope": [

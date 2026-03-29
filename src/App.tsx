@@ -1,14 +1,21 @@
 import { useEffect, useState, useRef } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
 import { useAppStore } from './stores/AppStore';
+import { useContextMenuStore } from './stores/contextMenuStore';
 import { trackPresence, isSupabaseConfigured, incrementStat } from './services/supabaseService';
 import TitleBar from './components/TitleBar';
 import VideoPlayer from './components/VideoPlayer';
 import ChatWidget from './components/ChatWidget';
 import Home from './components/Home';
 import SettingsDialog from './components/SettingsDialog';
+import { usemultiNookStore } from './stores/multiNookStore';
+import { MultiNookView } from './components/multi-nook/MultiNookView';
+import MultiNookChatSwitcher from './components/multi-nook/MultiNookChatSwitcher';
 import LoadingWidget from './components/LoadingWidget';
 import ToastManager from './components/ToastManager';
-import ProfileOverlay from './components/ProfileOverlay';
+import { TooltipManager } from './components/ui/TooltipManager';
+import { Tooltip } from './components/ui/Tooltip';
+import ProfileModal from './components/ProfileModal';
 import DropsOverlay from './components/DropsOverlay';
 import BadgesOverlay from './components/BadgesOverlay';
 import BadgeDetailOverlay from './components/BadgeDetailOverlay';
@@ -18,6 +25,7 @@ import SetupWizard from './components/SetupWizard';
 import StreamlinkMissingDialog from './components/StreamlinkMissingDialog';
 import Sidebar from './components/Sidebar';
 import ErrorBoundary from './components/ErrorBoundary';
+import { StreamContextMenu } from './components/StreamContextMenu';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
@@ -52,6 +60,8 @@ function App() {
   const { loadSettings, chatPlacement, isLoading, currentStream, streamUrl, checkAuthStatus, showProfileOverlay, setShowProfileOverlay, addToast, setShowDropsOverlay, showBadgesOverlay, setShowBadgesOverlay, badgesOverlayInitialPaintId, badgesOverlayInitialBadgeId, showWhispersOverlay, setShowWhispersOverlay, settings, updateSettings, isTheaterMode, isHomeActive, toggleHome, stopStream, loadActiveDropsCache } = useAppStore();
 
   const [chatSize, setChatSize] = useState(chatPlacement === 'bottom' ? DEFAULT_CHAT_HEIGHT : DEFAULT_CHAT_WIDTH);
+  const { isMultiNookActive, isChatHidden, slots } = usemultiNookStore();
+  const visibleSlotsLength = slots.filter((s) => !s.isMinimized).length;
   const [isResizing, setIsResizing] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const [selectedBadge, setSelectedBadge] = useState<{ badge: BadgeVersion; setId: string } | null>(null);
@@ -80,6 +90,8 @@ function App() {
   const chatPlacementRef = useRef(chatPlacement);
   const isTheaterModeRef = useRef(false);
   const streamUrlRef = useRef<string | null>(null);
+  const isMultiNookActiveRef = useRef(false);
+  const multiNookSlotsLengthRef = useRef(0);
   const isAdjustingRef = useRef(false);
 
   // Handle placement changes - preserve video dimensions when moving chat around
@@ -103,6 +115,7 @@ function App() {
       // when entering/exiting theater mode (where chat placement changes simultaneously)
       const lockEnabled = aspectRatioLockEnabledRef.current;
       const currentStreamUrl = streamUrlRef.current;
+      const currentIsMultiNookActive = isMultiNookActiveRef.current;
 
       // Skip if in theater mode - compact view handles its own sizing
       if (isTheaterMode) {
@@ -112,7 +125,7 @@ function App() {
         return;
       }
 
-      if (lockEnabled && currentStreamUrl) {
+      if (lockEnabled && (currentStreamUrl || currentIsMultiNookActive)) {
         try {
           const window = getCurrentWindow();
 
@@ -132,6 +145,36 @@ function App() {
           Logger.debug('[ChatSize] Old layout:', oldPlacement, 'with chat size', oldChatSize);
           Logger.debug('[ChatSize] New layout:', chatPlacement, 'with chat size', newSize);
 
+          let targetAspectRatio = 16.0 / 9.0;
+          
+          // Dynamically measure sidebar instead of hardcoding
+          let uiWidthOffset = 64;
+          const sidebarEl = document.querySelector('.border-r.border-borderSubtle.flex-shrink-0');
+          if (sidebarEl) {
+            uiWidthOffset = sidebarEl.getBoundingClientRect().width;
+          }
+          let uiHeightOffset = 0;
+
+          // Account for the chat resize separator
+          if (chatPlacement === 'right') uiWidthOffset += 4;
+          if (chatPlacement === 'bottom') uiHeightOffset += 4;
+
+          if (currentIsMultiNookActive) {
+            const len = multiNookSlotsLengthRef.current;
+            uiWidthOffset += 16; // 8px padding on L/R
+            uiHeightOffset += 16; // 8px padding on T/B
+
+            // Add inner gaps (8px each) based on grid matrix
+            if (len === 2) { targetAspectRatio = 16.0 / 18.0; uiHeightOffset += 8; }
+            else if (len >= 3 && len <= 4) { targetAspectRatio = 16.0 / 9.0; uiWidthOffset += 8; uiHeightOffset += 8; }
+            else if (len >= 5 && len <= 6) { targetAspectRatio = 48.0 / 18.0; uiWidthOffset += 16; uiHeightOffset += 8; }
+            else if (len >= 7 && len <= 9) { targetAspectRatio = 16.0 / 9.0; uiWidthOffset += 16; uiHeightOffset += 16; }
+            else if (len >= 10 && len <= 12) { targetAspectRatio = 64.0 / 27.0; uiWidthOffset += 24; uiHeightOffset += 16; }
+            else if (len >= 13 && len <= 16) { targetAspectRatio = 16.0 / 9.0; uiWidthOffset += 24; uiHeightOffset += 24; }
+            else if (len >= 17 && len <= 20) { targetAspectRatio = 80.0 / 36.0; uiWidthOffset += 32; uiHeightOffset += 24; }
+            else { uiWidthOffset += 32; uiHeightOffset += 32; }
+          }
+
           const [newWidth, newHeight] = await invoke<[number, number]>('calculate_aspect_ratio_size_preserve_video', {
             currentWidth: size.width,
             currentHeight: size.height,
@@ -140,6 +183,9 @@ function App() {
             oldChatPlacement: oldPlacement,
             newChatPlacement: chatPlacement,
             titleBarHeight: titleBarHeight,
+            targetAspectRatio: targetAspectRatio,
+            uiWidthOffset: uiWidthOffset,
+            uiHeightOffset: uiHeightOffset,
           });
 
           Logger.debug('[ChatSize] New window size to preserve video:', newWidth, newHeight);
@@ -170,6 +216,49 @@ function App() {
 
     return () => {
       window.removeEventListener('show-badge-detail', handleBadgeDetail as EventListener);
+    };
+  }, []);
+
+  // Global Context Menu Blocker (exempting inputs)
+  useEffect(() => {
+    const handleContextMenu = (e: MouseEvent) => {
+        const target = e.target as HTMLElement;
+        const isInput = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable || target.closest('input, textarea, [contenteditable]');
+        
+        if (isInput) {
+            e.preventDefault();
+            useContextMenuStore.getState().openInputMenu(e, target as HTMLElement);
+            return;
+        }
+
+        const selection = window.getSelection();
+        if (selection && selection.toString().trim().length > 0) {
+            e.preventDefault();
+            useContextMenuStore.getState().openSelectionMenu(e);
+            return;
+        }
+
+        e.preventDefault();
+    };
+    
+    // Global Keydown Blocker for Developer Tools (F12, Ctrl+Shift+I, Cmd+Option+I)
+    // Disabled automatically in development environment
+    const handleKeyDown = (e: KeyboardEvent) => {
+        if (import.meta.env.DEV) return;
+
+        if (e.key === 'F12') {
+            e.preventDefault();
+        }
+        if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'i') {
+            e.preventDefault();
+        }
+    };
+
+    document.addEventListener('contextmenu', handleContextMenu);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+        document.removeEventListener('contextmenu', handleContextMenu);
+        document.removeEventListener('keydown', handleKeyDown);
     };
   }, []);
 
@@ -662,6 +751,14 @@ function App() {
     streamUrlRef.current = streamUrl;
   }, [streamUrl]);
 
+  useEffect(() => {
+    isMultiNookActiveRef.current = isMultiNookActive;
+  }, [isMultiNookActive]);
+
+  useEffect(() => {
+    multiNookSlotsLengthRef.current = visibleSlotsLength;
+  }, [visibleSlotsLength]);
+
   // Track watch time and streams watched in Supabase
   useEffect(() => {
     if (!streamUrl || !isSupabaseConfigured()) return;
@@ -697,9 +794,11 @@ function App() {
       const currentChatPlacement = chatPlacementRef.current;
       const theaterMode = isTheaterModeRef.current;
       const currentStreamUrl = streamUrlRef.current;
+      const currentIsMultiNookActive = isMultiNookActiveRef.current;
+      const multiNookCount = multiNookSlotsLengthRef.current;
 
       // Don't adjust if in theater mode - theater mode handles its own sizing
-      if (theaterMode || !lockEnabled || !currentStreamUrl) return;
+      if (theaterMode || !lockEnabled || (!currentStreamUrl && !currentIsMultiNookActive)) return;
 
       // Prevent re-entrant calls
       if (isAdjustingRef.current) return;
@@ -728,12 +827,44 @@ function App() {
         // Title bar height is approximately 32px
         const titleBarHeight = 32;
 
+        let targetAspectRatio = 16.0 / 9.0;
+        
+        // Dynamically measure sidebar
+        let uiWidthOffset = 64;
+        const sidebarEl = document.querySelector('.border-r.border-borderSubtle.flex-shrink-0');
+        if (sidebarEl) {
+          uiWidthOffset = sidebarEl.getBoundingClientRect().width;
+        }
+        let uiHeightOffset = 0;
+
+        // Account for the chat resize separator
+        if (currentChatPlacement === 'right') uiWidthOffset += 4;
+        if (currentChatPlacement === 'bottom') uiHeightOffset += 4;
+
+        if (currentIsMultiNookActive) {
+          const len = multiNookCount;
+          uiWidthOffset += 16; // 8px padding on L/R
+          uiHeightOffset += 16; // 8px padding on T/B
+
+          if (len === 2) { targetAspectRatio = 16.0 / 18.0; uiHeightOffset += 8; }
+          else if (len >= 3 && len <= 4) { targetAspectRatio = 16.0 / 9.0; uiWidthOffset += 8; uiHeightOffset += 8; }
+          else if (len >= 5 && len <= 6) { targetAspectRatio = 48.0 / 18.0; uiWidthOffset += 16; uiHeightOffset += 8; }
+          else if (len >= 7 && len <= 9) { targetAspectRatio = 16.0 / 9.0; uiWidthOffset += 16; uiHeightOffset += 16; }
+          else if (len >= 10 && len <= 12) { targetAspectRatio = 64.0 / 27.0; uiWidthOffset += 24; uiHeightOffset += 16; }
+          else if (len >= 13 && len <= 16) { targetAspectRatio = 16.0 / 9.0; uiWidthOffset += 24; uiHeightOffset += 24; }
+          else if (len >= 17 && len <= 20) { targetAspectRatio = 80.0 / 36.0; uiWidthOffset += 32; uiHeightOffset += 24; }
+          else if (len > 20) { targetAspectRatio = 80.0 / 36.0; uiWidthOffset += 32; uiHeightOffset += 32; }
+        }
+
         const [newWidth, newHeight] = await invoke<[number, number]>('calculate_aspect_ratio_size', {
           currentWidth: width,
           currentHeight: height,
           chatSize: currentChatSize,
           chatPlacement: currentChatPlacement,
           titleBarHeight: titleBarHeight,
+          targetAspectRatio: targetAspectRatio,
+          uiWidthOffset: uiWidthOffset,
+          uiHeightOffset: uiHeightOffset,
         });
 
         Logger.debug('[AspectRatio] Calculated new size:', newWidth, newHeight);
@@ -754,11 +885,10 @@ function App() {
 
     // Initial adjustment when settings change
     adjustWindowForAspectRatio();
-  }, [settings.video_player?.lock_aspect_ratio, chatSize, chatPlacement, streamUrl, isTheaterMode]);
+  }, [settings.video_player?.lock_aspect_ratio, chatSize, chatPlacement, streamUrl, isTheaterMode, isMultiNookActive, visibleSlotsLength]);
 
   // Separate effect for the resize listener - only set up once and use refs
   useEffect(() => {
-    let resizeUnlisten: (() => void) | null = null;
     let debounceTimeout: NodeJS.Timeout | null = null;
 
     const adjustWindowForAspectRatio = async () => {
@@ -768,8 +898,10 @@ function App() {
       const currentChatPlacement = chatPlacementRef.current;
       const theaterMode = isTheaterModeRef.current;
       const currentStreamUrl = streamUrlRef.current;
+      const currentIsMultiNookActive = isMultiNookActiveRef.current;
+      const multiNookCount = multiNookSlotsLengthRef.current;
 
-      if (theaterMode || !lockEnabled || !currentStreamUrl) return;
+      if (theaterMode || !lockEnabled || (!currentStreamUrl && !currentIsMultiNookActive)) return;
       if (isAdjustingRef.current) return;
       isAdjustingRef.current = true;
 
@@ -788,12 +920,43 @@ function App() {
 
         const titleBarHeight = 32;
 
+        let targetAspectRatio = 16.0 / 9.0;
+        // Dynamically measure sidebar
+        let uiWidthOffset = 64;
+        const sidebarEl = document.querySelector('.border-r.border-borderSubtle.flex-shrink-0');
+        if (sidebarEl) {
+          uiWidthOffset = sidebarEl.getBoundingClientRect().width;
+        }
+        let uiHeightOffset = 0;
+
+        // Account for the chat resize separator
+        if (currentChatPlacement === 'right') uiWidthOffset += 4;
+        if (currentChatPlacement === 'bottom') uiHeightOffset += 4;
+
+        if (currentIsMultiNookActive) {
+          const len = multiNookCount;
+          uiWidthOffset += 16; // 8px padding on L/R
+          uiHeightOffset += 16; // 8px padding on T/B
+
+          if (len === 2) { targetAspectRatio = 16.0 / 18.0; uiHeightOffset += 8; }
+          else if (len >= 3 && len <= 4) { targetAspectRatio = 16.0 / 9.0; uiWidthOffset += 8; uiHeightOffset += 8; }
+          else if (len >= 5 && len <= 6) { targetAspectRatio = 48.0 / 18.0; uiWidthOffset += 16; uiHeightOffset += 8; }
+          else if (len >= 7 && len <= 9) { targetAspectRatio = 16.0 / 9.0; uiWidthOffset += 16; uiHeightOffset += 16; }
+          else if (len >= 10 && len <= 12) { targetAspectRatio = 64.0 / 27.0; uiWidthOffset += 24; uiHeightOffset += 16; }
+          else if (len >= 13 && len <= 16) { targetAspectRatio = 16.0 / 9.0; uiWidthOffset += 24; uiHeightOffset += 24; }
+          else if (len >= 17 && len <= 20) { targetAspectRatio = 80.0 / 36.0; uiWidthOffset += 32; uiHeightOffset += 24; }
+          else if (len > 20) { targetAspectRatio = 80.0 / 36.0; uiWidthOffset += 32; uiHeightOffset += 32; }
+        }
+
         const [newWidth, newHeight] = await invoke<[number, number]>('calculate_aspect_ratio_size', {
           currentWidth: width,
           currentHeight: height,
           chatSize: currentChatSize,
           chatPlacement: currentChatPlacement,
           titleBarHeight: titleBarHeight,
+          targetAspectRatio: targetAspectRatio,
+          uiWidthOffset: uiWidthOffset,
+          uiHeightOffset: uiHeightOffset,
         });
 
         if (Math.abs(width - newWidth) > 5 || Math.abs(height - newHeight) > 5) {
@@ -807,27 +970,27 @@ function App() {
       }
     };
 
-    const setupResizeListener = async () => {
-      const window = getCurrentWindow();
-      resizeUnlisten = await window.onResized(async () => {
-        // Debounce resize events
-        if (debounceTimeout) {
-          clearTimeout(debounceTimeout);
+    let unlistenPromise: Promise<() => void> | null = null;
+    const window = getCurrentWindow();
+    
+    unlistenPromise = window.onResized(async () => {
+      // Debounce resize events
+      if (debounceTimeout) {
+        clearTimeout(debounceTimeout);
+      }
+      debounceTimeout = setTimeout(async () => {
+        // Check refs for current state
+        if (aspectRatioLockEnabledRef.current && !isTheaterModeRef.current && (streamUrlRef.current || isMultiNookActiveRef.current)) {
+          await adjustWindowForAspectRatio();
         }
-        debounceTimeout = setTimeout(async () => {
-          // Check refs for current state
-          if (aspectRatioLockEnabledRef.current && !isTheaterModeRef.current && streamUrlRef.current) {
-            await adjustWindowForAspectRatio();
-          }
-        }, 100);
-      });
-    };
-
-    setupResizeListener();
+      }, 100);
+    });
 
     return () => {
-      if (resizeUnlisten) {
-        resizeUnlisten();
+      if (unlistenPromise) {
+        unlistenPromise.then(unlisten => {
+          if (typeof unlisten === 'function') unlisten();
+        });
       }
       if (debounceTimeout) {
         clearTimeout(debounceTimeout);
@@ -951,75 +1114,147 @@ function App() {
         {/* Main content area with Home/PIP support */}
         <div className="flex-1 relative overflow-hidden">
           {/* Home View - shown when isHomeActive or no stream */}
-          {(isHomeActive || (!streamUrl && !isLoading)) && (
-            <div className="absolute inset-0 z-10 bg-background/95 backdrop-blur-sm">
-              <Home />
-            </div>
-          )}
+          <AnimatePresence>
+            {(isHomeActive || (!streamUrl && !isLoading && !isMultiNookActive)) && (
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.2, ease: "easeInOut" }}
+                className="absolute inset-0 z-40 bg-background/85 backdrop-blur-2xl"
+              >
+                <Home />
+              </motion.div>
+            )}
+          </AnimatePresence>
 
           {/* Loading state when starting stream */}
-          {isLoading && !streamUrl && (
-            <div className="absolute inset-0 z-20 bg-black">
-              <LoadingWidget useFunnyMessages={true} showProxyNote={settings.ttvlol_plugin?.enabled ?? false} />
-            </div>
-          )}
+          <AnimatePresence>
+            {isLoading && !streamUrl && !isMultiNookActive && (
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.2 }}
+                className="absolute inset-0 z-50 bg-black"
+              >
+                <LoadingWidget useFunnyMessages={true} showProxyNote={settings.ttvlol_plugin?.enabled ?? false} />
+              </motion.div>
+            )}
+          </AnimatePresence>
 
-          {/* Stream/Chat View - blurred when Home is active but kept mounted to preserve session */}
-          {streamUrl && (
-            <div
-              ref={containerRef}
-              className={`flex flex-1 h-full ${chatPlacement === 'bottom' ? 'flex-col' : 'flex-row'} ${isHomeActive ? 'absolute inset-0 z-0 blur-xl opacity-30 pointer-events-none' : ''}`}
-            >
-              <div className="flex-1 relative overflow-hidden">
-                <div className="w-full h-full">
-                  <VideoPlayer key={streamUrl} />
+          {/* Stream/Chat View - kept mounted to preserve session */}
+          <AnimatePresence>
+            {(streamUrl || isMultiNookActive) && (
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.2, ease: "easeInOut" }}
+                ref={containerRef}
+                className={`flex flex-1 h-full ${chatPlacement === 'bottom' ? 'flex-col' : 'flex-row'} ${isHomeActive ? 'pointer-events-none' : ''}`}
+              >
+                <div className="flex-1 relative overflow-hidden bg-background">
+                  <AnimatePresence mode="wait">
+                    {isMultiNookActive ? (
+                      <motion.div 
+                        key="multinook"
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        transition={{ duration: 0.15 }}
+                        className="w-full h-full absolute inset-0"
+                      >
+                        <MultiNookView />
+                      </motion.div>
+                    ) : (
+                      <motion.div 
+                        key="videoplayer"
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        transition={{ duration: 0.15 }}
+                        className="w-full h-full absolute inset-0"
+                      >
+                        <VideoPlayer key={streamUrl} />
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                  <AnimatePresence>
+                    {isLoading && (
+                      <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        transition={{ duration: 0.2 }}
+                        className="absolute inset-0 z-20"
+                      >
+                        <LoadingWidget useFunnyMessages={true} showProxyNote={settings.ttvlol_plugin?.enabled ?? false} />
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
                 </div>
-                {isLoading && <LoadingWidget useFunnyMessages={true} showProxyNote={settings.ttvlol_plugin?.enabled ?? false} />}
-              </div>
-              {/* Chat - hidden when Home is active but kept mounted */}
-              {chatPlacement !== 'hidden' && (
-                <>
-                  {/* Resizable Separator */}
-                  <div
-                    onMouseDown={handleMouseDown}
-                    className={`
-                      ${chatPlacement === 'right' ? 'w-1 cursor-ew-resize hover:w-1.5' : 'h-1 cursor-ns-resize hover:h-1.5'}
-                      bg-borderLight hover:bg-accent transition-all flex-shrink-0 z-10
-                      ${isResizing ? (chatPlacement === 'right' ? 'w-1.5 bg-accent' : 'h-1.5 bg-accent') : ''}
-                    `}
-                    title={chatPlacement === 'right' ? 'Drag to resize chat width' : 'Drag to resize chat height'}
-                  />
-                  {/* Chat Widget */}
-                  <div
-                    className="flex-shrink-0 overflow-hidden"
-                    style={{
-                      [chatPlacement === 'right' ? 'width' : 'height']: `${chatSize}px`
+                {/* Chat - kept mounted to prevent iframe reload stutter */}
+                {chatPlacement !== 'hidden' && (
+                  <motion.div
+                    initial={{ opacity: 0, width: chatPlacement === 'right' ? 0 : undefined, height: chatPlacement === 'bottom' ? 0 : undefined }}
+                    animate={{ 
+                      opacity: (isMultiNookActive && isChatHidden) ? 0 : 1, 
+                      width: chatPlacement === 'right' ? ((isMultiNookActive && isChatHidden) ? 0 : 'auto') : undefined, 
+                      height: chatPlacement === 'bottom' ? ((isMultiNookActive && isChatHidden) ? 0 : 'auto') : undefined 
                     }}
+                    transition={{ type: "spring", stiffness: 350, damping: 25 }}
+                    className={`flex ${chatPlacement === 'bottom' ? 'flex-col' : 'flex-row'} flex-shrink-0`}
+                    style={{ overflow: 'hidden' }}
                   >
-                    <ChatWidget />
-                  </div>
-                </>
-              )}
-            </div>
-          )}
+                    {/* Resizable Separator */}
+                    <Tooltip content={chatPlacement === 'right' ? 'Drag to resize chat width' : 'Drag to resize chat height'} delay={100}>
+                      <div
+                        onMouseDown={handleMouseDown}
+                        className={`
+                          ${chatPlacement === 'right' ? 'w-1 cursor-ew-resize' : 'h-1 cursor-ns-resize'}
+                          bg-borderLight hover:bg-accent transition-colors flex-shrink-0 z-10
+                          ${isResizing ? 'bg-accent' : ''}
+                        `}
+                      />
+                    </Tooltip>
+                    {/* Chat Widget */}
+                    <div
+                      className="flex-shrink-0 flex flex-col h-full overflow-hidden bg-background"
+                      style={{
+                        [chatPlacement === 'right' ? 'width' : 'height']: `${chatSize}px`
+                      }}
+                    >
+                      {isMultiNookActive && <MultiNookChatSwitcher />}
+                      <div className="flex-1 overflow-hidden relative">
+                        <ChatWidget />
+                      </div>
+                    </div>
+                  </motion.div>
+                )}
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
       </div>
       <SettingsDialog />
       <DropsOverlay />
-      <ProfileOverlay
+      <ProfileModal
         isOpen={showProfileOverlay}
         onClose={() => setShowProfileOverlay(false)}
-        anchorPosition={{ x: window.innerWidth, y: 32 }}
       />
-      {showBadgesOverlay && !selectedBadge && (
-        <BadgesOverlay
-          onClose={() => setShowBadgesOverlay(false)}
-          onBadgeClick={(badge, setId) => setSelectedBadge({ badge, setId })}
-          initialPaintId={badgesOverlayInitialPaintId}
-          initialBadgeId={badgesOverlayInitialBadgeId}
-        />
-      )}
-      {selectedBadge && (
+      <AnimatePresence>
+        {showBadgesOverlay && !selectedBadge && (
+          <BadgesOverlay
+            onClose={() => setShowBadgesOverlay(false)}
+            onBadgeClick={(badge, setId) => setSelectedBadge({ badge, setId })}
+            initialPaintId={badgesOverlayInitialPaintId}
+            initialBadgeId={badgesOverlayInitialBadgeId}
+          />
+        )}
+      </AnimatePresence>
+      <AnimatePresence>
+        {selectedBadge && (
         <BadgeDetailOverlay
           badge={selectedBadge.badge}
           setId={selectedBadge.setId}
@@ -1029,7 +1264,8 @@ function App() {
           }}
           onBack={() => setSelectedBadge(null)}
         />
-      )}
+        )}
+      </AnimatePresence>
       {showChangelog && changelogVersion && (
         <ChangelogOverlay
           version={changelogVersion}
@@ -1046,8 +1282,11 @@ function App() {
       />
       <StreamlinkMissingDialog />
       <ToastManager />
+      <TooltipManager />
+      <StreamContextMenu />
     </div>
   );
 }
 
 export default App;
+

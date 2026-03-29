@@ -12,8 +12,12 @@ impl ChatService {
         IrcService::start(channel, state).await
     }
 
-    pub async fn send_message(message: &str, reply_parent_msg_id: Option<&str>) -> Result<()> {
-        IrcService::send_message(message, reply_parent_msg_id).await
+    pub async fn send_message(
+        message: &str,
+        reply_parent_msg_id: Option<&str>,
+        target_channel: Option<&str>,
+    ) -> Result<()> {
+        IrcService::send_message(message, reply_parent_msg_id, target_channel).await
     }
 
     pub async fn stop() -> Result<()> {

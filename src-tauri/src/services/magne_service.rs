@@ -221,12 +221,12 @@ impl MagneService {
                     "timestamps": { "start": timestamp * 1000 },
                     "assets": {
                         "large_image": STREAMNOOK_LOGO_URL,
-                        "large_text": "Stream Nook",
+                        "large_text": "StreamNook",
                         "small_image": STREAMNOOK_LOGO_URL,
-                        "small_text": "Stream Nook",
+                        "small_text": "StreamNook",
                     },
                     "buttons": [{
-                        "label": "Download Stream Nook",
+                        "label": "Download StreamNook",
                         "url": "https://github.com/winters27/StreamNook/",
                     }],
                 },
@@ -290,7 +290,7 @@ impl MagneService {
         let (large_img, large_txt) = if let Some(ref url) = game_image_url {
             (url.as_str(), game_name)
         } else {
-            (STREAMNOOK_LOGO_URL, "Stream Nook")
+            (STREAMNOOK_LOGO_URL, "StreamNook")
         };
 
         let assets = json!({
@@ -305,7 +305,7 @@ impl MagneService {
             buttons.push(json!({ "label": "Watch Stream", "url": stream_url }));
         }
         buttons.push(json!({
-            "label": "Download Stream Nook",
+            "label": "Download StreamNook",
             "url": "https://github.com/winters27/StreamNook/",
         }));
 

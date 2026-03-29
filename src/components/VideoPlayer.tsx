@@ -7,6 +7,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { Loader2, RefreshCcw } from 'lucide-react';
 import { Heart, HeartBreak } from 'phosphor-react';
 import { useAppStore } from '../stores/AppStore';
+import StreamTitleWithEmojis from './StreamTitleWithEmojis';
+import { Tooltip } from './ui/Tooltip';
 
 import { Logger } from '../utils/logger';
 const VideoPlayer = () => {
@@ -15,7 +17,7 @@ const VideoPlayer = () => {
   const hlsRef = useRef<Hls | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const progressUpdateIntervalRef = useRef<number | null>(null);
-  const { streamUrl, settings, getAvailableQualities, changeStreamQuality, handleStreamOffline, isAutoSwitching, currentStream, currentUser, stopStream, restartStream } = useAppStore();
+  const { streamUrl, settings, getAvailableQualities, changeStreamQuality, handleStreamOffline, isAutoSwitching, currentStream, currentUser, restartStream } = useAppStore();
   const playerSettings = settings.video_player;
   // Store settings in a ref so createPlayer doesn't need to depend on them
   // This prevents player recreation when volume/muted settings change
@@ -27,12 +29,17 @@ const VideoPlayer = () => {
   isAutoSwitchingRef.current = isAutoSwitching;
   const isLiveRef = useRef<boolean>(true);
   const userInitiatedPauseRef = useRef<boolean>(false);
-  const hasJumpedToLiveRef = useRef<boolean>(false);
   const [availableQualities, setAvailableQualities] = useState<string[]>([]);
   // Overlay visibility state (works in both normal and fullscreen modes)
   const [showOverlay, setShowOverlay] = useState(false);
   const overlayTimerRef = useRef<NodeJS.Timeout | null>(null);
   const OVERLAY_HIDE_DELAY = 2600; // Match Plyr's native control hide timing (2.6s)
+
+  // Memory Leak Prevention Refs for closures / timeouts
+  const volumeDebounceRef = useRef<NodeJS.Timeout | null>(null);
+  const bufferGateTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const onPlayingRef = useRef<(() => void) | null>(null);
+  const onLoadedMetadataRef = useRef<(() => void) | null>(null);
 
   // Follow state
   const [isFollowing, setIsFollowing] = useState<boolean | null>(null);
@@ -63,13 +70,7 @@ const VideoPlayer = () => {
   const minPlayTimeBeforeOfflineMs = 5000; // Must have played at least 5 seconds before considering offline
   const noFragmentTimeoutMs = 15000; // If no fragments received for 15 seconds with errors, stream is likely offline
 
-  // Sync volume with store
-  const syncVolumeToPlayer = useCallback(() => {
-    if (playerRef.current) {
-      playerRef.current.volume = playerSettings.volume;
-      playerRef.current.muted = playerSettings.muted;
-    }
-  }, [playerSettings.volume, playerSettings.muted]);
+
 
   // Fetch available qualities from Streamlink
   useEffect(() => {
@@ -250,6 +251,21 @@ const VideoPlayer = () => {
     if (!videoRef.current || !streamUrl) return;
 
     const video = videoRef.current;
+
+    // Clear previously attached video listeners to prevent memory leaks from stacking closures
+    if (onPlayingRef.current) video.removeEventListener('playing', onPlayingRef.current);
+    if (onLoadedMetadataRef.current) video.removeEventListener('loadedmetadata', onLoadedMetadataRef.current);
+    
+    // Clear pending timeouts
+    if (bufferGateTimeoutRef.current) {
+      clearTimeout(bufferGateTimeoutRef.current);
+      bufferGateTimeoutRef.current = null;
+    }
+    if (volumeDebounceRef.current) {
+      clearTimeout(volumeDebounceRef.current);
+      volumeDebounceRef.current = null;
+    }
+
     // Read settings from ref to avoid dependency on playerSettings
     // This prevents player recreation when only volume/muted changes
     const currentSettings = playerSettingsRef.current;
@@ -270,24 +286,25 @@ const VideoPlayer = () => {
     if (Hls.isSupported()) {
       Logger.debug('[HLS] HLS.js is supported, creating player...');
 
+
       // Create HLS.js instance with optimized settings
-      // Note: liveSyncDurationCount and liveMaxLatencyDurationCount are kept at default/conservative
-      // values for stability. The "jump to live" feature just does a one-time seek on load.
       const hls = new Hls({
         debug: false,
         enableWorker: true,
-        lowLatencyMode: currentSettings.low_latency_mode,
+        lowLatencyMode: false, // Force false: LL-HLS chunk parsing causes cyclic starvation with proxies
+        startFragPrefetch: false, // Disabled: prefetching double-buffers massive TS chunks in V8 heap
         backBufferLength: 30, // Keep 30 seconds of back buffer
         maxBufferLength: currentSettings.max_buffer_length || 30, // Buffer ahead
         maxMaxBufferLength: currentSettings.max_buffer_length || 120, // Max buffer
         maxBufferSize: 60 * 1000 * 1000, // 60 MB
-        maxBufferHole: 2.0, // Increased from 0.5 - allow larger gaps before seeking (helps with buffering issues)
-        highBufferWatchdogPeriod: 3, // Increased from 2 - check buffer health every 3s (less aggressive)
-        nudgeOffset: 0.5, // Increased from 0.1 - larger nudge when recovering (helps unstick playback)
-        nudgeMaxRetry: 5, // Increased from 3 - try more times to recover from stalls
-        maxFragLookUpTolerance: 0.5, // Increased from 0.25 - more tolerant fragment lookup
-        liveSyncDurationCount: currentSettings.low_latency_mode ? 2 : 3, // Stay close to live edge
-        liveMaxLatencyDurationCount: currentSettings.low_latency_mode ? 5 : 8, // Increased - allow more latency before seeking
+        maxBufferHole: 0.5, // Restored — the 2.0 was masking the premature-play root cause
+        highBufferWatchdogPeriod: 2, // Restored — check buffer health every 2s
+        nudgeOffset: 0.2, // Restored closer to default — buffer gate fixes the real issue
+        nudgeMaxRetry: 3, // Restored to default
+        maxFragLookUpTolerance: 0.5, // More tolerant fragment lookup
+        liveSyncDuration: currentSettings.low_latency_mode ? 6 : 8, // Seconds behind live edge. Force absolute time.
+        liveMaxLatencyDuration: 60, // Capped to 60s to allow GC. Prevents holding massive 10min TS buffers in RAM.
+        maxLiveSyncPlaybackRate: 1.15, // Rubber-band playback speed to catch up to live edge
         liveDurationInfinity: true, // Live stream has infinite duration
         manifestLoadingTimeOut: 10000, // 10s timeout for manifest
         manifestLoadingMaxRetry: 3, // Retry manifest 3 times
@@ -299,12 +316,12 @@ const VideoPlayer = () => {
         fragLoadingMaxRetry: 6, // Retry fragments 6 times
         fragLoadingRetryDelay: 1000, // Wait 1s between retries
         startLevel: currentSettings.start_quality || -1, // Start quality level
-        // Additional buffering improvements
-        abrEwmaDefaultEstimate: 500000, // Initial bandwidth estimate (500kbps)
+        // ABR tuning
+        abrEwmaDefaultEstimate: 1_500_000, // 1.5Mbps — balanced start to prevent initial bandwidth spike
         abrEwmaFastLive: 3.0, // Fast ABR for live streams
         abrEwmaSlowLive: 9.0, // Slow ABR for live streams
-        abrBandWidthFactor: 0.95, // Be slightly conservative with bandwidth (helps prevent stalls)
-        abrBandWidthUpFactor: 0.7, // Be cautious when upgrading quality
+        abrBandWidthFactor: 0.95, // Slightly conservative with bandwidth
+        abrBandWidthUpFactor: 0.7, // Cautious when upgrading quality
       });
 
       hlsRef.current = hls;
@@ -313,6 +330,17 @@ const VideoPlayer = () => {
       hls.on(Hls.Events.MANIFEST_PARSED, (_event, data) => {
         Logger.debug('[HLS] Manifest parsed, starting playback');
         Logger.debug('[HLS] Available quality levels:', data.levels.map(l => `${l.height}p @ ${l.bitrate}bps`).join(', '));
+
+        // Diagnostic: log the details HLS.js uses for live sync calculations
+        const selectedLevel = data.levels[data.firstLevel || 0];
+        Logger.debug(
+          `[HLS-DIAG] MANIFEST | levels=${data.levels.length} | ` +
+          `firstLevel=${data.firstLevel} | ` +
+          `targetDuration=${selectedLevel?.details?.targetduration ?? 'N/A'} | ` +
+          `liveSyncPosition=${hls.liveSyncPosition?.toFixed(1) ?? 'N/A'} | ` +
+          `config.liveSyncDuration=${hls.config.liveSyncDuration ?? 'unset'} | ` +
+          `config.liveSyncDurationCount=${hls.config.liveSyncDurationCount ?? 'unset'}`
+        );
 
         // Reset error counts on successful manifest parse - stream is working
         fatalErrorCountRef.current = 0;
@@ -337,7 +365,7 @@ const VideoPlayer = () => {
               selected: 1,
               options: [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2],
             },
-            autoplay: currentSettings.autoplay,
+            autoplay: false, // Gate controls playback start — wait for enough buffer
             muted: currentSettings.muted,
             volume: currentSettings.volume,
             invertTime: false,
@@ -367,7 +395,8 @@ const VideoPlayer = () => {
           });
 
           // Initial volume sync
-          syncVolumeToPlayer();
+          playerRef.current.volume = currentSettings.volume;
+          playerRef.current.muted = currentSettings.muted;
 
           // Listen for Plyr events
           player.on('play', () => {
@@ -381,19 +410,32 @@ const VideoPlayer = () => {
               }
             }, 50);
           });
-        }
 
-        // Start playback
-        if (currentSettings.autoplay) {
-          video.play().catch(e => {
-            Logger.debug('[HLS] Autoplay failed:', e);
-            // Try muted autoplay as fallback
-            video.muted = true;
-            video.play().catch(() => {
-              Logger.debug('[HLS] Muted autoplay also failed');
-            });
+          // Persist volume/muted changes back to settings when user adjusts via Plyr UI
+          player.on('volumechange', () => {
+            if (!playerRef.current) return;
+            const newVolume = playerRef.current.volume;
+            const newMuted = playerRef.current.muted;
+
+            // Debounce to avoid hammering the backend on every slider tick
+            if (volumeDebounceRef.current) clearTimeout(volumeDebounceRef.current);
+            volumeDebounceRef.current = setTimeout(() => {
+              const { settings, updateSettings } = useAppStore.getState();
+              const current = settings.video_player;
+              if (current.volume !== newVolume || current.muted !== newMuted) {
+                updateSettings({
+                  ...settings,
+                  video_player: { ...current, volume: newVolume, muted: newMuted },
+                });
+              }
+            }, 300);
           });
         }
+        // Don't play here. The FRAG_BUFFERED gate below will call play()
+        // once enough buffer exists (partial segment + one full segment).
+        // This prevents the cold-start stall. No seeking — HLS.js positions
+        // naturally via liveSyncDuration.
+        Logger.debug('[HLS] Manifest parsed — waiting for buffer depth before play...');
       });
 
       hls.on(Hls.Events.ERROR, (_event, data) => {
@@ -577,29 +619,56 @@ const VideoPlayer = () => {
       });
 
       hls.on(Hls.Events.FRAG_LOADED, (_event, data) => {
-        // Track when we last successfully received a fragment
         lastFragLoadedTimeRef.current = Date.now();
-
-        // Reset non-fatal error count on successful fragment load
-        // This means the stream is still working
         nonFatalErrorCountRef.current = 0;
-
-        // Log occasionally to avoid spam
         if (Math.random() < 0.05) {
-          Logger.debug(`[HLS] Fragment loaded: ${data.frag.sn}`);
+          Logger.debug(`[HLS] Fragment loaded: sn=${data.frag.sn} dur=${data.frag.duration.toFixed(1)}s`);
         }
       });
 
+      // ──── Cold-Start Buffer Gate ────
+      // Empirical data (hls-diag.mjs): Twitch segments are 2s, TARGETDURATION=5s.
+      // After 2 segments (4s buffer), surplus is +2.8s — safe to sustain playback.
+      // Gate threshold: 4s. Expected wall-clock wait: ~1.2s.
+      let playStarted = false;
+      const GATE_THRESHOLD = 4;
+
+      hls.on(Hls.Events.FRAG_BUFFERED, () => {
+        if (playStarted || !currentSettings.autoplay) return;
+
+        const buffered = video.buffered;
+        if (buffered.length === 0) return;
+
+        const depth = buffered.end(buffered.length - 1) - buffered.start(0);
+        if (depth < GATE_THRESHOLD) return;
+
+        playStarted = true;
+        Logger.debug(`[HLS] Buffer gate cleared: ${depth.toFixed(1)}s — starting playback`);
+        video.play().catch(e => {
+          Logger.debug('[HLS] Autoplay failed:', e);
+          video.muted = true;
+          video.play().catch(() => Logger.debug('[HLS] Muted autoplay also failed'));
+        });
+      });
+
+      // Fallback timeout
+      bufferGateTimeoutRef.current = setTimeout(() => {
+        if (!playStarted && currentSettings.autoplay) {
+          playStarted = true;
+          Logger.debug('[HLS] Buffer gate timeout — starting playback');
+          video.play().catch(() => {});
+        }
+      }, 5000);
       // Load the stream
       hls.loadSource(streamUrl);
       hls.attachMedia(video);
 
       // Add video event listeners
-      video.addEventListener('loadedmetadata', () => {
+      const onLoadedMetadata = () => {
         Logger.debug(`[Video] Metadata loaded: ${video.videoWidth}x${video.videoHeight}`);
-      });
+      };
 
-      video.addEventListener('playing', () => {
+      const onPlaying = () => {
         Logger.debug(`[Video] Playing: ${video.videoWidth}x${video.videoHeight}, paused: ${video.paused}, readyState: ${video.readyState}`);
         Logger.debug(`[Video] Audio state: muted=${video.muted}, volume=${video.volume}`);
 
@@ -610,54 +679,19 @@ const VideoPlayer = () => {
           Logger.debug('[Video] First successful playback recorded');
         }
 
-        // Jump to live on first play if enabled (fixes 15s delay)
-        // This is a one-time seek on load - doesn't affect ongoing buffer behavior
-        // Usage of 'playing' event ensures stream is actually running before we seek
-        if (currentSettings.jump_to_live && !hasJumpedToLiveRef.current && isLiveRef.current) {
-          Logger.debug('[HLS] Jump to live on load enabled, will seek to live edge...');
-          hasJumpedToLiveRef.current = true;
-
-          // Wait for buffer to build up before seeking - this is crucial!
-          // Increased to 2 seconds to allow more buffer to accumulate
-          setTimeout(() => {
-            // Check buffer state
-            if (video.buffered.length === 0) {
-              Logger.debug('[HLS] Jump to live: no buffer yet, retrying...');
-              hasJumpedToLiveRef.current = false;
-              return;
-            }
-
-            const bufferedEnd = video.buffered.end(video.buffered.length - 1);
-            const bufferedStart = video.buffered.start(video.buffered.length - 1);
-            const bufferedDuration = bufferedEnd - bufferedStart;
-            const currentPos = video.currentTime;
-            const timeBehindLive = bufferedEnd - currentPos;
-
-            Logger.debug(`[HLS] Jump to live: buffer=${bufferedDuration.toFixed(2)}s, current=${currentPos.toFixed(2)}s, bufferedEnd=${bufferedEnd.toFixed(2)}s, behind=${timeBehindLive.toFixed(2)}s`);
-
-            // Only seek if we're significantly behind (more than 8 seconds from live)
-            // and we have a reasonable buffer built up (at least 5 seconds)
-            if (timeBehindLive > 8 && bufferedDuration >= 5) {
-              // Seek to 5 seconds before buffered end to ensure smooth playback
-              // This gives enough buffer headroom to prevent stalls
-              const seekTarget = bufferedEnd - 5;
-              Logger.debug(`[HLS] Jump to live: seeking from ${currentPos.toFixed(2)}s to ${seekTarget.toFixed(2)}s (5s behind live)`);
-              video.currentTime = seekTarget;
-            } else if (timeBehindLive <= 8) {
-              Logger.debug('[HLS] Jump to live: already close to live edge, no seek needed');
-            } else {
-              Logger.debug(`[HLS] Jump to live: buffer too small (${bufferedDuration.toFixed(2)}s), waiting...`);
-              // Try again after more buffer builds up
-              hasJumpedToLiveRef.current = false;
-            }
-          }, 2000); // Wait 2 seconds for buffer to build (increased from 1s)
-        }
+        // Buffer gate handles the initial seek-to-live — no jump_to_live logic needed here.
 
         // Reset error counts on successful playback - stream is working
         fatalErrorCountRef.current = 0;
         manifestErrorCountRef.current = 0;
         nonFatalErrorCountRef.current = 0;
-      });
+      };
+
+      onLoadedMetadataRef.current = onLoadedMetadata;
+      onPlayingRef.current = onPlaying;
+
+      video.addEventListener('loadedmetadata', onLoadedMetadata);
+      video.addEventListener('playing', onPlaying);
 
     } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
       // Native HLS support (Safari)
@@ -693,25 +727,50 @@ const VideoPlayer = () => {
       });
 
       playerRef.current = player;
-      syncVolumeToPlayer();
+      playerRef.current.volume = currentSettings.volume;
+      playerRef.current.muted = currentSettings.muted;
 
-      video.addEventListener('loadedmetadata', () => {
-        video.play().catch(e => Logger.debug('Initial play failed:', e));
+      // Persist volume/muted changes back to settings (Safari path)
+      player.on('volumechange', () => {
+        if (!playerRef.current) return;
+        const newVolume = playerRef.current.volume;
+        const newMuted = playerRef.current.muted;
+
+        if (volumeDebounceRef.current) clearTimeout(volumeDebounceRef.current);
+        volumeDebounceRef.current = setTimeout(() => {
+          const { settings, updateSettings } = useAppStore.getState();
+          const current = settings.video_player;
+          if (current.volume !== newVolume || current.muted !== newMuted) {
+            updateSettings({
+              ...settings,
+              video_player: { ...current, volume: newVolume, muted: newMuted },
+            });
+          }
+        }, 300);
       });
+
+      const onSafariLoadedMetadata = () => {
+        video.play().catch(e => Logger.debug('Initial play failed:', e));
+      };
+      
+      onLoadedMetadataRef.current = onSafariLoadedMetadata;
+      video.addEventListener('loadedmetadata', onSafariLoadedMetadata);
+
     } else {
       Logger.error('[HLS] HLS is not supported in this browser');
     }
     // Only depend on streamUrl - settings and isAutoSwitching are read from refs inside the callback
     // This prevents player recreation when volume/muted settings change or when isAutoSwitching toggles
-  }, [streamUrl, syncVolumeToPlayer, handleStreamOffline]);
+  }, [streamUrl, handleStreamOffline]);
 
   useEffect(() => {
-    if (!videoRef.current || !streamUrl) return;
+    const videoElement = videoRef.current;
+    if (!videoElement || !streamUrl) return;
 
     // Start time display update loop
     progressUpdateIntervalRef.current = requestAnimationFrame(updateLiveTimeDisplay);
 
-    const video = videoRef.current;
+    const video = videoElement;
 
     // If HLS instance already exists, fully destroy it before creating new one
     // HLS.js doesn't handle reusing instances well after detach/attach cycles
@@ -780,7 +839,18 @@ const VideoPlayer = () => {
       // Reset state
       isLiveRef.current = true;
       userInitiatedPauseRef.current = false;
-      hasJumpedToLiveRef.current = false;
+
+      // Cleanup DOM listeners and timeouts
+      if (videoElement) {
+        const playingHandler = onPlayingRef.current;
+        const metadataHandler = onLoadedMetadataRef.current;
+        if (playingHandler) videoElement.removeEventListener('playing', playingHandler);
+        if (metadataHandler) videoElement.removeEventListener('loadedmetadata', metadataHandler);
+      }
+      const debouncer = volumeDebounceRef.current;
+      const gateTimeout = bufferGateTimeoutRef.current;
+      if (debouncer) clearTimeout(debouncer);
+      if (gateTimeout) clearTimeout(gateTimeout);
 
       // Reset error tracking for next stream
       fatalErrorCountRef.current = 0;
@@ -794,8 +864,11 @@ const VideoPlayer = () => {
 
   // Update volume when settings change
   useEffect(() => {
-    syncVolumeToPlayer();
-  }, [syncVolumeToPlayer]);
+    if (playerRef.current) {
+      playerRef.current.volume = playerSettings.volume;
+      playerRef.current.muted = playerSettings.muted;
+    }
+  }, [playerSettings.volume, playerSettings.muted]);
 
   // Update quality menu when qualities become available
   useEffect(() => {
@@ -803,14 +876,6 @@ const VideoPlayer = () => {
       updateQualityMenu();
     }
   }, [availableQualities, updateQualityMenu]);
-
-  // Clear overlay timer helper - use ref to avoid dependency issues
-  const clearOverlayTimer = useCallback(() => {
-    if (overlayTimerRef.current) {
-      clearTimeout(overlayTimerRef.current);
-      overlayTimerRef.current = null;
-    }
-  }, []);
 
   // Start overlay hide timer - use ref to avoid dependency issues
   const startOverlayHideTimer = useCallback(() => {
@@ -911,7 +976,7 @@ const VideoPlayer = () => {
         
         // Check if currently subscribed - IVR API uses meta.type to indicate active sub
         // meta.type can be "paid", "gift", "prime", etc. when actively subscribed
-        const metaData = (subageData as any)?.meta;
+        const metaData = (subageData as unknown as Record<string, unknown>)?.meta as Record<string, unknown> | undefined;
         const isSub = metaData?.type != null;
         const cumMonths = subageData?.cumulative?.months ?? 0;
         const tier = metaData?.tier ?? null;
@@ -991,7 +1056,7 @@ const VideoPlayer = () => {
 
       setIsFollowing(prev => !prev);
       Logger.debug(`[VideoPlayer] Successfully ${action}ed ${currentStream.user_login}`);
-    } catch (err: any) {
+    } catch (err) {
       Logger.error(`[VideoPlayer] ${action} error:`, err);
       useAppStore.getState().addToast(
         `Follow/Unfollow failed. Try logging out and back in via Settings to re-authenticate.`,
@@ -1106,17 +1171,67 @@ const VideoPlayer = () => {
           backgroundColor: '#000',
         }}
         playsInline
+        onLoadedMetadata={(e) => {
+          const video = e.target as HTMLVideoElement;
+          Logger.debug(`[Video] Metadata loaded: ${video.videoWidth}x${video.videoHeight}`);
+          // Safari fallback initial play
+          if (!Hls?.isSupported() && video.canPlayType('application/vnd.apple.mpegurl')) {
+            video.play().catch(err => Logger.debug('Initial play failed:', err));
+          }
+        }}
+        onPlaying={(e) => {
+          const video = e.target as HTMLVideoElement;
+          Logger.debug(`[Video] Playing: ${video.videoWidth}x${video.videoHeight}, paused: ${video.paused}, readyState: ${video.readyState}`);
+          Logger.debug(`[Video] Audio state: muted=${video.muted}, volume=${video.volume}`);
+
+          if (lastSuccessfulPlayRef.current === 0) {
+            lastSuccessfulPlayRef.current = Date.now();
+            Logger.debug('[Video] First successful playback recorded');
+          }
+
+          fatalErrorCountRef.current = 0;
+          manifestErrorCountRef.current = 0;
+          nonFatalErrorCountRef.current = 0;
+        }}
       />
+
+      {/* Stream Title Overlay — Top-left, shares hover timing with controls */}
+      {currentStream?.title?.trim() && (
+        <div
+          className={`stream-title-overlay absolute top-0 left-0 right-0 z-40 transition-all duration-300 pointer-events-none ${showOverlay
+            ? 'opacity-100'
+            : 'opacity-0'
+            }`}
+        >
+          {/* Gradient scrim for text legibility over bright video */}
+          <div className="absolute inset-0 bg-gradient-to-b from-black/50 via-black/20 to-transparent" />
+          <div className="relative px-4 pt-3 pb-6">
+            <Tooltip content={currentStream.title || ''} side="bottom" delay={300}>
+            <h3
+              className="text-white text-sm font-medium line-clamp-1 drop-shadow-lg"
+            >
+              <StreamTitleWithEmojis title={currentStream.title} />
+            </h3>
+            </Tooltip>
+            {currentStream.game_name && (
+              <p className="text-white/70 text-xs mt-0.5 drop-shadow-md">
+                {currentStream.game_name}
+              </p>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Follow & Subscribe Button Overlay */}
       {currentStream && (
         <div
-          className={`subscribe-overlay absolute top-3 right-3 z-50 flex items-center gap-2 transition-all duration-300 ${showOverlay
+          className={`subscribe-overlay absolute top-3 right-3 z-50 flex items-center gap-2 transition-all duration-300 transform-gpu will-change-[opacity,transform] ${showOverlay
             ? 'opacity-100 translate-y-0'
             : 'opacity-0 -translate-y-2 pointer-events-none'
             }`}
         >
           {/* Restart Stream Button */}
+          <Tooltip content="Refresh" side="bottom">
           <button
             onClick={async () => {
               setIsRestarting(true);
@@ -1130,7 +1245,6 @@ const VideoPlayer = () => {
             className={`flex items-center justify-center p-2.5 rounded-full transition-all duration-200 hover:scale-110 bg-background/60 backdrop-blur-md ${
               isRestarting ? 'cursor-wait opacity-70' : 'hover:bg-accent/20'
             }`}
-            title="Refresh"
           >
             {isRestarting ? (
               <Loader2 className="w-5 h-5 text-accent animate-spin" />
@@ -1138,8 +1252,16 @@ const VideoPlayer = () => {
               <RefreshCcw className="w-5 h-5 text-textSecondary hover:text-accent" />
             )}
           </button>
+          </Tooltip>
           
           {/* Follow Button - Icon Only with Glow */}
+          <Tooltip content={checkingFollowStatus
+                ? 'Checking follow status...'
+                : followLoading
+                  ? 'Processing...'
+                  : isFollowing
+                    ? `Unfollow ${currentStream.user_name}`
+                    : `Follow ${currentStream.user_name}`} side="bottom">
           <button
             onClick={handleFollowClick}
             disabled={followLoading || checkingFollowStatus}
@@ -1156,15 +1278,6 @@ const VideoPlayer = () => {
                   ? '0 0 15px rgba(239, 68, 68, 0.35), 0 0 25px rgba(239, 68, 68, 0.15)'
                   : '0 0 15px rgba(16, 185, 129, 0.35), 0 0 25px rgba(16, 185, 129, 0.15)'
             }}
-            title={
-              checkingFollowStatus
-                ? 'Checking follow status...'
-                : followLoading
-                  ? 'Processing...'
-                  : isFollowing
-                    ? `Unfollow ${currentStream.user_name}`
-                    : `Follow ${currentStream.user_name}`
-            }
           >
             {followLoading || checkingFollowStatus ? (
               <Loader2 className="w-6 h-6 animate-spin text-textSecondary" />
@@ -1185,18 +1298,17 @@ const VideoPlayer = () => {
               />
             )}
           </button>
+          </Tooltip>
 
           {/* Subscribe Button */}
-          <button
-            onClick={handleSubscribeClick}
-            className="flex items-center gap-2 px-4 py-2 glass-button text-textPrimary text-sm font-semibold rounded-lg shadow-lg transition-all duration-200 hover:scale-105"
-            title={
-              isSubscribed 
+          <Tooltip content={isSubscribed 
                 ? `Gift a sub to ${currentStream.user_name}'s community`
                 : hasSubHistory
                   ? `Resubscribe to ${currentStream.user_name} (${cumulativeMonths + 1} months)`
-                  : `Subscribe to ${currentStream.user_name}`
-            }
+                  : `Subscribe to ${currentStream.user_name}`} side="bottom">
+          <button
+            onClick={handleSubscribeClick}
+            className="flex items-center gap-2 px-4 py-2 glass-button text-white text-sm font-semibold transition-all duration-200"
           >
             <span>
               {isSubscribed ? 'Gift Subs' : hasSubHistory ? 'Resubscribe' : 'Subscribe'}
@@ -1214,6 +1326,7 @@ const VideoPlayer = () => {
               </svg>
             )}
           </button>
+          </Tooltip>
         </div>
       )}
     </div>

@@ -1,4 +1,5 @@
 use anyhow::Result;
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use log::debug;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -176,14 +177,54 @@ impl SevenTVAuthService {
         Self::get_token().await.is_ok()
     }
 
-    /// Get auth status with details
+    /// Decode the JWT exp claim without signature verification (fast-path expiry check).
+    /// Returns true if the token is expired or malformed.
+    fn is_token_expired(access_token: &str) -> bool {
+        // JWT format: header.payload.signature
+        let parts: Vec<&str> = access_token.split('.').collect();
+        if parts.len() != 3 {
+            return true; // Malformed → treat as expired
+        }
+
+        let payload_bytes = match URL_SAFE_NO_PAD.decode(parts[1]) {
+            Ok(b) => b,
+            Err(_) => return true,
+        };
+
+        let payload: serde_json::Value = match serde_json::from_slice(&payload_bytes) {
+            Ok(v) => v,
+            Err(_) => return true,
+        };
+
+        if let Some(exp) = payload.get("exp").and_then(|v| v.as_i64()) {
+            let now = chrono::Utc::now().timestamp();
+            exp < now
+        } else {
+            false // No exp claim → don't assume expired
+        }
+    }
+
+    /// Get auth status with details.
+    /// Uses local JWT exp decode for instant validation (no network).
     pub async fn get_auth_status() -> SevenTVAuthStatus {
         match Self::get_token_info().await {
-            Ok(token) => SevenTVAuthStatus {
-                is_authenticated: true,
-                user_id: Some(token.user_id),
-                twitch_id: Some(token.twitch_id),
-            },
+            Ok(token) => {
+                if Self::is_token_expired(&token.access_token) {
+                    debug!("[7TV_AUTH] Stored token has expired (JWT exp) - auto-clearing");
+                    let _ = Self::logout().await;
+                    SevenTVAuthStatus {
+                        is_authenticated: false,
+                        user_id: None,
+                        twitch_id: None,
+                    }
+                } else {
+                    SevenTVAuthStatus {
+                        is_authenticated: true,
+                        user_id: Some(token.user_id),
+                        twitch_id: Some(token.twitch_id),
+                    }
+                }
+            }
             Err(_) => SevenTVAuthStatus {
                 is_authenticated: false,
                 user_id: None,
@@ -295,14 +336,37 @@ impl SevenTVCosmeticsService {
             .await?;
 
         if !response.status().is_success() {
+            let status = response.status();
             let error_text = response.text().await?;
+            if status == reqwest::StatusCode::UNAUTHORIZED {
+                debug!("[7TV] Paint mutation returned 401 - session expired, clearing token");
+                let _ = SevenTVAuthService::logout().await;
+                return Err(anyhow::anyhow!(
+                    "SESSION_EXPIRED: 7TV session has expired. Please reconnect your 7TV account."
+                ));
+            }
             return Err(anyhow::anyhow!("Failed to set paint: {}", error_text));
         }
 
         let result: serde_json::Value = response.json().await?;
 
-        if result.get("errors").is_some() {
-            return Err(anyhow::anyhow!("GraphQL errors: {:?}", result["errors"]));
+        if let Some(errors) = result.get("errors") {
+            if let Some(arr) = errors.as_array() {
+                for err in arr {
+                    let is_auth_err = err
+                        .get("extensions")
+                        .and_then(|e| e.get("code"))
+                        .and_then(|c| c.as_str())
+                        .map(|c| c == "LOGIN_REQUIRED")
+                        .unwrap_or(false);
+                    if is_auth_err {
+                        debug!("[7TV] Paint GQL returned LOGIN_REQUIRED - clearing token");
+                        let _ = SevenTVAuthService::logout().await;
+                        return Err(anyhow::anyhow!("SESSION_EXPIRED: 7TV session has expired. Please reconnect your 7TV account."));
+                    }
+                }
+            }
+            return Err(anyhow::anyhow!("GraphQL errors: {:?}", errors));
         }
 
         debug!("[7TV] ✅ Paint changed successfully to: {:?}", paint_id);
@@ -346,14 +410,37 @@ impl SevenTVCosmeticsService {
             .await?;
 
         if !response.status().is_success() {
+            let status = response.status();
             let error_text = response.text().await?;
+            if status == reqwest::StatusCode::UNAUTHORIZED {
+                debug!("[7TV] Badge mutation returned 401 - session expired, clearing token");
+                let _ = SevenTVAuthService::logout().await;
+                return Err(anyhow::anyhow!(
+                    "SESSION_EXPIRED: 7TV session has expired. Please reconnect your 7TV account."
+                ));
+            }
             return Err(anyhow::anyhow!("Failed to set badge: {}", error_text));
         }
 
         let result: serde_json::Value = response.json().await?;
 
-        if result.get("errors").is_some() {
-            return Err(anyhow::anyhow!("GraphQL errors: {:?}", result["errors"]));
+        if let Some(errors) = result.get("errors") {
+            if let Some(arr) = errors.as_array() {
+                for err in arr {
+                    let is_auth_err = err
+                        .get("extensions")
+                        .and_then(|e| e.get("code"))
+                        .and_then(|c| c.as_str())
+                        .map(|c| c == "LOGIN_REQUIRED")
+                        .unwrap_or(false);
+                    if is_auth_err {
+                        debug!("[7TV] Badge GQL returned LOGIN_REQUIRED - clearing token");
+                        let _ = SevenTVAuthService::logout().await;
+                        return Err(anyhow::anyhow!("SESSION_EXPIRED: 7TV session has expired. Please reconnect your 7TV account."));
+                    }
+                }
+            }
+            return Err(anyhow::anyhow!("GraphQL errors: {:?}", errors));
         }
 
         debug!("[7TV] ✅ Badge changed successfully to: {:?}", badge_id);

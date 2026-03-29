@@ -3,6 +3,7 @@ import { useEffect, useState, useMemo, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../stores/AppStore';
 import { parseBadgeForLinks, type ParsedBadgeLink } from '../services/badgeParsingService';
+import { Tooltip } from './ui/Tooltip';
 
 import { Logger } from '../utils/logger';
 interface TwitchCategory {
@@ -636,7 +637,7 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
 
     // Extract all timestamps first to determine start and end
     const timestamps = text.match(isoRegex);
-    const now = Date.now();
+
 
     // Special handling for single timestamp
     if (timestamps && timestamps.length === 1) {
@@ -707,7 +708,7 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
               {afterMatch}
             </>
           );
-        } catch (e) {
+        } catch {
           // If parsing fails, fall through to normal text handling
         }
       }
@@ -730,7 +731,6 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
       // Format and add the highlighted timestamp
       try {
         const date = new Date(match[0]);
-        const dateTime = date.getTime();
         const formattedDate = date.toLocaleString(undefined, {
           year: 'numeric',
           month: 'long',
@@ -781,7 +781,7 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
             {formattedDate}
           </span>
         );
-      } catch (e) {
+      } catch {
         // If parsing fails, add original text
         parts.push(match[0]);
       }
@@ -798,11 +798,6 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
     return <>{parts}</>;
   };
 
-  // Format the badge ID for display
-  const formatBadgeId = (id: string) => {
-    return id.replace(/-/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
-  };
-
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm group">
       {/* Hover-sensitive background overlay */}
@@ -815,13 +810,14 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-borderSubtle">
           <div className="flex items-center gap-3">
-            <button
-              onClick={onBack}
-              className="p-2 hover:bg-glass rounded-lg transition-all group"
-              title="Back to badges"
-            >
-              <ArrowLeft size={20} className="text-textSecondary group-hover:text-textPrimary transition-colors" />
-            </button>
+            <Tooltip content="Back to badges" side="bottom">
+              <button
+                onClick={onBack}
+                className="p-2 hover:bg-glass rounded-lg transition-all group"
+              >
+                <ArrowLeft size={20} className="text-textSecondary group-hover:text-textPrimary transition-colors" />
+              </button>
+            </Tooltip>
             <div>
               <div className="flex items-center gap-2">
                 <h2 className="text-xl font-bold text-textPrimary">{badge.title}</h2>
@@ -841,13 +837,14 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
               <p className="text-sm text-accent">Twitch Chat Badge</p>
             </div>
           </div>
-          <button
-            onClick={onClose}
-            className="p-2 hover:bg-glass rounded-lg transition-colors"
-            title="Close"
-          >
-            <X size={20} className="text-textSecondary" />
-          </button>
+          <Tooltip content="Close" side="bottom">
+            <button
+              onClick={onClose}
+              className="p-2 hover:bg-glass rounded-lg transition-colors"
+            >
+              <X size={20} className="text-textSecondary" />
+            </button>
+          </Tooltip>
         </div>
 
         {/* Content */}
@@ -855,45 +852,48 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
           <div className="max-w-3xl mx-auto space-y-8">
             {/* Badge Variations */}
             <div className="flex items-end gap-4">
-              <a
-                href={badge.image_url_4x}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center justify-center bg-glass rounded-lg p-4 hover:bg-glass/80 transition-colors cursor-pointer"
-                title="View 72px image"
-              >
-                <img
-                  src={badge.image_url_4x}
-                  alt={badge.title}
-                  className="w-18 h-18 object-contain"
-                />
-              </a>
-              <a
-                href={badge.image_url_2x}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center justify-center bg-glass rounded-lg p-3 hover:bg-glass/80 transition-colors cursor-pointer"
-                title="View 36px image"
-              >
-                <img
-                  src={badge.image_url_2x}
-                  alt={badge.title}
-                  className="w-9 h-9 object-contain"
-                />
-              </a>
-              <a
-                href={badge.image_url_1x}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center justify-center bg-glass rounded-lg p-2 hover:bg-glass/80 transition-colors cursor-pointer"
-                title="View 18px image"
-              >
-                <img
-                  src={badge.image_url_1x}
-                  alt={badge.title}
-                  className="w-[18px] h-[18px] object-contain"
-                />
-              </a>
+              <Tooltip content="View 72px image" side="top">
+                <a
+                  href={badge.image_url_4x}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center justify-center bg-glass rounded-lg p-4 hover:bg-glass/80 transition-colors cursor-pointer"
+                >
+                  <img
+                    src={badge.image_url_4x}
+                    alt={badge.title}
+                    className="w-18 h-18 object-contain"
+                  />
+                </a>
+              </Tooltip>
+              <Tooltip content="View 36px image" side="top">
+                <a
+                  href={badge.image_url_2x}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center justify-center bg-glass rounded-lg p-3 hover:bg-glass/80 transition-colors cursor-pointer"
+                >
+                  <img
+                    src={badge.image_url_2x}
+                    alt={badge.title}
+                    className="w-9 h-9 object-contain"
+                  />
+                </a>
+              </Tooltip>
+              <Tooltip content="View 18px image" side="top">
+                <a
+                  href={badge.image_url_1x}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center justify-center bg-glass rounded-lg p-2 hover:bg-glass/80 transition-colors cursor-pointer"
+                >
+                  <img
+                    src={badge.image_url_1x}
+                    alt={badge.title}
+                    className="w-[18px] h-[18px] object-contain"
+                  />
+                </a>
+              </Tooltip>
             </div>
 
             {/* Quick Actions - Show when parsed links are found */}

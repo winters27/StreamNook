@@ -16,8 +16,6 @@ pub struct VideoPlayerSettings {
     pub volume: f32,
     pub start_quality: i32,
     pub lock_aspect_ratio: bool,
-    #[serde(default)]
-    pub jump_to_live: bool,
 }
 
 impl Default for VideoPlayerSettings {
@@ -30,7 +28,6 @@ impl Default for VideoPlayerSettings {
             volume: 1.0,
             start_quality: -1,
             lock_aspect_ratio: false,
-            jump_to_live: false,
         }
     }
 }
@@ -79,6 +76,16 @@ pub struct StreamlinkSettings {
     pub proxy_playlist: String, // Proxy playlist URLs
     #[serde(default)]
     pub custom_streamlink_path: Option<String>, // Custom folder path for portable/installed Streamlink
+    /// ID of the last proxy applied (persists through restarts/updates)
+    #[serde(default)]
+    pub last_applied_proxy_id: Option<String>,
+    /// Whether the current proxy was auto-selected (optimizer can override on next launch)
+    /// When false, a user manually chose a proxy and the optimizer will respect that choice
+    #[serde(default = "default_true")]
+    pub proxy_auto_optimized: bool,
+    /// Whether proxy optimization has been run at least once (replaces volatile localStorage flag)
+    #[serde(default)]
+    pub proxy_optimized_once: bool,
 }
 
 impl Default for StreamlinkSettings {
@@ -93,6 +100,9 @@ impl Default for StreamlinkSettings {
             use_proxy: true,
             proxy_playlist: "--twitch-proxy-playlist=https://lb-na.cdn-perfprod.com,https://eu.luminous.dev --twitch-proxy-playlist-fallback".to_string(),
             custom_streamlink_path: None,
+            last_applied_proxy_id: None,
+            proxy_auto_optimized: true,
+            proxy_optimized_once: false,
         }
     }
 }
@@ -244,6 +254,18 @@ pub struct CompactViewSettings {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct MultiNookSlot {
+    pub id: String,
+    pub channel_login: String,
+    pub volume: f32,
+    pub muted: bool,
+    pub is_primary: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream_url: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
 pub struct Settings {
     pub streamlink_path: String,
     pub streamlink_args: String,
@@ -280,6 +302,11 @@ pub struct Settings {
     /// Whether diagnostic logging is enabled (defaults to true)
     #[serde(default = "default_true")]
     pub error_reporting_enabled: bool,
+    /// Persisted multi-stream grid configurations
+    #[serde(default)]
+    pub multi_nook_slots: Vec<MultiNookSlot>,
+    #[serde(default)]
+    pub multi_nook_chat_hidden: bool,
 }
 
 fn default_theme() -> String {
@@ -314,6 +341,8 @@ impl Default for Settings {
             setup_complete: false, // New users need to complete setup
             compact_view: None,
             error_reporting_enabled: true, // Diagnostics enabled by default
+            multi_nook_slots: Vec::new(),
+            multi_nook_chat_hidden: false,
         }
     }
 }

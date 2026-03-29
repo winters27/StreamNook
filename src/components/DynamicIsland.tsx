@@ -6,6 +6,7 @@ import { listen, emit } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../stores/AppStore';
 import { Logger } from '../utils/logger';
+import { Tooltip } from './ui/Tooltip';
 import type {
     DynamicIslandNotification,
     LiveNotificationData,
@@ -1213,14 +1214,15 @@ const DynamicIsland = () => {
                                     }}
                                 >
                                     {/* Invisible close button in the middle third */}
-                                    <div
-                                        className="absolute left-1/3 right-1/3 top-0 bottom-0 cursor-pointer z-10"
-                                        onClick={(e) => {
-                                            e.stopPropagation();
-                                            setIsExpanded(false);
-                                        }}
-                                        title="Click to close"
-                                    />
+                                    <Tooltip content="Click to close" side="bottom">
+                                        <div
+                                            className="absolute left-1/3 right-1/3 top-0 bottom-0 cursor-pointer z-10"
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                setIsExpanded(false);
+                                            }}
+                                        />
+                                    </Tooltip>
                                     {/* Sound icon on the left */}
                                     <div className="flex-shrink-0">
                                         {soundEnabled ? (
@@ -1473,21 +1475,23 @@ const DynamicIsland = () => {
                                                         </span>
                                                         {/* Mark as read button - only show for unread notifications */}
                                                         {!notification.read && (
-                                                            <button
-                                                                onClick={(e) => markAsRead(notification.id, e)}
-                                                                className="opacity-0 group-hover:opacity-100 text-white/30 hover:text-green-400 transition-all p-0.5"
-                                                                title="Mark as read"
-                                                            >
-                                                                <Check size={14} />
-                                                            </button>
+                                                            <Tooltip content="Mark as read" side="top">
+                                                                <button
+                                                                    onClick={(e) => markAsRead(notification.id, e)}
+                                                                    className="opacity-0 group-hover:opacity-100 text-white/30 hover:text-green-400 transition-all p-0.5"
+                                                                >
+                                                                    <Check size={14} />
+                                                                </button>
+                                                            </Tooltip>
                                                         )}
-                                                        <button
-                                                            onClick={(e) => clearNotification(notification.id, e)}
-                                                            className="opacity-0 group-hover:opacity-100 text-white/30 hover:text-white transition-all p-0.5"
-                                                            title="Remove notification"
-                                                        >
-                                                            <X size={14} />
-                                                        </button>
+                                                        <Tooltip content="Remove notification" side="top">
+                                                            <button
+                                                                onClick={(e) => clearNotification(notification.id, e)}
+                                                                className="opacity-0 group-hover:opacity-100 text-white/30 hover:text-white transition-all p-0.5"
+                                                            >
+                                                                <X size={14} />
+                                                            </button>
+                                                        </Tooltip>
                                                         <ChevronRight size={14} className="text-white/30" />
                                                     </div>
                                                 </motion.div>

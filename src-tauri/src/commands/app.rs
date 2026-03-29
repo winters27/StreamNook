@@ -48,48 +48,58 @@ pub async fn calculate_aspect_ratio_size(
     chat_size: u32,
     chat_placement: String,
     title_bar_height: u32,
+    target_aspect_ratio: Option<f64>,
+    ui_width_offset: Option<u32>,
+    ui_height_offset: Option<u32>,
 ) -> Result<(u32, u32), String> {
-    // Standard video aspect ratio (16:9)
-    let video_aspect_ratio = 16.0 / 9.0;
+    // Default to standard video aspect ratio (16:9) if not provided
+    let video_aspect_ratio = target_aspect_ratio.unwrap_or(16.0 / 9.0);
+    let extra_w = ui_width_offset.unwrap_or(0);
+    let extra_h = ui_height_offset.unwrap_or(0);
 
-    // For the new placement, calculate window size that maintains 16:9 video
-    // The key insight: the VIDEO dimensions should drive the calculation
-    // We want to find window size where video is 16:9, based on current window dimensions
+    // The old logic rigidly locked width when chat was horizontal, and locked height when chat was vertical.
+    // This provides exact 1-to-1 tracking when dragging the chat slider, instead of a dynamic 2D bounding box
+    // which caused the window to shrink unexpectedly.
 
     let (new_width, new_height) = match chat_placement.as_str() {
         "right" => {
-            // Chat is on the right, so video width = total width - chat width
-            let video_width = current_width.saturating_sub(chat_size);
+            // Keep window width strictly locked, recalculate height to match.
+            // Video width = total width - chat size - extra width
+            let video_width = current_width
+                .saturating_sub(chat_size)
+                .saturating_sub(extra_w);
 
-            // Calculate ideal height for the video to maintain 16:9
+            // Ideal video height = video width / aspect ratio
             let ideal_video_height = (video_width as f64 / video_aspect_ratio) as u32;
 
-            // Total window height = ideal video height + title bar
-            let total_height = ideal_video_height + title_bar_height;
+            // Total height = ideal video height + title bar + extra height
+            let total_height = ideal_video_height + title_bar_height + extra_h;
 
             (current_width, total_height)
         }
         "bottom" => {
-            // Chat is on the bottom, so video height = total height - chat height - title bar
+            // Keep window height strictly locked, recalculate width to match.
+            // Video height = total height - chat size - title bar - extra height
             let video_height = current_height
                 .saturating_sub(chat_size)
-                .saturating_sub(title_bar_height);
+                .saturating_sub(title_bar_height)
+                .saturating_sub(extra_h);
 
-            // Calculate ideal width for the video to maintain 16:9
+            // Ideal video width = video height * aspect ratio
             let ideal_video_width = (video_height as f64 * video_aspect_ratio) as u32;
 
-            // Total window width = ideal video width (video takes full width)
-            // Total window height stays the same
-            (ideal_video_width, current_height)
+            // Total width = ideal video width + extra width
+            let total_width = ideal_video_width + extra_w;
+
+            (total_width, current_height)
         }
         "hidden" => {
-            // No chat, video takes full space
-            // Keep width, adjust height for 16:9
-            let video_width = current_width;
+            // No chat. Keep width rigidly locked, recalculate height.
+            let video_width = current_width.saturating_sub(extra_w);
             let ideal_video_height = (video_width as f64 / video_aspect_ratio) as u32;
-            let total_height = ideal_video_height + title_bar_height;
+            let total_height = ideal_video_height + title_bar_height + extra_h;
 
-            (video_width, total_height)
+            (current_width, total_height)
         }
         _ => (current_width, current_height),
     };
@@ -108,29 +118,44 @@ pub async fn calculate_aspect_ratio_size_preserve_video(
     old_chat_placement: String,
     new_chat_placement: String,
     title_bar_height: u32,
+    _target_aspect_ratio: Option<f64>, // Included for signature consistency, though this specifically preserves pixel dimensions
+    ui_width_offset: Option<u32>,
+    ui_height_offset: Option<u32>,
 ) -> Result<(u32, u32), String> {
+    let extra_w = ui_width_offset.unwrap_or(0);
+    let extra_h = ui_height_offset.unwrap_or(0);
+
     // First, calculate the current video dimensions based on old layout
     let (video_width, video_height) = match old_chat_placement.as_str() {
         "right" => {
-            let vw = current_width.saturating_sub(old_chat_size);
-            let vh = current_height.saturating_sub(title_bar_height);
+            let vw = current_width
+                .saturating_sub(old_chat_size)
+                .saturating_sub(extra_w);
+            let vh = current_height
+                .saturating_sub(title_bar_height)
+                .saturating_sub(extra_h);
             (vw, vh)
         }
         "bottom" => {
-            let vw = current_width;
+            let vw = current_width.saturating_sub(extra_w);
             let vh = current_height
                 .saturating_sub(old_chat_size)
-                .saturating_sub(title_bar_height);
+                .saturating_sub(title_bar_height)
+                .saturating_sub(extra_h);
             (vw, vh)
         }
         "hidden" => {
-            let vw = current_width;
-            let vh = current_height.saturating_sub(title_bar_height);
+            let vw = current_width.saturating_sub(extra_w);
+            let vh = current_height
+                .saturating_sub(title_bar_height)
+                .saturating_sub(extra_h);
             (vw, vh)
         }
         _ => (
-            current_width,
-            current_height.saturating_sub(title_bar_height),
+            current_width.saturating_sub(extra_w),
+            current_height
+                .saturating_sub(title_bar_height)
+                .saturating_sub(extra_h),
         ),
     };
 
@@ -140,24 +165,24 @@ pub async fn calculate_aspect_ratio_size_preserve_video(
             // Video on left, chat on right
             // Window width = video width + chat width
             // Window height = video height + title bar
-            let total_width = video_width + new_chat_size;
-            let total_height = video_height + title_bar_height;
+            let total_width = video_width + new_chat_size + extra_w;
+            let total_height = video_height + title_bar_height + extra_h;
             (total_width, total_height)
         }
         "bottom" => {
             // Video on top, chat on bottom
             // Window width = video width
             // Window height = video height + chat height + title bar
-            let total_width = video_width;
-            let total_height = video_height + new_chat_size + title_bar_height;
+            let total_width = video_width + extra_w;
+            let total_height = video_height + new_chat_size + title_bar_height + extra_h;
             (total_width, total_height)
         }
         "hidden" => {
             // Just video, no chat
             // Window width = video width
             // Window height = video height + title bar
-            let total_width = video_width;
-            let total_height = video_height + title_bar_height;
+            let total_width = video_width + extra_w;
+            let total_height = video_height + title_bar_height + extra_h;
             (total_width, total_height)
         }
         _ => (current_width, current_height),

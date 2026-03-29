@@ -2,6 +2,7 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { FolderOpen, X } from 'lucide-react';
 import { useAppStore } from '../../stores/AppStore';
 import ProxyHealthChecker from './ProxyHealthChecker';
+import { Tooltip } from '../ui/Tooltip';
 
 import { Logger } from '../../utils/logger';
 
@@ -34,6 +35,9 @@ const PlayerSettings = () => {
     use_proxy: true,
     proxy_playlist: '--twitch-proxy-playlist=https://lb-na.cdn-perfprod.com,https://eu.luminous.dev --twitch-proxy-playlist-fallback',
     custom_streamlink_path: undefined,
+    last_applied_proxy_id: undefined,
+    proxy_auto_optimized: true,
+    proxy_optimized_once: false,
   };
 
   const streamlink = settings.streamlink || streamlinkDefaults;
@@ -243,13 +247,14 @@ const PlayerSettings = () => {
                 className="w-full glass-input text-textPrimary text-sm px-3 py-2 pr-10"
               />
               {streamlink.custom_streamlink_path && (
+                <Tooltip content="Clear custom path" side="top">
                 <button
                   onClick={handleClearStreamlinkPath}
                   className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-textSecondary hover:text-red-400 transition-colors"
-                  title="Clear custom path"
                 >
                   <X size={16} />
                 </button>
+                </Tooltip>
               )}
             </div>
             <button
@@ -496,23 +501,6 @@ const PlayerSettings = () => {
               updateSettings({
                 ...settings,
                 video_player: { ...settings.video_player, low_latency_mode: !(settings.video_player?.low_latency_mode ?? true) },
-              })
-            }
-          />
-        </div>
-
-        {/* Jump to Live on Load */}
-        <div className="flex items-center justify-between gap-4">
-          <div>
-            <span className="text-sm font-medium text-textPrimary">Jump to Live on Load</span>
-            <p className="text-xs text-textSecondary">Automatically jump to the live edge when stream starts (fixes 15s delay)</p>
-          </div>
-          <Toggle
-            enabled={settings.video_player?.jump_to_live ?? false}
-            onChange={() =>
-              updateSettings({
-                ...settings,
-                video_player: { ...settings.video_player, jump_to_live: !(settings.video_player?.jump_to_live ?? false) },
               })
             }
           />

@@ -252,3 +252,27 @@ pub fn is_streamlink_available(state: State<'_, AppState>) -> bool {
     );
     available
 }
+
+#[tauri::command]
+pub async fn register_active_channel(
+    channel_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let bg_service = state.background_service.lock().await;
+    let ws_service_mutex = bg_service.websocket_service.clone();
+    let ws_service = ws_service_mutex.lock().await;
+    ws_service.register_active_channel(&channel_id).await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn unregister_active_channel(
+    channel_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let bg_service = state.background_service.lock().await;
+    let ws_service_mutex = bg_service.websocket_service.clone();
+    let ws_service = ws_service_mutex.lock().await;
+    ws_service.unregister_active_channel(&channel_id).await;
+    Ok(())
+}

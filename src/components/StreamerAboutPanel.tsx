@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { ExternalLink, Users, Globe } from 'lucide-react';
 import { ChannelAboutData, ChannelPanel as ChannelPanelType } from '../types/panels';
 import { Logger } from '../utils/logger';
+import { Tooltip } from './ui/Tooltip';
 
 // ============================================================================
 // Social Media SVG Icons (matching Twitch's native icon set)
@@ -304,24 +305,24 @@ const StreamerAboutPanel = memo(({ channelLogin }: StreamerAboutPanelProps) => {
             {aboutData.social_links.length > 0 && (
               <div className="space-y-1">
                 {aboutData.social_links.map((link, i) => (
-                  <a
-                    key={i}
-                    href={link.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    onClick={(e) => {
-                      e.preventDefault();
-                      invoke('open_browser_url', { url: link.url });
-                    }}
-                    className="flex items-center gap-2.5 px-3 py-2 rounded-lg glass-panel border border-borderSubtle/20 text-textSecondary hover:text-textPrimary hover:border-accent/30 hover:bg-white/[0.03] transition-all duration-200 group"
-                    title={link.url}
-                  >
-                    <span className="text-textSecondary/70 group-hover:text-accent transition-colors flex-shrink-0">
-                      {getSocialSvg(link.name)}
-                    </span>
-                    <span className="text-xs font-medium flex-1 truncate">{link.title}</span>
-                    <ExternalLink size={10} className="text-textSecondary/30 group-hover:text-textSecondary/60 transition-colors flex-shrink-0" />
-                  </a>
+                  <Tooltip key={i} content={link.url} side="top">
+                    <a
+                      href={link.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        invoke('open_browser_url', { url: link.url });
+                      }}
+                      className="flex items-center gap-2.5 px-3 py-2 rounded-lg glass-panel border border-borderSubtle/20 text-textSecondary hover:text-textPrimary hover:border-accent/30 hover:bg-white/[0.03] transition-all duration-200 group"
+                    >
+                      <span className="text-textSecondary/70 group-hover:text-accent transition-colors flex-shrink-0">
+                        {getSocialSvg(link.name)}
+                      </span>
+                      <span className="text-xs font-medium flex-1 truncate">{link.title}</span>
+                      <ExternalLink size={10} className="text-textSecondary/30 group-hover:text-textSecondary/60 transition-colors flex-shrink-0" />
+                    </a>
+                  </Tooltip>
                 ))}
               </div>
             )}

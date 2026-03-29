@@ -1,11 +1,13 @@
 import { useAppStore, SettingsTab } from '../stores/AppStore';
 import { X } from 'lucide-react';
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 import InterfaceSettings from './settings/InterfaceSettings';
 import PlayerSettings from './settings/PlayerSettings';
 import ChatSettings from './settings/ChatSettings';
 import ThemeSettings from './settings/ThemeSettings';
-import NetworkSettings from './settings/NetworkSettings';
+import { Tooltip } from './ui/Tooltip';
+
 import IntegrationsSettings from './settings/IntegrationsSettings';
 import CacheSettings from './settings/CacheSettings';
 import NotificationsSettings from './settings/NotificationsSettings';
@@ -28,7 +30,7 @@ const TAB_SECTIONS: Record<string, { id: string; label: string }[]> = {
   ],
   Chat: [],
   Theme: [],
-  Network: [],
+
   Integrations: [],
   Notifications: [],
   Cache: [],
@@ -45,7 +47,7 @@ const SettingsDialog = () => {
   const isAdmin = useIsAdmin();
 
   // Standard tabs available to everyone
-  const standardTabs: SettingsTab[] = ['Interface', 'Player', 'Chat', 'Theme', 'Network', 'Integrations', 'Notifications', 'Cache', 'Support', 'Updates'];
+  const standardTabs: SettingsTab[] = ['Interface', 'Player', 'Chat', 'Theme', 'Integrations', 'Notifications', 'Cache', 'Support', 'Updates'];
 
   // Add Analytics tab only for admin users
   const availableTabs = isAdmin ? [...standardTabs, 'Analytics' as SettingsTab] : standardTabs;
@@ -84,8 +86,6 @@ const SettingsDialog = () => {
 
 
 
-  if (!isSettingsOpen) return null;
-
   // Get sections for current tab
   const currentSections = activeTab ? TAB_SECTIONS[activeTab] || [] : [];
 
@@ -93,34 +93,50 @@ const SettingsDialog = () => {
   const isWideTab = activeTab === 'Analytics' || activeTab === 'Theme';
 
   return (
-    <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50">
-      <div className={`glass-panel backdrop-blur-lg p-6 rounded-lg mx-4 shadow-2xl flex flex-col transition-all duration-300 ${isWideTab ? 'w-[95vw] md:w-[90vw] lg:w-[85vw] max-w-7xl h-[90vh]' : 'w-[90vw] md:w-[80vw] lg:w-[70vw] xl:w-[60vw] max-w-6xl max-h-[85vh] min-h-[300px]'}`}>
-        {/* Header */}
+    <AnimatePresence>
+      {isSettingsOpen && (
+        <motion.div 
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.15 }}
+          className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50"
+        >
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.95, y: 15 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95, y: 15 }}
+            transition={{ type: "spring", stiffness: 350, damping: 25 }}
+            className={`glass-panel backdrop-blur-lg p-6 rounded-lg mx-4 shadow-2xl flex flex-col transition-all duration-300 ${isWideTab ? 'w-[95vw] md:w-[90vw] lg:w-[85vw] max-w-7xl h-[90vh]' : 'w-[90vw] md:w-[80vw] lg:w-[70vw] xl:w-[60vw] max-w-6xl max-h-[85vh] min-h-[300px]'}`}
+          >
+            {/* Header */}
         <div className="flex items-center justify-between mb-6 pb-4 border-b border-borderSubtle">
           <div className="flex items-center gap-3">
             {/* Back button for pages without sidebar */}
             {currentSections.length === 0 && (
-              <button
-                onClick={() => setActiveTab('Player')}
-                className="p-2 text-textSecondary hover:text-textPrimary hover:bg-glass rounded transition-all"
-                title="Back to settings"
-              >
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M19 12H5M12 19l-7-7 7-7"/>
-                </svg>
-              </button>
+              <Tooltip content="Back to settings" delay={200} side="bottom">
+                <button
+                  onClick={() => setActiveTab('Player')}
+                  className="p-2 text-textSecondary hover:text-textPrimary hover:bg-glass rounded transition-all"
+                >
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M19 12H5M12 19l-7-7 7-7"/>
+                  </svg>
+                </button>
+              </Tooltip>
             )}
             <h2 className="text-xl font-bold text-textPrimary">
               {activeTab}
             </h2>
           </div>
-          <button
-            onClick={closeSettings}
-            className="p-2 text-textSecondary hover:text-textPrimary hover:bg-glass rounded transition-all"
-            title="Close"
-          >
-            <X size={20} />
-          </button>
+          <Tooltip content="Close" delay={200} side="bottom">
+            <button
+              onClick={closeSettings}
+              className="p-2 text-textSecondary hover:text-textPrimary hover:bg-glass rounded transition-all"
+            >
+              <X size={20} />
+            </button>
+          </Tooltip>
         </div>
 
         <div className="flex flex-1 overflow-hidden">
@@ -176,7 +192,7 @@ const SettingsDialog = () => {
             {activeTab === 'Player' && <PlayerSettings />}
             {activeTab === 'Chat' && <ChatSettings />}
             {activeTab === 'Theme' && <ThemeSettings />}
-            {activeTab === 'Network' && <NetworkSettings />}
+
             {activeTab === 'Integrations' && <IntegrationsSettings />}
             {activeTab === 'Notifications' && <NotificationsSettings />}
             {activeTab === 'Cache' && <CacheSettings />}
@@ -195,8 +211,10 @@ const SettingsDialog = () => {
             Close
           </button>
         </div>
-      </div>
-    </div>
+      </motion.div>
+    </motion.div>
+      )}
+    </AnimatePresence>
   );
 };
 

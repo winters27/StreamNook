@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import type { ReleaseNotes } from '../types';
 import { parseInlineMarkdown } from '../services/markdownService';
+import { Tooltip } from './ui/Tooltip';
 
 import { Logger } from '../utils/logger';
 interface ChangelogOverlayProps {
@@ -169,13 +170,14 @@ const ChangelogOverlay = ({ version, onClose }: ChangelogOverlayProps) => {
               )}
             </div>
           </div>
-          <button
-            onClick={onClose}
-            className="p-1.5 text-textSecondary hover:text-textPrimary hover:bg-glass rounded-lg transition-all duration-200"
-            title="Close"
-          >
-            <X size={20} />
-          </button>
+          <Tooltip content="Close" side="bottom">
+            <button
+              onClick={onClose}
+              className="p-1.5 text-textSecondary hover:text-textPrimary hover:bg-glass rounded-lg transition-all duration-200"
+            >
+              <X size={20} />
+            </button>
+          </Tooltip>
         </div>
 
         {/* Divider */}

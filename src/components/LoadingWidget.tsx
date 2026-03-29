@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import PenroseCanvas from './PenroseCanvas';
+import { Tooltip } from './ui/Tooltip';
 
 // Emote URLs for Twitch emotes (using static.twitchemotes.com)
 const EMOTE_URLS: Record<string, string> = {
@@ -206,13 +207,13 @@ const LoadingWidget = ({ message, useFunnyMessages = false, showProxyNote = fals
 
       if (emoteUrl) {
         parts.push(
-          <img
-            key={`${emoteName}-${match.index}`}
-            src={emoteUrl}
-            alt={emoteName}
-            className="inline-block w-6 h-6 mx-0.5 align-middle"
-            title={emoteName}
-          />
+          <Tooltip key={`${emoteName}-${match.index}`} content={emoteName} side="top">
+            <img
+              src={emoteUrl}
+              alt={emoteName}
+              className="inline-block w-6 h-6 mx-0.5 align-middle"
+            />
+          </Tooltip>
         );
       } else {
         // If emote URL not found, just show the name

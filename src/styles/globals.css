@@ -197,8 +197,13 @@ body {
   background-color: var(--color-background-secondary);
   border-radius: 8px;
   backdrop-filter: blur(10px);
-  border: 1px solid var(--color-border-subtle);
-  transition: background-color 0.3s ease, border-color 0.3s ease;
+  /* A highly subtle version of the liquid glass bevel to frame content cards */
+  border: 1px solid transparent;
+  box-shadow: 
+    inset 1px 1px 0 0 rgba(255, 255, 255, 0.08),
+    inset -1px -1px 0 0 rgba(0, 0, 0, 0.15),
+    0 4px 10px rgba(0, 0, 0, 0.15);
+  transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.25);
 }
 
 /* User Profile Card specific styling with black transparency */
@@ -209,36 +214,89 @@ body {
   border: 1px solid var(--color-border-subtle);
 }
 
+.glass-badge {
+  background-color: var(--color-surface);
+  /* A microscopic liquid bevel for tiny indicator pills */
+  box-shadow: 
+    inset 0.5px 0.5px 0 0 rgba(255, 255, 255, 0.15),
+    inset -0.5px -0.5px 0 0 rgba(0, 0, 0, 0.1),
+    0 1px 2px rgba(0, 0, 0, 0.2);
+  border: 1px solid transparent;
+  border-radius: 4px;
+  backdrop-filter: blur(6px);
+}
+
 .glass-button {
   background-color: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: 4px;
-  backdrop-filter: blur(5px);
-  transition: all 0.2s ease;
+  /* Unified, crisp inner bevel matching panel thickness */
+  box-shadow: 
+    inset 1px 1px 0 0 rgba(255, 255, 255, 0.1),
+    inset -1px -1px 0 0 rgba(0, 0, 0, 0.15),
+    0 4px 6px rgba(0, 0, 0, 0.2), 
+    0 0 15px rgba(0, 0, 0, 0.1);
+  border: 1px solid transparent;
+  border-radius: 8px;
+  backdrop-filter: blur(8px);
+  /* The bouncy, fluid elasticity the user requested */
+  transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 2.2);
+}
+
+/* Static variant for framer-motion layout animations */
+.glass-button-static {
+  background-color: var(--color-surface);
+  box-shadow: 
+    inset 1px 1px 0 0 rgba(255, 255, 255, 0.1),
+    inset -1px -1px 0 0 rgba(0, 0, 0, 0.15),
+    0 4px 6px rgba(0, 0, 0, 0.2), 
+    0 0 15px rgba(0, 0, 0, 0.1);
+  border: 1px solid transparent;
+  border-radius: 8px;
+  backdrop-filter: blur(8px);
 }
 
 .glass-button:hover {
   background-color: var(--color-surface-hover);
-  box-shadow: 0 4px 15px var(--color-accent-muted);
+  /* Enhanced depth and brightness on hover */
+  box-shadow: 
+    inset 1px 1px 0 0 rgba(255, 255, 255, 0.15),
+    inset -1px -1px 0 0 rgba(0, 0, 0, 0.15),
+    0 4px 8px rgba(0, 0, 0, 0.25), 
+    0 0 18px rgba(0, 0, 0, 0.15);
 }
 
 .glass-button:active {
   background-color: var(--color-surface-active);
-  transform: translateY(1px);
+  /* Compression effect when clicked */
+  box-shadow: 
+    inset 1px 1px 0 0 rgba(255, 255, 255, 0.05),
+    inset -1px -1px 0 0 rgba(0, 0, 0, 0.1),
+    0 2px 4px rgba(0, 0, 0, 0.2);
 }
 
 .glass-input {
-  background-color: var(--color-background-secondary);
-  border: 1px solid var(--color-border-light);
-  border-radius: 4px;
-  backdrop-filter: blur(5px);
-  transition: all 0.2s ease;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 12px; /* Smoother curve fits this style better */
+  backdrop-filter: blur(8px);
+  
+  /* The exact Neumorphic formulation provided: long offsets, high blur, negative spread */
+  box-shadow: 
+    inset 4px 4px 10px -3px rgba(0, 0, 0, 0.5),     /* Soft, diffuse inner shadow */
+    inset -4px -4px 10px -3px rgba(255, 255, 255, 0.1); /* Soft, diffuse inner highlight */
+    
+  transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.25);
 }
 
 .glass-input:focus {
-  border-color: var(--color-accent-muted);
+  /* Maintain the exact same background and borders */
+  background: var(--color-surface);
   outline: none;
-  box-shadow: 0 0 0 2px var(--color-border-subtle);
+  border-color: var(--color-border-subtle);
+  
+  /* Simply deepen the pillowy trench to imply a heavier press, zero neon colors or rims */
+  box-shadow: 
+    inset 5px 5px 12px -3px rgba(0, 0, 0, 0.6),     
+    inset -5px -5px 12px -3px rgba(255, 255, 255, 0.15); 
 }
 
 /* Dropdown option styling */
@@ -819,6 +877,86 @@ body {
   animation: fly-up-fade 1s ease-out forwards;
 }
 
+/* MultiNook Suck-Up — card content dissolves upward when added to MultiNook */
+@keyframes multinook-suck-up {
+  0% {
+    transform: scale(1) rotate(0deg) translateY(0);
+    opacity: 1;
+    filter: blur(0px);
+  }
+  100% {
+    transform: scale(0.35) rotate(-5deg) translateY(-40px);
+    opacity: 0;
+    filter: blur(5px);
+  }
+}
+
+.animate-multinook-suck-up {
+  animation: multinook-suck-up 350ms cubic-bezier(0.55, 0, 1, 0.45) forwards;
+  will-change: transform, opacity, filter;
+}
+
+/* MultiNook Materialize — card content expands in from recalled state (reverse suck-up) */
+@keyframes multinook-materialize {
+  0% {
+    transform: scale(0.35) rotate(5deg) translateY(-40px);
+    opacity: 0;
+    filter: blur(5px);
+  }
+  100% {
+    transform: scale(1) rotate(0deg) translateY(0);
+    opacity: 1;
+    filter: blur(0px);
+  }
+}
+
+.animate-multinook-materialize {
+  animation: multinook-materialize 350ms cubic-bezier(0, 0.55, 0.45, 1) 550ms both;
+  will-change: transform, opacity, filter;
+}
+
+/* Ghost Card — persistent dashed outline left behind after suck-up */
+@keyframes ghost-card-pulse {
+  0%, 100% {
+    border-color: color-mix(in srgb, var(--color-accent) 25%, transparent);
+    box-shadow: 
+      inset 4px 4px 10px -3px rgba(0, 0, 0, 0.5),
+      inset -4px -4px 10px -3px rgba(255, 255, 255, 0.1),
+      inset 0 0 20px color-mix(in srgb, var(--color-accent) 4%, transparent);
+  }
+  50% {
+    border-color: color-mix(in srgb, var(--color-accent) 45%, transparent);
+    box-shadow: 
+      inset 4px 4px 10px -3px rgba(0, 0, 0, 0.5),
+      inset -4px -4px 10px -3px rgba(255, 255, 255, 0.1),
+      inset 0 0 30px color-mix(in srgb, var(--color-accent) 8%, transparent);
+  }
+}
+
+.ghost-card {
+  border: 2px dashed color-mix(in srgb, var(--color-accent) 30%, transparent) !important;
+  animation: ghost-card-pulse 2.5s ease-in-out infinite;
+  background: color-mix(in srgb, var(--color-surface) 35%, transparent) !important;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+/* Ghost card fade-in for the label/icon after suck-up completes */
+@keyframes ghost-label-appear {
+  0% {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.animate-ghost-label {
+  animation: ghost-label-appear 300ms 400ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
 @keyframes heart-break {
   0% {
     transform: scale(1) rotate(0deg) translateY(0);
@@ -1215,6 +1353,20 @@ body {
   z-index: 2147483647;
 }
 
+.video-player-container:fullscreen .stream-title-overlay,
+.video-player-container:-webkit-full-screen .stream-title-overlay,
+.video-player-container:-moz-full-screen .stream-title-overlay,
+.video-player-container:-ms-fullscreen .stream-title-overlay,
+.plyr--fullscreen-active ~ .stream-title-overlay,
+.plyr:fullscreen ~ .stream-title-overlay,
+.plyr:-webkit-full-screen ~ .stream-title-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 2147483646;
+}
+
 /* Alternative approach: Target elements when document has fullscreen element */
 :fullscreen .subscribe-overlay,
 :-webkit-full-screen .subscribe-overlay,
@@ -1223,6 +1375,16 @@ body {
   top: 12px !important;
   right: 12px !important;
   z-index: 2147483647 !important;
+}
+
+:fullscreen .stream-title-overlay,
+:-webkit-full-screen .stream-title-overlay,
+:-moz-full-screen .stream-title-overlay {
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  z-index: 2147483646 !important;
 }
 
 /* PIP mode */
@@ -1550,6 +1712,15 @@ body {
 
 .gift-shimmer-iridescent {
   animation: gift-pulse-iridescent 4s ease-in-out infinite;
+}
+
+/* Settings gear icon — smooth roll on hover, reverse on unhover */
+.settings-gear-btn > svg {
+  transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.settings-gear-btn:hover > svg {
+  transform: rotate(120deg);
 }
 
 /* Rainbow puddle background animation - combines ripple and color change */

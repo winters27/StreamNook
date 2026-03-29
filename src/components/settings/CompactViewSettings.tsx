@@ -1,7 +1,8 @@
 import { useState } from 'react';
-import { Proportions, Plus, Trash2, Check, X, Pencil } from 'lucide-react';
+import { Proportions, Plus, Trash2, Check, Pencil } from 'lucide-react';
 import { useAppStore } from '../../stores/AppStore';
 import { BUILT_IN_COMPACT_PRESETS, DEFAULT_COMPACT_PRESET_ID } from '../../constants/compactViewPresets';
+import { Tooltip } from '../ui/Tooltip';
 import type { CompactViewPreset } from '../../types';
 
 const CompactViewSettings = () => {
@@ -253,20 +254,22 @@ const CompactViewSettings = () => {
                       <span className="text-xs text-textMuted">{preset.width} × {preset.height}</span>
                     </button>
                     <div className="flex gap-1">
+                      <Tooltip content="Edit preset" side="top">
                       <button
                         onClick={() => startEditingPreset(preset)}
                         className="p-1.5 rounded-md text-textMuted hover:text-textPrimary hover:bg-glass transition-colors"
-                        title="Edit preset"
                       >
                         <Pencil size={14} />
                       </button>
+                      </Tooltip>
+                      <Tooltip content="Delete preset" side="top">
                       <button
                         onClick={() => handleDeleteCustomPreset(preset.id)}
                         className="p-1.5 rounded-md text-textMuted hover:text-red-400 hover:bg-glass transition-colors"
-                        title="Delete preset"
                       >
                         <Trash2 size={14} />
                       </button>
+                      </Tooltip>
                     </div>
                   </div>
                 )}

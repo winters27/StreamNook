@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useAppStore } from '../../stores/AppStore';
 import { themes, themeCategories, getThemeById, applyTheme, customThemeToTheme, getThemeByIdWithCustom, Theme } from '../../themes';
 import { Check, Palette, Sparkles, Moon, Leaf, Code, Star, Plus, Edit2, PaintBucket } from 'lucide-react';
+import { Tooltip } from '../ui/Tooltip';
 import ThemeCreator from './ThemeCreator';
 import type { CustomTheme } from '../../types';
 
@@ -50,31 +51,36 @@ const ThemeCard = ({ theme, isSelected, onSelect, isCustom, onEdit }: ThemeCardP
         >
             {/* Color Preview */}
             <div className="flex gap-1.5 mb-2">
+                <Tooltip content="Accent" side="top">
                 <div
                     className="w-4 h-4 rounded-full"
                     style={{ backgroundColor: palette.accent }}
-                    title="Accent"
                 />
+                </Tooltip>
+                <Tooltip content="Pink" side="top">
                 <div
                     className="w-4 h-4 rounded-full"
                     style={{ backgroundColor: palette.highlight.pink }}
-                    title="Pink"
                 />
+                </Tooltip>
+                <Tooltip content="Purple" side="top">
                 <div
                     className="w-4 h-4 rounded-full"
                     style={{ backgroundColor: palette.highlight.purple }}
-                    title="Purple"
                 />
+                </Tooltip>
+                <Tooltip content="Blue" side="top">
                 <div
                     className="w-4 h-4 rounded-full"
                     style={{ backgroundColor: palette.highlight.blue }}
-                    title="Blue"
                 />
+                </Tooltip>
+                <Tooltip content="Green" side="top">
                 <div
                     className="w-4 h-4 rounded-full"
                     style={{ backgroundColor: palette.highlight.green }}
-                    title="Green"
                 />
+                </Tooltip>
             </div>
 
             {/* Theme Info */}
@@ -86,16 +92,17 @@ const ThemeCard = ({ theme, isSelected, onSelect, isCustom, onEdit }: ThemeCardP
                     {theme.name}
                 </h4>
                 {isCustom && onEdit && (
+                    <Tooltip content="Edit theme" side="top">
                     <button
                         onClick={(e) => {
                             e.stopPropagation();
                             onEdit();
                         }}
                         className="p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity hover:bg-white/10"
-                        title="Edit theme"
                     >
                         <Edit2 size={12} style={{ color: palette.textSecondary }} />
                     </button>
+                    </Tooltip>
                 )}
             </div>
 

@@ -12,6 +12,7 @@ import {
   refreshProfileInBackground,
   CachedProfile
 } from '../services/cosmeticsCache';
+import { Tooltip } from './ui/Tooltip';
 
 interface ParsedMessage {
   username: string;
@@ -187,7 +188,6 @@ const UserProfileCard = ({
   // Follow state
   const [isFollowing, setIsFollowing] = useState<boolean | null>(null);
   const [followLoading, setFollowLoading] = useState(false);
-  const [followError, setFollowError] = useState<string | null>(null);
 
   // Get channel context
   const getChannelContext = useCallback(() => {
@@ -331,10 +331,7 @@ const UserProfileCard = ({
 
   // Handle follow/unfollow action via GQL mutations
   const handleFollowAction = useCallback(async () => {
-    if (followLoading) return;
-
     setFollowLoading(true);
-    setFollowError(null);
 
     const action = isFollowing ? 'unfollow' : 'follow';
     Logger.debug(`[UserProfileCard] Initiating ${action} for ${username} (ID: ${userId})`);
@@ -347,7 +344,6 @@ const UserProfileCard = ({
       Logger.debug(`[UserProfileCard] Successfully ${action}ed ${username}`);
     } catch (err: any) {
       Logger.error(`[UserProfileCard] ${action} error:`, err);
-      setFollowError(err?.message || `Failed to ${action}`);
       useAppStore.getState().addToast(
         `Follow/Unfollow failed. Try logging out and back in via Settings to re-authenticate.`,
         'error'
@@ -478,13 +474,16 @@ const UserProfileCard = ({
           <div className="flex items-center gap-2 mb-1 flex-wrap">
             <h3 className="text-xl font-bold truncate" style={usernameStyle}>{displayName}</h3>
             {twitchProfile?.broadcaster_type === 'partner' && (
-              <div title="Verified Partner">
+              <Tooltip content="Verified Partner" side="top">
+              <div>
                 <svg className="w-5 h-5 flex-shrink-0" viewBox="0 0 16 16" fill="#9146FF">
                   <path fillRule="evenodd" d="M12.5 3.5 8 2 3.5 3.5 2 8l1.5 4.5L8 14l4.5-1.5L14 8l-1.5-4.5ZM7 11l4.5-4.5L10 5 7 8 5.5 6.5 4 8l3 3Z" clipRule="evenodd" />
                 </svg>
               </div>
+              </Tooltip>
             )}
             {selectedPaint && (
+              <Tooltip content={`Click to view paint details: ${selectedPaint.name}`} side="top">
               <button
                 onClick={() => {
                   useAppStore.getState().openBadgesWithPaint(selectedPaint.id);
@@ -495,7 +494,6 @@ const UserProfileCard = ({
                   WebkitBackgroundClip: 'padding-box',
                   backgroundClip: 'padding-box',
                 }}
-                title={`Click to view paint details: ${selectedPaint.name}`}
               >
                 <span
                   style={{
@@ -508,6 +506,7 @@ const UserProfileCard = ({
                   🎨 {selectedPaint.name}
                 </span>
               </button>
+              </Tooltip>
             )}
           </div>
           <p className="text-sm text-textSecondary mb-3">@{username}</p>
@@ -540,15 +539,15 @@ const UserProfileCard = ({
                     <p className="text-[9px] text-textSecondary uppercase mb-1.5 font-medium">Twitch</p>
                     <div className="flex items-center gap-1.5 flex-wrap">
                       {twitchBadges.map((b: any, i: number) => (
+                        <Tooltip key={`twitch-${b.id}-${i}`} content={b.description ? `${b.title}\n${b.description}` : b.title} side="top">
                         <img
-                          key={`twitch-${b.id}-${i}`}
                           src={b.src}
                           srcSet={b.srcSet}
                           alt={b.title}
-                          title={b.description ? `${b.title}\n${b.description}` : b.title}
                           className="w-5 h-5 cursor-pointer hover:scale-110 transition-transform"
                           onError={e => { e.currentTarget.style.display = 'none'; }}
                         />
+                        </Tooltip>
                       ))}
                     </div>
                   </div>
@@ -560,12 +559,11 @@ const UserProfileCard = ({
                     <p className="text-[9px] text-textSecondary uppercase mb-1.5 font-medium">7TV</p>
                     <div className="flex items-center gap-1.5 flex-wrap">
                       {seventvBadges.map((b: any, i: number) => (
+                        <Tooltip key={`7tv-${b.id}-${i}`} content={b.title} side="top">
                         <FallbackImage
-                          key={`7tv-${b.id}-${i}`}
                           src={b.src}
                           fallbackUrls={b.fallbackUrls}
                           alt={b.title}
-                          title={b.title}
                           className="w-5 h-5 cursor-pointer hover:scale-110 transition-transform"
                           onClick={async () => {
                             try {
@@ -576,6 +574,7 @@ const UserProfileCard = ({
                             }
                           }}
                         />
+                        </Tooltip>
                       ))}
                     </div>
                   </div>
@@ -587,15 +586,15 @@ const UserProfileCard = ({
                     <p className="text-[9px] text-textSecondary uppercase mb-1.5 font-medium">Other</p>
                     <div className="flex items-center gap-1.5 flex-wrap">
                       {thirdPartyBadges.map((b: any, i: number) => (
+                        <Tooltip key={`3p-${b.id}-${i}`} content={`${b.title} (${b.provider?.toUpperCase() || 'Other'})`} side="top">
                         <img
-                          key={`3p-${b.id}-${i}`}
                           src={b.src}
                           srcSet={b.srcSet}
                           alt={b.title}
-                          title={`${b.title} (${b.provider?.toUpperCase() || 'Other'})`}
                           className="w-5 h-5 cursor-pointer hover:scale-110 transition-transform"
                           onError={e => { e.currentTarget.style.display = 'none'; }}
                         />
+                        </Tooltip>
                       ))}
                     </div>
                   </div>
@@ -657,6 +656,7 @@ const UserProfileCard = ({
           {/* Action Buttons */}
           <div className="flex gap-2 flex-wrap">
             {/* Follow/Unfollow Button */}
+            <Tooltip content={followLoading ? 'Processing...' : isFollowing ? `Unfollow ${displayName}` : `Follow ${displayName}`} side="top">
             <button
               onClick={handleFollowAction}
               disabled={followLoading}
@@ -666,7 +666,6 @@ const UserProfileCard = ({
                   ? 'hover:bg-red-500/20 border-red-500/30'
                   : 'hover:bg-green-500/20 border-green-500/30'
                 }`}
-              title={followLoading ? 'Processing...' : isFollowing ? `Unfollow ${displayName}` : `Follow ${displayName}`}
             >
               {followLoading ? (
                 <>
@@ -685,6 +684,7 @@ const UserProfileCard = ({
                 </>
               )}
             </button>
+            </Tooltip>
             <a href={`https://www.twitch.tv/${username}`} target="_blank" rel="noopener noreferrer" className="flex-1 glass-button text-white text-xs py-2 px-3 rounded text-center hover:bg-accent/20 transition-colors">
               View Channel
             </a>
@@ -714,7 +714,6 @@ const UserProfileCard = ({
                 onClose();
               }}
               className="glass-button text-white text-xs py-2 px-3 rounded text-center hover:bg-purple-500/20 transition-colors flex items-center justify-center gap-1.5"
-              title="Send Whisper"
             >
               <MessageCircle size={14} className="text-purple-400" />
               Whisper
@@ -738,15 +737,16 @@ const UserProfileCard = ({
               <p className="text-xs font-semibold text-textSecondary uppercase tracking-wide">
                 Recent Messages
               </p>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <span className="text-[10px] text-textSecondary/60">{messageHistory.length} messages</span>
+                <Tooltip content="Hide messages" side="top">
                 <button
                   onClick={() => setShowMessages(false)}
                   className="p-1 text-textSecondary hover:text-textPrimary hover:bg-glass rounded transition-all"
-                  title="Hide messages"
                 >
                   <ChevronUp size={14} />
                 </button>
+                </Tooltip>
               </div>
             </div>
             <div className="flex-1 px-4 py-3 overflow-y-auto scrollbar-thin">

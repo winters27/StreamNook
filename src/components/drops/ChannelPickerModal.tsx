@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { X, Users, Zap, Radio, Loader2, Sparkles } from 'lucide-react';
-
+import { Tooltip } from '../ui/Tooltip';
 import { Logger } from '../../utils/logger';
 interface MiningChannel {
   id: string;
@@ -103,13 +103,14 @@ export default function ChannelPickerModal({
               {campaignName} • {gameName}
             </p>
           </div>
-          <button
-            onClick={onClose}
-            className="p-2 text-textSecondary hover:text-textPrimary hover:bg-glass rounded-lg transition-all"
-            title="Close"
-          >
-            <X size={18} />
-          </button>
+          <Tooltip content="Close" side="bottom">
+            <button
+              onClick={onClose}
+              className="p-2 text-textSecondary hover:text-textPrimary hover:bg-glass rounded-lg transition-all"
+            >
+              <X size={18} />
+            </button>
+          </Tooltip>
         </div>
 
         {/* Content */}

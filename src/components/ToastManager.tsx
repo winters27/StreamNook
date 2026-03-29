@@ -1,9 +1,8 @@
 import { AnimatePresence, motion } from 'framer-motion';
-import { CheckCircle, XCircle, AlertCircle, Info, X, Download, Loader2 } from 'lucide-react';
+import { CheckCircle, XCircle, AlertCircle, Info, X } from 'lucide-react';
 import { useAppStore, Toast } from '../stores/AppStore';
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { listen } from '@tauri-apps/api/event';
-import { invoke } from '@tauri-apps/api/core';
 import { parseEmojisProxied, EmojiSegment } from '../services/emojiService';
 
 import { Logger } from '../utils/logger';
@@ -124,13 +123,25 @@ const TEST_NOTIFICATION_JOKES = [
   "You really woke up and chose gullibility today.",
 ];
 
+let globalAudioContext: AudioContext | null = null;
+
+const getSharedAudioContext = () => {
+  if (!globalAudioContext) {
+    globalAudioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+  }
+  if (globalAudioContext.state === 'suspended') {
+    globalAudioContext.resume().catch(() => {});
+  }
+  return globalAudioContext;
+};
+
 const ToastManager = () => {
   const { toasts, removeToast, addToast, settings } = useAppStore();
 
   // Function to play a subtle notification sound based on selected type
   const playNotificationSound = useCallback((soundType?: string) => {
     try {
-      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const audioContext = getSharedAudioContext();
       const oscillator = audioContext.createOscillator();
       const gainNode = audioContext.createGain();
 
@@ -280,7 +291,24 @@ const ToastManager = () => {
           try {
             // Use the AppStore's startStream method which properly handles all state updates
             const { startStream } = useAppStore.getState();
-            await startStream(notification.streamer_login);
+            
+            // Create a partial stream info object from the notification data
+            // This ensures we have the title, game, and avatar even if the stream hasn't
+            // updated in the Twitch API cache yet
+            const partialStreamInfo = {
+              id: '',
+              user_id: '', // Will be fetched via get_channel_info fallback
+              user_name: notification.streamer_name,
+              user_login: notification.streamer_login,
+              title: notification.stream_title || '',
+              viewer_count: 0,
+              game_name: notification.game_name || '',
+              thumbnail_url: notification.game_image || '',
+              profile_image_url: notification.streamer_avatar || '',
+              started_at: new Date().toISOString(),
+            } as any;
+            
+            await startStream(notification.streamer_login, partialStreamInfo);
           } catch (e) {
             Logger.error('Failed to open stream:', e);
             const { addToast: showError } = useAppStore.getState();

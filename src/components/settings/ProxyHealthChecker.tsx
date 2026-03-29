@@ -119,30 +119,18 @@ const ProxyHealthChecker = ({ compact = false, onApplyOptimal }: ProxyHealthChec
       
       Logger.info(`[ProxyHealth] Generated optimal args: ${optimalArgs}`);
       
-      // Update settings with the new proxy args
-      const streamlink = settings.streamlink || {
-        low_latency_enabled: true,
-        hls_live_edge: 3,
-        stream_timeout: 60,
-        retry_streams: 3,
-        disable_hosting: true,
-        skip_ssl_verify: false,
-        use_proxy: true,
-        proxy_playlist: optimalArgs,
-      };
-      
-      const newSettings = {
+      // Update settings — spread preserves all existing fields
+      await updateSettings({
         ...settings,
         streamlink: {
-          ...streamlink,
+          ...settings.streamlink!,
           use_proxy: true,
           proxy_playlist: optimalArgs,
+          last_applied_proxy_id: bestProxy.id,
+          proxy_auto_optimized: true,  // Optimizer can override on next launch
+          proxy_optimized_once: true,
         },
-      };
-      
-      Logger.info(`[ProxyHealth] Updating settings with proxy_playlist: ${newSettings.streamlink.proxy_playlist}`);
-      
-      await updateSettings(newSettings);
+      });
       
       Logger.info('[ProxyHealth] Settings updated successfully');
       
@@ -164,7 +152,7 @@ const ProxyHealthChecker = ({ compact = false, onApplyOptimal }: ProxyHealthChec
     }
   };
   
-  /** Apply a specific proxy */
+  /** Apply a specific proxy (manual user selection) */
   const handleApplyProxy = async (proxy: ProxyHealthResult) => {
     if (!proxy.is_healthy) return;
     
@@ -184,30 +172,21 @@ const ProxyHealthChecker = ({ compact = false, onApplyOptimal }: ProxyHealthChec
       
       Logger.info(`[ProxyHealth] Applying proxy: ${proxy.name} (${proxyArgs})`);
       
-      // Update settings
-      const streamlink = settings.streamlink || {
-        low_latency_enabled: true,
-        hls_live_edge: 3,
-        stream_timeout: 60,
-        retry_streams: 3,
-        disable_hosting: true,
-        skip_ssl_verify: false,
-        use_proxy: true,
-        proxy_playlist: proxyArgs,
-      };
-      
-      const newSettings = {
+      // Update settings — spread preserves all existing fields
+      // Mark as NOT auto-optimized so the startup optimizer respects this manual choice
+      await updateSettings({
         ...settings,
         streamlink: {
-          ...streamlink,
+          ...settings.streamlink!,
           use_proxy: true,
           proxy_playlist: proxyArgs,
+          last_applied_proxy_id: proxy.id,
+          proxy_auto_optimized: false,  // User chose this — optimizer won't override
+          proxy_optimized_once: true,
         },
-      };
+      });
       
-      await updateSettings(newSettings);
-      
-      Logger.info(`[ProxyHealth] Applied proxy: ${proxy.name}`);
+      Logger.info(`[ProxyHealth] Applied proxy: ${proxy.name} (manual override)`);
       
       // Auto-restart stream if one is currently playing
       if (streamUrl) {
@@ -275,6 +254,11 @@ const ProxyHealthChecker = ({ compact = false, onApplyOptimal }: ProxyHealthChec
             <div className="flex items-center gap-2">
               <span className="text-lg">{getRegionFlag(currentProxy.region)}</span>
               <span className="text-sm font-medium text-textPrimary">{currentProxy.name}</span>
+              {settings.streamlink?.proxy_auto_optimized === false ? (
+                <span className="text-xs px-1.5 py-0.5 rounded bg-yellow-500/15 text-yellow-400/80">Manual</span>
+              ) : (
+                <span className="text-xs px-1.5 py-0.5 rounded bg-accent/15 text-accent/80">Auto</span>
+              )}
             </div>
           </div>
         </div>

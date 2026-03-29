@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { AlertTriangle, AlertCircle, RefreshCw, Trash2, Shield, MessageCircle, ExternalLink } from 'lucide-react';
 import { useAppStore } from '../../stores/AppStore';
 import { getLogs, clearLogs, type LogEntry } from '../../services/logService';
+import { Tooltip } from '../ui/Tooltip';
 
 import { Logger } from '../../utils/logger';
 // Lanyard API types
@@ -239,20 +240,22 @@ const SupportSettings = () => {
                             <option value="errors">Errors Only</option>
                             <option value="warnings">Warnings Only</option>
                         </select>
+                        <Tooltip content="Refresh logs" side="top">
                         <button
                             onClick={handleRefresh}
                             className="p-1.5 glass-button rounded"
-                            title="Refresh logs"
                         >
                             <RefreshCw className="w-3 h-3" />
                         </button>
+                        </Tooltip>
+                        <Tooltip content="Clear all logs" side="top">
                         <button
                             onClick={handleClearLogs}
                             className="p-1.5 glass-button rounded text-red-400 hover:text-red-300"
-                            title="Clear all logs"
                         >
                             <Trash2 className="w-3 h-3" />
                         </button>
+                        </Tooltip>
                     </div>
                 </div>
 
@@ -311,13 +314,14 @@ const SupportSettings = () => {
                                     alt={lanyardData.discord_user.username}
                                     className="w-12 h-12 rounded-full"
                                 />
-                                <div
-                                    className={`absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full border-[1.5px] border-background ${getStatusColor(lanyardData.discord_status)}`}
-                                    title={getStatusLabel(lanyardData.discord_status)}
-                                    style={lanyardData.discord_status === 'online' ? {
-                                        animation: 'pulse-glow 2s ease-in-out infinite'
-                                    } : undefined}
-                                />
+                                <Tooltip content={getStatusLabel(lanyardData.discord_status)} side="top">
+                                    <div
+                                        className={`absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full border-[1.5px] border-background ${getStatusColor(lanyardData.discord_status)}`}
+                                        style={lanyardData.discord_status === 'online' ? {
+                                            animation: 'pulse-glow 2s ease-in-out infinite'
+                                        } : undefined}
+                                    />
+                                </Tooltip>
                             </div>
 
                             {/* User info */}

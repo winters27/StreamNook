@@ -121,20 +121,35 @@ export const useProxyHealthStore = create<ProxyHealthState>((set, get) => ({
   },
   
   /**
-   * Generate optimal streamlink proxy args based on health check results
+   * Generate optimal streamlink proxy args based on health check results.
+   * Uses CACHED results from the store — does NOT run a second hidden health check.
    */
   generateOptimalArgs: async (maxProxies = 3) => {
     try {
-      const { healthResults } = get();
+      let { healthResults, bestProxy, checkDurationMs, totalCount, healthyCount } = get();
       
+      // Only run a check if we genuinely have no cached results
       if (healthResults.length === 0) {
         Logger.warn('[ProxyHealth] No health results available, running check first...');
-        await get().checkAllProxies();
+        const response = await get().checkAllProxies();
+        if (!response) {
+          return '--twitch-proxy-playlist=https://lb-na.cdn-perfprod.com,https://eu.luminous.dev --twitch-proxy-playlist-fallback';
+        }
+        // Re-read from store after check
+        ({ healthResults, bestProxy, checkDurationMs, totalCount, healthyCount } = get());
       }
       
-      const response = await invoke<ProxyHealthCheckResponse>('check_proxy_health');
+      // Build the response object from cached store state
+      const cachedResponse: ProxyHealthCheckResponse = {
+        results: healthResults,
+        best_proxy: bestProxy,
+        check_duration_ms: checkDurationMs ?? 0,
+        total_checked: totalCount,
+        healthy_count: healthyCount,
+      };
+      
       const args = await invoke<string>('generate_optimal_proxy_args', {
-        results: response,
+        results: cachedResponse,
         maxProxies,
       });
       
