@@ -28,12 +28,15 @@ const WhisperChatWindow = ({
 
     // Scroll to bottom when new messages arrive
     useEffect(() => {
-        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        const container = messagesEndRef.current?.closest('.overflow-y-auto');
+        if (container) {
+            container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
+        }
     }, [conversation.messages]);
 
     // Focus input on mount
     useEffect(() => {
-        inputRef.current?.focus();
+        inputRef.current?.focus({ preventScroll: true });
     }, []);
 
     const handleSend = async () => {
@@ -70,7 +73,7 @@ const WhisperChatWindow = ({
             setMessage(messageToSend); // Restore message on error
         } finally {
             setIsSending(false);
-            inputRef.current?.focus();
+            inputRef.current?.focus({ preventScroll: true });
         }
     };
 

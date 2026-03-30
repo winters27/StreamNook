@@ -524,6 +524,11 @@ impl EmoteService {
                         flags {
                             zeroWidth
                         }
+                        host {
+                            files {
+                                width
+                            }
+                        }
                     }
                 }
             }
@@ -572,6 +577,10 @@ impl EmoteService {
                                     .pointer("/flags/zeroWidth")
                                     .and_then(|v| v.as_bool())
                                     .unwrap_or(false);
+                                let width = item
+                                    .pointer("/host/files/0/width")
+                                    .and_then(|v| v.as_u64())
+                                    .map(|v| v as u32);
                                 emotes.push(Emote {
                                     id: id.to_string(),
                                     name: name.to_string(),
@@ -581,7 +590,7 @@ impl EmoteService {
                                     local_url: None,
                                     emote_type: None,
                                     owner_id: None,
-                                    width: None,
+                                    width,
                                     owner_name: None,
                                 });
                             }
@@ -617,6 +626,10 @@ impl EmoteService {
                                     .or_else(|| item.get("flags"))
                                     .and_then(|v| v.as_i64())
                                     .unwrap_or(0);
+                                let width = emote_data
+                                    .pointer("/host/files/0/width")
+                                    .and_then(|v| v.as_u64())
+                                    .map(|v| v as u32);
                                 emotes.push(Emote {
                                     id: id.to_string(),
                                     name: name.to_string(),
@@ -626,7 +639,7 @@ impl EmoteService {
                                     local_url: None,
                                     emote_type: None,
                                     owner_id: None,
-                                    width: None,
+                                    width,
                                     owner_name: None,
                                 });
                             }
@@ -665,6 +678,10 @@ impl EmoteService {
                                         .or_else(|| active_emote.get("flags"))
                                         .and_then(|v| v.as_i64())
                                         .unwrap_or(0);
+                                    let width = emote_data
+                                        .pointer("/host/files/0/width")
+                                        .and_then(|v| v.as_u64())
+                                        .map(|v| v as u32);
                                     // Extract owner display name from emote data
                                     let owner_name = emote_data
                                         .pointer("/owner/display_name")
@@ -679,7 +696,7 @@ impl EmoteService {
                                         local_url: None,
                                         emote_type: None,
                                         owner_id: None,
-                                        width: None,
+                                        width,
                                         owner_name,
                                     });
                                 }

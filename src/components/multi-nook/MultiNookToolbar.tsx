@@ -55,7 +55,7 @@ const MultiNookToolbar: React.FC<MultiNookToolbarProps> = ({
   useEffect(() => {
     if (isSearchOpen) {
       // Small delay for the expand animation to start
-      const t = setTimeout(() => inputRef.current?.focus(), 80);
+      const t = setTimeout(() => inputRef.current?.focus({ preventScroll: true }), 80);
       return () => clearTimeout(t);
     }
   }, [isSearchOpen]);

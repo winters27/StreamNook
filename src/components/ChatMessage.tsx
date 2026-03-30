@@ -568,15 +568,22 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
 
       // If it's an overlay (zero-width inside grid), it naturally sits on top and doesn't need negative margins
       // The grid "place-items-center" handles exact overlaying algorithmically!
-      const overlayClasses = isOverlay ? 'z-10 drop-shadow-[0_0_2px_rgba(0,0,0,0.5)] hover:drop-shadow-[0_0_4px_rgba(234,179,8,0.8)]' : '';
-      const imgClasses = `inline-block h-7 w-auto max-w-[96px] cursor-pointer crisp-image ${inGrid ? '' : 'align-middle'} ${marginClass} hover:scale-110 transition-transform ${overlayClasses}`;
+      let srcSet: string | undefined = undefined;
+      // Inject srcSet for 7TV emotes to support wide sizes natively at 2x, 3x, and 4x resolutions
+      if (segment.emoteId && (emoteUrl.includes('7tv') || segment.emoteId.length === 24)) {
+        // We only apply this to 7TV emotes (IDs are exactly 24 hex chars like 01F7CTADRG000351ERP2WA0ME9)
+        if (!emoteUrl.includes('jtvnw.net') && !emoteUrl.includes('frankerfacez')) {
+          srcSet = `https://cdn.7tv.app/emote/${segment.emoteId}/1x.avif 1x, https://cdn.7tv.app/emote/${segment.emoteId}/2x.avif 2x, https://cdn.7tv.app/emote/${segment.emoteId}/3x.avif 3x, https://cdn.7tv.app/emote/${segment.emoteId}/4x.avif 4x`;
+        }
+      }
 
       const imgElement = (
         <img
           src={emoteUrl}
+          srcSet={srcSet}
           alt={segment.content}
           loading="lazy"
-          className={imgClasses}
+          className={`inline-block h-7 w-auto max-w-[128px] cursor-pointer crisp-image ${inGrid ? '' : 'align-middle'} ${marginClass} hover:scale-110 transition-transform ${isOverlay ? 'z-10 drop-shadow-[0_0_2px_rgba(0,0,0,0.5)] hover:drop-shadow-[0_0_4px_rgba(234,179,8,0.8)]' : ''}`}
           style={gridStyle}
           referrerPolicy="no-referrer"
           onContextMenu={(e) => {

@@ -225,7 +225,7 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
     const emojiPickerRef = useRef<HTMLDivElement>(null);
     const sendingRef = useRef(false);
 
-    const { currentUser, settings } = useAppStore();
+    const { currentUser, settings, setProfileModalUser } = useAppStore();
 
     // Listen for auto-import whisper data event
     useEffect(() => {
@@ -545,14 +545,17 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
     // Scroll to bottom when new messages arrive
     useEffect(() => {
         if (activeConversation) {
-            messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+            const container = messagesEndRef.current?.closest('.overflow-y-auto');
+            if (container) {
+                container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
+            }
         }
     }, [conversations, activeConversation]);
 
     // Focus input when opening a conversation
     useEffect(() => {
         if (activeConversation) {
-            inputRef.current?.focus();
+            inputRef.current?.focus({ preventScroll: true });
         }
     }, [activeConversation]);
 
@@ -868,7 +871,7 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
         } finally {
             setIsSending(false);
             sendingRef.current = false;
-            inputRef.current?.focus();
+            inputRef.current?.focus({ preventScroll: true });
         }
     };
 
@@ -881,7 +884,7 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
 
     const insertEmoji = (emoji: string) => {
         setMessage(prev => prev + emoji);
-        inputRef.current?.focus();
+        inputRef.current?.focus({ preventScroll: true });
     };
 
     const formatTime = (timestamp: number) => {
@@ -912,6 +915,56 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
         return allEmojis.filter(emoji => emoji.includes(emojiSearchQuery));
     };
 
+    const parseTextWithLinks = (text: string) => {
+        const urlRegex = /(https?:\/\/[^\s]+|www\.[^\s]+)/g;
+        const parts = text.split(urlRegex);
+
+        return parts.map((part, index) => {
+            if (part.match(/^(https?:\/\/|www\.)/)) {
+                const url = part.startsWith('http') ? part : `https://${part}`;
+                return (
+                    <a
+                        key={index}
+                        href={url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-accent hover:text-accentHover underline cursor-pointer"
+                        onClick={async (e) => {
+                            e.preventDefault();
+                            try {
+                                const { open } = await import('@tauri-apps/plugin-shell');
+                                await open(url);
+                            } catch (err) {
+                                Logger.error('[Whispers] Failed to open URL:', err);
+                            }
+                        }}
+                    >
+                        {part}
+                    </a>
+                );
+            }
+            return part;
+        });
+    };
+
+    const handleProfileClick = () => {
+        if (!currentConversation) return;
+
+        // Ensure we're not causing recursive re-renders by wrapping in a stable callback
+        setProfileModalUser({
+            id: currentConversation.user_id,
+            user_id: currentConversation.user_id,
+            user_name: currentConversation.user_name,
+            user_login: currentConversation.user_login,
+            title: `${currentConversation.user_name}'s Profile`,
+            viewer_count: 0,
+            game_name: '',
+            thumbnail_url: currentConversation.profile_image_url || '',
+            started_at: '',
+            profile_image_url: currentConversation.profile_image_url || '',
+        });
+    };
+
     if (!isOpen) return null;
 
     return (
@@ -919,7 +972,7 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-md"
             onClick={handleClose}
         >
             <motion.div
@@ -927,33 +980,33 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
                 animate={{ scale: 1, opacity: 1 }}
                 exit={{ scale: 0.95, opacity: 0 }}
                 transition={{ type: 'spring', stiffness: 300, damping: 30 }}
-                className="bg-background border border-borderLight rounded-xl shadow-2xl w-[700px] h-[650px] flex overflow-hidden"
+                className="glass-panel w-[700px] h-[650px] flex overflow-hidden shadow-[0_20px_50px_rgba(0,0,0,0.5)] bg-surface/50 !backdrop-blur-3xl"
                 onClick={(e) => e.stopPropagation()}
             >
                 {/* Sidebar - Conversation List */}
-                <div className={`w-full md:w-[280px] flex-shrink-0 border-r border-borderSubtle flex flex-col ${activeConversation && 'hidden md:flex'}`}>
+                <div className={`w-full md:w-[280px] flex-shrink-0 border-r border-borderSubtle flex flex-col min-h-0 ${activeConversation && 'hidden md:flex'}`}>
                     {/* Header */}
-                    <div className="flex items-center justify-between px-4 py-4 border-b border-borderSubtle">
+                    <div className="flex items-center justify-between px-4 py-4 border-b border-borderSubtle shrink-0">
                         <div className="flex items-center gap-2">
-                            <MessageCircle size={20} className="text-purple-400" />
-                            <span className="text-textPrimary font-semibold text-lg">Whispers</span>
+                            <MessageCircle size={20} className="text-accent" />
+                            <span className="text-textPrimary font-semibold text-lg hover:text-accent transition-colors">Whispers</span>
                             {totalUnread > 0 && (
-                                <span className="bg-purple-500 text-white text-xs px-2 py-0.5 rounded-full font-medium">
+                                <span className="glass-badge text-textPrimary text-xs px-2 py-0.5 rounded-full font-medium">
                                     {totalUnread}
                                 </span>
                             )}
                         </div>
-                        <div className="flex items-center gap-1">
+                        <div className="flex items-center gap-1 shrink-0">
                             <input type="file" ref={fileInputRef} onChange={handleFileImport} accept=".json" className="hidden" />
                             {/* Background Import Indicator */}
                             {whisperImportState.isImporting && (
                                 <Tooltip content="Click to view import progress" side="bottom">
                                 <button
                                     onClick={() => setShowImportWizard(true)}
-                                    className="flex items-center gap-2 px-2 py-1.5 bg-purple-500/20 hover:bg-purple-500/30 border border-purple-500/30 rounded-lg transition-colors animate-pulse"
+                                    className="flex items-center gap-2 px-2 py-1.5 glass-button hover:text-accent transition-colors animate-pulse"
                                 >
-                                    <Loader2 size={14} className="text-purple-400 animate-spin" />
-                                    <span className="text-purple-400 text-xs font-medium">
+                                    <Loader2 size={14} className="text-accent animate-spin" />
+                                    <span className="text-accent text-xs font-medium">
                                         {whisperImportState.exportProgress.total > 0
                                             ? `${whisperImportState.exportProgress.current + 1}/${whisperImportState.exportProgress.total}`
                                             : 'Importing...'}
@@ -967,7 +1020,7 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
                                 <button
                                     onClick={() => setShowImportWizard(true)}
                                     disabled={isImportingAll}
-                                    className="p-2 text-textSecondary hover:text-purple-400 hover:bg-glass rounded-lg transition-colors disabled:opacity-50"
+                                    className="p-2 text-textSecondary hover:text-accent hover:bg-surface-hover rounded-lg transition-colors disabled:opacity-50"
                                 >
                                     {isImportingAll ? <Loader2 size={18} className="animate-spin" /> : <Download size={18} />}
                                 </button>
@@ -976,12 +1029,12 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
                             <Tooltip content="New conversation" side="bottom">
                             <button
                                 onClick={() => setShowNewConversation(true)}
-                                className="p-2 text-textSecondary hover:text-purple-400 hover:bg-glass rounded-lg transition-colors"
+                                className="p-2 text-textSecondary hover:text-accent hover:bg-surface-hover rounded-lg transition-colors"
                             >
                                 <Plus size={18} />
                             </button>
                             </Tooltip>
-                            <button onClick={handleClose} className="p-2 text-textSecondary hover:text-textPrimary hover:bg-glass rounded-lg transition-colors md:hidden">
+                            <button onClick={handleClose} className="p-2 text-textSecondary hover:text-error hover:bg-red-500/10 rounded-lg transition-colors md:hidden">
                                 <X size={18} />
                             </button>
                         </div>
@@ -999,14 +1052,14 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
                                 <ChevronDown size={14} className={`transition-transform ${showSortMenu ? 'rotate-180' : ''}`} />
                             </button>
                             {showSortMenu && (
-                                <div className="absolute top-full left-0 mt-1 bg-background border border-borderLight rounded-lg shadow-lg z-10 py-1 min-w-[120px]">
-                                    <button onClick={() => { setSortOption('recent'); setShowSortMenu(false); }} className={`w-full px-3 py-1.5 text-left text-xs hover:bg-glass transition-colors flex items-center gap-2 ${sortOption === 'recent' ? 'text-purple-400' : 'text-textSecondary'}`}>
+                                <div className="absolute top-full left-0 mt-1 glass-panel z-10 py-1 min-w-[120px]">
+                                    <button onClick={() => { setSortOption('recent'); setShowSortMenu(false); }} className={`w-full px-3 py-1.5 text-left text-xs hover:bg-surface-hover transition-colors flex items-center gap-2 ${sortOption === 'recent' ? 'text-accent font-medium' : 'text-textSecondary'}`}>
                                         <Clock size={12} /> Recent
                                     </button>
-                                    <button onClick={() => { setSortOption('name'); setShowSortMenu(false); }} className={`w-full px-3 py-1.5 text-left text-xs hover:bg-glass transition-colors flex items-center gap-2 ${sortOption === 'name' ? 'text-purple-400' : 'text-textSecondary'}`}>
+                                    <button onClick={() => { setSortOption('name'); setShowSortMenu(false); }} className={`w-full px-3 py-1.5 text-left text-xs hover:bg-surface-hover transition-colors flex items-center gap-2 ${sortOption === 'name' ? 'text-accent font-medium' : 'text-textSecondary'}`}>
                                         <User size={12} /> Name
                                     </button>
-                                    <button onClick={() => { setSortOption('unread'); setShowSortMenu(false); }} className={`w-full px-3 py-1.5 text-left text-xs hover:bg-glass transition-colors flex items-center gap-2 ${sortOption === 'unread' ? 'text-purple-400' : 'text-textSecondary'}`}>
+                                    <button onClick={() => { setSortOption('unread'); setShowSortMenu(false); }} className={`w-full px-3 py-1.5 text-left text-xs hover:bg-surface-hover transition-colors flex items-center gap-2 ${sortOption === 'unread' ? 'text-accent font-medium' : 'text-textSecondary'}`}>
                                         <MessageCircle size={12} /> Unread
                                     </button>
                                 </div>
@@ -1016,18 +1069,18 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
 
                     {/* Import Progress */}
                     {importProgress && (
-                        <div className="px-4 py-2 bg-purple-500/10 border-b border-purple-500/20">
-                            <span className="text-purple-400 text-xs">{importProgress}</span>
+                        <div className="px-4 py-2 bg-accent/10 border-b border-accent/20">
+                            <span className="text-accent text-xs">{importProgress}</span>
                         </div>
                     )}
 
                     {/* Conversation List */}
-                    <div className="flex-1 overflow-y-auto scrollbar-thin">
+                    <div className="flex-1 overflow-y-auto min-h-0 scrollbar-thin">
                         {sortedConversations.length === 0 ? (
                             <div className="flex flex-col items-center justify-center h-full text-textMuted p-6">
-                                <Users size={40} className="mb-3 opacity-50" />
+                                <Users size={40} className="mb-3 opacity-50 text-accent/50" />
                                 <span className="text-sm text-center mb-2">No conversations yet</span>
-                                <button onClick={() => setShowNewConversation(true)} className="text-purple-400 hover:text-purple-300 text-sm">
+                                <button onClick={() => setShowNewConversation(true)} className="text-accent hover:text-accent font-medium text-sm transition-colors">
                                     Start a new conversation
                                 </button>
                             </div>
@@ -1035,19 +1088,19 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
                             sortedConversations.map((conv) => (
                                 <div
                                     key={conv.key}
-                                    className={`group relative w-full flex items-center gap-3 px-4 py-3 hover:bg-glass transition-colors cursor-pointer ${activeConversation === conv.key ? 'bg-glass' : ''}`}
+                                    className={`group relative w-full flex items-center gap-3 px-4 py-3 hover:bg-surface-hover transition-colors cursor-pointer ${activeConversation === conv.key ? 'bg-surface-active' : ''}`}
                                     onClick={() => setActiveConversation(conv.key)}
                                 >
                                     <div className="relative flex-shrink-0">
                                         {conv.profile_image_url ? (
-                                            <img src={conv.profile_image_url} alt={conv.user_name} className="w-11 h-11 rounded-full object-cover" />
+                                            <img src={conv.profile_image_url} alt={conv.user_name} className="w-11 h-11 rounded-full object-cover border border-white/5" />
                                         ) : (
-                                            <div className="w-11 h-11 rounded-full bg-purple-500/20 flex items-center justify-center">
-                                                <MessageCircle size={18} className="text-purple-400" />
+                                            <div className="w-11 h-11 rounded-full bg-accent/10 border border-accent/20 flex items-center justify-center">
+                                                <MessageCircle size={18} className="text-accent" />
                                             </div>
                                         )}
                                         {conv.unread_count > 0 && (
-                                            <div className="absolute -top-1 -right-1 w-5 h-5 bg-purple-500 rounded-full flex items-center justify-center text-white text-[10px] font-bold">
+                                            <div className="absolute -top-1 -right-1 w-5 h-5 glass-badge flex items-center justify-center text-textPrimary text-[10px] font-bold">
                                                 {conv.unread_count > 9 ? '9+' : conv.unread_count}
                                             </div>
                                         )}
@@ -1088,16 +1141,16 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
                 </div>
 
                 {/* Main Content */}
-                <div className={`flex-1 flex flex-col ${!activeConversation && !showNewConversation && 'hidden md:flex'}`}>
+                <div className={`flex-1 flex flex-col min-w-0 ${!activeConversation && !showNewConversation && 'hidden md:flex'}`}>
                     {showNewConversation ? (
-                        <>
-                            <div className="flex items-center gap-3 px-5 py-4 border-b border-borderSubtle">
-                                <button onClick={() => { setShowNewConversation(false); setSearchQuery(''); setSearchResults([]); }} className="p-2 text-textSecondary hover:text-textPrimary hover:bg-glass rounded-lg transition-colors">
+                        <div className="flex-1 flex flex-col min-h-0">
+                            <div className="flex items-center gap-3 px-5 py-4 border-b border-borderSubtle shrink-0">
+                                <button onClick={() => { setShowNewConversation(false); setSearchQuery(''); setSearchResults([]); }} className="p-2 text-textSecondary hover:text-accent hover:bg-surface-hover rounded-lg transition-colors">
                                     <ArrowLeft size={18} />
                                 </button>
                                 <span className="text-textPrimary font-semibold">New Conversation</span>
                             </div>
-                            <div className="p-5">
+                            <div className="p-5 shrink-0">
                                 <div className="flex items-center gap-3">
                                     <div className="flex-1 relative">
                                         <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-textMuted" />
@@ -1107,24 +1160,24 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
                                             onChange={(e) => setSearchQuery(e.target.value)}
                                             onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
                                             placeholder="Search for a user..."
-                                            className="w-full bg-glass border border-borderLight rounded-lg pl-10 pr-4 py-2.5 text-sm text-textPrimary placeholder:text-textMuted focus:outline-none focus:border-purple-500 transition-colors"
+                                            className="w-full glass-input rounded-lg pl-10 pr-4 py-2.5 text-sm transition-colors"
                                         />
                                     </div>
-                                    <button onClick={handleSearch} disabled={isSearching} className="px-5 py-2.5 bg-purple-500 hover:bg-purple-600 disabled:bg-purple-500/50 text-white rounded-lg text-sm transition-colors">
+                                    <button onClick={handleSearch} disabled={isSearching} className="px-5 py-2.5 glass-button hover:text-accent disabled:opacity-50 text-textPrimary rounded-lg text-sm transition-colors">
                                         {isSearching ? <Loader2 size={16} className="animate-spin" /> : 'Search'}
                                     </button>
                                 </div>
                             </div>
-                            <div className="flex-1 overflow-y-auto px-5 pb-5">
+                            <div className="flex-1 overflow-y-auto min-h-0 px-5 pb-5">
                                 {searchResults.length > 0 ? (
                                     <div className="space-y-2">
                                         {searchResults.map((user) => (
-                                            <button key={user.id} onClick={() => startConversation(user)} className="w-full flex items-center gap-3 p-3 bg-glass hover:bg-glass/80 rounded-lg transition-colors">
+                                            <button key={user.id} onClick={() => startConversation(user)} className="w-full flex items-center gap-3 p-3 glass-panel hover:bg-glass-hover rounded-lg transition-colors border-transparent">
                                                 {user.profile_image_url ? (
-                                                    <img src={user.profile_image_url} alt={user.display_name} className="w-11 h-11 rounded-full object-cover" />
+                                                    <img src={user.profile_image_url} alt={user.display_name} className="w-11 h-11 rounded-full object-cover border border-white/5" />
                                                 ) : (
-                                                    <div className="w-11 h-11 rounded-full bg-purple-500/20 flex items-center justify-center">
-                                                        <MessageCircle size={18} className="text-purple-400" />
+                                                    <div className="w-11 h-11 rounded-full bg-accent/10 border border-accent/20 flex items-center justify-center">
+                                                        <MessageCircle size={18} className="text-accent" />
                                                     </div>
                                                 )}
                                                 <div className="text-left">
@@ -1138,44 +1191,51 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
                                     <div className="text-center text-textMuted py-8">No users found</div>
                                 ) : null}
                             </div>
-                        </>
+                        </div>
                     ) : activeConversation && currentConversation ? (
                         <>
                             {/* Conversation Header */}
-                            <div className="flex items-center gap-3 px-5 py-4 border-b border-borderSubtle">
-                                <button onClick={() => setActiveConversation(null)} className="p-2 text-textSecondary hover:text-textPrimary hover:bg-glass rounded-lg transition-colors md:hidden">
+                            <div className="flex items-center gap-3 px-5 py-4 border-b border-borderSubtle shrink-0">
+                                <button onClick={() => setActiveConversation(null)} className="p-2 text-textSecondary hover:text-accent hover:bg-surface-hover rounded-lg transition-colors md:hidden">
                                     <ArrowLeft size={18} />
                                 </button>
-                                {currentConversation.profile_image_url ? (
-                                    <img src={currentConversation.profile_image_url} alt={currentConversation.user_name} className="w-10 h-10 rounded-full object-cover" />
-                                ) : (
-                                    <div className="w-10 h-10 rounded-full bg-purple-500/20 flex items-center justify-center">
-                                        <MessageCircle size={16} className="text-purple-400" />
+                                
+                                <button 
+                                    onClick={handleProfileClick}
+                                    className="flex items-center gap-3 flex-1 text-left group hover:bg-surface-hover p-1.5 -ml-1.5 rounded-lg transition-colors"
+                                >
+                                    {currentConversation.profile_image_url ? (
+                                        <img src={currentConversation.profile_image_url} alt={currentConversation.user_name} className="w-10 h-10 rounded-full object-cover border border-white/5 group-hover:border-accent/40 transition-colors" />
+                                    ) : (
+                                        <div className="w-10 h-10 rounded-full bg-accent/10 border border-accent/20 flex items-center justify-center group-hover:border-accent/40 transition-colors">
+                                            <MessageCircle size={16} className="text-accent" />
+                                        </div>
+                                    )}
+                                    <div className="flex-1">
+                                        <span className="text-textPrimary font-semibold text-sm block group-hover:text-accent transition-colors">{currentConversation.user_name}</span>
+                                        <span className="text-textMuted text-xs">@{currentConversation.user_login}</span>
                                     </div>
-                                )}
-                                <div className="flex-1">
-                                    <span className="text-textPrimary font-semibold text-sm block">{currentConversation.user_name}</span>
-                                    <span className="text-textMuted text-xs">@{currentConversation.user_login}</span>
-                                </div>
-                                <button onClick={handleClose} className="p-2 text-textSecondary hover:text-textPrimary hover:bg-glass rounded-lg transition-colors hidden md:block">
+                                </button>
+
+                                <button onClick={handleClose} className="p-2 text-textSecondary hover:text-error hover:bg-red-500/10 rounded-lg transition-colors hidden md:block shrink-0">
                                     <X size={18} />
                                 </button>
                             </div>
 
                             {/* Messages */}
-                            <div className="flex-1 overflow-y-auto p-5 space-y-3 scrollbar-thin">
+                            <div className="flex-1 overflow-y-auto min-h-0 p-5 space-y-4 scrollbar-thin">
                                 {currentConversation.messages.length === 0 ? (
                                     <div className="flex flex-col items-center justify-center h-full text-textMuted">
-                                        <MessageCircle size={40} className="mb-3 opacity-50" />
+                                        <MessageCircle size={40} className="mb-3 opacity-50 text-accent/50" />
                                         <span className="text-sm">No messages yet</span>
                                         <span className="text-xs mt-1">Start the conversation!</span>
                                     </div>
                                 ) : (
                                     currentConversation.messages.map((msg, index) => (
                                         <motion.div key={`${msg.id}-${index}`} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className={`flex ${msg.is_sent ? 'justify-end' : 'justify-start'}`}>
-                                            <div className={`max-w-[70%] px-4 py-2.5 rounded-2xl ${msg.is_sent ? 'bg-purple-500 text-white rounded-br-md' : 'bg-glass text-textPrimary rounded-bl-md'}`}>
-                                                <p className="text-sm break-words whitespace-pre-wrap">{msg.message}</p>
-                                                <span className={`text-[10px] mt-1 block ${msg.is_sent ? 'text-white/60' : 'text-textMuted'}`}>{formatTime(msg.timestamp)}</span>
+                                            <div className={`max-w-[75%] px-4 py-3 glass-button-static text-textPrimary ${msg.is_sent ? 'bg-blue-500/15 !border-blue-500/30 rounded-2xl rounded-br-md' : 'rounded-2xl rounded-bl-md'}`}>
+                                                <p className="text-sm break-words whitespace-pre-wrap">{parseTextWithLinks(msg.message)}</p>
+                                                <span className={`text-[10px] mt-1.5 block ${msg.is_sent ? 'text-blue-400/70 font-medium' : 'text-textMuted font-medium'}`}>{formatTime(msg.timestamp)}</span>
                                             </div>
                                         </motion.div>
                                     ))
@@ -1191,24 +1251,24 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
                             )}
 
                             {/* Input Area */}
-                            <div className="p-4 border-t border-borderSubtle relative">
+                            <div className="shrink-0 p-4 relative bg-surface-hover/20 backdrop-blur-md border-t border-borderSubtle">
                                 {/* Emoji Picker */}
                                 {showEmojiPicker && (
-                                    <div ref={emojiPickerRef} className="absolute bottom-full left-4 right-4 mb-2 bg-background border border-borderLight rounded-xl shadow-xl overflow-hidden" style={{ height: '320px' }}>
+                                    <div ref={emojiPickerRef} className="absolute bottom-full left-4 right-4 mb-2 glass-panel shadow-xl overflow-hidden" style={{ height: '320px' }}>
                                         <div className="p-3 border-b border-borderSubtle">
                                             <input
                                                 type="text"
                                                 value={emojiSearchQuery}
                                                 onChange={(e) => setEmojiSearchQuery(e.target.value)}
                                                 placeholder="Search emojis..."
-                                                className="w-full bg-glass border border-borderLight rounded-lg px-3 py-2 text-xs text-textPrimary placeholder:text-textMuted focus:outline-none focus:border-purple-500"
+                                                className="w-full glass-input rounded-lg px-3 py-2 text-xs transition-colors"
                                             />
                                             <div className="flex gap-1 mt-2 overflow-x-auto scrollbar-thin pb-1">
                                                 {Object.keys(emojiCategories).map((category) => (
                                                     <button
                                                         key={category}
                                                         onClick={() => { setSelectedEmojiCategory(category); setEmojiSearchQuery(''); }}
-                                                        className={`px-2 py-1 text-xs rounded whitespace-nowrap transition-colors ${selectedEmojiCategory === category ? 'bg-purple-500 text-white' : 'bg-glass text-textSecondary hover:bg-glass/80'}`}
+                                                        className={`px-3 py-1.5 text-xs font-medium rounded-md whitespace-nowrap transition-colors ${selectedEmojiCategory === category ? 'bg-accent/20 text-accent border border-accent/30' : 'bg-transparent text-textSecondary hover:bg-surface-hover border border-transparent'}`}
                                                     >
                                                         {category}
                                                     </button>
@@ -1221,7 +1281,7 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
                                                     <Tooltip key={`${emoji}-${idx}`} content={emoji} side="top">
                                                     <button
                                                         onClick={() => insertEmoji(emoji)}
-                                                        className="flex items-center justify-center p-2 hover:bg-glass rounded-lg transition-colors"
+                                                        className="flex items-center justify-center p-2 hover:bg-surface-hover rounded-lg transition-colors"
                                                     >
                                                         <img src={getAppleEmojiUrl(emoji)} alt={emoji} className="w-6 h-6 object-contain" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; (e.target as HTMLImageElement).insertAdjacentText('afterend', emoji); }} />
                                                     </button>
@@ -1233,7 +1293,7 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
                                 )}
 
                                 <div className="flex items-end gap-2">
-                                    <button onClick={() => setShowEmojiPicker(!showEmojiPicker)} className="p-2.5 text-textSecondary hover:text-purple-400 hover:bg-glass rounded-lg transition-colors flex-shrink-0">
+                                    <button onClick={() => setShowEmojiPicker(!showEmojiPicker)} className={`p-2.5 rounded-xl transition-colors flex-shrink-0 ${showEmojiPicker ? 'text-accent bg-accent/10 border border-accent/20' : 'text-textSecondary hover:text-accent hover:bg-surface-hover border border-transparent'}`}>
                                         <Smile size={20} />
                                     </button>
                                     <textarea
@@ -1245,7 +1305,7 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
                                         disabled={isSending}
                                         maxLength={500}
                                         rows={1}
-                                        className="flex-1 bg-glass border border-borderLight rounded-xl px-4 py-2.5 text-sm text-textPrimary placeholder:text-textMuted focus:outline-none focus:border-purple-500 transition-colors disabled:opacity-50 resize-none min-h-[42px] max-h-[120px]"
+                                        className="flex-1 glass-input rounded-xl px-4 py-3 text-sm transition-all duration-200 disabled:opacity-50 resize-none min-h-[44px] max-h-[120px] shadow-sm"
                                         style={{ height: 'auto' }}
                                         onInput={(e) => {
                                             const target = e.target as HTMLTextAreaElement;
@@ -1253,25 +1313,25 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
                                             target.style.height = Math.min(target.scrollHeight, 120) + 'px';
                                         }}
                                     />
-                                    <button onClick={handleSend} disabled={!message.trim() || isSending} className="p-2.5 bg-purple-500 hover:bg-purple-600 disabled:bg-purple-500/30 disabled:cursor-not-allowed text-white rounded-xl transition-colors flex-shrink-0">
-                                        {isSending ? <Loader2 size={20} className="animate-spin" /> : <Send size={20} />}
+                                    <button onClick={handleSend} disabled={!message.trim() || isSending} className="p-2.5 glass-button hover:text-accent disabled:opacity-40 disabled:hover:text-textPrimary disabled:cursor-not-allowed text-textPrimary rounded-xl transition-colors flex-shrink-0">
+                                        {isSending ? <Loader2 size={20} className="animate-spin text-accent" /> : <Send size={20} className={`${message.trim() ? 'text-accent drop-shadow-[0_0_8px_rgba(151,177,185,0.4)]' : ''} transition-all`} />}
                                     </button>
                                 </div>
-                                <div className="flex justify-between mt-2 px-1">
-                                    <span className="text-[10px] text-textMuted">Press Enter to send, Shift+Enter for new line</span>
-                                    <span className="text-[10px] text-textMuted">{message.length}/500</span>
+                                <div className="flex justify-between mt-2 px-2">
+                                    <span className="text-[10px] text-textMuted/70 font-medium">Press Enter to send, Shift+Enter for new line</span>
+                                    <span className="text-[10px] text-textMuted/70 font-medium">{message.length}/500</span>
                                 </div>
                             </div>
                         </>
                     ) : (
-                        <div className="flex-1 flex flex-col items-center justify-center text-textMuted p-8">
-                            <MessageCircle size={56} className="mb-4 opacity-30" />
-                            <span className="text-lg font-medium mb-1">Select a conversation</span>
-                            <span className="text-sm mb-4">or start a new one</span>
-                            <button onClick={() => setShowNewConversation(true)} className="px-5 py-2.5 bg-purple-500 hover:bg-purple-600 text-white rounded-lg text-sm transition-colors">
+                        <div className="flex-1 flex flex-col min-h-0 items-center justify-center text-textMuted p-8">
+                            <MessageCircle size={56} className="mb-4 opacity-30 text-accent" />
+                            <span className="text-lg font-medium mb-1 text-textPrimary">Select a conversation</span>
+                            <span className="text-sm mb-6 text-textMuted">or start a new one to begin whispering</span>
+                            <button onClick={() => setShowNewConversation(true)} className="px-5 py-2.5 glass-button hover:text-accent font-medium text-textPrimary rounded-lg text-sm transition-colors shadow-lg">
                                 New Conversation
                             </button>
-                            <button onClick={handleClose} className="mt-4 p-2 text-textSecondary hover:text-textPrimary hover:bg-glass rounded-lg transition-colors hidden md:block">
+                            <button onClick={handleClose} className="mt-6 p-2 text-textSecondary hover:text-error hover:bg-red-500/10 rounded-lg transition-colors hidden md:block">
                                 <X size={22} />
                             </button>
                         </div>

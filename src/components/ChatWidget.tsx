@@ -201,15 +201,16 @@ const EmoteGridItem = memo(({ emote, isFavorited, onInsert, onToggleFavorite }: 
     >
       <div 
         ref={containerRef}
-        className="relative group inline-block focus:outline-none"
+        className="relative group flex items-center justify-center focus:outline-none w-full h-full min-h-8"
       >
-        <button onClick={onInsert} className={`flex items-center justify-center p-1 min-w-8 min-h-8 hover:bg-glass rounded transition-colors ${emote.isZeroWidth ? 'ring-1 ring-yellow-400/50 bg-yellow-400/10' : ''}`}>
+        <button onClick={onInsert} className={`flex items-center justify-center p-1 w-full h-full min-w-8 min-h-8 hover:bg-glass rounded transition-colors ${emote.isZeroWidth ? 'ring-1 ring-yellow-400/50 bg-yellow-400/10' : ''}`}>
           {isVisible ? (
             <img
               src={emote.localUrl || emote.url}
+              srcSet={emote.provider === '7tv' ? `https://cdn.7tv.app/emote/${emote.id}/1x.avif 1x, https://cdn.7tv.app/emote/${emote.id}/2x.avif 2x, https://cdn.7tv.app/emote/${emote.id}/3x.avif 3x, https://cdn.7tv.app/emote/${emote.id}/4x.avif 4x` : undefined}
               alt={emote.name}
               referrerPolicy="no-referrer"
-              className={`h-8 w-auto max-w-[64px] object-contain ${emote.isZeroWidth ? 'drop-shadow-[0_0_3px_rgba(234,179,8,0.6)]' : ''}`}
+              className={`max-h-8 w-auto max-w-full object-contain ${emote.isZeroWidth ? 'drop-shadow-[0_0_3px_rgba(234,179,8,0.6)]' : ''}`}
 
               onError={(e) => {
                 const target = e.currentTarget;
@@ -222,7 +223,7 @@ const EmoteGridItem = memo(({ emote, isFavorited, onInsert, onToggleFavorite }: 
             />
           ) : (
             // Placeholder while not visible - same size to prevent layout shift
-            <div className="h-8 w-8 bg-glass/30 rounded animate-pulse" />
+            <div className="h-8 w-8 max-w-full bg-glass/30 rounded animate-pulse opacity-50" />
           )}
         </button>
         <button 
@@ -1339,7 +1340,7 @@ const ChatWidget = () => {
       if (inputRef.current) {
         inputRef.current.style.height = '36px';
       }
-      inputRef.current?.focus();
+      inputRef.current?.focus({ preventScroll: true });
 
       // Handle resub mode - send resub notification
       if (isResubMode && resubNotification && currentStream?.user_login) {
@@ -1539,7 +1540,7 @@ const ChatWidget = () => {
     setMentionStartPosition(null);
     
     // Focus and set cursor position after the inserted mention
-    inputRef.current?.focus();
+    inputRef.current?.focus({ preventScroll: true });
     const newCursorPos = beforeMention.length + user.username.length + 2; // +2 for @ and space
     setTimeout(() => {
       inputRef.current?.setSelectionRange(newCursorPos, newCursorPos);
@@ -1548,7 +1549,7 @@ const ChatWidget = () => {
 
   const insertEmote = (emoteName: string) => {
     setMessageInput(prev => prev + (prev ? ' ' : '') + emoteName + ' ');
-    inputRef.current?.focus();
+    inputRef.current?.focus({ preventScroll: true });
   };
 
   const handleEmoteRightClick = (emoteName: string) => {
@@ -1556,12 +1557,12 @@ const ChatWidget = () => {
       if (prev.trim()) return prev + (prev.endsWith(' ') ? '' : ' ') + emoteName + ' ';
       return emoteName + ' ';
     });
-    inputRef.current?.focus();
+    inputRef.current?.focus({ preventScroll: true });
   };
 
   const handleUsernameRightClick = (messageId: string, username: string) => {
     setReplyingTo({ messageId, username });
-    inputRef.current?.focus();
+    inputRef.current?.focus({ preventScroll: true });
   };
 
   const emojiCategories = EMOJI_CATEGORIES;
@@ -1599,14 +1600,39 @@ const ChatWidget = () => {
     }
   }, [selectedProvider, searchQuery]);
 
-  // Sort emotes by width (smaller first for better grid layout)
-  const sortedEmotes = useMemo(() => {
-    return [...filteredEmotes].sort((a, b) => {
-      // Prioritize zero-width emotes to the top of the list
-      if (a.isZeroWidth && !b.isZeroWidth) return -1;
-      if (!a.isZeroWidth && b.isZeroWidth) return 1;
-      return (a.width || 32) - (b.width || 32);
-    });
+  // Group emotes by width categories for better grid layout
+  const groupedWidthEmotes = useMemo(() => {
+    const groups = new Map<string, { label: string, emotes: Emote[], gridCols: string }>();
+    groups.set('standard', { label: 'Standard', emotes: [], gridCols: 'grid-cols-7' });
+    groups.set('wide', { label: 'Wide', emotes: [], gridCols: 'grid-cols-4' });
+    groups.set('ultrawide', { label: 'Ultra Wide', emotes: [], gridCols: 'grid-cols-3' });
+
+    for (const emote of filteredEmotes) {
+      const width = emote.width || 32;
+      if (width <= 48) {
+        groups.get('standard')!.emotes.push(emote);
+      } else if (width <= 80) {
+        groups.get('wide')!.emotes.push(emote);
+      } else {
+        groups.get('ultrawide')!.emotes.push(emote);
+      }
+    }
+    
+    // Sort emotes internally by exact width and then name
+    for (const group of groups.values()) {
+       group.emotes.sort((a, b) => {
+         // Zero-width emotes float to the start of their respective category
+         if (a.isZeroWidth && !b.isZeroWidth) return -1;
+         if (!a.isZeroWidth && b.isZeroWidth) return 1;
+
+         const wA = a.width || 32;
+         const wB = b.width || 32;
+         if (wA !== wB) return wA - wB; // Narrowest first
+         return a.name.localeCompare(b.name);
+       });
+    }
+
+    return groups;
   }, [filteredEmotes]);
 
   // Memoize grouped Twitch emotes to prevent recalculation on every render
@@ -2203,19 +2229,19 @@ const ChatWidget = () => {
                       </Tooltip>
                     </div>
                   </div>
-                  <div ref={emoteScrollRef} className="flex-1 overflow-y-auto p-3 scrollbar-thin">
+                  <div ref={emoteScrollRef} className="flex-1 overflow-y-auto px-2 pb-2 scrollbar-thin">
                     {selectedProvider === 'emoji' ? (
                       filteredEmojis.length === 0 ? (
                         <div className="flex items-center justify-center h-32"><p className="text-xs text-textSecondary">No emojis found</p></div>
                       ) : (
-                        <div className="space-y-4">
+                        <div className="flex flex-col gap-4 pt-2">
                           {Object.entries(emojiCategories).map(([category, emojis]) => {
                             const filteredCategoryEmojis = searchQuery ? emojis.filter(emoji => emoji.includes(searchQuery) || category.toLowerCase().includes(searchQuery.toLowerCase())) : emojis;
                             if (filteredCategoryEmojis.length === 0) return null;
                             return (
-                              <div key={category}>
-                                <h3 className="text-xs text-textSecondary font-semibold mb-2 px-1">{category}</h3>
-                                <div className="grid grid-cols-8 gap-1">
+                              <div key={category} className="flex flex-col">
+                                <h3 className="text-[10px] text-textSecondary uppercase tracking-wider font-bold mb-2 -mx-2 px-4 sticky top-0 py-1.5 border-b border-white/[0.03] z-10 backdrop-blur-ultra" style={{ backgroundColor: 'rgba(12, 12, 13, 0.95)' }}>{category}</h3>
+                                <div className="grid grid-cols-8 gap-1 px-1">
                                   {filteredCategoryEmojis.map((emoji, idx) => (
                                     <button key={`${category}-${idx}`} onClick={() => insertEmote(emoji)} className="flex items-center justify-center p-1.5 hover:bg-glass rounded transition-colors" title={emoji}>
                                       <img src={getAppleEmojiUrl(emoji)} alt={emoji} className="w-6 h-6 object-contain" onError={(e) => { e.currentTarget.style.display = 'none'; e.currentTarget.insertAdjacentText('afterend', emoji); }} />
@@ -2233,13 +2259,13 @@ const ChatWidget = () => {
                       <div className="flex items-center justify-center h-32"><p className="text-xs text-textSecondary">No emotes found</p></div>
                     ) : selectedProvider === 'twitch' ? (
                       // Grouped Twitch emotes by channel
-                      <div className="space-y-4">
+                      <div className="flex flex-col gap-4 pt-2">
                         {Array.from(groupedTwitchEmotes.entries()).map(([groupKey, group]) => (
-                          <div key={groupKey}>
-                            <h3 className="text-xs text-textPrimary font-semibold mb-2 px-2 sticky top-0 py-1.5 border-b border-borderSubtle z-10 backdrop-blur-ultra" style={{ backgroundColor: 'rgba(12, 12, 13, 0.95)' }}>
-                              {group.name} ({group.emotes.length})
+                          <div key={groupKey} className="flex flex-col">
+                            <h3 className="text-[10px] text-textSecondary uppercase tracking-wider font-bold mb-2 -mx-2 px-4 sticky top-0 py-1.5 border-b border-borderSubtle z-10 backdrop-blur-ultra" style={{ backgroundColor: 'rgba(12, 12, 13, 0.95)' }}>
+                              <span className="text-textPrimary">{group.name}</span> <span className="opacity-50">({group.emotes.length})</span>
                             </h3>
-                            <div className="grid grid-cols-7 gap-2">
+                            <div className="grid grid-cols-7 gap-2 px-1">
                               {group.emotes.map((emote, idx) => {
                                 const isFavorited = isFavoriteEmote(emote.id);
                                 return (
@@ -2295,38 +2321,47 @@ const ChatWidget = () => {
                         ))}
                       </div>
                     ) : (
-                      <div className="flex flex-wrap gap-1 justify-start">
-                        {sortedEmotes.map((emote: Emote, idx: number) => {
-                          const isFavorited = isFavoriteEmote(emote.id);
-                          return (
-                            <EmoteGridItem
-                              key={`${emote.provider}-${emote.id}-${idx}`}
-                              emote={emote}
-                              isFavorited={isFavorited}
-                              onInsert={() => insertEmote(emote.name)}
-                              onToggleFavorite={async () => {
-                                try {
-                                  if (isFavorited) {
-                                    await removeFavoriteEmote(emote.id);
-                                    if (selectedProvider === 'favorites') setFavoriteEmotes(prev => prev.filter(e => e.id !== emote.id));
-                                    useAppStore.getState().addToast(`Removed ${emote.name} from favorites`, 'info');
-                                  } else {
-                                    await addFavoriteEmote(emote);
-                                    if (emotes) {
-                                      const allEmotes = [...emotes.twitch, ...emotes.bttv, ...emotes['7tv'], ...emotes.ffz];
-                                      const availableFavorites = getAvailableFavorites(allEmotes);
-                                      setFavoriteEmotes(availableFavorites);
-                                    }
-                                    useAppStore.getState().addToast(`Added ${emote.name} to favorites`, 'success');
-                                  }
-                                } catch (err) {
-                                  Logger.error('Failed to toggle favorite:', err);
-                                  useAppStore.getState().addToast('Failed to update favorites', 'error');
-                                }
-                              }}
-                            />
-                          );
-                        })}
+                      <div className="flex flex-col gap-4 pt-2">
+                        {Array.from(groupedWidthEmotes.values()).filter(g => g.emotes.length > 0).map((group) => (
+                          <div key={group.label} className="flex flex-col">
+                            <h3 className="text-[10px] text-textSecondary uppercase tracking-wider font-bold mb-2 -mx-2 px-4 sticky top-0 py-1.5 border-b border-borderSubtle z-10 backdrop-blur-ultra" style={{ backgroundColor: 'rgba(12, 12, 13, 0.95)' }}>
+                              <span className="text-textPrimary">{group.label}</span> <span className="opacity-50">({group.emotes.length})</span>
+                            </h3>
+                            <div className={`grid ${group.gridCols} gap-2 px-1`}>
+                              {group.emotes.map((emote: Emote, idx: number) => {
+                                const isFavorited = isFavoriteEmote(emote.id);
+                                return (
+                                  <EmoteGridItem
+                                    key={`${emote.provider}-${emote.id}-${idx}`}
+                                    emote={emote}
+                                    isFavorited={isFavorited}
+                                    onInsert={() => insertEmote(emote.name)}
+                                    onToggleFavorite={async () => {
+                                      try {
+                                        if (isFavorited) {
+                                          await removeFavoriteEmote(emote.id);
+                                          if (selectedProvider === 'favorites') setFavoriteEmotes(prev => prev.filter(e => e.id !== emote.id));
+                                          useAppStore.getState().addToast(`Removed ${emote.name} from favorites`, 'info');
+                                        } else {
+                                          await addFavoriteEmote(emote);
+                                          if (emotes) {
+                                            const allEmotes = [...emotes.twitch, ...emotes.bttv, ...emotes['7tv'], ...emotes.ffz];
+                                            const availableFavorites = getAvailableFavorites(allEmotes);
+                                            setFavoriteEmotes(availableFavorites);
+                                          }
+                                          useAppStore.getState().addToast(`Added ${emote.name} to favorites`, 'success');
+                                        }
+                                      } catch (err) {
+                                        Logger.error('Failed to toggle favorite:', err);
+                                        useAppStore.getState().addToast('Failed to update favorites', 'error');
+                                      }
+                                    }}
+                                  />
+                                );
+                              })}
+                            </div>
+                          </div>
+                        ))}
                       </div>
                     )}
                   </div>
@@ -2355,7 +2390,7 @@ const ChatWidget = () => {
                   onActivateShare={() => {
                     setIsResubMode(true);
                     setReplyingTo(null); // Clear reply mode if active
-                    inputRef.current?.focus();
+                    inputRef.current?.focus({ preventScroll: true });
                   }}
                   onDismiss={() => {
                     setResubDismissed(true);
@@ -2377,7 +2412,7 @@ const ChatWidget = () => {
                     setIsWatchStreakMode(true);
                     setIsResubMode(false); // Can't be in both modes
                     setReplyingTo(null);
-                    inputRef.current?.focus();
+                    inputRef.current?.focus({ preventScroll: true });
                   }}
                   onDismiss={() => {
                     setWatchStreakDismissed(true);
