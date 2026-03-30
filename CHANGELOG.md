@@ -1,3 +1,9 @@
+## [7.1.2] - 2026-03-30
+### 🔧 Maintenance
+- **Update Checks**: Improved how StreamNook checks for updates by directly downloading necessary files from GitHub releases. This bypasses GitHub API rate limits, ensuring more reliable update checks, especially during active development.
+- **Release Notes**: Release notes for updates are now fetched directly from the `CHANGELOG.md` file, providing a more accurate and up-to-date description of changes.
+- **Download Size**: The download size for updates is now more accurately reported by using HTTP HEAD requests.
+
 ## [7.1.1] - 2026-03-30
 ### ✨ Features
 - **Enhanced 7TV Emote Support**: 7TV emotes now display correctly with their intended resolutions thanks to improved `srcset` implementation, offering a crisper and more detailed viewing experience. Zero-width emotes are also better integrated.
@@ -1082,6 +1088,7 @@ ATTENTION: ALL USERS LOG OUT OF TWITCH THEN LOG BACK IN FOR SOME CHANGES OT TAKE
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
