@@ -66,36 +66,25 @@ pub fn get_local_component_versions() -> Result<ComponentManifest, String> {
 /// Fetch remote component versions from GitHub
 #[tauri::command]
 pub async fn get_remote_component_versions() -> Result<ComponentManifest, String> {
-    let client = reqwest::Client::builder()
-        .user_agent("StreamNook")
-        .build()
-        .map_err(|e| e.to_string())?;
+    let mut builder = reqwest::Client::builder().user_agent("StreamNook");
 
-    // Get latest release info
-    let release: serde_json::Value = client
-        .get("https://api.github.com/repos/winters27/StreamNook/releases/latest")
-        .send()
-        .await
-        .map_err(|e| format!("Failed to fetch releases: {}", e))?
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse releases: {}", e))?;
+    // Inject PAT to bypass 60-req/hour limit during intense development
+    if let Ok(token) = std::env::var("GH_TOKEN").or_else(|_| std::env::var("GITHUB_TOKEN")) {
+        builder = builder.default_headers(
+            std::iter::once((
+                reqwest::header::AUTHORIZATION,
+                reqwest::header::HeaderValue::from_str(&format!("Bearer {}", token)).unwrap(),
+            ))
+            .collect(),
+        );
+    }
 
-    // Find components.json asset
-    let assets = release["assets"].as_array().ok_or("No assets in release")?;
+    let client = builder.build().map_err(|e| e.to_string())?;
 
-    let components_asset = assets
-        .iter()
-        .find(|a| a["name"].as_str() == Some("components.json"))
-        .ok_or("components.json not found in release")?;
-
-    let download_url = components_asset["browser_download_url"]
-        .as_str()
-        .ok_or("No download URL for components.json")?;
-
-    // Download and parse components.json
+    // Directly download components.json from the latest release asset redirect
+    // This entirely bypasses the api.github.com rate limit for unauthenticated users
     let components_json: ComponentManifest = client
-        .get(download_url)
+        .get("https://github.com/winters27/StreamNook/releases/latest/download/components.json")
         .send()
         .await
         .map_err(|e| format!("Failed to download components.json: {}", e))?
@@ -146,52 +135,31 @@ pub async fn check_for_bundle_update() -> Result<BundleUpdateStatus, String> {
     };
 
     // Fetch remote version info
-    let client = reqwest::Client::builder()
-        .user_agent("StreamNook")
-        .build()
-        .map_err(|e| e.to_string())?;
+    let mut builder = reqwest::Client::builder().user_agent("StreamNook");
 
-    let release: serde_json::Value = client
-        .get("https://api.github.com/repos/winters27/StreamNook/releases/latest")
+    // Inject PAT to bypass 60-req/hour limit during intense development
+    if let Ok(token) = std::env::var("GH_TOKEN").or_else(|_| std::env::var("GITHUB_TOKEN")) {
+        builder = builder.default_headers(
+            std::iter::once((
+                reqwest::header::AUTHORIZATION,
+                reqwest::header::HeaderValue::from_str(&format!("Bearer {}", token)).unwrap(),
+            ))
+            .collect(),
+        );
+    }
+
+    let client = builder.build().map_err(|e| e.to_string())?;
+
+    // Directly download components.json from the latest release asset redirect
+    // This entirely bypasses the api.github.com rate limit for unauthenticated users
+    let remote: ComponentManifest = client
+        .get("https://github.com/winters27/StreamNook/releases/latest/download/components.json")
         .send()
         .await
-        .map_err(|e| format!("Failed to fetch releases: {}", e))?
+        .map_err(|e| format!("Failed to download remote components.json: {}", e))?
         .json()
         .await
-        .map_err(|e| format!("Failed to parse releases: {}", e))?;
-
-    let assets = release["assets"].as_array().ok_or("No assets")?;
-
-    // Find components.json in the release
-    let components_asset = assets
-        .iter()
-        .find(|a| a["name"].as_str() == Some("components.json"));
-
-    // Get remote manifest
-    let remote = if let Some(asset) = components_asset {
-        let download_url = asset["browser_download_url"]
-            .as_str()
-            .ok_or("No download URL for components.json")?;
-
-        client
-            .get(download_url)
-            .send()
-            .await
-            .map_err(|e| format!("Failed to download components.json: {}", e))?
-            .json::<ComponentManifest>()
-            .await
-            .map_err(|e| format!("Failed to parse components.json: {}", e))?
-    } else {
-        return Err("components.json not found in release".to_string());
-    };
-
-    // Find the bundle
-    let bundle_asset = assets.iter().find(|a| {
-        a["name"]
-            .as_str()
-            .map(|n| n == "StreamNook.7z")
-            .unwrap_or(false)
-    });
+        .map_err(|e| format!("Failed to parse remote components.json: {}", e))?;
 
     // Build status based on whether we have local manifest or not
     let mut status = if let Some(ref local_manifest) = local {
@@ -224,21 +192,52 @@ pub async fn check_for_bundle_update() -> Result<BundleUpdateStatus, String> {
         }
     };
 
-    if let Some(asset) = bundle_asset {
-        status.download_url = asset["browser_download_url"]
-            .as_str()
-            .map(|s| s.to_string());
-        status.bundle_name = asset["name"].as_str().map(|s| s.to_string());
+    // Set deterministic download URLs since we bypassed the API
+    let download_url = format!(
+        "https://github.com/winters27/StreamNook/releases/download/v{}/StreamNook.7z",
+        remote.streamnook.version
+    );
+    status.bundle_name = Some("StreamNook.7z".to_string());
+    status.download_url = Some(download_url.clone());
 
-        // Format download size
-        if let Some(size) = asset["size"].as_u64() {
-            let mb = size as f64 / 1_048_576.0;
-            status.download_size = Some(format!("{:.1} MB", mb));
+    // Fetch release notes strictly from raw CHANGELOG.md to bypass the API restrictions entirely.
+    let changelog_url = format!(
+        "https://raw.githubusercontent.com/winters27/StreamNook/v{}/CHANGELOG.md",
+        remote.streamnook.version
+    );
+
+    if let Ok(changelog_res) = client.get(&changelog_url).send().await {
+        if let Ok(changelog_text) = changelog_res.text().await {
+            // Find the start of the version section
+            let pattern = format!(
+                r"(?s)## \[?{}\]?",
+                regex::escape(&remote.streamnook.version)
+            );
+            if let Ok(re) = regex::Regex::new(&pattern) {
+                if let Some(mat) = re.find(&changelog_text) {
+                    let text_after = &changelog_text[mat.start()..];
+                    // Slice until the next version block starts (denoted by a newline followed by "## ")
+                    let end_idx = text_after[mat.len()..]
+                        .find("\n## ")
+                        .map(|i| i + mat.len())
+                        .unwrap_or(text_after.len());
+                    status.release_notes = Some(text_after[..end_idx].trim().to_string());
+                }
+            }
         }
     }
 
-    // Extract release notes
-    status.release_notes = release["body"].as_str().map(|s| s.to_string());
+    // Optionally grab the download size using an HTTP HEAD request via redirects, skipping API data
+    if let Ok(head_res) = client.head(&download_url).send().await {
+        if let Some(content_length) = head_res.headers().get(reqwest::header::CONTENT_LENGTH) {
+            if let Ok(len_str) = content_length.to_str() {
+                if let Ok(size) = len_str.parse::<u64>() {
+                    let mb = size as f64 / 1_048_576.0;
+                    status.download_size = Some(format!("{:.1} MB", mb));
+                }
+            }
+        }
+    }
 
     Ok(status)
 }
