@@ -1,3 +1,22 @@
+## [7.1.0] - 2026-03-29
+### ✨ Features
+- **MultiNook Enhancements**: Introducing the Grid Engine (MultiNook)! You can now dock, undock, arrange, and manage multiple streams in a highly customizable grid. The tutorial guides you through adding streams, focusing audio, reordering layouts, and more.
+- **7TV Zero-Width Emotes**: Full support for 7TV's zero-width emotes has been added, allowing for more expressive chat interactions.
+- **User Profile Modal**: A new modal allows you to view user profiles directly within the app, including their bio, social links, and panels. You can also follow or unfollow users directly from this modal.
+- **Offline Channel View**: The Home screen now displays your followed channels that are currently offline, showing their last broadcast time for context.
+- **Improved Search & Navigation**: Enhanced stream search with better handling of exact matches and offline users. Improved category browsing and navigation within the app.
+
+### 🐛 Bug Fixes
+- **Zero-Width Emote Rendering**: Corrected rendering of zero-width emotes, ensuring they display correctly within chat messages, especially when layered.
+- **Chat Refresh Logic**: Fixed an issue where the chat wouldn't properly refresh after certain UI actions, ensuring a more stable chat experience.
+- **Follow/Unfollow Status**: Resolved bugs related to accurately displaying follow status for users.
+- **MultiNook Hot-Swapping**: Ensured that MultiNook correctly handles switching between streams, updating backend processes like EventSub and drops monitoring.
+
+### 🔧 Maintenance
+- **Dependency Updates**: Updated various dependencies, including Tauri core and plugins, for improved stability and performance.
+- **Code Splitting**: Implemented code splitting in the Vite build process for faster initial load times.
+- **UI Polish**: Numerous minor styling adjustments and usability improvements across various components for a smoother user experience.
+
 ## [7.0.0] - 2026-03-28
 ### ✨ Features
 - **Multi-Stream Viewing**: Introducing MultiNook! Watch and manage multiple streams simultaneously.
@@ -1047,6 +1066,7 @@ ATTENTION: ALL USERS LOG OUT OF TWITCH THEN LOG BACK IN FOR SOME CHANGES OT TAKE
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
