@@ -1,3 +1,19 @@
+## [7.1.1] - 2026-03-30
+### ✨ Features
+- **Enhanced 7TV Emote Support**: 7TV emotes now display correctly with their intended resolutions thanks to improved `srcset` implementation, offering a crisper and more detailed viewing experience. Zero-width emotes are also better integrated.
+- **Improved Whisper Functionality**: The Whisper feature now intelligently parses and displays URLs within messages, allowing direct clicking to open them. Additionally, clicking on a user's profile picture in the Whisper sidebar will now correctly open their profile modal.
+- **Refined UI & UX**: Several quality-of-life improvements have been made across the application, including better input field focus management, smoother scrolling in chat and whisper windows, and an updated visual appearance for the Whisper widget with enhanced glassmorphism effects.
+
+### 🐛 Bug Fixes
+- Fixed an issue where certain input fields and chat areas would lose focus unexpectedly, improving overall usability.
+- Resolved issues with scrolling behavior in chat and whisper components, ensuring a smoother experience.
+
+### 🔧 Maintenance
+- **Viewport Optimization**: Updated the viewport meta tag to prevent user scaling on mobile devices, ensuring a more consistent display.
+
+### ⚡ Performance
+- **Optimized Emote Grid Layout**: Emotes are now grouped by width categories, leading to a more organized and performant emote picker, especially for users with many emotes.
+
 ## [7.1.0] - 2026-03-29
 ### ✨ Features
 - **MultiNook Enhancements**: Introducing the Grid Engine (MultiNook)! You can now dock, undock, arrange, and manage multiple streams in a highly customizable grid. The tutorial guides you through adding streams, focusing audio, reordering layouts, and more.
@@ -1066,6 +1082,7 @@ ATTENTION: ALL USERS LOG OUT OF TWITCH THEN LOG BACK IN FOR SOME CHANGES OT TAKE
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
