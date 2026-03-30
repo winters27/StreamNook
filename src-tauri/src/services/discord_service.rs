@@ -172,8 +172,8 @@ impl DiscordService {
             let idle = IDLE_PHRASES.choose(&mut rng).unwrap_or(&"Just chilling");
 
             let activity = Activity::new()
-                .details(browsing)
-                .state(idle)
+                .details(*browsing)
+                .state(*idle)
                 .assets(
                     Assets::new()
                         .large_image(DISCORD_LARGE_IMAGE)

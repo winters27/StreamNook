@@ -315,7 +315,7 @@ pub async fn place_prediction(
     use serde_json::json;
 
     // Use the mobile/Android client ID for GQL queries
-    const CLIENT_ID: &str = "kd1unb4b3q4t58fwlpcbzcbnm76a8fp";
+    const CLIENT_ID: &str = env!("TWITCH_ANDROID_CLIENT_ID");
 
     let token = DropsAuthService::get_token()
         .await
@@ -396,7 +396,7 @@ pub async fn get_active_prediction(
     use reqwest::Client;
     use serde_json::json;
 
-    const CLIENT_ID: &str = "kd1unb4b3q4t58fwlpcbzcbnm76a8fp";
+    const CLIENT_ID: &str = env!("TWITCH_ANDROID_CLIENT_ID");
 
     let token = DropsAuthService::get_token()
         .await
@@ -523,7 +523,7 @@ pub async fn get_channel_points_for_channel(
     use serde_json::json;
 
     // Use web client ID for this query (matches the working channel_points_service)
-    const CLIENT_ID: &str = "kimne78kx3ncx6brgo4mv6wki5h1ko";
+    const CLIENT_ID: &str = env!("TWITCH_WEB_CLIENT_ID");
 
     let token = DropsAuthService::get_token()
         .await
@@ -813,7 +813,7 @@ pub async fn get_channel_rewards(
     use serde_json::json;
 
     // Use mobile client ID for persisted queries (same as predictions)
-    const CLIENT_ID: &str = "kd1unb4b3q4t58fwlpcbzcbnm76a8fp";
+    const CLIENT_ID: &str = env!("TWITCH_ANDROID_CLIENT_ID");
 
     let token = DropsAuthService::get_token()
         .await
@@ -898,7 +898,7 @@ pub async fn redeem_channel_reward(
     use serde_json::json;
 
     // Use mobile client ID for redemption (mutation)
-    const CLIENT_ID: &str = "kd1unb4b3q4t58fwlpcbzcbnm76a8fp";
+    const CLIENT_ID: &str = env!("TWITCH_ANDROID_CLIENT_ID");
 
     let token = DropsAuthService::get_token()
         .await
@@ -1011,7 +1011,7 @@ pub async fn send_highlighted_message(
     use serde_json::json;
 
     // Use mobile client ID - less strict integrity requirements than web
-    const CLIENT_ID: &str = "kd1unb4b3q4t58fwlpcbzcbnm76a8fp";
+    const CLIENT_ID: &str = env!("TWITCH_ANDROID_CLIENT_ID");
 
     let token = DropsAuthService::get_token()
         .await
@@ -1137,7 +1137,7 @@ pub async fn unlock_random_emote(
     use serde_json::json;
 
     // Use mobile client ID - less strict integrity requirements
-    const CLIENT_ID: &str = "kd1unb4b3q4t58fwlpcbzcbnm76a8fp";
+    const CLIENT_ID: &str = env!("TWITCH_ANDROID_CLIENT_ID");
 
     let token = DropsAuthService::get_token()
         .await
@@ -1303,7 +1303,7 @@ pub async fn get_modifiable_emotes(channel_id: String) -> Result<Vec<ModifiableE
     use serde_json::json;
 
     // Use mobile Android client ID
-    const CLIENT_ID: &str = "kd1unb4b3q4t58fwlpcbzcbnm76a8fp";
+    const CLIENT_ID: &str = env!("TWITCH_ANDROID_CLIENT_ID");
 
     let token = DropsAuthService::get_token()
         .await
@@ -1443,7 +1443,7 @@ pub async fn unlock_modified_emote(
     use serde_json::json;
 
     // Use mobile Android client ID
-    const CLIENT_ID: &str = "kd1unb4b3q4t58fwlpcbzcbnm76a8fp";
+    const CLIENT_ID: &str = env!("TWITCH_ANDROID_CLIENT_ID");
 
     let token = DropsAuthService::get_token()
         .await
@@ -1596,7 +1596,7 @@ pub async fn unlock_chosen_emote(
     use serde_json::json;
 
     // Use mobile Android client ID
-    const CLIENT_ID: &str = "kd1unb4b3q4t58fwlpcbzcbnm76a8fp";
+    const CLIENT_ID: &str = env!("TWITCH_ANDROID_CLIENT_ID");
 
     let token = DropsAuthService::get_token()
         .await

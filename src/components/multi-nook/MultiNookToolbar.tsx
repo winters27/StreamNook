@@ -3,8 +3,9 @@ import { useDroppable, useDraggable } from '@dnd-kit/core';
 import { CSS } from '@dnd-kit/utilities';
 import { invoke } from '@tauri-apps/api/core';
 import { usemultiNookStore } from '../../stores/multiNookStore';
+import { useTutorialStore } from '../../stores/tutorialStore';
 import { MultiNookSlot } from '../../types';
-import { Plus, Maximize2, MessageSquare, MessageSquareOff, Loader2, Users, X, ArrowLeft, RefreshCcw } from 'lucide-react';
+import { Plus, Maximize2, Minimize2, MessageSquare, MessageSquareOff, Loader2, Users, X, ArrowLeft, RefreshCcw } from 'lucide-react';
 import { Logger } from '../../utils/logger';
 import { Tooltip } from '../ui/Tooltip';
 import { useAppStore } from '../../stores/AppStore';
@@ -35,6 +36,7 @@ const MultiNookToolbar: React.FC<MultiNookToolbarProps> = ({
 }) => {
   const { slots, addSlot, undockSlot, swapDockedSlot, isChatHidden, toggleChatHidden, toggleMultiNook, resyncAllSlots } = usemultiNookStore();
   const minimizedSlots = slots.filter(s => s.isMinimized);
+  const { isDocked: isTutorialDocked, setIsDocked: setTutorialDocked } = useTutorialStore();
 
   const { setNodeRef: setDockRef, isOver } = useDroppable({ id: dockDropId });
 
@@ -230,19 +232,19 @@ const MultiNookToolbar: React.FC<MultiNookToolbarProps> = ({
                 </Tooltip>
               </>
             ) : (
-              <Tooltip content="Exit MultiNook" delay={200} side="bottom">
+              <Tooltip content="Close Grid Engine" delay={200} side="bottom">
                 <button
                   onClick={toggleMultiNook}
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-bold tracking-wide rounded-lg transition-all whitespace-nowrap glass-button text-textSecondary hover:text-white hover:text-red-400 hover:bg-red-500/10"
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-bold tracking-wide rounded-lg transition-all whitespace-nowrap glass-button text-textSecondary hover:text-white hover:text-red-400 hover:bg-red-500/10 group"
                 >
-                  <ArrowLeft size={16} />
-                  <span>Exit MultiNook</span>
+                  <ArrowLeft size={16} className="group-hover:-translate-x-0.5 transition-transform" />
+                  <span>Exit</span>
                 </button>
               </Tooltip>
             )}
           </div>
 
-          {minimizedSlots.length > 0 && (
+          {(minimizedSlots.length > 0 || (slots.length === 0 && isTutorialDocked)) && (
             <>
               <div className="h-4 w-px bg-borderSubtle shrink-0" />
               <div className="flex items-center gap-2 flex-1 overflow-x-auto scrollbar-none mask-edges">
@@ -255,6 +257,10 @@ const MultiNookToolbar: React.FC<MultiNookToolbarProps> = ({
                     onUndock={() => undockSlot(slot.id)}
                   />
                 ))}
+                
+                {slots.length === 0 && isTutorialDocked && (
+                  <TutorialDockPill onUndock={() => setTutorialDocked(false)} />
+                )}
               </div>
             </>
           )}
@@ -405,13 +411,14 @@ const MultiNookToolbar: React.FC<MultiNookToolbarProps> = ({
           <Tooltip content={isChatHidden ? 'Show Chat' : 'Hide Chat'} delay={200} side="bottom">
             <button
               onClick={toggleChatHidden}
-              className={`w-8 h-8 flex items-center justify-center transition-all duration-200 glass-button ${
+              className={`w-8 h-8 flex items-center justify-center transition-all duration-200 ${
                 isChatHidden
-                  ? 'text-textSecondary hover:text-white'
-                  : 'text-red-400 hover:text-red-300'
+                  ? 'glass-input text-accent drop-shadow-md'
+                  : 'glass-button text-textSecondary hover:text-red-400 hover:bg-red-500/10'
               }`}
+              style={{ borderRadius: '8px' }}
             >
-              {isChatHidden ? <MessageSquare size={15} /> : <MessageSquareOff size={15} />}
+              {isChatHidden ? <MessageSquareOff size={15} /> : <MessageSquare size={15} />}
             </button>
           </Tooltip>
           </div>
@@ -481,6 +488,69 @@ const DraggableDockPill: React.FC<{
             onUndock();
           }}
           className="w-5 h-5 flex items-center justify-center rounded-full bg-accent/10 text-accent hover:bg-accent hover:text-white transition-all ml-1"
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          <Maximize2 size={10} strokeWidth={3} />
+        </button>
+      </Tooltip>
+    </div>
+  </Tooltip>
+  );
+};
+
+/** Draggable fake pill for the tutorial */
+const TutorialDockPill: React.FC<{
+  onUndock: () => void;
+}> = ({ onUndock }) => {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    isDragging,
+  } = useDraggable({
+    id: `docked::tutorial::dock`,
+  });
+
+  const style = transform
+    ? {
+        transform: CSS.Translate.toString(transform),
+        zIndex: isDragging ? 50 : undefined,
+      }
+    : undefined;
+
+  return (
+    <Tooltip content="Drag to grid to restore" delay={500} side="bottom">
+      <div
+        ref={setNodeRef}
+        style={style}
+        className={`
+          group flex items-center gap-2 pl-1 pr-1 py-1 rounded-full glass-button
+          cursor-grab active:cursor-grabbing border-emerald-400/30 bg-emerald-400/10
+          transition-all duration-300 shrink-0 touch-none
+          ${isDragging
+            ? 'opacity-80 scale-105 shadow-[0_0_20px_rgba(52,211,153,0.3)] ring-1 ring-emerald-400'
+            : 'hover:text-white'
+          }
+        `}
+        {...attributes}
+        {...listeners}
+      >
+        <div className="flex items-center gap-1.5 opacity-80 group-hover:opacity-100 transition-opacity">
+        <div className="w-5 h-5 rounded-full bg-emerald-400/20 flex items-center justify-center">
+            <Minimize2 size={12} className="text-emerald-400" />
+        </div>
+        <span className="text-xs font-semibold text-emerald-400 truncate max-w-[130px] select-none pr-1">
+          Docking Tutorial
+        </span>
+      </div>
+      <Tooltip content="Restore to Grid" delay={200} side="bottom">
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onUndock();
+          }}
+          className="w-5 h-5 flex items-center justify-center rounded-full bg-emerald-400/20 text-emerald-400 hover:bg-emerald-400 hover:text-white transition-all ml-1"
           onPointerDown={(e) => e.stopPropagation()}
         >
           <Maximize2 size={10} strokeWidth={3} />

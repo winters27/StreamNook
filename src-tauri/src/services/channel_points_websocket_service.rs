@@ -920,7 +920,7 @@ impl ChannelPointsWebSocketService {
     /// Look up channel info by ID via Twitch API (fallback for unknown channels)
     async fn lookup_channel_by_id(channel_id: &str) -> Result<Option<(String, String)>> {
         // Use drops client ID for GQL query
-        const CLIENT_ID: &str = "kd1unb4b3q4t58fwlpcbzcbnm76a8fp";
+        const CLIENT_ID: &str = env!("TWITCH_ANDROID_CLIENT_ID");
 
         let token = match DropsAuthService::get_token().await {
             Ok(t) => t,

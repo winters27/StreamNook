@@ -7,7 +7,7 @@ use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use uuid::Uuid;
 
 // Use Twitch Android app client ID for GQL operations
-const ANDROID_CLIENT_ID: &str = "kd1unb4b3q4t58fwlpcbzcbnm76a8fp";
+const ANDROID_CLIENT_ID: &str = env!("TWITCH_ANDROID_CLIENT_ID");
 const CLIENT_URL: &str = "https://www.twitch.tv";
 // GQL hash for badge selection mutation
 const BADGE_MUTATION_HASH: &str =

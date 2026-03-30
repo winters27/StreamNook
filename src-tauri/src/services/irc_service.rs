@@ -663,7 +663,7 @@ impl IrcService {
 
                 match client
                     .get(&url)
-                    .header("Client-Id", "1qgws7yzcp21g5ledlzffw3lmqdvie")
+                    .header("Client-Id", env!("TWITCH_APP_CLIENT_ID"))
                     .header("Authorization", format!("Bearer {}", token))
                     .send()
                     .await

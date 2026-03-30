@@ -16,8 +16,8 @@ use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::Emitter;
 
-const CLIENT_ID: &str = "1qgws7yzcp21g5ledlzffw3lmqdvie";
-const CLIENT_SECRET: &str = "b0lftwt9jvyhlg50cxtrnijd06grn0";
+const CLIENT_ID: &str = env!("TWITCH_APP_CLIENT_ID");
+const CLIENT_SECRET: &str = env!("TWITCH_APP_CLIENT_SECRET");
 const KEYRING_SERVICE: &str = "streamnook_twitch_token";
 const KEYRING_USERNAME: &str = "user"; // Standardized username
 const REDIRECT_URI: &str = "http://localhost:3000/callback";
@@ -1345,7 +1345,7 @@ impl TwitchService {
         let client = Client::new();
 
         let url = format!(
-            "https://api.twitch.tv/helix/search/channels?query={}&first=20",
+            "https://api.twitch.tv/helix/search/channels?query={}&first=60&live_only=false",
             urlencoding::encode(query)
         );
 
@@ -1372,15 +1372,18 @@ impl TwitchService {
                         Some(user_name),
                         Some(user_login),
                         Some(title),
-                        Some(game_name),
                     ) = (
                         channel.get("id").and_then(|v| v.as_str()),
                         channel.get("id").and_then(|v| v.as_str()), // Note: Search result 'id' is the user_id
                         channel.get("display_name").and_then(|v| v.as_str()),
                         channel.get("broadcaster_login").and_then(|v| v.as_str()),
                         channel.get("title").and_then(|v| v.as_str()),
-                        channel.get("game_name").and_then(|v| v.as_str()),
                     ) {
+                        let game_name = channel
+                            .get("game_name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+
                         let thumbnail_url = channel
                             .get("thumbnail_url")
                             .and_then(|v| v.as_str())
@@ -1492,6 +1495,34 @@ impl TwitchService {
                     }
                 }
 
+                // Append exact match if query looks like a username, to patch Twitch's search algo filtering out inactive direct matches
+                let trimmed_query = query.trim();
+                if !trimmed_query.contains(' ')
+                    && !streams
+                        .iter()
+                        .any(|s| s.user_login.eq_ignore_ascii_case(trimmed_query))
+                {
+                    if let Ok(exact_user) = Self::get_user_by_login(trimmed_query).await {
+                        let synthesize = TwitchStream {
+                            id: exact_user.id.clone(),
+                            user_id: exact_user.id,
+                            user_name: exact_user.display_name,
+                            user_login: exact_user.login,
+                            title: String::new(),
+                            viewer_count: 0,
+                            game_id: String::new(),
+                            game_name: String::new(),
+                            thumbnail_url: exact_user.profile_image_url.clone().unwrap_or_default(),
+                            started_at: String::new(),
+                            broadcaster_type: exact_user.broadcaster_type,
+                            has_shared_chat: None,
+                            profile_image_url: exact_user.profile_image_url,
+                            is_live: Some(false),
+                        };
+                        streams.insert(0, synthesize);
+                    }
+                }
+
                 Ok(streams)
             }
             None => Ok(Vec::new()),
@@ -1509,7 +1540,7 @@ impl TwitchService {
         let client = Client::new();
 
         // Twitch Android app client ID — matches the DropsAuthService token
-        const GQL_CLIENT_ID: &str = "kd1unb4b3q4t58fwlpcbzcbnm76a8fp";
+        const GQL_CLIENT_ID: &str = env!("TWITCH_ANDROID_CLIENT_ID");
 
         let payload = serde_json::json!({
             "operationName": "FollowButton_FollowUser",
@@ -1573,7 +1604,7 @@ impl TwitchService {
         let token = DropsAuthService::get_token().await?;
         let client = Client::new();
 
-        const GQL_CLIENT_ID: &str = "kd1unb4b3q4t58fwlpcbzcbnm76a8fp";
+        const GQL_CLIENT_ID: &str = env!("TWITCH_ANDROID_CLIENT_ID");
 
         let payload = serde_json::json!({
             "operationName": "FollowButton_UnfollowUser",
@@ -1635,7 +1666,7 @@ impl TwitchService {
         let token = DropsAuthService::get_token().await?;
         let client = Client::new();
 
-        const GQL_CLIENT_ID: &str = "kd1unb4b3q4t58fwlpcbzcbnm76a8fp";
+        const GQL_CLIENT_ID: &str = env!("TWITCH_ANDROID_CLIENT_ID");
 
         let payload = serde_json::json!({
             "operationName": "GetPinnedChat",
@@ -1792,6 +1823,217 @@ impl TwitchService {
             channel_id
         );
         Ok(pinned_messages)
+    }
+
+    pub async fn get_all_followed_channels(
+        limit: u32,
+        cursor: Option<String>,
+    ) -> Result<(Vec<TwitchStream>, Option<String>)> {
+        let token = Self::get_token().await?;
+        let client = Client::new();
+
+        let user_info = Self::get_user_info().await?;
+
+        let mut url = format!(
+            "https://api.twitch.tv/helix/channels/followed?user_id={}&first={}",
+            user_info.id, limit
+        );
+        if let Some(c) = cursor {
+            url.push_str(&format!("&after={}", c));
+        }
+
+        let response = client
+            .get(&url)
+            .header(AUTHORIZATION, format!("Bearer {}", token))
+            .header("Client-Id", CLIENT_ID)
+            .send()
+            .await?
+            .json::<serde_json::Value>()
+            .await?;
+
+        let next_cursor = response
+            .get("pagination")
+            .and_then(|p| p.get("cursor"))
+            .and_then(|c| c.as_str())
+            .map(|s| s.to_string());
+
+        let data = response.get("data").and_then(|d| d.as_array());
+
+        match data {
+            Some(arr) => {
+                let mut streams = Vec::new();
+                let mut user_ids = Vec::new();
+
+                for channel in arr {
+                    if let (
+                        Some(broadcaster_id),
+                        Some(broadcaster_login),
+                        Some(broadcaster_name),
+                        Some(followed_at),
+                    ) = (
+                        channel.get("broadcaster_id").and_then(|v| v.as_str()),
+                        channel.get("broadcaster_login").and_then(|v| v.as_str()),
+                        channel.get("broadcaster_name").and_then(|v| v.as_str()),
+                        channel.get("followed_at").and_then(|v| v.as_str()),
+                    ) {
+                        user_ids.push(broadcaster_id.to_string());
+
+                        streams.push(TwitchStream {
+                            id: broadcaster_id.to_string(),
+                            user_id: broadcaster_id.to_string(),
+                            user_name: broadcaster_name.to_string(),
+                            user_login: broadcaster_login.to_string(),
+                            title: String::new(),
+                            viewer_count: 0,
+                            game_id: String::new(),
+                            game_name: String::new(),
+                            thumbnail_url: String::new(),
+                            started_at: followed_at.to_string(), // use started_at to store followed_at temporarily
+                            broadcaster_type: None,
+                            has_shared_chat: None,
+                            profile_image_url: None,
+                            is_live: Some(false),
+                        });
+                    }
+                }
+
+                // Fetch actual user avatars via helix/users
+                if !user_ids.is_empty() {
+                    // Split into chunks of 100 (Twitch API max) just in case
+                    for chunk in user_ids.chunks(100) {
+                        let user_ids_param = chunk
+                            .iter()
+                            .map(|id| format!("id={}", id))
+                            .collect::<Vec<_>>()
+                            .join("&");
+
+                        let users_url =
+                            format!("https://api.twitch.tv/helix/users?{}", user_ids_param);
+                        if let Ok(users_response) = client
+                            .get(&users_url)
+                            .header("Client-Id", CLIENT_ID)
+                            .header(AUTHORIZATION, format!("Bearer {}", token))
+                            .send()
+                            .await
+                        {
+                            if let Ok(users_json) = users_response.json::<serde_json::Value>().await
+                            {
+                                if let Some(users_data) =
+                                    users_json.get("data").and_then(|d| d.as_array())
+                                {
+                                    let mut profiles = std::collections::HashMap::new();
+                                    for user in users_data {
+                                        if let (Some(id), Some(profile_image_url)) = (
+                                            user.get("id").and_then(|v| v.as_str()),
+                                            user.get("profile_image_url").and_then(|v| v.as_str()),
+                                        ) {
+                                            profiles.insert(
+                                                id.to_string(),
+                                                profile_image_url.to_string(),
+                                            );
+                                        }
+                                    }
+
+                                    for stream in &mut streams {
+                                        if let Some(avatar) = profiles.get(&stream.user_id) {
+                                            stream.profile_image_url = Some(avatar.clone());
+                                            stream.thumbnail_url = avatar.clone();
+                                            // use avatar as thumbnail fallback
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Ok((streams, next_cursor))
+            }
+            None => Ok((Vec::new(), None)),
+        }
+    }
+
+    pub async fn get_offline_last_broadcasts(
+        user_ids: Vec<String>,
+    ) -> Result<std::collections::HashMap<String, Option<String>>> {
+        let client = Client::new();
+        // create the query
+        let query = format!(
+            r#"query {{ users(ids: {}) {{ id lastBroadcast {{ startedAt }} videos(first: 1, sort: TIME) {{ edges {{ node {{ createdAt lengthSeconds }} }} }} }} }}"#,
+            serde_json::to_string(&user_ids).unwrap_or_else(|_| "[]".to_string())
+        );
+
+        let payload = serde_json::json!([{
+            "operationName": null,
+            "variables": {},
+            "query": query
+        }]);
+
+        // IMPORTANT: Unauthenticated GQL requires the Twitch Web Client-ID, NOT the Helix Developer application Client-ID
+        let response = client
+            .post("https://gql.twitch.tv/gql")
+            .header("Client-ID", env!("TWITCH_WEB_CLIENT_ID"))
+            .json(&payload)
+            .send()
+            .await?;
+
+        let text = response.text().await?;
+        let json: serde_json::Value = serde_json::from_str(&text)?;
+
+        let mut result_map = std::collections::HashMap::new();
+
+        if let Some(arr) = json.as_array() {
+            if let Some(users_data) = arr
+                .first()
+                .and_then(|obj| obj.get("data"))
+                .and_then(|d| d.get("users"))
+                .and_then(|u| u.as_array())
+            {
+                for user in users_data {
+                    if let Some(id) = user.get("id").and_then(|i| i.as_str()) {
+                        let mut final_time = None;
+
+                        // Try calculating exact true end time using their most recent VOD/Stream duration
+                        if let Some(edges) = user
+                            .get("videos")
+                            .and_then(|v| v.get("edges"))
+                            .and_then(|e| e.as_array())
+                        {
+                            if let Some(node) = edges.first().and_then(|e| e.get("node")) {
+                                if let (Some(created_at), Some(length)) = (
+                                    node.get("createdAt").and_then(|c| c.as_str()),
+                                    node.get("lengthSeconds").and_then(|l| l.as_i64()),
+                                ) {
+                                    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(created_at)
+                                    {
+                                        let end_time = dt + ChronoDuration::seconds(length);
+                                        // Format back to RFC3339 string so frontend can trivially parse it using new Date()
+                                        final_time = Some(end_time.to_rfc3339());
+                                    }
+                                }
+                            }
+                        }
+
+                        // Fallback to start time for streamers who completely disable all VOD recordings
+                        if final_time.is_none() {
+                            final_time = user
+                                .get("lastBroadcast")
+                                .and_then(|lb| lb.get("startedAt"))
+                                .and_then(|sa| sa.as_str())
+                                .map(|s| s.to_string());
+                        }
+
+                        result_map.insert(id.to_string(), final_time);
+                    }
+                }
+            }
+        }
+
+        debug!(
+            "[TWITCH] Parsed {} last broadcast timestamps",
+            result_map.len()
+        );
+        Ok(result_map)
     }
 
     pub async fn check_following_status(target_user_id: &str) -> Result<bool> {

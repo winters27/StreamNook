@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use tokio::sync::RwLock;
 
-const CLIENT_ID: &str = "1qgws7yzcp21g5ledlzffw3lmqdvie";
+const CLIENT_ID: &str = env!("TWITCH_APP_CLIENT_ID");
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Emote {
@@ -604,17 +604,25 @@ impl EmoteService {
                 if let Ok(json) = response.json::<serde_json::Value>().await {
                     if let Some(global_emotes) = json.get("emotes").and_then(|v| v.as_array()) {
                         for item in global_emotes {
+                            let emote_data = item.get("data").unwrap_or(item);
                             if let (Some(id), Some(name)) = (
-                                item.get("id").and_then(|v| v.as_str()),
+                                emote_data
+                                    .get("id")
+                                    .or_else(|| item.get("id"))
+                                    .and_then(|v| v.as_str()),
                                 item.get("name").and_then(|v| v.as_str()),
                             ) {
-                                let flags = item.get("flags").and_then(|v| v.as_i64()).unwrap_or(0);
+                                let flags = emote_data
+                                    .get("flags")
+                                    .or_else(|| item.get("flags"))
+                                    .and_then(|v| v.as_i64())
+                                    .unwrap_or(0);
                                 emotes.push(Emote {
                                     id: id.to_string(),
                                     name: name.to_string(),
                                     url: format!("https://cdn.7tv.app/emote/{}/1x.avif", id),
                                     provider: EmoteProvider::SevenTV,
-                                    is_zero_width: Some(flags == 256),
+                                    is_zero_width: Some((flags & 256) == 256),
                                     local_url: None,
                                     emote_type: None,
                                     owner_id: None,
@@ -652,8 +660,9 @@ impl EmoteService {
                                 let name = active_emote.get("name").and_then(|v| v.as_str());
 
                                 if let (Some(id), Some(name)) = (emote_id, name) {
-                                    let flags = active_emote
+                                    let flags = emote_data
                                         .get("flags")
+                                        .or_else(|| active_emote.get("flags"))
                                         .and_then(|v| v.as_i64())
                                         .unwrap_or(0);
                                     // Extract owner display name from emote data

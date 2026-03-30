@@ -1,5 +1,5 @@
 import { Window } from '@tauri-apps/api/window';
-import { Home, Gift, User, Settings, Proportions, MessageCircle, Pickaxe, Clock, Tv, LogOut } from 'lucide-react';
+import { Gift, User, Settings, Proportions, MessageCircle, Pickaxe, Clock, Tv } from 'lucide-react';
 import { Minus, X, CornersOut, CornersIn, Medal } from 'phosphor-react';
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -20,7 +20,7 @@ import { Tooltip } from './ui/Tooltip';
 const TitleBar = () => {
   const store = useAppStore();
 
-  const { openSettings, setShowProfileOverlay, setShowDropsOverlay, setShowBadgesOverlay, setShowWhispersOverlay, showProfileOverlay, isAuthenticated, currentUser, isMiningActive, isTheaterMode, toggleTheaterMode, streamUrl, settings, isHomeActive, toggleHome, exitStream, whisperImportState } = store;
+  const { openSettings, setShowProfileOverlay, setShowDropsOverlay, setShowBadgesOverlay, setShowWhispersOverlay, showProfileOverlay, isAuthenticated, currentUser, isMiningActive, isTheaterMode, toggleTheaterMode, streamUrl, settings, whisperImportState } = store;
   const [showAbout, setShowAbout] = useState(false);
   const [, setShowSplash] = useState(false);
   const [dropsSettings, setDropsSettings] = useState<DropsSettings | null>(null);
@@ -262,7 +262,7 @@ const TitleBar = () => {
     <>
       <div
         data-tauri-drag-region
-        className="relative flex items-center justify-between h-8 px-3 select-none bg-secondary backdrop-blur-md border-b border-borderSubtle z-50"
+        className="relative flex items-center justify-between h-[33px] px-3 select-none bg-secondary backdrop-blur-md border-b border-borderSubtle z-50"
       >
         {/* Dynamic Island - Centered in title bar */}
         <ErrorBoundary
@@ -276,27 +276,7 @@ const TitleBar = () => {
           {/* Penrose Logo */}
           <PenroseLogo onClick={() => setShowAbout(true)} />
 
-          {/* Home / Exit Stream - only show when stream is playing */}
-          {streamUrl && (
-            <>
-              <Tooltip content={isHomeActive ? "Return to Stream" : "Home"} delay={200}>
-                <button
-                  onClick={toggleHome}
-                  className={`p-1.5 rounded transition-all duration-200 ${isHomeActive ? 'text-accent glass-badge shadow-[0_0_10px_rgba(var(--color-accent-rgb),0.3)]' : 'text-textSecondary hover:text-textPrimary'}`}
-                >
-                  <Home size={16} />
-                </button>
-              </Tooltip>
-              <Tooltip content="Exit Stream" delay={200}>
-                <button
-                  onClick={exitStream}
-                  className="p-1.5 text-textSecondary hover:text-red-400 rounded transition-all duration-200"
-                >
-                  <LogOut size={16} />
-                </button>
-              </Tooltip>
-            </>
-          )}
+
 
           {/* Drops Button with Inline Progress Badge */}
           <div 
@@ -484,16 +464,16 @@ const TitleBar = () => {
           <Tooltip content={isAuthenticated ? 'Profile' : 'Login'} delay={200}>
             <button
               onClick={() => setShowProfileOverlay(!showProfileOverlay)}
-              className="p-1.5 text-textSecondary hover:text-textPrimary rounded transition-all duration-200"
+              className="p-1 text-textSecondary hover:text-textPrimary rounded transition-all duration-200"
             >
               {isAuthenticated && currentUser?.profile_image_url ? (
                 <img
                   src={currentUser.profile_image_url}
                   alt="Profile"
-                  className="w-4 h-4 rounded-full object-cover"
+                  className="w-5 h-5 rounded-full object-cover"
                 />
               ) : (
-                <User size={16} />
+                <User size={20} />
               )}
             </button>
           </Tooltip>
@@ -503,7 +483,7 @@ const TitleBar = () => {
             <Tooltip content={isTheaterMode ? 'Exit Compact View' : `Compact View (${getSelectedCompactViewPreset(settings?.compact_view?.selectedPresetId, settings?.compact_view?.customPresets).name})`} delay={200}>
               <button
                 onClick={toggleTheaterMode}
-                className={`p-1.5 rounded transition-all duration-200 ${isTheaterMode ? 'text-accent glass-badge shadow-[0_0_10px_rgba(var(--color-accent-rgb),0.3)]' : 'text-textSecondary hover:text-textPrimary'
+                className={`p-1.5 !rounded transition-all duration-200 ${isTheaterMode ? 'text-accent glass-input shadow-[0_0_10px_rgba(var(--color-accent-rgb),0.3)]' : 'text-textSecondary hover:text-textPrimary'
                   }`}
               >
                 <Proportions size={16} />

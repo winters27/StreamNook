@@ -188,7 +188,7 @@ pub async fn get_cached_global_badges() -> Result<Option<HelixBadgesResponse>, S
 pub async fn prefetch_global_badges() -> Result<(), String> {
     debug!("[Badges] Starting background badge pre-fetch...");
 
-    let client_id = "1qgws7yzcp21g5ledlzffw3lmqdvie".to_string();
+    let client_id = env!("TWITCH_APP_CLIENT_ID").to_string();
 
     match TwitchService::get_token().await {
         Ok(token) => match fetch_global_badges(client_id, token).await {
@@ -216,7 +216,7 @@ pub async fn prefetch_global_badges() -> Result<(), String> {
 pub async fn force_refresh_global_badges() -> Result<HelixBadgesResponse, String> {
     debug!("[Badges] Force refreshing global badges from Twitch API...");
 
-    let client_id = "1qgws7yzcp21g5ledlzffw3lmqdvie".to_string();
+    let client_id = env!("TWITCH_APP_CLIENT_ID").to_string();
     let token = TwitchService::get_token()
         .await
         .map_err(|e| format!("Failed to get token: {}", e))?;
@@ -345,7 +345,7 @@ pub async fn get_badges_missing_metadata() -> Result<Vec<(String, String)>, Stri
 /// Get Twitch credentials for badge fetching
 #[tauri::command]
 pub async fn get_twitch_credentials() -> Result<(String, String), String> {
-    let client_id = "1qgws7yzcp21g5ledlzffw3lmqdvie".to_string();
+    let client_id = env!("TWITCH_APP_CLIENT_ID").to_string();
     let token = TwitchService::get_token()
         .await
         .map_err(|e| format!("Failed to get token: {}", e))?;
@@ -359,7 +359,7 @@ pub async fn get_twitch_credentials() -> Result<(String, String), String> {
 pub async fn debug_list_twitch_badges() -> Result<Vec<(String, usize, Vec<String>)>, String> {
     debug!("[Badges/Debug] Fetching badges directly from Twitch API...");
 
-    let client_id = "1qgws7yzcp21g5ledlzffw3lmqdvie".to_string();
+    let client_id = env!("TWITCH_APP_CLIENT_ID").to_string();
     let token = TwitchService::get_token()
         .await
         .map_err(|e| format!("Failed to get token: {}", e))?;
@@ -403,7 +403,7 @@ pub async fn debug_compare_badge_sources() -> Result<(Vec<String>, Vec<String>, 
     debug!("[Badges/Debug] Comparing Twitch API badges with cached badges...");
 
     // Get badges from Twitch API
-    let client_id = "1qgws7yzcp21g5ledlzffw3lmqdvie".to_string();
+    let client_id = env!("TWITCH_APP_CLIENT_ID").to_string();
     let token = TwitchService::get_token()
         .await
         .map_err(|e| format!("Failed to get token: {}", e))?;
@@ -493,7 +493,7 @@ pub async fn get_user_badges(
     user_id: String,
     channel_id: Option<String>,
 ) -> Result<String, String> {
-    let client_id = "1qgws7yzcp21g5ledlzffw3lmqdvie".to_string();
+    let client_id = env!("TWITCH_APP_CLIENT_ID").to_string();
     let token = TwitchService::get_token()
         .await
         .map_err(|e| format!("Failed to get token: {}", e))?;

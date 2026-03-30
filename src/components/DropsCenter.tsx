@@ -1694,7 +1694,7 @@ export default function DropsCenter() {
                 {/* Loading State */}
                 {isLoading && (
                     <div className="h-full flex items-center justify-center">
-                        <LoadingWidget useFunnyMessages={false} />
+                        <LoadingWidget useFunnyMessages={false} message="Loading drops & inventory..." />
                     </div>
                 )}
 

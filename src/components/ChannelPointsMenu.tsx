@@ -419,11 +419,11 @@ const ChannelPointsMenu: React.FC<ChannelPointsMenuProps> = ({
   return (
     <div
       ref={menuRef}
-      className="absolute bottom-full left-0 right-0 mb-2 max-h-[400px] border border-border rounded-xl shadow-2xl overflow-hidden z-50"
-      style={{ backgroundColor: 'rgba(12, 12, 13, 0.98)', backdropFilter: 'blur(20px)' }}
+      className="glass-panel absolute bottom-full left-0 right-0 mb-2 flex flex-col max-h-[400px] overflow-hidden z-50"
+      style={{ backgroundColor: 'rgba(12, 12, 13, 0.95)', backdropFilter: 'blur(24px)' }}
     >
       {/* Header with balance */}
-      <div className="px-4 py-3 border-b border-border bg-gradient-to-r from-purple-900/30 to-transparent">
+      <div className="px-4 py-3 border-b border-borderSubtle bg-black/20">
         <div className="flex items-center justify-between">
           <span className="text-sm font-medium text-textSecondary">
             {customPointsName || 'Channel Points'}
@@ -484,7 +484,7 @@ const ChannelPointsMenu: React.FC<ChannelPointsMenuProps> = ({
                   className={`
                     w-full flex items-center gap-3 p-2.5 rounded-lg transition-all text-left
                     ${available 
-                      ? 'hover:bg-glass cursor-pointer active:scale-[0.99]' 
+                      ? 'hover:bg-surface-hover cursor-pointer active:scale-[0.99]' 
                       : 'opacity-50 cursor-not-allowed'}
                     ${isRedeeming ? 'animate-pulse bg-accent/10' : ''}
                   `}
@@ -554,11 +554,12 @@ const ChannelPointsMenu: React.FC<ChannelPointsMenuProps> = ({
 
       {/* Highlighted Message Input Modal */}
       {showHighlightModal && highlightReward && (
-        <div className="absolute inset-0 flex flex-col rounded-xl overflow-hidden"
-          style={{ backgroundColor: 'rgba(12, 12, 13, 0.98)', backdropFilter: 'blur(20px)' }}
+        <div 
+          className="glass-panel absolute inset-0 flex flex-col overflow-hidden z-50"
+          style={{ backgroundColor: 'rgba(12, 12, 13, 0.95)', backdropFilter: 'blur(24px)' }}
         >
           {/* Modal Header */}
-          <div className="px-4 py-3 border-b border-border bg-gradient-to-r from-yellow-500/20 to-transparent">
+          <div className="px-4 py-3 border-b border-borderSubtle bg-black/20">
             <div className="flex items-center justify-between">
               <span className="text-sm font-medium text-yellow-400">
                 ✨ {highlightReward.title}
@@ -610,10 +611,10 @@ const ChannelPointsMenu: React.FC<ChannelPointsMenuProps> = ({
                   onClick={handleSendHighlightedMessage}
                   disabled={!highlightMessage.trim() || redeemingId === highlightReward.id}
                   className={`
-                    px-4 py-1.5 text-xs font-semibold rounded-lg transition-all
+                    px-4 py-1.5 text-xs font-semibold glass-button transition-all
                     ${highlightMessage.trim() && redeemingId !== highlightReward.id
-                      ? 'bg-yellow-500 text-black hover:bg-yellow-400 active:scale-[0.98]'
-                      : 'bg-yellow-500/30 text-yellow-400/50 cursor-not-allowed'}
+                      ? 'text-yellow-400 hover:text-yellow-300'
+                      : 'opacity-50 cursor-not-allowed'}
                   `}
                 >
                   {redeemingId === highlightReward.id ? 'Sending...' : 'Send Highlighted'}
@@ -627,8 +628,8 @@ const ChannelPointsMenu: React.FC<ChannelPointsMenuProps> = ({
       {/* Emote Reveal Popup */}
       {showEmoteReveal && revealedEmote && (
         <div 
-          className="absolute inset-0 flex flex-col items-center justify-center rounded-xl overflow-hidden z-50"
-          style={{ backgroundColor: 'rgba(12, 12, 13, 0.98)', backdropFilter: 'blur(20px)' }}
+          className="glass-panel absolute inset-0 flex flex-col items-center justify-center overflow-hidden z-50"
+          style={{ backgroundColor: 'rgba(12, 12, 13, 0.95)', backdropFilter: 'blur(24px)' }}
           onClick={() => {
             setShowEmoteReveal(false);
             setRevealedEmote(null);
@@ -676,8 +677,8 @@ const ChannelPointsMenu: React.FC<ChannelPointsMenuProps> = ({
       {/* Confirmation Modal */}
       {showConfirmModal && pendingReward && (
         <div 
-          className="absolute inset-0 flex flex-col items-center justify-center rounded-xl overflow-hidden z-40"
-          style={{ backgroundColor: 'rgba(12, 12, 13, 0.98)', backdropFilter: 'blur(20px)' }}
+          className="glass-panel absolute inset-0 flex flex-col items-center justify-center overflow-hidden z-50"
+          style={{ backgroundColor: 'rgba(12, 12, 13, 0.95)', backdropFilter: 'blur(24px)' }}
         >
           {/* Header */}
           <div className="text-lg font-bold text-textPrimary mb-2">
@@ -734,10 +735,10 @@ const ChannelPointsMenu: React.FC<ChannelPointsMenuProps> = ({
               onClick={handleConfirmRedemption}
               disabled={redeemingId !== null}
               className={`
-                px-6 py-2 text-sm font-semibold rounded-lg transition-all
+                px-6 py-2 text-sm font-semibold glass-button transition-all
                 ${redeemingId === null
-                  ? 'bg-accent text-white hover:bg-accent/90 active:scale-[0.98]'
-                  : 'bg-accent/30 text-accent/50 cursor-not-allowed'}
+                  ? 'text-accent hover:text-accent-hover active:scale-[0.98]'
+                  : 'opacity-50 cursor-not-allowed'}
               `}
             >
               {redeemingId !== null ? 'Unlocking...' : 'Confirm'}
@@ -749,10 +750,8 @@ const ChannelPointsMenu: React.FC<ChannelPointsMenuProps> = ({
       {/* Modify Emote Picker Modal */}
       {showModifyEmoteModal && modifyEmoteReward && (
         <div 
-          className="absolute inset-0 z-50 flex flex-col" 
-          style={{ 
-            backgroundColor: 'rgba(12, 12, 13, 0.98)',
-          }}
+          className="glass-panel absolute inset-0 z-50 flex flex-col overflow-hidden"
+          style={{ backgroundColor: 'rgba(12, 12, 13, 0.95)', backdropFilter: 'blur(24px)' }}
         >
           {/* Header */}
           <div className="flex items-center justify-between p-4 border-b border-borderSubtle">
@@ -829,10 +828,10 @@ const ChannelPointsMenu: React.FC<ChannelPointsMenuProps> = ({
                           key={emote.id}
                           onClick={() => setSelectedModifyEmote(emote.id)}
                           className={`
-                            relative flex flex-col items-center gap-1 p-2 rounded-lg transition-all
+                            relative flex flex-col items-center gap-1 p-2 rounded-lg transition-all border border-transparent
                             ${isSelected
-                              ? 'bg-accent/30 border-2 border-accent'
-                              : 'bg-glass hover:bg-glass-hover border-2 border-transparent'
+                              ? 'bg-surface-active border-border text-accent-neon shadow-inner'
+                              : 'hover:bg-surface-hover'
                             }
                           `}
                         >
@@ -874,10 +873,10 @@ const ChannelPointsMenu: React.FC<ChannelPointsMenuProps> = ({
                         key={modification.id}
                         onClick={() => setSelectedModifier(modification)}
                         className={`
-                          flex items-center gap-3 p-3 rounded-lg transition-all text-left
+                          flex items-center gap-3 p-3 rounded-lg transition-all text-left border border-transparent
                           ${isSelected
-                            ? 'bg-accent/30 border-2 border-accent'
-                            : 'bg-glass hover:bg-glass-hover border-2 border-transparent'
+                            ? 'bg-surface-active border-border text-accent-neon shadow-inner'
+                            : 'hover:bg-surface-hover'
                           }
                         `}
                       >
@@ -942,10 +941,10 @@ const ChannelPointsMenu: React.FC<ChannelPointsMenuProps> = ({
                   onClick={() => setModifyStep('modifier')}
                   disabled={!selectedModifyEmote}
                   className={`
-                    px-4 py-2 text-sm font-semibold rounded-lg transition-all
+                    px-4 py-2 text-sm font-semibold glass-button transition-all
                     ${selectedModifyEmote
-                      ? 'bg-accent text-white hover:bg-accent/90 active:scale-[0.98]'
-                      : 'bg-glass text-textSecondary cursor-not-allowed'
+                      ? 'text-accent hover:text-accent-hover active:scale-[0.98]'
+                      : 'opacity-50 cursor-not-allowed'
                     }
                   `}
                 >
@@ -956,10 +955,10 @@ const ChannelPointsMenu: React.FC<ChannelPointsMenuProps> = ({
                   onClick={handleModifyEmoteConfirm}
                   disabled={!selectedModifier || redeemingId !== null}
                   className={`
-                    px-4 py-2 text-sm font-semibold rounded-lg transition-all
+                    px-4 py-2 text-sm font-semibold glass-button transition-all
                     ${selectedModifier && redeemingId === null
-                      ? 'bg-accent text-white hover:bg-accent/90 active:scale-[0.98]'
-                      : 'bg-glass text-textSecondary cursor-not-allowed'
+                      ? 'text-accent hover:text-accent-hover active:scale-[0.98]'
+                      : 'opacity-50 cursor-not-allowed'
                     }
                   `}
                 >
@@ -974,10 +973,8 @@ const ChannelPointsMenu: React.FC<ChannelPointsMenuProps> = ({
       {/* Choose Emote Modal - Single step emote picker */}
       {showChooseEmoteModal && chooseEmoteReward && (
         <div 
-          className="absolute inset-0 z-50 flex flex-col" 
-          style={{ 
-            backgroundColor: 'rgba(12, 12, 13, 0.98)',
-          }}
+          className="glass-panel absolute inset-0 z-50 flex flex-col overflow-hidden"
+          style={{ backgroundColor: 'rgba(12, 12, 13, 0.95)', backdropFilter: 'blur(24px)' }}
         >
           {/* Header */}
           <div className="flex items-center justify-between p-4 border-b border-borderSubtle">
@@ -1032,10 +1029,10 @@ const ChannelPointsMenu: React.FC<ChannelPointsMenuProps> = ({
                       key={emote.id}
                       onClick={() => setSelectedUnlockEmote(emote)}
                       className={`
-                        relative flex flex-col items-center gap-1 p-2 rounded-lg transition-all
+                        relative flex flex-col items-center gap-1 p-2 rounded-lg transition-all border border-transparent
                         ${isSelected
-                          ? 'bg-accent/30 border-2 border-accent'
-                          : 'bg-glass hover:bg-glass-hover border-2 border-transparent'
+                          ? 'bg-surface-active border-border text-accent-neon shadow-inner'
+                          : 'hover:bg-surface-hover'
                         }
                       `}
                     >
@@ -1087,10 +1084,10 @@ const ChannelPointsMenu: React.FC<ChannelPointsMenuProps> = ({
                 onClick={handleChooseEmoteConfirm}
                 disabled={!selectedUnlockEmote || redeemingId !== null}
                 className={`
-                  px-4 py-2 text-sm font-semibold rounded-lg transition-all
+                  px-4 py-2 text-sm font-semibold glass-button transition-all
                   ${selectedUnlockEmote && redeemingId === null
-                    ? 'bg-accent text-white hover:bg-accent/90 active:scale-[0.98]'
-                    : 'bg-glass text-textSecondary cursor-not-allowed'
+                    ? 'text-accent hover:text-accent-hover active:scale-[0.98]'
+                    : 'opacity-50 cursor-not-allowed'
                   }
                 `}
               >

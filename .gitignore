@@ -7,17 +7,7 @@ src-tauri/target/
 
 # Tauri auto-generated schemas (regenerated on every build)
 src-tauri/gen/schemas/
-scripts/release_manager.ps1
-scripts/generate_emoji_map.js
-scripts/generate_emoji_categories.js
-scripts/inspect-drops-api.js
-scripts/inspect-predictions.js
-scripts/fetch-7tv-badges.mjs
-scripts/explore-7tv-badges.mjs
-scripts/twitch-gql-server.js
-scripts/*.json
-scripts/hls-diag.mjs
-scripts/svg2png.mjs
+scripts/*
 
 # Documentation
 docs/

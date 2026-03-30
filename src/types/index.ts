@@ -304,6 +304,7 @@ export interface TwitchStream {
   broadcaster_type?: string;
   has_shared_chat?: boolean;
   profile_image_url?: string;
+  is_live?: boolean;
 }
 
 export interface TwitchUser {

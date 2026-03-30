@@ -142,7 +142,6 @@ const EmoteGridItem = memo(({ emote, isFavorited, onInsert, onToggleFavorite }: 
   onInsert: () => void;
   onToggleFavorite: () => void;
 }) => {
-  const [isHovered, setIsHovered] = useState(false);
   const [isVisible, setIsVisible] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   
@@ -168,69 +167,75 @@ const EmoteGridItem = memo(({ emote, isFavorited, onInsert, onToggleFavorite }: 
   }, []);
   
   return (
-    <div 
-      ref={containerRef}
-      className="relative group"
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
-    >
-      <button onClick={onInsert} className="flex items-center justify-center p-1 min-w-8 min-h-8 hover:bg-glass rounded transition-colors">
-        {isVisible ? (
+    <Tooltip 
+      side="top" 
+      delay={200}
+      content={
+        <div className="flex flex-col items-center gap-1.5 py-0.5">
           <img
-            src={emote.localUrl || emote.url}
+            src={emote.provider === '7tv' ? `https://cdn.7tv.app/emote/${emote.id}/4x.avif` : (emote.localUrl || emote.url)}
             alt={emote.name}
-            referrerPolicy="no-referrer"
-            className="h-8 w-auto max-w-[64px] object-contain"
+            className="h-16 w-auto max-w-[96px] object-contain mx-auto drop-shadow-md"
             onError={(e) => {
-              const target = e.currentTarget;
-              if (emote.localUrl && target.src !== emote.url) {
-                target.src = emote.url;
-              } else {
-                target.style.opacity = '0.3';
+              if (emote.provider === '7tv') {
+                const target = e.currentTarget;
+                const src = target.src;
+                if (src.includes('/4x.avif')) target.src = `https://cdn.7tv.app/emote/${emote.id}/2x.avif`;
+                else if (src.includes('/2x.avif')) target.src = `https://cdn.7tv.app/emote/${emote.id}/1x.avif`;
               }
             }}
           />
-        ) : (
-          // Placeholder while not visible - same size to prevent layout shift
-          <div className="h-8 w-8 bg-glass/30 rounded animate-pulse" />
-        )}
-      </button>
-      {/* Tooltip - only renders when hovered to avoid preloading 4x images */}
-      {isHovered && (
-        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 pointer-events-none" style={{ zIndex: 2147483647 }}>
-          <div className="glass-panel border border-borderSubtle rounded-lg p-3 shadow-2xl min-w-[120px]" style={{ backgroundColor: 'var(--color-background)', borderColor: 'var(--color-border-subtle)' }}>
+          <div className="text-center flex flex-col items-center gap-0.5">
+            <span className="font-bold text-[13px] leading-tight">{emote.name}</span>
+            <span className="text-[10px] text-white/60 leading-tight">
+              {emote.owner_name ? `by ${emote.owner_name}` : emote.provider}
+            </span>
+            {emote.isZeroWidth && (
+              <span className="text-[9px] font-bold tracking-wider uppercase text-yellow-400 mt-0.5 mix-blend-screen drop-shadow-sm">
+                Zero-Width
+              </span>
+            )}
+          </div>
+        </div>
+      }
+    >
+      <div 
+        ref={containerRef}
+        className="relative group inline-block focus:outline-none"
+      >
+        <button onClick={onInsert} className={`flex items-center justify-center p-1 min-w-8 min-h-8 hover:bg-glass rounded transition-colors ${emote.isZeroWidth ? 'ring-1 ring-yellow-400/50 bg-yellow-400/10' : ''}`}>
+          {isVisible ? (
             <img
-              src={emote.provider === '7tv' ? `https://cdn.7tv.app/emote/${emote.id}/4x.avif` : (emote.localUrl || emote.url)}
+              src={emote.localUrl || emote.url}
               alt={emote.name}
-              className="h-16 w-auto max-w-[96px] object-contain mx-auto"
+              referrerPolicy="no-referrer"
+              className={`h-8 w-auto max-w-[64px] object-contain ${emote.isZeroWidth ? 'drop-shadow-[0_0_3px_rgba(234,179,8,0.6)]' : ''}`}
+
               onError={(e) => {
-                if (emote.provider === '7tv') {
-                  const target = e.currentTarget;
-                  const src = target.src;
-                  if (src.includes('/4x.avif')) target.src = `https://cdn.7tv.app/emote/${emote.id}/2x.avif`;
-                  else if (src.includes('/2x.avif')) target.src = `https://cdn.7tv.app/emote/${emote.id}/1x.avif`;
+                const target = e.currentTarget;
+                if (emote.localUrl && target.src !== emote.url) {
+                  target.src = emote.url;
+                } else {
+                  target.style.opacity = '0.3';
                 }
               }}
             />
-            <div className="mt-2 text-center">
-              <div className="text-sm font-medium" style={{ color: 'var(--color-text-primary)' }}>{emote.name}</div>
-              <div className="text-[10px]" style={{ color: 'var(--color-text-secondary)' }}>
-                {emote.owner_name ? `by ${emote.owner_name}` : emote.provider}
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-      <button 
-        onClick={(e) => { e.stopPropagation(); onToggleFavorite(); }} 
-        className={`absolute top-0 right-0 p-1 rounded-bl transition-all ${isFavorited ? 'text-yellow-400 opacity-100' : 'text-textSecondary opacity-0 group-hover:opacity-100'} hover:text-yellow-400 hover:bg-glass`} 
-        title={isFavorited ? 'Remove from favorites' : 'Add to favorites'}
-      >
-        <svg className="w-3 h-3" fill={isFavorited ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth={2} viewBox="0 0 20 20">
-          <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
-        </svg>
-      </button>
-    </div>
+          ) : (
+            // Placeholder while not visible - same size to prevent layout shift
+            <div className="h-8 w-8 bg-glass/30 rounded animate-pulse" />
+          )}
+        </button>
+        <button 
+          onClick={(e) => { e.stopPropagation(); onToggleFavorite(); }} 
+          className={`absolute top-0 right-0 p-1 rounded-bl transition-all ${isFavorited ? 'text-yellow-400 opacity-100' : 'text-textSecondary opacity-0 group-hover:opacity-100'} hover:text-yellow-400 hover:bg-glass`} 
+          title={isFavorited ? 'Remove from favorites' : 'Add to favorites'}
+        >
+          <svg className="w-3 h-3" fill={isFavorited ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth={2} viewBox="0 0 20 20">
+            <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
+          </svg>
+        </button>
+      </div>
+    </Tooltip>
   );
 });
 const HYPE_MESSAGES = [
@@ -661,6 +666,8 @@ const ChatWidget = () => {
 
 
   useEffect(() => {
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    
     if (currentStream?.user_login && connectedChannelRef.current !== currentStream.user_login) {
       connectedChannelRef.current = currentStream.user_login;
       // Reset pause state when switching channels - ensures chat starts anchored to bottom
@@ -696,11 +703,55 @@ const ChatWidget = () => {
       setIsPinnedExpanded(true);
       // Reset to chat view when switching channels
       setActiveView('chat');
+      
+      // NEW: Hot-swap backend tracking context if inside MultiNook
+      if (isMultiNookActive) {
+        Logger.info(`[MultiNook] Hot-swapping backend tracking for ${currentStream.user_login}...`);
+        
+        // Immediate clean up front-end state
+        useAppStore.getState().setCurrentHypeTrain(null);
+        
+        const channelId = currentStream.user_id;
+        const channelName = currentStream.user_login;
+        
+        if (channelId) {
+          // Debounce the backend network shifting (250ms) to prevent UI spamming
+          timeoutId = setTimeout(() => {
+            invoke('start_drops_monitoring', { channelId, channelName }).catch(e => Logger.warn('[Drops] Failed to hot-swap', e));
+            invoke('register_active_channel', { channelId }).catch(() => {});
+            
+            invoke('disconnect_eventsub')
+              .then(() => {
+                // Delay reconnection by 150ms to ensure the OS socket closes safely
+                setTimeout(() => {
+                  invoke('connect_eventsub', { broadcasterId: channelId }).catch(e => Logger.warn('[EventSub] Failed to hot-swap', e));
+                }, 150);
+              })
+              .catch(() => {});
+          }, 250);
+        }
+      }
     }
+    
     return () => {
       if (currentStream?.user_login !== connectedChannelRef.current) connectedChannelRef.current = null;
+      if (timeoutId) clearTimeout(timeoutId);
     };
-  }, [currentStream?.user_login, currentStream?.user_id]);
+  }, [currentStream?.user_login, currentStream?.user_id, isMultiNookActive]);
+
+  // Chat refresh signal — triggered by VideoPlayer's refresh button
+  const chatRefreshKey = useAppStore((s) => s.chatRefreshKey);
+  const chatRefreshMountRef = useRef(chatRefreshKey);
+  useEffect(() => {
+    // Skip initial mount
+    if (chatRefreshMountRef.current === chatRefreshKey) return;
+    chatRefreshMountRef.current = chatRefreshKey;
+
+    if (currentStream?.user_login) {
+      Logger.info('[ChatWidget] Chat refresh triggered — reconnecting...');
+      connectChat(currentStream.user_login, currentStream.user_id);
+    }
+  }, [chatRefreshKey, currentStream?.user_login, currentStream?.user_id, connectChat]);
 
   // Force unpause chat when returning from About view
   useEffect(() => {
@@ -1279,7 +1330,7 @@ const ChatWidget = () => {
   }, [messages]);
 
   const handleSendMessage = async () => {
-    if (messageInput.trim() && isConnected && currentUser) {
+    if ((messageInput.trim() || isWatchStreakMode || isResubMode) && isConnected && currentUser) {
       const messageToSend = messageInput;
       const replyParentMsgId = replyingTo?.messageId;
       setMessageInput('');
@@ -1550,7 +1601,12 @@ const ChatWidget = () => {
 
   // Sort emotes by width (smaller first for better grid layout)
   const sortedEmotes = useMemo(() => {
-    return [...filteredEmotes].sort((a, b) => (a.width || 32) - (b.width || 32));
+    return [...filteredEmotes].sort((a, b) => {
+      // Prioritize zero-width emotes to the top of the list
+      if (a.isZeroWidth && !b.isZeroWidth) return -1;
+      if (!a.isZeroWidth && b.isZeroWidth) return 1;
+      return (a.width || 32) - (b.width || 32);
+    });
   }, [filteredEmotes]);
 
   // Memoize grouped Twitch emotes to prevent recalculation on every render
@@ -2115,32 +2171,32 @@ const ChatWidget = () => {
                     <input type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="Search emotes..."
                       className="w-full glass-input text-xs px-3 py-1.5 placeholder-textSecondary" />
                     <div className="flex gap-1 mt-2">
-                      <button onClick={() => setSelectedProvider('favorites')} className={`flex-1 py-1.5 text-xs rounded transition-all flex items-center justify-center gap-1 ${selectedProvider === 'favorites' ? 'glass-button text-white' : 'bg-glass text-textSecondary hover:bg-glass-hover'}`} title={`Favorites (${favoriteEmotes.length})`}>
+                      <button onClick={() => setSelectedProvider('favorites')} className={`flex-1 py-1.5 text-xs transition-all flex items-center justify-center gap-1 ${selectedProvider === 'favorites' ? 'glass-input text-emerald-400 font-extrabold' : 'glass-button text-textSecondary hover:text-white'}`} style={{ borderRadius: '8px' }} title={`Favorites (${favoriteEmotes.length})`}>
                         <span className="text-yellow-400">★</span><span className="text-[10px] opacity-70">{favoriteEmotes.length}</span>
                       </button>
                       <Tooltip content="Emoji" side="top">
-                      <button onClick={() => setSelectedProvider('emoji')} className={`flex-1 py-1.5 text-xs rounded transition-all flex items-center justify-center ${selectedProvider === 'emoji' ? 'glass-button text-white' : 'bg-glass text-textSecondary hover:bg-glass-hover'}`}><img src={getAppleEmojiUrl('😀')} alt="😀" className="w-4 h-4" /></button>
+                      <button onClick={() => setSelectedProvider('emoji')} className={`flex-1 py-1.5 text-xs transition-all flex items-center justify-center ${selectedProvider === 'emoji' ? 'glass-input text-emerald-400 font-extrabold' : 'glass-button text-textSecondary hover:text-white'}`} style={{ borderRadius: '8px' }}><img src={getAppleEmojiUrl('😀')} alt="😀" className="w-4 h-4" /></button>
                       </Tooltip>
                       <Tooltip content={`Twitch (${emotes?.twitch.length || 0})`} side="top">
-                      <button onClick={() => setSelectedProvider('twitch')} className={`flex-1 py-1.5 text-xs rounded transition-all flex items-center justify-center gap-1 ${selectedProvider === 'twitch' ? 'glass-button text-white' : 'bg-glass text-textSecondary hover:bg-glass-hover'}`}>
+                      <button onClick={() => setSelectedProvider('twitch')} className={`flex-1 py-1.5 text-xs transition-all flex items-center justify-center gap-1 ${selectedProvider === 'twitch' ? 'glass-input text-emerald-400 font-extrabold' : 'glass-button text-textSecondary hover:text-white'}`} style={{ borderRadius: '8px' }}>
                         <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M11.571 4.714h1.715v5.143H11.57zm4.715 0H18v5.143h-1.714zM6 0L1.714 4.286v15.428h5.143V24l4.286-4.286h3.428L22.286 12V0zm14.571 11.143l-3.428 3.428h-3.429l-3 3v-3H6.857V1.714h13.714Z" /></svg>
                         <span className="text-[10px] opacity-70">{emotes?.twitch.length || 0}</span>
                       </button>
                       </Tooltip>
                       <Tooltip content={`BetterTTV (${emotes?.bttv.length || 0})`} side="top">
-                      <button onClick={() => setSelectedProvider('bttv')} className={`flex-1 py-1.5 text-xs rounded transition-all flex items-center justify-center gap-1 ${selectedProvider === 'bttv' ? 'glass-button text-white' : 'bg-glass text-textSecondary hover:bg-glass-hover'}`}>
+                      <button onClick={() => setSelectedProvider('bttv')} className={`flex-1 py-1.5 text-xs transition-all flex items-center justify-center gap-1 ${selectedProvider === 'bttv' ? 'glass-input text-emerald-400 font-extrabold' : 'glass-button text-textSecondary hover:text-white'}`} style={{ borderRadius: '8px' }}>
                         <svg className="w-4 h-4" viewBox="0 0 300 300" fill="currentColor"><path fill="transparent" d="M249.771 150A99.771 99.922 0 0 1 150 249.922 99.771 99.922 0 0 1 50.229 150 99.771 99.922 0 0 1 150 50.078 99.771 99.922 0 0 1 249.771 150Z" /><path d="M150 1.74C68.409 1.74 1.74 68.41 1.74 150S68.41 298.26 150 298.26h148.26V150.17h-.004c0-.057.004-.113.004-.17C298.26 68.409 231.59 1.74 150 1.74zm0 49c55.11 0 99.26 44.15 99.26 99.26 0 55.11-44.15 99.26-99.26 99.26-55.11 0-99.26-44.15-99.26-99.26 0-55.11 44.15-99.26 99.26-99.26z" /><path d="M161.388 70.076c-10.662 0-19.42 7.866-19.42 17.67 0 9.803 8.758 17.67 19.42 17.67 10.662 0 19.42-7.867 19.42-17.67 0-9.804-8.758-17.67-19.42-17.67zm45.346 24.554-.02.022-.004.002c-5.402 2.771-11.53 6.895-18.224 11.978l-.002.002-.004.002c-25.943 19.766-60.027 54.218-80.344 80.33h-.072l-1.352 1.768c-5.114 6.69-9.267 12.762-12.098 18.006l-.082.082.022.021v.002l.004.002.174.176.052-.053.102.053-.07.072c30.826 30.537 81.213 30.431 111.918-.273 30.783-30.784 30.8-81.352.04-112.152l-.005-.004zM87.837 142.216c-9.803 0-17.67 8.758-17.67 19.42 0 10.662 7.867 19.42 17.67 19.42 9.804 0 17.67-8.758 17.67-19.42 0-10.662-7.866-19.42-17.67-19.42z" /></svg>
                         <span className="text-[10px] opacity-70">{emotes?.bttv.length || 0}</span>
                       </button>
                       </Tooltip>
                       <Tooltip content={`7TV (${emotes?.['7tv'].length || 0})`} side="top">
-                      <button onClick={() => setSelectedProvider('7tv')} className={`flex-1 py-1.5 text-xs rounded transition-all flex items-center justify-center gap-1 ${selectedProvider === '7tv' ? 'glass-button text-white' : 'bg-glass text-textSecondary hover:bg-glass-hover'}`}>
+                      <button onClick={() => setSelectedProvider('7tv')} className={`flex-1 py-1.5 text-xs transition-all flex items-center justify-center gap-1 ${selectedProvider === '7tv' ? 'glass-input text-emerald-400 font-extrabold' : 'glass-button text-textSecondary hover:text-white'}`} style={{ borderRadius: '8px' }}>
                         <svg className="w-4 h-4" viewBox="0 0 28 21" fill="currentColor"><path d="M20.7465 5.48825L21.9799 3.33745L22.646 2.20024L21.4125 0.0494437V0H14.8259L17.2928 4.3016L17.9836 5.48825H20.7465Z" /><path d="M7.15395 19.9258L14.5546 7.02104L15.4673 5.43884L13.0004 1.13724L12.3097 0.0247596H1.8995L0.666057 2.17556L0 3.31276L1.23344 5.46356V5.51301H9.12745L2.96025 16.267L2.09685 17.7998L3.33029 19.9506V20H7.15395" /><path d="M17.4655 19.9257H21.2398L26.1736 11.3225L27.037 9.83924L25.8036 7.68844V7.63899H22.0046L19.5377 11.9406L19.365 12.262L16.8981 7.96038L16.7255 7.63899L14.2586 11.9406L13.5679 13.1272L17.2682 19.5796L17.4655 19.9257Z" /></svg>
                         <span className="text-[10px] opacity-70">{emotes?.['7tv'].length || 0}</span>
                       </button>
                       </Tooltip>
                       <Tooltip content={`FrankerFaceZ (${emotes?.ffz.length || 0})`} side="top">
-                      <button onClick={() => setSelectedProvider('ffz')} className={`flex-1 py-1.5 text-xs rounded transition-all flex items-center justify-center gap-1 ${selectedProvider === 'ffz' ? 'glass-button text-white' : 'bg-glass text-textSecondary hover:bg-glass-hover'}`}>
+                      <button onClick={() => setSelectedProvider('ffz')} className={`flex-1 py-1.5 text-xs transition-all flex items-center justify-center gap-1 ${selectedProvider === 'ffz' ? 'glass-input text-emerald-400 font-extrabold' : 'glass-button text-textSecondary hover:text-white'}`} style={{ borderRadius: '8px' }}>
                         <svg className="w-4 h-4" viewBox="-0.5 -0.5 40 30" fill="currentColor"><path d="M 15.5,-0.5 C 17.8333,-0.5 20.1667,-0.5 22.5,-0.5C 24.6552,3.13905 26.8218,6.80572 29,10.5C 29.691,7.40943 31.5243,6.24276 34.5,7C 36.585,9.68221 38.2517,12.5155 39.5,15.5C 39.5,17.5 39.5,19.5 39.5,21.5C 34.66,25.2533 29.3267,27.92 23.5,29.5C 20.5,29.5 17.5,29.5 14.5,29.5C 9.11466,27.3005 4.11466,24.3005 -0.5,20.5C -0.5,17.5 -0.5,14.5 -0.5,11.5C 4.17691,4.45967 7.34358,5.12633 9,13.5C 10.6047,10.3522 11.6047,7.01889 12,3.5C 12.6897,1.64977 13.8564,0.316435 15.5,-0.5 Z" /></svg>
                         <span className="text-[10px] opacity-70">{emotes?.ffz.length || 0}</span>
                       </button>
@@ -2396,22 +2452,26 @@ const ChatWidget = () => {
                 {/* Input container with emoji button inset on the left */}
                 <div className="relative flex-1 min-w-0 flex items-center">
                   {/* Emoji button — inset left inside the input */}
-                  <Tooltip content="Emotes" side="top">
+                  <Tooltip content={showEmotePicker ? "Close Emotes" : "Emotes"} side="top">
                   <button
                     onClick={() => setShowEmotePicker(!showEmotePicker)}
                     onMouseLeave={cycleEmoteSmiley}
                     className="group absolute left-1 top-1/2 -translate-y-1/2 z-10 flex items-center justify-center w-7 h-7 text-textSecondary hover:text-textPrimary transition-colors duration-200"
                   >
-                    <img
-                      src={getAppleEmojiUrl(currentSmiley)}
-                      alt={currentSmiley}
-                      draggable={false}
-                      className={`w-4 h-4 object-contain transition-all ease-in-out group-hover:drop-shadow-[0_0_5px_rgba(200,224,232,0.8)] ${
-                        isSmileyTransitioning
-                          ? 'opacity-0 scale-50 duration-100'
-                          : 'opacity-100 scale-100 duration-150'
-                      }`}
-                    />
+                    {showEmotePicker ? (
+                      <svg className="w-4 h-4 transition-all duration-200 text-accent group-hover:drop-shadow-[0_0_5px_rgba(200,224,232,0.8)]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" /></svg>
+                    ) : (
+                      <img
+                        src={getAppleEmojiUrl(currentSmiley)}
+                        alt={currentSmiley}
+                        draggable={false}
+                        className={`w-4 h-4 object-contain transition-all ease-in-out group-hover:drop-shadow-[0_0_5px_rgba(200,224,232,0.8)] ${
+                          isSmileyTransitioning
+                            ? 'opacity-0 scale-50 duration-100'
+                            : 'opacity-100 scale-100 duration-150'
+                        }`}
+                      />
+                    )}
                   </button>
                   </Tooltip>
                   {/* @ Mention Autocomplete */}
@@ -2453,7 +2513,7 @@ const ChatWidget = () => {
                 <Tooltip content={isWatchStreakMode ? "Share Watch Streak" : "Send message"} side="top">
                 <button 
                   onClick={handleSendMessage} 
-                  disabled={(!messageInput.trim() && !isWatchStreakMode) || !isConnected} 
+                  disabled={(!messageInput.trim() && !isWatchStreakMode && !isResubMode) || !isConnected} 
                   className={`flex-shrink-0 flex items-center justify-center self-center w-9 h-9 text-white rounded transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed ${
                     isWatchStreakMode 
                       ? 'bg-amber-500 hover:bg-amber-400 shadow-[0_0_12px_rgba(245,158,11,0.3)]' 

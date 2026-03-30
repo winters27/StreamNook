@@ -11,8 +11,8 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 // Client IDs - Web for checking, Android for claiming (to match token)
-const WEB_CLIENT_ID: &str = "kimne78kx3ncx6brgo4mv6wki5h1ko";
-const ANDROID_CLIENT_ID: &str = "kd1unb4b3q4t58fwlpcbzcbnm76a8fp"; // Same as drops token
+const WEB_CLIENT_ID: &str = env!("TWITCH_WEB_CLIENT_ID");
+const ANDROID_CLIENT_ID: &str = env!("TWITCH_ANDROID_CLIENT_ID"); // Same as drops token
 const CLIENT_URL: &str = "https://www.twitch.tv";
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 /// Stable Twitch tracking endpoint — proven working in mining_service.rs

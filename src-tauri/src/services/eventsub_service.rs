@@ -268,7 +268,7 @@ impl EventSubService {
             }
         };
 
-        let client_id = "1qgws7yzcp21g5ledlzffw3lmqdvie";
+        let client_id = env!("TWITCH_APP_CLIENT_ID");
         let client = reqwest::Client::new();
 
         // Get all existing subscriptions
@@ -770,7 +770,7 @@ impl EventSubService {
 
     async fn subscribe_to_events(broadcaster_id: &str, session_id: &str) -> Result<()> {
         let token = TwitchService::get_token().await?;
-        let client_id = "1qgws7yzcp21g5ledlzffw3lmqdvie";
+        let client_id = env!("TWITCH_APP_CLIENT_ID");
         let client = reqwest::Client::new();
 
         // Get the current user's ID for user-specific subscriptions

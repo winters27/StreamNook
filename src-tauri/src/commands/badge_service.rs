@@ -11,7 +11,7 @@ lazy_static::lazy_static! {
 
 /// Initialize the badge service (called on app start)
 pub async fn initialize_badge_service() {
-    let client_id = "1qgws7yzcp21g5ledlzffw3lmqdvie".to_string();
+    let client_id = env!("TWITCH_APP_CLIENT_ID").to_string();
     let service = BadgeService::new(client_id);
 
     // Pre-fetch global badges if token is available

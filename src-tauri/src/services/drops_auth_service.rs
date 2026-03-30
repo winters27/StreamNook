@@ -10,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::time::Duration;
 
 // Twitch Android App credentials (used by TwitchDropsMiner)
-const DROPS_CLIENT_ID: &str = "kd1unb4b3q4t58fwlpcbzcbnm76a8fp";
+const DROPS_CLIENT_ID: &str = env!("TWITCH_ANDROID_CLIENT_ID");
 const DROPS_TOKEN_FILE_NAME: &str = ".twitch_drops_token";
 
 #[derive(Debug, Deserialize)]

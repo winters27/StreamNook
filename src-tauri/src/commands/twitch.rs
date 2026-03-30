@@ -275,6 +275,25 @@ pub async fn unfollow_channel(target_user_id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub async fn get_all_followed_channels(
+    limit: u32,
+    cursor: Option<String>,
+) -> Result<(Vec<TwitchStream>, Option<String>), String> {
+    TwitchService::get_all_followed_channels(limit, cursor)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn get_offline_last_broadcasts(
+    user_ids: Vec<String>,
+) -> Result<std::collections::HashMap<String, Option<String>>, String> {
+    TwitchService::get_offline_last_broadcasts(user_ids)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn check_following_status(target_user_id: String) -> Result<bool, String> {
     TwitchService::check_following_status(&target_user_id)
         .await

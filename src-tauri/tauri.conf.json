@@ -9,7 +9,7 @@
     "frontendDist": "../dist"
   },
   "bundle": {
-    "active": true,
+    "active": false,
     "targets": "all",
     "icon": [
       "icons/icon.ico"

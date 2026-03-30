@@ -85,6 +85,8 @@ export interface WhisperImportState {
 interface AppState {
   settings: Settings;
   followedStreams: TwitchStream[];
+  offlineFollowedChannels: TwitchStream[];
+  setOfflineFollowedChannels: (channels: TwitchStream[]) => void;
   recommendedStreams: TwitchStream[];
   recommendedCursor: string | null;
   hasMoreRecommended: boolean;
@@ -120,9 +122,18 @@ interface AppState {
   isAutoSwitching: boolean;
   // Track when raid redirect occurred to prevent auto-switch from overriding
   lastRaidRedirectTime: number;
+  profileModalUser: TwitchStream | null;
+  setProfileModalUser: (user: TwitchStream | null) => void;
   // Navigation state for deep linking
   homeActiveTab: HomeTab;
   homeSelectedCategory: TwitchCategory | null;
+  streamOriginCategory: TwitchCategory | null;
+  
+  // Category cache
+  cachedTopGames: TwitchCategory[];
+  cachedGamesCursor: string | null;
+  cachedHasMoreGames: boolean;
+  cachedTopGamesTimestamp: number;
   dropsSearchTerm: string;
   // Centralized drops cache
   dropsCache: DropsCache | null;
@@ -170,6 +181,14 @@ interface AppState {
   // Navigation actions for deep linking
   setHomeActiveTab: (tab: HomeTab) => void;
   setHomeSelectedCategory: (category: TwitchCategory | null) => void;
+  setStreamOriginCategory: (category: TwitchCategory | null) => void;
+  
+  // Category cache actions
+  setCachedTopGames: (games: TwitchCategory[], cursor: string | null, hasMore: boolean) => void;
+  appendCachedTopGames: (games: TwitchCategory[], cursor: string | null, hasMore: boolean) => void;
+  // Chat refresh signal
+  chatRefreshKey: number;
+  triggerChatRefresh: () => void;
   setDropsSearchTerm: (term: string) => void;
   navigateToHomeTab: (tab: HomeTab, category?: TwitchCategory) => void;
   navigateToCategoryByName: (categoryName: string) => Promise<void>;
@@ -217,6 +236,8 @@ let magneReconnectInterval: ReturnType<typeof setInterval> | null = null;
 export const useAppStore = create<AppState>((set, get) => ({
   settings: {} as Settings,
   followedStreams: [],
+  offlineFollowedChannels: [],
+  setOfflineFollowedChannels: (channels: TwitchStream[]) => set({ offlineFollowedChannels: channels }),
   watchStreaks: {},
   recommendedStreams: [],
   recommendedCursor: null,
@@ -251,9 +272,20 @@ export const useAppStore = create<AppState>((set, get) => ({
   isAutoSwitching: false,
   // Track when raid redirect occurred to prevent auto-switch from overriding
   lastRaidRedirectTime: 0,
+  profileModalUser: null,
+  setProfileModalUser: (user) => set({ profileModalUser: user }),
   // Navigation state for deep linking
   homeActiveTab: 'following' as HomeTab,
   homeSelectedCategory: null,
+  streamOriginCategory: null,
+  
+  // Category cache init
+  cachedTopGames: [],
+  cachedGamesCursor: null,
+  cachedHasMoreGames: true,
+  cachedTopGamesTimestamp: 0,
+  chatRefreshKey: 0,
+  triggerChatRefresh: () => set((state) => ({ chatRefreshKey: state.chatRefreshKey + 1 })),
   dropsSearchTerm: '',
   // Centralized drops cache
   dropsCache: null,
@@ -518,7 +550,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!settings.favorite_streamers) {
       settings.favorite_streamers = [];
     }
-    set({ settings, chatPlacement: settings.chat_placement });
+    const state = get();
+    if (state.isTheaterMode) {
+      set({ settings, originalChatPlacement: settings.chat_placement });
+    } else {
+      set({ settings, chatPlacement: settings.chat_placement });
+    }
 
     // Sync diagnostic logging state to both frontend and backend
     const diagnosticsEnabled = settings.error_reporting_enabled !== false;
@@ -628,7 +665,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
 
     await invoke('save_settings', { settings: newSettings });
-    set({ settings: newSettings, chatPlacement: newSettings.chat_placement });
+    
+    const state = get();
+    if (state.isTheaterMode) {
+      // Don't un-hide the chat if we're in compact/theater mode, just quietly update the original placement
+      set({ settings: newSettings, originalChatPlacement: newSettings.chat_placement });
+    } else {
+      set({ settings: newSettings, chatPlacement: newSettings.chat_placement });
+    }
 
     // Sync diagnostic logging state if it changed
     if (newSettings.error_reporting_enabled !== oldSettings.error_reporting_enabled) {
@@ -808,7 +852,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         Logger.warn('Could not disconnect EventSub:', e);
       }
 
-      set({ streamUrl: null, currentStream: null, currentHypeTrain: null });
+      set({ streamUrl: null, currentStream: null, currentHypeTrain: null, streamOriginCategory: null });
 
       // Update user context for error reporting (stream stopped)
       saveUserContextToLocalStorage(get().currentUser, null);
@@ -1589,7 +1633,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       state.toggleTheaterMode();
     }
     await state.stopStream();
-    set({ isHomeActive: true });
+    set({ isHomeActive: true, streamOriginCategory: null });
   },
 
   // Navigation actions for deep linking
@@ -1599,6 +1643,28 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setHomeSelectedCategory: (category: TwitchCategory | null) => {
     set({ homeSelectedCategory: category });
+  },
+
+  setStreamOriginCategory: (category: TwitchCategory | null) => {
+    set({ streamOriginCategory: category });
+  },
+
+  setCachedTopGames: (games: TwitchCategory[], cursor: string | null, hasMore: boolean) => {
+    set({ 
+      cachedTopGames: games, 
+      cachedGamesCursor: cursor, 
+      cachedHasMoreGames: hasMore, 
+      cachedTopGamesTimestamp: Date.now() 
+    });
+  },
+
+  appendCachedTopGames: (games: TwitchCategory[], cursor: string | null, hasMore: boolean) => {
+    set((state) => ({
+      cachedTopGames: [...state.cachedTopGames, ...games],
+      cachedGamesCursor: cursor,
+      cachedHasMoreGames: hasMore,
+      cachedTopGamesTimestamp: Date.now()
+    }));
   },
 
   setDropsSearchTerm: (term: string) => {

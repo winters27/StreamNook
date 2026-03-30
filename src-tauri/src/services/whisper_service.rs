@@ -8,7 +8,7 @@ use tokio::sync::RwLock;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 const EVENTSUB_URL: &str = "wss://eventsub.wss.twitch.tv/ws";
-const CLIENT_ID: &str = "1qgws7yzcp21g5ledlzffw3lmqdvie";
+const CLIENT_ID: &str = env!("TWITCH_APP_CLIENT_ID");
 
 #[derive(Debug, Deserialize)]
 struct WebSocketMessage {

@@ -579,7 +579,7 @@ impl BadgeService {
             .http_client
             .post("https://gql.twitch.tv/gql")
             .header("Accept-Language", "en-US")
-            .header("Client-ID", "kimne78kx3ncx6brgo4mv6wki5h1ko")
+            .header("Client-ID", env!("TWITCH_WEB_CLIENT_ID"))
             .json(&vec![request])
             .send()
             .await
@@ -675,7 +675,7 @@ impl BadgeService {
             .http_client
             .post("https://gql.twitch.tv/gql")
             .header("Accept-Language", "en-US")
-            .header("Client-Id", "kimne78kx3ncx6brgo4mv6wki5h1ko")
+            .header("Client-Id", env!("TWITCH_WEB_CLIENT_ID"))
             .header("Authorization", format!("OAuth {}", token))
             .json(&request_body)
             .send()

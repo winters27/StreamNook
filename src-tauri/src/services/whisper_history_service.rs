@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 const GQL_URL: &str = "https://gql.twitch.tv/gql";
-const CLIENT_ID: &str = "kimne78kx3ncx6brgo4mv6wki5h1ko"; // Twitch's first-party client ID
+const CLIENT_ID: &str = env!("TWITCH_WEB_CLIENT_ID"); // Twitch's first-party client ID
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct WhisperThread {

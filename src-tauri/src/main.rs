@@ -277,7 +277,7 @@ fn main() {
 
                 match TwitchService::get_token().await {
                     Ok(token) => {
-                        let client_id = "1qgws7yzcp21g5ledlzffw3lmqdvie".to_string();
+                        let client_id = env!("TWITCH_APP_CLIENT_ID").to_string();
                         match fetch_global_badges(client_id, token).await {
                             Ok(badges) => {
                                 debug!("[Main] Background badge pre-fetch complete: {} badge sets cached", badges.data.len());
@@ -349,6 +349,8 @@ fn main() {
             follow_channel,
             unfollow_channel,
             check_following_status,
+            get_all_followed_channels,
+            get_offline_last_broadcasts,
             verify_token_health,
             force_refresh_token,
             get_twitch_token,

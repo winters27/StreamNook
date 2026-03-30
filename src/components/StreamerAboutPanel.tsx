@@ -91,7 +91,7 @@ const PanelCard = memo(({ panel }: { panel: ChannelPanelType }) => {
             e.preventDefault();
             invoke('open_browser_url', { url: panel.link_url });
           }}
-          className="block relative group rounded-lg overflow-hidden"
+          className="block relative group rounded-lg overflow-hidden mb-3 break-inside-avoid"
         >
           {img}
           <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors flex items-center justify-center">
@@ -100,7 +100,7 @@ const PanelCard = memo(({ panel }: { panel: ChannelPanelType }) => {
         </a>
       );
     }
-    return <div className="rounded-lg overflow-hidden">{img}</div>;
+    return <div className="rounded-lg overflow-hidden mb-3 break-inside-avoid">{img}</div>;
   }
 
   const Wrapper = hasLink ? 'a' : 'div';
@@ -117,7 +117,7 @@ const PanelCard = memo(({ panel }: { panel: ChannelPanelType }) => {
   return (
     <Wrapper
       {...wrapperProps}
-      className={`glass-panel rounded-lg overflow-hidden border border-borderSubtle/30 transition-all duration-200 block ${
+      className={`glass-panel rounded-lg overflow-hidden border border-borderSubtle/30 transition-all duration-200 block mb-3 break-inside-avoid ${
         hasLink ? 'cursor-pointer hover:border-accent/40 hover:bg-white/[0.02] group' : ''
       }`}
     >
@@ -191,7 +191,7 @@ const LoadingSkeleton = () => (
 
 // Empty state
 const EmptyState = () => (
-  <div className="flex flex-col items-center justify-center h-full p-8 text-center gap-3">
+  <div className="flex-1 flex flex-col items-center justify-center p-8 text-center gap-3 min-h-[50vh]">
     <div className="w-12 h-12 rounded-full bg-glass/30 flex items-center justify-center">
       <Users size={20} className="text-textSecondary/60" />
     </div>
@@ -206,9 +206,10 @@ const EmptyState = () => (
 
 interface StreamerAboutPanelProps {
   channelLogin: string;
+  hideHero?: boolean;
 }
 
-const StreamerAboutPanel = memo(({ channelLogin }: StreamerAboutPanelProps) => {
+const StreamerAboutPanel = memo(({ channelLogin, hideHero }: StreamerAboutPanelProps) => {
   const [aboutData, setAboutData] = useState<ChannelAboutData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -261,38 +262,44 @@ const StreamerAboutPanel = memo(({ channelLogin }: StreamerAboutPanelProps) => {
         {isLoading && <LoadingSkeleton />}
 
         {error && (
-          <div className="p-4 text-center">
-            <p className="text-xs text-red-400/80">Failed to load channel info</p>
+          <div className="flex-1 flex flex-col items-center justify-center p-8 text-center gap-3 min-h-[50vh]">
+            <div className="w-12 h-12 rounded-full bg-red-500/10 flex items-center justify-center">
+              <Users size={20} className="text-red-400/60" />
+            </div>
+            <p className="text-sm text-red-400/80">Failed to load channel info</p>
+            <p className="text-xs text-textSecondary/60">The broadcaster might not exist or the channel is banned.</p>
           </div>
         )}
 
         {isEmpty && <EmptyState />}
 
-        {!isLoading && !error && aboutData && !isEmpty && (
+        {!isLoading && !error && aboutData && (
           <div className="p-3 space-y-3">
             {/* Hero Section — Avatar, name, followers */}
-            <div className="flex items-center gap-3">
-              {aboutData.profile_image_url && (
-                <img
-                  src={aboutData.profile_image_url}
-                  alt={aboutData.display_name || channelLogin}
-                  className="w-14 h-14 rounded-full object-cover ring-2 ring-borderSubtle/40 flex-shrink-0"
-                />
-              )}
-              <div className="min-w-0 flex-1">
-                <h3 className="text-base font-bold text-textPrimary truncate">
-                  {aboutData.display_name || channelLogin}
-                </h3>
-                {aboutData.follower_count != null && (
-                  <div className="flex items-center gap-1.5 mt-0.5">
-                    <Users size={11} className="text-textSecondary/70" />
-                    <span className="text-xs text-textSecondary">
-                      {formatFollowers(aboutData.follower_count)} followers
-                    </span>
-                  </div>
+            {!hideHero && (
+              <div className="flex items-center gap-3">
+                {aboutData.profile_image_url && (
+                  <img
+                    src={aboutData.profile_image_url}
+                    alt={aboutData.display_name || channelLogin}
+                    className="w-14 h-14 rounded-full object-cover ring-2 ring-borderSubtle/40 flex-shrink-0"
+                  />
                 )}
+                <div className="min-w-0 flex-1">
+                  <h3 className="text-base font-bold text-textPrimary truncate">
+                    {aboutData.display_name || channelLogin}
+                  </h3>
+                  {aboutData.follower_count != null && (
+                    <div className="flex items-center gap-1.5 mt-0.5">
+                      <Users size={11} className="text-textSecondary/70" />
+                      <span className="text-xs text-textSecondary">
+                        {formatFollowers(aboutData.follower_count)} followers
+                      </span>
+                    </div>
+                  )}
+                </div>
               </div>
-            </div>
+            )}
 
             {/* Bio Description */}
             {aboutData.description && (
@@ -303,7 +310,7 @@ const StreamerAboutPanel = memo(({ channelLogin }: StreamerAboutPanelProps) => {
 
             {/* Social Links */}
             {aboutData.social_links.length > 0 && (
-              <div className="space-y-1">
+              <div className="flex flex-wrap gap-2">
                 {aboutData.social_links.map((link, i) => (
                   <Tooltip key={i} content={link.url} side="top">
                     <a
@@ -314,7 +321,7 @@ const StreamerAboutPanel = memo(({ channelLogin }: StreamerAboutPanelProps) => {
                         e.preventDefault();
                         invoke('open_browser_url', { url: link.url });
                       }}
-                      className="flex items-center gap-2.5 px-3 py-2 rounded-lg glass-panel border border-borderSubtle/20 text-textSecondary hover:text-textPrimary hover:border-accent/30 hover:bg-white/[0.03] transition-all duration-200 group"
+                      className="inline-flex items-center gap-2.5 px-3 py-2 rounded-lg glass-panel border border-borderSubtle/20 text-textSecondary hover:text-textPrimary hover:border-accent/30 hover:bg-white/[0.03] transition-all duration-200 group flex-auto min-w-[140px] max-w-full sm:max-w-[240px]"
                     >
                       <span className="text-textSecondary/70 group-hover:text-accent transition-colors flex-shrink-0">
                         {getSocialSvg(link.name)}
@@ -334,7 +341,7 @@ const StreamerAboutPanel = memo(({ channelLogin }: StreamerAboutPanelProps) => {
 
             {/* Panel Cards */}
             {aboutData.panels.length > 0 && (
-              <div className="space-y-2">
+              <div className="columns-1 sm:columns-[320px] gap-3 mt-4">
                 {aboutData.panels.map((panel) => (
                   <PanelCard key={panel.id} panel={panel} />
                 ))}

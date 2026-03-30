@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 // Use Twitch Android app client ID for GQL operations
-const ANDROID_CLIENT_ID: &str = "kd1unb4b3q4t58fwlpcbzcbnm76a8fp";
+const ANDROID_CLIENT_ID: &str = env!("TWITCH_ANDROID_CLIENT_ID");
 const CLIENT_URL: &str = "https://www.twitch.tv";
 
 // GQL hashes for resub operations

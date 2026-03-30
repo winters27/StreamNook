@@ -15,11 +15,11 @@ use uuid::Uuid;
 
 // Use Twitch ANDROID APP client ID for GQL operations (required for drops API access)
 // This is what TwitchDropsMiner uses - it works with NO SCOPES
-const CLIENT_ID: &str = "kd1unb4b3q4t58fwlpcbzcbnm76a8fp";
+const CLIENT_ID: &str = env!("TWITCH_ANDROID_CLIENT_ID");
 const CLIENT_URL: &str = "https://www.twitch.tv";
 
 // Your app's client ID (for reference - used for other Helix API calls)
-const APP_CLIENT_ID: &str = "1qgws7yzcp21g5ledlzffw3lmqdvie";
+const APP_CLIENT_ID: &str = env!("TWITCH_APP_CLIENT_ID");
 
 #[derive(Debug, Deserialize)]
 struct GraphQLResponse<T> {

@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 // Use Twitch Android app client ID for GQL operations
-const ANDROID_CLIENT_ID: &str = "kd1unb4b3q4t58fwlpcbzcbnm76a8fp";
+const ANDROID_CLIENT_ID: &str = env!("TWITCH_ANDROID_CLIENT_ID");
 const CLIENT_URL: &str = "https://www.twitch.tv";
 
 // GQL hash for RewardList query
@@ -119,7 +119,7 @@ struct ShareMilestoneError {
 // HELPERS
 // ============================================================================
 
-const WEB_CLIENT_ID: &str = "kimne78kx3ncx6brgo4mv6wki5h1ko";
+const WEB_CLIENT_ID: &str = env!("TWITCH_WEB_CLIENT_ID");
 
 /// Create headers for GQL requests using the Web Client ID
 fn create_web_gql_headers(token: &str) -> HeaderMap {

@@ -1,8 +1,8 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { useAppStore, HomeTab } from '../stores/AppStore';
 import { createPortal } from 'react-dom';
-import { Search, ArrowLeft, Heart, Maximize2, X, Gift, Pickaxe, LayoutGrid, Flame, ArrowUpRight, Undo2 } from 'lucide-react';
-import { motion, LayoutGroup } from 'framer-motion';
+import { Search, ArrowLeft, Heart, Maximize2, X, Gift, Pickaxe, LayoutGrid, Flame, ArrowUpRight, Undo2, LogOut, User, Loader2 } from 'lucide-react';
+import { motion, LayoutGroup, AnimatePresence } from 'framer-motion';
 import { usemultiNookStore } from '../stores/multiNookStore';
 
 import { invoke } from '@tauri-apps/api/core';
@@ -13,7 +13,6 @@ import { useContextMenuStore } from '../stores/contextMenuStore';
 import { Tooltip } from './ui/Tooltip';
 
 import { Logger } from '../utils/logger';
-
 // Types for drops data
 interface DropCampaign {
     id: string;
@@ -247,7 +246,7 @@ const QuickAddButton = ({ stream }: { stream: TwitchStream }) => {
             className="absolute -top-2.5 -right-2.5 z-20 opacity-0 group-hover:opacity-100 transition-all duration-300 scale-90 group-hover:scale-100 group-hover:-translate-y-1 group-hover:translate-x-1"
             onMouseEnter={handleHover}    
         >
-            <Tooltip content="Quick Add to MultiNook" side="top">
+            <Tooltip content="Add to MultiNook" side="top">
                 <button
                     ref={buttonRef}
                     onClick={(e) => {
@@ -267,6 +266,8 @@ const QuickAddButton = ({ stream }: { stream: TwitchStream }) => {
         </div>
     );
 };
+
+
 
 const Home = () => {
     const {
@@ -290,11 +291,62 @@ const Home = () => {
         homeSelectedCategory,
         setHomeActiveTab,
         setHomeSelectedCategory,
+        // Category cache
+        cachedTopGames,
+        cachedGamesCursor,
+        cachedHasMoreGames,
+        cachedTopGamesTimestamp,
+        setCachedTopGames,
+        appendCachedTopGames,
         // Hype Train status for stream badges
         activeHypeTrainChannels,
         refreshHypeTrainStatuses,
         watchStreaks,
+        offlineFollowedChannels,
+        setOfflineFollowedChannels,
+        setProfileModalUser,
     } = useAppStore();
+
+    const [isLoadingOfflineChannels, setIsLoadingOfflineChannels] = useState(false);
+    const [offlineChannelsFetched, setOfflineChannelsFetched] = useState(false);
+    const [offlineLastBroadcasts, setOfflineLastBroadcasts] = useState<Record<string, string | null>>({});
+
+    // Fetch offline followed channels when viewing the following tab
+    useEffect(() => {
+        if (homeActiveTab === 'following' && isAuthenticated && !offlineChannelsFetched && !isLoadingOfflineChannels) {
+            const fetchOfflineChannels = async () => {
+                setIsLoadingOfflineChannels(true);
+                try {
+                    const result = await invoke('get_all_followed_channels', { limit: 100, cursor: null }) as [TwitchStream[], string | null];
+                    const channels = result[0];
+                    
+                    // Filter out already live ones (that are in followedStreams)
+                    const liveIds = new Set(followedStreams.map(s => s.user_id));
+                    const offline = channels.filter(c => !liveIds.has(c.user_id));
+                    
+                    setOfflineFollowedChannels(offline);
+                    setOfflineChannelsFetched(true);
+
+                    // Fetch "last broadcast" metadata natively via GQL
+                    if (offline.length > 0) {
+                        try {
+                            const userIds = offline.map(c => c.user_id);
+                            const broadcasts = await invoke('get_offline_last_broadcasts', { userIds }) as Record<string, string | null>;
+                            Logger.info('Fetched offline last broadcasts:', broadcasts);
+                            setOfflineLastBroadcasts(prev => ({ ...prev, ...broadcasts }));
+                        } catch(e) {
+                            Logger.error('Failed to fetch offline last broadcasts:', e);
+                        }
+                    }
+                } catch (e) {
+                    Logger.error('Failed to fetch offline followed channels:', e);
+                } finally {
+                    setIsLoadingOfflineChannels(false);
+                }
+            };
+            fetchOfflineChannels();
+        }
+    }, [homeActiveTab, isAuthenticated, followedStreams, offlineChannelsFetched, isLoadingOfflineChannels, setOfflineFollowedChannels]);
 
     // MultiNook ghost card state
     const multiNookSlots = usemultiNookStore(s => s.slots);
@@ -321,10 +373,10 @@ const Home = () => {
     const [searchQuery, setSearchQuery] = useState('');
     const [searchResults, setSearchResults] = useState<TwitchStream[]>([]);
     const [isSearching, setIsSearching] = useState(false);
-    const [topGames, setTopGames] = useState<TwitchCategory[]>([]);
+    const topGames = cachedTopGames;
     const [isLoadingGames, setIsLoadingGames] = useState(false);
-    const [gamesCursor, setGamesCursor] = useState<string | null>(null);
-    const [hasMoreGames, setHasMoreGames] = useState(true);
+    const gamesCursor = cachedGamesCursor;
+    const hasMoreGames = cachedHasMoreGames;
     const [isLoadingMoreGames, setIsLoadingMoreGames] = useState(false);
     const [categoryStreams, setCategoryStreams] = useState<TwitchStream[]>([]);
     const [isLoadingCategoryStreams, setIsLoadingCategoryStreams] = useState(false);
@@ -385,24 +437,32 @@ const Home = () => {
         }
     }, [isSearchExpanded]);
 
-    const loadTopGames = async () => {
-        setIsLoadingGames(true);
-        setGamesCursor(null);
-        setHasMoreGames(true);
+    const loadTopGames = async (background = false) => {
+        if (!background) {
+            setIsLoadingGames(true);
+        }
         try {
             const [games, cursor] = await invoke('get_top_games_paginated', {
                 cursor: null,
                 limit: 40
             }) as [TwitchCategory[], string | null];
-            setTopGames(games);
-            setGamesCursor(cursor);
-            setHasMoreGames(!!cursor);
+            
+            if (background && cachedTopGames.length > 40) {
+                // Preserve scroll-loaded pages: replace only page 1, keep pages 2+
+                const preservedPages = cachedTopGames.slice(40);
+                setCachedTopGames([...games, ...preservedPages], cachedGamesCursor, cachedHasMoreGames);
+            } else {
+                setCachedTopGames(games, cursor, !!cursor);
+            }
         } catch (e) {
             Logger.error('Failed to load top games:', e);
-            setTopGames([]);
-            setHasMoreGames(false);
+            if (!background) {
+                setCachedTopGames([], null, false);
+            }
         } finally {
-            setIsLoadingGames(false);
+            if (!background) {
+                setIsLoadingGames(false);
+            }
         }
     };
 
@@ -415,15 +475,13 @@ const Home = () => {
                 cursor: gamesCursor,
                 limit: 40
             }) as [TwitchCategory[], string | null];
-            setTopGames(prev => [...prev, ...games]);
-            setGamesCursor(cursor);
-            setHasMoreGames(!!cursor);
+            appendCachedTopGames(games, cursor, !!cursor);
         } catch (e) {
             Logger.error('Failed to load more top games:', e);
         } finally {
             setIsLoadingMoreGames(false);
         }
-    }, [hasMoreGames, isLoadingMoreGames, gamesCursor]);
+    }, [hasMoreGames, isLoadingMoreGames, gamesCursor, appendCachedTopGames]);
 
     // Load active drops campaigns and build maps for both game_id and game_name lookup
     const loadActiveDrops = async () => {
@@ -631,12 +689,20 @@ const Home = () => {
         }
     };
 
+    const CATEGORY_CACHE_TTL = 60_000; // 60 seconds
+
     const handleBrowseClick = () => {
         setActiveTab('browse');
         setIsSearchExpanded(false);
+        
+        const isCacheStale = Date.now() - cachedTopGamesTimestamp > CATEGORY_CACHE_TTL;
+        
         if (topGames.length === 0) {
-            loadTopGames();
+            loadTopGames(false);
+        } else if (isCacheStale) {
+            loadTopGames(true);
         }
+        
         // Also load drops data
         if (dropsGameIds.size === 0) {
             loadActiveDrops();
@@ -684,17 +750,55 @@ const Home = () => {
         }
     };
 
-    // Effect to handle navigation from badge overlay (category with empty ID)
+    // Effect to handle category view re-mount or navigation from badge overlay
     useEffect(() => {
-        if (activeTab === 'category' && selectedCategory && !selectedCategory.id && selectedCategory.name) {
-            loadCategoryStreamsByName(selectedCategory.name);
+        if (activeTab === 'category' && selectedCategory) {
+            if (selectedCategory.id) {
+                // Normal category — re-fetch if streams are empty (e.g., after remount from watching a stream)
+                if (categoryStreams.length === 0 && !isLoadingCategoryStreams) {
+                    handleCategoryClick(selectedCategory);
+                }
+            } else if (selectedCategory.name) {
+                // Badge overlay navigation — category has no ID, load by name
+                loadCategoryStreamsByName(selectedCategory.name);
+            }
         }
+    // categoryStreams.length intentionally excluded to avoid re-fetch loops after legitimate empty results
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [activeTab, selectedCategory]);
+
+    // Effect to auto-load categories when browse tab is active but topGames were lost (e.g., remount)
+    useEffect(() => {
+        const isCacheStale = Date.now() - cachedTopGamesTimestamp > CATEGORY_CACHE_TTL;
+        if (activeTab === 'browse' && topGames.length === 0 && !isLoadingGames) {
+            loadTopGames(false);
+        } else if (activeTab === 'browse' && isCacheStale && !isLoadingGames) {
+            loadTopGames(true);
+        }
+        if (activeTab === 'browse' && dropsGameIds.size === 0) {
+            loadActiveDrops();
+        }
+    // topGames.length intentionally excluded to avoid re-fetch loops
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [activeTab]);
 
     const handleBackToBrowse = () => {
         setActiveTab('browse');
         setSelectedCategory(null);
         setCategoryStreams([]);
+        
+        const isCacheStale = Date.now() - cachedTopGamesTimestamp > CATEGORY_CACHE_TTL;
+        
+        // Re-fetch categories if lost on remount
+        if (topGames.length === 0) {
+            loadTopGames(false);
+        } else if (isCacheStale) {
+            loadTopGames(true);
+        }
+        
+        if (dropsGameIds.size === 0) {
+            loadActiveDrops();
+        }
     };
 
     const handleSearch = async () => {
@@ -719,6 +823,10 @@ const Home = () => {
         } else if (e.key === 'Escape') {
             setIsSearchExpanded(false);
             setSearchQuery('');
+            setSearchResults([]);
+            if (activeTab === 'search') {
+                setActiveTab(isAuthenticated ? 'following' : 'recommended');
+            }
         }
     };
 
@@ -731,6 +839,10 @@ const Home = () => {
     };
 
     const handleStreamClick = (stream: TwitchStream) => {
+        // Track which category this stream was started from (if any)
+        useAppStore.getState().setStreamOriginCategory(
+            activeTab === 'category' && selectedCategory ? selectedCategory : null
+        );
         startStream(stream.user_login, stream);
     };
 
@@ -808,7 +920,9 @@ const Home = () => {
             ? recommendedStreams
             : activeTab === 'category'
                 ? categoryStreams
-                : searchResults;
+                : searchResults.filter(s => s.viewer_count > 0 || s.is_live);
+
+    const offlineSearchResults = activeTab === 'search' ? searchResults.filter(s => s.viewer_count === 0 && !s.is_live) : [];
 
     return (
         <div className="flex flex-col h-full">
@@ -850,7 +964,7 @@ const Home = () => {
 
                 {/* Centered Navigation - All tabs and search together */}
                 {!(activeTab === 'category' && selectedCategory) && (
-                    <div className="relative flex items-center glass-panel px-1.5 py-1 rounded-xl">
+                    <div className="relative flex items-center glass-panel px-1.5 py-1 !rounded-xl">
                         {/* Navigation buttons - fade out when search is expanded */}
                         <LayoutGroup>
                         <div className={`flex items-center gap-1 transition-opacity duration-300 ${isSearchExpanded ? 'opacity-0' : 'opacity-100'}`}>
@@ -948,50 +1062,62 @@ const Home = () => {
                         </LayoutGroup>
 
                         {/* Search overlay - expands from right to cover buttons */}
-                        <div
-                            className={`absolute inset-0 flex items-center rounded-xl transition-all duration-300 ease-out bg-surface/30 backdrop-blur-3xl ${isSearchExpanded
-                                ? 'opacity-100 visible'
-                                : 'opacity-0 invisible pointer-events-none'
-                                }`}
+                        <motion.div
+                            initial={false}
+                            animate={{ 
+                                clipPath: isSearchExpanded 
+                                    ? 'inset(0% 0% 0% 0% round 12px)' 
+                                    : 'inset(0% 0% 0% 100% round 12px)',
+                                opacity: isSearchExpanded ? 1 : 0
+                            }}
+                            transition={{ type: "spring", stiffness: 350, damping: 30 }}
+                            className="absolute -inset-[1px] flex items-center glass-input !rounded-xl z-20"
+                            style={{ pointerEvents: isSearchExpanded ? 'auto' : 'none' }}
                         >
-                            <div className="flex items-center gap-1.5 w-full px-1.5 py-1">
-                                <div className="flex-1 flex items-center glass-panel rounded-lg shadow-sm border border-transparent">
-                                    <input
-                                        ref={searchInputRef}
-                                        type="text"
-                                        value={searchQuery}
-                                        onChange={(e) => setSearchQuery(e.target.value)}
-                                        onKeyDown={handleSearchKeyPress}
-                                        placeholder="Search channels..."
-                                        className="flex-1 bg-transparent text-white text-sm px-3 py-1.5 focus:outline-none placeholder:text-white/60"
-                                    />
-                                    {/* Toggle button: X when empty, Search when has text */}
-                                    <Tooltip content={searchQuery.trim() ? "Search" : "Close"} side="top">
+                            <input
+                                ref={searchInputRef}
+                                type="text"
+                                value={searchQuery}
+                                onChange={(e) => setSearchQuery(e.target.value)}
+                                onKeyDown={handleSearchKeyPress}
+                                onBlur={() => {
+                                    if (!searchQuery.trim()) {
+                                        setIsSearchExpanded(false);
+                                    }
+                                }}
+                                className="flex-1 bg-transparent text-center text-white text-sm px-10 py-1.5 focus:outline-none h-full w-full"
+                            />
+
+                            {/* Close button - ONLY visible when text exists */}
+                            <AnimatePresence>
+                            {searchQuery.trim() && (
+                                <motion.div
+                                    initial={{ opacity: 0, scale: 0.8 }}
+                                    animate={{ opacity: 1, scale: 1 }}
+                                    exit={{ opacity: 0, scale: 0.8 }}
+                                    transition={{ duration: 0.15 }}
+                                    className="absolute right-1.5"
+                                >
+                                    <Tooltip content="Close Search" side="top">
                                     <button
                                         onClick={() => {
-                                            if (searchQuery.trim()) {
-                                                handleSearch();
-                                            } else {
-                                                setIsSearchExpanded(false);
-                                                setSearchQuery('');
+                                            setIsSearchExpanded(false);
+                                            setSearchQuery('');
+                                            setSearchResults([]);
+                                            if (activeTab === 'search') {
+                                                setActiveTab(isAuthenticated ? 'following' : 'recommended');
                                             }
                                         }}
                                         disabled={isSearching}
-                                        className={`p-1.5 mr-1 rounded transition-all flex-shrink-0 ${searchQuery.trim()
-                                            ? 'text-white hover:bg-white/20'
-                                            : 'text-white/60 hover:text-white hover:bg-white/10'
-                                            } ${isSearching ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+                                        className={`p-1.5 rounded-full transition-all text-white/60 hover:text-white hover:bg-white/10 ${isSearching ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
                                     >
-                                        {searchQuery.trim() ? (
-                                            <Search size={16} className={isSearching ? 'animate-pulse' : ''} />
-                                        ) : (
-                                            <X size={16} />
-                                        )}
+                                        <X size={16} />
                                     </button>
                                     </Tooltip>
-                                </div>
-                            </div>
-                        </div>
+                                </motion.div>
+                            )}
+                            </AnimatePresence>
+                        </motion.div>
                     </div>
                 )}
 
@@ -1020,11 +1146,8 @@ const Home = () => {
                 {activeTab === 'browse' && (
                     <>
                         {isLoadingGames ? (
-                            <div className="flex items-center justify-center h-full">
-                                <div className="text-center">
-                                    <div className="animate-spin rounded-full h-12 w-12 border-4 border-glass border-t-accent mx-auto mb-3" />
-                                    <p className="text-textSecondary text-xs">Loading categories...</p>
-                                </div>
+                            <div className="relative h-full min-h-[400px]">
+                                <LoadingWidget useFunnyMessages={false} message="Loading categories..." />
                             </div>
                         ) : topGames.length === 0 ? (
                             <div className="flex items-center justify-center h-full">
@@ -1216,14 +1339,6 @@ const Home = () => {
                                                             />
                                                             <div className="absolute top-1.5 left-1.5 flex items-center gap-1">
                                                                 <div className="live-dot text-xs px-1.5 py-0.5">LIVE</div>
-                                                                {watchStreaks[stream.user_id] > 0 && (
-                                                                    <Tooltip content={`${watchStreaks[stream.user_id]} Stream Watch Streak`} side="top">
-                                                                    <div className="flex items-center gap-1 font-bold text-[10px] leading-tight px-1.5 py-0.5 rounded shadow-[0_0_10px_rgba(245,158,11,0.25)] bg-amber-500/10 text-amber-400 border border-amber-500/30 backdrop-blur-md">
-                                                                        <Flame size={10} className="stroke-[2.5]" />
-                                                                        <span>{watchStreaks[stream.user_id]}</span>
-                                                                    </div>
-                                                                    </Tooltip>
-                                                                )}
                                                                 {hasDrops && (
                                                                     <div className="drops-badge-glass">
                                                                         <Gift size={10} />
@@ -1242,6 +1357,16 @@ const Home = () => {
                                                             <div className="absolute bottom-1.5 left-1.5 px-2 py-0.5 glass-badge text-white text-xs font-medium rounded">
                                                                 {stream.viewer_count.toLocaleString()} viewers
                                                             </div>
+                                                            {watchStreaks[stream.user_id] > 0 && (
+                                                                <div className="absolute bottom-1.5 right-1.5">
+                                                                    <Tooltip content={`${watchStreaks[stream.user_id]} Stream Watch Streak`} side="top">
+                                                                    <div className="flex items-center gap-1 font-bold text-[10px] leading-tight px-1.5 py-0.5 rounded shadow-[0_0_10px_rgba(245,158,11,0.25)] bg-amber-500/10 text-amber-400 border border-amber-500/30 backdrop-blur-md">
+                                                                        <Flame size={10} className="stroke-[2.5]" />
+                                                                        <span>{watchStreaks[stream.user_id]}</span>
+                                                                    </div>
+                                                                    </Tooltip>
+                                                                </div>
+                                                            )}
                                                         </div>
                                                         <div className="space-y-0.5">
                                                             <h3 className="text-textPrimary font-medium text-sm line-clamp-1 group-hover:text-accent transition-colors">
@@ -1298,7 +1423,7 @@ const Home = () => {
                                     </button>
                                 </div>
                             </div>
-                        ) : displayStreams.length === 0 ? (
+                        ) : displayStreams.length === 0 && (activeTab !== 'search' || offlineSearchResults.length === 0) ? (
                             <div className="flex items-center justify-center h-full">
                                 <div className="text-center glass-panel p-6 max-w-sm">
                                     <h3 className="text-base font-bold text-textPrimary mb-1">
@@ -1335,8 +1460,9 @@ const Home = () => {
                             </div>
                         ) : (
                             <>
-                                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-3">
-                                    {displayStreams.map(stream => {
+                                {displayStreams.length > 0 && (
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-3">
+                                        {displayStreams.map(stream => {
                                         const isFavorite = isFavoriteStreamer(stream.user_id);
                                         // Check if stream's game has active drops
                                         const streamDropsCampaign = stream.game_name ? dropsGameNames.get(stream.game_name.toLowerCase()) : undefined;
@@ -1408,14 +1534,6 @@ const Home = () => {
                                                                 />
                                                                 <div className="absolute top-1.5 left-1.5 flex items-center gap-1">
                                                                     <div className="live-dot text-xs px-1.5 py-0.5">LIVE</div>
-                                                                    {watchStreaks[stream.user_id] > 0 && (
-                                                                        <Tooltip content={`${watchStreaks[stream.user_id]} Stream Watch Streak`} side="top">
-                                                                        <div className="flex items-center gap-1 font-bold text-[10px] leading-tight px-1.5 py-0.5 rounded shadow-[0_0_10px_rgba(245,158,11,0.25)] bg-amber-500/10 text-amber-400 border border-amber-500/30 backdrop-blur-md">
-                                                                            <Flame size={10} className="stroke-[2.5]" />
-                                                                            <span>{watchStreaks[stream.user_id]}</span>
-                                                                        </div>
-                                                                        </Tooltip>
-                                                                    )}
                                                                     {hasDrops && (
                                                                         <div className="drops-badge-glass">
                                                                             <Gift size={10} />
@@ -1434,6 +1552,16 @@ const Home = () => {
                                                                 <div className="absolute bottom-1.5 left-1.5 px-2 py-0.5 glass-badge text-white text-xs font-medium rounded">
                                                                     {stream.viewer_count.toLocaleString()} viewers
                                                                 </div>
+                                                                {watchStreaks[stream.user_id] > 0 && (
+                                                                    <div className="absolute bottom-1.5 right-1.5">
+                                                                        <Tooltip content={`${watchStreaks[stream.user_id]} Stream Watch Streak`} side="top">
+                                                                        <div className="flex items-center gap-1 font-bold text-[10px] leading-tight px-1.5 py-0.5 rounded shadow-[0_0_10px_rgba(245,158,11,0.25)] bg-amber-500/10 text-amber-400 border border-amber-500/30 backdrop-blur-md">
+                                                                            <Flame size={10} className="stroke-[2.5]" />
+                                                                            <span>{watchStreaks[stream.user_id]}</span>
+                                                                        </div>
+                                                                        </Tooltip>
+                                                                    </div>
+                                                                )}
                                                             </div>
                                                             <div className="flex items-end justify-between mt-1">
                                                                 <div className="space-y-0.5 flex-1 min-w-0 pr-2 pb-1">
@@ -1467,7 +1595,7 @@ const Home = () => {
                                                                             fill={isFavorite ? "url(#glass-heart-fill)" : "none"}
                                                                             stroke={isFavorite ? "url(#glass-heart-stroke)" : "currentColor"}
                                                                             strokeWidth={isFavorite ? 1.5 : 2}
-                                                                            className={`transition-all duration-300 ${isFavorite ? 'drop-shadow-[0_4px_8px_rgba(236,72,153,0.5)]' : 'text-textSecondary hover:text-white'} ${animatingHearts.has(stream.user_id) ? 'animate-heart-break' : ''}`}
+                                                                            className={`transition-all duration-300 ${isFavorite ? 'drop-shadow-[0_4px_8px_rgba(236,72,153,0.5)]' : 'text-textSecondary hover:text-white opacity-0 group-hover:opacity-100'} ${animatingHearts.has(stream.user_id) ? 'animate-heart-break' : ''}`}
                                                                         />
                                                                     </button>
                                                                     </Tooltip>
@@ -1479,7 +1607,112 @@ const Home = () => {
                                             );
                                         })();
                                     })}
-                                </div>
+                                    </div>
+                                )}
+
+                                {/* Offline Followed Channels Section */}
+                                {activeTab === 'following' && offlineFollowedChannels.length > 0 && (
+                                    <div className={displayStreams.length > 0 ? "mt-6 pt-4 relative" : "pt-2"}>
+                                        {displayStreams.length > 0 && (
+                                            <div className="absolute top-0 left-0 right-0 h-px bg-borderSubtle/30" />
+                                        )}
+                                        <div className="col-span-full pb-3 px-2 flex justify-between items-center">
+                                            <h3 className="text-sm font-semibold text-textSecondary uppercase tracking-wide flex items-center gap-2">
+                                                <User size={14} className="text-textSecondary/70" />
+                                                Offline Channels
+                                            </h3>
+                                        </div>
+                                        <div className="flex flex-wrap gap-3 px-2 pb-6 relative z-0 mt-2">
+                                            {[...offlineFollowedChannels].sort((a, b) => {
+                                                const timeA = offlineLastBroadcasts[a.id] ? new Date(offlineLastBroadcasts[a.id]!).getTime() : 0;
+                                                const timeB = offlineLastBroadcasts[b.id] ? new Date(offlineLastBroadcasts[b.id]!).getTime() : 0;
+                                                return timeB - timeA;
+                                            }).map((user) => {
+                                                const lastOnline = offlineLastBroadcasts[user.id];
+                                                let relativeTimeResult = '';
+                                                if (lastOnline) {
+                                                    const date = new Date(lastOnline);
+                                                    if (!isNaN(date.getTime())) {
+                                                        const diffInSeconds = Math.floor((new Date().getTime() - date.getTime()) / 1000);
+                                                        if (diffInSeconds < 60) relativeTimeResult = `${diffInSeconds}s ago`;
+                                                        else if (diffInSeconds < 3600) relativeTimeResult = `${Math.floor(diffInSeconds / 60)}m ago`;
+                                                        else if (diffInSeconds < 86400) relativeTimeResult = `${Math.floor(diffInSeconds / 3600)}h ago`;
+                                                        else if (diffInSeconds < 2592000) relativeTimeResult = `${Math.floor(diffInSeconds / 86400)}d ago`;
+                                                        else if (diffInSeconds < 31536000) relativeTimeResult = `${Math.floor(diffInSeconds / 2592000)}mo ago`;
+                                                        else relativeTimeResult = `${Math.floor(diffInSeconds / 31536000)}y ago`;
+                                                    }
+                                                }
+
+                                                return (
+                                                    <button
+                                                        key={user.id}
+                                                        onClick={() => setProfileModalUser(user)}
+                                                        className="flex items-center gap-3 px-3 py-2 rounded-xl glass-panel hover:bg-white/[0.05] border border-borderSubtle hover:border-accent/40 transition-all text-left shadow-sm group w-[180px] sm:w-[200px]"
+                                                    >
+                                                        <div className="w-10 h-10 rounded-full bg-glass flex items-center justify-center overflow-hidden ring-1 ring-borderSubtle group-hover:ring-accent/40 flex-shrink-0">
+                                                            {user.thumbnail_url ? (
+                                                                <img src={user.thumbnail_url} alt={user.user_name} className="w-full h-full object-cover" />
+                                                            ) : (
+                                                                <User size={14} className="text-textSecondary" />
+                                                            )}
+                                                        </div>
+                                                        <div className="flex-1 min-w-0">
+                                                            <h4 className="text-sm font-semibold text-textPrimary truncate group-hover:text-accent transition-colors">
+                                                                {user.user_name}
+                                                            </h4>
+                                                            <p className="text-[10px] text-textSecondary truncate">
+                                                                {relativeTimeResult ? `Last live ${relativeTimeResult}` : 'Offline'}
+                                                            </p>
+                                                        </div>
+                                                    </button>
+                                                );
+                                            })}
+                                            {isLoadingOfflineChannels && (
+                                                <div className="flex items-center justify-center p-2 w-[180px] sm:w-[200px]">
+                                                    <Loader2 size={16} className="animate-spin text-accent" />
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* Offline Users Search Section */}
+                                {activeTab === 'search' && offlineSearchResults.length > 0 && (
+                                    <div className={displayStreams.length > 0 ? "mt-4 border-t border-borderSubtle/30 pt-4" : "pt-2"}>
+                                        <div className="col-span-full pb-3 px-2">
+                                            <h3 className="text-sm font-semibold text-textSecondary uppercase tracking-wide flex items-center gap-2">
+                                                <User size={14} className="text-textSecondary/70" />
+                                                Offline Channels
+                                            </h3>
+                                        </div>
+                                        <div className="flex flex-wrap gap-3 px-2 pb-6 relative z-0">
+                                            {offlineSearchResults.map((user) => (
+                                                <button
+                                                    key={user.id}
+                                                    onClick={() => setProfileModalUser(user)}
+                                                    className="flex items-center gap-3 px-3 py-2 rounded-xl glass-panel hover:bg-white/[0.05] border border-borderSubtle hover:border-accent/40 transition-all text-left shadow-sm group w-[180px] sm:w-[200px]"
+                                                >
+                                                    <div className="w-10 h-10 rounded-full bg-glass flex items-center justify-center overflow-hidden ring-1 ring-borderSubtle group-hover:ring-accent/40 flex-shrink-0">
+                                                        {user.thumbnail_url ? (
+                                                            <img src={user.thumbnail_url} alt={user.user_name} className="w-full h-full object-cover" />
+                                                        ) : (
+                                                            <User size={14} className="text-textSecondary" />
+                                                        )}
+                                                    </div>
+                                                    <div className="flex-1 min-w-0">
+                                                        <h4 className="text-sm font-semibold text-textPrimary truncate group-hover:text-accent transition-colors">
+                                                            {user.user_name}
+                                                        </h4>
+                                                        <p className="text-[10px] text-textSecondary truncate">
+                                                            {user.game_name || 'Channel'}
+                                                        </p>
+                                                    </div>
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+
                                 {activeTab === 'recommended' && isLoadingMore && (
                                     <div className="flex justify-center items-center py-6">
                                         <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-accent"></div>

@@ -299,7 +299,7 @@ impl LogService {
     ) -> Result<()> {
         // Get webhook URL from environment variable or settings
         // For now, using the hardcoded URL from the original TS version
-        let webhook_url = "https://ptb.discord.com/api/webhooks/1444242659739697204/GpZDi70IWHCIObS-LOtFr89uU-J8tbnQLG7DRhHACR1Wn-26YchRTPCdWKUYf47zHyv7";
+        let webhook_url = env!("DISCORD_WEBHOOK_URL");
 
         // Build error details
         let error_details = errors

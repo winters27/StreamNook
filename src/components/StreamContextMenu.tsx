@@ -2,13 +2,13 @@ import React, { useEffect, useRef } from 'react';
 import { useContextMenuStore } from '../stores/contextMenuStore';
 import { useAppStore } from '../stores/AppStore';
 import { usemultiNookStore } from '../stores/multiNookStore';
-import { LayoutGrid, Heart, UserPlus, UserMinus, Loader2, Scissors, Copy, ClipboardPaste, Type } from 'lucide-react';
+import { LayoutGrid, Heart, UserPlus, UserMinus, Loader2, Scissors, Copy, ClipboardPaste, Type, User } from 'lucide-react';
 import { Logger } from '../utils/logger';
 import { invoke } from '@tauri-apps/api/core';
 
 export const StreamContextMenu: React.FC = () => {
     const { isOpen, x, y, stream, inputElement, selectionText, menuType, isFollowing, isCheckingFollow, closeMenu, toggleFollow } = useContextMenuStore();
-    const { toggleFavoriteStreamer, isFavoriteStreamer } = useAppStore();
+    const { toggleFavoriteStreamer, isFavoriteStreamer, setProfileModalUser } = useAppStore();
     const { addSlot, slots } = usemultiNookStore();
     
     const menuRef = useRef<HTMLDivElement>(null);
@@ -262,15 +262,25 @@ export const StreamContextMenu: React.FC = () => {
                     e.stopPropagation();
                 }}
             >
-                {/* Header (Stream name for context) */}
-                <div className="px-3 py-2 border-b border-borderSubtle mb-1">
-                    <span className="text-xs font-semibold text-textPrimary truncate block">
-                        {stream.user_name}
-                    </span>
-                    <span className="text-[10px] text-textMuted uppercase tracking-wider block">
-                        Options
-                    </span>
-                </div>
+                {/* Header (View Profile Action) */}
+                <button 
+                    onClick={(e) => {
+                        e.stopPropagation();
+                        setProfileModalUser(stream);
+                        closeMenu();
+                    }}
+                    className="w-full text-left px-3 py-2 border-b border-borderSubtle mb-1 rounded-t-lg hover:bg-glass-hover transition-colors group flex items-center justify-between"
+                >
+                    <div>
+                        <span className="text-xs font-semibold text-textPrimary group-hover:text-[#29b6f6] transition-colors truncate block">
+                            {stream.user_name}
+                        </span>
+                        <span className="text-[10px] text-textMuted uppercase tracking-wider block mt-0.5 group-hover:text-[#29b6f6]/70 transition-colors">
+                            View Profile
+                        </span>
+                    </div>
+                    <User size={14} className="text-textMuted group-hover:text-[#29b6f6] transition-colors" />
+                </button>
 
                 {/* Add to MultiNook */}
                 <button

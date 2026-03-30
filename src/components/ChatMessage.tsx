@@ -32,6 +32,7 @@ interface EmoteSegment {
   bits?: number;
   tier?: string;
   color?: string;
+  isZeroWidth?: boolean;
 }
 
 // Global cache for channel names and profile images to prevent re-fetching and flashing
@@ -303,6 +304,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
             content: seg.content,
             emoteId: seg.emote_id,
             emoteUrl: seg.emote_url,
+            isZeroWidth: seg.is_zero_width,
           };
         } else if (seg.type === 'emoji') {
           return {
@@ -356,6 +358,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
                    content: emote.name,
                    emoteId: emote.id,
                    emoteUrl: emote.url, // The emote object from ChatWidget already has localUrl merged if available
+                   isZeroWidth: emote.isZeroWidth || (emote as any).is_zero_width,
                });
            } else {
                // Parse the word for emojis - this enables iOS-style emoji for optimistic messages
@@ -551,93 +554,161 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
   }, [seventvPaint, parsed.color]);
 
 
-  const renderContent = (segments: EmoteSegment[]) => {
-    return segments.map((segment, index) => {
-      if (segment.type === 'emote') {
-        const emoteUrl = segment.emoteUrl ||
-          (segment.emoteId ? `https://static-cdn.jtvnw.net/emoticons/v2/${segment.emoteId}/default/dark/3.0` : '');
+  const renderSegment = (segment: EmoteSegment, key: string, inGrid: boolean, isOverlay: boolean = false) => {
+    const gridStyle = inGrid ? { gridArea: '1/1' } : {};
+    const marginClass = inGrid ? '' : 'mx-0.5';
+    
+    if (segment.type === 'emote') {
+      const emoteUrl = segment.emoteUrl ||
+        (segment.emoteId ? `https://static-cdn.jtvnw.net/emoticons/v2/${segment.emoteId}/default/dark/3.0` : '');
 
-        // Reactive caching: If we're using a remote URL, queue it for caching
-        // We check if it's NOT a local URL (doesn't start with asset:// or http://asset.localhost)
-        if (emoteUrl && !emoteUrl.startsWith('asset://') && !emoteUrl.includes('asset.localhost') && segment.emoteId) {
-          queueEmoteForCaching(segment.emoteId, emoteUrl);
-        }
-
-        return (
-          <Tooltip key={`${segment.emoteId || segment.content}-${index}`} content={`Right-click to copy: ${segment.content}`} side="top">
-            <img
-              src={emoteUrl}
-              alt={segment.content}
-              loading="lazy"
-              className="inline-block h-7 w-auto max-w-[96px] align-middle mx-0.5 cursor-pointer hover:scale-110 transition-transform crisp-image"
-              referrerPolicy="no-referrer"
-              onContextMenu={(e) => {
-                e.preventDefault();
-                if (onEmoteRightClick) {
-                  onEmoteRightClick(segment.content);
-                }
-              }}
-              onError={(e) => {
-                // Fallback to text if image fails to load
-                e.currentTarget.style.display = 'none';
-                e.currentTarget.insertAdjacentText('afterend', segment.content);
-              }}
-            />
-          </Tooltip>
-        );
+      if (emoteUrl && !emoteUrl.startsWith('asset://') && !emoteUrl.includes('asset.localhost') && segment.emoteId) {
+        queueEmoteForCaching(segment.emoteId, emoteUrl);
       }
 
-      if (segment.type === 'emoji' && segment.emojiUrl) {
-        // Get cached/proxied URL to bypass tracking prevention
-        const emojiSrc = getCachedEmojiUrl(segment.content, segment.emojiUrl);
-        return (
-          <Tooltip key={`emoji-${segment.content}-${index}`} content={segment.content} side="top">
-            <img
-              src={emojiSrc}
-              alt={segment.content}
-              loading="lazy"
-              className="inline h-5 w-5 align-middle mx-0.5 crisp-image"
-              onError={(e) => {
-                // Fallback to native emoji if image fails to load
-                e.currentTarget.style.display = 'none';
-                e.currentTarget.insertAdjacentText('afterend', segment.content);
-              }}
-            />
-          </Tooltip>
-        );
-      }
+      // If it's an overlay (zero-width inside grid), it naturally sits on top and doesn't need negative margins
+      // The grid "place-items-center" handles exact overlaying algorithmically!
+      const overlayClasses = isOverlay ? 'z-10 drop-shadow-[0_0_2px_rgba(0,0,0,0.5)] hover:drop-shadow-[0_0_4px_rgba(234,179,8,0.8)]' : '';
+      const imgClasses = `inline-block h-7 w-auto max-w-[96px] cursor-pointer crisp-image ${inGrid ? '' : 'align-middle'} ${marginClass} hover:scale-110 transition-transform ${overlayClasses}`;
 
-      // Handle cheermote segments (animated bits like Cheer500)
-      if (segment.type === 'cheermote') {
-        const bits = segment.bits ?? 0;
-        return (
-          <Tooltip key={`cheermote-${segment.content}-${index}`} content={`${bits.toLocaleString()} bits`} side="top">
-            <span className="inline-flex items-center gap-0.5 align-middle">
-              <img
-                src={segment.cheermoteUrl}
-                alt={segment.content}
-                loading="lazy"
-                className="inline-block h-7 w-auto align-middle crisp-image"
-                referrerPolicy="no-referrer"
-                onError={(e) => {
-                  // Fallback to text if GIF fails to load
-                  e.currentTarget.style.display = 'none';
-                  e.currentTarget.insertAdjacentText('afterend', segment.content);
-                }}
-              />
-              <span 
-                className="font-bold text-sm" 
-                style={{ color: segment.color ?? '#979797' }}
-              >
-                {bits}
+      const imgElement = (
+        <img
+          src={emoteUrl}
+          alt={segment.content}
+          loading="lazy"
+          className={imgClasses}
+          style={gridStyle}
+          referrerPolicy="no-referrer"
+          onContextMenu={(e) => {
+            e.preventDefault();
+            if (onEmoteRightClick) onEmoteRightClick(segment.content);
+          }}
+          onError={(e) => {
+            e.currentTarget.style.display = 'none';
+            e.currentTarget.insertAdjacentText('afterend', segment.content);
+          }}
+        />
+      );
+
+      return (
+        <Tooltip key={key} content={`Right-click to copy${segment.isZeroWidth ? ' (Zero-Width)' : ''}: ${segment.content}`} side="top">
+          {isOverlay && !inGrid ? (
+            // Fallback for standalone zero-width emote (e.g., at the start of a message)
+            <span className="inline-block w-0 align-middle pointer-events-none" style={gridStyle}>
+              <span className="pointer-events-auto -translate-x-full">
+                {imgElement}
               </span>
             </span>
-          </Tooltip>
+          ) : (
+            imgElement
+          )}
+        </Tooltip>
+      );
+    }
+
+    if (segment.type === 'emoji' && segment.emojiUrl) {
+      const emojiSrc = getCachedEmojiUrl(segment.content, segment.emojiUrl);
+      return (
+        <Tooltip key={key} content={segment.content} side="top">
+          <img
+            src={emojiSrc}
+            alt={segment.content}
+            loading="lazy"
+            className={`inline h-5 w-5 ${inGrid ? '' : 'align-middle'} ${marginClass} crisp-image`}
+            style={gridStyle}
+            onError={(e) => {
+              e.currentTarget.style.display = 'none';
+              e.currentTarget.insertAdjacentText('afterend', segment.content);
+            }}
+          />
+        </Tooltip>
+      );
+    }
+
+    if (segment.type === 'cheermote') {
+      const bits = segment.bits ?? 0;
+      return (
+        <Tooltip key={key} content={`${bits.toLocaleString()} bits`} side="top">
+          <span className={`inline-flex items-center gap-0.5 ${inGrid ? '' : 'align-middle'} ${marginClass}`} style={gridStyle}>
+            <img
+              src={segment.cheermoteUrl}
+              alt={segment.content}
+              loading="lazy"
+              className="inline-block h-7 w-auto align-middle crisp-image"
+              referrerPolicy="no-referrer"
+              onError={(e) => {
+                e.currentTarget.style.display = 'none';
+                e.currentTarget.insertAdjacentText('afterend', segment.content);
+              }}
+            />
+            <span className="font-bold text-sm" style={{ color: segment.color ?? '#979797' }}>
+              {bits}
+            </span>
+          </span>
+        </Tooltip>
+      );
+    }
+
+    return (
+      <span key={key} style={gridStyle} className={inGrid ? '' : 'align-middle'}>
+        {parseTextWithLinks(segment.content)}
+      </span>
+    );
+  };
+
+  const renderContent = (segments: EmoteSegment[]) => {
+    // Phase 1: Group zero-width emotes with their preceding visual elements
+    const groupedSegments: (EmoteSegment | EmoteSegment[])[] = [];
+
+    segments.forEach((segment) => {
+      if (segment.type === 'emote' && segment.isZeroWidth) {
+        if (groupedSegments.length > 0) {
+          const last = groupedSegments[groupedSegments.length - 1];
+          // If the last item is already a group, push into it
+          if (Array.isArray(last)) {
+            last.push(segment);
+          } else if (last.type === 'text' && last.content.trim() === '') {
+            // Twitch chat often puts spaces between typed emotes
+            // If the last segment is just a space, check what's before the space
+            if (groupedSegments.length > 1) {
+              const beforeSpace = groupedSegments[groupedSegments.length - 2];
+              if (Array.isArray(beforeSpace)) {
+                beforeSpace.push(segment);
+                groupedSegments.pop(); // Remove the space!
+              } else if (beforeSpace.type === 'emote' || beforeSpace.type === 'emoji') {
+                groupedSegments[groupedSegments.length - 2] = [beforeSpace, segment];
+                groupedSegments.pop(); // Remove the space!
+              } else {
+                groupedSegments.push([segment]);
+              }
+            } else {
+              groupedSegments.push([segment]);
+            }
+          } else if (last.type === 'emote' || last.type === 'emoji') {
+            groupedSegments[groupedSegments.length - 1] = [last, segment];
+          } else {
+            groupedSegments.push([segment]);
+          }
+        } else {
+          // Zero-width emote at the very start of the message
+          groupedSegments.push([segment]);
+        }
+      } else {
+        groupedSegments.push(segment);
+      }
+    });
+
+    // Phase 2: Render groups
+    return groupedSegments.map((group, index) => {
+      if (Array.isArray(group)) {
+        // Render stacked standard in an inline-grid
+        return (
+          <span key={`group-${index}`} className="inline-grid items-center justify-items-center align-middle mx-0.5">
+            {group.map((seg, innerIndex) => renderSegment(seg, `${index}-${innerIndex}`, true, innerIndex > 0))}
+          </span>
         );
       }
-
-      // Parse text for URLs and make them clickable
-      return <span key={index}>{parseTextWithLinks(segment.content)}</span>;
+      return renderSegment(group, index.toString(), false, false);
     });
   };
 

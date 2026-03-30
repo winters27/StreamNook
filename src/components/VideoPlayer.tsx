@@ -4,8 +4,9 @@ import Plyr from 'plyr';
 import 'plyr/dist/plyr.css';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { invoke } from '@tauri-apps/api/core';
-import { Loader2, RefreshCcw } from 'lucide-react';
-import { Heart, HeartBreak } from 'phosphor-react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { Loader2, RefreshCcw, Home } from 'lucide-react';
+import { Heart, HeartBreak, ArrowLeft, X as XIcon } from 'phosphor-react';
 import { useAppStore } from '../stores/AppStore';
 import StreamTitleWithEmojis from './StreamTitleWithEmojis';
 import { Tooltip } from './ui/Tooltip';
@@ -17,7 +18,7 @@ const VideoPlayer = () => {
   const hlsRef = useRef<Hls | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const progressUpdateIntervalRef = useRef<number | null>(null);
-  const { streamUrl, settings, getAvailableQualities, changeStreamQuality, handleStreamOffline, isAutoSwitching, currentStream, currentUser, restartStream } = useAppStore();
+  const { streamUrl, settings, getAvailableQualities, changeStreamQuality, handleStreamOffline, isAutoSwitching, currentStream, currentUser, restartStream, exitStream, toggleHome, isHomeActive, streamOriginCategory, setHomeActiveTab, setHomeSelectedCategory, triggerChatRefresh, isAuthenticated } = useAppStore();
   const playerSettings = settings.video_player;
   // Store settings in a ref so createPlayer doesn't need to depend on them
   // This prevents player recreation when volume/muted settings change
@@ -1196,64 +1197,78 @@ const VideoPlayer = () => {
       />
 
       {/* Stream Title Overlay — Top-left, shares hover timing with controls */}
-      {currentStream?.title?.trim() && (
-        <div
-          className={`stream-title-overlay absolute top-0 left-0 right-0 z-40 transition-all duration-300 pointer-events-none ${showOverlay
-            ? 'opacity-100'
-            : 'opacity-0'
-            }`}
-        >
+      <AnimatePresence>
+        {currentStream?.title?.trim() && showOverlay && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.3, ease: 'easeInOut' }}
+            className="stream-title-overlay absolute top-0 left-0 right-0 z-40 pointer-events-none"
+          >
           {/* Gradient scrim for text legibility over bright video */}
           <div className="absolute inset-0 bg-gradient-to-b from-black/50 via-black/20 to-transparent" />
-          <div className="relative px-4 pt-3 pb-6">
-            <Tooltip content={currentStream.title || ''} side="bottom" delay={300}>
-            <h3
-              className="text-white text-sm font-medium line-clamp-1 drop-shadow-lg"
-            >
-              <StreamTitleWithEmojis title={currentStream.title} />
-            </h3>
-            </Tooltip>
-            {currentStream.game_name && (
-              <p className="text-white/70 text-xs mt-0.5 drop-shadow-md">
-                {currentStream.game_name}
-              </p>
+          <div className="relative px-4 pt-3 pb-6 flex items-start gap-2">
+            {/* Back Arrow or Home Button (Only visible when Home is not active) */}
+            {!isHomeActive && (
+              streamOriginCategory ? (
+                <Tooltip content="Back to category" side="bottom" delay={200}>
+                  <button
+                    onClick={() => {
+                      setHomeActiveTab('category');
+                      setHomeSelectedCategory(streamOriginCategory);
+                      toggleHome();
+                    }}
+                    className="shrink-0 mt-0.5 p-2 glass-button rounded-lg pointer-events-auto"
+                    style={{ backdropFilter: 'blur(16px)' }}
+                  >
+                    <ArrowLeft size={16} weight="bold" className="text-white" />
+                  </button>
+                </Tooltip>
+              ) : (
+                <Tooltip content="Home" side="bottom" delay={200}>
+                  <button
+                    onClick={() => {
+                      setHomeActiveTab(isAuthenticated ? 'following' : 'recommended');
+                      toggleHome();
+                    }}
+                    className="shrink-0 mt-0.5 p-2 glass-button rounded-lg pointer-events-auto"
+                    style={{ backdropFilter: 'blur(16px)' }}
+                  >
+                    <Home size={16} className="text-white drop-shadow-md" />
+                  </button>
+                </Tooltip>
+              )
             )}
+            <div className="min-w-0">
+              <Tooltip content={currentStream.title || ''} side="bottom" delay={300}>
+              <h3
+                className="text-white text-sm font-medium line-clamp-1 drop-shadow-lg"
+              >
+                <StreamTitleWithEmojis title={currentStream.title} />
+              </h3>
+              </Tooltip>
+              {currentStream.game_name && (
+                <p className="text-white/70 text-xs mt-0.5 drop-shadow-md">
+                  {currentStream.game_name}
+                </p>
+              )}
+            </div>
           </div>
-        </div>
-      )}
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Follow & Subscribe Button Overlay */}
-      {currentStream && (
-        <div
-          className={`subscribe-overlay absolute top-3 right-3 z-50 flex items-center gap-2 transition-all duration-300 transform-gpu will-change-[opacity,transform] ${showOverlay
-            ? 'opacity-100 translate-y-0'
-            : 'opacity-0 -translate-y-2 pointer-events-none'
-            }`}
-        >
-          {/* Restart Stream Button */}
-          <Tooltip content="Refresh" side="bottom">
-          <button
-            onClick={async () => {
-              setIsRestarting(true);
-              try {
-                await restartStream();
-              } finally {
-                setIsRestarting(false);
-              }
-            }}
-            disabled={isRestarting}
-            className={`flex items-center justify-center p-2.5 rounded-full transition-all duration-200 hover:scale-110 bg-background/60 backdrop-blur-md ${
-              isRestarting ? 'cursor-wait opacity-70' : 'hover:bg-accent/20'
-            }`}
+      <AnimatePresence>
+        {currentStream && showOverlay && (
+          <motion.div
+            initial={{ opacity: 0, y: -8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            transition={{ duration: 0.3, ease: 'easeInOut' }}
+            className="subscribe-overlay absolute top-3 right-3 z-50 flex items-center gap-2"
           >
-            {isRestarting ? (
-              <Loader2 className="w-5 h-5 text-accent animate-spin" />
-            ) : (
-              <RefreshCcw className="w-5 h-5 text-textSecondary hover:text-accent" />
-            )}
-          </button>
-          </Tooltip>
-          
           {/* Follow Button - Icon Only with Glow */}
           <Tooltip content={checkingFollowStatus
                 ? 'Checking follow status...'
@@ -1265,36 +1280,28 @@ const VideoPlayer = () => {
           <button
             onClick={handleFollowClick}
             disabled={followLoading || checkingFollowStatus}
-            className={`flex items-center justify-center p-2.5 rounded-full transition-all duration-200 hover:scale-110 ${followLoading || checkingFollowStatus
-              ? 'opacity-60 cursor-wait bg-background/60 backdrop-blur-md'
-              : isFollowing
-                ? 'bg-red-500/20 hover:bg-red-500/30'
-                : 'bg-emerald-500/20 hover:bg-emerald-500/30'
+            className={`flex items-center justify-center p-2 glass-button rounded-lg ${followLoading || checkingFollowStatus
+              ? 'opacity-60 cursor-wait'
+              : ''
               }`}
-            style={{
-              boxShadow: followLoading || checkingFollowStatus
-                ? 'none'
-                : isFollowing
-                  ? '0 0 15px rgba(239, 68, 68, 0.35), 0 0 25px rgba(239, 68, 68, 0.15)'
-                  : '0 0 15px rgba(16, 185, 129, 0.35), 0 0 25px rgba(16, 185, 129, 0.15)'
-            }}
+            style={{ backdropFilter: 'blur(16px)' }}
           >
             {followLoading || checkingFollowStatus ? (
-              <Loader2 className="w-6 h-6 animate-spin text-textSecondary" />
+              <Loader2 className="w-4 h-4 animate-spin text-textSecondary" />
             ) : heartDropAnimation ? (
               <HeartBreak
                 weight="fill"
-                className="w-6 h-6 text-red-400 animate-heart-drop"
+                className="w-4 h-4 text-red-400 animate-heart-drop"
               />
             ) : isFollowing ? (
               <HeartBreak
                 weight="fill"
-                className="w-6 h-6 text-red-400 drop-shadow-[0_0_5px_rgba(239,68,68,0.7)]"
+                className="w-4 h-4 text-red-400 drop-shadow-[0_0_5px_rgba(239,68,68,0.7)]"
               />
             ) : (
               <Heart
                 weight="fill"
-                className="w-6 h-6 text-emerald-400 drop-shadow-[0_0_5px_rgba(16,185,129,0.7)]"
+                className="w-4 h-4 text-emerald-400 drop-shadow-[0_0_5px_rgba(16,185,129,0.7)]"
               />
             )}
           </button>
@@ -1309,6 +1316,7 @@ const VideoPlayer = () => {
           <button
             onClick={handleSubscribeClick}
             className="flex items-center gap-2 px-4 py-2 glass-button text-white text-sm font-semibold transition-all duration-200"
+            style={{ backdropFilter: 'blur(16px)' }}
           >
             <span>
               {isSubscribed ? 'Gift Subs' : hasSubHistory ? 'Resubscribe' : 'Subscribe'}
@@ -1327,8 +1335,46 @@ const VideoPlayer = () => {
             )}
           </button>
           </Tooltip>
-        </div>
-      )}
+
+          {/* Restart Stream Button */}
+          <Tooltip content="Refresh" side="bottom">
+          <button
+            onClick={async () => {
+              setIsRestarting(true);
+              try {
+                await restartStream();
+                triggerChatRefresh();
+              } finally {
+                setIsRestarting(false);
+              }
+            }}
+            disabled={isRestarting}
+            className={`flex items-center justify-center p-2 glass-button rounded-lg ${
+              isRestarting ? 'cursor-wait opacity-70' : ''
+            }`}
+            style={{ backdropFilter: 'blur(16px)' }}
+          >
+            {isRestarting ? (
+              <Loader2 className="w-4 h-4 text-accent animate-spin" />
+            ) : (
+              <RefreshCcw className="w-4 h-4 text-textSecondary" />
+            )}
+          </button>
+          </Tooltip>
+
+          {/* Close Stream Button */}
+          <Tooltip content="Close Stream" side="bottom">
+          <button
+            onClick={exitStream}
+            className="flex items-center justify-center p-2 glass-button rounded-lg"
+            style={{ backgroundColor: 'rgba(239, 68, 68, 0.25)', backdropFilter: 'blur(16px)' }}
+          >
+            <XIcon weight="bold" className="w-4 h-4 text-red-400" />
+          </button>
+          </Tooltip>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 };

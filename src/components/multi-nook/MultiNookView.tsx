@@ -21,7 +21,9 @@ import {
 import { ArrowUpFromLine } from 'lucide-react';
 import { MultiNookCell } from './MultiNookCell';
 import MultiNookToolbar from './MultiNookToolbar';
+import { MultiNookTutorial } from './MultiNookTutorial';
 import { usemultiNookStore } from '../../stores/multiNookStore';
+import { useTutorialStore } from '../../stores/tutorialStore';
 import { Logger } from '../../utils/logger';
 import { useMultiNookSync } from './useMultiNookSync';
 
@@ -40,7 +42,14 @@ export const MultiNookView: React.FC = () => {
   useMultiNookSync();
 
   // Track drag state: which type of item is being dragged
-  const [dragSource, setDragSource] = useState<'visible' | 'docked' | null>(null);
+  const [dragSource, setDragSource] = useState<'visible' | 'docked' | 'tutorial' | null>(null);
+
+  // Clean up tutorial state precisely when a real stream is added
+  useEffect(() => {
+    if (slots.length > 0) {
+      useTutorialStore.getState().reset();
+    }
+  }, [slots.length]);
 
   // Build a map of slot id -> visual order index for CSS-based reordering.
   const orderMap = useMemo(() => {
@@ -83,7 +92,9 @@ export const MultiNookView: React.FC = () => {
 
   const handleDragStart = (event: DragStartEvent) => {
     const id = event.active.id as string;
-    if (id.startsWith(DOCKED_PREFIX)) {
+    if (id.startsWith('tutorial::') || id.startsWith('docked::tutorial::')) {
+      setDragSource('tutorial');
+    } else if (id.startsWith(DOCKED_PREFIX)) {
       setDragSource('docked');
     } else {
       setDragSource('visible');
@@ -98,6 +109,11 @@ export const MultiNookView: React.FC = () => {
     if (!over) return;
 
     const activeId = active.id as string;
+    
+    // Completely ignore tutorial drags; useDndMonitor internally handles them!
+    if (activeId.startsWith('tutorial::') || activeId.startsWith('docked::tutorial::')) {
+      return;
+    }
 
     // Dragging a visible cell → dock zone = dock it
     if (over.id === DOCK_DROP_ID && currentSource === 'visible') {
@@ -202,7 +218,7 @@ export const MultiNookView: React.FC = () => {
   }, [visibleSlots.length, dimensions]);
 
   // Show dock zone only when dragging a visible cell
-  const showDockZone = dragSource === 'visible';
+  const showDockZone = dragSource === 'visible' || dragSource === 'tutorial';
   // Show undock zone only when dragging a docked pill
   const showUndockZone = dragSource === 'docked';
 
@@ -223,9 +239,7 @@ export const MultiNookView: React.FC = () => {
 
         <div className="flex-1 w-full p-2 relative overflow-hidden" ref={containerRef}>
           {visibleSlots.length === 0 && !showUndockZone ? (
-            <div className="w-full h-full flex flex-col items-center justify-center text-textMuted border-2 border-dashed border-borderSubtle bg-glass/20 rounded-xl px-4 text-center">
-              <p className="text-sm">Right-click any stream to add it from the context menu, or use the <strong className="text-textPrimary">+</strong> search button in the top right.</p>
-            </div>
+            <MultiNookTutorial />
           ) : (
             <div className="w-full h-full relative">
               {/* Undock drop zone — overlays the grid when dragging a docked pill */}
@@ -290,20 +304,20 @@ const UndockDropZone: React.FC<{ dropId: string }> = ({ dropId }) => {
     <div
       ref={setNodeRef}
       className={`
-        absolute inset-0 z-20 flex items-center justify-center rounded-xl
-        transition-all duration-200 pointer-events-auto
+        absolute inset-0 z-20 flex items-center justify-center rounded-xl pointer-events-auto
+        transition-all duration-300 ease-out backdrop-blur-sm
         ${isOver
-          ? 'bg-accent/10 border-2 border-accent/40 shadow-[0_0_30px_rgba(167,139,250,0.1)]'
-          : 'bg-glass/5 border-2 border-dashed border-borderSubtle'
+          ? 'bg-transparent border-2 border-accent/60 shadow-[0_0_20px_rgba(167,139,250,0.1)_inset]'
+          : 'bg-transparent border-2 border-dashed border-white/10'
         }
       `}
     >
-      <div className={`flex items-center gap-2 transition-all duration-200 ${isOver ? 'scale-105' : ''}`}>
+      <div className={`flex items-center gap-3 transition-all duration-300 ${isOver ? 'scale-105' : ''}`}>
         <ArrowUpFromLine
-          size={18}
-          className={`transition-colors duration-200 ${isOver ? 'text-accent' : 'text-textMuted'}`}
+          size={20}
+          className={`transition-colors duration-300 ${isOver ? 'text-accent' : 'text-textMuted'}`}
         />
-        <span className={`text-sm font-semibold uppercase tracking-wider transition-colors duration-200 ${isOver ? 'text-accent' : 'text-textMuted'}`}>
+        <span className={`text-sm font-bold uppercase tracking-widest transition-colors duration-300 ${isOver ? 'text-accent' : 'text-textMuted'}`}>
           {isOver ? 'Release to restore' : 'Drop here to restore to grid'}
         </span>
       </div>

@@ -297,7 +297,7 @@ async fn fetch_twitch_profile(user_id: &str) -> Result<TwitchUserProfile, String
         .await
         .map_err(|e| format!("Failed to get token: {}", e))?;
 
-    let client_id = "1qgws7yzcp21g5ledlzffw3lmqdvie";
+    let client_id = env!("TWITCH_APP_CLIENT_ID");
 
     let client = reqwest::Client::new();
     let response = client

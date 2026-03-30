@@ -118,17 +118,7 @@ const AboutWidget = ({ onClose }: AboutWidgetProps) => {
                 FFZ
               </a>
               </Tooltip>
-              <span className="text-textSecondary">•</span>
-              <Tooltip content="Twitch" side="top">
-              <a
-                href="https://www.twitch.tv"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-textPrimary hover:text-[#9146FF] transition-colors font-medium text-sm"
-              >
-                Twitch
-              </a>
-              </Tooltip>
+
             </div>
           </div>
 
@@ -181,15 +171,7 @@ const AboutWidget = ({ onClose }: AboutWidgetProps) => {
                 <span className="text-[#06B6D4] font-medium">Tailwind</span>
               </span>
 
-              {/* Twitch API */}
-              <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-glass rounded-full text-xs">
-                <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none">
-                  <path d="M4 2L2 6v14h5v2h3l2-2h4l6-6V2H4zm16 11l-3 3h-4l-2 2v-2H7V4h13v9z" fill="#9146FF" />
-                  <rect x="14" y="7" width="2" height="5" fill="white" />
-                  <rect x="10" y="7" width="2" height="5" fill="white" />
-                </svg>
-                <span className="text-[#9146FF] font-medium">Twitch API</span>
-              </span>
+
             </div>
           </div>
 

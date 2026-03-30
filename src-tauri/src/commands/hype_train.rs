@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 // Use Twitch web client ID - works without authentication for read operations
-const WEB_CLIENT_ID: &str = "kimne78kx3ncx6brgo4mv6wki5h1ko";
+const WEB_CLIENT_ID: &str = env!("TWITCH_WEB_CLIENT_ID");
 const GQL_URL: &str = "https://gql.twitch.tv/gql";
 
 // GQL hash for BulkAllActiveHypeTrainStatusesQuery - checks if channel has active train

@@ -19,7 +19,7 @@ const DEFAULT_STALE_THRESHOLD_SECONDS: u64 = 420; // 7 minutes
 const RELAXED_STALE_THRESHOLD_SECONDS: u64 = 900; // 15 minutes for relaxed mode
 
 // Use Android app client ID for drops-related queries
-const CLIENT_ID: &str = "kd1unb4b3q4t58fwlpcbzcbnm76a8fp";
+const CLIENT_ID: &str = env!("TWITCH_ANDROID_CLIENT_ID");
 
 pub struct MiningService {
     client: Client,

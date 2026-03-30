@@ -248,12 +248,14 @@ export async function fetchAllEmotes(channelName?: string, channelId?: string): 
 
     // Enhance with local URLs ONLY if they're already cached (non-blocking lookup)
     // The browser will load from CDN if localUrl is undefined
-    const enhanceWithLocalUrls = (emotes: Emote[]) => {
+    const enhanceWithLocalUrls = (emotes: any[]) => {
       return emotes.map(emote => {
         // Only use cached path if it's already in memory - no blocking
         const localPath = cachedEmoteFiles.get(emote.id);
+        const zeroWidth = emote.is_zero_width !== undefined ? emote.is_zero_width : emote.isZeroWidth;
         return {
           ...emote,
+          isZeroWidth: zeroWidth,
           localUrl: localPath ? convertFileSrc(localPath) : undefined
         };
       });
@@ -310,8 +312,11 @@ export async function getEmoteByName(channelId: string | null, emoteName: string
     if (emote) {
       // Enhance with local URL if available
       const localPath = cachedEmoteFiles.get(emote.id);
+      const anyEmote = emote as any;
+      const zeroWidth = anyEmote.is_zero_width !== undefined ? anyEmote.is_zero_width : emote.isZeroWidth;
       return {
         ...emote,
+        isZeroWidth: zeroWidth,
         localUrl: localPath ? convertFileSrc(localPath) : undefined
       };
     }

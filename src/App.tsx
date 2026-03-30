@@ -16,6 +16,7 @@ import ToastManager from './components/ToastManager';
 import { TooltipManager } from './components/ui/TooltipManager';
 import { Tooltip } from './components/ui/Tooltip';
 import ProfileModal from './components/ProfileModal';
+import { SearchProfileModal } from './components/SearchProfileModal';
 import DropsOverlay from './components/DropsOverlay';
 import BadgesOverlay from './components/BadgesOverlay';
 import BadgeDetailOverlay from './components/BadgeDetailOverlay';
@@ -57,7 +58,7 @@ const DEFAULT_CHAT_WIDTH = 384; // For 'right' placement
 const DEFAULT_CHAT_HEIGHT = 200; // For 'bottom' placement
 
 function App() {
-  const { loadSettings, chatPlacement, isLoading, currentStream, streamUrl, checkAuthStatus, showProfileOverlay, setShowProfileOverlay, addToast, setShowDropsOverlay, showBadgesOverlay, setShowBadgesOverlay, badgesOverlayInitialPaintId, badgesOverlayInitialBadgeId, showWhispersOverlay, setShowWhispersOverlay, settings, updateSettings, isTheaterMode, isHomeActive, toggleHome, stopStream, loadActiveDropsCache } = useAppStore();
+  const { loadSettings, chatPlacement, isLoading, currentStream, streamUrl, checkAuthStatus, showProfileOverlay, setShowProfileOverlay, addToast, setShowDropsOverlay, showBadgesOverlay, setShowBadgesOverlay, badgesOverlayInitialPaintId, badgesOverlayInitialBadgeId, showWhispersOverlay, setShowWhispersOverlay, settings, updateSettings, isTheaterMode, isHomeActive, toggleHome, stopStream, loadActiveDropsCache, profileModalUser, setProfileModalUser } = useAppStore();
 
   const [chatSize, setChatSize] = useState(chatPlacement === 'bottom' ? DEFAULT_CHAT_HEIGHT : DEFAULT_CHAT_WIDTH);
   const { isMultiNookActive, isChatHidden, slots } = usemultiNookStore();
@@ -139,7 +140,7 @@ function App() {
           }
 
           const size = await window.innerSize();
-          const titleBarHeight = 32;
+          const titleBarHeight = 33;
 
           Logger.debug('[ChatSize] Calculating window size to preserve video dimensions');
           Logger.debug('[ChatSize] Old layout:', oldPlacement, 'with chat size', oldChatSize);
@@ -677,8 +678,8 @@ function App() {
             settings.compact_view?.customPresets
           );
 
-          // Title bar height is approximately 32px, window borders are 1px each side
-          const titleBarHeight = 32;
+          // Title bar height is approximately 33px, window borders are 1px each side
+          const titleBarHeight = 33;
           const windowBorderWidth = 2; // 1px border on each side
           // Subtract borders so total window width matches the preset exactly
           const targetWidth = preset.width - windowBorderWidth;
@@ -824,8 +825,8 @@ function App() {
         Logger.debug('[AspectRatio] Chat size:', currentChatSize);
         Logger.debug('[AspectRatio] Chat placement:', currentChatPlacement);
 
-        // Title bar height is approximately 32px
-        const titleBarHeight = 32;
+        // Title bar height is approximately 33px
+        const titleBarHeight = 33;
 
         let targetAspectRatio = 16.0 / 9.0;
         
@@ -918,7 +919,7 @@ function App() {
         const width = size.width;
         const height = size.height;
 
-        const titleBarHeight = 32;
+        const titleBarHeight = 33;
 
         let targetAspectRatio = 16.0 / 9.0;
         // Dynamically measure sidebar
@@ -1243,6 +1244,13 @@ function App() {
         isOpen={showProfileOverlay}
         onClose={() => setShowProfileOverlay(false)}
       />
+      
+      {profileModalUser && (
+        <SearchProfileModal
+          user={profileModalUser}
+          onClose={() => setProfileModalUser(null)}
+        />
+      )}
       <AnimatePresence>
         {showBadgesOverlay && !selectedBadge && (
           <BadgesOverlay

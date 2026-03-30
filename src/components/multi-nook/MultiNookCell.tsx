@@ -99,7 +99,7 @@ export const MultiNookCell: React.FC<MultiNookCellProps> = ({ slot, cssOrder, gr
         }
       }}
       className={`${gridSpanClass} relative w-full h-full rounded-lg overflow-hidden border border-white/5 ${
-        isFocused ? 'shadow-[0_0_25px_rgba(255,255,255,0.25)]' : ''
+        isFocused ? 'shadow-[0_0_25px_var(--color-accent-muted)]' : ''
       } ${
         isDragging ? 'opacity-50 blur-sm' : 'opacity-100'
       } bg-black/40 transition-[box-shadow,opacity,filter] duration-300 group flex items-center justify-center video-player-container [&_.plyr]:w-full [&_.plyr]:h-full [&_.plyr]:absolute [&_.plyr]:inset-0 cursor-pointer`}
@@ -107,7 +107,7 @@ export const MultiNookCell: React.FC<MultiNookCellProps> = ({ slot, cssOrder, gr
       <video
         ref={videoRef}
         className="w-full h-full"
-        style={{ backgroundColor: '#000', objectFit: 'contain' }}
+        style={{ backgroundColor: '#000', objectFit: 'cover' }}
         autoPlay
         playsInline
       />
@@ -136,11 +136,11 @@ export const MultiNookCell: React.FC<MultiNookCellProps> = ({ slot, cssOrder, gr
           <div className="absolute left-1/2 -translate-x-1/2 top-1.5 z-20">
             <Tooltip content="Drag to reposition stream" delay={500} side="top">
               <div 
-                className="cursor-grab active:cursor-grabbing px-3 py-1 hover:bg-white/10 rounded-md transition-colors [&_*]:cursor-grab flex items-center justify-center"
+                className="cursor-grab active:cursor-grabbing px-3 py-1 hover:bg-emerald-400/10 rounded-md transition-colors [&_*]:cursor-grab flex items-center justify-center text-emerald-400/50"
                 {...attributes}
                 {...listeners}
               >
-                <GripHorizontal className="w-5 h-5 text-white/50 group-hover:text-white/100 transition-colors drop-shadow-md" />
+                <GripHorizontal className="w-5 h-5 group-hover:text-emerald-400/80 transition-colors drop-shadow-md" />
               </div>
             </Tooltip>
           </div>
