@@ -1,3 +1,28 @@
+## [7.2.0] - 2026-03-31
+> [!IMPORTANT]
+> **Re-Authentication Required**
+> When you launch this update, StreamNook will automatically log you out and prompt you to log back in. This is totally normal and expected! We've added powerful new moderation tools and features that require you to grant StreamNook the new necessary Twitch permissions.
+
+### ✨ Features
+- **Enhanced Category Browsing**: Dive into categories with new sub-tabs for Live Streams, Clips, and Videos, complete with sorting and filtering options.
+- **Moderator Tools**: Manage your chat effectively with new commands like `/ban`, `/timeout`, `/clear`, `/mod`, `/vip`, and more, directly from the UI.
+- **Command Autocomplete**: Type `/` in chat to see a helpful list of available commands and their usage.
+- **Moderator Logs**: A new pane displays all moderation actions taken in chat, providing transparency and history.
+- **Stream Nook Media Player**: Watch clips and VODs directly within the app with improved playback for MP4 files and a more robust HLS player.
+- **User Profile Enhancements**: Quickly access moderator actions, copy messages, or pre-fill commands directly from user profiles.
+- **Drops Integration**: Improved visibility and interaction with Twitch Drops campaigns directly from the Home screen.
+- **Visual Polish**: Numerous UI refinements, including interactive command suggestions, refined glassmorphism effects, and a collapsible moderator menu.
+
+### 🐛 Bug Fixes
+- **Fixed Streamlink Issues**: Resolved problems with custom Streamlink paths and improved handling of VOD/clip playback.
+- **Chat Stability**: Addressed various bugs in chat rendering, message parsing, and connection management for a more reliable experience.
+- **Player Reliability**: Improved HLS player stability, especially during stream restarts and offline transitions.
+
+### 🔧 Maintenance
+- **Expanded Twitch API Integration**: Added support for a wide range of Twitch API endpoints to manage streams, chat settings, user data, and more.
+- **Performance Optimizations**: Refined caching strategies and component rendering to improve overall application responsiveness.
+- **Code Refactoring**: Various under-the-hood improvements to enhance code quality and maintainability.
+
 ## [7.1.2] - 2026-03-30
 ### 🔧 Maintenance
 - **Update Checks**: Improved how StreamNook checks for updates by directly downloading necessary files from GitHub releases. This bypasses GitHub API rate limits, ensuring more reliable update checks, especially during active development.
@@ -1088,6 +1113,7 @@ ATTENTION: ALL USERS LOG OUT OF TWITCH THEN LOG BACK IN FOR SOME CHANGES OT TAKE
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
