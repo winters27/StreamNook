@@ -57,6 +57,51 @@ export const useTwitchChat = () => {
     r9k: boolean;
   }>({ followersOnly: -1, slow: 0, subsOnly: false, emoteOnly: false, r9k: false });
 
+  // Expose the current user's IRC badges to determine chat privilege bypasses
+  const [userBadges, setUserBadges] = useState<string | null>(null);
+
+  // Listen for locally emitted system messages (like /mods command results)
+  useEffect(() => {
+    const handleSystemMessage = (e: CustomEvent) => {
+      const message = e.detail?.message;
+      if (!message) return;
+      
+      const sysMsgId = `sys-cmd-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+      
+      setMessages(prev => {
+        const limit = isPausedForBufferRef.current ? CHAT_MAX_WITH_BUFFER : CHAT_HISTORY_MAX;
+        
+        const updated = [...prev, {
+          id: sysMsgId,
+          username: 'System',
+          display_name: 'Twitch',
+          color: '#9147ff', // Twitch purple
+          badges: [{ key: 'staff/1', info: {} }], // Use staff badge for official look
+          content: message,
+          segments: [{ type: 'text', content: message }],
+          is_action: false,
+          is_first_message: false,
+          is_mentioned: false,
+          is_from_shared_chat: false,
+          tags: new Map([
+            ['user-id', 'tw-system'], 
+            ['id', sysMsgId]
+          ]),
+        } as unknown as any]; // Cast to avoid deep type checking
+        
+        if (updated.length > limit) {
+          return updated.slice(updated.length - limit);
+        }
+        return updated;
+      });
+    };
+
+    window.addEventListener('twitch-system-message', handleSystemMessage as EventListener);
+    return () => {
+      window.removeEventListener('twitch-system-message', handleSystemMessage as EventListener);
+    };
+  }, []);
+
   // Use refs for all mutable state that needs to be accessed in callbacks
   const wsRef = useRef<WebSocket | null>(null);
   const seenMessageIdsRef = useRef<Set<string>>(new Set());
@@ -134,6 +179,7 @@ export const useTwitchChat = () => {
 
     // Reset room state on cleanup (channel switch / disconnect)
     setRoomState({ followersOnly: -1, slow: 0, subsOnly: false, emoteOnly: false, r9k: false });
+    setUserBadges(null);
 
     // Only stop the backend IRC service when explicitly requested (e.g., channel switch or app cleanup)
     // The Rust start_chat already calls stop() at its beginning, so we don't need to call it
@@ -208,7 +254,8 @@ export const useTwitchChat = () => {
               }
               
               parsedMessages = await invoke<any[]>('parse_historical_messages', { 
-                messages: recentMessagesRaw 
+                messages: recentMessagesRaw,
+                channelName: channel
               });
             } catch (parseErr: any) {
               parseAttempts++;
@@ -273,10 +320,12 @@ export const useTwitchChat = () => {
       const connectWithRetry = async (retries = 5): Promise<WebSocket> => {
         for (let i = 0; i < retries; i++) {
           try {
-            // Wait longer on each retry
-            const delay = 500 + (i * 500);
-            Logger.debug(`[Chat] Waiting ${delay}ms before connection attempt ${i + 1}/${retries}`);
-            await new Promise(resolve => setTimeout(resolve, delay));
+            // Wait longer on each retry, but try immediately on first attempt
+            const delay = i === 0 ? 10 : 500 + (i * 500);
+            if (delay > 10) {
+              Logger.debug(`[Chat] Waiting ${delay}ms before connection attempt ${i + 1}/${retries}`);
+              await new Promise(resolve => setTimeout(resolve, delay));
+            }
 
             // Check if we've been cleaned up or channel changed
             if (currentChannelRef.current !== channel) {
@@ -383,6 +432,7 @@ export const useTwitchChat = () => {
           const badges = message.substring('USER_BADGES:'.length);
           Logger.debug('[Chat] Received user badges from IRC:', badges);
           userBadgesFromIrcRef.current = badges;
+          setUserBadges(badges);
           return;
         }
 
@@ -478,9 +528,52 @@ export const useTwitchChat = () => {
               return;
             }
 
-            // Handle NOTICE events (e.g. followers-only rejection, sub-only, duplicate)
             if (parsed.type === 'NOTICE') {
               Logger.debug('[Chat] NOTICE:', parsed.msg_id, parsed.message);
+              
+              // Local IRC Mod Log Fallback - Catches settings changes that EventSub misses (e.g., subs-only) or token failures
+              const msgId = parsed.msg_id;
+              if (msgId) {
+                const modActionMap: Record<string, string> = {
+                  'host_on': 'host',
+                  'host_off': 'unhost',
+                  'slow_on': 'slow_mode_on',
+                  'slow_off': 'slow_mode_off',
+                  'subs_on': 'subscriber_only_on',
+                  'subs_off': 'subscriber_only_off',
+                  'emote_only_on': 'emote_only_on',
+                  'emote_only_off': 'emote_only_off',
+                  'followers_on': 'follower_only_on',
+                  'followers_off': 'follower_only_off',
+                  'followers_on_zero': 'follower_only_on',
+                  'timeout_success': 'timeout',
+                  'ban_success': 'ban',
+                  'unban_success': 'unban',
+                  'untimeout_success': 'untimeout',
+                  'clear_chat': 'clear_chat'
+                };
+
+                if (modActionMap[msgId]) {
+                  const state = useAppStore.getState();
+                  const recentEventSubAction = msgId.replace('_on', '').replace('_off', '').replace('_success', '');
+                  const recentlyAdded = state.modLogs.some(l => 
+                    (l.action === recentEventSubAction || l.action === modActionMap[msgId]) && 
+                    new Date(l.timestamp).getTime() > Date.now() - 2000
+                  );
+
+                  if (!recentlyAdded) {
+                    state.addModLog({
+                      id: `irc-${Date.now()}-${Math.random()}`,
+                      action: modActionMap[msgId],
+                      timestamp: new Date().toISOString(),
+                      moderator_name: 'Twitch System',
+                      target_user_name: 'Stream/Settings',
+                      reason: parsed.message,
+                      details: parsed
+                    });
+                  }
+                }
+              }
 
               // Only remove optimistic messages for known rejection msg-ids
               const rejectionIds = new Set([
@@ -511,13 +604,48 @@ export const useTwitchChat = () => {
                 });
               }
 
-              // Surface the notice text as a timed error
+              // Surface the notice text as an inline system message
               if (parsed.message) {
+                Logger.debug('[Chat] Injecting NOTICE as inline message:', parsed.message);
+                
+                const sysMsgId = `notice-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+                
+                // Add to seen so it doesn't get processed again if somehow duplicated
+                seenMessageIdsRef.current.add(sysMsgId);
+                
+                setMessages(prev => {
+                  const limit = isPausedForBufferRef.current ? CHAT_MAX_WITH_BUFFER : CHAT_HISTORY_MAX;
+                  
+                  const updated = [...prev, {
+                    id: sysMsgId,
+                    username: 'System',
+                    display_name: 'Twitch',
+                    color: '#9147ff', // Twitch purple
+                    badges: [{ key: 'staff/1', info: {} }], // Use staff badge for official look
+                    content: parsed.message,
+                    segments: [{ type: 'text', content: parsed.message }],
+                    is_action: false,
+                    is_first_message: false,
+                    is_mentioned: false,
+                    is_from_shared_chat: false,
+                    tags: new Map([
+                      ['user-id', 'tw-system'], 
+                      ['id', sysMsgId]
+                    ]),
+                  } as unknown as any]; // Cast to avoid deep type checking for BackendChatMessage vs string
+                  
+                  if (updated.length > limit) {
+                    return updated.slice(updated.length - limit);
+                  }
+                  return updated;
+                });
+                
+                // Still set the error state just in case it's needed elsewhere, but shorter duration
                 if (noticeErrorTimerRef.current) {
                   clearTimeout(noticeErrorTimerRef.current);
                 }
                 setError(parsed.message);
-                noticeErrorTimerRef.current = setTimeout(() => setError(null), 6000);
+                noticeErrorTimerRef.current = setTimeout(() => setError(null), 3000);
               }
               return;
             }
@@ -1042,5 +1170,5 @@ export const useTwitchChat = () => {
     }
   }, [trimToLimit]);
 
-  return { messages, connectChat, sendMessage, isConnected, error, setPaused, deletedMessageIds, clearedUserContexts, roomState };
+  return { messages, connectChat, sendMessage, isConnected, error, setPaused, deletedMessageIds, clearedUserContexts, roomState, userBadges };
 };

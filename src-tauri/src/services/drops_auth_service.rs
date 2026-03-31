@@ -1,3 +1,5 @@
+lazy_static::lazy_static! { static ref HTTP_CLIENT: reqwest::Client = reqwest::Client::new(); }
+
 use crate::services::cookie_jar_service::CookieJarService;
 use anyhow::Result;
 use chrono::{Duration as ChronoDuration, Utc};
@@ -159,7 +161,7 @@ impl DropsAuthService {
 
     /// Start the device code flow for drops authentication
     pub async fn start_device_flow() -> Result<DropsDeviceCodeInfo> {
-        let client = Client::new();
+        let client = HTTP_CLIENT.clone();
 
         let params = [
             ("client_id", DROPS_CLIENT_ID),
@@ -208,7 +210,7 @@ impl DropsAuthService {
         interval: u64,
         expires_in: u64,
     ) -> Result<String> {
-        let client = Client::new();
+        let client = HTTP_CLIENT.clone();
         let start_time = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
         let expiry_time = start_time + expires_in;
         let mut poll_interval = interval;
@@ -322,7 +324,7 @@ impl DropsAuthService {
 
     /// Refresh the drops token
     async fn refresh_token(refresh_token: &str) -> Result<StorableDropsToken> {
-        let client = Client::new();
+        let client = HTTP_CLIENT.clone();
         let params = [
             ("grant_type", "refresh_token"),
             ("refresh_token", refresh_token),
@@ -426,7 +428,7 @@ impl DropsAuthService {
             Err(_) => return Ok(false),
         };
 
-        let client = Client::new();
+        let client = HTTP_CLIENT.clone();
         let response = client
             .get("https://id.twitch.tv/oauth2/validate")
             .header("Authorization", format!("OAuth {}", token))

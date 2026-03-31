@@ -100,6 +100,7 @@ interface MultiNookState {
   swapDockedSlot: (id: string) => void;
   setActiveChatChannelId: (id: string | null) => void;
   toggleChatHidden: () => void;
+  batchLoadMissingStreams: () => Promise<void>;
   
   // Synchronization
   resyncAllSlots: () => void;
@@ -118,6 +119,43 @@ export const usemultiNookStore = create<MultiNookState>((set, get) => ({
   suckUpLogin: null,
   recallAnimation: null,
   materializingLogin: null,
+
+  batchLoadMissingStreams: async () => {
+    const slots = get().slots;
+    const missing = slots.filter(s => !s.streamUrl);
+    if (missing.length === 0) return;
+
+    // Concurrently fetch all missing stream URLs
+    const fetchPromises = missing.map(async (slot) => {
+      try {
+        const url = await invoke<string>('start_multi_nook', {
+          streamId: slot.id,
+          url: `https://twitch.tv/${slot.channelLogin}`,
+          quality: 'best', // Could be dynamic from settings later
+        });
+        return { id: slot.id, url };
+      } catch (err) {
+        Logger.error(`Failed to start multi-nook proxy for ${slot.channelLogin}:`, err);
+        return { id: slot.id, url: null };
+      }
+    });
+
+    const results = await Promise.all(fetchPromises);
+
+    // Batch update the state so all streams get their URLs in the exact same React render frame
+    set((state) => {
+      let changed = false;
+      const newSlots = state.slots.map(s => {
+        const resolved = results.find(r => r.id === s.id);
+        if (resolved && resolved.url) {
+          changed = true;
+          return { ...s, streamUrl: resolved.url };
+        }
+        return s;
+      });
+      return changed ? { slots: newSlots } : state;
+    });
+  },
 
   triggerAddAnimation: (x: number, y: number, channelLogin: string) => {
     const id = Date.now();

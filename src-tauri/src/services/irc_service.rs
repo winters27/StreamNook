@@ -34,6 +34,7 @@ static IRC_WRITER: OnceLock<Mutex<Option<Arc<Mutex<tokio::io::WriteHalf<TcpStrea
     OnceLock::new();
 static SHARED_CHAT_ROOMS: OnceLock<Mutex<HashMap<String, Vec<String>>>> = OnceLock::new();
 static USER_BADGES_CACHE: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+static ROOM_STATE_CACHE: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 static CHANNEL_EMOTES: OnceLock<Mutex<Option<EmoteSet>>> = OnceLock::new();
 
 const IRC_SERVER: &str = "irc.chat.twitch.tv";
@@ -71,6 +72,10 @@ fn get_user_badges_cache() -> &'static Mutex<Option<String>> {
     USER_BADGES_CACHE.get_or_init(|| Mutex::new(None))
 }
 
+fn get_room_state_cache() -> &'static Mutex<Option<String>> {
+    ROOM_STATE_CACHE.get_or_init(|| Mutex::new(None))
+}
+
 fn get_channel_emotes() -> &'static Mutex<Option<EmoteSet>> {
     CHANNEL_EMOTES.get_or_init(|| Mutex::new(None))
 }
@@ -93,7 +98,10 @@ impl IrcService {
             .await
             .insert(channel.to_string());
 
-        // Check if token exists before attempting to connect
+        // Clear caches for new channel
+        *get_user_badges_cache().lock().await = None;
+        *get_room_state_cache().lock().await = None;
+
         let token = match TwitchService::get_token().await {
             Ok(t) => t,
             Err(_) => {
@@ -529,7 +537,12 @@ impl IrcService {
                 }
             }
 
-            let _ = tx.send(serde_json::Value::Object(room_state).to_string());
+            let room_state_str = serde_json::Value::Object(room_state).to_string();
+
+            // Cache the room state for late-connecting clients
+            *get_room_state_cache().lock().await = Some(room_state_str.clone());
+
+            let _ = tx.send(room_state_str);
 
             // Check for shared chat information
             if let Some(room_id) = Self::extract_tag_value(trimmed, "room-id") {
@@ -753,6 +766,17 @@ impl IrcService {
 
         debug!("[WS] New local WebSocket client connected");
 
+        // Send active roomstate cache immediately so clients don't miss initialization
+        if let Some(state) = get_room_state_cache().lock().await.as_ref() {
+            let _ = local_tx.send(warp::ws::Message::text(state.clone())).await;
+        }
+
+        // Send active badges cache
+        if let Some(badges) = get_user_badges_cache().lock().await.as_ref() {
+            let badges_message = format!("USER_BADGES:{}", badges);
+            let _ = local_tx.send(warp::ws::Message::text(badges_message)).await;
+        }
+
         // Send any queued messages first
         let mut queue = get_message_queue().lock().await;
         let queued_count = queue.len();
@@ -870,7 +894,7 @@ impl IrcService {
     }
 
     /// Fetch and store channel emotes for the current channel
-    async fn fetch_and_store_emotes(
+    pub async fn fetch_and_store_emotes(
         channel_name: &str,
         emote_service: Arc<tokio::sync::RwLock<EmoteService>>,
     ) {
@@ -1267,18 +1291,26 @@ impl IrcService {
         let mut is_action = false;
         let content = if let Some(idx) = raw.find("PRIVMSG") {
             let rest = &raw[idx..];
+            let mut result_msg = "".to_string();
+
+            // Support both standard IRC format " :" and optimized IVR format (space after channel)
             if let Some(colon) = rest.find(" :") {
-                let mut msg = rest[colon + 2..].trim_end().to_string();
-                // Check for ACTION wrapper: \x01ACTION message\x01
-                // Minimum valid: "\x01ACTION X\x01" = 10 chars (8 for header + 1 content + 1 closing)
-                if msg.len() >= 10 && msg.starts_with("\x01ACTION ") && msg.ends_with('\x01') {
-                    is_action = true;
-                    msg = msg[8..msg.len() - 1].to_string();
+                result_msg = rest[colon + 2..].trim_end().to_string();
+            } else if let Some(space_idx) = rest.find(" #") {
+                let after_hash = &rest[space_idx + 1..];
+                if let Some(payload_start) = after_hash.find(' ') {
+                    result_msg = after_hash[payload_start + 1..].trim_end().to_string();
                 }
-                msg
-            } else {
-                "".to_string()
             }
+
+            let mut msg = result_msg;
+            // Check for ACTION wrapper: \x01ACTION message\x01
+            // Minimum valid: "\x01ACTION X\x01" = 10 chars (8 for header + 1 content + 1 closing)
+            if msg.len() >= 10 && msg.starts_with("\x01ACTION ") && msg.ends_with('\x01') {
+                is_action = true;
+                msg = msg[8..msg.len() - 1].to_string();
+            }
+            msg
         } else {
             "".to_string()
         };
@@ -1540,8 +1572,16 @@ impl IrcService {
         // Format: :tmi.twitch.tv USERNOTICE #channel :optional message
         let content = if let Some(idx) = raw.find("USERNOTICE") {
             let rest = &raw[idx..];
+            // Support both standard IRC format " :" and optimized IVR format (space after channel)
             if let Some(colon) = rest.find(" :") {
                 rest[colon + 2..].trim_end().to_string()
+            } else if let Some(space_idx) = rest.find(" #") {
+                let after_hash = &rest[space_idx + 1..];
+                if let Some(payload_start) = after_hash.find(' ') {
+                    after_hash[payload_start + 1..].trim_end().to_string()
+                } else {
+                    "".to_string()
+                }
             } else {
                 "".to_string()
             }

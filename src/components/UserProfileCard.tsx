@@ -35,6 +35,9 @@ interface UserProfileCardProps {
   channelId?: string;
   channelName?: string;
   onStartWhisper?: (user: { id: string; login: string; display_name: string; profile_image_url?: string }) => void;
+  isModerator?: boolean;
+  broadcasterId?: string;
+  onPreFillCommand?: (cmd: string) => void;
 }
 
 interface UserProfileComplete {
@@ -172,7 +175,10 @@ const UserProfileCard = ({
   position,
   channelId: propChannelId,
   channelName: propChannelName,
-  onStartWhisper
+  onStartWhisper,
+  isModerator = false,
+  broadcasterId,
+  onPreFillCommand,
 }: UserProfileCardProps) => {
   const [profileData, setProfileData] = useState<UserProfileComplete | null>(null);
   const [cachedProfile, setCachedProfile] = useState<CachedProfile | null>(null);
@@ -351,7 +357,7 @@ const UserProfileCard = ({
     } finally {
       setFollowLoading(false);
     }
-  }, [userId, username, isFollowing, followLoading]);
+  }, [userId, username, isFollowing]);
 
   // Categorized badges - prefer cached profile for instant display
   const { twitchBadges, seventvBadges, thirdPartyBadges, totalBadgeCount } = useMemo(() => {
@@ -685,8 +691,17 @@ const UserProfileCard = ({
               )}
             </button>
             </Tooltip>
-            <a href={`https://www.twitch.tv/${username}`} target="_blank" rel="noopener noreferrer" className="flex-1 glass-button text-white text-xs py-2 px-3 rounded text-center hover:bg-accent/20 transition-colors">
-              View Channel
+            <button
+              onClick={() => {
+                useAppStore.getState().startOfflineChat(username);
+                onClose();
+              }}
+              className="flex-1 glass-button text-white text-xs py-2 px-3 rounded text-center hover:bg-accent/20 transition-colors"
+            >
+              Join Chat
+            </button>
+            <a href={`https://www.twitch.tv/${username}`} target="_blank" rel="noopener noreferrer" className="flex-1 glass-button text-white text-xs py-2 px-3 rounded text-center hover:bg-accent/20 transition-colors flex items-center justify-center">
+              Twitch
             </a>
             <button
               onClick={async () => {
@@ -728,6 +743,135 @@ const UserProfileCard = ({
               Messages ({messageHistory.length})
             </button>
           </div>
+
+          {/* Moderator Danger Zone */}
+          {isModerator && broadcasterId && (
+            <div className="mt-4 pt-3 border-t border-red-500/20">
+              <div className="flex items-center gap-1.5 mb-2">
+                <svg className="w-3.5 h-3.5 text-red-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+                <span className="text-[10px] uppercase font-bold text-red-400 tracking-wider">Moderator Actions</span>
+              </div>
+              <div className="grid grid-cols-4 gap-2">
+                {/* Purge (1s Timeout) */}
+                <Tooltip content="Purge recent messages" side="top">
+                  <button
+                    onClick={async () => {
+                      if (onPreFillCommand) {
+                        onPreFillCommand(`/timeout ${username} 1 Purge`);
+                        onClose();
+                        return;
+                      }
+                      try {
+                        const { invoke } = await import('@tauri-apps/api/core');
+                        await invoke('ban_user', { broadcasterId, targetUserId: userId, duration: 1, reason: 'Purge' });
+                        useAppStore.getState().addToast(`Purged messages for ${username}`, 'success');
+                      } catch (err) {
+                        Logger.error('[UserProfileCard] Failed to purge:', err);
+                        useAppStore.getState().addToast('Failed to purge user', 'error');
+                      }
+                    }}
+                    className="p-1.5 glass-button text-xs font-semibold text-white/70 hover:text-white hover:bg-orange-500/20 border hover:border-orange-500/30 rounded flex items-center justify-center transition-colors"
+                  >
+                    Purge
+                  </button>
+                </Tooltip>
+
+                {/* Timeout 10m */}
+                <Tooltip content="Timeout for 10 minutes" side="top">
+                  <button
+                    onClick={async () => {
+                      if (onPreFillCommand) {
+                        onPreFillCommand(`/timeout ${username} 600 `);
+                        onClose();
+                        return;
+                      }
+                      try {
+                        const { invoke } = await import('@tauri-apps/api/core');
+                        await invoke('ban_user', { broadcasterId, targetUserId: userId, duration: 600, reason: null });
+                        useAppStore.getState().addToast(`Timed out ${username} for 10m`, 'success');
+                      } catch (err) {
+                        Logger.error('[UserProfileCard] Failed to timeout:', err);
+                        useAppStore.getState().addToast('Failed to timeout user', 'error');
+                      }
+                    }}
+                    className="p-1.5 glass-button text-xs font-semibold text-white/70 hover:text-white hover:bg-yellow-500/20 border hover:border-yellow-500/30 rounded flex items-center justify-center transition-colors"
+                  >
+                    10m
+                  </button>
+                </Tooltip>
+
+                {/* Timeout 24h */}
+                <Tooltip content="Timeout for 24 hours" side="top">
+                  <button
+                    onClick={async () => {
+                      if (onPreFillCommand) {
+                        onPreFillCommand(`/timeout ${username} 86400 `);
+                        onClose();
+                        return;
+                      }
+                      try {
+                        const { invoke } = await import('@tauri-apps/api/core');
+                        await invoke('ban_user', { broadcasterId, targetUserId: userId, duration: 86400, reason: null });
+                        useAppStore.getState().addToast(`Timed out ${username} for 24h`, 'success');
+                      } catch (err) {
+                        Logger.error('[UserProfileCard] Failed to timeout:', err);
+                        useAppStore.getState().addToast('Failed to timeout user', 'error');
+                      }
+                    }}
+                    className="p-1.5 glass-button text-xs font-semibold text-white/70 hover:text-white hover:bg-orange-600/20 border hover:border-orange-600/30 rounded flex items-center justify-center transition-colors"
+                  >
+                    24h
+                  </button>
+                </Tooltip>
+
+                {/* Ban */}
+                <Tooltip content="Permanently Ban User" side="top">
+                  <button
+                    onClick={async () => {
+                      if (onPreFillCommand) {
+                        onPreFillCommand(`/ban ${username} `);
+                        onClose();
+                        return;
+                      }
+                      if (window.confirm(`Are you sure you want to permanently ban ${username}?`)) {
+                        try {
+                          const { invoke } = await import('@tauri-apps/api/core');
+                          await invoke('ban_user', { broadcasterId, targetUserId: userId, duration: null, reason: null });
+                          useAppStore.getState().addToast(`Banned ${username}`, 'success');
+                          onClose();
+                        } catch (err) {
+                          Logger.error('[UserProfileCard] Failed to ban:', err);
+                          useAppStore.getState().addToast('Failed to ban user', 'error');
+                        }
+                      }
+                    }}
+                    className="p-1.5 text-xs font-semibold text-red-200 bg-red-900/50 hover:bg-red-600 border border-red-500/30 rounded flex items-center justify-center transition-colors shadow-lg"
+                  >
+                    Ban
+                  </button>
+                </Tooltip>
+              </div>
+              <div className="mt-2 text-right">
+                <button
+                  onClick={async () => {
+                    if (window.confirm(`Unban ${username}?`)) {
+                      try {
+                        const { invoke } = await import('@tauri-apps/api/core');
+                        await invoke('unban_user', { broadcasterId, targetUserId: userId });
+                        useAppStore.getState().addToast(`Unbanned ${username}`, 'success');
+                      } catch (err) {
+                        Logger.error('[UserProfileCard] Failed to unban:', err);
+                        useAppStore.getState().addToast('Failed to unban user', 'error');
+                      }
+                    }
+                  }}
+                  className="text-[10px] font-medium text-textSecondary hover:text-white hover:underline cursor-pointer"
+                >
+                  Unban User
+                </button>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Expandable Messages Section */}

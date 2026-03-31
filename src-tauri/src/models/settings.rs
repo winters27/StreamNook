@@ -258,11 +258,21 @@ pub struct CompactViewSettings {
 pub struct MultiNookSlot {
     pub id: String,
     pub channel_login: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channel_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channel_name: Option<String>,
     pub volume: f32,
     pub muted: bool,
-    pub is_primary: bool,
+    pub is_focused: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_minimized: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile_image_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub game_name: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]

@@ -29,6 +29,7 @@ interface PredictionData {
   prediction_window_seconds: number;
   created_at: string;
   status: string;
+  winning_outcome_id?: string;
 }
 
 interface PredictionOverlayProps {
@@ -101,9 +102,30 @@ const PredictionOverlay = ({ channelId, channelLogin, isHypeTrainActive = false 
           // Only set if we don't already have this prediction active
           if (!activePrediction || activePrediction.prediction_id !== result.prediction_id) {
             setActivePrediction(result);
-            setIsLocked(result.status === 'LOCKED');
+            
+            const isFinished = result.status === 'LOCKED' || result.status === 'RESOLVED' || result.status === 'RESOLVE_PENDING';
+            setIsLocked(isFinished);
             setIsExpanded(true);
-            setResolutionState('none');
+            
+            // Handle specific closed states immediately on mount
+            if (result.status === 'RESOLVED') {
+                setResolutionState('announced'); // User late-joined, we don't know their bet, just announce it
+                setWinningOutcomeId(result.winning_outcome_id || null);
+                
+                // Keep the resolution banner visible briefly then dismiss it (similar to pubsub behavior)
+                setTimeout(() => {
+                    setActivePrediction(null);
+                    setSelectedOutcome(null);
+                    setHasPlacedBet(false);
+                    setResolutionState('none');
+                    setWinningOutcomeId(null);
+                }, 5000);
+            } else if (result.status === 'RESOLVE_PENDING') {
+                setResolutionState('pending');
+            } else {
+                setResolutionState('none');
+            }
+
             // Auto-select first outcome if prediction is still active (not locked)
             setSelectedOutcome(result.status === 'ACTIVE' && result.outcomes?.length > 0 ? result.outcomes[0].id : null);
             setHasPlacedBet(false);
@@ -115,7 +137,7 @@ const PredictionOverlay = ({ channelId, channelLogin, isHypeTrainActive = false 
               const remaining = Math.max(0, result.prediction_window_seconds - elapsed);
               setTimeRemaining(remaining);
               
-              if (remaining === 0) {
+              if (remaining <= 0) {
                 setIsLocked(true);
               }
             } else {

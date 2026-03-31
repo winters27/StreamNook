@@ -1,16 +1,17 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { useAppStore, HomeTab } from '../stores/AppStore';
 import { createPortal } from 'react-dom';
-import { Search, ArrowLeft, Heart, Maximize2, X, Gift, Pickaxe, LayoutGrid, Flame, ArrowUpRight, Undo2, LogOut, User, Loader2 } from 'lucide-react';
-import { motion, LayoutGroup, AnimatePresence } from 'framer-motion';
+import { Search, ArrowLeft, Heart, Maximize2, X, Gift, Pickaxe, LayoutGrid, Flame, ArrowUpRight, Undo2, Users, User, Loader2, MessageSquare } from 'lucide-react';
+import { motion, LayoutGroup, AnimatePresence, useScroll, useTransform } from 'framer-motion';
 import { usemultiNookStore } from '../stores/multiNookStore';
 
 import { invoke } from '@tauri-apps/api/core';
-import type { TwitchStream, TwitchCategory } from '../types';
+import type { TwitchStream, TwitchCategory, CategoryInfo, TwitchClip, TwitchVideo } from '../types';
 import LoadingWidget from './LoadingWidget';
 import StreamTitleWithEmojis from './StreamTitleWithEmojis';
 import { useContextMenuStore } from '../stores/contextMenuStore';
 import { Tooltip } from './ui/Tooltip';
+import { GlassSelect } from './ui/GlassSelect';
 
 import { Logger } from '../utils/logger';
 // Types for drops data
@@ -305,6 +306,14 @@ const Home = () => {
         offlineFollowedChannels,
         setOfflineFollowedChannels,
         setProfileModalUser,
+        openDropsWithSearch,
+        playMedia,
+        homeCategoryTab,
+        setHomeCategoryTab,
+        clipsPeriod, setClipsPeriod,
+        videosSort, setVideosSort,
+        videosPeriod, setVideosPeriod,
+        mediaSearchQuery, setMediaSearchQuery,
     } = useAppStore();
 
     const [isLoadingOfflineChannels, setIsLoadingOfflineChannels] = useState(false);
@@ -372,6 +381,8 @@ const Home = () => {
 
     const [searchQuery, setSearchQuery] = useState('');
     const [searchResults, setSearchResults] = useState<TwitchStream[]>([]);
+    const [categorySearchResults, setCategorySearchResults] = useState<TwitchCategory[]>([]);
+    const [searchMode, setSearchMode] = useState<'streamers' | 'categories'>('streamers');
     const [isSearching, setIsSearching] = useState(false);
     const topGames = cachedTopGames;
     const [isLoadingGames, setIsLoadingGames] = useState(false);
@@ -379,7 +390,38 @@ const Home = () => {
     const hasMoreGames = cachedHasMoreGames;
     const [isLoadingMoreGames, setIsLoadingMoreGames] = useState(false);
     const [categoryStreams, setCategoryStreams] = useState<TwitchStream[]>([]);
+    const [categoryStreamsCursor, setCategoryStreamsCursor] = useState<string | null>(null);
+    const [hasMoreCategoryStreams, setHasMoreCategoryStreams] = useState(true);
+    const [isLoadingMoreCategoryStreams, setIsLoadingMoreCategoryStreams] = useState(false);
     const [isLoadingCategoryStreams, setIsLoadingCategoryStreams] = useState(false);
+    
+    // Category Tabs State
+    const [categoryActiveTab, setCategoryActiveTabLocal] = useState<'live' | 'clips' | 'videos'>(homeCategoryTab);
+    // Wrapper that syncs local and store state
+    const setCategoryActiveTab = useCallback((tab: 'live' | 'clips' | 'videos') => {
+        setCategoryActiveTabLocal(tab);
+        setHomeCategoryTab(tab);
+    }, [setHomeCategoryTab]);
+    // Sync from store → local when navigating back from a clip/VOD
+    useEffect(() => {
+        setCategoryActiveTabLocal(homeCategoryTab);
+    }, [homeCategoryTab]);
+    const [categoryClips, setCategoryClips] = useState<TwitchClip[]>([]);
+    const [categoryClipsCursor, setCategoryClipsCursor] = useState<string | null>(null);
+    const [hasMoreCategoryClips, setHasMoreCategoryClips] = useState(true);
+    const [isLoadingClips, setIsLoadingClips] = useState(false);
+    const [isLoadingMoreClips, setIsLoadingMoreClips] = useState(false);
+    
+    const [categoryVideos, setCategoryVideos] = useState<TwitchVideo[]>([]);
+    const [categoryVideosCursor, setCategoryVideosCursor] = useState<string | null>(null);
+    const [hasMoreCategoryVideos, setHasMoreCategoryVideos] = useState(true);
+    const [isLoadingVideos, setIsLoadingVideos] = useState(false);
+    const [isLoadingMoreVideos, setIsLoadingMoreVideos] = useState(false);
+
+    const [categoryDetails, setCategoryDetails] = useState<CategoryInfo | null>(null);
+    const [isLoadingCategoryDetails, setIsLoadingCategoryDetails] = useState(false);
+    const [isDescriptionExpanded, setIsDescriptionExpanded] = useState(false);
+    const [isDescriptionClamped, setIsDescriptionClamped] = useState(true);
     const [animatingHearts, setAnimatingHearts] = useState<Set<string>>(new Set());
     const [isSearchExpanded, setIsSearchExpanded] = useState(false);
     const searchInputRef = useRef<HTMLInputElement>(null);
@@ -390,6 +432,13 @@ const Home = () => {
     const [dropsGameNames, setDropsGameNames] = useState<Map<string, DropCampaign>>(new Map());
 
     const scrollContainerRef = useRef<HTMLDivElement>(null);
+    const { scrollY } = useScroll({ container: scrollContainerRef });
+    
+    // Smooth scroll-linked math for the compact Top UI floating pill
+    const heroOpacity = useTransform(scrollY, [10, 80], [1, 0]);
+    // The floating Pill Title fades in strictly as the Hero finishes fading out
+    const compactTitleOpacity = useTransform(scrollY, [60, 100], [0, 1]);
+    const compactTitleY = useTransform(scrollY, [60, 100], [10, 0]);
     const loadingRef = useRef(false);
     
     // Debounce ref for Hype Train status refresh
@@ -413,7 +462,7 @@ const Home = () => {
         return () => clearTimeout(initTimer);
     }, [loadFollowedStreams, loadRecommendedStreams]);
 
-    // Auto-select the appropriate tab based on auth status on initial mount only
+    // Scroll-Collapse Header Observer has been completely replaced by native framer-motion useScroll progressive tracking!    // Auto-select the appropriate tab based on auth status on initial mount only
     // This effect should NOT run when user clicks tabs - remove homeActiveTab from deps
     useEffect(() => {
         // Don't override if user has navigated to a specific tab
@@ -618,10 +667,16 @@ const Home = () => {
 
         // Also listen for mining status change events
         let unlisten: (() => void) | null = null;
+        let isMounted = true;
         const setupListener = async () => {
             try {
                 const { listen } = await import('@tauri-apps/api/event');
-                unlisten = await listen('mining-status-changed', syncMiningStatus);
+                const unlistenFn = await listen('mining-status-changed', syncMiningStatus);
+                if (isMounted) {
+                    unlisten = unlistenFn;
+                } else {
+                    unlistenFn();
+                }
             } catch {
                 // Event listener not available
             }
@@ -629,6 +684,7 @@ const Home = () => {
         setupListener();
 
         return () => {
+            isMounted = false;
             clearInterval(interval);
             if (unlisten) unlisten();
         };
@@ -714,40 +770,72 @@ const Home = () => {
         setActiveTab('category');
         setIsLoadingCategoryStreams(true);
         setCategoryStreams([]);
+        setIsLoadingCategoryDetails(true);
+        setCategoryDetails(null);
+        setIsDescriptionExpanded(false);
+        setCategoryActiveTab('live');
+        setCategoryClips([]);
+        setCategoryClipsCursor(null);
+        setHasMoreCategoryClips(true);
+        setCategoryVideos([]);
+        setCategoryVideosCursor(null);
+        setHasMoreCategoryVideos(true);
 
-        try {
-            const [streams] = await invoke('get_streams_by_game', {
-                gameId: category.id,
-                cursor: null,
-                limit: 40
-            }) as [TwitchStream[], string | null];
-            setCategoryStreams(streams);
-        } catch (e) {
-            Logger.error('Failed to load category streams:', e);
-            setCategoryStreams([]);
-        } finally {
-            setIsLoadingCategoryStreams(false);
-        }
+        invoke('get_streams_by_game', { gameId: category.id, cursor: null, limit: 40 })
+            .then(res => {
+                const [streams, cursor] = res as [TwitchStream[], string | null];
+                setCategoryStreams(streams);
+                setCategoryStreamsCursor(cursor);
+                setHasMoreCategoryStreams(!!cursor && streams.length > 0);
+            })
+            .catch(e => {
+                Logger.error('Failed to load category streams:', e);
+                setCategoryStreams([]);
+                setCategoryStreamsCursor(null);
+                setHasMoreCategoryStreams(false);
+            })
+            .finally(() => setIsLoadingCategoryStreams(false));
+
+        invoke('get_category_info', { gameName: category.name })
+            .then(details => setCategoryDetails(details as CategoryInfo | null))
+            .catch(e => Logger.error('Failed to load category details:', e))
+            .finally(() => setIsLoadingCategoryDetails(false));
     };
 
     // Load streams by game name when navigating from badge overlay (category has no ID)
     const loadCategoryStreamsByName = async (gameName: string) => {
         setIsLoadingCategoryStreams(true);
         setCategoryStreams([]);
+        setIsLoadingCategoryDetails(true);
+        setCategoryDetails(null);
+        setIsDescriptionExpanded(false);
+        setCategoryActiveTab('live');
+        setCategoryClips([]);
+        setCategoryClipsCursor(null);
+        setHasMoreCategoryClips(true);
+        setCategoryVideos([]);
+        setCategoryVideosCursor(null);
+        setHasMoreCategoryVideos(true);
 
-        try {
-            const streams = await invoke('get_streams_by_game_name', {
-                gameName: gameName,
-                excludeUserLogin: null,
-                limit: 40
-            }) as TwitchStream[];
-            setCategoryStreams(streams);
-        } catch (e) {
-            Logger.error('Failed to load category streams by name:', e);
-            setCategoryStreams([]);
-        } finally {
-            setIsLoadingCategoryStreams(false);
-        }
+        invoke('get_streams_by_game_name', { gameName: gameName, excludeUserLogin: null, cursor: null, limit: 40 })
+            .then(res => {
+                const [streams, cursor] = res as [TwitchStream[], string | null];
+                setCategoryStreams(streams);
+                setCategoryStreamsCursor(cursor);
+                setHasMoreCategoryStreams(!!cursor && streams.length > 0);
+            })
+            .catch(e => {
+                Logger.error('Failed to load category streams by name:', e);
+                setCategoryStreams([]);
+                setCategoryStreamsCursor(null);
+                setHasMoreCategoryStreams(false);
+            })
+            .finally(() => setIsLoadingCategoryStreams(false));
+
+        invoke('get_category_info', { gameName: gameName })
+            .then(details => setCategoryDetails(details as CategoryInfo | null))
+            .catch(e => Logger.error('Failed to load category details:', e))
+            .finally(() => setIsLoadingCategoryDetails(false));
     };
 
     // Effect to handle category view re-mount or navigation from badge overlay
@@ -756,7 +844,24 @@ const Home = () => {
             if (selectedCategory.id) {
                 // Normal category — re-fetch if streams are empty (e.g., after remount from watching a stream)
                 if (categoryStreams.length === 0 && !isLoadingCategoryStreams) {
-                    handleCategoryClick(selectedCategory);
+                    // Don't call handleCategoryClick here — it resets categoryActiveTab to 'live'.
+                    // When navigating back from a clip/VOD, we need to preserve the sub-tab.
+                    // Just reload the stream data without touching tab state.
+                    setIsLoadingCategoryStreams(true);
+                    invoke('get_streams_by_game', { gameId: selectedCategory.id, cursor: null, limit: 40 })
+                        .then(res => {
+                            const [streams, cursor] = res as [TwitchStream[], string | null];
+                            setCategoryStreams(streams);
+                            setCategoryStreamsCursor(cursor);
+                            setHasMoreCategoryStreams(!!cursor && streams.length > 0);
+                        })
+                        .catch(e => {
+                            Logger.error('Failed to load category streams:', e);
+                            setCategoryStreams([]);
+                            setCategoryStreamsCursor(null);
+                            setHasMoreCategoryStreams(false);
+                        })
+                        .finally(() => setIsLoadingCategoryStreams(false));
                 }
             } else if (selectedCategory.name) {
                 // Badge overlay navigation — category has no ID, load by name
@@ -786,6 +891,8 @@ const Home = () => {
         setActiveTab('browse');
         setSelectedCategory(null);
         setCategoryStreams([]);
+        setCategoryStreamsCursor(null);
+        setHasMoreCategoryStreams(true);
         
         const isCacheStale = Date.now() - cachedTopGamesTimestamp > CATEGORY_CACHE_TTL;
         
@@ -801,17 +908,189 @@ const Home = () => {
         }
     };
 
+    const loadMoreCategoryStreams = useCallback(async () => {
+        if (!selectedCategory || !hasMoreCategoryStreams || isLoadingMoreCategoryStreams) return;
+        setIsLoadingMoreCategoryStreams(true);
+        try {
+            if (selectedCategory.id) {
+                const res = await invoke('get_streams_by_game', { 
+                    gameId: selectedCategory.id, 
+                    cursor: categoryStreamsCursor, 
+                    limit: 40 
+                }) as [TwitchStream[], string | null];
+                const [newStreams, newCursor] = res;
+                if (newStreams.length > 0) {
+                    setCategoryStreams(prev => [...prev, ...newStreams]);
+                    setCategoryStreamsCursor(newCursor);
+                    setHasMoreCategoryStreams(!!newCursor);
+                } else {
+                    setHasMoreCategoryStreams(false);
+                }
+            } else if (selectedCategory.name) {
+                const res = await invoke('get_streams_by_game_name', { 
+                    gameName: selectedCategory.name, 
+                    excludeUserLogin: null, 
+                    cursor: categoryStreamsCursor, 
+                    limit: 40 
+                }) as [TwitchStream[], string | null];
+                const [newStreams, newCursor] = res;
+                if (newStreams.length > 0) {
+                    setCategoryStreams(prev => [...prev, ...newStreams]);
+                    setCategoryStreamsCursor(newCursor);
+                    setHasMoreCategoryStreams(!!newCursor);
+                } else {
+                    setHasMoreCategoryStreams(false);
+                }
+            }
+        } catch (e) {
+            Logger.error('Failed to load more category streams:', e);
+            setHasMoreCategoryStreams(false);
+        } finally {
+            setIsLoadingMoreCategoryStreams(false);
+        }
+    }, [selectedCategory, hasMoreCategoryStreams, isLoadingMoreCategoryStreams, categoryStreamsCursor]);
+
+    const loadCategoryClips = async () => {
+        if (!selectedCategory?.id) return;
+        setIsLoadingClips(true);
+        setCategoryClips([]);
+        setCategoryClipsCursor(null);
+        setHasMoreCategoryClips(true);
+        try {
+            const res = await invoke('get_clips_by_game', { gameId: selectedCategory.id, limit: 40, cursor: null, period: clipsPeriod }) as [TwitchClip[], string | null];
+            setCategoryClips(res[0]);
+            setCategoryClipsCursor(res[1]);
+            // Clips often don't have cursors if they reach the end in the first page, Twitch pagination is finicky
+            setHasMoreCategoryClips(!!res[1] && res[0].length >= 40);
+        } catch (e) {
+            Logger.error('Failed to load category clips:', e);
+            setHasMoreCategoryClips(false);
+        } finally {
+            setIsLoadingClips(false);
+        }
+    };
+
+    const loadMoreCategoryClips = useCallback(async () => {
+        if (!selectedCategory?.id || !hasMoreCategoryClips || isLoadingMoreClips) return;
+        setIsLoadingMoreClips(true);
+        try {
+            const res = await invoke('get_clips_by_game', { gameId: selectedCategory.id, limit: 40, cursor: categoryClipsCursor, period: clipsPeriod }) as [TwitchClip[], string | null];
+            if (res[0].length > 0) {
+                setCategoryClips(prev => [...prev, ...res[0]]);
+                setCategoryClipsCursor(res[1]);
+                setHasMoreCategoryClips(!!res[1] && res[0].length >= 40);
+            } else {
+                setHasMoreCategoryClips(false);
+            }
+        } catch (e) {
+            Logger.error('Failed to load more category clips:', e);
+            setHasMoreCategoryClips(false);
+        } finally {
+            setIsLoadingMoreClips(false);
+        }
+    }, [selectedCategory, hasMoreCategoryClips, isLoadingMoreClips, categoryClipsCursor, clipsPeriod]);
+
+    const loadCategoryVideos = async () => {
+        if (!selectedCategory?.id) return;
+        setIsLoadingVideos(true);
+        setCategoryVideos([]);
+        setCategoryVideosCursor(null);
+        setHasMoreCategoryVideos(true);
+        try {
+            const res = await invoke('get_videos_by_game', { gameId: selectedCategory.id, sort: videosSort, period: videosPeriod, limit: 40, cursor: null }) as [TwitchVideo[], string | null];
+            setCategoryVideos(res[0]);
+            setCategoryVideosCursor(res[1]);
+            setHasMoreCategoryVideos(!!res[1] && res[0].length >= 40);
+        } catch (e) {
+            Logger.error('Failed to load category videos:', e);
+            setHasMoreCategoryVideos(false);
+        } finally {
+            setIsLoadingVideos(false);
+        }
+    };
+
+    const loadMoreCategoryVideos = useCallback(async () => {
+        if (!selectedCategory?.id || !hasMoreCategoryVideos || isLoadingMoreVideos) return;
+        setIsLoadingMoreVideos(true);
+        try {
+            const res = await invoke('get_videos_by_game', { gameId: selectedCategory.id, sort: videosSort, period: videosPeriod, limit: 40, cursor: categoryVideosCursor }) as [TwitchVideo[], string | null];
+            if (res[0].length > 0) {
+                setCategoryVideos(prev => [...prev, ...res[0]]);
+                setCategoryVideosCursor(res[1]);
+                setHasMoreCategoryVideos(!!res[1] && res[0].length >= 40);
+            } else {
+                setHasMoreCategoryVideos(false);
+            }
+        } catch (e) {
+            Logger.error('Failed to load more category videos:', e);
+            setHasMoreCategoryVideos(false);
+        } finally {
+            setIsLoadingMoreVideos(false);
+        }
+    }, [selectedCategory, hasMoreCategoryVideos, isLoadingMoreVideos, categoryVideosCursor, videosSort, videosPeriod]);
+
+    // Effect to trigger fetching clips/videos on tab change
+    useEffect(() => {
+        if (activeTab === 'category' && selectedCategory?.id) {
+            if (categoryActiveTab === 'clips' && categoryClips.length === 0 && !isLoadingClips) {
+                loadCategoryClips();
+            } else if (categoryActiveTab === 'videos' && categoryVideos.length === 0 && !isLoadingVideos) {
+                loadCategoryVideos();
+            }
+        }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [activeTab, categoryActiveTab, selectedCategory]);
+
+    // Refresh clips when period changes
+    useEffect(() => {
+        if (activeTab === 'category' && categoryActiveTab === 'clips' && selectedCategory?.id) {
+            loadCategoryClips();
+        }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [clipsPeriod]);
+
+    // Refresh videos when sort or period changes
+    useEffect(() => {
+        if (activeTab === 'category' && categoryActiveTab === 'videos' && selectedCategory?.id) {
+            loadCategoryVideos();
+        }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [videosSort, videosPeriod]);
+
     const handleSearch = async () => {
         if (!searchQuery.trim()) return;
 
         setIsSearching(true);
-        setActiveTab('search');
         try {
-            const results = await invoke('search_channels', { query: searchQuery }) as TwitchStream[];
-            setSearchResults(results);
+            if (activeTab === 'browse' || (activeTab === 'search' && searchMode === 'categories')) {
+                setSearchMode('categories');
+                setActiveTab('search');
+                const results = await invoke('search_categories', { query: searchQuery, limit: 40 }) as TwitchCategory[];
+                setCategorySearchResults(results);
+                setSearchResults([]);
+            } else if ((activeTab === 'category' && selectedCategory) || (activeTab === 'search' && searchMode === 'streamers' && selectedCategory)) {
+                setSearchMode('streamers');
+                setActiveTab('search');
+                const results = await invoke('search_channels', { query: searchQuery }) as TwitchStream[];
+                
+                const filtered = results.filter(s => 
+                    (selectedCategory.id && s.game_id === selectedCategory.id) || 
+                    (selectedCategory.name && s.game_name?.toLowerCase() === selectedCategory.name.toLowerCase())
+                );
+                
+                setSearchResults(filtered);
+                setCategorySearchResults([]);
+            } else {
+                setSearchMode('streamers');
+                setActiveTab('search');
+                const results = await invoke('search_channels', { query: searchQuery }) as TwitchStream[];
+                setSearchResults(results);
+                setCategorySearchResults([]);
+            }
         } catch (e) {
             Logger.error('Search failed:', e);
             setSearchResults([]);
+            setCategorySearchResults([]);
         } finally {
             setIsSearching(false);
         }
@@ -824,6 +1103,7 @@ const Home = () => {
             setIsSearchExpanded(false);
             setSearchQuery('');
             setSearchResults([]);
+            setCategorySearchResults([]);
             if (activeTab === 'search') {
                 setActiveTab(isAuthenticated ? 'following' : 'recommended');
             }
@@ -831,11 +1111,17 @@ const Home = () => {
     };
 
     const getThumbnailUrl = (url: string) => {
-        return url.replace('{width}', '1280').replace('{height}', '720');
+        return url
+            .replace('%{width}', '1280').replace('%{height}', '720')
+            .replace('{width}', '1280').replace('{height}', '720');
     };
 
     const getGameBoxArt = (url: string) => {
-        return url.replace('{width}', '1200').replace('{height}', '1600');
+        if (!url) return '';
+        if (url.includes('{width}') && url.includes('{height}')) {
+            return url.replace('{width}', '1200').replace('{height}', '1600');
+        }
+        return url.replace(/-\d+x\d+\.(jpg|jpeg|png)$/i, '-1200x1600.$1');
     };
 
     const handleStreamClick = (stream: TwitchStream) => {
@@ -904,7 +1190,40 @@ const Home = () => {
                 });
             }
         }
-    }, [activeTab, hasMoreRecommended, isLoadingMore, loadMoreRecommendedStreams, hasMoreGames, isLoadingMoreGames, loadMoreTopGames]);
+
+        // Handle category content infinite scroll
+        if (activeTab === 'category') {
+            if (categoryActiveTab === 'live' && hasMoreCategoryStreams && !isLoadingMoreCategoryStreams && !loadingRef.current) {
+                if (scrollPercentage > 0.8) {
+                    loadingRef.current = true;
+                    loadMoreCategoryStreams().finally(() => {
+                        loadingRef.current = false;
+                    });
+                }
+            } else if (categoryActiveTab === 'clips' && hasMoreCategoryClips && !isLoadingMoreClips && !loadingRef.current) {
+                if (scrollPercentage > 0.8) {
+                    loadingRef.current = true;
+                    loadMoreCategoryClips().finally(() => {
+                        loadingRef.current = false;
+                    });
+                }
+            } else if (categoryActiveTab === 'videos' && hasMoreCategoryVideos && !isLoadingMoreVideos && !loadingRef.current) {
+                if (scrollPercentage > 0.8) {
+                    loadingRef.current = true;
+                    loadMoreCategoryVideos().finally(() => {
+                        loadingRef.current = false;
+                    });
+                }
+            }
+        }
+    }, [
+        activeTab, hasMoreRecommended, isLoadingMore, loadMoreRecommendedStreams, 
+        hasMoreGames, isLoadingMoreGames, loadMoreTopGames, 
+        categoryActiveTab,
+        hasMoreCategoryStreams, isLoadingMoreCategoryStreams, loadMoreCategoryStreams,
+        hasMoreCategoryClips, isLoadingMoreClips, loadMoreCategoryClips,
+        hasMoreCategoryVideos, isLoadingMoreVideos, loadMoreCategoryVideos
+    ]);
 
     useEffect(() => {
         const container = scrollContainerRef.current;
@@ -924,6 +1243,157 @@ const Home = () => {
 
     const offlineSearchResults = activeTab === 'search' ? searchResults.filter(s => s.viewer_count === 0 && !s.is_live) : [];
 
+    const renderCategoryCard = (game: TwitchCategory) => {
+        const dropsCampaign = dropsGameIds.get(game.id);
+        const hasDrops = !!dropsCampaign;
+
+        return (
+            <div
+                key={game.id}
+                className={`glass-panel cursor-pointer hover:bg-glass-hover transition-all duration-200 group overflow-hidden relative ${isOverlayMode ? '!bg-black/40 !border-white/5' : ''} ${hasDrops ? 'ring-2 ring-accent shadow-accent/40' : ''}`}
+                style={hasDrops ? { boxShadow: '0 0 15px var(--color-accent-muted)' } : undefined}
+                onClick={() => handleCategoryClick(game)}
+            >
+                <div className="relative overflow-hidden">
+                    <img
+                        loading="lazy"
+                        src={getGameBoxArt(game.box_art_url)}
+                        alt={game.name}
+                        className="w-full aspect-[3/4] object-cover group-hover:scale-105 transition-transform duration-200"
+                    />
+                    {hasDrops && (
+                        <div className="absolute inset-0 bg-gradient-to-t from-accent/40 via-transparent to-accent/20 pointer-events-none" />
+                    )}
+                    {hasDrops && (
+                        <div className="absolute top-2 left-2 z-10">
+                            <div className="drops-badge-glass-lg">
+                                <Gift size={14} className="drop-shadow-lg" />
+                                <span>DROPS</span>
+                            </div>
+                        </div>
+                    )}
+                    {hasDrops && (
+                        <Tooltip content={activeMiningIds.has(dropsCampaign.id) ? `Click to stop mining ${dropsCampaign.name}` : `Start mining ${dropsCampaign.name}`} side="top">
+                        <button
+                            onClick={(e) => handleToggleMining(e, dropsCampaign)}
+                            className={`absolute bottom-2 right-2 left-2 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md text-xs font-semibold transition-all duration-300 glass-button ${activeMiningIds.has(dropsCampaign.id)
+                                ? '!bg-green-500/20 text-green-400 border-green-500/30 !shadow-[0_2px_10px_rgba(34,197,94,0.3),inset_0_1px_rgba(255,255,255,0.2)] ring-1 ring-green-500/20 hover:!bg-red-500/30 hover:text-red-400 hover:border-red-500/30 hover:ring-red-500/30 hover:!shadow-[0_2px_10px_rgba(239,68,68,0.3),inset_0_1px_rgba(255,255,255,0.2)]'
+                                : '!bg-accent/30 text-white border-accent/40 !shadow-[0_2px_10px_rgba(var(--color-accent-rgb),0.4),inset_0_1px_rgba(255,255,255,0.2)] ring-1 ring-accent/20 hover:!bg-accent/50 hover:scale-[1.02]'
+                                }`}
+                        >
+                            {activeMiningIds.has(dropsCampaign.id) ? (
+                                <>
+                                    <Pickaxe size={14} className="animate-pulse" />
+                                    <span>Mining</span>
+                                </>
+                            ) : (
+                                <>
+                                    <Pickaxe size={14} />
+                                    <span>Mine Drops</span>
+                                </>
+                            )}
+                        </button>
+                        </Tooltip>
+                    )}
+                </div>
+                <div className="p-2">
+                    <Tooltip content={game.name} side="bottom"><h3 className="text-textPrimary font-medium text-sm line-clamp-2 group-hover:text-accent transition-colors">
+                        {game.name}
+                    </h3></Tooltip>
+                    {game.viewer_count !== undefined && (
+                        <p className="text-textSecondary text-xs mt-0.5">
+                            {game.viewer_count.toLocaleString()} viewers
+                        </p>
+                    )}
+                </div>
+            </div>
+        );
+    };
+
+    const hasCategoryDrops = activeTab === 'category' && selectedCategory && (!!(
+        (selectedCategory.id && dropsGameIds.has(selectedCategory.id)) ||
+        (selectedCategory.name && dropsGameNames.has(selectedCategory.name.toLowerCase()))
+    ));
+
+    const renderClipCard = (clip: TwitchClip) => {
+        return (
+            <div
+                key={clip.id}
+                className={`glass-panel cursor-pointer hover:bg-glass-hover transition-all duration-200 group overflow-hidden relative ${isOverlayMode ? '!bg-black/40 !border-white/5' : ''}`}
+                onClick={() => {
+                    setHomeCategoryTab('clips');
+                    playMedia('clip', clip.url, clip);
+                }}
+            >
+                <div className="relative overflow-hidden rounded">
+                    <img
+                        loading="lazy"
+                        src={clip.thumbnail_url || 'https://vod-secure.twitch.tv/_404/404_processing_320x180.png'}
+                        alt={clip.title}
+                        onError={(e) => { e.currentTarget.src = 'https://vod-secure.twitch.tv/_404/404_processing_320x180.png'; }}
+                        className="w-full aspect-video object-cover group-hover:scale-105 transition-transform duration-200 bg-black/20"
+                    />
+                    <div className="absolute bottom-1.5 left-1.5 px-2 py-0.5 glass-badge text-white text-[10px] font-medium rounded">
+                        {clip.duration.toFixed(1)}s
+                    </div>
+                    <div className="absolute top-1.5 left-1.5 px-2 py-0.5 glass-badge text-white text-[10px] font-medium rounded flex items-center gap-1">
+                        <Users size={10} />
+                        {clip.view_count.toLocaleString()}
+                    </div>
+                </div>
+                <div className="px-1 py-2 space-y-0.5">
+                    <h3 className="text-textPrimary font-medium text-[13px] leading-tight line-clamp-2 group-hover:text-accent transition-colors">
+                        {clip.title}
+                    </h3>
+                    <div className="flex items-center justify-between text-[11px] text-textSecondary mt-1 pt-1 border-t border-white/5">
+                        <span className="truncate max-w-[50%]">{clip.broadcaster_name}</span>
+                        <span className="shrink-0">{new Date(clip.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</span>
+                    </div>
+                    <p className="text-[10px] text-textSecondary/60 truncate italic">Clipped by {clip.creator_name}</p>
+                </div>
+            </div>
+        );
+    };
+
+    const renderVideoCard = (video: TwitchVideo) => {
+        return (
+            <div
+                key={video.id}
+                className={`glass-panel cursor-pointer hover:bg-glass-hover transition-all duration-200 group overflow-hidden relative ${isOverlayMode ? '!bg-black/40 !border-white/5' : ''}`}
+                onClick={() => {
+                    setHomeCategoryTab('videos');
+                    playMedia('video', video.url, video);
+                }}
+            >
+                <div className="relative overflow-hidden rounded">
+                    <img
+                        loading="lazy"
+                        src={video.thumbnail_url ? video.thumbnail_url.replace('%{width}', '440').replace('%{height}', '248') : 'https://vod-secure.twitch.tv/_404/404_processing_320x180.png'}
+                        alt={video.title}
+                        onError={(e) => { e.currentTarget.src = 'https://vod-secure.twitch.tv/_404/404_processing_320x180.png'; }}
+                        className="w-full aspect-video object-cover group-hover:scale-105 transition-transform duration-200 bg-black/20"
+                    />
+                    <div className="absolute bottom-1.5 left-1.5 px-2 py-0.5 glass-badge text-white text-[10px] font-medium rounded">
+                        {video.duration}
+                    </div>
+                    <div className="absolute top-1.5 left-1.5 px-2 py-0.5 glass-badge text-white text-[10px] font-medium rounded flex items-center gap-1">
+                        <Users size={10} />
+                        {video.view_count.toLocaleString()}
+                    </div>
+                </div>
+                <div className="px-1 py-2 space-y-0.5">
+                    <h3 className="text-textPrimary font-medium text-[13px] leading-tight line-clamp-2 group-hover:text-accent transition-colors">
+                        {video.title}
+                    </h3>
+                    <div className="flex items-center justify-between text-[11px] text-textSecondary mt-1 pt-1 border-t border-white/5">
+                        <span className="truncate max-w-[50%]">{video.user_name}</span>
+                        <span className="shrink-0">{new Date(video.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</span>
+                    </div>
+                </div>
+            </div>
+        );
+    };
+
     return (
         <div className="flex flex-col h-full">
             {/* Global SVG Definitions for Liquid Glass Heart */}
@@ -941,29 +1411,10 @@ const Home = () => {
                 </defs>
             </svg>
 
-            {/* Compact Header */}
-            <div className="flex items-center justify-center gap-3 px-4 py-2.5 border-b border-borderSubtle relative min-h-[48px]">
-                {/* Category back button and name - absolute left with proper spacing */}
-                {activeTab === 'category' && selectedCategory && (
-                    <div className="absolute left-4 flex items-center gap-2 max-w-[40%]">
-                        <Tooltip content="Back to Browse" side="top">
-                        <button
-                            onClick={handleBackToBrowse}
-                            className="p-2 glass-panel hover:bg-glass-hover rounded-lg transition-all group flex-shrink-0"
-                        >
-                            <ArrowLeft size={18} className="text-textSecondary group-hover:text-textPrimary transition-colors" />
-                        </button>
-                        </Tooltip>
-                        <span className="text-textPrimary font-medium text-sm truncate">
-                            {selectedCategory.name}
-                        </span>
-                    </div>
-                )}
-
-
-
-                {/* Centered Navigation - All tabs and search together */}
-                {!(activeTab === 'category' && selectedCategory) && (
+            {/* Top Navigation Frame - Always Center Navigation */}
+            {!(activeTab === 'category' && selectedCategory) && (
+                <div className="flex flex-col relative box-border overflow-hidden z-20">
+                    <div className="flex gap-3 relative z-30 px-4 py-2.5 min-h-[48px] items-center justify-center border-b border-borderSubtle bg-background/95 backdrop-blur-md">
                     <div className="relative flex items-center glass-panel px-1.5 py-1 !rounded-xl">
                         {/* Navigation buttons - fade out when search is expanded */}
                         <LayoutGroup>
@@ -1027,7 +1478,7 @@ const Home = () => {
                                 )}
                                 <span className={`relative z-10 inline-block transition-all duration-300 ${activeTab !== 'browse' ? 'group-hover:drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]' : ''}`}>Categories</span>
                             </button>
-                            {searchResults.length > 0 && (
+                            {(searchResults.length > 0 || categorySearchResults.length > 0) && (
                                 <button
                                     onClick={() => setActiveTab('search')}
                                     className={`group relative px-3 py-1.5 text-sm font-medium rounded-lg transition-all duration-300 whitespace-nowrap ${activeTab === 'search'
@@ -1044,7 +1495,7 @@ const Home = () => {
                                     )}
                                     <span className={`relative z-10 flex items-center transition-all duration-300 ${activeTab !== 'search' ? 'group-hover:drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]' : ''}`}>
                                         Results
-                                        <span className="ml-1 text-xs opacity-80">{searchResults.length}</span>
+                                        <span className="ml-1 text-xs opacity-80">{searchMode === 'categories' ? categorySearchResults.length : searchResults.length}</span>
                                     </span>
                                 </button>
                             )}
@@ -1104,6 +1555,7 @@ const Home = () => {
                                             setIsSearchExpanded(false);
                                             setSearchQuery('');
                                             setSearchResults([]);
+                                            setCategorySearchResults([]);
                                             if (activeTab === 'search') {
                                                 setActiveTab(isAuthenticated ? 'following' : 'recommended');
                                             }
@@ -1119,8 +1571,6 @@ const Home = () => {
                             </AnimatePresence>
                         </motion.div>
                     </div>
-                )}
-
                 {/* Return to Stream Button - absolute right */}
                 {streamUrl && (
                     <Tooltip content="Return to Stream" side="bottom">
@@ -1135,19 +1585,191 @@ const Home = () => {
                 )}
             </div>
 
+        </div>
+        )}
+
             {/* Content */}
             <div ref={scrollContainerRef} className="flex-1 overflow-y-auto p-4 scrollbar-thin relative">
+                
+                {/* FLOATING GLASS PILL HEADER (Only in Category View) */}
+                {activeTab === 'category' && selectedCategory && (
+                    <div className="sticky top-4 mt-2 z-30 h-0 overflow-visible flex items-center justify-between w-full pointer-events-none">
+                        <div className="flex items-center gap-3 text-textPrimary">
+                            {/* Back Button */}
+                            <Tooltip content="Back to Browse" side="right">
+                                <button
+                                    onClick={handleBackToBrowse}
+                                    className="h-[44px] w-[44px] glass-panel hover:bg-glass-hover rounded-xl flex items-center justify-center shadow-lg pointer-events-auto bg-background/80 backdrop-blur-md transition-colors"
+                                >
+                                    <ArrowLeft size={20} className="text-textSecondary hover:text-textPrimary transition-colors" />
+                                </button>
+                            </Tooltip>
+
+                            {/* Tiny Category Pill - Dropping in playfully */}
+                            <motion.div
+                                style={{ opacity: compactTitleOpacity, y: compactTitleY }}
+                                className="h-[44px] glass-panel rounded-xl px-4 flex items-center shadow-lg pointer-events-auto bg-background/80 backdrop-blur-md border border-white/5"
+                            >
+                                <span className="font-bold text-sm truncate max-w-[200px] sm:max-w-[400px]">
+                                    {selectedCategory.name}
+                                </span>
+                            </motion.div>
+                        </div>
+                        
+                        {/* Return to Stream Button (In Category Mode) */}
+                        {streamUrl && (
+                            <Tooltip content="Return to Stream" side="left">
+                                <button
+                                    onClick={toggleHome}
+                                    className="flex items-center gap-1.5 px-3 h-[44px] glass-button text-accent shadow-[0_0_15px_rgba(var(--color-accent-rgb),0.2)] text-sm font-medium rounded-xl transition-all hover:text-white pointer-events-auto backdrop-blur-md"
+                                >
+                                    <Maximize2 size={14} />
+                                    <span className="hidden sm:inline">Return</span>
+                                </button>
+                            </Tooltip>
+                        )}
+                    </div>
+                )}
+                
+                {/* NATURAL SCROLLING HERO BANNER */}
+                {activeTab === 'category' && selectedCategory && (
+                    <motion.div 
+                        style={{ opacity: heroOpacity }}
+                        className="flex gap-4 sm:gap-6 w-full max-w-[900px] items-start pb-6 mt-2 ml-[56px] relative z-10"
+                    >
+                        {/* Hero Box Art */}
+                        <div className="flex-shrink-0">
+                            <div className={`w-[108px] h-[144px] sm:w-[144px] sm:h-[192px] bg-white/5 rounded-xl overflow-hidden shadow-[0_8px_30px_rgba(0,0,0,0.6)] border border-white/10 flex items-center justify-center ${isLoadingCategoryDetails && !categoryDetails?.boxArtUrl && !selectedCategory?.box_art_url ? 'animate-pulse' : ''}`}>
+                                {(categoryDetails?.boxArtUrl || selectedCategory?.box_art_url) ? (
+                                    <img 
+                                        src={getGameBoxArt(categoryDetails?.boxArtUrl || selectedCategory.box_art_url)} 
+                                        alt={selectedCategory.name}
+                                        className={`w-full h-full object-cover transition-opacity duration-300 ${isLoadingCategoryDetails && !categoryDetails?.boxArtUrl ? 'opacity-50' : 'opacity-100'}`}
+                                        loading="lazy"
+                                    />
+                                ) : (
+                                    <LayoutGrid size={32} className="text-white/20" />
+                                )}
+                            </div>
+                        </div>
+                        
+                        {/* Category Metadata Column */}
+                        <div className="flex flex-col flex-1 min-w-0 pr-16 mt-1 sm:mt-2 max-w-[600px]">
+                            {/* Title & Followers */}
+                            <div className="flex items-center gap-3 mb-2 flex-wrap">
+                                <h1 className="text-2xl sm:text-3xl font-black text-transparent bg-clip-text bg-gradient-to-r from-textPrimary to-textSecondary truncate leading-tight">
+                                    {categoryDetails?.displayName || selectedCategory.name}
+                                </h1>
+                               {categoryDetails?.followersCount != null && (
+                                    <div className="glass-badge flex items-center gap-1.5 whitespace-nowrap !bg-white/5 backdrop-blur-md px-2.5 py-1 shrink-0">
+                                        <Users size={12} className="text-accent" />
+                                        <span className="text-[11px] font-bold text-textPrimary tracking-wide">
+                                            {new Intl.NumberFormat('en-US', { notation: "compact", compactDisplay: "short" }).format(categoryDetails.followersCount)} Followers
+                                        </span>
+                                    </div>
+                                )}
+                            </div>
+                            
+                            {/* Tags */}
+                            <div className="flex flex-wrap gap-1.5 mb-3">
+                                {hasCategoryDrops && (
+                                    <button 
+                                        onClick={(e) => {
+                                            e.stopPropagation();
+                                            if (selectedCategory?.name) {
+                                                openDropsWithSearch(selectedCategory.name);
+                                            }
+                                        }}
+                                        className="drops-badge-glass hover:brightness-125 hover:scale-105 active:scale-95 transition-all cursor-pointer !text-[10px] !px-2 !py-0.5 mr-1"
+                                    >
+                                        <Gift size={11} />
+                                        <span>DROPS ENABLED</span>
+                                    </button>
+                                )}
+                                {isLoadingCategoryDetails ? (
+                                    <>
+                                        <div className="h-5 w-16 bg-white/5 rounded-full animate-pulse px-2"></div>
+                                        <div className="h-5 w-20 bg-white/5 rounded-full animate-pulse px-2"></div>
+                                        <div className="h-5 w-14 bg-white/5 rounded-full animate-pulse px-2"></div>
+                                    </>
+                                ) : categoryDetails?.tags && categoryDetails.tags.length > 0 ? (
+                                    categoryDetails.tags.slice(0, 5).map(tag => (
+                                        <span key={tag.id} className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-white/5 border border-white/10 text-textSecondary truncate max-w-[150px] shadow-sm tracking-wide">
+                                            {tag.localizedName}
+                                        </span>
+                                    ))
+                                ) : null}
+                            </div>
+                            
+                            {/* Description Accordion */}
+                            <div className="relative group">
+                                {isLoadingCategoryDetails ? (
+                                     <div className="space-y-2 mt-1 w-full max-w-[400px]">
+                                         <div className="h-3 bg-white/10 rounded w-full animate-pulse"></div>
+                                         <div className="h-3 bg-white/10 rounded w-5/6 animate-pulse"></div>
+                                     </div>
+                                ) : categoryDetails?.description ? (
+                                    <div className="relative">
+                                        <motion.div 
+                                            initial={false}
+                                            animate={{ height: isDescriptionExpanded ? "auto" : 48 }}
+                                            transition={{ duration: 0.25, ease: "easeOut" }}
+                                            onAnimationComplete={() => {
+                                                if (!isDescriptionExpanded) {
+                                                    setIsDescriptionClamped(true);
+                                                }
+                                            }}
+                                            className="overflow-hidden"
+                                        >
+                                            <p className={`text-[13px] sm:text-[14px] text-textSecondary/90 font-medium leading-[24px] ${isDescriptionClamped ? 'line-clamp-2' : ''}`}>
+                                                {categoryDetails.description}
+                                            </p>
+                                        </motion.div>
+                                        {!isDescriptionExpanded && categoryDetails.description.length > 100 && (
+                                            <div className="mt-1 flex items-center justify-start pointer-events-none">
+                                                <button 
+                                                    onClick={(e) => { 
+                                                        e.stopPropagation(); 
+                                                        setIsDescriptionClamped(false);
+                                                        setIsDescriptionExpanded(true); 
+                                                    }}
+                                                    className="text-[12px] font-bold text-accent hover:text-white pointer-events-auto transition-colors"
+                                                >
+                                                    Read More
+                                                </button>
+                                            </div>
+                                        )}
+                                        {isDescriptionExpanded && (
+                                            <div className="mt-1">
+                                                <button 
+                                                    onClick={(e) => { e.stopPropagation(); setIsDescriptionExpanded(false); }}
+                                                    className="text-[11px] font-bold text-textSecondary hover:text-textPrimary transition-colors"
+                                                >
+                                                    Show Less
+                                                </button>
+                                            </div>
+                                        )}
+                                    </div>
+                                ) : (
+                                    <p className="text-[13px] text-textSecondary/40 italic">No description available</p>
+                                )}
+                            </div>
+                        </div>
+                    </motion.div>
+                )}
+
                 {/* Only show full LoadingWidget during initial app load, not user-initiated login */}
                 {isLoading && !isAuthenticated && !hasInitialized && (
                     <LoadingWidget useFunnyMessages={true} />
                 )}
 
+                {/* Progressive Scroll Category Profile is now perfectly enclosed within the Top Navigation Frame! */}
                 {/* Browse View - Game Categories */}
                 {activeTab === 'browse' && (
                     <>
                         {isLoadingGames ? (
-                            <div className="relative h-full min-h-[400px]">
-                                <LoadingWidget useFunnyMessages={false} message="Loading categories..." />
+                            <div className="relative h-full min-h-[400px] flex items-center justify-center">
+                                <LoadingWidget useFunnyMessages={false} message="Loading categories..." fullScreen={false} />
                             </div>
                         ) : topGames.length === 0 ? (
                             <div className="flex items-center justify-center h-full">
@@ -1159,75 +1781,7 @@ const Home = () => {
                         ) : (
                             <>
                                 <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-8 gap-3">
-                                    {topGames.map(game => {
-                                        const dropsCampaign = dropsGameIds.get(game.id);
-                                        const hasDrops = !!dropsCampaign;
-
-                                        return (
-                                            <div
-                                                key={game.id}
-                                                className={`glass-panel cursor-pointer hover:bg-glass-hover transition-all duration-200 group overflow-hidden relative ${isOverlayMode ? '!bg-black/40 !border-white/5' : ''} ${hasDrops ? 'ring-2 ring-accent shadow-accent/40' : ''}`}
-                                                style={hasDrops ? { boxShadow: '0 0 15px var(--color-accent-muted)' } : undefined}
-                                                onClick={() => handleCategoryClick(game)}
-                                            >
-                                                <div className="relative overflow-hidden">
-                                                    <img
-                                                        loading="lazy"
-                                                        src={getGameBoxArt(game.box_art_url)}
-                                                        alt={game.name}
-                                                        className="w-full aspect-[3/4] object-cover group-hover:scale-105 transition-transform duration-200"
-                                                    />
-                                                    {/* Drops overlay gradient */}
-                                                    {hasDrops && (
-                                                        <div className="absolute inset-0 bg-gradient-to-t from-accent/40 via-transparent to-accent/20 pointer-events-none" />
-                                                    )}
-                                                    {/* Drops Badge */}
-                                                    {hasDrops && (
-                                                        <div className="absolute top-2 left-2 z-10">
-                                                            <div className="drops-badge-glass-lg">
-                                                                <Gift size={14} className="drop-shadow-lg" />
-                                                                <span>DROPS</span>
-                                                            </div>
-                                                        </div>
-                                                    )}
-                                                    {/* Mine Drops Button - Toggle start/stop mining */}
-                                                    {hasDrops && (
-                                                        <Tooltip content={activeMiningIds.has(dropsCampaign.id) ? `Click to stop mining ${dropsCampaign.name}` : `Start mining ${dropsCampaign.name}`} side="top">
-                                                        <button
-                                                            onClick={(e) => handleToggleMining(e, dropsCampaign)}
-                                                            className={`absolute bottom-2 right-2 left-2 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md text-xs font-semibold transition-all duration-300 glass-button ${activeMiningIds.has(dropsCampaign.id)
-                                                                ? '!bg-green-500/20 text-green-400 border-green-500/30 !shadow-[0_2px_10px_rgba(34,197,94,0.3),inset_0_1px_rgba(255,255,255,0.2)] ring-1 ring-green-500/20 hover:!bg-red-500/30 hover:text-red-400 hover:border-red-500/30 hover:ring-red-500/30 hover:!shadow-[0_2px_10px_rgba(239,68,68,0.3),inset_0_1px_rgba(255,255,255,0.2)]'
-                                                                : '!bg-accent/30 text-white border-accent/40 !shadow-[0_2px_10px_rgba(var(--color-accent-rgb),0.4),inset_0_1px_rgba(255,255,255,0.2)] ring-1 ring-accent/20 hover:!bg-accent/50 hover:scale-[1.02]'
-                                                                }`}
-                                                        >
-                                                            {activeMiningIds.has(dropsCampaign.id) ? (
-                                                                <>
-                                                                    <Pickaxe size={14} className="animate-pulse" />
-                                                                    <span>Mining</span>
-                                                                </>
-                                                            ) : (
-                                                                <>
-                                                                    <Pickaxe size={14} />
-                                                                    <span>Mine Drops</span>
-                                                                </>
-                                                            )}
-                                                        </button>
-                                                        </Tooltip>
-                                                    )}
-                                                </div>
-                                                <div className="p-2">
-                                                    <Tooltip content={game.name} side="bottom"><h3 className="text-textPrimary font-medium text-sm line-clamp-2 group-hover:text-accent transition-colors">
-                                                        {game.name}
-                                                    </h3></Tooltip>
-                                                    {game.viewer_count !== undefined && (
-                                                        <p className="text-textSecondary text-xs mt-0.5">
-                                                            {game.viewer_count.toLocaleString()} viewers
-                                                        </p>
-                                                    )}
-                                                </div>
-                                            </div>
-                                        );
-                                    })}
+                                    {topGames.map(game => renderCategoryCard(game))}
                                 </div>
                                 {/* Loading indicator for infinite scroll */}
                                 {isLoadingMoreGames && (
@@ -1248,148 +1802,371 @@ const Home = () => {
 
                 {/* Category Streams View */}
                 {activeTab === 'category' && (
-                    <>
-                        {isLoadingCategoryStreams ? (
-                            <div className="flex items-center justify-center h-full">
-                                <div className="text-center">
-                                    <div className="animate-spin rounded-full h-12 w-12 border-4 border-glass border-t-accent mx-auto mb-3" />
-                                    <p className="text-textSecondary text-xs">Loading streams...</p>
-                                </div>
+                    <div className="pt-2">
+                        {/* Category Sub-Navigation Tabs and Toolbar */}
+                        <div className="flex items-center justify-between gap-4 mb-4 border-b border-white/5 pb-3 w-full mt-2">
+                            <div className="flex gap-2">
+                                <button
+                                    onClick={() => setCategoryActiveTab('live')}
+                                    className={`px-4 py-1.5 text-sm font-bold !rounded-lg transition-all relative ${categoryActiveTab === 'live' ? 'glass-input text-textPrimary' : 'glass-button text-textSecondary/80 hover:text-textPrimary'}`}
+                                >
+                                    Live
+                                </button>
+                                <button
+                                    onClick={() => setCategoryActiveTab('clips')}
+                                    className={`px-4 py-1.5 text-sm font-bold !rounded-lg transition-all relative ${categoryActiveTab === 'clips' ? 'glass-input text-textPrimary' : 'glass-button text-textSecondary/80 hover:text-textPrimary'}`}
+                                >
+                                    Clips
+                                </button>
+                                <button
+                                    onClick={() => setCategoryActiveTab('videos')}
+                                    className={`px-4 py-1.5 text-sm font-bold !rounded-lg transition-all relative ${categoryActiveTab === 'videos' ? 'glass-input text-textPrimary' : 'glass-button text-textSecondary/80 hover:text-textPrimary'}`}
+                                >
+                                    Videos
+                                </button>
                             </div>
-                        ) : categoryStreams.length === 0 ? (
-                            <div className="flex items-center justify-center h-full">
-                                <div className="text-center glass-panel p-6 max-w-sm">
-                                    <h3 className="text-base font-bold text-textPrimary mb-1">No Live Streams</h3>
-                                    <p className="text-textSecondary text-sm">
-                                        No one is streaming {selectedCategory?.name}.
-                                    </p>
-                                </div>
-                            </div>
-                        ) : (
-                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-3">
-                                {categoryStreams.map(stream => {
-                                    // Check if the current category has active drops
-                                    const categoryDropsCampaign = selectedCategory?.id
-                                        ? dropsGameIds.get(selectedCategory.id)
-                                        : (selectedCategory?.name ? dropsGameNames.get(selectedCategory.name.toLowerCase()) : undefined);
-                                    const hasDrops = !!categoryDropsCampaign;
 
-                                    return (() => {
-                                        const isQueued = isInMultiNook(stream.user_login);
-                                        const isSuckingUp = suckUpLogin === stream.user_login.toLowerCase();
-                                        const isMaterializing = materializingLogin === stream.user_login.toLowerCase();
-
-                                        return (
-                                            <motion.div
-                                                layout
-                                                transition={{ type: "spring", stiffness: 350, damping: 25 }}
-                                                key={stream.id}
-                                                className={`p-2.5 transition-all duration-200 group relative ${
-                                                    isQueued && !isSuckingUp
-                                                        ? 'ghost-card rounded-lg cursor-default'
-                                                        : isQueued && isSuckingUp
-                                                            ? `glass-panel cursor-default ${isOverlayMode ? '!bg-black/40 !border-white/5' : ''}`
-                                                            : `glass-panel cursor-pointer hover:bg-glass-hover ${isOverlayMode ? '!bg-black/40 !border-white/5' : ''} ${hasDrops ? 'ring-2 ring-accent/60' : ''}`
-                                                }`}
-                                                style={!isQueued && hasDrops ? { boxShadow: '0 0 12px var(--color-accent-muted)' } : undefined}
-                                                onClick={() => !isQueued && handleStreamClick(stream)}
-                                                onContextMenu={(e) => !isQueued && useContextMenuStore.getState().openMenu(e, stream)}
+                            {/* Filter/Search Toolbar for Clips and Videos */}
+                            {(categoryActiveTab === 'clips' || categoryActiveTab === 'videos') && (
+                                <div className="flex items-center gap-2">
+                                    {/* Search Box */}
+                                    <div className="relative group">
+                                        <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-textSecondary group-focus-within:text-accent transition-colors">
+                                            <Search size={14} />
+                                        </div>
+                                        <input
+                                            type="text"
+                                            placeholder={`Search ${categoryActiveTab}...`}
+                                            value={mediaSearchQuery}
+                                            onChange={(e) => setMediaSearchQuery(e.target.value)}
+                                            className="glass-input !rounded-lg pl-9 pr-3 py-1.5 w-[140px] focus:w-[220px] outline-none text-sm text-textPrimary placeholder-textSecondary/50 font-medium transition-all"
+                                        />
+                                        {mediaSearchQuery && (
+                                            <button 
+                                                onClick={() => setMediaSearchQuery('')}
+                                                className="absolute inset-y-0 right-0 pr-3 flex items-center text-textSecondary hover:text-accent transition-colors"
                                             >
-                                                {isQueued && !isSuckingUp ? (
-                                                    /* Ghost state — recall button + label */
-                                                    <>
-                                                        <div className="invisible">
-                                                            <div className="relative mb-2 overflow-hidden rounded aspect-video" />
-                                                            <div className="space-y-0.5">
-                                                                <div className="h-4" />
-                                                                <div className="h-3" />
-                                                            </div>
-                                                        </div>
-                                                        <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 animate-ghost-label">
-                                                            <LayoutGrid size={18} className="text-accent/50" />
-                                                            <span className="text-accent text-xs font-semibold truncate max-w-[80%]">{stream.user_name}</span>
-                                                            <span className="text-textSecondary text-[10px]">Queued in MultiNook</span>
-                                                            <Tooltip content="Recall from MultiNook" side="bottom">
-                                                                <button
-                                                                    onClick={(e) => {
-                                                                        e.stopPropagation();
-                                                                        const card = (e.currentTarget as HTMLElement).closest('.ghost-card');
-                                                                        const rect = card?.getBoundingClientRect();
-                                                                        const cx = rect ? rect.left + rect.width / 2 : e.clientX;
-                                                                        const cy = rect ? rect.top + rect.height / 2 : e.clientY;
-                                                                        triggerRecallAnimation(stream.user_login, cx, cy);
-                                                                    }}
-                                                                    className="glass-button !rounded-full !p-1.5 mt-1 text-textSecondary hover:text-accent transition-colors"
-                                                                >
-                                                                    <Undo2 size={14} strokeWidth={2} />
-                                                                </button>
-                                                            </Tooltip>
-                                                        </div>
-                                                    </>
-                                                ) : (
-                                                    /* Normal content, suck-up, or materialize animation */
-                                                    <div className={isSuckingUp ? 'animate-multinook-suck-up' : isMaterializing ? 'animate-multinook-materialize' : undefined}>
-                                                        {!isSuckingUp && <QuickAddButton stream={stream} />}
-                                                        <div className="relative mb-2 overflow-hidden rounded">
-                                                            <img
-                                                                loading="lazy"
-                                                                src={getThumbnailUrl(stream.thumbnail_url)}
-                                                                alt={stream.title}
-                                                                className="w-full aspect-video object-cover group-hover:scale-105 transition-transform duration-200"
-                                                            />
-                                                            <div className="absolute top-1.5 left-1.5 flex items-center gap-1">
-                                                                <div className="live-dot text-xs px-1.5 py-0.5">LIVE</div>
-                                                                {hasDrops && (
-                                                                    <div className="drops-badge-glass">
-                                                                        <Gift size={10} />
-                                                                        <span>DROPS</span>
+                                                <X size={14} />
+                                            </button>
+                                        )}
+                                    </div>
+                                    <div className="h-5 w-px bg-white/10 mx-1"></div>
+                                    {/* Dropdowns */}
+                                    {categoryActiveTab === 'clips' && (
+                                        <GlassSelect
+                                            value={clipsPeriod}
+                                            onChange={(val) => setClipsPeriod(val)}
+                                            options={[
+                                                { value: '24h', label: 'Last 24 Hours' },
+                                                { value: '7d', label: 'Last 7 Days' },
+                                                { value: '30d', label: 'Last 30 Days' },
+                                                { value: 'all', label: 'All Time' }
+                                            ]}
+                                        />
+                                    )}
+                                    {categoryActiveTab === 'videos' && (
+                                        <>
+                                            <GlassSelect
+                                                value={videosSort}
+                                                onChange={(val) => setVideosSort(val)}
+                                                options={[
+                                                    { value: 'time', label: 'Recent' },
+                                                    { value: 'trending', label: 'Trending' },
+                                                    { value: 'views', label: 'Most Viewed' }
+                                                ]}
+                                            />
+                                            <GlassSelect
+                                                value={videosPeriod}
+                                                onChange={(val) => setVideosPeriod(val)}
+                                                options={[
+                                                    { value: 'all', label: 'All Time' },
+                                                    { value: 'day', label: 'Last 24 Hours' },
+                                                    { value: 'week', label: 'Last 7 Days' },
+                                                    { value: 'month', label: 'Last 30 Days' }
+                                                ]}
+                                            />
+                                        </>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Rendering Logic based on categoryActiveTab */}
+                        {categoryActiveTab === 'live' && (
+                            <>
+                                {isLoadingCategoryStreams ? (
+                                    <div className="flex items-center justify-center h-full">
+                                        <div className="text-center">
+                                            <div className="animate-spin rounded-full h-12 w-12 border-4 border-glass border-t-accent mx-auto mb-3" />
+                                            <p className="text-textSecondary text-xs">Loading streams...</p>
+                                        </div>
+                                    </div>
+                                ) : categoryStreams.length === 0 ? (
+                                    <div className="flex items-center justify-center h-full">
+                                        <div className="text-center glass-panel p-6 max-w-sm">
+                                            <h3 className="text-base font-bold text-textPrimary mb-1">No Live Streams</h3>
+                                            <p className="text-textSecondary text-sm">
+                                                No one is streaming {selectedCategory?.name}.
+                                            </p>
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-3">
+                                        {categoryStreams.map(stream => {
+                                            // Drops indicator is elevated to the hero banner in Category view!
+                                            // We explicitly disable drops badging on individual stream cards here to reduce noise.
+                                            const hasDrops = false;
+
+                                            return (() => {
+                                                const isQueued = isInMultiNook(stream.user_login);
+                                                const isSuckingUp = suckUpLogin === stream.user_login.toLowerCase();
+                                                const isMaterializing = materializingLogin === stream.user_login.toLowerCase();
+
+                                                return (
+                                                    <motion.div
+                                                        layout
+                                                        transition={{ type: "spring", stiffness: 350, damping: 25 }}
+                                                        key={stream.id}
+                                                        className={`p-2.5 transition-all duration-200 group relative ${
+                                                            isQueued && !isSuckingUp
+                                                                ? 'ghost-card rounded-lg cursor-default'
+                                                                : isQueued && isSuckingUp
+                                                                    ? `glass-panel cursor-default ${isOverlayMode ? '!bg-black/40 !border-white/5' : ''}`
+                                                                    : `glass-panel cursor-pointer hover:bg-glass-hover ${isOverlayMode ? '!bg-black/40 !border-white/5' : ''} ${hasDrops ? 'ring-2 ring-accent/60' : ''}`
+                                                        }`}
+                                                        style={!isQueued && hasDrops ? { boxShadow: '0 0 12px var(--color-accent-muted)' } : undefined}
+                                                        onClick={() => !isQueued && handleStreamClick(stream)}
+                                                        onContextMenu={(e) => !isQueued && useContextMenuStore.getState().openMenu(e, stream)}
+                                                    >
+                                                        {isQueued && !isSuckingUp ? (
+                                                            /* Ghost state — recall button + label */
+                                                            <>
+                                                                <div className="invisible">
+                                                                    <div className="relative mb-2 overflow-hidden rounded aspect-video" />
+                                                                    <div className="space-y-0.5">
+                                                                        <div className="h-4" />
+                                                                        <div className="h-3" />
                                                                     </div>
-                                                                )}
-                                                                {activeHypeTrainChannels.get(stream.user_id) && (
-                                                                    <div className={activeHypeTrainChannels.get(stream.user_id)?.isGolden ? 'hype-train-badge-glass-golden' : 'hype-train-badge-glass'}>
-                                                                        <svg className="w-2.5 h-2.5" viewBox="0 0 15 13" fill="none">
-                                                                            <path fillRule="evenodd" clipRule="evenodd" d="M4.10001 0.549988H2.40001V4.79999H0.700012V10.75H1.55001C1.55001 11.6889 2.31113 12.45 3.25001 12.45C4.1889 12.45 4.95001 11.6889 4.95001 10.75H5.80001C5.80001 11.6889 6.56113 12.45 7.50001 12.45C8.4389 12.45 9.20001 11.6889 9.20001 10.75H10.05C10.05 11.6889 10.8111 12.45 11.75 12.45C12.6889 12.45 13.45 11.6889 13.45 10.75H14.3V0.549988H6.65001V2.24999H7.50001V4.79999H4.10001V0.549988ZM12.6 9.04999V6.49999H2.40001V9.04999H12.6ZM9.20001 4.79999H12.6V2.24999H9.20001V4.79999Z" fill="currentColor" />
-                                                                        </svg>
-                                                                        <span>LVL {activeHypeTrainChannels.get(stream.user_id)?.level}</span>
-                                                                    </div>
-                                                                )}
-                                                            </div>
-                                                            <div className="absolute bottom-1.5 left-1.5 px-2 py-0.5 glass-badge text-white text-xs font-medium rounded">
-                                                                {stream.viewer_count.toLocaleString()} viewers
-                                                            </div>
-                                                            {watchStreaks[stream.user_id] > 0 && (
-                                                                <div className="absolute bottom-1.5 right-1.5">
-                                                                    <Tooltip content={`${watchStreaks[stream.user_id]} Stream Watch Streak`} side="top">
-                                                                    <div className="flex items-center gap-1 font-bold text-[10px] leading-tight px-1.5 py-0.5 rounded shadow-[0_0_10px_rgba(245,158,11,0.25)] bg-amber-500/10 text-amber-400 border border-amber-500/30 backdrop-blur-md">
-                                                                        <Flame size={10} className="stroke-[2.5]" />
-                                                                        <span>{watchStreaks[stream.user_id]}</span>
-                                                                    </div>
+                                                                </div>
+                                                                <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 animate-ghost-label">
+                                                                    <LayoutGrid size={18} className="text-accent/50" />
+                                                                    <span className="text-accent text-xs font-semibold truncate max-w-[80%]">{stream.user_name}</span>
+                                                                    <span className="text-textSecondary text-[10px]">Queued in MultiNook</span>
+                                                                    <Tooltip content="Recall from MultiNook" side="bottom">
+                                                                        <button
+                                                                            onClick={(e) => {
+                                                                                e.stopPropagation();
+                                                                                const card = (e.currentTarget as HTMLElement).closest('.ghost-card');
+                                                                                const rect = card?.getBoundingClientRect();
+                                                                                const cx = rect ? rect.left + rect.width / 2 : e.clientX;
+                                                                                const cy = rect ? rect.top + rect.height / 2 : e.clientY;
+                                                                                triggerRecallAnimation(stream.user_login, cx, cy);
+                                                                            }}
+                                                                            className="glass-button !rounded-full !p-1.5 mt-1 text-textSecondary hover:text-accent transition-colors"
+                                                                        >
+                                                                            <Undo2 size={14} strokeWidth={2} />
+                                                                        </button>
                                                                     </Tooltip>
                                                                 </div>
-                                                            )}
-                                                        </div>
-                                                        <div className="space-y-0.5">
-                                                            <h3 className="text-textPrimary font-medium text-sm line-clamp-1 group-hover:text-accent transition-colors">
-                                                                <StreamTitleWithEmojis title={stream.title} />
-                                                            </h3>
-                                                            <div className="flex items-center gap-1">
-                                                                <p className="text-textSecondary text-xs">{stream.user_name}</p>
-                                                                {stream.broadcaster_type === 'partner' && (
-                                                                    <svg className="w-3 h-3 flex-shrink-0" viewBox="0 0 16 16" fill="#9146FF">
-                                                                        <path fillRule="evenodd" d="M12.5 3.5 8 2 3.5 3.5 2 8l1.5 4.5L8 14l4.5-1.5L14 8l-1.5-4.5ZM7 11l4.5-4.5L10 5 7 8 5.5 6.5 4 8l3 3Z" clipRule="evenodd"></path>
-                                                                    </svg>
-                                                                )}
+                                                            </>
+                                                        ) : (
+                                                            /* Normal content, suck-up, or materialize animation */
+                                                            <div className={isSuckingUp ? 'animate-multinook-suck-up' : isMaterializing ? 'animate-multinook-materialize' : undefined}>
+                                                                {!isSuckingUp && <QuickAddButton stream={stream} />}
+                                                                <div className="relative mb-2 overflow-hidden rounded">
+                                                                    <img
+                                                                        loading="lazy"
+                                                                        src={getThumbnailUrl(stream.thumbnail_url)}
+                                                                        alt={stream.title}
+                                                                        className="w-full aspect-video object-cover group-hover:scale-105 transition-transform duration-200"
+                                                                    />
+                                                                    <div className="absolute top-1.5 left-1.5 flex items-center gap-1">
+                                                                        <div className="live-dot text-xs px-1.5 py-0.5">LIVE</div>
+                                                                        {hasDrops && (
+                                                                            <div className="drops-badge-glass">
+                                                                                <Gift size={10} />
+                                                                                <span>DROPS</span>
+                                                                            </div>
+                                                                        )}
+                                                                        {activeHypeTrainChannels.get(stream.user_id) && (
+                                                                            <div className={activeHypeTrainChannels.get(stream.user_id)?.isGolden ? 'hype-train-badge-glass-golden' : 'hype-train-badge-glass'}>
+                                                                                <svg className="w-2.5 h-2.5" viewBox="0 0 15 13" fill="none">
+                                                                                    <path fillRule="evenodd" clipRule="evenodd" d="M4.10001 0.549988H2.40001V4.79999H0.700012V10.75H1.55001C1.55001 11.6889 2.31113 12.45 3.25001 12.45C4.1889 12.45 4.95001 11.6889 4.95001 10.75H5.80001C5.80001 11.6889 6.56113 12.45 7.50001 12.45C8.4389 12.45 9.20001 11.6889 9.20001 10.75H10.05C10.05 11.6889 10.8111 12.45 11.75 12.45C12.6889 12.45 13.45 11.6889 13.45 10.75H14.3V0.549988H6.65001V2.24999H7.50001V4.79999H4.10001V0.549988ZM12.6 9.04999V6.49999H2.40001V9.04999H12.6ZM9.20001 4.79999H12.6V2.24999H9.20001V4.79999Z" fill="currentColor" />
+                                                                                </svg>
+                                                                                <span>LVL {activeHypeTrainChannels.get(stream.user_id)?.level}</span>
+                                                                            </div>
+                                                                        )}
+                                                                    </div>
+                                                                    <div className="absolute bottom-1.5 left-1.5 px-2 py-0.5 glass-badge text-white text-[10px] font-medium rounded">
+                                                                        {stream.viewer_count.toLocaleString()} viewers
+                                                                    </div>
+                                                                    {watchStreaks[stream.user_id] > 0 && (
+                                                                        <div className="absolute bottom-1.5 right-1.5">
+                                                                            <Tooltip content={`${watchStreaks[stream.user_id]} Stream Watch Streak`} side="top">
+                                                                            <div className="flex items-center gap-1 font-bold text-[10px] leading-tight px-1.5 py-0.5 rounded shadow-[0_0_10px_rgba(245,158,11,0.25)] bg-amber-500/10 text-amber-400 border border-amber-500/30 backdrop-blur-md">
+                                                                                <Flame size={10} className="stroke-[2.5]" />
+                                                                                <span>{watchStreaks[stream.user_id]}</span>
+                                                                            </div>
+                                                                            </Tooltip>
+                                                                        </div>
+                                                                    )}
+                                                                </div>
+                                                                <div className="space-y-0.5">
+                                                                    <h3 className="text-textPrimary font-medium text-[13px] leading-tight line-clamp-1 group-hover:text-accent transition-colors">
+                                                                        <StreamTitleWithEmojis title={stream.title} />
+                                                                    </h3>
+                                                                    <div className="flex items-center justify-between">
+                                                                        <div className="flex items-center gap-1">
+                                                                            <p className="text-textSecondary text-[11px] font-medium">{stream.user_name}</p>
+                                                                            {stream.broadcaster_type === 'partner' && (
+                                                                                <svg className="w-3 h-3 flex-shrink-0" viewBox="0 0 16 16" fill="#9146FF">
+                                                                                    <path fillRule="evenodd" d="M12.5 3.5 8 2 3.5 3.5 2 8l1.5 4.5L8 14l4.5-1.5L14 8l-1.5-4.5ZM7 11l4.5-4.5L10 5 7 8 5.5 6.5 4 8l3 3Z" clipRule="evenodd"></path>
+                                                                                </svg>
+                                                                            )}
+                                                                        </div>
+                                                                    </div>
+                                                                </div>
                                                             </div>
-                                                        </div>
-                                                    </div>
-                                                )}
-                                            </motion.div>
-                                        );
-                                    })();
-                                })}
-                            </div>
+                                                        )}
+                                                    </motion.div>
+                                                );
+                                            })();
+                                        })}
+                                    </div>
+                                )}
+                                {/* Loading indicator for infinite scroll */}
+                                {isLoadingMoreCategoryStreams && (
+                                    <div className="flex justify-center items-center py-6 w-full">
+                                        <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-accent"></div>
+                                    </div>
+                                )}
+                                {/* End of streams message */}
+                                {!hasMoreCategoryStreams && categoryStreams.length > 0 && (
+                                    <div className="text-center py-6 w-full">
+                                        <p className="text-textSecondary text-xs">No more category streams</p>
+                                    </div>
+                                )}
+                            </>
                         )}
-                    </>
+                        
+                        {categoryActiveTab === 'clips' && (
+                            <>
+                                {isLoadingClips ? (
+                                    <div className="flex items-center justify-center h-full pt-10">
+                                        <div className="text-center">
+                                            <div className="animate-spin rounded-full h-12 w-12 border-4 border-glass border-t-accent mx-auto mb-3" />
+                                            <p className="text-textSecondary text-xs">Loading clips...</p>
+                                        </div>
+                                    </div>
+                                ) : categoryClips.length === 0 ? (
+                                    <div className="flex items-center justify-center h-[300px]">
+                                        <div className="text-center glass-panel p-6 max-w-sm">
+                                            <h3 className="text-base font-bold text-textPrimary mb-1">No Clips Found</h3>
+                                            <p className="text-textSecondary text-sm">
+                                                No clips have been generated for {selectedCategory?.name} yet.
+                                            </p>
+                                        </div>
+                                    </div>
+                                ) : (() => {
+                                     const filteredClips = categoryClips.filter(c => 
+                                         !mediaSearchQuery || 
+                                         c.title.toLowerCase().includes(mediaSearchQuery.toLowerCase()) || 
+                                         c.broadcaster_name.toLowerCase().includes(mediaSearchQuery.toLowerCase())
+                                     );
+                                     
+                                     if (filteredClips.length === 0) {
+                                         return (
+                                             <div className="flex items-center justify-center h-[300px]">
+                                                 <div className="text-center glass-panel p-6 max-w-sm">
+                                                     <h3 className="text-base font-bold text-textPrimary mb-1">No Results Search</h3>
+                                                     <p className="text-textSecondary text-sm">
+                                                         No clips match your search "{mediaSearchQuery}".
+                                                     </p>
+                                                 </div>
+                                             </div>
+                                         );
+                                     }
+
+                                     return (
+                                         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-3">
+                                             {filteredClips.map(clip => renderClipCard(clip))}
+                                         </div>
+                                     );
+                                 })()}
+                                {/* Loading indicator for infinite scroll */}
+                                {isLoadingMoreClips && (
+                                    <div className="flex justify-center items-center py-6 w-full">
+                                        <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-accent"></div>
+                                    </div>
+                                )}
+                                {/* End of clips message */}
+                                {!hasMoreCategoryClips && categoryClips.length > 0 && (
+                                    <div className="text-center py-6 w-full">
+                                        <p className="text-textSecondary text-xs">End of clips</p>
+                                    </div>
+                                )}
+                            </>
+                        )}
+                        
+                        {categoryActiveTab === 'videos' && (
+                            <>
+                                {isLoadingVideos ? (
+                                    <div className="flex items-center justify-center h-full pt-10">
+                                        <div className="text-center">
+                                            <div className="animate-spin rounded-full h-12 w-12 border-4 border-glass border-t-accent mx-auto mb-3" />
+                                            <p className="text-textSecondary text-xs">Loading videos...</p>
+                                        </div>
+                                    </div>
+                                ) : categoryVideos.length === 0 ? (
+                                    <div className="flex items-center justify-center h-[300px]">
+                                        <div className="text-center glass-panel p-6 max-w-sm">
+                                            <h3 className="text-base font-bold text-textPrimary mb-1">No Videos Found</h3>
+                                            <p className="text-textSecondary text-sm">
+                                                No videos exist for {selectedCategory?.name}.
+                                            </p>
+                                        </div>
+                                    </div>
+                                ) : (() => {
+                                     const filteredVideos = categoryVideos.filter(v => 
+                                         !mediaSearchQuery || 
+                                         v.title.toLowerCase().includes(mediaSearchQuery.toLowerCase()) || 
+                                         v.user_name.toLowerCase().includes(mediaSearchQuery.toLowerCase())
+                                     );
+
+                                     if (filteredVideos.length === 0) {
+                                         return (
+                                             <div className="flex items-center justify-center h-[300px]">
+                                                 <div className="text-center glass-panel p-6 max-w-sm">
+                                                     <h3 className="text-base font-bold text-textPrimary mb-1">No Results Search</h3>
+                                                     <p className="text-textSecondary text-sm">
+                                                         No videos match your search "{mediaSearchQuery}".
+                                                     </p>
+                                                 </div>
+                                             </div>
+                                         );
+                                     }
+
+                                     return (
+                                         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-3">
+                                             {filteredVideos.map(video => renderVideoCard(video))}
+                                         </div>
+                                     );
+                                 })()}
+                                {/* Loading indicator for infinite scroll */}
+                                {isLoadingMoreVideos && (
+                                    <div className="flex justify-center items-center py-6 w-full">
+                                        <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-accent"></div>
+                                    </div>
+                                )}
+                                {/* End of videos message */}
+                                {!hasMoreCategoryVideos && categoryVideos.length > 0 && (
+                                    <div className="text-center py-6 w-full">
+                                        <p className="text-textSecondary text-xs">End of videos</p>
+                                    </div>
+                                )}
+                            </>
+                        )}
+                    </div>
                 )}
 
                 {/* Following/Recommended/Search Views */}
@@ -1423,7 +2200,7 @@ const Home = () => {
                                     </button>
                                 </div>
                             </div>
-                        ) : displayStreams.length === 0 && (activeTab !== 'search' || offlineSearchResults.length === 0) ? (
+                        ) : displayStreams.length === 0 && categorySearchResults.length === 0 && (activeTab !== 'search' || offlineSearchResults.length === 0) ? (
                             <div className="flex items-center justify-center h-full">
                                 <div className="text-center glass-panel p-6 max-w-sm">
                                     <h3 className="text-base font-bold text-textPrimary mb-1">
@@ -1434,7 +2211,9 @@ const Home = () => {
                                             ? 'None of your followed channels are live.'
                                             : activeTab === 'recommended'
                                                 ? 'Could not load streams.'
-                                                : `No channels found for "${searchQuery}".`}
+                                                : searchMode === 'categories' 
+                                                    ? `No categories found for "${searchQuery}".`
+                                                    : `No channels found for "${searchQuery}".`}
                                     </p>
                                     {/* Login prompt for unauthenticated users when streams fail to load */}
                                     {!isAuthenticated && activeTab === 'recommended' && (
@@ -1460,7 +2239,12 @@ const Home = () => {
                             </div>
                         ) : (
                             <>
-                                {displayStreams.length > 0 && (
+                                {activeTab === 'search' && searchMode === 'categories' && categorySearchResults.length > 0 && (
+                                    <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-8 gap-3">
+                                        {categorySearchResults.map(game => renderCategoryCard(game))}
+                                    </div>
+                                )}
+                                {displayStreams.length > 0 && !(activeTab === 'search' && searchMode === 'categories') && (
                                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-3">
                                         {displayStreams.map(stream => {
                                         const isFavorite = isFavoriteStreamer(stream.user_id);
@@ -1568,19 +2352,41 @@ const Home = () => {
                                                                     <h3 className="text-textPrimary font-medium text-sm line-clamp-1 group-hover:text-accent transition-colors">
                                                                         <StreamTitleWithEmojis title={stream.title} />
                                                                     </h3>
-                                                                    <div className="flex items-center gap-1">
-                                                                        <p className="text-textSecondary text-xs">{stream.user_name}</p>
+                                                                    <button 
+                                                                        onClick={(e) => { 
+                                                                            e.stopPropagation(); 
+                                                                            useAppStore.getState().setProfileModalUser(stream); 
+                                                                        }}
+                                                                        className="flex items-center gap-1 text-textSecondary text-xs hover:text-white hover:bg-white/10 px-1.5 py-0.5 -mx-1.5 -my-0.5 rounded transition-all cursor-pointer text-left focus:outline-none w-max max-w-full"
+                                                                    >
+                                                                        <span className="truncate">{stream.user_name}</span>
                                                                         {stream.broadcaster_type === 'partner' && (
                                                                             <svg className="w-3 h-3 flex-shrink-0" viewBox="0 0 16 16" fill="#9146FF">
                                                                                 <path fillRule="evenodd" d="M12.5 3.5 8 2 3.5 3.5 2 8l1.5 4.5L8 14l4.5-1.5L14 8l-1.5-4.5ZM7 11l4.5-4.5L10 5 7 8 5.5 6.5 4 8l3 3Z" clipRule="evenodd"></path>
                                                                             </svg>
                                                                         )}
-                                                                    </div>
-                                                                    <div className="flex items-center gap-1">
-                                                                        <p className="text-textSecondary text-xs line-clamp-1">{stream.game_name}</p>
-                                                                        {hasDrops && (
-                                                                            <Gift size={10} className="text-accent flex-shrink-0" />
-                                                                        )}
+                                                                    </button>
+                                                                    <div className="flex items-center w-full">
+                                                                        <Tooltip content={stream.game_name} side="bottom">
+                                                                            <button 
+                                                                                onClick={(e) => {
+                                                                                    e.stopPropagation();
+                                                                                    if (stream.game_id && stream.game_name) {
+                                                                                        handleCategoryClick({ 
+                                                                                            id: stream.game_id, 
+                                                                                            name: stream.game_name, 
+                                                                                            box_art_url: '' 
+                                                                                        });
+                                                                                    }
+                                                                                }}
+                                                                                className="flex items-center gap-1 text-textSecondary text-xs hover:text-white hover:bg-white/10 px-1.5 py-0.5 -mx-1.5 -my-0.5 rounded transition-all text-left cursor-pointer focus:outline-none overflow-hidden"
+                                                                            >
+                                                                                <span className="line-clamp-1">{stream.game_name}</span>
+                                                                                {hasDrops && (
+                                                                                    <Gift size={10} className="text-accent flex-shrink-0" />
+                                                                                )}
+                                                                            </button>
+                                                                        </Tooltip>
                                                                     </div>
                                                                 </div>
 
@@ -1644,27 +2450,57 @@ const Home = () => {
                                                 }
 
                                                 return (
-                                                    <button
+                                                    <div
                                                         key={user.id}
-                                                        onClick={() => setProfileModalUser(user)}
-                                                        className="flex items-center gap-3 px-3 py-2 rounded-xl glass-panel hover:bg-white/[0.05] border border-borderSubtle hover:border-accent/40 transition-all text-left shadow-sm group w-[180px] sm:w-[200px]"
+                                                        className="relative group w-[180px] sm:w-[200px] rounded-xl overflow-hidden glass-panel border border-borderSubtle hover:border-white/20 transition-all shadow-sm"
                                                     >
-                                                        <div className="w-10 h-10 rounded-full bg-glass flex items-center justify-center overflow-hidden ring-1 ring-borderSubtle group-hover:ring-accent/40 flex-shrink-0">
-                                                            {user.thumbnail_url ? (
-                                                                <img src={user.thumbnail_url} alt={user.user_name} className="w-full h-full object-cover" />
-                                                            ) : (
-                                                                <User size={14} className="text-textSecondary" />
-                                                            )}
+                                                        {/* Base Card Content */}
+                                                        <div className="w-full flex items-center gap-3 px-3 py-2">
+                                                            <div className="w-10 h-10 rounded-full bg-glass flex items-center justify-center overflow-hidden ring-1 ring-borderSubtle group-hover:ring-accent/40 flex-shrink-0 relative transition-all">
+                                                                {user.thumbnail_url ? (
+                                                                    <img src={user.thumbnail_url} alt={user.user_name} className="w-full h-full object-cover" />
+                                                                ) : (
+                                                                    <User size={14} className="text-textSecondary" />
+                                                                )}
+                                                            </div>
+                                                            <div className="flex-1 min-w-0 transition-opacity duration-200">
+                                                                <h4 className="text-sm font-semibold text-textPrimary truncate transition-colors">
+                                                                    {user.user_name}
+                                                                </h4>
+                                                                <p className="text-[10px] text-textSecondary truncate">
+                                                                    {relativeTimeResult ? `Last live ${relativeTimeResult}` : 'Offline'}
+                                                                </p>
+                                                            </div>
                                                         </div>
-                                                        <div className="flex-1 min-w-0">
-                                                            <h4 className="text-sm font-semibold text-textPrimary truncate group-hover:text-accent transition-colors">
-                                                                {user.user_name}
-                                                            </h4>
-                                                            <p className="text-[10px] text-textSecondary truncate">
-                                                                {relativeTimeResult ? `Last live ${relativeTimeResult}` : 'Offline'}
-                                                            </p>
+
+                                                        {/* Action Overlay (Optimized - No blur on hidden elements) */}
+                                                        <div className="absolute inset-0 bg-[#0c0c0d]/90 opacity-0 group-hover:opacity-100 transition-all duration-200 flex items-center justify-center gap-2 z-10">
+                                                            <button
+                                                                onClick={(e) => {
+                                                                    e.stopPropagation();
+                                                                    const store = useAppStore.getState();
+                                                                    if (store.isHomeActive) store.toggleHome();
+                                                                    store.startOfflineChat(user.user_login, user);
+                                                                }}
+                                                                className="px-3 py-1.5 rounded-lg glass-button text-[12px] font-bold text-white hover:bg-white/20 transition-all border border-white/10 hover:border-white/30 shadow-lg flex items-center gap-1.5"
+                                                            >
+                                                                <MessageSquare size={14} strokeWidth={2.5} />
+                                                                <span>Offline Chat</span>
+                                                            </button>
+                                                            
+                                                            <Tooltip content="Profile" side="top">
+                                                                <button
+                                                                    onClick={(e) => {
+                                                                        e.stopPropagation();
+                                                                        setProfileModalUser(user);
+                                                                    }}
+                                                                    className="p-[7px] rounded-lg glass-button text-textSecondary hover:text-white hover:bg-white/20 transition-all border border-white/10 hover:border-white/30 shadow-lg"
+                                                                >
+                                                                    <User size={14} strokeWidth={2.5} />
+                                                                </button>
+                                                            </Tooltip>
                                                         </div>
-                                                    </button>
+                                                    </div>
                                                 );
                                             })}
                                             {isLoadingOfflineChannels && (
@@ -1733,8 +2569,8 @@ const Home = () => {
                     <div
                         className="fixed pointer-events-none z-50"
                         style={{
-                            left: flyingDroplet.x,
-                            top: flyingDroplet.y,
+                            left: flyingDroplet?.x ?? 0,
+                            top: flyingDroplet?.y ?? 0,
                             transform: 'translate(-50%, -50%)',
                         }}
                     >

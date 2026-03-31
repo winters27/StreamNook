@@ -254,6 +254,24 @@ body {
   backdrop-filter: blur(8px);
 }
 
+/* Liquid Glass Component - Advanced Refraction */
+.liquid-glass-panel {
+  /* Increased density to make the glass feel physically thicker, without acting like a flat dark wall */
+  background-color: rgba(16, 16, 20, 0.35);
+  /* Liquid Specular Highlights via dual internal bevels */
+  box-shadow: 
+    inset 1px 1px 0 0 rgba(255, 255, 255, 0.18),
+    inset -1px -1px 0 0 rgba(0, 0, 0, 0.4),
+    0 10px 30px -5px rgba(0, 0, 0, 0.7), 
+    0 0 20px rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(255,255,255,0.06); 
+  border-radius: 12px; 
+  /* Absolute maximum blur radius (96px) to completely melt any structures/text behind it into soft gradients */
+  -webkit-backdrop-filter: blur(96px) saturate(180%);
+  backdrop-filter: blur(96px) saturate(180%);
+  transition: all 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
 .glass-button:hover {
   background-color: var(--color-surface-hover);
   /* Enhanced depth and brightness on hover */

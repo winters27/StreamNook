@@ -41,9 +41,10 @@ const DropsSettings = () => {
 
     // Listen for mining status updates from backend
     let unlisten: (() => void) | undefined;
+    let isMounted = true;
     const setupListener = async () => {
       const { listen } = await import('@tauri-apps/api/event');
-      unlisten = await listen<any>('mining-status-update', (event) => {
+      const unlistenFn = await listen<any>('mining-status-update', (event) => {
         const status = event.payload;
         Logger.debug('Mining status update received:', status);
 
@@ -55,10 +56,16 @@ const DropsSettings = () => {
           setIsInitializing(false);
         }
       });
+      if (isMounted) {
+        unlisten = unlistenFn;
+      } else {
+        unlistenFn();
+      }
     };
     setupListener();
 
     return () => {
+      isMounted = false;
       if (unlisten) {
         unlisten();
       }

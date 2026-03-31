@@ -292,16 +292,24 @@ const UpdatesSettings = () => {
     // Listen for update progress events
     useEffect(() => {
         let unlisten: (() => void) | null = null;
+        let isMounted = true;
 
         const setupListener = async () => {
-            unlisten = await listen<string>('bundle-update-progress', (event) => {
+            const unlistenFn = await listen<string>('bundle-update-progress', (event) => {
                 setUpdateProgress(event.payload);
             });
+            
+            if (isMounted) {
+                unlisten = unlistenFn;
+            } else {
+                unlistenFn();
+            }
         };
 
         setupListener();
 
         return () => {
+            isMounted = false;
             if (unlisten) {
                 unlisten();
             }

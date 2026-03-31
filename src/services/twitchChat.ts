@@ -156,7 +156,7 @@ export const parseMessage = (raw: string | BackendChatMessage, channelId?: strin
   // Legacy string parsing logic
   // Parse IRC tags, username, content, etc.
   const tags = new Map<string, string>();
-  let message = raw;
+  let message = (raw as string).trim();
 
   // Parse tags if present
   if (raw.startsWith('@')) {
@@ -191,13 +191,13 @@ export const parseMessage = (raw: string | BackendChatMessage, channelId?: strin
   let content = '';
   let isAction = false;
   if (isUserNotice) {
-    // For USERNOTICE, content comes after USERNOTICE #channel :
-    const contentMatch = message.match(/USERNOTICE\s+#\S+\s+:(.+)$/);
-    content = contentMatch ? contentMatch[1] : '';
+    // For USERNOTICE, content comes after USERNOTICE #channel [:]
+    const contentMatch = message.match(/USERNOTICE\s+#\S+\s+:?(.*)$/);
+    content = contentMatch ? contentMatch[1] : message;
   } else {
-    // For PRIVMSG, content comes after PRIVMSG #channel :
-    const contentMatch = message.match(/PRIVMSG\s+#\S+\s+:(.+)$/);
-    content = contentMatch ? contentMatch[1] : '';
+    // For PRIVMSG, content comes after PRIVMSG #channel [:]
+    const contentMatch = message.match(/PRIVMSG\s+#\S+\s+:?(.*)$/);
+    content = contentMatch ? contentMatch[1] : message;
 
     // Check if this is an ACTION message (like /me command)
     if (content.startsWith('\u0001ACTION ') && content.endsWith('\u0001')) {

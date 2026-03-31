@@ -9,6 +9,7 @@ const MiningStatus = () => {
   const [lastProgressUpdate, setLastProgressUpdate] = useState<number>(0);
 
   useEffect(() => {
+    let isMounted = true;
     let unlisten: (() => void) | undefined;
     let unlistenProgress: (() => void) | undefined;
 
@@ -19,18 +20,25 @@ const MiningStatus = () => {
 
         // Get initial status
         const initialStatus = await invoke<MiningStatusType>('get_mining_status');
-        setStatus(initialStatus);
-        setIsLoading(false);
+        if (isMounted) {
+          setStatus(initialStatus);
+          setIsLoading(false);
+        }
 
         // Listen for status updates
-        unlisten = await listen<MiningStatusType>('mining-status-update', (event) => {
+        const unlistenFn = await listen<MiningStatusType>('mining-status-update', (event) => {
           Logger.debug('🔄 Mining status update received:', event.payload);
           setStatus(event.payload);
           setLastProgressUpdate(Date.now());
         });
+        if (isMounted) {
+          unlisten = unlistenFn;
+        } else {
+          unlistenFn();
+        }
 
         // Also listen for direct progress updates from WebSocket
-        unlistenProgress = await listen<{
+        const unlistenProgressFn = await listen<{
           drop_id: string;
           current_minutes: number;
           required_minutes: number;
@@ -71,15 +79,25 @@ const MiningStatus = () => {
           
           setLastProgressUpdate(Date.now());
         });
+        
+        if (isMounted) {
+          unlistenProgress = unlistenProgressFn;
+        } else {
+          unlistenProgressFn();
+        }
+
       } catch (error) {
         Logger.error('Failed to setup mining status listener:', error);
-        setIsLoading(false);
+        if (isMounted) {
+          setIsLoading(false);
+        }
       }
     };
 
     setupListener();
 
     return () => {
+      isMounted = false;
       if (unlisten) {
         unlisten();
       }

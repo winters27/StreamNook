@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import type { Settings, TwitchUser, TwitchStream, UserInfo, TwitchCategory, HypeTrainData } from '../types';
+import type { Settings, TwitchUser, TwitchStream, UserInfo, TwitchCategory, HypeTrainData, TwitchVideo, ModLogEvent } from '../types';
 import { trackActivity, isStreamlinkError, sendStreamlinkDiagnostics } from '../services/logService';
 import { Logger, setDiagnosticsEnabled } from '../utils/logger';
 import { upsertUser } from '../services/supabaseService';
@@ -22,6 +22,21 @@ export interface Toast {
 export type SettingsTab = 'Interface' | 'Player' | 'Chat' | 'Theme' | 'Integrations' | 'Notifications' | 'Cache' | 'Support' | 'Updates' | 'Analytics';
 
 export type HomeTab = 'following' | 'recommended' | 'browse' | 'search' | 'category';
+
+export interface MediaInfo {
+  id?: string;
+  broadcaster_id?: string;
+  user_id?: string;
+  broadcaster_name?: string;
+  user_name?: string;
+  title?: string;
+  view_count?: number;
+  thumbnail_url?: string;
+  created_at?: string;
+  game_id?: string;
+  game_name?: string;
+  language?: string;
+}
 
 // Types for drops data - matches backend DropCampaign struct
 export interface DropCampaign {
@@ -93,6 +108,9 @@ interface AppState {
   isLoadingMore: boolean;
   streamUrl: string | null;
   currentStream: TwitchStream | null;
+  currentMediaType: 'live' | 'clip' | 'video' | 'offline_chat' | null;
+  originalMediaUrl: string | null;
+  setCurrentStream: (stream: TwitchStream | null) => void;
   chatPlacement: string;
   isLoading: boolean;
   isSettingsOpen: boolean;
@@ -128,7 +146,18 @@ interface AppState {
   homeActiveTab: HomeTab;
   homeSelectedCategory: TwitchCategory | null;
   streamOriginCategory: TwitchCategory | null;
+  homeCategoryTab: 'live' | 'clips' | 'videos';
   
+  // Media sorting and filtering state
+  clipsPeriod: string;
+  videosSort: string;
+  videosPeriod: string;
+  mediaSearchQuery: string;
+  setClipsPeriod: (period: string) => void;
+  setVideosSort: (sort: string) => void;
+  setVideosPeriod: (period: string) => void;
+  setMediaSearchQuery: (query: string) => void;
+
   // Category cache
   cachedTopGames: TwitchCategory[];
   cachedGamesCursor: string | null;
@@ -153,7 +182,9 @@ interface AppState {
   loadFollowedStreams: () => Promise<void>;
   loadRecommendedStreams: () => Promise<void>;
   loadMoreRecommendedStreams: () => Promise<void>;
-  startStream: (channel: string, streamInfo?: TwitchStream) => Promise<void>;
+  startStream: (channel: string, streamInfo?: TwitchStream, skipChatRefresh?: boolean) => Promise<void>;
+  startOfflineChat: (channel: string, streamInfo?: TwitchStream) => Promise<void>;
+  playMedia: (type: 'clip' | 'video', url: string, info: MediaInfo) => Promise<void>;
   stopStream: () => Promise<void>;
   restartStream: () => Promise<void>;  // Restart current stream (stops and starts again)
   getAvailableQualities: () => Promise<string[]>;
@@ -182,6 +213,7 @@ interface AppState {
   setHomeActiveTab: (tab: HomeTab) => void;
   setHomeSelectedCategory: (category: TwitchCategory | null) => void;
   setStreamOriginCategory: (category: TwitchCategory | null) => void;
+  setHomeCategoryTab: (tab: 'live' | 'clips' | 'videos') => void;
   
   // Category cache actions
   setCachedTopGames: (games: TwitchCategory[], cursor: string | null, hasMore: boolean) => void;
@@ -200,6 +232,10 @@ interface AppState {
   // Whisper import actions
   setWhisperImportState: (state: Partial<WhisperImportState>) => void;
   resetWhisperImportState: () => void;
+  // Mod Logs State
+  modLogs: ModLogEvent[];
+  addModLog: (log: ModLogEvent) => void;
+  clearModLogs: () => void;
 }
 
 // Flags to ensure we only show session toasts once per app session
@@ -207,6 +243,7 @@ let hasShownWelcomeBackToast = false;
 
 // Store EventSub listener cleanup functions at module level
 let eventSubListenerCleanup: (() => void)[] = [];
+let eventSubConnectionId = 0;
 
 // Helper to save user context to localStorage for error reporting
 const saveUserContextToLocalStorage = (currentUser: TwitchUser | null, currentStream: TwitchStream | null) => {
@@ -245,6 +282,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   isLoadingMore: false,
   streamUrl: null,
   currentStream: null,
+  currentMediaType: null,
+  originalMediaUrl: null,
+  setCurrentStream: (stream: TwitchStream | null) => set({ currentStream: stream }),
   chatPlacement: 'right',
   isLoading: false,
   isSettingsOpen: false,
@@ -278,6 +318,17 @@ export const useAppStore = create<AppState>((set, get) => ({
   homeActiveTab: 'following' as HomeTab,
   homeSelectedCategory: null,
   streamOriginCategory: null,
+  homeCategoryTab: 'live' as 'live' | 'clips' | 'videos',
+
+  // Media sorting and filtering state
+  clipsPeriod: 'all',
+  videosSort: 'time',
+  videosPeriod: 'all',
+  mediaSearchQuery: '',
+  setClipsPeriod: (period: string) => set({ clipsPeriod: period }),
+  setVideosSort: (sort: string) => set({ videosSort: sort }),
+  setVideosPeriod: (period: string) => set({ videosPeriod: period }),
+  setMediaSearchQuery: (query: string) => set({ mediaSearchQuery: query }),
   
   // Category cache init
   cachedTopGames: [],
@@ -285,6 +336,15 @@ export const useAppStore = create<AppState>((set, get) => ({
   cachedHasMoreGames: true,
   cachedTopGamesTimestamp: 0,
   chatRefreshKey: 0,
+  modLogs: [],
+  addModLog: (log) => set((state) => {
+    Logger.debug(`[ModLogs] Adding new log: ${log.action} for ${log.target_user_name}`);
+    // Keep max 100 logs
+    const currentLogs = state.modLogs || [];
+    const newLogs = [log, ...currentLogs].slice(0, 100);
+    return { modLogs: newLogs };
+  }),
+  clearModLogs: () => set({ modLogs: [] }),
   triggerChatRefresh: () => set((state) => ({ chatRefreshKey: state.chatRefreshKey + 1 })),
   dropsSearchTerm: '',
   // Centralized drops cache
@@ -395,6 +455,29 @@ export const useAppStore = create<AppState>((set, get) => ({
 
       Logger.debug(`[AutoSwitch] Stream ${currentUserLogin} confirmed offline`);
 
+      // Check if user prefers to stay in offline chat
+      if (settings.auto_switch?.stay_in_offline_chat) {
+        Logger.debug('[AutoSwitch] User prefers to stay in offline chat. Transitioning to offline chat mode...');
+        set({ isAutoSwitching: false });
+        
+        // Stop the stream (video player) but DO NOT stop chat
+        try {
+          await invoke('stop_stream');
+          Logger.debug('[AutoSwitch] Stream video stopped for offline mode');
+        } catch (e) {
+          Logger.warn('[AutoSwitch] Error stopping stream video:', e);
+        }
+
+        // We also want to trigger startOfflineChat to ensure we load the VOD and set the correct state
+        if (currentStream) {
+          // We can't await this directly without causing a loop if it fails, so we run it async
+          setTimeout(() => {
+            get().startOfflineChat(currentUserLogin, currentStream);
+          }, 100);
+        }
+        return;
+      }
+
       // Step 2: Clean up current stream connections thoroughly
       Logger.debug('[AutoSwitch] Cleaning up current stream connections...');
 
@@ -420,7 +503,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
 
       // Clear current stream state
-      set({ streamUrl: null, currentStream: null });
+      set({ streamUrl: null, currentStream: null, currentMediaType: null });
 
       // Step 3: Find the next best stream based on mode
       const switchMode = settings.auto_switch?.mode ?? 'same_category';
@@ -439,11 +522,13 @@ export const useAppStore = create<AppState>((set, get) => ({
 
         Logger.debug(`[AutoSwitch] Looking for streams in category: ${gameName}`);
 
-        streams = await invoke('get_streams_by_game_name', {
+        const streamsResponse = await invoke('get_streams_by_game_name', {
           gameName: gameName,
           excludeUserLogin: currentUserLogin,
           limit: 10
-        }) as TwitchStream[];
+        }) as [TwitchStream[], string | null];
+        
+        streams = streamsResponse[0] || [];
 
         if (!streams || streams.length === 0) {
           Logger.debug('[AutoSwitch] No other streams found in this category');
@@ -818,6 +903,56 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({ isLoadingMore: false, hasMoreRecommended: false });
     }
   },
+  playMedia: async (type: 'clip' | 'video', url: string, info: MediaInfo) => {
+    set({ isLoading: true });
+    trackActivity(`Started watching ${type}: ${info?.title || info?.id}`);
+    try {
+      const { settings, stopStream, currentStream } = get();
+
+      // Ensure exact channel termination
+      if (currentStream) {
+        await stopStream();
+      }
+      const isAvailable = await invoke('is_streamlink_available') as boolean;
+      if (!isAvailable) {
+        Logger.debug('[Media] Streamlink not found, showing missing dialog');
+        set({ isLoading: false, showStreamlinkMissing: true });
+        return;
+      }
+
+      const streamUrl = await invoke('start_stream', { url: url, quality: settings.quality }) as string;
+      const parsedInfo: TwitchStream = {
+        id: info.id || '',
+        user_id: info.broadcaster_id || info.user_id || '',
+        user_name: info.broadcaster_name || info.user_name || 'StreamNook Media',
+        user_login: '',
+        title: info.title || `Twitch ${type}`,
+        viewer_count: info.view_count || 0,
+        game_name: type === 'clip' ? 'Twitch Clip' : 'Twitch Video',
+        thumbnail_url: info.thumbnail_url || '',
+        profile_image_url: '',
+        started_at: info.created_at || new Date().toISOString(),
+      };
+
+      set({ 
+        streamUrl: streamUrl, 
+        currentStream: parsedInfo, 
+        currentMediaType: type,
+        originalMediaUrl: url,
+        isHomeActive: false,
+        // Preserve the origin category so the back button works for clips/VODs.
+        // stopStream() clears this, so we re-set it here from the current navigation context.
+        streamOriginCategory: get().homeSelectedCategory || null,
+      });
+      
+    } catch (e: unknown) {
+      Logger.error(`Failed to start ${type}:`, e);
+      get().addToast(`Failed to load ${type}: ${String(e)}`, 'error');
+      set({ isHomeActive: true, currentMediaType: null, currentStream: null, streamUrl: null });
+    } finally {
+      set({ isLoading: false });
+    }
+  },
   stopStream: async () => {
     trackActivity('Stopped stream');
     try {
@@ -852,7 +987,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         Logger.warn('Could not disconnect EventSub:', e);
       }
 
-      set({ streamUrl: null, currentStream: null, currentHypeTrain: null, streamOriginCategory: null });
+      set({ streamUrl: null, currentStream: null, currentMediaType: null, currentHypeTrain: null, streamOriginCategory: null });
 
       // Update user context for error reporting (stream stopped)
       saveUserContextToLocalStorage(get().currentUser, null);
@@ -876,9 +1011,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   restartStream: async () => {
-    const { currentStream, settings } = get();
+    const { currentStream, settings, currentMediaType } = get();
     if (!currentStream) {
       Logger.warn('[Stream] Cannot restart: no current stream');
+      return;
+    }
+    
+    if (currentMediaType && currentMediaType !== 'live') {
+      Logger.warn('[Stream] Cannot restart non-live media (clips/videos).');
       return;
     }
     
@@ -928,8 +1068,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
 
     try {
+      const { currentMediaType, originalMediaUrl } = get();
+      const targetUrl = (currentMediaType !== 'live' && originalMediaUrl) ? originalMediaUrl : `https://twitch.tv/${currentStream.user_login}`;
+
       const qualities = await invoke('get_stream_qualities', {
-        url: `https://twitch.tv/${currentStream.user_login}`
+        url: targetUrl
       }) as string[];
 
       Logger.debug('[Qualities] Available from Streamlink:', qualities);
@@ -952,8 +1095,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       Logger.debug(`[Quality] Changing to: ${quality}`);
       set({ isLoading: true });
 
+      const { currentMediaType, originalMediaUrl } = get();
+      const targetUrl = (currentMediaType !== 'live' && originalMediaUrl) ? originalMediaUrl : `https://twitch.tv/${currentStream.user_login}`;
+
       const url = await invoke('change_stream_quality', {
-        url: `https://twitch.tv/${currentStream.user_login}`,
+        url: targetUrl,
         quality: quality
       }) as string;
 
@@ -971,7 +1117,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({ isLoading: false });
     }
   },
-  startStream: async (channel, providedStreamInfo?) => {
+  startStream: async (channel, providedStreamInfo?, skipChatRefresh = false) => {
     set({ isLoading: true });
     trackActivity(`Started watching: ${channel}`);
     try {
@@ -1005,7 +1151,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       } else {
         // Fallback: get channel info to get the user_id and other details
         try {
-          const rawInfo: any = await invoke('get_channel_info', { channelName: channel });
+          const rawInfo = await invoke<{ title?: string; game_name?: string; broadcaster_id?: string; broadcaster_name?: string }>('get_channel_info', { channelName: channel });
           info = {
             id: providedStreamInfo?.id || '',
             user_id: rawInfo.broadcaster_id || '',
@@ -1034,17 +1180,21 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
       }
 
-      set({ streamUrl: url, currentStream: info, isHomeActive: false });
+      set({ streamUrl: url, currentStream: info, currentMediaType: 'live', originalMediaUrl: null, isHomeActive: false });
 
       // Save user context for error reporting
       saveUserContextToLocalStorage(get().currentUser, info);
 
-      // Start chat first - only if authenticated
-      try {
-        await invoke('start_chat', { channel });
-      } catch (e) {
-        Logger.warn('Could not start chat:', e);
-        // Chat connection failed, but stream can still work
+      // Start chat first - only if authenticated and not skipping refresh
+      if (get().isAuthenticated && !skipChatRefresh) {
+        try {
+          await invoke('start_chat', { channel });
+        } catch (e) {
+          Logger.warn('Could not start chat:', e);
+          // Chat connection failed, but stream can still work
+        }
+      } else if (skipChatRefresh) {
+        Logger.debug(`[Stream] Skipping chat refresh for ${channel} (Seamless Auto-Switch enabled)`);
       }
 
       // Start drops and channel points monitoring
@@ -1064,7 +1214,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           // Auto-reserve watch token for this stream (if enabled in settings)
           // This ensures the user is "present" in chat for gifted sub eligibility
           try {
-            const dropsSettings = await invoke('get_drops_settings') as any;
+            const dropsSettings = await invoke<{ reserve_token_for_current_stream?: boolean; auto_reserve_on_watch?: boolean }>('get_drops_settings');
             if (dropsSettings?.reserve_token_for_current_stream && dropsSettings?.auto_reserve_on_watch) {
               await invoke('set_reserved_channel', {
                 channelId,
@@ -1129,6 +1279,8 @@ export const useAppStore = create<AppState>((set, get) => ({
 
       if (channelId && get().isAuthenticated) {
         try {
+          const currentConnectionId = ++eventSubConnectionId;
+
           // Clean up any existing event listeners first
           Logger.debug('[EventSub] Cleaning up existing listeners...');
           for (const cleanup of eventSubListenerCleanup) {
@@ -1144,7 +1296,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
           // Set up event listeners for Rust-emitted events
           // Listen for raid events
-          const unlistenRaid = await listen('eventsub://raid', async (event: any) => {
+          const unlistenRaid = await listen<{ to_broadcaster_user_login: string; viewers: number }>('eventsub://raid', async (event) => {
             if (!autoRedirectOnRaid) return;
             
             const raidData = event.payload;
@@ -1162,7 +1314,12 @@ export const useAppStore = create<AppState>((set, get) => ({
             // Start the new stream (this will also set up new EventSub subscription)
             await get().startStream(raidData.to_broadcaster_user_login);
           });
-          eventSubListenerCleanup.push(unlistenRaid);
+          
+          if (currentConnectionId === eventSubConnectionId) {
+            eventSubListenerCleanup.push(unlistenRaid);
+          } else {
+            unlistenRaid();
+          }
 
           // Listen for stream offline events
           const unlistenOffline = await listen('eventsub://offline', () => {
@@ -1170,10 +1327,46 @@ export const useAppStore = create<AppState>((set, get) => ({
             // Use the existing handleStreamOffline which has all the auto-switch logic
             get().handleStreamOffline();
           });
-          eventSubListenerCleanup.push(unlistenOffline);
+          
+          if (currentConnectionId === eventSubConnectionId) {
+            eventSubListenerCleanup.push(unlistenOffline);
+          } else {
+            unlistenOffline();
+          }
+
+          // Listen for stream online events
+          const unlistenOnline = await listen<{ broadcaster_user_login: string; broadcaster_user_name: string; id: string; started_at: string }>('eventsub://online', (event) => {
+            const onlineData = event.payload;
+            Logger.debug(`[EventSub] Stream went online for ${onlineData.broadcaster_user_login}`);
+            
+            const state = get();
+            
+            // Auto-Switch Logic: If the user is currently parked in this channel's offline chat room
+            if (state.currentStream && state.currentStream.user_login === onlineData.broadcaster_user_login) {
+                if (state.currentMediaType === 'offline_chat') {
+                    Logger.info(`[EventSub] Auto-switching from offline chat to newly live stream: ${onlineData.broadcaster_user_login}`);
+                    state.addToast(`${onlineData.broadcaster_user_name} just went live! Seamlessly connecting...`, 'success');
+                    
+                    const liveStreamObject: TwitchStream = {
+                        ...state.currentStream,
+                        id: onlineData.id || state.currentStream.id,
+                        is_live: true,
+                        started_at: onlineData.started_at || new Date().toISOString(),
+                    };
+                    
+                    state.startStream(liveStreamObject.user_login, liveStreamObject, true);
+                }
+            }
+          });
+
+          if (currentConnectionId === eventSubConnectionId) {
+            eventSubListenerCleanup.push(unlistenOnline);
+          } else {
+            unlistenOnline();
+          }
 
           // Listen for channel update events
-          const unlistenUpdate = await listen('eventsub://channel-update', (event: any) => {
+          const unlistenUpdate = await listen<{ title: string; category_name: string; category_id: string }>('eventsub://channel-update', (event) => {
             const updateData = event.payload;
             const currentStream = get().currentStream;
             if (currentStream) {
@@ -1209,6 +1402,28 @@ export const useAppStore = create<AppState>((set, get) => ({
             }
           });
           eventSubListenerCleanup.push(unlistenUpdate);
+
+          // Listen for moderation events via EventSub (High Fidelity)
+          const unlistenModerate = await listen<Record<string, unknown>>('eventsub://channel-moderate', (event) => {
+            const data = event.payload;
+            const action = data.action as string || 'unknown';
+            
+            // Extract the timestamp based on the action, or use a default
+            const eventDetails = data[action] as Record<string, unknown> | undefined;
+            const targetUserFallback = String(data.target_user_name || data.target_user_login || '');
+            
+            get().addModLog({
+              id: String(data.id || Date.now() + Math.random()),
+              action,
+              timestamp: new Date().toISOString(),
+              moderator_name: String(data.moderator_user_name || data.moderator_user_login || 'Unknown'),
+              target_user_name: eventDetails?.user_name as string || targetUserFallback,
+              reason: eventDetails?.reason as string || undefined,
+              duration: eventDetails?.expires_at ? undefined : ((eventDetails?.duration as number) ?? (eventDetails?.wait_time_seconds as number)),
+              details: data
+            });
+          });
+          eventSubListenerCleanup.push(unlistenModerate);
 
           // Start Hype Train GQL polling (works for any channel, no moderator access needed)
           // Adaptive polling: 15s when idle, 5s when train active
@@ -1269,7 +1484,7 @@ export const useAppStore = create<AppState>((set, get) => ({
                   set({ currentHypeTrain: null });
                 }
               }
-            } catch (e) {
+            } catch {
               // Silently fail - GQL polling is non-critical
             }
             
@@ -1311,6 +1526,111 @@ export const useAppStore = create<AppState>((set, get) => ({
 
       // Show toast error to user
       get().addToast(`Failed to start stream: ${errorMessage}`, 'error');
+    } finally {
+      set({ isLoading: false });
+    }
+  },
+  startOfflineChat: async (channel, providedStreamInfo?) => {
+    set({ isLoading: true });
+    trackActivity(`Joined offline chat: ${channel}`);
+    try {
+      // Use the provided stream info, or find it or construct it
+      let info: TwitchStream;
+      const followedStreamInfo = get().followedStreams.find(s => s.user_login.toLowerCase() === channel.toLowerCase());
+      
+      if (followedStreamInfo) {
+        info = followedStreamInfo;
+      } else if (providedStreamInfo && providedStreamInfo.user_id) {
+        info = providedStreamInfo;
+      } else {
+        try {
+          const rawInfo = await invoke<{ title?: string; game_name?: string; broadcaster_id?: string; broadcaster_name?: string }>('get_channel_info', { channelName: channel });
+          info = {
+            id: providedStreamInfo?.id || '',
+            user_id: rawInfo.broadcaster_id || '',
+            user_name: rawInfo.broadcaster_name || providedStreamInfo?.user_name || channel,
+            user_login: channel.toLowerCase(),
+            title: rawInfo.title || providedStreamInfo?.title || `Offline Chat: ${channel}`,
+            viewer_count: 0,
+            game_name: rawInfo.game_name || providedStreamInfo?.game_name || '',
+            thumbnail_url: providedStreamInfo?.thumbnail_url || '',
+            profile_image_url: providedStreamInfo?.profile_image_url || '',
+            started_at: providedStreamInfo?.started_at || new Date().toISOString(),
+          };
+        } catch (e) {
+          Logger.warn('Could not get channel info for offline chat:', e);
+          info = providedStreamInfo || {
+            id: '',
+            user_id: '',
+            user_name: channel,
+            user_login: channel.toLowerCase(),
+            title: `Offline Chat: ${channel}`,
+            viewer_count: 0,
+            game_name: '',
+            thumbnail_url: '',
+            started_at: new Date().toISOString(),
+          };
+        }
+      }
+
+      // Try to fetch the latest video for the streamer
+      let latestVideoUrl: string | null = null;
+      let resolvedStreamUrl: string | null = null;
+      let streamContextForUI = { ...info };
+      
+      if (info.user_id) {
+        try {
+          const videos = await invoke<TwitchVideo[]>('get_user_videos', {
+            userId: info.user_id,
+            sort: 'time',
+            limit: 1
+          });
+          if (videos && videos.length > 0) {
+            const latestVod = videos[0];
+            latestVideoUrl = `https://twitch.tv/videos/${latestVod.id}`;
+            Logger.debug(`[Offline Chat] Found recent VOD for ${channel}: ${latestVideoUrl}`);
+            
+            // Enrich the stream UI context with accurate VOD metadata 
+            streamContextForUI = {
+              ...info,
+              title: latestVod.title,
+              started_at: latestVod.created_at,
+              viewer_count: latestVod.view_count
+            };
+            
+            // Resolve the actual playback URL using Streamlink
+            try {
+              resolvedStreamUrl = await invoke<string>('start_stream', { url: latestVideoUrl, quality: get().settings.quality });
+              Logger.debug(`[Offline Chat] Resolved VOD playback URL: ${resolvedStreamUrl}`);
+            } catch (resolveError) {
+              Logger.warn(`[Offline Chat] Could not resolve playback URL for VOD, falling back to banner:`, resolveError);
+            }
+          }
+        } catch (e) {
+          Logger.warn(`[Offline Chat] Failed to fetch recent video for ${channel}`, e);
+        }
+      }
+
+      set({ 
+        streamUrl: resolvedStreamUrl || 'offline', 
+        currentStream: streamContextForUI, 
+        currentMediaType: 'offline_chat', 
+        originalMediaUrl: latestVideoUrl,
+        isHomeActive: false 
+      });
+
+      // Connect chat
+      if (get().isAuthenticated) {
+        try {
+          await invoke('start_chat', { channel });
+          Logger.debug(`[Offline Chat] Connected chat for ${channel}`);
+        } catch (e) {
+          Logger.warn(`[Offline Chat] Could not connect chat for ${channel}:`, e);
+        }
+      }
+    } catch (e) {
+      Logger.error('[Offline Chat] Failed to join offline chat:', e);
+      get().addToast(`Failed to join offline chat: ${e}`, 'error');
     } finally {
       set({ isLoading: false });
     }
@@ -1519,12 +1839,40 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   checkAuthStatus: async () => {
+    let hasCredentials = false;
+    let authErrorMsg = '';
+    
     try {
       // Check if we have stored credentials first (only on initial check, not periodic checks)
       const wasAuthenticated = get().isAuthenticated;
-      const hasCredentials = await invoke('has_stored_credentials') as boolean;
+      hasCredentials = await invoke('has_stored_credentials') as boolean;
 
+      if (!hasCredentials) {
+        throw new Error('No stored credentials');
+      }
 
+      // Explicitly check token health to catch missing scopes (like moderation upgrades)
+      try {
+        const health = await invoke<{ is_valid: boolean; needs_refresh: boolean; error?: string }>('verify_token_health');
+        
+        // If the token is invalid specifically because of missing scopes, we must abort auth.
+        // If it's invalid but `needs_refresh` is true, we let get_user_info handle the auto-refresh cycle natively.
+        // If it's simply a network error on Twitch's end, we don't maliciously destroy the session.
+        if (!health.is_valid && health.error && health.error.includes('Missing scopes')) {
+          throw new Error(health.error);
+        }
+      } catch (healthErr) {
+        const msg = healthErr instanceof Error ? healthErr.message : String(healthErr);
+        
+        // Re-throw only if it's explicitly the missing scopes error we care about
+        if (msg.includes('Missing scopes')) {
+          throw new Error(msg);
+        }
+        
+        // Otherwise, gracefully ignore the health check failure (e.g. offline network or temporary 500 code) 
+        // and let get_user_info function as the true source of truth for auth state and auto-refresh.
+        Logger.debug('[Auth] verify_token_health failed or threw network error, proceeding to get_user_info fallback');
+      }
 
       // Try to get user info - if it works, we're authenticated
       const userInfo = await invoke('get_user_info') as UserInfo;
@@ -1574,14 +1922,50 @@ export const useAppStore = create<AppState>((set, get) => ({
       // Check if user was previously authenticated (session expired)
       const wasAuthenticated = get().isAuthenticated;
       const previousUser = get().currentUser;
+      authErrorMsg = e instanceof Error ? e.message : String(e);
 
       // If it fails, we're not authenticated
       set({ isAuthenticated: false, currentUser: null, followedStreams: [] });
 
-      // Show session expired toast if user was previously logged in
-      if (wasAuthenticated && previousUser) {
+      const isMissingScopes = authErrorMsg.includes('Missing scopes');
+      const isNetworkError = authErrorMsg.toLowerCase().includes('error sending request') || 
+                             authErrorMsg.toLowerCase().includes('timeout') || 
+                             authErrorMsg.toLowerCase().includes('network') ||
+                             authErrorMsg.toLowerCase().includes('dns error') ||
+                             authErrorMsg.toLowerCase().includes('proxy') ||
+                             authErrorMsg.toLowerCase().includes('failed to fetch') ||
+                             authErrorMsg.includes('500') ||
+                             authErrorMsg.includes('502') ||
+                             authErrorMsg.includes('503') ||
+                             authErrorMsg.includes('504');
+
+      // Proactively notify the user if they lost their session or needed a scope upgrade
+      if (isMissingScopes) {
+        get().addToast(
+          'We added new features! Please log in again to grant the new permissions.',
+          'warning',
+          {
+            label: 'Log In',
+            onClick: () => get().loginToTwitch()
+          }
+        );
+      } else if (isNetworkError) {
+        // Don't mistakenly tell them their session expired if their internet is just out
+        Logger.warn('[Auth] Network error during auth check, failing gracefully:', authErrorMsg);
+      } else if (wasAuthenticated && previousUser) {
+        // They were actively using the app and the session functionally died (like 401 Unauthorized)
         get().addToast(
           'Your session has expired. Please log in again to continue.',
+          'warning',
+          {
+            label: 'Log In',
+            onClick: () => get().loginToTwitch()
+          }
+        );
+      } else if (hasCredentials && !wasAuthenticated && authErrorMsg !== 'No stored credentials') {
+        // They booted up the app with a token on disk, but it was definitively invalid/expired
+        get().addToast(
+          'Your login session expired while away. Please log in again.',
           'warning',
           {
             label: 'Log In',
@@ -1647,6 +2031,10 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setStreamOriginCategory: (category: TwitchCategory | null) => {
     set({ streamOriginCategory: category });
+  },
+
+  setHomeCategoryTab: (tab: 'live' | 'clips' | 'videos') => {
+    set({ homeCategoryTab: tab });
   },
 
   setCachedTopGames: (games: TwitchCategory[], cursor: string | null, hasMore: boolean) => {

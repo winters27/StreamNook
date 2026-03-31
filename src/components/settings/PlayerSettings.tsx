@@ -210,10 +210,38 @@ const PlayerSettings = () => {
                 updateSettings({
                   ...settings,
                   auto_switch: {
+                    ...settings.auto_switch,
                     enabled: settings.auto_switch?.enabled ?? true,
                     mode: settings.auto_switch?.mode ?? 'same_category',
                     show_notification: settings.auto_switch?.show_notification ?? true,
                     auto_redirect_on_raid: !(settings.auto_switch?.auto_redirect_on_raid ?? true),
+                  },
+                })
+              }
+            />
+          </div>
+
+          {/* Stay in Offline Chat */}
+          <div className="flex items-center justify-between">
+            <div>
+              <label className="text-sm font-medium text-textPrimary">
+                Stay in Offline Chat
+              </label>
+              <p className="text-xs text-textSecondary">
+                Don't auto-switch when stream ends, stay in the chat room instead
+              </p>
+            </div>
+            <Toggle
+              enabled={settings.auto_switch?.stay_in_offline_chat ?? false}
+              onChange={() =>
+                updateSettings({
+                  ...settings,
+                  auto_switch: {
+                    ...settings.auto_switch,
+                    enabled: settings.auto_switch?.enabled ?? true,
+                    mode: settings.auto_switch?.mode ?? 'same_category',
+                    show_notification: settings.auto_switch?.show_notification ?? true,
+                    stay_in_offline_chat: !(settings.auto_switch?.stay_in_offline_chat ?? false),
                   },
                 })
               }

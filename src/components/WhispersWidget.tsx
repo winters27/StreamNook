@@ -230,10 +230,11 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
     // Listen for auto-import whisper data event
     useEffect(() => {
         let unlisten: (() => void) | undefined;
+        let isMounted = true;
 
         const setupListener = async () => {
             // Listen for the actual data object (emitted directly from backend)
-            unlisten = await listen<{ version: number; exportedAt: string; myUserId: string | null; myUsername: string | null; conversations: ExportedConversation[] }>('whisper-data-ready', async (event) => {
+            const unlistenFn = await listen<{ version: number; exportedAt: string; myUserId: string | null; myUsername: string | null; conversations: ExportedConversation[] }>('whisper-data-ready', async (event) => {
                 const data = event.payload;
                 Logger.debug('[Whispers] Auto-import data received directly:', data.conversations?.length, 'conversations');
 
@@ -348,11 +349,15 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
                     Logger.error('[Whispers] Failed to process auto-import data:', err);
                 }
             });
+
+            if (isMounted) unlisten = unlistenFn;
+            else unlistenFn();
         };
 
         setupListener();
 
         return () => {
+            isMounted = false;
             if (unlisten) {
                 unlisten();
             }
@@ -450,9 +455,13 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
 
     // Listen for incoming whispers
     useEffect(() => {
-        const unlisten = listen<WhisperFromBackend>('whisper-received', async (event) => {
-            const data = event.payload;
-            if (settings.live_notifications?.play_sound) {
+        let isMounted = true;
+        let unlistenFn: (() => void) | undefined;
+
+        const setupListener = async () => {
+            const unlisten = await listen<WhisperFromBackend>('whisper-received', async (event) => {
+                const data = event.payload;
+                if (settings.live_notifications?.play_sound) {
                 playNotificationSound();
             }
             let profileImageUrl: string | undefined;
@@ -539,7 +548,17 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
                 return newConversations;
             });
         });
-        return () => { unlisten.then((fn) => fn()); };
+        
+            if (isMounted) unlistenFn = unlisten;
+            else unlisten();
+        };
+
+        setupListener();
+
+        return () => {
+            isMounted = false;
+            if (unlistenFn) unlistenFn();
+        };
     }, [activeConversation, playNotificationSound, settings.live_notifications?.play_sound]);
 
     // Scroll to bottom when new messages arrive

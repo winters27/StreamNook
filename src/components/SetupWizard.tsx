@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
     X,
@@ -62,6 +62,15 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
 
     const { addToast, settings, updateSettings, isAuthenticated, checkAuthStatus, loginToTwitch, whisperImportState, setWhisperImportState, resetWhisperImportState } = useAppStore();
     const [whisperImportStarted, setWhisperImportStarted] = useState(false);
+    const unlistenRefs = useRef<Array<() => void>>([]);
+
+    // Clean up event listeners on unmount
+    useEffect(() => {
+        return () => {
+            unlistenRefs.current.forEach(fn => fn());
+            unlistenRefs.current = [];
+        };
+    }, []);
 
     const steps = [
         { title: 'Welcome', description: 'Get started with StreamNook', icon: Sparkles },
@@ -297,6 +306,11 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
         setError(null);
         try {
             await loginToTwitch();
+            
+            // clear existing listeners
+            unlistenRefs.current.forEach(fn => fn());
+            unlistenRefs.current = [];
+
             const unlisten = await listen('twitch-login-complete', async () => {
                 await checkAuthStatus();
                 setStatus(prev => ({ ...prev, mainAuthenticated: true }));
@@ -312,13 +326,17 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                 // Auto-advance to next step after a short delay
                 setTimeout(() => setCurrentStep(4), 500);
 
-                unlisten();
+                unlistenRefs.current.forEach(fn => fn());
+                unlistenRefs.current = [];
             });
             const unlistenError = await listen('twitch-login-error', (event) => {
                 setError(`Login failed: ${event.payload}`);
                 setIsAuthenticating(false);
-                unlistenError();
+                unlistenRefs.current.forEach(fn => fn());
+                unlistenRefs.current = [];
             });
+            
+            unlistenRefs.current = [unlisten, unlistenError];
         } catch (e) {
             Logger.error('Failed to start login:', e);
             setError(`Failed to start login: ${e}`);

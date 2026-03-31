@@ -155,6 +155,7 @@ export interface AutoSwitchSettings {
   mode: AutoSwitchMode;         // 'same_category' = switch to stream in same game, 'followed_streams' = switch to a followed streamer
   show_notification: boolean;   // Show toast when auto-switching
   auto_redirect_on_raid?: boolean; // Automatically follow raids to the target channel
+  stay_in_offline_chat?: boolean;  // Do not auto-switch if stream goes offline, instead fallback to offline chat mode
 }
 
 // Compact View Presets
@@ -280,7 +281,18 @@ export interface Settings {
   custom_themes?: CustomTheme[]; // User-created custom themes
   multi_nook_slots?: MultiNookSlot[]; // Persisted multi-nook grid configurations
   multi_nook_chat_hidden?: boolean; // Whether the chat panel is globally hidden in MultiNook
+  show_mod_logs?: boolean; // Whether to display the Mod Logs pane
+}
 
+export interface ModLogEvent {
+  id: string;
+  action: string;
+  timestamp: string;
+  moderator_name: string;
+  target_user_name?: string;
+  reason?: string;
+  duration?: number;
+  details?: Record<string, unknown>;
 }
 
 export interface ReleaseNotes {
@@ -305,6 +317,44 @@ export interface TwitchStream {
   has_shared_chat?: boolean;
   profile_image_url?: string;
   is_live?: boolean;
+}
+
+export interface TwitchClip {
+  id: string;
+  url: string;
+  embed_url: string;
+  broadcaster_id: string;
+  broadcaster_name: string;
+  creator_id: string;
+  creator_name: string;
+  video_id: string;
+  game_id: string;
+  language: string;
+  title: string;
+  view_count: number;
+  created_at: string;
+  thumbnail_url: string;
+  duration: number;
+  vod_offset?: number;
+}
+
+export interface TwitchVideo {
+  id: string;
+  stream_id?: string;
+  user_id: string;
+  user_login: string;
+  user_name: string;
+  title: string;
+  description: string;
+  created_at: string;
+  published_at: string;
+  url: string;
+  thumbnail_url: string;
+  viewable: string;
+  view_count: number;
+  language: string;
+  type: string;
+  duration: string;
 }
 
 export interface TwitchUser {
@@ -370,6 +420,21 @@ export interface TwitchGame {
 export interface TwitchCategory extends TwitchGame {
   viewer_count?: number;
   tags?: string[];
+}
+
+export interface CategoryTag {
+  id: string;
+  localizedName: string;
+}
+
+export interface CategoryInfo {
+  id: string;
+  name: string;
+  displayName: string | null;
+  description: string | null;
+  followersCount: number | null;
+  boxArtUrl: string | null;
+  tags: CategoryTag[] | null;
 }
 
 // Unified Game Interface for Drops UI Overhaul

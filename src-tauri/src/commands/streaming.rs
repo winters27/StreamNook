@@ -141,14 +141,20 @@ pub async fn start_stream(
             settings.ttvlol_plugin.enabled, settings.streamlink.use_proxy, proxy_args, custom
         );
 
-        // Only use ttvlol args if BOTH enabled in settings AND the plugin file exists
-        let args = if settings.ttvlol_plugin.enabled && ttvlol_installed {
+        // Identify if it's a VOD or Clip
+        let is_vod_or_clip =
+            url.contains("/videos/") || url.contains("/clip/") || url.contains("clips.twitch.tv");
+
+        // Only use ttvlol args if BOTH enabled in settings AND the plugin file exists AND it's a live stream
+        let args = if settings.ttvlol_plugin.enabled && ttvlol_installed && !is_vod_or_clip {
             // Use the ttvlol plugin args (proxy args)
             debug!("[Streaming] ✅ Using ttvlol plugin args: {}", proxy_args);
             proxy_args
         } else {
-            // Don't use any special args if plugin is disabled or not installed
-            if settings.ttvlol_plugin.enabled && !ttvlol_installed {
+            // Don't use any special args if plugin is disabled, not installed, or URL is a VOD/Clip
+            if is_vod_or_clip {
+                debug!("[Streaming] ℹ️ Bypassing ttvlol proxy args for VOD/Clip");
+            } else if settings.ttvlol_plugin.enabled && !ttvlol_installed {
                 debug!(
                     "[Streaming] ⚠️ WARNING: ttvlol enabled but plugin not installed, skipping ttvlol args"
                 );
@@ -175,6 +181,22 @@ pub async fn start_stream(
     )
     .await
     .map_err(|e| e.to_string())?;
+
+    // If it's an MP4 file (like Twitch Clips), we don't proxy it through the HLS server!
+    let stream_url_lower = stream_url.to_lowercase();
+    let url_without_query = if let Some(q_idx) = stream_url_lower.find('?') {
+        &stream_url_lower[..q_idx]
+    } else {
+        &stream_url_lower
+    };
+
+    if url_without_query.ends_with(".mp4") {
+        debug!(
+            "[Streaming] Stream URL is an MP4 (likely a Clip), bypassing proxy: {}",
+            stream_url
+        );
+        return Ok(stream_url);
+    }
 
     // Start local HTTP server to proxy the stream
     let port = StreamServer::start_proxy_server(stream_url)

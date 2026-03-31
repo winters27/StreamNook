@@ -307,19 +307,12 @@ export const useMultiNookPlayer = ({
       });
       
       let playStarted = false;
-      const GATE_THRESHOLD = 4;
 
       hls.on(Hls.Events.FRAG_BUFFERED, () => {
         if (playStarted) return;
         
-        const buffered = video.buffered;
-        if (buffered.length === 0) return;
-        
-        const depth = buffered.end(buffered.length - 1) - buffered.start(0);
-        if (depth < GATE_THRESHOLD) return;
-        
         playStarted = true;
-        Logger.debug(`[MultiNook-${streamId}] Buffer gate cleared (${depth.toFixed(1)}s), starting playback`);
+        Logger.debug(`[MultiNook-${streamId}] First fragment buffered, starting playback immediately (Gate removed)`);
         video.play().catch(e => {
           Logger.debug(`[MultiNook-${streamId}] Autoplay failed:`, e);
           video.muted = true;

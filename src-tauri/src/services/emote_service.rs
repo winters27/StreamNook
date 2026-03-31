@@ -80,6 +80,8 @@ pub struct EmoteService {
     client: reqwest::Client,
     // Cache duration (5 minutes like the TS version)
     cache_duration: Duration,
+    // Cached authorized user ID to prevent rate-limiting on /validate
+    cached_user_id: Arc<RwLock<Option<String>>>,
 }
 
 impl EmoteService {
@@ -92,6 +94,7 @@ impl EmoteService {
                 .build()
                 .unwrap_or_default(),
             cache_duration: Duration::from_secs(5 * 60), // 5 minutes
+            cached_user_id: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -156,6 +159,7 @@ impl EmoteService {
             }
         };
 
+        let has_twitch_error = twitch_result.is_err();
         let twitch_emotes = match twitch_result {
             Ok(emotes) => emotes,
             Err(e) => {
@@ -184,11 +188,21 @@ impl EmoteService {
         // Update memory cache
         {
             let mut cache = self.cache.write().await;
+            // If Twitch fetch failed, set timestamp artificially in the past so it expires in 10s
+            // cache_duration is 5 minutes, so 5 mins - 10s = 290s in the past
+            let timestamp = if has_twitch_error {
+                SystemTime::now()
+                    .checked_sub(Duration::from_secs(290))
+                    .unwrap_or(SystemTime::now())
+            } else {
+                SystemTime::now()
+            };
+
             cache.insert(
                 cache_key,
                 CachedEmoteSet {
                     set: emote_set.clone(),
-                    timestamp: SystemTime::now(),
+                    timestamp,
                 },
             );
         }
@@ -254,22 +268,34 @@ impl EmoteService {
             }
         };
 
-        // First, get the user ID from the token validation endpoint
-        let validate_response = self
-            .client
-            .get("https://id.twitch.tv/oauth2/validate")
-            .header("Authorization", format!("OAuth {}", token))
-            .send()
-            .await?;
+        // Get user ID from cache, or fetch it via /validate
+        let user_id = {
+            let mut cache_write = self.cached_user_id.write().await;
+            if let Some(id) = cache_write.clone() {
+                id
+            } else {
+                // Fetch the user ID from the token validation endpoint
+                let validate_response = self
+                    .client
+                    .get("https://id.twitch.tv/oauth2/validate")
+                    .header("Authorization", format!("OAuth {}", token))
+                    .send()
+                    .await?;
 
-        if !validate_response.status().is_success() {
-            return Err(anyhow::anyhow!("Token validation failed"));
-        }
+                if !validate_response.status().is_success() {
+                    return Err(anyhow::anyhow!("Token validation failed"));
+                }
 
-        let validate_data: serde_json::Value = validate_response.json().await?;
-        let user_id = validate_data["user_id"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("No user_id in token validation response"))?;
+                let validate_data: serde_json::Value = validate_response.json().await?;
+                let fetched_id = validate_data["user_id"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("No user_id in token validation response"))?
+                    .to_string();
+
+                *cache_write = Some(fetched_id.clone());
+                fetched_id
+            }
+        };
 
         debug!(
             "[EmoteService] Fetching Twitch emotes for user_id: {}",
@@ -396,13 +422,16 @@ impl EmoteService {
                                 item.get("id").and_then(|v| v.as_str()),
                                 item.get("code").and_then(|v| v.as_str()),
                             ) {
-                                let image_type = item.get("imageType").and_then(|v| v.as_str());
+                                let is_modifier = item
+                                    .get("modifier")
+                                    .and_then(|v| v.as_bool())
+                                    .unwrap_or(false);
                                 emotes.push(Emote {
                                     id: id.to_string(),
                                     name: code.to_string(),
                                     url: format!("https://cdn.betterttv.net/emote/{}/1x", id),
                                     provider: EmoteProvider::BTTV,
-                                    is_zero_width: Some(image_type == Some("gif")),
+                                    is_zero_width: Some(is_modifier),
                                     local_url: None,
                                     emote_type: None,
                                     owner_id: None,
@@ -440,13 +469,16 @@ impl EmoteService {
                                     item.get("id").and_then(|v| v.as_str()),
                                     item.get("code").and_then(|v| v.as_str()),
                                 ) {
-                                    let image_type = item.get("imageType").and_then(|v| v.as_str());
+                                    let is_modifier = item
+                                        .get("modifier")
+                                        .and_then(|v| v.as_bool())
+                                        .unwrap_or(false);
                                     emotes.push(Emote {
                                         id: id.to_string(),
                                         name: code.to_string(),
                                         url: format!("https://cdn.betterttv.net/emote/{}/1x", id),
                                         provider: EmoteProvider::BTTV,
-                                        is_zero_width: Some(image_type == Some("gif")),
+                                        is_zero_width: Some(is_modifier),
                                         local_url: None,
                                         emote_type: None,
                                         owner_id: None,
@@ -465,13 +497,16 @@ impl EmoteService {
                                     item.get("id").and_then(|v| v.as_str()),
                                     item.get("code").and_then(|v| v.as_str()),
                                 ) {
-                                    let image_type = item.get("imageType").and_then(|v| v.as_str());
+                                    let is_modifier = item
+                                        .get("modifier")
+                                        .and_then(|v| v.as_bool())
+                                        .unwrap_or(false);
                                     emotes.push(Emote {
                                         id: id.to_string(),
                                         name: code.to_string(),
                                         url: format!("https://cdn.betterttv.net/emote/{}/1x", id),
                                         provider: EmoteProvider::BTTV,
-                                        is_zero_width: Some(image_type == Some("gif")),
+                                        is_zero_width: Some(is_modifier),
                                         local_url: None,
                                         emote_type: None,
                                         owner_id: None,

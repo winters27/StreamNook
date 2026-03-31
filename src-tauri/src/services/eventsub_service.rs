@@ -684,6 +684,18 @@ impl EventSubService {
                     let _ = app_handle.emit("eventsub://channel-update", &update_event);
                 }
             }
+            "channel.moderate" => {
+                // Handle moderation events (pass raw JSON through to frontend)
+                debug!(
+                    "🛠️ Moderation action: {}",
+                    notification
+                        .event
+                        .get("action")
+                        .and_then(|a| a.as_str())
+                        .unwrap_or("unknown")
+                );
+                let _ = app_handle.emit("eventsub://channel-moderate", &notification.event);
+            }
             "channel.channel_points_automatic_reward_redemption.add" => {
                 // Handle automatic channel points rewards
                 debug!("🎁 Automatic channel points reward redeemed");
@@ -815,6 +827,15 @@ impl EventSubService {
                 "2",
                 serde_json::json!({
                     "broadcaster_user_id": broadcaster_id
+                }),
+            ),
+            // Channel moderation events (bans, timeouts, deletes, etc.)
+            (
+                "channel.moderate",
+                "2",
+                serde_json::json!({
+                    "broadcaster_user_id": broadcaster_id,
+                    "moderator_user_id": current_user_id
                 }),
             ),
             // Hype Train events (V2)

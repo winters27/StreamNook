@@ -160,9 +160,10 @@ interface LoadingWidgetProps {
   message?: string;
   useFunnyMessages?: boolean;
   showProxyNote?: boolean;
+  fullScreen?: boolean;
 }
 
-const LoadingWidget = ({ message, useFunnyMessages = false, showProxyNote = false }: LoadingWidgetProps) => {
+const LoadingWidget = ({ message, useFunnyMessages = false, showProxyNote = false, fullScreen = true }: LoadingWidgetProps) => {
   const [currentMessageIndex, setCurrentMessageIndex] = useState(() =>
     Math.floor(Math.random() * FUNNY_MESSAGES.length)
   );
@@ -232,7 +233,7 @@ const LoadingWidget = ({ message, useFunnyMessages = false, showProxyNote = fals
   };
 
   return (
-    <div className="absolute inset-0 flex items-center justify-center bg-black/70 backdrop-blur-sm">
+    <div className={`flex items-center justify-center ${fullScreen ? 'absolute inset-0 bg-black/70 backdrop-blur-sm' : 'h-full w-full'}`}>
       {/* Proxy/Ad-blocker note - positioned at top left */}
       {showProxyNote && (
         <div className="absolute top-4 left-4 max-w-xs animate-fade-in">

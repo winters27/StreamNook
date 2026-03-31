@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState, useMemo, useCallback, memo } from 'react';
 import { createPortal } from 'react-dom';
+import { motion, AnimatePresence } from 'framer-motion';
 import ChatMessageList from './ChatMessageList';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -23,6 +24,7 @@ import ErrorBoundary from './ErrorBoundary';
 import PredictionOverlay from './PredictionOverlay';
 import StreamerAboutPanel from './StreamerAboutPanel';
 import ChannelPointsMenu from './ChannelPointsMenu';
+import ModeratorMenu from './chat/ModeratorMenu';
 import ResubNotificationBanner, { ResubNotification } from './ResubNotificationBanner';
 import WatchStreakBanner, { WatchStreakMilestone } from './WatchStreakBanner';
 import { fetchAllEmotes, Emote, EmoteSet, preloadChannelEmotes, queueEmoteForCaching } from '../services/emoteService';
@@ -44,6 +46,9 @@ import { getAppleEmojiUrl } from '../services/emojiService';
 import { fetchRecentMessagesAsIRC } from '../services/ivrService';
 import { useChatUserStore } from '../stores/chatUserStore';
 import MentionAutocomplete from './MentionAutocomplete';
+import CommandAutocomplete from './chat/CommandAutocomplete';
+import { COMMAND_DEFINITIONS, CommandDefinition } from '../utils/chatCommands';
+import { handleSlashCommand } from '../utils/commandHandler';
 
 import { BackendChatMessage } from '../services/twitchChat';
 import { Tooltip } from './ui/Tooltip';
@@ -165,7 +170,7 @@ const EmoteGridItem = memo(({ emote, isFavorited, onInsert, onToggleFavorite }: 
     observer.observe(element);
     return () => observer.disconnect();
   }, []);
-  
+
   return (
     <Tooltip 
       side="top" 
@@ -303,8 +308,8 @@ const HYPE_MESSAGES = [
 ];
 
 const ChatWidget = () => {
-  const { messages, connectChat, sendMessage, isConnected, error, setPaused: setBufferPaused, deletedMessageIds, clearedUserContexts } = useTwitchChat();
-  const { currentStream: rawCurrentStream, currentUser, currentHypeTrain } = useAppStore();
+  const { messages, connectChat, sendMessage, isConnected, error, setPaused: setBufferPaused, deletedMessageIds, clearedUserContexts, roomState, userBadges } = useTwitchChat();
+  const { currentStream: rawCurrentStream, currentUser, currentHypeTrain, currentMediaType } = useAppStore();
   const { isMultiNookActive, activeChatChannelId, slots } = usemultiNookStore();
   
   const currentStream = useMemo(() => {
@@ -331,12 +336,18 @@ const ChatWidget = () => {
     }
     return rawCurrentStream;
   }, [rawCurrentStream, isMultiNookActive, activeChatChannelId, slots]);
+
+  const isModerator = useMemo(() => {
+    if (!userBadges) return false;
+    return userBadges.includes('moderator') || userBadges.includes('broadcaster');
+  }, [userBadges]);
   
   // UI state
   const [messageInput, setMessageInput] = useState('');
   const [activeView, setActiveView] = useState<'chat' | 'about'>('chat');
   const [showEmotePicker, setShowEmotePicker] = useState(false);
   const [emotes, setEmotes] = useState<EmoteSet | null>(null);
+
 
   // Dynamic smiley icon — cycles on unhover with crossfade animation
   const smileyPool = useMemo(() => ['😀', '😄', '😁', '😆', '🤣', '😂', '😊', '😇', '🙂', '😉', '😌', '😍', '🥰', '😜', '🤪', '😎', '🤩', '🥳', '😏', '😋', '🤗', '🫠', '🫡', '😺'], []);
@@ -407,6 +418,39 @@ const ChatWidget = () => {
   const [mentionStartPosition, setMentionStartPosition] = useState<number | null>(null);
   const { addUser, getMatchingUsers, clearUsers } = useChatUserStore();
 
+  // / command autocomplete state
+  const [showCommandAutocomplete, setShowCommandAutocomplete] = useState(false);
+  const [commandQuery, setCommandQuery] = useState('');
+  const [commandSelectedIndex, setCommandSelectedIndex] = useState(0);
+  const [matchingCommands, setMatchingCommands] = useState<CommandDefinition[]>([]);
+
+  // Dynamically compute if the current input is a valid, fully-formed command
+  const commandState = useMemo(() => {
+    if (!messageInput.startsWith('/')) return { isCommand: false, isValid: false, definition: null };
+    
+    // Check if it's purely a slash
+    if (messageInput.trim() === '/') return { isCommand: true, isValid: false, definition: null };
+
+    const parts = messageInput.split(' ');
+    const cmdName = parts[0].substring(1).toLowerCase();
+    
+    const definition = COMMAND_DEFINITIONS.find(c => c.name === cmdName);
+    if (!definition) return { isCommand: true, isValid: false, definition: null };
+    
+    // Count required arguments (those wrapped in <>)
+    const usageParts = definition.usage.split(' ').slice(1);
+    const requiredArgsCount = usageParts.filter(p => p.startsWith('<') && p.endsWith('>')).length;
+    
+    // Parse how many arguments the user has provided
+    const providedArgsCount = parts.slice(1).filter(p => p.trim() !== '').length;
+    
+    return { 
+      isCommand: true, 
+      isValid: providedArgsCount >= requiredArgsCount,
+      definition
+    };
+  }, [messageInput]);
+
   // Resub notification state
   const [resubNotification, setResubNotification] = useState<ResubNotification | null>(null);
   const [isResubMode, setIsResubMode] = useState(false);
@@ -453,6 +497,15 @@ const ChatWidget = () => {
 
   // Cache for channel names (broadcaster ID -> display name) used in emote picker grouping
   const [channelNameCache, setChannelNameCache] = useState<Map<string, string>>(new Map());
+
+  // Dynamic chat privileges based on IRC badge context & room state
+  const isSubOnly = roomState?.subsOnly || false;
+  const isBroadcaster = currentUser?.login && currentStream?.user_login && currentUser.login.toLowerCase() === currentStream.user_login.toLowerCase();
+  const canBypassSubOnly = isBroadcaster || (userBadges ? /(broadcaster|moderator|subscriber|founder|vip)/i.test(userBadges) : false);
+  const isInputDisabled = !isConnected || (isSubOnly && !canBypassSubOnly);
+  const chatPlaceholder = isWatchStreakMode 
+    ? "Add a message (optional)..." 
+    : (isSubOnly && !canBypassSubOnly ? "Subscriber-Only Mode" : "Send a message");
 
   // Messages to render
   const visibleMessages = messages;
@@ -1015,11 +1068,17 @@ const ChatWidget = () => {
 
     // Listen for mining events using dynamic import
     let unlisten: (() => void) | null = null;
+    let isMounted = true;
 
     const setupListener = async () => {
       try {
         const { listen } = await import('@tauri-apps/api/event');
-        unlisten = await listen('mining-status-changed', handleMiningStatusChange);
+        const unlistenFn = await listen('mining-status-changed', handleMiningStatusChange);
+        if (isMounted) {
+          unlisten = unlistenFn;
+        } else {
+          unlistenFn();
+        }
       } catch (err) {
         Logger.warn('[ChatWidget] Failed to set up mining event listener:', err);
       }
@@ -1030,6 +1089,7 @@ const ChatWidget = () => {
     const pollInterval = setInterval(handleMiningStatusChange, 5000);
 
     return () => {
+      isMounted = false;
       if (unlisten) unlisten();
       clearInterval(pollInterval);
     };
@@ -1393,6 +1453,35 @@ const ChatWidget = () => {
       }
 
       try {
+        // Intercept slash commands
+        if (messageToSend.startsWith('/')) {
+          const handled = await handleSlashCommand(
+            messageToSend, 
+            currentStream?.user_id || '', 
+            currentStream?.user_login || '',
+            (msg) => sendMessage(msg, {
+              username: currentUser!.login || currentUser!.username,
+              displayName: currentUser!.display_name || currentUser!.username,
+              userId: currentUser!.user_id,
+              color: undefined,
+              badges: ''
+            })
+          );
+          
+          if (handled) {
+            return;
+          }
+
+          // Unhandled slash commands (like /mods, /vips, /me) get sent directly
+          // through IRC without optimistic rendering. Twitch IRC responds with
+          // a NOTICE message which the frontend already handles inline.
+          await invoke('send_chat_message', {
+            message: messageToSend,
+            replyParentMsgId: null,
+          });
+          return;
+        }
+
         let badgeString = '';
         try {
           const userBadges = await invoke<string>('get_user_badges', { userId: currentUser.user_id, channelId: currentStream?.user_id });
@@ -1466,6 +1555,49 @@ const ChatWidget = () => {
       }
     }
     
+    // Handle command autocomplete navigation when visible
+    if (showCommandAutocomplete) {
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setCommandSelectedIndex(prev => 
+          prev > 0 ? prev - 1 : matchingCommands.length - 1
+        );
+        return;
+      }
+      
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setCommandSelectedIndex(prev => 
+          prev < matchingCommands.length - 1 ? prev + 1 : 0
+        );
+        return;
+      }
+      
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        const selectedCmd = matchingCommands[commandSelectedIndex];
+        if (selectedCmd) {
+          insertCommand(selectedCmd);
+        }
+        return;
+      }
+      
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setShowCommandAutocomplete(false);
+        return;
+      }
+      
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        const selectedCmd = matchingCommands[commandSelectedIndex];
+        if (selectedCmd) {
+          insertCommand(selectedCmd);
+        }
+        return;
+      }
+    }
+    
     // Normal Enter to send message
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -1473,15 +1605,11 @@ const ChatWidget = () => {
     }
   };
 
-  // Handle input changes and detect @ mentions
-  const handleInputChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    const value = e.target.value;
-    const cursorPos = e.target.selectionStart || value.length;
+  // Auto-resize textarea whenever messageInput changes
+  useEffect(() => {
+    const textarea = inputRef.current;
+    if (!textarea) return;
     
-    setMessageInput(value);
-    
-    // Auto-resize textarea (expand upward as content grows)
-    const textarea = e.target;
     // Temporarily set overflow hidden to get accurate scrollHeight
     textarea.style.overflow = 'hidden';
     textarea.style.height = 'auto'; // Reset to calculate new height
@@ -1490,7 +1618,70 @@ const ChatWidget = () => {
     textarea.style.height = `${newHeight}px`;
     // Enable scrolling only if we hit max height
     textarea.style.overflow = newHeight >= maxHeight ? 'auto' : 'hidden';
+  }, [messageInput]);
+
+  // Handle input changes and detect @ mentions
+  const handleInputChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const value = e.target.value;
+    const cursorPos = e.target.selectionStart || value.length;
     
+    setMessageInput(value);
+    
+    // Check for Command Autocomplete (slash commands)
+    const isCommand = value.startsWith('/');
+    if (isCommand) {
+      // Find space to determine if we are still typing the command or the arguments
+      const firstSpaceIndex = value.indexOf(' ');
+      
+      if (firstSpaceIndex === -1 && value.length > 0) {
+        // Still typing the command itself
+        const query = value.slice(1).toLowerCase(); // remove '/'
+        setCommandQuery(query);
+        
+        // Filter commands based on roles
+        const availableCommands = COMMAND_DEFINITIONS.filter(cmd => {
+          if (cmd.category === 'Everyone') return true;
+          if (cmd.category === 'Moderator' || cmd.category === 'Chat Flow') return isModerator;
+          if (cmd.category === 'Engagement' || cmd.category === 'Broadcaster') return isModerator || isBroadcaster;
+          return false;
+        });
+        
+        const matches = availableCommands.filter(cmd => cmd.name.toLowerCase().startsWith(query));
+        setMatchingCommands(matches);
+        setShowCommandAutocomplete(matches.length > 0);
+        setCommandSelectedIndex(0);
+        
+        // don't show mention autocomplete
+        setShowMentionAutocomplete(false);
+        return;
+      } else {
+        // We've typed a space, hide command autocomplete
+        setShowCommandAutocomplete(false);
+        
+        // Detect if we are typing a command parameter that expects a username
+        const cmdName = value.substring(1, firstSpaceIndex).toLowerCase();
+        const cmdDef = COMMAND_DEFINITIONS.find(c => c.name.toLowerCase() === cmdName);
+        
+        if (cmdDef && (cmdDef.usage.includes('<username>') || cmdDef.usage.includes('[username]'))) {
+          const afterCommand = value.substring(firstSpaceIndex + 1);
+          const secondSpaceIndex = afterCommand.indexOf(' ');
+          
+          if (secondSpaceIndex === -1 && cursorPos > firstSpaceIndex) {
+            const query = afterCommand;
+            setMentionQuery(query);
+            setMentionStartPosition(firstSpaceIndex);
+            setMentionSelectedIndex(0);
+            
+            const matches = getMatchingUsers(query);
+            setShowMentionAutocomplete(matches.length > 0);
+            return;
+          }
+        }
+      }
+    } else {
+      setShowCommandAutocomplete(false);
+    }
+
     // Find the @ trigger before cursor
     const textBeforeCursor = value.slice(0, cursorPos);
     const lastAtIndex = textBeforeCursor.lastIndexOf('@');
@@ -1521,17 +1712,53 @@ const ChatWidget = () => {
     setShowMentionAutocomplete(false);
     setMentionQuery('');
     setMentionStartPosition(null);
-  }, [getMatchingUsers]);
+  }, [getMatchingUsers, isModerator, isBroadcaster]);
 
-  // Insert a mention at the current @ position
+  // Insert a command string directly from other UI elements (like UserProfileCard)
+  const preFillCommand = useCallback((cmdText: string) => {
+    setMessageInput(cmdText);
+    
+    // Hide autocomplete just in case
+    setShowCommandAutocomplete(false);
+    setCommandQuery('');
+    
+    // Focus and set cursor position at end
+    inputRef.current?.focus({ preventScroll: true });
+    setTimeout(() => {
+      inputRef.current?.setSelectionRange(cmdText.length, cmdText.length);
+    }, 0);
+  }, []);
+
+  // Insert a command at the current slash position
+  const insertCommand = useCallback((cmd: CommandDefinition) => {
+    // Insert /command with a trailing space
+    const newValue = `/${cmd.name} `;
+    setMessageInput(newValue);
+    
+    // Hide autocomplete
+    setShowCommandAutocomplete(false);
+    setCommandQuery('');
+    
+    // Focus and set cursor position after the inserted command
+    inputRef.current?.focus({ preventScroll: true });
+    setTimeout(() => {
+      inputRef.current?.setSelectionRange(newValue.length, newValue.length);
+    }, 0);
+  }, []);
+
+  // Insert a mention at the current trigger position
   const insertMention = useCallback((user: { username: string; displayName: string }) => {
     if (mentionStartPosition === null) return;
+    
+    const triggerChar = messageInput.charAt(mentionStartPosition);
+    const isCommandArg = triggerChar === ' ';
     
     const beforeMention = messageInput.slice(0, mentionStartPosition);
     const afterMention = messageInput.slice(mentionStartPosition + 1 + mentionQuery.length);
     
-    // Insert @username with a trailing space
-    const newValue = `${beforeMention}@${user.username} ${afterMention}`;
+    // Commands expect raw usernames, whereas normal mentions need the @ prefix
+    const prefix = isCommandArg ? ' ' : '@';
+    const newValue = `${beforeMention}${prefix}${user.username} ${afterMention}`;
     setMessageInput(newValue);
     
     // Hide autocomplete
@@ -1564,6 +1791,11 @@ const ChatWidget = () => {
     setReplyingTo({ messageId, username });
     inputRef.current?.focus({ preventScroll: true });
   };
+
+  const handleMessageCopy = useCallback((content: string) => {
+    setMessageInput(content + ' ');
+    inputRef.current?.focus({ preventScroll: true });
+  }, []);
 
   const emojiCategories = EMOJI_CATEGORIES;
 
@@ -1788,7 +2020,7 @@ const ChatWidget = () => {
 
   return (
     <>
-      <div className="h-full bg-secondary backdrop-blur-md overflow-hidden flex flex-col relative">
+      <div className="h-full bg-secondary overflow-hidden flex flex-col relative">
         {/* Prediction Overlay - floating at top of chat */}
         <PredictionOverlay
           channelId={currentStream?.user_id}
@@ -1942,13 +2174,13 @@ const ChatWidget = () => {
                     setActiveView(activeView === 'about' ? 'chat' : 'about');
                   }}
                 >
-                  <div className="relative h-4 overflow-hidden" style={{ width: activeView === 'about' ? '44px' : (isSharedChat ? '135px' : '88px') }}>
+                  <div className="relative h-4 overflow-hidden transition-all duration-300 ease-in-out" style={{ width: activeView === 'about' ? '44px' : (isSharedChat ? '135px' : currentMediaType === 'offline_chat' ? '92px' : '88px') }}>
                     <div
                       className="absolute w-full transition-transform duration-300 ease-in-out"
                       style={{ transform: activeView === 'about' ? 'translateY(-100%)' : 'translateY(0)' }}
                     >
                       <p className={`text-xs font-semibold leading-4 whitespace-nowrap ${isSharedChat ? 'iridescent-title' : 'text-textPrimary'}`}>
-                        {isConnected ? (isSharedChat ? 'SHARED STREAM CHAT' : 'STREAM CHAT') : 'DISCONNECTED'}
+                        {isConnected ? (isSharedChat ? 'SHARED STREAM CHAT' : currentMediaType === 'offline_chat' ? 'OFFLINE CHAT' : 'STREAM CHAT') : 'DISCONNECTED'}
                       </p>
                     </div>
                     <div
@@ -2002,113 +2234,120 @@ const ChatWidget = () => {
 
                 </div>
               </div>
-              {/* Expandable pinned message section */}
-              {pinnedMessages.length > 0 && (
-                <div
-                  ref={pinnedContentRef}
-                  className="overflow-hidden transition-all duration-300 ease-in-out"
-                  style={{
-                    maxHeight: isPinnedExpanded ? `${pinnedContentRef.current?.scrollHeight || 300}px` : '0px',
-                    opacity: isPinnedExpanded ? 1 : 0,
-                  }}
-                >
-                  {pinnedMessages.map((pin) => (
-                    <div
-                      key={pin.id}
-                      className="mt-3 rounded-lg p-3 border border-white/[0.06]"
-                      style={{
-                        background: 'rgba(12, 12, 13, 0.75)',
-                        backdropFilter: 'blur(24px)',
-                      }}
-                    >
-                      {/* Sender row: avatar + badges + name + message */}
-                      <div className="flex items-start gap-2.5">
-                        {/* Sender avatar */}
-                        {pin.sender_avatar ? (
-                          <img
-                            src={pin.sender_avatar}
-                            alt={pin.sender_name}
-                            className="w-8 h-8 rounded-full flex-shrink-0 object-cover"
-                          />
-                        ) : (
-                          <div
-                            className="w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center text-xs font-bold text-white"
-                            style={{ backgroundColor: pin.sender_color }}
-                          >
-                            {pin.sender_name.charAt(0).toUpperCase()}
-                          </div>
-                        )}
-                        <div className="flex-1 min-w-0">
-                          {/* Name + badges row */}
-                          <div className="flex items-center gap-1.5 flex-wrap">
-                            {/* Badges — resolved from in-memory badge cache */}
-                            {(() => {
-                              const badgeStr = pin.sender_badges?.map(b => `${b.set_id}/${b.version}`).join(',') || '';
-                              if (!badgeStr) return null;
-                              const resolved = parseBadges(badgeStr, currentStream?.user_id);
-                              return resolved.map((badge: { key: string; info: { image_url_1x?: string; image_url_2x?: string; title?: string } | null }, i: number) => (
-                                badge.info?.image_url_1x ? (
-                                  <img
-                                    key={`${badge.key}-${i}`}
-                                    src={badge.info.image_url_2x || badge.info.image_url_1x}
-                                    alt={badge.info.title || badge.key}
-                                    title={badge.info.title || badge.key}
-                                    className="w-[18px] h-[18px] flex-shrink-0"
-                                  />
-                                ) : null
-                              ));
-                            })()}
-                            <span
-                              className="text-sm font-semibold"
-                              style={{ color: pin.sender_color }}
-                            >
-                              {pin.sender_name}
-                            </span>
-                          </div>
-                          {/* Message text with clickable links */}
-                          <p className="text-[13px] text-textPrimary/90 mt-1.5 break-words" style={{ lineHeight: '1.6' }}>
-                            {pin.message_text.split(/(https?:\/\/\S+)/g).map((part, i) =>
-                              /^https?:\/\//.test(part) ? (
-                                <a
-                                  key={i}
-                                  className="text-accent hover:underline pointer-events-auto cursor-pointer"
-                                  onClick={() => {
-                                    import('@tauri-apps/plugin-shell').then(({ open }) => open(part));
-                                  }}
-                                >
-                                  {part.length > 50 ? part.slice(0, 50) + '…' : part}
-                                </a>
-                              ) : (
-                                <span key={i}>{part}</span>
-                              )
-                            )}
-                          </p>
-                        </div>
-                      </div>
-                      {/* Pinned by footer — visually separated */}
-                      {pin.pinned_by && (
-                        <div className="flex items-center gap-1.5 mt-2.5 pt-2 border-t border-white/[0.05] ml-[42px]">
-                          <svg className="w-2.5 h-2.5 text-accent" fill="currentColor" viewBox="0 0 16 16">
-                            <path d="M4.146.146A.5.5 0 0 1 4.5 0h7a.5.5 0 0 1 .5.5c0 .68-.342 1.174-.646 1.479-.126.125-.25.224-.354.298v4.431l.078.048c.203.127.476.314.751.555C12.36 7.775 13 8.527 13 9.5a.5.5 0 0 1-.5.5h-4v4.5a.5.5 0 0 1-1 0V10h-4A.5.5 0 0 1 3 9.5c0-.973.64-1.725 1.17-2.189A5.921 5.921 0 0 1 5 6.708V2.277a2.77 2.77 0 0 1-.354-.298C4.342 1.674 4 1.179 4 .5a.5.5 0 0 1 .146-.354z"/>
-                          </svg>
-                          {pin.pinned_by_avatar && (
-                            <img
-                              src={pin.pinned_by_avatar}
-                              alt={pin.pinned_by}
-                              className="w-3.5 h-3.5 rounded-full object-cover"
-                            />
-                          )}
-                          <span className="text-[10px] text-textSecondary">
-                            Pinned by <span className="font-medium text-textPrimary/70">{pin.pinned_by}</span>
-                          </span>
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
+              {/* Pinned messages are now rendered in a floating modal outside the header */}
           </div>
         </div>
+
+        {/* Free Floating Pinned Message Modal */}
+        {pinnedMessages.length > 0 && (
+          <div className="absolute left-3 right-3 z-[15] pointer-events-none flex flex-col items-center"
+            style={{ 
+              top: currentHypeTrain ? '80px' : '48px', // Positioning based on header height
+            }}>
+            <AnimatePresence>
+              {isPinnedExpanded && (
+                <motion.div
+                  initial={{ opacity: 0, y: -10, scale: 0.96, height: 0 }}
+                  animate={{ opacity: 1, y: 0, scale: 1, height: 'auto' }}
+                  exit={{ opacity: 0, y: -10, scale: 0.96, height: 0 }}
+                  transition={{ duration: 0.3, ease: [0.175, 0.885, 0.32, 1.2] }}
+                  className="w-full max-w-sm glass-panel bg-background/[0.45] shadow-2xl mt-2 pointer-events-auto overflow-hidden origin-top"
+                  style={{ backdropFilter: 'blur(64px) saturate(300%)', WebkitBackdropFilter: 'blur(64px) saturate(300%)' }}
+                >
+                {pinnedMessages.map((pin, i) => (
+                  <div
+                    key={pin.id}
+                    className={`p-3.5 ${i > 0 ? 'border-t border-white/[0.05]' : ''}`}
+                  >
+                    {/* Sender row: avatar + badges + name + message */}
+                    <div className="flex items-start gap-3">
+                      {/* Sender avatar */}
+                      {pin.sender_avatar ? (
+                        <img
+                          src={pin.sender_avatar}
+                          alt={pin.sender_name}
+                          className="w-9 h-9 rounded-full flex-shrink-0 object-cover border border-white/5"
+                        />
+                      ) : (
+                        <div
+                          className="w-9 h-9 rounded-full flex-shrink-0 flex items-center justify-center text-[13px] font-bold text-white shadow-inner"
+                          style={{ backgroundColor: pin.sender_color }}
+                        >
+                          {pin.sender_name.charAt(0).toUpperCase()}
+                        </div>
+                      )}
+                      <div className="flex-1 min-w-0 pt-0.5">
+                        {/* Name + badges row */}
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          {/* Badges — resolved from in-memory badge cache */}
+                          {(() => {
+                            const badgeStr = pin.sender_badges?.map(b => `${b.set_id}/${b.version}`).join(',') || '';
+                            if (!badgeStr) return null;
+                            const resolved = parseBadges(badgeStr, currentStream?.user_id);
+                            return resolved.map((badge: { key: string; info: { image_url_1x?: string; image_url_2x?: string; title?: string } | null }, bi: number) => (
+                              badge.info?.image_url_1x ? (
+                                <img
+                                  key={`${badge.key}-${bi}`}
+                                  src={badge.info.image_url_2x || badge.info.image_url_1x}
+                                  alt={badge.info.title || badge.key}
+                                  title={badge.info.title || badge.key}
+                                  className="w-4 h-4 flex-shrink-0 drop-shadow-sm"
+                                />
+                              ) : null
+                            ));
+                          })()}
+                          <span
+                            className="text-sm font-bold tracking-tight"
+                            style={{ color: pin.sender_color, textShadow: '0 1px 2px rgba(0,0,0,0.8)' }}
+                          >
+                            {pin.sender_name}
+                          </span>
+                        </div>
+                        {/* Message text with clickable links */}
+                        <p className="text-[13.5px] text-textPrimary/95 mt-1.5 break-words font-medium" style={{ lineHeight: '1.5' }}>
+                          {pin.message_text.split(/(https?:\/\/\S+)/g).map((part, index) =>
+                            /^https?:\/\//.test(part) ? (
+                              <a
+                                key={index}
+                                className="text-accent/90 hover:text-accent hover:underline pointer-events-auto cursor-pointer transition-colors"
+                                onClick={() => {
+                                  import('@tauri-apps/plugin-shell').then(({ open }) => open(part));
+                                }}
+                              >
+                                {part.length > 50 ? part.slice(0, 50) + '…' : part}
+                              </a>
+                            ) : (
+                              <span key={index}>{part}</span>
+                            )
+                          )}
+                        </p>
+                      </div>
+                    </div>
+                    {/* Pinned by footer — visually separated */}
+                    {pin.pinned_by && (
+                      <div className="flex items-center gap-2 mt-3 pt-2.5 border-t border-white/[0.04] ml-[48px]">
+                        <svg className="w-3 h-3 text-accent" fill="currentColor" viewBox="0 0 16 16">
+                          <path d="M4.146.146A.5.5 0 0 1 4.5 0h7a.5.5 0 0 1 .5.5c0 .68-.342 1.174-.646 1.479-.126.125-.25.224-.354.298v4.431l.078.048c.203.127.476.314.751.555C12.36 7.775 13 8.527 13 9.5a.5.5 0 0 1-.5.5h-4v4.5a.5.5 0 0 1-1 0V10h-4A.5.5 0 0 1 3 9.5c0-.973.64-1.725 1.17-2.189A5.921 5.921 0 0 1 5 6.708V2.277a2.77 2.77 0 0 1-.354-.298C4.342 1.674 4 1.179 4 .5a.5.5 0 0 1 .146-.354z"/>
+                        </svg>
+                        {pin.pinned_by_avatar && (
+                          <img
+                            src={pin.pinned_by_avatar}
+                            alt={pin.pinned_by}
+                            className="w-4 h-4 rounded-full object-cover border border-white/10"
+                          />
+                        )}
+                        <span className="text-[11px] text-textSecondary uppercase tracking-wide font-medium">
+                          Pinned by <span className="font-bold text-textPrimary/80 ml-0.5 capitalize">{pin.pinned_by}</span>
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                ))}
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+        )}
 
         {/* Staging area removed - using direct rendering with ResizeObserver */}
 
@@ -2162,6 +2401,7 @@ const ChatWidget = () => {
                 }}
                 onUsernameClick={handleUsernameClick}
                 onReplyClick={handleReplyClick}
+                onMessageCopy={handleMessageCopy}
                 onEmoteRightClick={handleEmoteRightClick}
                 onUsernameRightClick={handleUsernameRightClick}
                 onBadgeClick={handleBadgeClick}
@@ -2170,6 +2410,8 @@ const ChatWidget = () => {
                 clearedUserContexts={clearedUserContexts}
                 emotes={emotes}
                 getMessageId={getMessageId}
+                isModerator={isModerator}
+                broadcasterId={currentStream?.user_id}
               />
             </ErrorBoundary>
           )}
@@ -2188,11 +2430,17 @@ const ChatWidget = () => {
 
         {/* Input container - static flex item at bottom (hidden when About view active) */}
         {activeView === 'chat' &&
-        <div className="flex-shrink-0 border-t border-borderSubtle backdrop-blur-ultra" style={{ backgroundColor: 'rgba(12, 12, 13, 0.9)' }}>
+        <div className="flex-shrink-0 border-t border-borderSubtle" style={{ backgroundColor: 'rgba(12, 12, 13, 0.9)' }}>
           <div className="p-2">
             <div className="relative">
+              <AnimatePresence>
               {showEmotePicker && (
-                <div className="absolute bottom-full left-0 right-0 mb-2 h-[520px] max-h-[calc(100vh-120px)] border border-borderSubtle rounded-lg shadow-lg flex flex-col overflow-hidden" style={{ backgroundColor: 'rgba(12, 12, 13, 0.95)' }}>
+                <motion.div 
+                  initial={{ opacity: 0, y: 10, scale: 0.98 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={{ opacity: 0, y: 10, scale: 0.98 }}
+                  transition={{ type: "spring", stiffness: 400, damping: 30 }}
+                  className="absolute bottom-full left-0 right-0 mb-2 h-[520px] max-h-[calc(100vh-120px)] border border-borderSubtle rounded-lg shadow-lg flex flex-col overflow-hidden origin-bottom" style={{ backgroundColor: 'rgba(12, 12, 13, 0.95)' }}>
                   <div className="p-2 border-b border-borderSubtle">
                     <input type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="Search emotes..."
                       className="w-full glass-input text-xs px-3 py-1.5 placeholder-textSecondary" />
@@ -2365,7 +2613,18 @@ const ChatWidget = () => {
                       </div>
                     )}
                   </div>
-                </div>
+                </motion.div>
+              )}
+              </AnimatePresence>
+              
+              {/* / Command Autocomplete (Dominated Width) */}
+              {showCommandAutocomplete && (
+                <CommandAutocomplete
+                  commands={matchingCommands}
+                  selectedIndex={commandSelectedIndex}
+                  onSelect={(cmd) => insertCommand(cmd)}
+                  onSelectedIndexChange={setCommandSelectedIndex}
+                />
               )}
               {/* Channel Points Menu - renders at full width like emote picker */}
               {showChannelPointsMenu && currentStream && (
@@ -2484,12 +2743,26 @@ const ChatWidget = () => {
                   </button>
                   </Tooltip>
                 )}
+                {/* Moderator Dashboard */}
+                {isModerator && currentStream && (
+                  <div className="flex-shrink-0 self-center z-20">
+                    <ModeratorMenu broadcasterId={currentStream.user_id} roomState={roomState} />
+                  </div>
+                )}
                 {/* Input container with emoji button inset on the left */}
                 <div className="relative flex-1 min-w-0 flex items-center">
                   {/* Emoji button — inset left inside the input */}
                   <Tooltip content={showEmotePicker ? "Close Emotes" : "Emotes"} side="top">
                   <button
-                    onClick={() => setShowEmotePicker(!showEmotePicker)}
+                    onClick={() => {
+                      if (!showEmotePicker && emotes && emotes.twitch.length <= 15) {
+                        Logger.warn('[ChatWidget] Detected fallback emotes only. Retrying fetch before opening picker...');
+                        if (currentStream) {
+                           loadEmotes(currentStream.user_login, currentStream.user_id);
+                        }
+                      }
+                      setShowEmotePicker(!showEmotePicker);
+                    }}
                     onMouseLeave={cycleEmoteSmiley}
                     className="group absolute left-1 top-1/2 -translate-y-1/2 z-10 flex items-center justify-center w-7 h-7 text-textSecondary hover:text-textPrimary transition-colors duration-200"
                   >
@@ -2523,10 +2796,12 @@ const ChatWidget = () => {
                     value={messageInput} 
                     onChange={handleInputChange} 
                     onKeyDown={handleKeyPress}
-                    placeholder={isWatchStreakMode ? "Add a message (optional)..." : "Send a message"} 
-                    className={`w-full glass-input text-textPrimary text-sm placeholder-textSecondary resize-none overflow-hidden scrollbar-thin leading-[1.4] self-center transition-all duration-300 ${
+                    placeholder={chatPlaceholder} 
+                    className={`w-full glass-input text-sm placeholder-textSecondary resize-none overflow-hidden scrollbar-thin leading-[1.4] self-center transition-all duration-300 ${
                       isWatchStreakMode 
-                        ? 'ring-2 ring-amber-500/50 bg-amber-500/5 shadow-[0_0_15px_rgba(245,158,11,0.15)] placeholder-amber-500/60' 
+                        ? 'ring-2 ring-amber-500/50 bg-amber-500/5 shadow-[0_0_15px_rgba(245,158,11,0.15)] placeholder-amber-500/60 text-textPrimary' 
+                        : commandState.isValid
+                        ? 'font-bold tracking-wide'
                         : ''
                     }`}
                     style={{ 
@@ -2536,19 +2811,32 @@ const ChatWidget = () => {
                       paddingBottom: '8px',
                       paddingLeft: '36px',
                       paddingRight: '12px',
+                      ...(commandState.isValid && !isWatchStreakMode ? {
+                        backgroundColor: 'rgba(200, 224, 232, 0.1)',
+                        borderColor: 'var(--color-accent)',
+                        boxShadow: '0 0 16px rgba(200, 224, 232, 0.25), inset 4px 4px 10px -3px rgba(0, 0, 0, 0.6)',
+                        color: 'var(--color-accent)'
+                      } : commandState.isCommand && !isWatchStreakMode ? {
+                        backgroundColor: 'rgba(255, 255, 255, 0.04)',
+                        borderColor: 'rgba(255, 255, 255, 0.2)',
+                        color: 'var(--color-text-primary)'
+                      } : {
+                        color: 'var(--color-text-primary)'
+                      })
                     }}
                     rows={1}
-                    disabled={!isConnected}
+                    disabled={isInputDisabled}
                     onBlur={() => {
                       // Delay hiding to allow click on autocomplete
                       setTimeout(() => setShowMentionAutocomplete(false), 150);
+                      setTimeout(() => setShowCommandAutocomplete(false), 150);
                     }}
                   />
                 </div>
                 <Tooltip content={isWatchStreakMode ? "Share Watch Streak" : "Send message"} side="top">
                 <button 
                   onClick={handleSendMessage} 
-                  disabled={(!messageInput.trim() && !isWatchStreakMode && !isResubMode) || !isConnected} 
+                  disabled={(!messageInput.trim() && !isWatchStreakMode && !isResubMode) || isInputDisabled} 
                   className={`flex-shrink-0 flex items-center justify-center self-center w-9 h-9 text-white rounded transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed ${
                     isWatchStreakMode 
                       ? 'bg-amber-500 hover:bg-amber-400 shadow-[0_0_12px_rgba(245,158,11,0.3)]' 
@@ -2568,7 +2856,10 @@ const ChatWidget = () => {
         selectedUser && (
           <UserProfileCard userId={selectedUser.userId} username={selectedUser.username} displayName={selectedUser.displayName}
             color={selectedUser.color} badges={selectedUser.badges} messageHistory={userMessageHistory.current.get(selectedUser.userId) || []}
-            onClose={() => setSelectedUser(null)} position={selectedUser.position} />
+            onClose={() => setSelectedUser(null)} position={selectedUser.position}
+            isModerator={isModerator}
+            broadcasterId={currentStream?.user_id}
+            onPreFillCommand={preFillCommand} />
         )
       }
     </>

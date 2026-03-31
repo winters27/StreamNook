@@ -1,11 +1,12 @@
 import { useEffect, useState, useRef } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { useAppStore } from './stores/AppStore';
+import { useAppStore, type WhisperImportProgress } from './stores/AppStore';
 import { useContextMenuStore } from './stores/contextMenuStore';
 import { trackPresence, isSupabaseConfigured, incrementStat } from './services/supabaseService';
 import TitleBar from './components/TitleBar';
 import VideoPlayer from './components/VideoPlayer';
 import ChatWidget from './components/ChatWidget';
+import { ModLogsWidget } from './components/chat/ModLogsWidget';
 import Home from './components/Home';
 import SettingsDialog from './components/SettingsDialog';
 import { usemultiNookStore } from './stores/multiNookStore';
@@ -58,12 +59,14 @@ const DEFAULT_CHAT_WIDTH = 384; // For 'right' placement
 const DEFAULT_CHAT_HEIGHT = 200; // For 'bottom' placement
 
 function App() {
-  const { loadSettings, chatPlacement, isLoading, currentStream, streamUrl, checkAuthStatus, showProfileOverlay, setShowProfileOverlay, addToast, setShowDropsOverlay, showBadgesOverlay, setShowBadgesOverlay, badgesOverlayInitialPaintId, badgesOverlayInitialBadgeId, showWhispersOverlay, setShowWhispersOverlay, settings, updateSettings, isTheaterMode, isHomeActive, toggleHome, stopStream, loadActiveDropsCache, profileModalUser, setProfileModalUser } = useAppStore();
+  const { loadSettings, chatPlacement, isLoading, streamUrl, currentMediaType, checkAuthStatus, showProfileOverlay, setShowProfileOverlay, addToast, showBadgesOverlay, setShowBadgesOverlay, badgesOverlayInitialPaintId, badgesOverlayInitialBadgeId, showWhispersOverlay, setShowWhispersOverlay, settings, updateSettings, isTheaterMode, isHomeActive, loadActiveDropsCache, profileModalUser, setProfileModalUser } = useAppStore();
 
   const [chatSize, setChatSize] = useState(chatPlacement === 'bottom' ? DEFAULT_CHAT_HEIGHT : DEFAULT_CHAT_WIDTH);
+  const [modLogsSize, setModLogsSize] = useState(300); // Default Mod Logs size
   const { isMultiNookActive, isChatHidden, slots } = usemultiNookStore();
   const visibleSlotsLength = slots.filter((s) => !s.isMinimized).length;
   const [isResizing, setIsResizing] = useState(false);
+  const [isResizingModLogs, setIsResizingModLogs] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const [selectedBadge, setSelectedBadge] = useState<{ badge: BadgeVersion; setId: string } | null>(null);
   
@@ -296,6 +299,9 @@ function App() {
   }, []);
 
   useEffect(() => {
+    let isMounted = true;
+    const cleanupFunctions: (() => void)[] = [];
+
     const initializeApp = async () => {
       await loadSettings();
       await checkAuthStatus();
@@ -334,7 +340,20 @@ function App() {
       }
 
       // Set up event listeners for drops and channel points
-      const unlistenChannelPoints = await listen('channel-points-claimed', (event: any) => {
+      const addListener = async <T,>(event: string, handler: (event: { payload: T }) => void) => {
+        try {
+          const unlistenFn = await listen<T>(event, handler);
+          if (isMounted) {
+            cleanupFunctions.push(unlistenFn);
+          } else {
+            unlistenFn();
+          }
+        } catch (e) {
+          Logger.warn(`[App] Failed to set up listener for ${event}:`, e);
+        }
+      };
+
+      await addListener<{ points_earned: number }>('channel-points-claimed', (event) => {
         const claim = event.payload;
         addToast(`Claimed ${claim.points_earned} channel points!`, 'success');
 
@@ -348,38 +367,38 @@ function App() {
       });
 
       // Listen for drops farming errors and report them to Discord via logService
-      const unlistenDropsError = await listen('drops-error', (event: any) => {
+      await addListener<{ category: string; message: string }>('drops-error', (event) => {
         const { category, message } = event.payload;
         // Log as error - this will be picked up by logService and sent to Discord
         Logger.error(`[${category}] ${message}`);
       });
 
       // Listen for start-whisper events from standalone profile windows
-      const unlistenStartWhisper = await listen<{ id: string; login: string; display_name: string; profile_image_url?: string }>('start-whisper', (event) => {
+      await addListener<{ id: string; login: string; display_name: string; profile_image_url?: string }>('start-whisper', (event) => {
         Logger.debug('[App] Received start-whisper event:', event.payload);
         useAppStore.getState().openWhisperWithUser(event.payload);
       });
 
       // Listen for refresh-following-list events (triggered by follow/unfollow automation)
-      const unlistenRefreshFollowing = await listen('refresh-following-list', () => {
+      await addListener('refresh-following-list', () => {
         Logger.debug('[App] Received refresh-following-list event, refreshing...');
         useAppStore.getState().loadFollowedStreams();
       });
 
       // Listen for mining status updates (for title bar gift box animation)
-      const unlistenMiningStatus = await listen<{ is_mining: boolean }>('mining-status-update', (event) => {
+      await addListener<{ is_mining: boolean }>('mining-status-update', (event) => {
         Logger.debug('[App] Mining status update:', event.payload.is_mining);
         useAppStore.getState().setMiningActive(event.payload.is_mining);
       });
 
       // Listen for whisper import events (global listener so import works from any UI)
-      const unlistenWhisperProgress = await listen<{ step: number; status: string; detail: string; current: number; total: number }>(
+      await addListener<{ step: number; status: string; detail: string; current: number; total: number }>(
         'whisper-import-progress',
         (event) => {
           const { step, status, detail, current, total } = event.payload;
           const { setWhisperImportState } = useAppStore.getState();
           setWhisperImportState({
-            progress: { step, status: status as any, detail, current, total }
+            progress: { step, status: status as WhisperImportProgress['status'], detail, current, total }
           });
 
           // Track export progress for step 3
@@ -407,7 +426,7 @@ function App() {
         }
       );
 
-      const unlistenWhisperComplete = await listen<{ success: boolean; message: string; conversations: number; messages: number }>(
+      await addListener<{ success: boolean; message: string; conversations: number; messages: number }>(
         'whisper-import-complete',
         (event) => {
           const { success, message, conversations, messages } = event.payload;
@@ -432,16 +451,15 @@ function App() {
       );
 
       // Listen for reserved stream going offline (watch token allocation feature)
-      const unlistenReservedOffline = await listen('reserved-stream-offline', () => {
+      await addListener('reserved-stream-offline', () => {
         Logger.debug('[App] Reserved stream went offline, clearing reservation');
         addToast('Reserved stream went offline - token returned to rotation', 'info');
       });
 
       // Listen for streamnook:// deep links (e.g. from Magne's "Watch Stream" button)
-      let unlistenDeepLink: (() => void) | null = null;
       try {
         const { onOpenUrl } = await import('@tauri-apps/plugin-deep-link');
-        unlistenDeepLink = await onOpenUrl((urls: string[]) => {
+        const unlistenDeepLink = await onOpenUrl((urls: string[]) => {
           for (const url of urls) {
             Logger.debug('[App] Deep link received:', url);
             // Parse streamnook://watch/{channel}
@@ -456,38 +474,37 @@ function App() {
             }
           }
         });
+        
+        if (isMounted) {
+          cleanupFunctions.push(unlistenDeepLink);
+        } else {
+          unlistenDeepLink();
+        }
       } catch (e) {
         Logger.warn('[App] Deep link plugin not available:', e);
       }
-
-      // Set up periodic auth check to detect session expiry while watching
-      // Check every 5 minutes
-      const authCheckInterval = setInterval(async () => {
-        const { isAuthenticated: wasAuthenticated, currentStream } = useAppStore.getState();
-
-        // Only check if we were authenticated and are currently watching a stream
-        if (wasAuthenticated && currentStream) {
-          Logger.debug('[App] Performing periodic auth check...');
-          await checkAuthStatus();
-        }
-      }, 5 * 60 * 1000); // 5 minutes
-
-      // Cleanup listeners on unmount
-      return () => {
-        unlistenChannelPoints();
-        unlistenDropsError();
-        unlistenStartWhisper();
-        unlistenRefreshFollowing();
-        unlistenMiningStatus();
-        unlistenWhisperProgress();
-        unlistenWhisperComplete();
-        unlistenReservedOffline();
-        if (unlistenDeepLink) unlistenDeepLink();
-        clearInterval(authCheckInterval);
-      };
     };
 
     initializeApp();
+
+    // Set up periodic auth check to detect session expiry while watching
+    // Check every 5 minutes
+    const authCheckInterval = setInterval(async () => {
+      const { isAuthenticated: wasAuthenticated, currentStream } = useAppStore.getState();
+
+      // Only check if we were authenticated and are currently watching a stream
+      if (wasAuthenticated && currentStream) {
+        Logger.debug('[App] Performing periodic auth check...');
+        await checkAuthStatus();
+      }
+    }, 5 * 60 * 1000); // 5 minutes
+
+    return () => {
+      isMounted = false;
+      cleanupFunctions.forEach(fn => fn());
+      clearInterval(authCheckInterval);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loadSettings, checkAuthStatus]);
 
   // Apply theme when settings are loaded or theme changes
@@ -891,6 +908,8 @@ function App() {
   // Separate effect for the resize listener - only set up once and use refs
   useEffect(() => {
     let debounceTimeout: NodeJS.Timeout | null = null;
+    let isMounted = true;
+    let unlistenFn: (() => void) | null = null;
 
     const adjustWindowForAspectRatio = async () => {
       // Use refs for current values
@@ -971,28 +990,29 @@ function App() {
       }
     };
 
-    let unlistenPromise: Promise<() => void> | null = null;
-    const window = getCurrentWindow();
-    
-    unlistenPromise = window.onResized(async () => {
-      // Debounce resize events
-      if (debounceTimeout) {
-        clearTimeout(debounceTimeout);
-      }
-      debounceTimeout = setTimeout(async () => {
-        // Check refs for current state
-        if (aspectRatioLockEnabledRef.current && !isTheaterModeRef.current && (streamUrlRef.current || isMultiNookActiveRef.current)) {
-          await adjustWindowForAspectRatio();
+    // Use Tauri API directly
+    import('@tauri-apps/api/window').then(({ getCurrentWindow }) => {
+      const window = getCurrentWindow();
+      window.onResized(async () => {
+        // Debounce resize events
+        if (debounceTimeout) {
+          clearTimeout(debounceTimeout);
         }
-      }, 100);
+        debounceTimeout = setTimeout(async () => {
+          // Check refs for current state
+          if (aspectRatioLockEnabledRef.current && !isTheaterModeRef.current && (streamUrlRef.current || isMultiNookActiveRef.current)) {
+            await adjustWindowForAspectRatio();
+          }
+        }, 100);
+      }).then(unlisten => {
+        if (isMounted) unlistenFn = unlisten;
+        else unlisten();
+      });
     });
 
     return () => {
-      if (unlistenPromise) {
-        unlistenPromise.then(unlisten => {
-          if (typeof unlisten === 'function') unlisten();
-        });
-      }
+      isMounted = false;
+      if (unlistenFn) unlistenFn();
       if (debounceTimeout) {
         clearTimeout(debounceTimeout);
       }
@@ -1052,49 +1072,73 @@ function App() {
     setIsResizing(true);
   };
 
+  const handleModLogsMouseDown = (e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsResizingModLogs(true);
+  };
+
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
-      if (!isResizing || !containerRef.current) return;
+      // Chat Resizing
+      if (isResizing && containerRef.current) {
+        const container = containerRef.current;
+        const containerRect = container.getBoundingClientRect();
 
-      const container = containerRef.current;
-      const containerRect = container.getBoundingClientRect();
-
-      if (chatPlacement === 'right') {
-        // Calculate new width from the right edge
-        const newWidth = containerRect.right - e.clientX;
-        // Clamp between 250px and container width minus 200px (to leave space for video)
-        const maxWidth = containerRect.width - 200;
-        const clampedWidth = Math.max(250, Math.min(maxWidth, newWidth));
-        setChatSize(clampedWidth);
-      } else if (chatPlacement === 'bottom') {
-        // Calculate new height from the bottom edge
-        const newHeight = containerRect.bottom - e.clientY;
-        // Clamp between 150px and container height minus 150px (to leave space for video)
-        const maxHeight = containerRect.height - 150;
-        const clampedHeight = Math.max(150, Math.min(maxHeight, newHeight));
-        setChatSize(clampedHeight);
+        if (chatPlacement === 'right') {
+          const newWidth = containerRect.right - e.clientX;
+          const maxWidth = containerRect.width - 200;
+          const clampedWidth = Math.max(250, Math.min(maxWidth, newWidth));
+          setChatSize(clampedWidth);
+        } else if (chatPlacement === 'bottom') {
+          const newHeight = containerRect.bottom - e.clientY;
+          const maxHeight = containerRect.height - 150;
+          const clampedHeight = Math.max(150, Math.min(maxHeight, newHeight));
+          setChatSize(clampedHeight);
+        }
+      } 
+      // Mod Logs Resizing
+      else if (isResizingModLogs) {
+        // Mod Logs are always on the opposite side of chat.
+        // If chat is Right, Mod Logs is bottom.
+        // If chat is Bottom, Mod Logs is right.
+        if (chatPlacement === 'right') {
+          // Mod logs is at the bottom
+          const newHeight = window.innerHeight - e.clientY;
+          const clampedHeight = Math.max(150, Math.min(window.innerHeight - 200, newHeight));
+          setModLogsSize(clampedHeight);
+        } else if (chatPlacement === 'bottom') {
+          // Mod logs is at the right
+          const newWidth = window.innerWidth - e.clientX;
+          const clampedWidth = Math.max(200, Math.min(800, newWidth));
+          setModLogsSize(clampedWidth);
+        }
       }
     };
 
     const handleMouseUp = () => {
       setIsResizing(false);
+      setIsResizingModLogs(false);
     };
 
-    if (isResizing) {
-      document.addEventListener('mousemove', handleMouseMove);
-      document.addEventListener('mouseup', handleMouseUp);
-      // Prevent text selection while dragging
+    if (isResizing || isResizingModLogs) {
+      window.addEventListener('mousemove', handleMouseMove);
+      window.addEventListener('mouseup', handleMouseUp);
       document.body.style.userSelect = 'none';
-      document.body.style.cursor = chatPlacement === 'right' ? 'ew-resize' : 'ns-resize';
+      
+      if (isResizing) {
+        document.body.style.cursor = chatPlacement === 'right' ? 'ew-resize' : 'ns-resize';
+      } else {
+        document.body.style.cursor = chatPlacement === 'bottom' ? 'ew-resize' : 'ns-resize';
+      }
     }
 
     return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
       document.body.style.userSelect = '';
       document.body.style.cursor = '';
     };
-  }, [isResizing, chatPlacement]);
+  }, [isResizing, isResizingModLogs, chatPlacement]);
 
   return (
     <div className="flex flex-col h-screen bg-background backdrop-blur-md">
@@ -1152,87 +1196,128 @@ function App() {
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
                 transition={{ duration: 0.2, ease: "easeInOut" }}
-                ref={containerRef}
-                className={`flex flex-1 h-full ${chatPlacement === 'bottom' ? 'flex-col' : 'flex-row'} ${isHomeActive ? 'pointer-events-none' : ''}`}
+                className={`flex flex-1 h-full overflow-hidden ${
+                  settings.show_mod_logs && chatPlacement !== 'hidden'
+                    ? (chatPlacement === 'right' ? 'flex-col' : 'flex-row') 
+                    : (chatPlacement === 'bottom' ? 'flex-col' : 'flex-row')
+                } ${isHomeActive ? 'pointer-events-none' : ''}`}
               >
-                <div className="flex-1 relative overflow-hidden bg-background">
-                  <AnimatePresence mode="wait">
-                    {isMultiNookActive ? (
-                      <motion.div 
-                        key="multinook"
-                        initial={{ opacity: 0 }}
-                        animate={{ opacity: 1 }}
-                        exit={{ opacity: 0 }}
-                        transition={{ duration: 0.15 }}
-                        className="w-full h-full absolute inset-0"
-                      >
-                        <MultiNookView />
-                      </motion.div>
-                    ) : (
-                      <motion.div 
-                        key="videoplayer"
-                        initial={{ opacity: 0 }}
-                        animate={{ opacity: 1 }}
-                        exit={{ opacity: 0 }}
-                        transition={{ duration: 0.15 }}
-                        className="w-full h-full absolute inset-0"
-                      >
-                        <VideoPlayer key={streamUrl} />
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
-                  <AnimatePresence>
-                    {isLoading && (
-                      <motion.div
-                        initial={{ opacity: 0 }}
-                        animate={{ opacity: 1 }}
-                        exit={{ opacity: 0 }}
-                        transition={{ duration: 0.2 }}
-                        className="absolute inset-0 z-20"
-                      >
-                        <LoadingWidget useFunnyMessages={true} showProxyNote={settings.ttvlol_plugin?.enabled ?? false} />
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
-                </div>
-                {/* Chat - kept mounted to prevent iframe reload stutter */}
-                {chatPlacement !== 'hidden' && (
-                  <motion.div
-                    initial={{ opacity: 0, width: chatPlacement === 'right' ? 0 : undefined, height: chatPlacement === 'bottom' ? 0 : undefined }}
-                    animate={{ 
-                      opacity: (isMultiNookActive && isChatHidden) ? 0 : 1, 
-                      width: chatPlacement === 'right' ? ((isMultiNookActive && isChatHidden) ? 0 : 'auto') : undefined, 
-                      height: chatPlacement === 'bottom' ? ((isMultiNookActive && isChatHidden) ? 0 : 'auto') : undefined 
-                    }}
-                    transition={{ type: "spring", stiffness: 350, damping: 25 }}
-                    className={`flex ${chatPlacement === 'bottom' ? 'flex-col' : 'flex-row'} flex-shrink-0`}
-                    style={{ overflow: 'hidden' }}
-                  >
-                    {/* Resizable Separator */}
-                    <Tooltip content={chatPlacement === 'right' ? 'Drag to resize chat width' : 'Drag to resize chat height'} delay={100}>
-                      <div
-                        onMouseDown={handleMouseDown}
-                        className={`
-                          ${chatPlacement === 'right' ? 'w-1 cursor-ew-resize' : 'h-1 cursor-ns-resize'}
-                          bg-borderLight hover:bg-accent transition-colors flex-shrink-0 z-10
-                          ${isResizing ? 'bg-accent' : ''}
-                        `}
-                      />
-                    </Tooltip>
-                    {/* Chat Widget */}
-                    <div
-                      className="flex-shrink-0 flex flex-col h-full overflow-hidden bg-background"
-                      style={{
-                        [chatPlacement === 'right' ? 'width' : 'height']: `${chatSize}px`
+                
+                {/* Video & Chat Container */}
+                <div 
+                  ref={containerRef}
+                  className={`flex flex-1 h-full overflow-hidden relative ${chatPlacement === 'bottom' ? 'flex-col' : 'flex-row'}`}
+                >
+                  <div className="flex-1 relative overflow-hidden bg-background">
+                    <AnimatePresence mode="wait">
+                      {isMultiNookActive ? (
+                        <motion.div 
+                          key="multinook"
+                          initial={{ opacity: 0 }}
+                          animate={{ opacity: 1 }}
+                          exit={{ opacity: 0 }}
+                          transition={{ duration: 0.15 }}
+                          className="w-full h-full absolute inset-0"
+                        >
+                          <MultiNookView />
+                        </motion.div>
+                      ) : (
+                        <motion.div 
+                          key="videoplayer"
+                          initial={{ opacity: 0 }}
+                          animate={{ opacity: 1 }}
+                          exit={{ opacity: 0 }}
+                          transition={{ duration: 0.15 }}
+                          className="w-full h-full absolute inset-0"
+                        >
+                          <VideoPlayer key={streamUrl} />
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                    <AnimatePresence>
+                      {isLoading && (
+                        <motion.div
+                          initial={{ opacity: 0 }}
+                          animate={{ opacity: 1 }}
+                          exit={{ opacity: 0 }}
+                          transition={{ duration: 0.2 }}
+                          className="absolute inset-0 z-20"
+                        >
+                          <LoadingWidget useFunnyMessages={true} showProxyNote={settings.ttvlol_plugin?.enabled ?? false} />
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </div>
+                  {/* Chat */}
+                  {chatPlacement !== 'hidden' && (currentMediaType === 'live' || currentMediaType === 'offline_chat' || isMultiNookActive) && (
+                    <motion.div
+                      initial={{ opacity: 0, width: chatPlacement === 'right' ? 0 : undefined, height: chatPlacement === 'bottom' ? 0 : undefined }}
+                      animate={{ 
+                        opacity: (isMultiNookActive && isChatHidden) ? 0 : 1, 
+                        width: chatPlacement === 'right' ? ((isMultiNookActive && isChatHidden) ? 0 : 'auto') : undefined, 
+                        height: chatPlacement === 'bottom' ? ((isMultiNookActive && isChatHidden) ? 0 : 'auto') : undefined 
                       }}
+                      transition={{ type: "spring", stiffness: 350, damping: 25 }}
+                      className={`flex ${chatPlacement === 'bottom' ? 'flex-col' : 'flex-row'} flex-shrink-0`}
+                      style={{ overflow: 'hidden' }}
                     >
-                      {isMultiNookActive && <MultiNookChatSwitcher />}
-                      <div className="flex-1 overflow-hidden relative">
-                        <ChatWidget />
+                      <Tooltip content={chatPlacement === 'right' ? 'Drag to resize chat width' : 'Drag to resize chat height'} delay={100}>
+                        <div
+                          onMouseDown={handleMouseDown}
+                          className={`
+                            ${chatPlacement === 'right' ? 'w-1 cursor-ew-resize' : 'h-1 cursor-ns-resize'}
+                            bg-borderLight hover:bg-accent transition-colors flex-shrink-0 z-10
+                            ${isResizing ? 'bg-accent' : ''}
+                          `}
+                        />
+                      </Tooltip>
+                      <div
+                        className="flex-shrink-0 flex flex-col h-full overflow-hidden bg-background"
+                        style={{
+                          [chatPlacement === 'right' ? 'width' : 'height']: `${chatSize}px`
+                        }}
+                      >
+                        {isMultiNookActive && <MultiNookChatSwitcher />}
+                        <div className="flex-1 overflow-hidden relative">
+                          <ChatWidget />
+                        </div>
                       </div>
-                    </div>
-                  </motion.div>
-                )}
+                    </motion.div>
+                  )}
+                </div>
+
+                {/* Mod Logs Panel */}
+                <AnimatePresence>
+                  {settings.show_mod_logs && (
+                    <motion.div
+                      initial={{ opacity: 0, [chatPlacement === 'right' ? 'height' : 'width']: 0 }}
+                      animate={{ opacity: 1, [chatPlacement === 'right' ? 'height' : 'width']: 'auto' }}
+                      exit={{ opacity: 0, [chatPlacement === 'right' ? 'height' : 'width']: 0 }}
+                      className={`flex ${chatPlacement === 'right' ? 'flex-col' : 'flex-row'} flex-shrink-0 relative overflow-hidden`}
+                    >
+                      {/* Resizer */}
+                      <Tooltip content={chatPlacement === 'right' ? 'Drag to resize mod logs height' : 'Drag to resize mod logs width'} delay={100}>
+                        <div
+                          onMouseDown={handleModLogsMouseDown}
+                          className={`
+                            ${chatPlacement === 'right' ? 'h-1 cursor-ns-resize w-full' : 'w-1 cursor-ew-resize h-full'}
+                            bg-borderLight hover:bg-accent transition-colors flex-shrink-0 z-10
+                            ${isResizingModLogs ? 'bg-accent' : ''}
+                          `}
+                        />
+                      </Tooltip>
+                      <div 
+                        className="bg-background overflow-hidden relative"
+                        style={{
+                          [chatPlacement === 'right' ? 'height' : 'width']: `${modLogsSize}px`
+                        }}
+                      >
+                         <ModLogsWidget />
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+
               </motion.div>
             )}
           </AnimatePresence>

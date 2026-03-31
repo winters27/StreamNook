@@ -18,10 +18,11 @@ use tauri::Emitter;
 
 const CLIENT_ID: &str = env!("TWITCH_APP_CLIENT_ID");
 const CLIENT_SECRET: &str = env!("TWITCH_APP_CLIENT_SECRET");
+const TWITCH_GQL_CLIENT_ID: &str = "kimne78kx3ncx6brgo4mv6wki5h1ko";
 const KEYRING_SERVICE: &str = "streamnook_twitch_token";
 const KEYRING_USERNAME: &str = "user"; // Standardized username
 const REDIRECT_URI: &str = "http://localhost:3000/callback";
-const SCOPES: &str = "user:read:follows user:read:email chat:read chat:edit channel:read:redemptions channel:manage:redemptions moderator:read:followers openid user:manage:whispers user:read:whispers user:read:emotes channel:read:hype_train";
+const SCOPES: &str = "user:read:follows user:read:email chat:read chat:edit channel:read:redemptions channel:manage:redemptions moderator:read:followers openid user:manage:whispers user:read:whispers user:read:emotes channel:read:hype_train moderator:read:blocked_terms moderator:manage:chat_settings moderator:manage:unban_requests moderator:manage:banned_users moderator:manage:chat_messages moderator:read:moderators moderator:read:vips channel:manage:moderators channel:manage:vips moderator:manage:suspicious_users user:manage:chat_color user:manage:blocked_users user:read:blocked_users moderator:manage:announcements moderator:manage:shoutouts channel:edit:commercial channel:manage:raids channel:manage:broadcast moderation:read";
 const TOKEN_FILE_NAME: &str = ".twitch_token";
 
 /// Get the app data directory (works consistently in dev and release)
@@ -474,7 +475,7 @@ impl TwitchService {
         }
     }
 
-    pub async fn logout(_state: &AppState) -> Result<()> {
+    pub async fn logout() -> Result<()> {
         // Delete token from file storage
         let _ = Self::delete_token_file();
 
@@ -768,10 +769,46 @@ impl TwitchService {
             })
             .unwrap_or_default();
 
+        let required_scopes: Vec<&str> = SCOPES.split_whitespace().collect();
+        let missing_scopes: Vec<&str> = required_scopes
+            .into_iter()
+            .filter(|&required| !scopes.iter().any(|s| s == required))
+            .collect();
+
+        if !missing_scopes.is_empty() {
+            debug!(
+                "❌ [Auth Debug] Token is missing required scopes: {:?}",
+                missing_scopes
+            );
+
+            // Delete the invalid token from storage
+            if let Err(e) = Self::logout().await {
+                debug!(
+                    "⚠️ [Auth Debug] Failed to clean up token with missing scopes: {}",
+                    e
+                );
+            }
+
+            return Ok(TokenHealthStatus {
+                is_valid: false,
+                seconds_remaining: 0,
+                hours_remaining: 0,
+                minutes_remaining: 0,
+                scopes,
+                user_id: None,
+                login: None,
+                needs_refresh: false,
+                error: Some(format!(
+                    "Missing scopes: {}. Please log in again.",
+                    missing_scopes.join(", ")
+                )),
+            });
+        }
+
         let user_id = data["user_id"].as_str().map(|s| s.to_string());
         let login = data["login"].as_str().map(|s| s.to_string());
 
-        debug!("✅ [Auth Debug] Token is VALID.");
+        debug!("✅ [Auth Debug] Token is VALID and has all required scopes.");
         debug!("ℹ️ [Auth Debug] Scopes: {}", scopes.join(", "));
         debug!(
             "⏳ [Auth Debug] Time remaining: {}h {}m ({}s)",
@@ -2212,21 +2249,26 @@ impl TwitchService {
         _state: &AppState,
         game_name: &str,
         exclude_user_login: Option<&str>,
+        cursor: Option<&str>,
         limit: u32,
-    ) -> Result<Vec<TwitchStream>> {
+    ) -> Result<(Vec<TwitchStream>, Option<String>)> {
         // First, get the game ID from the game name
         let game_id = match Self::get_game_id_by_name(game_name).await? {
             Some(id) => id,
-            None => return Ok(Vec::new()), // Game not found
+            None => return Ok((Vec::new(), None)), // Game not found
         };
 
         let token = Self::get_token().await.ok();
         let client = Client::new();
 
-        let url = format!(
+        let mut url = format!(
             "https://api.twitch.tv/helix/streams?game_id={}&first={}",
             game_id, limit
         );
+
+        if let Some(c) = cursor {
+            url.push_str(&format!("&after={}", c));
+        }
 
         let mut request = client.get(&url).header("Client-Id", CLIENT_ID);
 
@@ -2301,10 +2343,1040 @@ impl TwitchService {
                     }
                 }
 
+                // Extract pagination cursor
+                let pagination_cursor = response
+                    .get("pagination")
+                    .and_then(|p| p.get("cursor"))
+                    .and_then(|c| c.as_str())
+                    .map(|s| s.to_string());
+
                 // Streams are already sorted by viewer count (highest first) from the API
-                Ok(streams)
+                Ok((streams, pagination_cursor))
+            }
+            None => Ok((Vec::new(), None)),
+        }
+    }
+
+    pub async fn get_category_info(
+        game_name: &str,
+    ) -> Result<Option<crate::models::stream::CategoryInfo>> {
+        let client = Client::new();
+        let query = "query($name: String!) { game(name: $name) { id name displayName description followersCount boxArtURL tags(tagType: CONTENT) { id localizedName } } }";
+
+        let body = serde_json::json!({
+            "query": query,
+            "variables": { "name": game_name }
+        });
+
+        let response = client
+            .post("https://gql.twitch.tv/gql")
+            .header("Client-Id", TWITCH_GQL_CLIENT_ID)
+            .json(&body)
+            .send()
+            .await?;
+
+        if response.status().is_success() {
+            let data: crate::models::stream::GqlDataResponse = response.json().await?;
+            if let Some(game_data) = data.data {
+                return Ok(game_data.game);
+            }
+        }
+
+        Ok(None)
+    }
+
+    pub async fn get_clips_by_game(
+        game_id: &str,
+        limit: u32,
+        cursor: Option<&str>,
+        period: Option<&str>,
+    ) -> Result<(Vec<crate::models::stream::TwitchClip>, Option<String>)> {
+        let token = Self::get_token().await?;
+        let client = Client::new();
+
+        let mut url = format!(
+            "https://api.twitch.tv/helix/clips?game_id={}&first={}",
+            game_id, limit
+        );
+
+        if let Some(p) = period {
+            if p != "all" && !p.is_empty() {
+                let now = chrono::Utc::now();
+                let started_at = match p {
+                    "day" | "24h" => Some(now - chrono::Duration::days(1)),
+                    "week" | "7d" => Some(now - chrono::Duration::days(7)),
+                    "month" | "30d" => Some(now - chrono::Duration::days(30)),
+                    _ => None,
+                };
+
+                if let Some(date) = started_at {
+                    // Twitch API requires RFC3339 format for started_at
+                    url.push_str(&format!("&started_at={}", date.to_rfc3339()));
+                }
+            }
+        }
+
+        if let Some(c) = cursor {
+            url.push_str(&format!("&after={}", c));
+        }
+
+        let response = client
+            .get(&url)
+            .header("Client-Id", CLIENT_ID)
+            .header(AUTHORIZATION, format!("Bearer {}", token))
+            .send()
+            .await?
+            .json::<serde_json::Value>()
+            .await?;
+
+        let data = response.get("data").and_then(|d| d.as_array());
+
+        match data {
+            Some(arr) => {
+                let clips: Vec<crate::models::stream::TwitchClip> =
+                    serde_json::from_value(serde_json::Value::Array(arr.clone()))?;
+
+                let pagination_cursor = response
+                    .get("pagination")
+                    .and_then(|p| p.get("cursor"))
+                    .and_then(|c| c.as_str())
+                    .map(|s| s.to_string());
+
+                Ok((clips, pagination_cursor))
+            }
+            None => Ok((Vec::new(), None)),
+        }
+    }
+
+    pub async fn get_videos_by_game(
+        game_id: &str,
+        sort: &str,
+        period: Option<&str>,
+        limit: u32,
+        cursor: Option<&str>,
+    ) -> Result<(Vec<crate::models::stream::TwitchVideo>, Option<String>)> {
+        let token = Self::get_token().await?;
+        let client = Client::new();
+
+        let mut url = format!(
+            "https://api.twitch.tv/helix/videos?game_id={}&sort={}&first={}",
+            game_id, sort, limit
+        );
+
+        if let Some(p) = period {
+            if !p.is_empty() && p != "all" {
+                url.push_str(&format!("&period={}", p));
+            }
+        }
+
+        if let Some(c) = cursor {
+            url.push_str(&format!("&after={}", c));
+        }
+
+        let response = client
+            .get(&url)
+            .header("Client-Id", CLIENT_ID)
+            .header(AUTHORIZATION, format!("Bearer {}", token))
+            .send()
+            .await?
+            .json::<serde_json::Value>()
+            .await?;
+
+        let data = response.get("data").and_then(|d| d.as_array());
+
+        match data {
+            Some(arr) => {
+                let videos: Vec<crate::models::stream::TwitchVideo> =
+                    serde_json::from_value(serde_json::Value::Array(arr.clone()))?;
+
+                let pagination_cursor = response
+                    .get("pagination")
+                    .and_then(|p| p.get("cursor"))
+                    .and_then(|c| c.as_str())
+                    .map(|s| s.to_string());
+
+                Ok((videos, pagination_cursor))
+            }
+            None => Ok((Vec::new(), None)),
+        }
+    }
+
+    pub async fn get_user_videos(
+        user_id: &str,
+        sort: &str,
+        limit: u32,
+    ) -> Result<Vec<crate::models::stream::TwitchVideo>> {
+        let token = Self::get_token().await?;
+        let client = Client::new();
+
+        let url = format!(
+            "https://api.twitch.tv/helix/videos?user_id={}&sort={}&first={}",
+            user_id, sort, limit
+        );
+
+        let response = client
+            .get(&url)
+            .header("Client-Id", CLIENT_ID)
+            .header(AUTHORIZATION, format!("Bearer {}", token))
+            .send()
+            .await?
+            .json::<serde_json::Value>()
+            .await?;
+
+        let data = response.get("data").and_then(|d| d.as_array());
+
+        match data {
+            Some(arr) => {
+                let videos: Vec<crate::models::stream::TwitchVideo> =
+                    serde_json::from_value(serde_json::Value::Array(arr.clone()))?;
+
+                Ok(videos)
             }
             None => Ok(Vec::new()),
         }
+    }
+
+    /// Update Chat Settings (Emote mode, Follower mode, Slow mode, etc.)
+    pub async fn update_chat_settings(
+        broadcaster_id: &str,
+        settings: serde_json::Value,
+    ) -> Result<()> {
+        let token = Self::get_token().await?;
+        let client = Client::new();
+        let user_info = Self::get_user_info().await?;
+        let moderator_id = &user_info.id;
+
+        let url = format!(
+            "https://api.twitch.tv/helix/chat/settings?broadcaster_id={}&moderator_id={}",
+            broadcaster_id, moderator_id
+        );
+
+        let response = client
+            .patch(&url)
+            .header("Client-Id", CLIENT_ID)
+            .header(AUTHORIZATION, format!("Bearer {}", token))
+            .header("Content-Type", "application/json")
+            .json(&settings)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            error!(
+                "[TwitchService] Failed to update chat settings: {}",
+                error_text
+            );
+            return Err(anyhow::anyhow!("Failed to update chat settings"));
+        }
+
+        Ok(())
+    }
+
+    /// Clear all messages from chat
+    pub async fn clear_chat(broadcaster_id: &str) -> Result<()> {
+        let token = Self::get_token().await?;
+        let client = Client::new();
+        let user_info = Self::get_user_info().await?;
+        let moderator_id = &user_info.id;
+
+        let url = format!(
+            "https://api.twitch.tv/helix/chat/messages?broadcaster_id={}&moderator_id={}",
+            broadcaster_id, moderator_id
+        );
+
+        let response = client
+            .delete(&url)
+            .header("Client-Id", CLIENT_ID)
+            .header(AUTHORIZATION, format!("Bearer {}", token))
+            .send()
+            .await?;
+
+        if !response.status().is_success() && response.status() != 204 {
+            let error_text = response.text().await.unwrap_or_default();
+            error!("[TwitchService] Failed to clear chat: {}", error_text);
+            return Err(anyhow::anyhow!("Failed to clear chat"));
+        }
+
+        Ok(())
+    }
+
+    /// Delete a specific chat message
+    pub async fn delete_chat_message(broadcaster_id: &str, message_id: &str) -> Result<()> {
+        let token = Self::get_token().await?;
+        let client = Client::new();
+        let user_info = Self::get_user_info().await?;
+        let moderator_id = &user_info.id;
+
+        let url = format!(
+            "https://api.twitch.tv/helix/chat/messages?broadcaster_id={}&moderator_id={}&message_id={}",
+            broadcaster_id, moderator_id, message_id
+        );
+
+        let response = client
+            .delete(&url)
+            .header("Client-Id", CLIENT_ID)
+            .header(AUTHORIZATION, format!("Bearer {}", token))
+            .send()
+            .await?;
+
+        if !response.status().is_success() && response.status() != 204 {
+            let error_text = response.text().await.unwrap_or_default();
+            error!("[TwitchService] Failed to delete message: {}", error_text);
+            return Err(anyhow::anyhow!("Failed to delete message"));
+        }
+
+        Ok(())
+    }
+
+    /// Ban or timeout a user
+    pub async fn ban_user(
+        broadcaster_id: &str,
+        target_user_id: &str,
+        duration: Option<u32>,
+        reason: Option<&str>,
+    ) -> Result<()> {
+        let token = Self::get_token().await?;
+        let client = Client::new();
+        let user_info = Self::get_user_info().await?;
+        let moderator_id = &user_info.id;
+
+        let url = format!(
+            "https://api.twitch.tv/helix/moderation/bans?broadcaster_id={}&moderator_id={}",
+            broadcaster_id, moderator_id
+        );
+
+        let mut payload = serde_json::json!({
+            "data": {
+                "user_id": target_user_id,
+            }
+        });
+
+        if let Some(d) = duration {
+            payload["data"]["duration"] = serde_json::json!(d);
+        }
+
+        if let Some(r) = reason {
+            if !r.is_empty() {
+                payload["data"]["reason"] = serde_json::json!(r);
+            }
+        }
+
+        let response = client
+            .post(&url)
+            .header("Client-Id", CLIENT_ID)
+            .header(AUTHORIZATION, format!("Bearer {}", token))
+            .header("Content-Type", "application/json")
+            .json(&payload)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            error!("[TwitchService] Failed to ban/timeout user: {}", error_text);
+            return Err(anyhow::anyhow!("Failed to ban or timeout user"));
+        }
+
+        Ok(())
+    }
+
+    /// Unban a user
+    pub async fn unban_user(broadcaster_id: &str, target_user_id: &str) -> Result<()> {
+        let token = Self::get_token().await?;
+        let client = Client::new();
+        let user_info = Self::get_user_info().await?;
+        let moderator_id = &user_info.id;
+
+        let url = format!(
+            "https://api.twitch.tv/helix/moderation/bans?broadcaster_id={}&moderator_id={}&user_id={}",
+            broadcaster_id, moderator_id, target_user_id
+        );
+
+        let response = client
+            .delete(&url)
+            .header("Client-Id", CLIENT_ID)
+            .header(AUTHORIZATION, format!("Bearer {}", token))
+            .send()
+            .await?;
+
+        if !response.status().is_success() && response.status() != 204 {
+            let error_text = response.text().await.unwrap_or_default();
+            error!("[TwitchService] Failed to unban user: {}", error_text);
+            return Err(anyhow::anyhow!("Failed to unban user"));
+        }
+
+        Ok(())
+    }
+
+    /// Add a channel moderator
+    pub async fn add_channel_moderator(broadcaster_id: &str, user_id: &str) -> Result<()> {
+        let token = Self::get_token().await?;
+        let client = Client::new();
+
+        let url = format!(
+            "https://api.twitch.tv/helix/moderation/moderators?broadcaster_id={}&user_id={}",
+            broadcaster_id, user_id
+        );
+
+        let response = client
+            .post(&url)
+            .header("Client-Id", CLIENT_ID)
+            .header(AUTHORIZATION, format!("Bearer {}", token))
+            .send()
+            .await?;
+
+        if !response.status().is_success() && response.status() != 204 {
+            let error_text = response.text().await.unwrap_or_default();
+            error!("[TwitchService] Failed to add moderator: {}", error_text);
+            return Err(anyhow::anyhow!("Failed to add moderator"));
+        }
+
+        Ok(())
+    }
+
+    /// Remove a channel moderator
+    pub async fn remove_channel_moderator(broadcaster_id: &str, user_id: &str) -> Result<()> {
+        let token = Self::get_token().await?;
+        let client = Client::new();
+
+        let url = format!(
+            "https://api.twitch.tv/helix/moderation/moderators?broadcaster_id={}&user_id={}",
+            broadcaster_id, user_id
+        );
+
+        let response = client
+            .delete(&url)
+            .header("Client-Id", CLIENT_ID)
+            .header(AUTHORIZATION, format!("Bearer {}", token))
+            .send()
+            .await?;
+
+        if !response.status().is_success() && response.status() != 204 {
+            let error_text = response.text().await.unwrap_or_default();
+            error!("[TwitchService] Failed to remove moderator: {}", error_text);
+            return Err(anyhow::anyhow!("Failed to remove moderator"));
+        }
+
+        Ok(())
+    }
+
+    /// Add a channel VIP
+    pub async fn add_channel_vip(broadcaster_id: &str, user_id: &str) -> Result<()> {
+        let token = Self::get_token().await?;
+        let client = Client::new();
+
+        let url = format!(
+            "https://api.twitch.tv/helix/channels/vips?broadcaster_id={}&user_id={}",
+            broadcaster_id, user_id
+        );
+
+        let response = client
+            .post(&url)
+            .header("Client-Id", CLIENT_ID)
+            .header(AUTHORIZATION, format!("Bearer {}", token))
+            .send()
+            .await?;
+
+        if !response.status().is_success() && response.status() != 204 {
+            let error_text = response.text().await.unwrap_or_default();
+            error!("[TwitchService] Failed to add VIP: {}", error_text);
+            return Err(anyhow::anyhow!("Failed to add VIP"));
+        }
+
+        Ok(())
+    }
+
+    /// Remove a channel VIP
+    pub async fn remove_channel_vip(broadcaster_id: &str, user_id: &str) -> Result<()> {
+        let token = Self::get_token().await?;
+        let client = Client::new();
+
+        let url = format!(
+            "https://api.twitch.tv/helix/channels/vips?broadcaster_id={}&user_id={}",
+            broadcaster_id, user_id
+        );
+
+        let response = client
+            .delete(&url)
+            .header("Client-Id", CLIENT_ID)
+            .header(AUTHORIZATION, format!("Bearer {}", token))
+            .send()
+            .await?;
+
+        if !response.status().is_success() && response.status() != 204 {
+            let error_text = response.text().await.unwrap_or_default();
+            error!("[TwitchService] Failed to remove VIP: {}", error_text);
+            return Err(anyhow::anyhow!("Failed to remove VIP"));
+        }
+
+        Ok(())
+    }
+
+    /// Update Suspicious User Status (Restrict/Monitor)
+    pub async fn update_suspicious_user_status(
+        broadcaster_id: &str,
+        target_user_id: &str,
+        status: &str,
+    ) -> Result<()> {
+        let token = Self::get_token().await?;
+        let client = Client::new();
+        let user_info = Self::get_user_info().await?;
+        let moderator_id = &user_info.id;
+
+        let url = format!(
+            "https://api.twitch.tv/helix/moderation/suspicious_users?broadcaster_id={}&moderator_id={}",
+            broadcaster_id, moderator_id
+        );
+
+        let payload = serde_json::json!({
+            "user_id": target_user_id,
+            "status": status // "RESTRICTED", "NO_TREATMENT", "ACTIVE_MONITORING"
+        });
+
+        let response = client
+            .put(&url)
+            .header("Client-Id", CLIENT_ID)
+            .header(AUTHORIZATION, format!("Bearer {}", token))
+            .header("Content-Type", "application/json")
+            .json(&payload)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            error!(
+                "[TwitchService] Failed to update suspicious user status: {}",
+                error_text
+            );
+            return Err(anyhow::anyhow!("Failed to update suspicious user status"));
+        }
+
+        Ok(())
+    }
+
+    /// Update User Chat Color
+    pub async fn update_user_chat_color(user_id: &str, color: &str) -> Result<()> {
+        let token = Self::get_token().await?;
+        let client = Client::new();
+
+        let url = format!(
+            "https://api.twitch.tv/helix/chat/color?user_id={}&color={}",
+            user_id, color
+        );
+
+        let response = client
+            .put(&url)
+            .header("Client-Id", CLIENT_ID)
+            .header(AUTHORIZATION, format!("Bearer {}", token))
+            .send()
+            .await?;
+
+        if !response.status().is_success() && response.status() != 204 {
+            let error_text = response.text().await.unwrap_or_default();
+            error!(
+                "[TwitchService] Failed to update user chat color: {}",
+                error_text
+            );
+            return Err(anyhow::anyhow!("Failed to update user chat color"));
+        }
+
+        Ok(())
+    }
+
+    /// Block user
+    pub async fn block_user(target_user_id: &str) -> Result<()> {
+        let token = Self::get_token().await?;
+        let client = Client::new();
+        let user_info = Self::get_user_info().await?;
+
+        let url = format!(
+            "https://api.twitch.tv/helix/users/blocks?target_user_id={}",
+            target_user_id
+        );
+
+        let response = client
+            .put(&url)
+            .header("Client-Id", CLIENT_ID)
+            .header(AUTHORIZATION, format!("Bearer {}", token))
+            .send()
+            .await?;
+
+        if !response.status().is_success() && response.status() != 204 {
+            let error_text = response.text().await.unwrap_or_default();
+            error!("[TwitchService] Failed to block user: {}", error_text);
+            return Err(anyhow::anyhow!("Failed to block user"));
+        }
+
+        Ok(())
+    }
+
+    /// Unblock user
+    pub async fn unblock_user(target_user_id: &str) -> Result<()> {
+        let token = Self::get_token().await?;
+        let client = Client::new();
+        let user_info = Self::get_user_info().await?;
+
+        let url = format!(
+            "https://api.twitch.tv/helix/users/blocks?target_user_id={}",
+            target_user_id
+        );
+
+        let response = client
+            .delete(&url)
+            .header("Client-Id", CLIENT_ID)
+            .header(AUTHORIZATION, format!("Bearer {}", token))
+            .send()
+            .await?;
+
+        if !response.status().is_success() && response.status() != 204 {
+            let error_text = response.text().await.unwrap_or_default();
+            error!("[TwitchService] Failed to unblock user: {}", error_text);
+            return Err(anyhow::anyhow!("Failed to unblock user"));
+        }
+
+        Ok(())
+    }
+
+    /// Get Channel Moderators
+    pub async fn get_channel_moderators(broadcaster_id: &str) -> Result<Vec<serde_json::Value>> {
+        let token = Self::get_token().await?;
+        let client = Client::new();
+
+        let url = format!(
+            "https://api.twitch.tv/helix/moderation/moderators?broadcaster_id={}",
+            broadcaster_id
+        );
+
+        let response = client
+            .get(&url)
+            .header("Client-Id", CLIENT_ID)
+            .header(AUTHORIZATION, format!("Bearer {}", token))
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            error!(
+                "[TwitchService] Failed to get moderators ({}): {}",
+                status, error_text
+            );
+            return Err(anyhow::anyhow!("Failed to get moderators: HTTP {}", status));
+        }
+
+        let json: serde_json::Value = response.json().await?;
+
+        if let Some(data) = json.get("data").and_then(|d| d.as_array()) {
+            Ok(data.clone())
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
+    /// Get Channel VIPs
+    pub async fn get_channel_vips(broadcaster_id: &str) -> Result<Vec<serde_json::Value>> {
+        let token = Self::get_token().await?;
+        let client = Client::new();
+
+        let url = format!(
+            "https://api.twitch.tv/helix/channels/vips?broadcaster_id={}",
+            broadcaster_id
+        );
+
+        let response = client
+            .get(&url)
+            .header("Client-Id", CLIENT_ID)
+            .header(AUTHORIZATION, format!("Bearer {}", token))
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            error!(
+                "[TwitchService] Failed to get VIPs ({}): {}",
+                status, error_text
+            );
+            return Err(anyhow::anyhow!("Failed to get VIPs: HTTP {}", status));
+        }
+
+        let json: serde_json::Value = response.json().await?;
+
+        if let Some(data) = json.get("data").and_then(|d| d.as_array()) {
+            Ok(data.clone())
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
+    /// Get channel chatters (moderators and VIPs) via GQL
+    /// The Helix API requires broadcaster_id to match the access token user_id,
+    /// so we use the GQL Mods/VIPs queries which work for any authenticated user.
+    pub async fn get_chatters_by_role(channel_login: &str) -> Result<serde_json::Value> {
+        let client = Client::new();
+
+        // Build batch GQL request — both Mods and VIPs in one round trip
+        let payload = serde_json::json!([
+            {
+                "operationName": "Mods",
+                "variables": {
+                    "login": channel_login
+                },
+                "extensions": {
+                    "persistedQuery": {
+                        "version": 1,
+                        "sha256Hash": "cb912a7e0789e0f8a4c85c25041a08324475831024d03d624172b59498caf085"
+                    }
+                }
+            },
+            {
+                "operationName": "VIPs",
+                "variables": {
+                    "login": channel_login
+                },
+                "extensions": {
+                    "persistedQuery": {
+                        "version": 1,
+                        "sha256Hash": "612a574d07afe5db2f9e878e290225224a0b955e65b5d1235dcd4b68ff668218"
+                    }
+                }
+            }
+        ]);
+
+        let response = client
+            .post("https://gql.twitch.tv/gql")
+            .header("Client-Id", TWITCH_GQL_CLIENT_ID)
+            .json(&payload)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            error!(
+                "[TwitchService] GQL Mods/VIPs failed ({}): {}",
+                status, error_text
+            );
+            return Err(anyhow::anyhow!("GQL Mods/VIPs failed: HTTP {}", status));
+        }
+
+        let json: serde_json::Value = response.json().await?;
+
+        // Response is an array of two results: [ModsResponse, VIPsResponse]
+        // Mods: data.user.mods.edges[].node.login
+        // VIPs: data.user.vips.edges[].node.login
+        let mut moderators: Vec<serde_json::Value> = Vec::new();
+        let mut vips: Vec<serde_json::Value> = Vec::new();
+
+        if let Some(arr) = json.as_array() {
+            // Parse Mods response (index 0)
+            if let Some(mods_data) = arr.first() {
+                if let Some(edges) = mods_data
+                    .get("data")
+                    .and_then(|d| d.get("user"))
+                    .and_then(|u| u.get("mods"))
+                    .and_then(|m| m.get("edges"))
+                    .and_then(|e| e.as_array())
+                {
+                    for edge in edges {
+                        if let Some(node) = edge.get("node") {
+                            moderators.push(node.clone());
+                        }
+                    }
+                }
+            }
+
+            // Parse VIPs response (index 1)
+            if let Some(vips_data) = arr.get(1) {
+                if let Some(edges) = vips_data
+                    .get("data")
+                    .and_then(|d| d.get("user"))
+                    .and_then(|u| u.get("vips"))
+                    .and_then(|v| v.get("edges"))
+                    .and_then(|e| e.as_array())
+                {
+                    for edge in edges {
+                        if let Some(node) = edge.get("node") {
+                            vips.push(node.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(serde_json::json!({
+            "moderators": moderators,
+            "vips": vips
+        }))
+    }
+
+    /// Send Chat Announcement
+    pub async fn send_chat_announcement(
+        broadcaster_id: &str,
+        message: &str,
+        color: Option<&str>,
+    ) -> Result<()> {
+        let token = Self::get_token().await?;
+        let client = Client::new();
+        let user_info = Self::get_user_info().await?;
+        let moderator_id = &user_info.id;
+
+        let url = format!(
+            "https://api.twitch.tv/helix/chat/announcements?broadcaster_id={}&moderator_id={}",
+            broadcaster_id, moderator_id
+        );
+
+        let mut payload = serde_json::json!({
+            "message": message
+        });
+
+        if let Some(c) = color {
+            payload["color"] = serde_json::json!(c);
+        }
+
+        let response = client
+            .post(&url)
+            .header("Client-Id", CLIENT_ID)
+            .header(AUTHORIZATION, format!("Bearer {}", token))
+            .header("Content-Type", "application/json")
+            .json(&payload)
+            .send()
+            .await?;
+
+        if !response.status().is_success() && response.status() != 204 {
+            let error_text = response.text().await.unwrap_or_default();
+            error!(
+                "[TwitchService] Failed to send announcement: {}",
+                error_text
+            );
+            return Err(anyhow::anyhow!("Failed to send chat announcement"));
+        }
+
+        Ok(())
+    }
+
+    /// Send Shoutout
+    pub async fn send_shoutout(broadcaster_id: &str, target_user_id: &str) -> Result<()> {
+        let token = Self::get_token().await?;
+        let client = Client::new();
+        let user_info = Self::get_user_info().await?;
+        let moderator_id = &user_info.id;
+
+        let url = format!(
+            "https://api.twitch.tv/helix/chat/shoutouts?from_broadcaster_id={}&to_broadcaster_id={}&moderator_id={}",
+            broadcaster_id, target_user_id, moderator_id
+        );
+
+        let response = client
+            .post(&url)
+            .header("Client-Id", CLIENT_ID)
+            .header(AUTHORIZATION, format!("Bearer {}", token))
+            .send()
+            .await?;
+
+        if !response.status().is_success() && response.status() != 204 {
+            let error_text = response.text().await.unwrap_or_default();
+            error!("[TwitchService] Failed to send shoutout: {}", error_text);
+            return Err(anyhow::anyhow!("Failed to send shoutout"));
+        }
+
+        Ok(())
+    }
+
+    /// Start Commercial
+    pub async fn start_commercial(broadcaster_id: &str, length: u32) -> Result<()> {
+        let token = Self::get_token().await?;
+        let client = Client::new();
+
+        let url = "https://api.twitch.tv/helix/channels/commercial";
+
+        let payload = serde_json::json!({
+            "broadcaster_id": broadcaster_id,
+            "length": length
+        });
+
+        let response = client
+            .post(url)
+            .header("Client-Id", CLIENT_ID)
+            .header(AUTHORIZATION, format!("Bearer {}", token))
+            .header("Content-Type", "application/json")
+            .json(&payload)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            error!("[TwitchService] Failed to start commercial: {}", error_text);
+            return Err(anyhow::anyhow!("Failed to start commercial"));
+        }
+
+        Ok(())
+    }
+
+    /// Start Raid
+    pub async fn start_raid(broadcaster_id: &str, target_user_id: &str) -> Result<()> {
+        let token = Self::get_token().await?;
+        let client = Client::new();
+
+        let url = format!(
+            "https://api.twitch.tv/helix/raids?from_broadcaster_id={}&to_broadcaster_id={}",
+            broadcaster_id, target_user_id
+        );
+
+        let response = client
+            .post(&url)
+            .header("Client-Id", CLIENT_ID)
+            .header(AUTHORIZATION, format!("Bearer {}", token))
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            error!("[TwitchService] Failed to start raid: {}", error_text);
+            return Err(anyhow::anyhow!("Failed to start raid"));
+        }
+
+        Ok(())
+    }
+
+    /// Cancel Raid
+    pub async fn cancel_raid(broadcaster_id: &str) -> Result<()> {
+        let token = Self::get_token().await?;
+        let client = Client::new();
+
+        let url = format!(
+            "https://api.twitch.tv/helix/raids?broadcaster_id={}",
+            broadcaster_id
+        );
+
+        let response = client
+            .delete(&url)
+            .header("Client-Id", CLIENT_ID)
+            .header(AUTHORIZATION, format!("Bearer {}", token))
+            .send()
+            .await?;
+
+        if !response.status().is_success() && response.status() != 204 {
+            let error_text = response.text().await.unwrap_or_default();
+            error!("[TwitchService] Failed to cancel raid: {}", error_text);
+            return Err(anyhow::anyhow!("Failed to cancel raid"));
+        }
+
+        Ok(())
+    }
+
+    /// Create Stream Marker
+    pub async fn create_stream_marker(user_id: &str, description: Option<&str>) -> Result<()> {
+        let token = Self::get_token().await?;
+        let client = Client::new();
+
+        let url = "https://api.twitch.tv/helix/streams/markers";
+
+        let mut payload = serde_json::json!({
+            "user_id": user_id
+        });
+
+        if let Some(desc) = description {
+            if !desc.is_empty() {
+                payload["description"] = serde_json::json!(desc);
+            }
+        }
+
+        let response = client
+            .post(url)
+            .header("Client-Id", CLIENT_ID)
+            .header(AUTHORIZATION, format!("Bearer {}", token))
+            .header("Content-Type", "application/json")
+            .json(&payload)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            error!(
+                "[TwitchService] Failed to create stream marker: {}",
+                error_text
+            );
+            return Err(anyhow::anyhow!("Failed to create stream marker"));
+        }
+
+        Ok(())
+    }
+
+    /// Warn a chat user (Helix: POST /moderation/warnings)
+    pub async fn warn_chat_user(
+        broadcaster_id: &str,
+        target_user_id: &str,
+        reason: &str,
+    ) -> Result<()> {
+        let token = Self::get_token().await?;
+        let client = Client::new();
+        let user_info = Self::get_user_info().await?;
+        let moderator_id = &user_info.id;
+
+        let url = format!(
+            "https://api.twitch.tv/helix/moderation/warnings?broadcaster_id={}&moderator_id={}",
+            broadcaster_id, moderator_id
+        );
+
+        let payload = serde_json::json!({
+            "data": {
+                "user_id": target_user_id,
+                "reason": reason
+            }
+        });
+
+        let response = client
+            .post(&url)
+            .header("Client-Id", CLIENT_ID)
+            .header(AUTHORIZATION, format!("Bearer {}", token))
+            .header("Content-Type", "application/json")
+            .json(&payload)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            error!("[TwitchService] Failed to warn user: {}", error_text);
+            return Err(anyhow::anyhow!("Failed to warn user"));
+        }
+
+        Ok(())
+    }
+
+    /// Update Shield Mode (Helix: PUT /moderation/shield_mode)
+    pub async fn update_shield_mode(broadcaster_id: &str, is_active: bool) -> Result<()> {
+        let token = Self::get_token().await?;
+        let client = Client::new();
+        let user_info = Self::get_user_info().await?;
+        let moderator_id = &user_info.id;
+
+        let url = format!(
+            "https://api.twitch.tv/helix/moderation/shield_mode?broadcaster_id={}&moderator_id={}",
+            broadcaster_id, moderator_id
+        );
+
+        let payload = serde_json::json!({
+            "is_active": is_active
+        });
+
+        let response = client
+            .put(&url)
+            .header("Client-Id", CLIENT_ID)
+            .header(AUTHORIZATION, format!("Bearer {}", token))
+            .header("Content-Type", "application/json")
+            .json(&payload)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            error!(
+                "[TwitchService] Failed to update shield mode: {}",
+                error_text
+            );
+            return Err(anyhow::anyhow!("Failed to update shield mode"));
+        }
+
+        Ok(())
     }
 }

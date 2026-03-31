@@ -18,7 +18,13 @@ const VideoPlayer = () => {
   const hlsRef = useRef<Hls | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const progressUpdateIntervalRef = useRef<number | null>(null);
-  const { streamUrl, settings, getAvailableQualities, changeStreamQuality, handleStreamOffline, isAutoSwitching, currentStream, currentUser, restartStream, exitStream, toggleHome, isHomeActive, streamOriginCategory, setHomeActiveTab, setHomeSelectedCategory, triggerChatRefresh, isAuthenticated } = useAppStore();
+  const { streamUrl, settings, getAvailableQualities, changeStreamQuality, handleStreamOffline, isAutoSwitching, currentStream, currentUser, restartStream, exitStream, toggleHome, isHomeActive, streamOriginCategory, setHomeActiveTab, setHomeSelectedCategory, triggerChatRefresh, isAuthenticated, currentMediaType } = useAppStore();
+  // Stabilize handleStreamOffline in a ref so createPlayer's identity stays stable.
+  // Without this, every Zustand set() call recreates handleStreamOffline, which changes
+  // createPlayer's reference, which re-fires the player creation effect — causing double
+  // player creation and breaking WebView2's hardware decoder for clip playback.
+  const handleStreamOfflineRef = useRef(handleStreamOffline);
+  handleStreamOfflineRef.current = handleStreamOffline;
   const playerSettings = settings.video_player;
   // Store settings in a ref so createPlayer doesn't need to depend on them
   // This prevents player recreation when volume/muted settings change
@@ -73,17 +79,21 @@ const VideoPlayer = () => {
 
 
 
-  // Fetch available qualities from Streamlink
+  // Fetch available qualities from Streamlink (live streams only)
+  // Clips and VODs don't need quality switching via Streamlink — they serve a single MP4.
   useEffect(() => {
-    if (streamUrl) {
+    if (streamUrl && currentMediaType === 'live') {
       getAvailableQualities().then(qualities => {
         if (qualities.length > 0) {
           setAvailableQualities(qualities);
           Logger.debug('[Quality] Fetched from Streamlink:', qualities);
         }
       });
+    } else {
+      // Clear stale qualities when switching to clip/VOD
+      setAvailableQualities([]);
     }
-  }, [streamUrl, getAvailableQualities]);
+  }, [streamUrl, getAvailableQualities, currentMediaType]);
 
   // Update quality menu when qualities are available
   const updateQualityMenu = useCallback(() => {
@@ -217,6 +227,13 @@ const VideoPlayer = () => {
     const video = videoRef.current;
     const container = containerRef.current;
     if (!video || !container || !isLiveRef.current) return;
+    
+    // Only apply live time display if current media is live
+    const { currentMediaType } = useAppStore.getState();
+    if (currentMediaType !== 'live') {
+      isLiveRef.current = false;
+      return;
+    }
 
     // Update time display to show "LIVE"
     const currentTimeDisplay = container.querySelector('.plyr__time--current');
@@ -281,10 +298,86 @@ const VideoPlayer = () => {
       hlsRef.current = null;
     }
 
+    // ALWAYS destroy existing Plyr instances before recreating!
+    // This is explicitly required because Live streams and Clips/VODs have fundamentally
+    // different control layouts (progress bars vs none). Reusing instances breaks the UI
+    // and can cause phantom black overlays.
+    if (playerRef.current) {
+      try {
+        // CRITICAL: Clear video source BEFORE destroying Plyr.
+        // Plyr.destroy() moves the <video> element out of its wrapper back to its
+        // original DOM position. If the video is actively decoding (src is set),
+        // this DOM re-parenting causes WebView2's hardware video decoder to lose
+        // its DirectComposition surface — resulting in audio-but-no-video (black frame).
+        video.pause();
+        video.removeAttribute('src');
+        video.load();
+        playerRef.current.destroy();
+      } catch (e) {
+        Logger.warn('Error destroying existing Plyr:', e);
+      }
+      playerRef.current = null;
+    }
+
     Logger.debug('Creating HLS.js player for URL:', streamUrl);
 
-    // Check if HLS.js is supported
-    if (Hls.isSupported()) {
+    if (streamUrl === 'offline') {
+      Logger.debug('[Media] Stream is offline, skipping player creation');
+      return;
+    }
+
+    // Check if it's an MP4 file
+    let urlWithoutQuery = streamUrl.toLowerCase();
+    const queryIndex = urlWithoutQuery.indexOf('?');
+    if (queryIndex !== -1) {
+      urlWithoutQuery = urlWithoutQuery.substring(0, queryIndex);
+    }
+    const isMp4 = urlWithoutQuery.endsWith('.mp4');
+
+    if (isMp4) {
+      Logger.debug('[Media] MP4 stream detected, bypassing Hls.js and Plyr');
+      isLiveRef.current = false; // It's a clip!
+
+      // MP4 clips use NATIVE <video> controls — NO Plyr.
+      // Plyr wraps the <video> element by moving it inside a new container div. This DOM
+      // re-parenting destroys WebView2's DirectComposition surface for the hardware video
+      // decoder, resulting in audio-only playback (black/frozen frame). React 18 StrictMode
+      // doubles the damage by running mount→cleanup→mount, causing TWO re-parenting cycles.
+      // Native <video> avoids all of this — no DOM moves, no surface loss.
+      video.controls = true;
+      video.src = streamUrl;
+      video.volume = currentSettings.volume;
+      video.muted = currentSettings.muted;
+      video.load();
+
+      // Persist volume/muted changes back to settings (native controls path)
+      const onVolumeChange = () => {
+        if (volumeDebounceRef.current) clearTimeout(volumeDebounceRef.current);
+        volumeDebounceRef.current = setTimeout(() => {
+          const { settings, updateSettings } = useAppStore.getState();
+          const current = settings.video_player;
+          if (current.volume !== video.volume || current.muted !== video.muted) {
+            updateSettings({
+              ...settings,
+              video_player: { ...current, volume: video.volume, muted: video.muted },
+            });
+          }
+        }, 300);
+      };
+      video.addEventListener('volumechange', onVolumeChange);
+
+      if (currentSettings.autoplay) {
+        const playPromise = video.play();
+        if (playPromise !== undefined) {
+          playPromise.catch(e => {
+            Logger.debug('[Media] MP4 autoplay failed, trying muted:', e);
+            video.muted = true;
+            video.play().catch(e2 => Logger.debug('[Media] Muted MP4 play also failed:', e2));
+          });
+        }
+      }
+      return;
+    } else if (Hls.isSupported()) {
       Logger.debug('[HLS] HLS.js is supported, creating player...');
 
 
@@ -381,19 +474,21 @@ const VideoPlayer = () => {
           playerRef.current = player;
 
           // Set up live stream overrides
-          isLiveRef.current = true;
+          isLiveRef.current = useAppStore.getState().currentMediaType === 'live';
 
           // Override duration for live stream progress bar
-          Object.defineProperty(video, 'duration', {
-            get: function () {
-              const buffered = this.buffered;
-              if (buffered.length > 0) {
-                return buffered.end(buffered.length - 1);
-              }
-              return Infinity;
-            },
-            configurable: true,
-          });
+          if (isLiveRef.current) {
+            Object.defineProperty(video, 'duration', {
+              get: function () {
+                const buffered = this.buffered;
+                if (buffered.length > 0) {
+                  return buffered.end(buffered.length - 1);
+                }
+                return Infinity;
+              },
+              configurable: true,
+            });
+          }
 
           // Initial volume sync
           playerRef.current.volume = currentSettings.volume;
@@ -506,7 +601,7 @@ const VideoPlayer = () => {
               manifestErrorCountRef.current = 0;
 
               // Trigger auto-switch
-              handleStreamOffline();
+              handleStreamOfflineRef.current();
               return;
             }
           }
@@ -550,7 +645,7 @@ const VideoPlayer = () => {
             fatalErrorCountRef.current = 0;
 
             // Trigger auto-switch
-            handleStreamOffline();
+            handleStreamOfflineRef.current();
             return;
           }
 
@@ -582,7 +677,7 @@ const VideoPlayer = () => {
                   Logger.debug(`[HLS] Has played: ${hasPlayedSuccessfully}, Time since start: ${timeSinceStart}ms`);
                   manifestErrorCountRef.current = 0;
                   fatalErrorCountRef.current = 0;
-                  handleStreamOffline();
+                  handleStreamOfflineRef.current();
                   return;
                 }
               }
@@ -660,6 +755,16 @@ const VideoPlayer = () => {
           video.play().catch(() => {});
         }
       }, 5000);
+      // DEBUG: Verify manifest contents manually before HLS
+      fetch(streamUrl).then(res => {
+        Logger.debug(`[Debug] Initial M3U8 response status: ${res.status}`);
+        return res.text();
+      }).then(text => {
+        Logger.debug(`[Debug] Initial M3U8 Content Start: ${text.substring(0, 200)}`);
+      }).catch(e => {
+        Logger.error(`[Debug] Initial M3U8 Fetch Failed:`, e);
+      });
+
       // Load the stream
       hls.loadSource(streamUrl);
       hls.attachMedia(video);
@@ -762,7 +867,8 @@ const VideoPlayer = () => {
     }
     // Only depend on streamUrl - settings and isAutoSwitching are read from refs inside the callback
     // This prevents player recreation when volume/muted settings change or when isAutoSwitching toggles
-  }, [streamUrl, handleStreamOffline]);
+  // handleStreamOffline is accessed via ref to keep this callback stable.
+  }, [streamUrl]);
 
   useEffect(() => {
     const videoElement = videoRef.current;
@@ -832,7 +938,16 @@ const VideoPlayer = () => {
       }
 
       // Destroy Plyr instance
+      // CRITICAL: Stop the video decoder BEFORE Plyr.destroy() re-parents the <video> element.
+      // React 18 StrictMode double-fires effects (mount → cleanup → mount). If the video is
+      // actively decoding when Plyr moves it in the DOM, WebView2's hardware decoder loses its
+      // DirectComposition surface — resulting in audio-only playback (black/frozen frame).
       if (playerRef.current) {
+        if (videoElement) {
+          videoElement.pause();
+          videoElement.removeAttribute('src');
+          videoElement.load();
+        }
         playerRef.current.destroy();
         playerRef.current = null;
       }
@@ -861,7 +976,11 @@ const VideoPlayer = () => {
       lastErrorTimeRef.current = 0;
       lastFragLoadedTimeRef.current = 0;
     };
-  }, [streamUrl, createPlayer, updateLiveTimeDisplay]);
+  // createPlayer is intentionally excluded: its only dep is streamUrl (already listed).
+  // Including it causes double-creation on fresh mounts because React gives useCallback
+  // a new identity on the very first render, firing this effect twice.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [streamUrl, updateLiveTimeDisplay]);
 
   // Update volume when settings change
   useEffect(() => {
@@ -1196,6 +1315,55 @@ const VideoPlayer = () => {
         }}
       />
 
+      {/* Offline Banner (Fallback when no VOD exists) */}
+      <AnimatePresence>
+        {streamUrl === 'offline' && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="absolute inset-0 z-30 flex flex-col items-center justify-center pointer-events-none"
+          >
+            {/* Background blur/gradient */}
+            <div className="absolute inset-0 bg-gradient-to-br from-purple-900/10 to-black backdrop-blur-3xl" />
+            
+            {/* Content card */}
+            <div className="relative z-10 p-8 rounded-2xl glass-panel border border-white/10 shadow-2xl flex flex-col items-center max-w-md text-center bg-black/40">
+              <div className="w-24 h-24 mb-6 rounded-full bg-glass flex items-center justify-center border border-white/20 shadow-[0_0_50px_rgba(145,70,255,0.3)]">
+                <span className="text-5xl drop-shadow-lg">😴</span>
+              </div>
+              <h2 className="text-2xl font-bold text-white mb-3 drop-shadow-md tracking-wide">
+                Stream Offline
+              </h2>
+              <p className="text-white/70 text-sm leading-relaxed mb-8">
+                Welcome to the offline chat room. <span className="font-semibold text-white">{currentStream?.user_name || 'The broadcaster'}</span> has no recent videos available to display, but you can still hang out and chat.
+              </p>
+              
+              <div className="flex gap-4 pointer-events-auto">
+                <button 
+                  onClick={() => {
+                    setHomeActiveTab(isAuthenticated ? 'following' : 'recommended');
+                    toggleHome();
+                  }}
+                  className="px-6 py-2.5 glass-button bg-accent/20 border border-accent/40 text-white rounded-lg hover:bg-accent/40 hover:border-accent/60 shadow-[0_0_15px_rgba(145,70,255,0.2)] transition-colors flex items-center gap-2 font-medium"
+                >
+                  <Home size={16} strokeWidth={2.5} /> Keep Browsing
+                </button>
+                <button 
+                  onClick={async () => {
+                    setHomeActiveTab(isAuthenticated ? 'following' : 'recommended');
+                    await exitStream();
+                  }}
+                  className="px-6 py-2.5 glass-button text-white/80 rounded-lg border border-white/10 hover:bg-white/10 hover:text-white transition-colors flex items-center gap-2 font-medium"
+                >
+                  <XIcon size={16} weight="bold" /> Exit Chat
+                </button>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Stream Title Overlay — Top-left, shares hover timing with controls */}
       <AnimatePresence>
         {currentStream?.title?.trim() && showOverlay && (
@@ -1211,7 +1379,27 @@ const VideoPlayer = () => {
           <div className="relative px-4 pt-3 pb-6 flex items-start gap-2">
             {/* Back Arrow or Home Button (Only visible when Home is not active) */}
             {!isHomeActive && (
-              streamOriginCategory ? (
+              currentMediaType === 'clip' || currentMediaType === 'video' ? (
+                // Clips/VODs: always show back arrow — stop playback and return to category
+                <Tooltip content={streamOriginCategory ? `Back to ${streamOriginCategory.name}` : 'Back'} side="bottom" delay={200}>
+                  <button
+                    onClick={async () => {
+                      if (streamOriginCategory) {
+                        setHomeActiveTab('category');
+                        setHomeSelectedCategory(streamOriginCategory);
+                        // homeCategoryTab is already set to 'clips' or 'videos' from when the card was clicked
+                      } else {
+                        setHomeActiveTab(isAuthenticated ? 'following' : 'recommended');
+                      }
+                      await exitStream();
+                    }}
+                    className="shrink-0 mt-0.5 p-2 glass-button rounded-lg pointer-events-auto"
+                    style={{ backdropFilter: 'blur(16px)' }}
+                  >
+                    <ArrowLeft size={16} weight="bold" className="text-white" />
+                  </button>
+                </Tooltip>
+              ) : streamOriginCategory ? (
                 <Tooltip content="Back to category" side="bottom" delay={200}>
                   <button
                     onClick={() => {
@@ -1226,18 +1414,20 @@ const VideoPlayer = () => {
                   </button>
                 </Tooltip>
               ) : (
-                <Tooltip content="Home" side="bottom" delay={200}>
-                  <button
-                    onClick={() => {
-                      setHomeActiveTab(isAuthenticated ? 'following' : 'recommended');
-                      toggleHome();
-                    }}
-                    className="shrink-0 mt-0.5 p-2 glass-button rounded-lg pointer-events-auto"
-                    style={{ backdropFilter: 'blur(16px)' }}
-                  >
-                    <Home size={16} className="text-white drop-shadow-md" />
-                  </button>
-                </Tooltip>
+                <div className="flex gap-1.5 items-center pointer-events-auto shrink-0 mt-0.5">
+                  <Tooltip content="Keep Browsing" side="bottom" delay={200}>
+                    <button
+                      onClick={() => {
+                        setHomeActiveTab(isAuthenticated ? 'following' : 'recommended');
+                        toggleHome();
+                      }}
+                      className="p-2 glass-button rounded-lg"
+                      style={{ backdropFilter: 'blur(16px)' }}
+                    >
+                      <Home size={16} className="text-white drop-shadow-md" strokeWidth={2.5} />
+                    </button>
+                  </Tooltip>
+                </div>
               )
             )}
             <div className="min-w-0">
@@ -1250,7 +1440,11 @@ const VideoPlayer = () => {
               </Tooltip>
               {currentStream.game_name && (
                 <p className="text-white/70 text-xs mt-0.5 drop-shadow-md">
-                  {currentStream.game_name}
+                  {currentMediaType === 'live' 
+                    ? currentStream.game_name 
+                    : streamUrl === 'offline' 
+                      ? currentStream.game_name
+                      : `${currentStream.game_name} • ${currentStream.viewer_count?.toLocaleString() || 0} Views • ${new Date(currentStream.started_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}`}
                 </p>
               )}
             </div>
@@ -1261,7 +1455,7 @@ const VideoPlayer = () => {
 
       {/* Follow & Subscribe Button Overlay */}
       <AnimatePresence>
-        {currentStream && showOverlay && (
+        {currentStream && showOverlay && (currentMediaType === 'live' || currentMediaType === 'offline_chat') && (
           <motion.div
             initial={{ opacity: 0, y: -8 }}
             animate={{ opacity: 1, y: 0 }}
@@ -1337,30 +1531,32 @@ const VideoPlayer = () => {
           </Tooltip>
 
           {/* Restart Stream Button */}
-          <Tooltip content="Refresh" side="bottom">
-          <button
-            onClick={async () => {
-              setIsRestarting(true);
-              try {
-                await restartStream();
-                triggerChatRefresh();
-              } finally {
-                setIsRestarting(false);
-              }
-            }}
-            disabled={isRestarting}
-            className={`flex items-center justify-center p-2 glass-button rounded-lg ${
-              isRestarting ? 'cursor-wait opacity-70' : ''
-            }`}
-            style={{ backdropFilter: 'blur(16px)' }}
-          >
-            {isRestarting ? (
-              <Loader2 className="w-4 h-4 text-accent animate-spin" />
-            ) : (
-              <RefreshCcw className="w-4 h-4 text-textSecondary" />
-            )}
-          </button>
-          </Tooltip>
+          {currentMediaType === 'live' && (
+            <Tooltip content="Refresh" side="bottom">
+            <button
+              onClick={async () => {
+                setIsRestarting(true);
+                try {
+                  await restartStream();
+                  triggerChatRefresh();
+                } finally {
+                  setIsRestarting(false);
+                }
+              }}
+              disabled={isRestarting}
+              className={`flex items-center justify-center p-2 glass-button rounded-lg ${
+                isRestarting ? 'cursor-wait opacity-70' : ''
+              }`}
+              style={{ backdropFilter: 'blur(16px)' }}
+            >
+              {isRestarting ? (
+                <Loader2 className="w-4 h-4 text-accent animate-spin" />
+              ) : (
+                <RefreshCcw className="w-4 h-4 text-white hover:text-accent transition-colors duration-200" />
+              )}
+            </button>
+            </Tooltip>
+          )}
 
           {/* Close Stream Button */}
           <Tooltip content="Close Stream" side="bottom">

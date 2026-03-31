@@ -1,11 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 import { useSortable } from '@dnd-kit/sortable';
 import { motion } from 'framer-motion';
 import { MultiNookSlot } from '../../types';
 import { useMultiNookPlayer } from './useMultiNookPlayer';
 import { usemultiNookStore } from '../../stores/multiNookStore';
-import { invoke } from '@tauri-apps/api/core';
-import { Logger } from '../../utils/logger';
 import StreamTitleWithEmojis from '../StreamTitleWithEmojis';
 import { Tooltip } from '../ui/Tooltip';
 import { GripHorizontal, Undo2 } from 'lucide-react';
@@ -21,7 +19,7 @@ export const MultiNookCell: React.FC<MultiNookCellProps> = ({ slot, cssOrder, gr
   const { id, channelLogin, channelName, volume, muted, isFocused, streamUrl, isMinimized = false } = slot;
   const { toggleFocusSlot, dockSlot, removeSlot } = usemultiNookStore();
   
-  const [isLoading, setIsLoading] = useState(!streamUrl);
+  const isLoading = !streamUrl;
 
   const { videoRef, isBuffering, error } = useMultiNookPlayer({
     streamUrl,
@@ -50,39 +48,6 @@ export const MultiNookCell: React.FC<MultiNookCellProps> = ({ slot, cssOrder, gr
   };
 
   const combinedStyle = { ...style, ...customStyle };
-
-  // Start the proxy server for this cell if it's missing the URL
-  useEffect(() => {
-    if (streamUrl) return;
-
-    let isMounted = true;
-    const startStream = async () => {
-      try {
-        setIsLoading(true);
-        const url = await invoke<string>('start_multi_nook', {
-          streamId: id,
-          url: `https://twitch.tv/${channelLogin}`,
-          quality: 'best', // Or fetch from settings
-        });
-        
-        if (isMounted) {
-          usemultiNookStore.setState((state) => ({
-            slots: state.slots.map(s => s.id === id ? { ...s, streamUrl: url } : s)
-          }));
-          setIsLoading(false);
-        }
-      } catch (err) {
-        Logger.error(`Failed to start multi-nook proxy for ${channelLogin}:`, err);
-        if (isMounted) setIsLoading(false);
-      }
-    };
-
-    startStream();
-
-    return () => {
-      isMounted = false;
-    };
-  }, [id, channelLogin, streamUrl]);
 
   return (
     <motion.div

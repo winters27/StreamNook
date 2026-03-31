@@ -14,18 +14,21 @@ interface ChatMessageListProps {
     username: string,
     displayName: string,
     color: string,
-    badges: Array<{ key: string; info: any }>,
+    badges: Array<{ key: string; info: Record<string, unknown> }>,
     event: React.MouseEvent
   ) => void;
   onReplyClick: (parentMsgId: string) => void;
+  onMessageCopy?: (content: string) => void;
   onEmoteRightClick: (emoteName: string) => void;
   onUsernameRightClick: (messageId: string, username: string) => void;
-  onBadgeClick: (badgeKey: string, badgeInfo: any) => void;
+  onBadgeClick: (badgeKey: string, badgeInfo: Record<string, unknown>) => void;
   highlightedMessageId: string | null;
   deletedMessageIds: Set<string>;
   clearedUserContexts: Map<string, { context: ModerationContext; affectedMessageIds: Set<string> }>;
   emotes: EmoteSet | null;
   getMessageId: (message: string | BackendChatMessage) => string | null;
+  isModerator?: boolean;
+  broadcasterId?: string;
 }
 
 /**
@@ -45,6 +48,7 @@ const ChatMessageList = memo(function ChatMessageList({
   onScroll,
   onUsernameClick,
   onReplyClick,
+  onMessageCopy,
   onEmoteRightClick,
   onUsernameRightClick,
   onBadgeClick,
@@ -53,6 +57,8 @@ const ChatMessageList = memo(function ChatMessageList({
   clearedUserContexts,
   emotes,
   getMessageId,
+  isModerator,
+  broadcasterId,
 }: ChatMessageListProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const isScrollingProgrammatically = useRef(false);
@@ -152,7 +158,6 @@ const ChatMessageList = memo(function ChatMessageList({
         }
       }, 150);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lastMessageId, isPaused, messages.length]); // Track lastMessageId to handle buffer trimming updates
 
   // Handle scroll events - this updates wasAtBottomRef for the NEXT message arrival
@@ -200,9 +205,9 @@ const ChatMessageList = memo(function ChatMessageList({
   // Expose scrollToBottom to parent via ref callback pattern
   useEffect(() => {
     // This makes the scroll function available outside
-    (window as any).__chatScrollToBottom = scrollToBottom;
+    (window as Window & typeof globalThis & { __chatScrollToBottom?: () => void }).__chatScrollToBottom = scrollToBottom;
     return () => {
-      delete (window as any).__chatScrollToBottom;
+      delete (window as Window & typeof globalThis & { __chatScrollToBottom?: () => void }).__chatScrollToBottom;
     };
   }, [scrollToBottom]);
 
@@ -257,12 +262,15 @@ const ChatMessageList = memo(function ChatMessageList({
                 messageIndex={index}
                 onUsernameClick={onUsernameClick}
                 onReplyClick={onReplyClick}
+                onMessageCopy={onMessageCopy}
                 isHighlighted={highlightedMessageId === messageId}
                 moderationContext={moderationContext}
                 onEmoteRightClick={onEmoteRightClick}
                 onUsernameRightClick={onUsernameRightClick}
                 onBadgeClick={onBadgeClick}
                 emotes={emotes}
+                isModerator={isModerator}
+                broadcasterId={broadcasterId}
               />
             </div>
           );

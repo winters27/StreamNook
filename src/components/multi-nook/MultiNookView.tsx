@@ -34,7 +34,7 @@ const UNDOCK_DROP_ID = 'undock-drop-zone';
 const DOCKED_PREFIX = 'docked::';
 
 export const MultiNookView: React.FC = () => {
-  const { slots, reorderSlots, dockSlot, undockSlot } = usemultiNookStore();
+  const { slots, reorderSlots, dockSlot, undockSlot, batchLoadMissingStreams } = usemultiNookStore();
   const visibleSlots = useMemo(() => slots.filter((s) => !s.isMinimized), [slots]);
   const minimizedSlots = useMemo(() => slots.filter((s) => s.isMinimized), [slots]);
 
@@ -50,6 +50,13 @@ export const MultiNookView: React.FC = () => {
       useTutorialStore.getState().reset();
     }
   }, [slots.length]);
+
+  // Batch loader for concurrent synchronous instantiation
+  useEffect(() => {
+    if (slots.some(s => !s.streamUrl)) {
+      batchLoadMissingStreams();
+    }
+  }, [slots, batchLoadMissingStreams]);
 
   // Build a map of slot id -> visual order index for CSS-based reordering.
   const orderMap = useMemo(() => {

@@ -468,12 +468,20 @@ impl StreamlinkManager {
 
         // For portable streamlink, explicitly specify where to find plugins
         // This is CRITICAL for ttvlol plugin to be loaded
-        let plugins_dir = Self::get_plugins_directory(settings.custom_streamlink_path.as_deref());
-        if let Some(ref plugin_path) = plugins_dir {
-            if std::path::Path::new(plugin_path).exists() {
-                debug!("[Streamlink] Adding --plugin-dirs: {}", plugin_path);
-                cmd.arg("--plugin-dirs").arg(plugin_path);
+        let is_vod_or_clip =
+            url.contains("/videos/") || url.contains("/clip/") || url.contains("clips.twitch.tv");
+
+        if !is_vod_or_clip {
+            let plugins_dir =
+                Self::get_plugins_directory(settings.custom_streamlink_path.as_deref());
+            if let Some(ref plugin_path) = plugins_dir {
+                if std::path::Path::new(plugin_path).exists() {
+                    debug!("[Streamlink] Adding --plugin-dirs: {}", plugin_path);
+                    cmd.arg("--plugin-dirs").arg(plugin_path);
+                }
             }
+        } else {
+            debug!("[Streamlink] Bypassing custom plugins for VOD/Clip URL");
         }
 
         cmd.arg(url).arg(quality).arg("--stream-url");
@@ -544,7 +552,20 @@ impl StreamlinkManager {
             ));
         }
 
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        let full_output = String::from_utf8_lossy(&output.stdout);
+        let url = full_output
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .next_back()
+            .unwrap_or("")
+            .trim()
+            .to_string();
+
+        if url.is_empty() {
+            return Err(anyhow::anyhow!("Streamlink returned empty output"));
+        }
+
+        Ok(url)
     }
 
     // Keep legacy method for backwards compatibility

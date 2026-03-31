@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useMemo } from 'react';
+import { motion } from 'framer-motion';
 import { ChatUser } from '../stores/chatUserStore';
 import { computePaintStyle } from '../services/seventvService';
 
@@ -96,22 +97,25 @@ const MentionAutocomplete: React.FC<MentionAutocompleteProps> = ({
   }
 
   return (
-    <div
-      className="absolute z-50 w-full max-h-[220px] overflow-y-auto rounded-lg border border-borderSubtle shadow-2xl"
+    <motion.div
+      initial={{ opacity: 0, y: 6, scale: 0.98 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      exit={{ opacity: 0, y: 6, scale: 0.98 }}
+      transition={{ duration: 0.15, ease: "easeOut" }}
+      className="absolute z-[60] w-full max-h-[220px] overflow-y-auto custom-scrollbar rounded-xl border border-borderSubtle shadow-[0_16px_48px_rgba(0,0,0,0.8)] bg-background/[0.45] glass-panel origin-bottom"
       style={{
         bottom: '100%',
         left: 0,
         right: 0,
         marginBottom: '8px',
-        // Solid dark background with slight transparency for depth
-        backgroundColor: 'rgba(18, 18, 20, 0.98)',
-        backdropFilter: 'blur(12px)',
+        backdropFilter: 'blur(64px) saturate(300%)',
+        WebkitBackdropFilter: 'blur(64px) saturate(300%)',
       }}
-      ref={listRef}
+      ref={listRef as any}
     >
       {/* Header */}
-      <div className="px-3 py-1.5 border-b border-borderSubtle">
-        <span className="text-[10px] font-medium text-textSecondary uppercase tracking-wide">
+      <div className="px-3 py-1.5 border-b border-white/5 sticky top-0 z-10 bg-background/[0.5] backdrop-blur-md">
+        <span className="text-[10px] font-medium text-white/50 uppercase tracking-wide">
           Mention User
         </span>
       </div>
@@ -128,7 +132,7 @@ const MentionAutocomplete: React.FC<MentionAutocompleteProps> = ({
           />
         ))}
       </div>
-    </div>
+    </motion.div>
   );
 };
 

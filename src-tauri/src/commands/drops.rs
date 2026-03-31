@@ -1,3 +1,5 @@
+lazy_static::lazy_static! { static ref HTTP_CLIENT: reqwest::Client = reqwest::Client::new(); }
+
 use crate::models::drops::*;
 use crate::models::settings::AppState;
 use crate::services::drops_auth_service::{DropsAuthService, DropsDeviceCodeInfo};
@@ -321,7 +323,7 @@ pub async fn place_prediction(
         .await
         .map_err(|e| format!("Failed to get token: {}", e))?;
 
-    let client = Client::new();
+    let client = HTTP_CLIENT.clone();
 
     // Use the MakePrediction GQL mutation
     let mutation = r#"
@@ -402,7 +404,7 @@ pub async fn get_active_prediction(
         .await
         .map_err(|e| format!("Failed to get token: {}", e))?;
 
-    let client = Client::new();
+    let client = HTTP_CLIENT.clone();
 
     // GQL query to fetch active prediction for a channel
     let query = r#"
@@ -529,7 +531,7 @@ pub async fn get_channel_points_for_channel(
         .await
         .map_err(|e| format!("Failed to get token: {}", e))?;
 
-    let client = Client::new();
+    let client = HTTP_CLIENT.clone();
 
     // Use the same query structure as channel_points_service which works correctly
     // Include communityPointsSettings to get custom points name and icon
@@ -819,7 +821,7 @@ pub async fn get_channel_rewards(
         .await
         .map_err(|e| format!("Failed to get token: {}", e))?;
 
-    let client = Client::new();
+    let client = HTTP_CLIENT.clone();
 
     // Use ChannelPointsContext with includeGoalTypes (captured from Twitch)
     let response = client
@@ -904,7 +906,7 @@ pub async fn redeem_channel_reward(
         .await
         .map_err(|e| format!("Failed to get token: {}", e))?;
 
-    let client = Client::new();
+    let client = HTTP_CLIENT.clone();
 
     // GQL mutation to redeem a channel reward
     // Note: This mutation may need a persisted query hash
@@ -1017,7 +1019,7 @@ pub async fn send_highlighted_message(
         .await
         .map_err(|e| format!("Failed to get token: {}", e))?;
 
-    let client = Client::new();
+    let client = HTTP_CLIENT.clone();
 
     // Generate transaction ID and device/session IDs (UUID without dashes, lowercase)
     let transaction_id = uuid::Uuid::new_v4().to_string().replace("-", "");
@@ -1143,7 +1145,7 @@ pub async fn unlock_random_emote(
         .await
         .map_err(|e| format!("Failed to get token: {}", e))?;
 
-    let client = Client::new();
+    let client = HTTP_CLIENT.clone();
 
     // Generate IDs
     let transaction_id = uuid::Uuid::new_v4().to_string().replace("-", "");
@@ -1309,7 +1311,7 @@ pub async fn get_modifiable_emotes(channel_id: String) -> Result<Vec<ModifiableE
         .await
         .map_err(|e| format!("Failed to get token: {}", e))?;
 
-    let client = Client::new();
+    let client = HTTP_CLIENT.clone();
 
     // Generate required headers
     let device_id = uuid::Uuid::new_v4().to_string().replace("-", "");
@@ -1449,7 +1451,7 @@ pub async fn unlock_modified_emote(
         .await
         .map_err(|e| format!("Failed to get token: {}", e))?;
 
-    let client = Client::new();
+    let client = HTTP_CLIENT.clone();
 
     // Generate required headers and transaction ID
     let device_id = uuid::Uuid::new_v4().to_string().replace("-", "");
@@ -1602,7 +1604,7 @@ pub async fn unlock_chosen_emote(
         .await
         .map_err(|e| format!("Failed to get token: {}", e))?;
 
-    let client = Client::new();
+    let client = HTTP_CLIENT.clone();
 
     // Generate required headers and transaction ID
     let device_id = uuid::Uuid::new_v4().to_string().replace("-", "");

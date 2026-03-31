@@ -79,6 +79,16 @@ pub async fn start_multi_chat(
 /// Parse historical IRC messages (from IVR API) through the Rust backend
 /// Layout is handled by the browser - we just parse the message structure
 #[tauri::command]
-pub async fn parse_historical_messages(messages: Vec<String>) -> Result<Vec<ChatMessage>, String> {
+pub async fn parse_historical_messages(
+    messages: Vec<String>,
+    channel_name: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<Vec<ChatMessage>, String> {
+    // If a channel name is provided, ensure we fetch its emotes before parsing
+    // This allows BTTV/7TV/FFZ emotes to be matched during parse_text_segment
+    if let Some(channel) = channel_name {
+        IrcService::fetch_and_store_emotes(&channel, state.emote_service.clone()).await;
+    }
+
     Ok(IrcService::parse_historical_messages(messages).await)
 }

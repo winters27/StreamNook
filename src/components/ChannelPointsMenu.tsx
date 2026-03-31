@@ -85,6 +85,7 @@ const ChannelPointsMenu: React.FC<ChannelPointsMenuProps> = ({
 
   // Fetch rewards when menu opens
   useEffect(() => {
+    let isMounted = true;
     const fetchRewards = async () => {
       setIsLoading(true);
       setError(null);
@@ -93,16 +94,17 @@ const ChannelPointsMenu: React.FC<ChannelPointsMenuProps> = ({
         const result = await invoke<ChannelReward[]>('get_channel_rewards', {
           channelId: channelLogin  // Backend param is named channelId but expects login
         });
-        setRewards(result);
+        if (isMounted) setRewards(result);
       } catch (err) {
         Logger.error('[ChannelPointsMenu] Failed to fetch rewards:', err);
-        setError(typeof err === 'string' ? err : 'Failed to load rewards');
+        if (isMounted) setError(typeof err === 'string' ? err : 'Failed to load rewards');
       } finally {
-        setIsLoading(false);
+        if (isMounted) setIsLoading(false);
       }
     };
 
     fetchRewards();
+    return () => { isMounted = false; };
   }, [channelLogin]);
 
   // Close on Escape key

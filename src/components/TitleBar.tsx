@@ -83,6 +83,7 @@ const TitleBar = () => {
   useEffect(() => {
     let unlistenStatus: (() => void) | undefined;
     let unlistenProgress: (() => void) | undefined;
+    let isMounted = true;
 
     const loadMiningStatus = async () => {
       try {
@@ -95,12 +96,14 @@ const TitleBar = () => {
 
     const setupListeners = async () => {
       // Listen for mining status updates
-      unlistenStatus = await listen<MiningStatus>('mining-status-update', (event) => {
+      const uStatus = await listen<MiningStatus>('mining-status-update', (event) => {
         setMiningStatus(event.payload);
       });
+      if (isMounted) unlistenStatus = uStatus;
+      else uStatus();
 
       // Listen for progress updates (more frequent)
-      unlistenProgress = await listen<{ drop_id: string; current_minutes: number; required_minutes: number; campaign_id?: string; drop_name?: string }>('drops-progress-update', (event) => {
+      const uProgress = await listen<{ drop_id: string; current_minutes: number; required_minutes: number; campaign_id?: string; drop_name?: string }>('drops-progress-update', (event) => {
         setMiningStatus((prev) => {
           if (!prev || !prev.is_mining) return prev;
           
@@ -135,6 +138,8 @@ const TitleBar = () => {
           };
         });
       });
+      if (isMounted) unlistenProgress = uProgress;
+      else uProgress();
     };
 
     loadMiningStatus();
@@ -144,6 +149,7 @@ const TitleBar = () => {
     const interval = setInterval(loadMiningStatus, 10000);
 
     return () => {
+      isMounted = false;
       if (unlistenStatus) unlistenStatus();
       if (unlistenProgress) unlistenProgress();
       clearInterval(interval);

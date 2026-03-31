@@ -103,9 +103,12 @@ interface ChatMessageProps {
   isHighlighted?: boolean;
   moderationContext?: { type: 'timeout' | 'ban' | 'deleted'; duration?: number } | null; // Moderation context from CLEARMSG/CLEARCHAT
   onEmoteRightClick?: (emoteName: string) => void;
+  onMessageCopy?: (content: string) => void;
   onUsernameRightClick?: (messageId: string, username: string) => void;
   onBadgeClick?: (badgeKey: string, badgeInfo: { url?: string; image_url_4x?: string }) => void;
   emotes?: EmoteSet | null;
+  isModerator?: boolean;
+  broadcasterId?: string;
 }
 
 /**
@@ -129,13 +132,17 @@ const MentionSpan: React.FC<{
   useEffect(() => {
     if (cachedUser) return; // Already have data from store
     
+    let isMounted = true;
+    
     // Try to look up via API and get cosmetics
     import('@tauri-apps/api/core').then(({ invoke }) => {
       invoke<{ id: string; login: string; display_name: string }>('get_user_by_login', { login: username })
         .then((user) => {
+          if (!isMounted) return;
           if (user) {
             // Try to get cosmetics for this user (includes paint)
             getCosmeticsWithFallback(user.id).then((cosmetics) => {
+              if (!isMounted) return;
               if (cosmetics) {
                 const selectedPaint = cosmetics.paints?.find((p: SevenTVPaintWithSelection) => p.selected);
                 if (selectedPaint) {
@@ -147,6 +154,10 @@ const MentionSpan: React.FC<{
         })
         .catch(() => {});
     });
+    
+    return () => {
+      isMounted = false;
+    };
   }, [username, cachedUser]);
   
   // Compute paint style - use user's Twitch color as fallback (not accent)
@@ -231,7 +242,7 @@ const chatMessageAreEqual = (prevProps: ChatMessageProps, nextProps: ChatMessage
 
 // Memoized ChatMessage component to prevent unnecessary re-renders
 // This is critical for preventing animation restarts when new messages arrive
-const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, onUsernameClick, onReplyClick, isHighlighted = false, moderationContext = null, onEmoteRightClick, onUsernameRightClick, onBadgeClick, emotes }: ChatMessageProps) {
+const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, onUsernameClick, onReplyClick, isHighlighted = false, moderationContext = null, onEmoteRightClick, onMessageCopy, onUsernameRightClick, onBadgeClick, emotes, isModerator = false, broadcasterId }: ChatMessageProps) {
   const { settings, currentUser, currentStream } = useAppStore();
   const chatDesign = settings.chat_design;
   const parsed = useMemo(() => {
@@ -570,9 +581,9 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
       // The grid "place-items-center" handles exact overlaying algorithmically!
       let srcSet: string | undefined = undefined;
       // Inject srcSet for 7TV emotes to support wide sizes natively at 2x, 3x, and 4x resolutions
-      if (segment.emoteId && (emoteUrl.includes('7tv') || segment.emoteId.length === 24)) {
-        // We only apply this to 7TV emotes (IDs are exactly 24 hex chars like 01F7CTADRG000351ERP2WA0ME9)
-        if (!emoteUrl.includes('jtvnw.net') && !emoteUrl.includes('frankerfacez')) {
+      // Note: BTTV IDs are ALSO 24 hex characters, so we explicitly exclude betterttv
+      if (segment.emoteId && (emoteUrl.includes('7tv') || segment.emoteId.length === 24 || segment.emoteId.length === 26)) {
+        if (!emoteUrl.includes('jtvnw.net') && !emoteUrl.includes('frankerfacez') && !emoteUrl.includes('betterttv')) {
           srcSet = `https://cdn.7tv.app/emote/${segment.emoteId}/1x.avif 1x, https://cdn.7tv.app/emote/${segment.emoteId}/2x.avif 2x, https://cdn.7tv.app/emote/${segment.emoteId}/3x.avif 3x, https://cdn.7tv.app/emote/${segment.emoteId}/4x.avif 4x`;
         }
       }
@@ -800,6 +811,9 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
   const bitsAmount = parsed.tags.get('bits');
   const isBitsCheer = bitsAmount && parseInt(bitsAmount, 10) > 0;
 
+  // Check if this is a system message
+  const isSystemMessage = parsed.username === 'System';
+
   // Get system message for subscriptions and donations
   const systemMessage = parsed.tags.get('system-msg')?.replace(/\\s/g, ' ');
 
@@ -848,10 +862,13 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
       return;
     }
 
+    let isMounted = true;
+
     // Fetch the channel name and profile image
     import('@tauri-apps/api/core').then(({ invoke }) => {
       invoke<any>('get_user_by_id', { userId: sourceRoomId })
         .then((user) => {
+          if (!isMounted) return;
           if (user && user.login) {
             // Store name in cache
             channelNameCache.set(sourceRoomId, user.login);
@@ -868,6 +885,10 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
           Logger.warn('[ChatMessage] Failed to fetch source channel info:', err);
         });
     });
+
+    return () => {
+      isMounted = false;
+    };
   }, [isFromSharedChat, sourceRoomId, fetchedChannelName, channelProfileImage]);
 
   // Handle bits cheers
@@ -1623,6 +1644,34 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
     );
   }
 
+  // Handle system messages directly to apply strict yellow styling without username
+  if (isSystemMessage) {
+    const eventPadding = calculateHalfPadding(chatDesign?.message_spacing ?? 8);
+    const messageId = parsed.tags.get('id') || `system-${Date.now()}`;
+    
+    return (
+      <div 
+        key={messageId} 
+        className="px-3 border-y border-yellow-500/20 bg-yellow-500/10 mb-[1px]" 
+        style={{ paddingTop: `${eventPadding}px`, paddingBottom: `${eventPadding}px` }}
+      >
+        <div className="flex items-center gap-2">
+          {/* Information / Alert Icon */}
+          <div className="flex-shrink-0">
+            <svg className="w-4 h-4 text-yellow-500/80" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-yellow-200/90 font-medium text-xs leading-relaxed">
+              {renderContent(contentWithEmotes)}
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
 
   // Build dynamic styles based on chat design settings
   // Use consistent padding on container - spacing between messages is handled via py classes
@@ -1660,7 +1709,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
 
   return (
     <div
-      className={`px-3 hover:bg-glass transition-colors ${borderClass} ${animationClass
+      className={`group relative px-3 hover:bg-glass transition-colors ${borderClass} ${animationClass
         } ${isHighlightedMessage ? 'highlight-message-gradient' : ''
         } ${isFirstMessage ? 'bg-gradient-to-r from-purple-500/20 via-purple-400/10 to-transparent' : ''} ${isFromSharedChat ? 'border-l-2 border-l-accent/50 bg-accent/5' : ''
         } ${backgroundClass} ${moderationContext ? 'opacity-50' : ''}`}
@@ -1899,6 +1948,136 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
           </span>
         </div>
       </div>
+      {/* Quick Actions Dock: Copy for everyone, Mod tools for Mods */}
+      {(isModerator || !!onMessageCopy) && broadcasterId && (
+        <div 
+          className="absolute top-1 right-2 opacity-0 group-hover:opacity-100 transition-all duration-200 flex items-center bg-zinc-900/90 backdrop-blur-md border border-white/10 shadow-lg rounded-lg overflow-visible z-[50] translate-y-1 group-hover:translate-y-0"
+        >
+          {/* Copy Message (Available to all) */}
+          {onMessageCopy && (
+            <Tooltip content="Copy message" side="top">
+              <button
+                onClick={(e) => { e.preventDefault(); onMessageCopy(parsed.content); }}
+                className="p-1.5 m-0.5 rounded-md hover:bg-stone-500/20 text-white/50 hover:text-white transition-colors"
+                title="Copy message to input"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
+              </button>
+            </Tooltip>
+          )}
+
+          {/* Moderator Tools Divider */}
+          {onMessageCopy && isModerator && (
+            <div className="w-px h-4 bg-white/10 mx-0.5" />
+          )}
+
+          {/* Moderator-Only Tools */}
+          {isModerator && (
+            <>
+              {/* Delete Message */}
+              <Tooltip content="Delete Message" side="top">
+                <button
+                  onClick={async (e) => {
+                    e.preventDefault();
+                    const msgId = parsed.tags.get('id');
+                    if (msgId) {
+                      try {
+                        const { invoke } = await import('@tauri-apps/api/core');
+                        await invoke('delete_chat_message', { broadcasterId, messageId: msgId });
+                      } catch (err) {
+                        Logger.error('[ChatMessage] Failed to delete message:', err);
+                      }
+                    }
+                  }}
+                  className="p-1.5 m-0.5 rounded-md hover:bg-red-500/20 text-white/50 hover:text-red-400 transition-colors"
+                >
+                  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+                </button>
+              </Tooltip>
+
+              <div className="w-px h-4 bg-white/10" />
+
+              {/* Quick Timeout (10m) */}
+              <div className="relative flex group/timeout">
+            <Tooltip content="Timeout User (10m)" side="top">
+              <button
+                onClick={async (e) => {
+                  e.preventDefault();
+                  const targetUserId = parsed.tags.get('user-id');
+                  if (targetUserId) {
+                    try {
+                      const { invoke } = await import('@tauri-apps/api/core');
+                      await invoke('ban_user', { broadcasterId, targetUserId, duration: 600, reason: null });
+                    } catch (err) {
+                      Logger.error('[ChatMessage] Failed to timeout user:', err);
+                    }
+                  }
+                }}
+                className="p-1.5 m-0.5 rounded-md hover:bg-yellow-500/20 text-white/50 hover:text-yellow-400 transition-colors"
+              >
+                <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+              </button>
+            </Tooltip>
+            
+            {/* Timeout Dropdown */}
+            <div className="absolute top-1/2 -translate-y-1/2 right-full opacity-0 pointer-events-none group-hover/timeout:opacity-100 group-hover/timeout:pointer-events-auto transition-opacity pr-1 py-4">
+              <div className="flex bg-zinc-900 border border-white/10 rounded-md shadow-xl overflow-hidden">
+                {[
+                  { label: '1s', val: 1 }, 
+                  { label: '10m', val: 600 }, 
+                  { label: '1h', val: 3600 }, 
+                  { label: '24h', val: 86400 }
+                ].map(opt => (
+                  <button
+                    key={opt.val}
+                    className="px-2 py-1 text-[10px] font-bold text-white/70 hover:text-yellow-400 hover:bg-white/10 transition-colors border-r border-white/5 last:border-0"
+                    onClick={async (e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      const targetUserId = parsed.tags.get('user-id');
+                      if (targetUserId) {
+                        try {
+                          const { invoke } = await import('@tauri-apps/api/core');
+                          await invoke('ban_user', { broadcasterId, targetUserId, duration: opt.val, reason: null });
+                        } catch (err) {
+                          Logger.error('[ChatMessage] Failed to timeout user (quick value):', err);
+                        }
+                      }
+                    }}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="w-px h-4 bg-white/10" />
+
+          {/* Quick Ban */}
+          <Tooltip content="Ban User" side="top">
+            <button
+              onClick={async (e) => {
+                e.preventDefault();
+                const targetUserId = parsed.tags.get('user-id');
+                if (targetUserId) {
+                  try {
+                    const { invoke } = await import('@tauri-apps/api/core');
+                    await invoke('ban_user', { broadcasterId, targetUserId, duration: null, reason: null });
+                  } catch (err) {
+                    Logger.error('[ChatMessage] Failed to ban user:', err);
+                  }
+                }
+              }}
+              className="p-1.5 m-0.5 rounded-md hover:bg-red-500/20 text-white/50 hover:text-red-500 transition-colors"
+            >
+              <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+            </button>
+          </Tooltip>
+          </>
+          )}
+        </div>
+      )}
     </div>
   );
 }, chatMessageAreEqual);

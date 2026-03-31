@@ -73,7 +73,7 @@ export default function DropsCenter() {
     const [searchTerm, setSearchTerm] = useState('');
     const [selectedGame, setSelectedGame] = useState<UnifiedGame | null>(null);
     const [, setIsLoadingGameDetail] = useState(false);
-    const { addToast, setShowDropsOverlay, currentUser } = useAppStore();
+    const { addToast, setShowDropsOverlay, currentUser, dropsSearchTerm, setDropsSearchTerm } = useAppStore();
     
 
 
@@ -549,6 +549,29 @@ export default function DropsCenter() {
             setIsLoadingGameDetail(false);
         }
     };
+
+    // Auto-apply dropsSearchTerm when navigated to from a specific deep-link
+    useEffect(() => {
+        if (dropsSearchTerm && unifiedGames.length > 0) {
+            setSearchTerm(dropsSearchTerm);
+            
+            const lowerSearch = dropsSearchTerm.toLowerCase();
+            const exactMatch = unifiedGames.find(g => g.name.toLowerCase() === lowerSearch);
+            
+            if (exactMatch) {
+                setTimeout(() => handleGameSelect(exactMatch), 50);
+            } else {
+                const partialMatches = unifiedGames.filter(g => g.name.toLowerCase().includes(lowerSearch));
+                if (partialMatches.length === 1) {
+                    setTimeout(() => handleGameSelect(partialMatches[0]), 50);
+                }
+            }
+            
+            // Clear the search term from store so it doesn't re-trigger when returning
+            setDropsSearchTerm('');
+        }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [dropsSearchTerm, unifiedGames]);
 
     // Mine All Game - starts mining all campaigns for a game sequentially
     // Smart start: Skip campaigns that are already fully complete and start from the first incomplete one
@@ -1100,26 +1123,28 @@ export default function DropsCenter() {
         init();
 
         // Listeners
+        let isMounted = true;
         let unlistenStatus: (() => void) | undefined;
         let unlistenProgress: (() => void) | undefined;
         let unlistenComplete: (() => void) | undefined;
         let unlistenNoChannels: (() => void) | undefined;
 
         const setupListeners = async () => {
-            unlistenStatus = await listen<MiningStatus>('mining-status-update', (event) => {
+            const uStatus = await listen<MiningStatus>('mining-status-update', (event) => {
                 Logger.debug('[DropsCenter] Mining status update:', event.payload);
                 setMiningStatus(event.payload);
                 
                 // Update AppStore's isMiningActive based on the status
                 useAppStore.getState().setMiningActive(event.payload.is_mining);
             });
+            if (isMounted) unlistenStatus = uStatus; else uStatus();
             
             // Listen for mining complete events (drop reached 100%)
             // This handles all 3 mining modes:
             // 1. Single Campaign Mining - stop completely
             // 2. Mine All Game - check if there are more campaigns in queue, start next if so
             // 3. Auto-Mining - handled by backend's start_mining (doesn't use this event)
-            unlistenComplete = await listen<{ game_name: string; reason: string }>('mining-complete', async (event) => {
+            const uComplete = await listen<{ game_name: string; reason: string }>('mining-complete', async (event) => {
                 Logger.debug('[DropsCenter] Mining complete:', event.payload);
                 
                 // Check if we're in a Mine All queue (use ref to get current value, not stale closure)
@@ -1162,9 +1187,10 @@ export default function DropsCenter() {
                 // Refresh data to show updated progress
                 loadDropsData();
             });
+            if (isMounted) unlistenComplete = uComplete; else uComplete();
 
             // Listen for mining stopped due to no channels available (all streams offline)
-            unlistenNoChannels = await listen<{ reason: string }>('mining-stopped-no-channels', async (event) => {
+            const uNoChannels = await listen<{ reason: string }>('mining-stopped-no-channels', async (event) => {
                 Logger.debug('[DropsCenter] Mining stopped - no channels:', event.payload);
                 
                 // Check if we're in a Mine All queue
@@ -1206,8 +1232,9 @@ export default function DropsCenter() {
                 // Refresh data
                 loadDropsData();
             });
+            if (isMounted) unlistenNoChannels = uNoChannels; else uNoChannels();
 
-            unlistenProgress = await listen<{ drop_id: string; current_minutes: number; required_minutes: number; timestamp: number; campaign_id?: string; }>('drops-progress-update', (event) => {
+            const uProgress = await listen<{ drop_id: string; current_minutes: number; required_minutes: number; timestamp: number; campaign_id?: string; }>('drops-progress-update', (event) => {
                 Logger.debug('[DropsCenter] Received drops-progress-update:', event.payload);
 
                 // Update progress state
@@ -1316,10 +1343,12 @@ export default function DropsCenter() {
                     return prev;
                 });
             });
+            if (isMounted) unlistenProgress = uProgress; else uProgress();
         };
         setupListeners();
 
         return () => {
+            isMounted = false;
             if (unlistenStatus) unlistenStatus();
             if (unlistenProgress) unlistenProgress();
             if (unlistenComplete) unlistenComplete();

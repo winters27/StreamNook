@@ -70,6 +70,7 @@ const ProfileModal = ({ isOpen, onClose }: ProfileModalProps) => {
 
   // Listen for events
   useEffect(() => {
+    let isMounted = true;
     let unlistenFound: (() => void) | undefined;
     let unlistenUpdate: (() => void) | undefined;
     let unlisten7TV: (() => void) | undefined;
@@ -77,15 +78,20 @@ const ProfileModal = ({ isOpen, onClose }: ProfileModalProps) => {
     const setupListeners = async () => {
       const { listen } = await import('@tauri-apps/api/event');
       
-      unlistenFound = await listen('chat-identity-badges-found', (event: any) => {
+      const unlistenFoundFn = await listen('chat-identity-badges-found', (event: any) => {
         const result = event.payload;
         if (result.success) {
           setChatIdentityBadges(result.badges);
         }
         setIsFetchingIdentity(false);
       });
+      if (isMounted) {
+        unlistenFound = unlistenFoundFn;
+      } else {
+        unlistenFoundFn();
+      }
 
-      unlistenUpdate = await listen('chat-identity-update-result', (event: any) => {
+      const unlistenUpdateFn = await listen('chat-identity-update-result', (event: any) => {
         const result = event.payload;
         if (result.success) {
           setChatIdentityBadges(prev => prev.map(b => ({
@@ -95,11 +101,21 @@ const ProfileModal = ({ isOpen, onClose }: ProfileModalProps) => {
         }
         setUpdatingBadgeId(null);
       });
+      if (isMounted) {
+        unlistenUpdate = unlistenUpdateFn;
+      } else {
+        unlistenUpdateFn();
+      }
 
-      unlisten7TV = await listen('seventv-connected', () => {
+      const unlisten7TVFn = await listen('seventv-connected', () => {
         setSeventvAuthConnected(true);
         setIsConnecting7TV(false);
       });
+      if (isMounted) {
+        unlisten7TV = unlisten7TVFn;
+      } else {
+        unlisten7TVFn();
+      }
     };
 
     if (isOpen) {
@@ -107,6 +123,7 @@ const ProfileModal = ({ isOpen, onClose }: ProfileModalProps) => {
     }
 
     return () => {
+      isMounted = false;
       if (unlistenFound) unlistenFound();
       if (unlistenUpdate) unlistenUpdate();
       if (unlisten7TV) unlisten7TV();
