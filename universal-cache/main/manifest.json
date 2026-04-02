@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "last_sync": 1775027743,
+  "last_sync": 1775113229,
   "entries": {
     "global_badges": {
       "id": "global_badges",
@@ -730,51 +730,6 @@
                   "description": "This badge was earned by subscribing to a COD: Black Ops 7 streamer during launch!",
                   "click_action": null,
                   "click_url": null
-                }
-              ]
-            },
-            {
-              "set_id": "bloom-badge",
-              "versions": [
-                {
-                  "id": "1",
-                  "image_url_1x": "https://static-cdn.jtvnw.net/badges/v1/6c119c4d-adb3-4199-a0cb-3e09d7bc14c3/1",
-                  "image_url_2x": "https://static-cdn.jtvnw.net/badges/v1/6c119c4d-adb3-4199-a0cb-3e09d7bc14c3/2",
-                  "image_url_4x": "https://static-cdn.jtvnw.net/badges/v1/6c119c4d-adb3-4199-a0cb-3e09d7bc14c3/3",
-                  "title": "Bloom Badge Level 1",
-                  "description": "Earn this badge for watching a clip, VOD or live stream 3 days a week. The badge upgrades weekly.",
-                  "click_action": "visit_url",
-                  "click_url": "https://help.twitch.tv/s/article/weekly-rewards"
-                },
-                {
-                  "id": "2",
-                  "image_url_1x": "https://static-cdn.jtvnw.net/badges/v1/45eea8e2-e0b3-4560-a32f-4a4cb5b0a061/1",
-                  "image_url_2x": "https://static-cdn.jtvnw.net/badges/v1/45eea8e2-e0b3-4560-a32f-4a4cb5b0a061/2",
-                  "image_url_4x": "https://static-cdn.jtvnw.net/badges/v1/45eea8e2-e0b3-4560-a32f-4a4cb5b0a061/3",
-                  "title": "Bloom Badge Level 2",
-                  "description": "Earn this badge for watching a clip, VOD or live stream 3 days a week. The badge upgrades weekly.",
-                  "click_action": "visit_url",
-                  "click_url": "https://help.twitch.tv/s/article/weekly-rewards"
-                },
-                {
-                  "id": "3",
-                  "image_url_1x": "https://static-cdn.jtvnw.net/badges/v1/d7c40c24-02ca-4221-ae02-28402528a006/1",
-                  "image_url_2x": "https://static-cdn.jtvnw.net/badges/v1/d7c40c24-02ca-4221-ae02-28402528a006/2",
-                  "image_url_4x": "https://static-cdn.jtvnw.net/badges/v1/d7c40c24-02ca-4221-ae02-28402528a006/3",
-                  "title": "Bloom Badge Level 3",
-                  "description": "Earn this badge for watching a clip, VOD or live stream 3 days a week. The badge upgrades weekly.",
-                  "click_action": "visit_url",
-                  "click_url": "https://help.twitch.tv/s/article/weekly-rewards"
-                },
-                {
-                  "id": "4",
-                  "image_url_1x": "https://static-cdn.jtvnw.net/badges/v1/d52284fd-bf7a-4a94-85ad-e2f0427ec6db/1",
-                  "image_url_2x": "https://static-cdn.jtvnw.net/badges/v1/d52284fd-bf7a-4a94-85ad-e2f0427ec6db/2",
-                  "image_url_4x": "https://static-cdn.jtvnw.net/badges/v1/d52284fd-bf7a-4a94-85ad-e2f0427ec6db/3",
-                  "title": "Bloom Badge Level 4",
-                  "description": "Earn this badge for watching a clip, VOD or live stream 3 days a week. The badge upgrades weekly.",
-                  "click_action": "visit_url",
-                  "click_url": "https://help.twitch.tv/s/article/weekly-rewards"
                 }
               ]
             },
@@ -4855,10 +4810,10 @@
             }
           ]
         },
-        "cached_at": 1775027298
+        "cached_at": 1775113229
       },
       "metadata": {
-        "timestamp": 1775027298,
+        "timestamp": 1775113229,
         "expiry_days": 7,
         "source": "twitch",
         "version": 1
