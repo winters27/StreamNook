@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "last_sync": 1775805312,
+  "last_sync": 1775890193,
   "entries": {
     "global_badges": {
       "id": "global_badges",
@@ -4870,10 +4870,10 @@
             }
           ]
         },
-        "cached_at": 1775805310
+        "cached_at": 1775890191
       },
       "metadata": {
-        "timestamp": 1775805310,
+        "timestamp": 1775890191,
         "expiry_days": 7,
         "source": "twitch",
         "version": 1
@@ -10680,7 +10680,7 @@
         "more_info": "The Baby Chick badge is a limited-time global chat badge dedicated to the Tiny Takeover event in Minecraft. To earn it, you need to subscribe or gift a subscription (Prime subs doesn’t count) to streamer in the Minecraft category during the event period. Event time: 2026-04-06T16:00:00Z &#8211; 2026-04-20T18:58:00Z The badge is distributed via Twitch Drops and granted automatically after the requirement is met."
       },
       "metadata": {
-        "timestamp": 1775285315,
+        "timestamp": 1775890192,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -10693,10 +10693,10 @@
       "data": {
         "date_added": "3 April 2026",
         "usage_stats": null,
-        "more_info": "The CDawg Cyclethon 5 badge is a limited-time global chat badge dedicated to CDawg&#8217;s 5th Charity Cyclethon 2026. To earn it, you need to watch livestream on the /cdawg channel during the campaign. Event Duration: to be confirmed The badge is distributed via Twitch Drops and granted automatically after meeting the requirement."
+        "more_info": "The CDawg Cyclethon 5 badge is a limited-time global chat badge dedicated to CDawg&#8217;s 5th Charity Cyclethon 2026. To earn it, you need to watch 1 hour of livestream on the /cdawg channel during the campaign. The stream must be in the Just Chatting category for your progress to count. Event Duration: 2026-04-06T00:00:00Z &#8211; 2026-04-19T08:00:00Z The badge is distributed via Twitch Drops and granted automatically after meeting the requirement."
       },
       "metadata": {
-        "timestamp": 1775285317,
+        "timestamp": 1775890193,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
