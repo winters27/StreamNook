@@ -16,7 +16,7 @@ tauri-build = { version = "2.5.2", features = [] }
 lazy_static = "1.5.0"
 regex = "1.12.2"
 strsim = "0.11.1"
-phf_codegen = "0.11"
+phf_codegen = "0.13"
 
 [dependencies]
 tauri = { version = "2.9.4", features = ["protocol-asset", "tray-icon", "image-png"] }
