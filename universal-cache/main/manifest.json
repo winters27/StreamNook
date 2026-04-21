@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "last_sync": 1776671446,
+  "last_sync": 1776756112,
   "entries": {
     "global_badges": {
       "id": "global_badges",
@@ -4930,10 +4930,10 @@
             }
           ]
         },
-        "cached_at": 1776671445
+        "cached_at": 1776756108
       },
       "metadata": {
-        "timestamp": 1776671445,
+        "timestamp": 1776756108,
         "expiry_days": 7,
         "source": "twitch",
         "version": 1
@@ -10804,7 +10804,7 @@
         "more_info": "The Dodomogged badge is a limited-time global chat badge dedicated to the launch of the Windrose. To earn it, you need to subscribe or gift a subscription (Prime subs doesn’t count) to streamer in the Windrose category during the event period. Event time: 14 Apr, 07:00 UTC &#8211; 28 Apr, 06:59 UTC The badge is distributed via Twitch Drops and granted automatically after the requirement is met."
       },
       "metadata": {
-        "timestamp": 1776151077,
+        "timestamp": 1776756110,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -10820,7 +10820,7 @@
         "more_info": "The Winston Overwatch badge is a limited-time global chat badge dedicated to Overwatch. To earn it, you need to subscribe or gift a subscription (Prime subs doesn’t count) to streamer in the Overwatch category during the event period. Event time: 14 Apr, 18:00 UTC &#8211; 12 May, 17:59 UTC The badge is distributed via Twitch Drops and granted automatically after the requirement is met."
       },
       "metadata": {
-        "timestamp": 1776151079,
+        "timestamp": 1776756112,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
