@@ -39,7 +39,7 @@ futures-util = { version = "0.3.31", features = ["sink"] }
 rand = "0.10.1"
 keyring = "3.6.3"  # For secure token storage
 url = "2.5.7"
-sha2 = "0.10.9"
+sha2 = "0.11.0"
 base64 = "0.22.1"
 lazy_static = "1.5.0"
 dirs = "6.0.0"
