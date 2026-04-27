@@ -57,7 +57,7 @@ scopeguard = "1.2"
 rust-embed = "8.7"
 mime_guess = "2.0"
 phf = "0.13"
-lru = "0.17"
+lru = "0.18"
 
 log = "0.4"
 env_logger = "0.11"
