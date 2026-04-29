@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "last_sync": 1777363594,
+  "last_sync": 1777449610,
   "entries": {
     "global_badges": {
       "id": "global_badges",
@@ -5110,10 +5110,10 @@
             }
           ]
         },
-        "cached_at": 1777363586
+        "cached_at": 1777449602
       },
       "metadata": {
-        "timestamp": 1777363586,
+        "timestamp": 1777449602,
         "expiry_days": 7,
         "source": "twitch",
         "version": 1
@@ -11048,7 +11048,7 @@
         "more_info": "The Content Unlock Quest Chat badge is a limited-time global Twitch chat badge celebrating the FINAL FANTASY XIV Fan Festivals, specifically the EU segment. To earn this badge, you need to watch the official Fan Fest 2026 channel for 60 minutes. Event time: 24 Jul, 07:01 UTC &#8211; 27 Jul, 06:59 UTC The badge is distributed via Twitch Drops and granted automatically after meeting the requirement. One more free badge dedicated to this event: Moogle Chat"
       },
       "metadata": {
-        "timestamp": 1776842397,
+        "timestamp": 1777449604,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -11064,7 +11064,7 @@
         "more_info": "The Moogle Chat badge is a limited-time global Twitch chat badge celebrating the FINAL FANTASY XIV Fan Festivals, specifically the EU segment. To earn this badge, you need to watch 60 minutes of any live stream in the Final Fantasy XIV category during the campaign. Event time: 24 Jul, 07:01 UTC &#8211; 27 Jul, 06:59 UTC The badge is distributed via Twitch Drops and granted automatically after meeting the requirement. One more free badge dedicated to this event: Content Unlock Quest Chat &nbsp;"
       },
       "metadata": {
-        "timestamp": 1776842398,
+        "timestamp": 1777449605,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -11080,7 +11080,7 @@
         "more_info": "The Alpha Chat badge is a limited-time global Twitch chat badge celebrating the FINAL FANTASY XIV Fan Festivals, specifically the JP segment. To earn this badge, you need to watch 60 minutes of any live stream in the Final Fantasy XIV category during the campaign. Event time: 30 Oct, 07:01 UTC &#8211; 2 Nov, 06:59 UTC The badge is distributed via Twitch Drops and granted automatically after meeting the requirement. One more free badge dedicated to this event: Quest Complete Chat"
       },
       "metadata": {
-        "timestamp": 1776842399,
+        "timestamp": 1777449606,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -11096,7 +11096,7 @@
         "more_info": "The Quest Complete Chat badge is a limited-time global Twitch chat badge celebrating the FINAL FANTASY XIV Fan Festivals, specifically the JP segment. To earn this badge, you need to watch the official Fan Fest 2026 channel for 60 minutes. Event time: 30 Oct, 07:01 UTC &#8211; 2 Nov, 06:59 UTC The badge is distributed via Twitch Drops and granted automatically after meeting the requirement. One more free badge dedicated to this event: Alpha Chat"
       },
       "metadata": {
-        "timestamp": 1776842401,
+        "timestamp": 1777449607,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -11109,10 +11109,10 @@
       "data": {
         "date_added": "21 April 2026",
         "usage_stats": null,
-        "more_info": "The Fat Cat Chat badge is a limited-time global Twitch chat badge celebrating the FINAL FANTASY XIV Fan Festivals, specifically the NA segment. To earn this badge, you need to watch 60 minutes of any live stream in the Final Fantasy XIV category during the campaign. Event time: 23 Apr, 23:01 UTC &#8211; 25 Apr, 22:58 UTC The badge is distributed via Twitch Drops and granted automatically after meeting the requirement. One more free badge dedicated to this event: Main Scenario Quest Chat"
+        "more_info": "The Fat Cat Chat badge is a limited-time global Twitch chat badge celebrating the FINAL FANTASY XIV Fan Festivals, specifically the NA segment. To earn this badge, you need to watch 60 minutes of any live stream in the Final Fantasy XIV category during the campaign. Event time: 23 Apr, 23:01 UTC &#8211; 27 Apr, 06:58 UTC The badge is distributed via Twitch Drops and granted automatically after meeting the requirement. One more free badge dedicated to this event: Main Scenario Quest Chat"
       },
       "metadata": {
-        "timestamp": 1776842402,
+        "timestamp": 1777449608,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
@@ -11125,10 +11125,10 @@
       "data": {
         "date_added": "21 April 2026",
         "usage_stats": null,
-        "more_info": "The Main Scenario Quest Chat badge is a limited-time global Twitch chat badge celebrating the FINAL FANTASY XIV Fan Festivals, specifically the NA segment. To earn this badge, you need to watch the official Fan Fest 2026 channel for 60 minutes. Event time: 23 Apr, 23:01 UTC &#8211; 25 Apr, 22:58 UTC The badge is distributed via Twitch Drops and granted automatically after meeting the requirement. One more free badge dedicated to this event: Fat Cat Chat"
+        "more_info": "The Main Scenario Quest Chat badge is a limited-time global Twitch chat badge celebrating the FINAL FANTASY XIV Fan Festivals, specifically the NA segment. To earn this badge, you need to watch the official Fan Fest 2026 channel for 60 minutes. Event time: 23 Apr, 23:01 UTC &#8211; 27 Apr, 06:58 UTC The badge is distributed via Twitch Drops and granted automatically after meeting the requirement. One more free badge dedicated to this event: Fat Cat Chat"
       },
       "metadata": {
-        "timestamp": 1776842403,
+        "timestamp": 1777449610,
         "expiry_days": 0,
         "source": "badgebase",
         "version": 1
