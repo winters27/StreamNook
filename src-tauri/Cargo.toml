@@ -19,13 +19,13 @@ strsim = "0.11.1"
 phf_codegen = "0.13"
 
 [dependencies]
-tauri = { version = "2.9.4", features = ["protocol-asset", "tray-icon", "image-png"] }
+tauri = { version = "2.11.0", features = ["protocol-asset", "tray-icon", "image-png"] }
 tauri-plugin-shell = { git = "https://github.com/tauri-apps/plugins-workspace", branch = "v2" }
 tauri-plugin-opener = { git = "https://github.com/tauri-apps/plugins-workspace", branch = "v2" }
-tauri-plugin-dialog = "2.7.0"
+tauri-plugin-dialog = "2.7.1"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
-tokio = { version = "1.52.1", features = ["full"] }
+tokio = { version = "1.52.2", features = ["full"] }
 tokio-tungstenite = { version = "0.27.0", features = ["native-tls"] }
 reqwest = { version = "0.12.24", features = ["json", "gzip", "cookies", "multipart"] }
 cookie_store = "0.22.0"
@@ -33,7 +33,7 @@ oauth2 = "5.0.0"
 discord-rich-presence = "1.0.0"
 anyhow = "1.0.100"
 confy = "2.0.0"
-warp = { version = "0.4.2", features = ["server", "websocket"] }
+warp = { version = "0.4.3", features = ["server", "websocket"] }
 futures = "0.3"
 futures-util = { version = "0.3.31", features = ["sink"] }
 rand = "0.10.1"
@@ -43,7 +43,7 @@ sha2 = "0.11.0"
 base64 = "0.22.1"
 lazy_static = "1.5.0"
 dirs = "6.0.0"
-tauri-plugin-http = "2.5.8"
+tauri-plugin-http = "2.5.9"
 regex = "1.12.2"
 strsim = "0.11.1"
 uuid = { version = "1.23.1", features = ["v4"] }
@@ -61,7 +61,7 @@ lru = "0.18"
 
 log = "0.4"
 env_logger = "0.11"
-tauri-plugin-deep-link = "2.4.8"
+tauri-plugin-deep-link = "2.4.9"
 tauri-plugin-clipboard-manager = "2.3.2"
 
 
