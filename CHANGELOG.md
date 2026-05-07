@@ -1,3 +1,13 @@
+## [7.2.1] - 2026-05-07
+### ✨ Features
+- **Twitch Drops Mining (Fix)**: Drops are now mined using Twitch's official GraphQL API, ensuring continued functionality as older endpoints are deprecated.
+
+### 🐛 Bug Fixes
+- **Home Screen UI**: Fixed an issue with the category view where the hero banner and floating title animations would not behave correctly on scroll.
+
+### 🔧 Maintenance
+- Improved the reliability of the drops mining service by removing outdated caching mechanisms and migrating to the latest Twitch API for tracking watch time.
+
 ## [7.2.0] - 2026-03-31
 > [!IMPORTANT]
 > **Re-Authentication Required**
@@ -1113,6 +1123,7 @@ ATTENTION: ALL USERS LOG OUT OF TWITCH THEN LOG BACK IN FOR SOME CHANGES OT TAKE
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
