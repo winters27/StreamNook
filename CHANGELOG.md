@@ -1,13 +1,9 @@
 ## [7.2.1] - 2026-05-07
-### ✨ Features
-- **Twitch Drops Mining (Fix)**: Drops are now mined using Twitch's official GraphQL API, ensuring continued functionality as older endpoints are deprecated.
-
 ### 🐛 Bug Fixes
-- **Home Screen UI**: Fixed an issue with the category view where the hero banner and floating title animations would not behave correctly on scroll.
-
-### 🔧 Maintenance
-- Improved the reliability of the drops mining service by removing outdated caching mechanisms and migrating to the latest Twitch API for tracking watch time.
-
+- Fullscreen now fills the entire display when the app window isn't maximized
+- Fixed blue border / chrome leak when re-entering fullscreen from a maximized window
+- Window correctly returns to maximized after exiting fullscreen, no more drift off-screen
+- Closes #125 (items 1 and 2) — special thanks to @swott for filing the very first issue on the repo
 ## [7.2.0] - 2026-03-31
 > [!IMPORTANT]
 > **Re-Authentication Required**
@@ -1123,19 +1119,4 @@ ATTENTION: ALL USERS LOG OUT OF TWITCH THEN LOG BACK IN FOR SOME CHANGES OT TAKE
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
