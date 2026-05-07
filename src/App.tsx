@@ -934,6 +934,12 @@ function App() {
           return;
         }
 
+        const isFullscreen = await window.isFullscreen();
+        if (isFullscreen) {
+          isAdjustingRef.current = false;
+          return;
+        }
+
         const size = await window.innerSize();
         const width = size.width;
         const height = size.height;

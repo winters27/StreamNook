@@ -12,6 +12,40 @@ import StreamTitleWithEmojis from './StreamTitleWithEmojis';
 import { Tooltip } from './ui/Tooltip';
 
 import { Logger } from '../utils/logger';
+
+let restoreMaximizedAfterFullscreen = false;
+const syncTauriWindowFullscreen = async (entering: boolean) => {
+  try {
+    const { getCurrentWindow, currentMonitor, PhysicalPosition } = await import('@tauri-apps/api/window');
+    const win = getCurrentWindow();
+    if (entering) {
+      // Win32 quirk: setting fullscreen while WS_MAXIMIZE is set leaves
+      // the maximized chrome/taskbar visible. Unmaximize first.
+      restoreMaximizedAfterFullscreen = await win.isMaximized();
+      if (restoreMaximizedAfterFullscreen) {
+        await win.unmaximize();
+      }
+      await win.setFullscreen(true);
+    } else {
+      await win.setFullscreen(false);
+      if (restoreMaximizedAfterFullscreen) {
+        // After repeated fullscreen→exit cycles, Win32's saved restore
+        // placement can drift, leaving the next maximize() bound to the
+        // wrong rect (window ends up partially off-screen). Anchor to the
+        // current monitor's origin first so maximize() snaps to its work area.
+        const monitor = await currentMonitor();
+        if (monitor) {
+          await win.setPosition(new PhysicalPosition(monitor.position.x, monitor.position.y));
+        }
+        await win.maximize();
+        restoreMaximizedAfterFullscreen = false;
+      }
+    }
+  } catch (err) {
+    Logger.error('[Fullscreen] Failed to sync Tauri window:', err);
+  }
+};
+
 const VideoPlayer = () => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const playerRef = useRef<Plyr | null>(null);
@@ -467,11 +501,19 @@ const VideoPlayer = () => {
             tooltips: { controls: true, seek: true },
             hideControls: true,
             clickToPlay: true,
+            // Force Plyr's CSS-only fullscreen — the Tauri window is borderless
+            // (decorations: false), so HTML5 element-fullscreen ends up scoped
+            // to the window viewport instead of the screen. We bridge Plyr's
+            // enter/exit events to the Tauri window's true OS fullscreen below.
+            fullscreen: { enabled: true, fallback: 'force', iosNative: false },
             // Disable Plyr's built-in localStorage - we manage settings via Tauri backend
             storage: { enabled: false },
           });
 
           playerRef.current = player;
+
+          player.on('enterfullscreen', () => syncTauriWindowFullscreen(true));
+          player.on('exitfullscreen', () => syncTauriWindowFullscreen(false));
 
           // Set up live stream overrides
           isLiveRef.current = useAppStore.getState().currentMediaType === 'live';
@@ -828,6 +870,9 @@ const VideoPlayer = () => {
         invertTime: false,
         keyboard: { focused: true, global: true },
         tooltips: { controls: true, seek: true },
+        // See note in the HLS.js path above — force CSS-only fullscreen so we
+        // can promote it to a real OS window fullscreen via Tauri.
+        fullscreen: { enabled: true, fallback: 'force', iosNative: false },
         // Disable Plyr's built-in localStorage - we manage settings via Tauri backend
         storage: { enabled: false },
       });
@@ -835,6 +880,9 @@ const VideoPlayer = () => {
       playerRef.current = player;
       playerRef.current.volume = currentSettings.volume;
       playerRef.current.muted = currentSettings.muted;
+
+      player.on('enterfullscreen', () => syncTauriWindowFullscreen(true));
+      player.on('exitfullscreen', () => syncTauriWindowFullscreen(false));
 
       // Persist volume/muted changes back to settings (Safari path)
       player.on('volumechange', () => {
