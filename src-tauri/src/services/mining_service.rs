@@ -6,10 +6,12 @@ use crate::services::drops_websocket_service::DropsWebSocketService;
 use anyhow::Result;
 use base64::{engine::general_purpose, Engine as _};
 use chrono::{Duration, Utc};
+use flate2::write::GzEncoder;
+use flate2::Compression;
 use log::{debug, error};
-use regex::Regex;
 use reqwest::Client;
 use serde_json::json;
+use std::io::Write;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Listener};
 use tokio::sync::RwLock;
@@ -30,7 +32,6 @@ pub struct MiningService {
     is_running: Arc<RwLock<bool>>,
     websocket_service: Arc<tokio::sync::Mutex<DropsWebSocketService>>,
     cached_user_id: Arc<RwLock<Option<String>>>, // Cache user ID to avoid repeated validation calls
-    cached_spade_url: Arc<RwLock<Option<String>>>, // Cache spade URL to avoid repeated HTML fetches
     event_listener_id: Arc<RwLock<Option<u32>>>, // Store event listener ID for cleanup
     current_mining_game: Arc<RwLock<Option<String>>>, // Track current game to detect session changes
     // Recovery system state
@@ -54,7 +55,6 @@ impl MiningService {
             is_running: Arc::new(RwLock::new(false)),
             websocket_service: Arc::new(tokio::sync::Mutex::new(DropsWebSocketService::new())),
             cached_user_id: Arc::new(RwLock::new(None)),
-            cached_spade_url: Arc::new(RwLock::new(None)),
             event_listener_id: Arc::new(RwLock::new(None)),
             current_mining_game: Arc::new(RwLock::new(None)),
             // Initialize recovery watchdog state
@@ -134,32 +134,32 @@ impl MiningService {
                                 let _ = app_handle.emit("mining-status-update", &current_status);
                             } else {
                                 debug!("⚠️ Drop ID mismatch in mining status update. Got {}, expected {}", drop_id, current_drop.drop_id);
-                                
+
                                 // We have a mismatch. Attempts to find the correct drop info and update status.
                                 drop(status); // Release lock before calling drops_service
 
                                 let drops_service_lock = drops_service.lock().await;
                                 // Access cached campaigns via internal method or field if exposed (it is public in struct but field access might be tricky if not pub)
-                                // Only cached_campaigns is needed. It is pub in DropsService struct? 
-                                // Looking at view_file of drops_service.rs, cached_campaigns field is NOT pub. 
+                                // Only cached_campaigns is needed. It is pub in DropsService struct?
+                                // Looking at view_file of drops_service.rs, cached_campaigns field is NOT pub.
                                 // But `get_all_active_campaigns_cached` returns Vec<DropCampaign>.
                                 let _ = drops_service_lock;
                                 // Wait, we can't access fields if they are private.
                                 // But we can call `get_all_active_campaigns_cached`.
                                 // However, that is async and we are in a async block.
-                                // Since we already have the lock, we can't call async methods on it if we hold the lock? 
+                                // Since we already have the lock, we can't call async methods on it if we hold the lock?
                                 // `websockets_listener` has `drops_service` which is `Arc<Mutex<DropsService>>`?
                                 // In `services/mining_service.rs`, `drops_service` is `Arc<Mutex<DropsService>>`.
                                 // But `DropsService` methods take `&self`.
                                 // If we lock it, we get `MutexGuard<DropsService>`. We can't call async methods on `&self` easily if we hold the guard?
                                 // Actually `DropsService` methods are async.
-                                
+
                                 drop(drops_service_lock);
-                                
+
                                 // We need to query drops service for campaigns to find the drop name.
                                 // We'll just define a helper block
                                 let campaigns_result = drops_service.lock().await.get_all_active_campaigns_cached().await;
-                                
+
                                 if let Ok(campaigns) = campaigns_result {
                                     // Search for the drop
                                     let mut found_drop_info = None;
@@ -167,14 +167,14 @@ impl MiningService {
                                         if let Some(drop) = campaign.time_based_drops.iter().find(|d| d.id == drop_id) {
                                             // Found it!
                                             let progress_percentage = (current_minutes as f32 / required_minutes as f32) * 100.0;
-                                            
+
                                             let estimated_completion = if current_minutes > 0 && current_minutes < required_minutes {
                                                 let remaining_minutes = required_minutes - current_minutes;
                                                 Some(Utc::now() + chrono::Duration::minutes(remaining_minutes as i64))
                                             } else {
                                                 None
                                             };
-                                            
+
                                             // Determine drop name
                                             let drop_name = if let Some(benefit) = drop.benefit_edges.first() {
                                                 benefit.name.clone()
@@ -184,7 +184,7 @@ impl MiningService {
 
                                             // Get drop image from benefit_edges
                                             let drop_image = drop.benefit_edges.first().map(|b| b.image_url.clone());
-                                            
+
                                             found_drop_info = Some(CurrentDropInfo {
                                                 drop_id: drop.id.clone(),
                                                 drop_name,
@@ -199,17 +199,17 @@ impl MiningService {
                                             break;
                                         }
                                     }
-                                    
+
                                     if let Some(new_drop_info) = found_drop_info {
                                         debug!("✅ Found metadata for mismatched drop: {} ({})", new_drop_info.drop_name, new_drop_info.game_name);
-                                        
+
                                         // ONLY update current_drop if this is a mineable drop (required_minutes > 0)
                                         // Subscription drops (0 required minutes) should NOT override the current mining target
                                         if new_drop_info.required_minutes > 0 {
                                             let mut status = mining_status.write().await;
                                             status.current_drop = Some(new_drop_info);
                                             status.last_update = Utc::now();
-                                            
+
                                             // Emit
                                             let current_status = status.clone();
                                             drop(status);
@@ -227,10 +227,10 @@ impl MiningService {
                         } else {
                             debug!("⚠️ No current_drop in mining status during update. Attempting to recover...");
                              drop(status); // Release lock
-                             
+
                             // Same recovery logic as above
                             let campaigns_result = drops_service.lock().await.get_all_active_campaigns_cached().await;
-                            
+
                              if let Ok(campaigns) = campaigns_result {
                                 // Search for the drop
                                 let mut found_drop_info = None;
@@ -242,7 +242,7 @@ impl MiningService {
                                         } else {
                                             drop.name.clone()
                                         };
-                                        
+
                                         let estimated_completion = if current_minutes > 0 && current_minutes < required_minutes {
                                              let remaining_minutes = required_minutes - current_minutes;
                                              Some(Utc::now() + chrono::Duration::minutes(remaining_minutes as i64))
@@ -252,7 +252,7 @@ impl MiningService {
 
                                         // Get drop image from benefit_edges
                                         let drop_image = drop.benefit_edges.first().map(|b| b.image_url.clone());
-                                        
+
                                         found_drop_info = Some(CurrentDropInfo {
                                             drop_id: drop.id.clone(),
                                             drop_name,
@@ -267,17 +267,17 @@ impl MiningService {
                                         break;
                                     }
                                 }
-                                
+
                                 if let Some(new_drop_info) = found_drop_info {
                                     debug!("✅ Recovered drop info from scratch: {} ({})", new_drop_info.drop_name, new_drop_info.game_name);
-                                    
+
                                     // ONLY update current_drop if this is a mineable drop (required_minutes > 0)
                                     // Subscription drops (0 required minutes) should NOT be set as current mining target
                                     if new_drop_info.required_minutes > 0 {
                                         let mut status = mining_status.write().await;
                                         status.current_drop = Some(new_drop_info);
                                         status.last_update = Utc::now();
-                                        
+
                                          // Emit
                                         let current_status = status.clone();
                                         drop(status);
@@ -407,7 +407,6 @@ impl MiningService {
         let eligible_channels = self.eligible_channels.clone();
         let is_running = self.is_running.clone();
         let cached_user_id = self.cached_user_id.clone();
-        let cached_spade_url = self.cached_spade_url.clone();
 
         // Spawn the mining loop for a specific campaign with a specific channel
         tokio::spawn(async move {
@@ -578,7 +577,6 @@ impl MiningService {
                                 let settings_clone = settings.clone();
                                 let eligible_channels_clone = eligible_channels.clone();
                                 let cached_user_id_clone = cached_user_id.clone();
-                                let cached_spade_url_clone = cached_spade_url.clone();
 
                                 tokio::spawn(async move {
                                     let mut current_channel = best_channel_clone;
@@ -604,7 +602,6 @@ impl MiningService {
                                             &current_broadcast_id,
                                             &token_clone,
                                             &cached_user_id_clone,
-                                            &cached_spade_url_clone,
                                         )
                                         .await
                                         {
@@ -670,18 +667,6 @@ impl MiningService {
                                                                         .write()
                                                                         .await;
                                                                 *eligible = fresh_channels.clone();
-                                                            }
-
-                                                            // Clear cached spade URL when switching channels (channel-specific)
-                                                            {
-                                                                let mut cached =
-                                                                    cached_spade_url_clone
-                                                                        .write()
-                                                                        .await;
-                                                                *cached = None;
-                                                                debug!(
-                                                                    "🗑️ Cleared cached spade URL on channel switch"
-                                                                );
                                                             }
 
                                                             {
@@ -779,7 +764,7 @@ impl MiningService {
                                             let status = mining_status_poll.read().await;
                                             if let Some(ref channel) = status.current_channel {
                                                 if channel.game_name != game_name_session {
-                                                    debug!("🛑 Stopping inventory polling loop for {} (switched to {})", 
+                                                    debug!("🛑 Stopping inventory polling loop for {} (switched to {})",
                                                         game_name_session, channel.game_name);
                                                     break;
                                                 }
@@ -840,14 +825,14 @@ impl MiningService {
 
                                                         // Skip subscription drops (0 required minutes) - they can't be mined
                                                         if required_minutes == 0 {
-                                                            debug!("📊 Skipping subscription drop: {} (0 required minutes)", 
+                                                            debug!("📊 Skipping subscription drop: {} (0 required minutes)",
                                                                 time_drop.name);
                                                             continue;
                                                         }
 
                                                         // Skip drops that are already complete (100%+)
                                                         if current_minutes >= required_minutes {
-                                                            debug!("📊 Skipping completed drop: {} ({}/{} minutes)", 
+                                                            debug!("📊 Skipping completed drop: {} ({}/{} minutes)",
                                                                 time_drop.name, current_minutes, required_minutes);
                                                             continue;
                                                         }
@@ -876,7 +861,7 @@ impl MiningService {
                                                                 0.0
                                                             };
 
-                                                        debug!("📊 Inventory poll: {}/{} minutes for {} ({}) [{:.1}%]", 
+                                                        debug!("📊 Inventory poll: {}/{} minutes for {} ({}) [{:.1}%]",
                                                             current_minutes, required_minutes, drop_name, time_drop.id, progress_percentage);
 
                                                         all_drops_with_progress.push((
@@ -918,7 +903,7 @@ impl MiningService {
                                                                 )
                                                             };
 
-                                                        debug!("📊 [Fallback] Including drop with 0 progress: {} (0/{} minutes)", 
+                                                        debug!("📊 [Fallback] Including drop with 0 progress: {} (0/{} minutes)",
                                                             drop_name, required_minutes);
 
                                                         all_drops_with_progress.push((
@@ -1005,7 +990,7 @@ impl MiningService {
                                                             });
                                                         status.last_update = chrono::Utc::now();
 
-                                                        debug!("✅ [Inventory] Set current_drop to HIGHEST progress: {} ({}/{} = {:.1}%)", 
+                                                        debug!("✅ [Inventory] Set current_drop to HIGHEST progress: {} ({}/{} = {:.1}%)",
                                                             drop_name, current_minutes, required_minutes, progress_percentage);
 
                                                         let current_status = status.clone();
@@ -1169,7 +1154,6 @@ impl MiningService {
         let eligible_channels = self.eligible_channels.clone();
         let is_running = self.is_running.clone();
         let cached_user_id = self.cached_user_id.clone();
-        let cached_spade_url = self.cached_spade_url.clone();
 
         // Spawn the mining loop for a specific campaign
         tokio::spawn(async move {
@@ -1426,7 +1410,6 @@ impl MiningService {
                                 let settings_clone = settings.clone();
                                 let eligible_channels_clone = eligible_channels.clone();
                                 let cached_user_id_clone = cached_user_id.clone();
-                                let cached_spade_url_clone = cached_spade_url.clone();
                                 let watch_session_channel = best_channel.name.clone(); // Track this session's channel
 
                                 tokio::spawn(async move {
@@ -1452,7 +1435,7 @@ impl MiningService {
                                                 if mining_channel.game_name
                                                     != current_channel.game_name
                                                 {
-                                                    debug!("🛑 Stopping watch payload loop for {} (switched to {})", 
+                                                    debug!("🛑 Stopping watch payload loop for {} (switched to {})",
                                                         watch_session_channel, mining_channel.game_name);
                                                     break;
                                                 }
@@ -1467,7 +1450,6 @@ impl MiningService {
                                             &current_broadcast_id,
                                             &token_clone,
                                             &cached_user_id_clone,
-                                            &cached_spade_url_clone,
                                         )
                                         .await
                                         {
@@ -1536,18 +1518,6 @@ impl MiningService {
                                                                         .write()
                                                                         .await;
                                                                 *eligible = fresh_channels.clone();
-                                                            }
-
-                                                            // Clear cached spade URL when switching channels (channel-specific)
-                                                            {
-                                                                let mut cached =
-                                                                    cached_spade_url_clone
-                                                                        .write()
-                                                                        .await;
-                                                                *cached = None;
-                                                                debug!(
-                                                                    "🗑️ Cleared cached spade URL on channel switch"
-                                                                );
                                                             }
 
                                                             // Update mining status with new channel
@@ -1651,7 +1621,7 @@ impl MiningService {
                                             let status = mining_status_poll.read().await;
                                             if let Some(ref channel) = status.current_channel {
                                                 if channel.game_name != game_name_session {
-                                                    debug!("🛑 Stopping inventory polling loop for {} (switched to {})", 
+                                                    debug!("🛑 Stopping inventory polling loop for {} (switched to {})",
                                                         game_name_session, channel.game_name);
                                                     break;
                                                 }
@@ -1720,7 +1690,7 @@ impl MiningService {
                                                         if required_minutes > 0
                                                             && current_minutes >= required_minutes
                                                         {
-                                                            debug!("📊 Skipping completed drop: {} ({}/{} minutes)", 
+                                                            debug!("📊 Skipping completed drop: {} ({}/{} minutes)",
                                                                 time_drop.name, current_minutes, required_minutes);
                                                             continue;
                                                         }
@@ -1750,7 +1720,7 @@ impl MiningService {
                                                                 0.0
                                                             };
 
-                                                        debug!("📊 Inventory poll: {}/{} minutes for {} ({}) [{:.1}%]", 
+                                                        debug!("📊 Inventory poll: {}/{} minutes for {} ({}) [{:.1}%]",
                                                             current_minutes, required_minutes, drop_name, time_drop.id, progress_percentage);
 
                                                         all_drops_with_progress.push((
@@ -1792,7 +1762,7 @@ impl MiningService {
                                                                 )
                                                             };
 
-                                                        debug!("📊 [Fallback] Including drop with 0 progress: {} (0/{} minutes)", 
+                                                        debug!("📊 [Fallback] Including drop with 0 progress: {} (0/{} minutes)",
                                                             drop_name, required_minutes);
 
                                                         all_drops_with_progress.push((
@@ -1884,7 +1854,7 @@ impl MiningService {
                                                             });
                                                         status.last_update = chrono::Utc::now();
 
-                                                        debug!("✅ [Inventory] Set current_drop to HIGHEST progress: {} ({}/{} = {:.1}%)", 
+                                                        debug!("✅ [Inventory] Set current_drop to HIGHEST progress: {} ({}/{} = {:.1}%)",
                                                             drop_name, current_minutes, required_minutes, progress_percentage);
 
                                                         // Emit mining status update to frontend
@@ -2064,7 +2034,6 @@ impl MiningService {
         let eligible_channels = self.eligible_channels.clone();
         let is_running = self.is_running.clone();
         let cached_user_id = self.cached_user_id.clone();
-        let cached_spade_url = self.cached_spade_url.clone();
 
         // Spawn the mining loop
         tokio::spawn(async move {
@@ -2260,7 +2229,6 @@ impl MiningService {
                                 let token_clone = token.clone();
                                 let is_running_clone = is_running.clone();
                                 let cached_user_id_clone = cached_user_id.clone();
-                                let cached_spade_url_clone = cached_spade_url.clone();
 
                                 tokio::spawn(async move {
                                     let mut interval =
@@ -2280,7 +2248,6 @@ impl MiningService {
                                             &broadcast_id_clone,
                                             &token_clone,
                                             &cached_user_id_clone,
-                                            &cached_spade_url_clone,
                                         )
                                         .await
                                         {
@@ -2324,7 +2291,7 @@ impl MiningService {
                                             let status = mining_status_poll.read().await;
                                             if let Some(ref channel) = status.current_channel {
                                                 if channel.game_name != game_name_session {
-                                                    debug!("🛑 Stopping inventory polling loop for {} (auto-mining switched to {})", 
+                                                    debug!("🛑 Stopping inventory polling loop for {} (auto-mining switched to {})",
                                                         game_name_session, channel.game_name);
                                                     break;
                                                 }
@@ -2401,7 +2368,7 @@ impl MiningService {
                                                                     0.0
                                                                 };
 
-                                                            debug!("📊 [Auto-Mining] Inventory poll: {}/{} minutes for {} ({}) [{:.1}%]", 
+                                                            debug!("📊 [Auto-Mining] Inventory poll: {}/{} minutes for {} ({}) [{:.1}%]",
                                                                 current_minutes, required_minutes, drop_name, time_drop.id, progress_percentage);
 
                                                             all_drops_with_progress.push((
@@ -2489,7 +2456,7 @@ impl MiningService {
                                                             });
                                                         status.last_update = chrono::Utc::now();
 
-                                                        debug!("✅ [Auto-Mining] Set current_drop to HIGHEST progress: {} ({}/{} = {:.1}%)", 
+                                                        debug!("✅ [Auto-Mining] Set current_drop to HIGHEST progress: {} ({}/{} = {:.1}%)",
                                                             drop_name, current_minutes, required_minutes, progress_percentage);
 
                                                         let current_status = status.clone();
@@ -3186,29 +3153,26 @@ impl MiningService {
         Ok(None)
     }
 
-    /// Send watch payload to Twitch to progress drops
-    /// Uses the official spade.twitch.tv tracking endpoint (same as TwitchDropsMiner)
+    /// Send a minute-watched event via the `sendSpadeEvents` GraphQL mutation.
+    ///
+    /// The legacy `spade.twitch.tv/track` endpoint still returns 204 and
+    /// credits channel points but no longer credits drops; drop attribution
+    /// reads the GQL path. The inner watch event is gzip+base64 encoded
+    /// inside the mutation's `input.data` variable with `encoding: GZIP_B64`.
     async fn send_watch_payload(
         client: &Client,
         channel: &MiningChannel,
         broadcast_id: &str,
         token: &str,
         cached_user_id: &Arc<RwLock<Option<String>>>,
-        _cached_spade_url: &Arc<RwLock<Option<String>>>,
     ) -> Result<bool> {
-        // Use the official Twitch spade tracking endpoint
-        // This is the stable URL that doesn't expire (unlike video-edge segment URLs)
-        let spade_url = "https://spade.twitch.tv/track";
-
         // Get user ID (check cache first)
         let user_id = {
             let cached = cached_user_id.read().await;
             if let Some(id) = cached.as_ref() {
                 id.clone()
             } else {
-                drop(cached); // Release read lock before acquiring write lock
-
-                // Fetch user ID with retry logic
+                drop(cached);
                 let id = match Self::get_user_id_with_retry(client, token, 3).await {
                     Ok(id) => id,
                     Err(e) => {
@@ -3216,156 +3180,118 @@ impl MiningService {
                         return Ok(false);
                     }
                 };
-
-                // Cache it
                 let mut cached_write = cached_user_id.write().await;
                 *cached_write = Some(id.clone());
                 id
             }
         };
 
-        // Create the minute-watched payload (same as TwitchDropsMiner)
-        let payload_data = json!([{
+        let inner_payload = json!([{
             "event": "minute-watched",
             "properties": {
-                "broadcast_id": broadcast_id.to_string(),  // Use the actual broadcast ID
+                "broadcast_id": broadcast_id.to_string(),
                 "channel_id": channel.id.clone(),
                 "channel": channel.name.clone(),
+                "client_time": Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
+                "game": channel.game_name.clone(),
+                "game_id": channel.game_id.clone(),
                 "hidden": false,
+                "is_live": true,
                 "live": true,
-                "location": "channel",
                 "logged_in": true,
+                "minutes_logged": 1,
                 "muted": false,
-                "player": "site",
                 "user_id": user_id
             }
         }]);
 
-        // Minify and base64 encode the payload
-        let payload_str = serde_json::to_string(&payload_data)?;
-        let encoded = general_purpose::STANDARD.encode(payload_str.as_bytes());
+        // Minify (no whitespace) → gzip → base64
+        let payload_minified = serde_json::to_string(&inner_payload)?;
+        let mut gz = GzEncoder::new(Vec::new(), Compression::default());
+        gz.write_all(payload_minified.as_bytes())?;
+        let gzipped = gz.finish()?;
+        let g64 = general_purpose::STANDARD.encode(&gzipped);
 
-        // Send the watch payload with detailed error handling
+        let mutation = json!({
+            "query": "\n mutation SendEvents($input: SendSpadeEventsInput!) {\n sendSpadeEvents(input: $input) {\n statusCode\n}\n}\n",
+            "variables": {
+                "input": {
+                    "data": g64,
+                    "repository": "twilight",
+                    "encoding": "GZIP_B64"
+                }
+            }
+        });
+
+        debug!(
+            "🎯 [watch_payload/gql] channel={} channel_id={} broadcast_id={} game={} user_id={}",
+            channel.name, channel.id, broadcast_id, channel.game_name, user_id,
+        );
+
         let response_result = client
-            .post(spade_url)
-            .form(&[("data", encoded)])
-            .timeout(std::time::Duration::from_secs(15)) // Explicit 15 second timeout
+            .post("https://gql.twitch.tv/gql")
+            .header("Client-ID", CLIENT_ID)
+            .header("Authorization", format!("OAuth {}", token))
+            .header("Origin", "https://www.twitch.tv")
+            .header("Referer", "https://www.twitch.tv")
+            .header("Accept-Language", "en-US")
+            .json(&mutation)
+            .timeout(std::time::Duration::from_secs(15))
             .send()
             .await;
 
         match response_result {
             Ok(response) => {
-                let status = response.status();
-                if status.as_u16() == 204 {
-                    // Success - caller will print the message
-                    Ok(true)
-                } else {
-                    // Log detailed status info
-                    let status_code = status.as_u16();
-                    let response_text = response
-                        .text()
-                        .await
-                        .unwrap_or_else(|_| "Unable to read body".to_string());
+                let http_status = response.status();
+                if !http_status.is_success() {
                     debug!(
-                        "⚠️ Watch payload returned HTTP {} for {} - Response: {}",
-                        status_code,
-                        channel.name,
-                        if response_text.len() > 200 {
-                            &response_text[..200]
-                        } else {
-                            &response_text
-                        }
+                        "⚠️ Watch GQL HTTP {} for {}",
+                        http_status.as_u16(),
+                        channel.name
                     );
-
-                    // Log specific status codes for debugging
-                    match status_code {
-                        429 => debug!("   ⏱️ Rate limited by Twitch!"),
-                        401 | 403 => debug!("   🔐 Authentication/authorization issue"),
-                        404 => debug!("   🔍 Spade URL not found - may need to refresh"),
-                        500..=599 => debug!("   🔥 Twitch server error"),
-                        _ => {}
+                    return Ok(false);
+                }
+                // Twitch returns the mutation's reported `statusCode` inside
+                // `data.sendSpadeEvents.statusCode`; 204 = credited.
+                let body: serde_json::Value = response.json().await.unwrap_or(json!({}));
+                let inner_status = body
+                    .get("data")
+                    .and_then(|d| d.get("sendSpadeEvents"))
+                    .and_then(|s| s.get("statusCode"))
+                    .and_then(|v| v.as_i64());
+                match inner_status {
+                    Some(204) => Ok(true),
+                    Some(other) => {
+                        debug!(
+                            "⚠️ sendSpadeEvents inner statusCode={} for {} — body: {}",
+                            other,
+                            channel.name,
+                            serde_json::to_string(&body).unwrap_or_default()
+                        );
+                        Ok(false)
                     }
-
-                    Ok(false)
+                    None => {
+                        // No data.sendSpadeEvents — likely a GQL error block
+                        debug!(
+                            "⚠️ sendSpadeEvents missing statusCode for {} — body: {}",
+                            channel.name,
+                            serde_json::to_string(&body).unwrap_or_default()
+                        );
+                        Ok(false)
+                    }
                 }
             }
             Err(e) => {
-                // Detailed error classification
                 if e.is_timeout() {
-                    debug!(
-                        "⏱️ Watch payload TIMEOUT for {} - Request took too long",
-                        channel.name
-                    );
+                    debug!("⏱️ Watch GQL TIMEOUT for {}", channel.name);
                 } else if e.is_connect() {
-                    debug!(
-                        "🔌 Watch payload CONNECTION ERROR for {} - {}",
-                        channel.name, e
-                    );
-                } else if e.is_request() {
-                    debug!(
-                        "📤 Watch payload REQUEST ERROR for {} - {}",
-                        channel.name, e
-                    );
+                    debug!("🔌 Watch GQL CONNECT ERROR for {} - {}", channel.name, e);
                 } else {
-                    debug!("❌ Watch payload ERROR for {} - {}", channel.name, e);
+                    debug!("❌ Watch GQL ERROR for {} - {}", channel.name, e);
                 }
-
-                // Return error instead of Ok(false) so caller knows it was an actual error
-                Err(anyhow::anyhow!("Watch payload failed: {}", e))
+                Err(anyhow::anyhow!("Watch GQL failed: {}", e))
             }
         }
-    }
-
-    /// Extract spade URL from channel page (like TwitchDropsMiner does)
-    async fn get_spade_url(client: &Client, channel_name: &str) -> Result<String> {
-        let channel_url = format!("https://www.twitch.tv/{}", channel_name);
-
-        // Fetch the channel page HTML
-        let response = client
-            .get(&channel_url)
-            .header(
-                "User-Agent",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            )
-            .send()
-            .await?;
-
-        let html = response.text().await?;
-
-        // Try to find spade URL directly in the HTML (mobile view pattern)
-        let spade_pattern =
-            Regex::new(r#""spade_?url":\s*"(https://video-edge-[.\w\-/]+\.ts(?:\?[^"]*)?)"#)?;
-
-        if let Some(captures) = spade_pattern.captures(&html) {
-            if let Some(url) = captures.get(1) {
-                return Ok(url.as_str().to_string());
-            }
-        }
-
-        // If not found directly, look for settings JS file
-        let settings_pattern =
-            Regex::new(r#"src="(https://[\w.]+/config/settings\.[0-9a-f]{32}\.js)"#)?;
-
-        if let Some(captures) = settings_pattern.captures(&html) {
-            if let Some(settings_url) = captures.get(1) {
-                // Fetch the settings JS file
-                let settings_response = client.get(settings_url.as_str()).send().await?;
-
-                let settings_js = settings_response.text().await?;
-
-                // Look for spade URL in settings
-                if let Some(captures) = spade_pattern.captures(&settings_js) {
-                    if let Some(url) = captures.get(1) {
-                        return Ok(url.as_str().to_string());
-                    }
-                }
-            }
-        }
-
-        Err(anyhow::anyhow!(
-            "Could not find spade URL for channel {}",
-            channel_name
-        ))
     }
 
     /// Get user ID from token validation with retry logic

@@ -2,7 +2,7 @@ import { useEffect, useState, useRef, useCallback } from 'react';
 import { useAppStore, HomeTab } from '../stores/AppStore';
 import { createPortal } from 'react-dom';
 import { Search, ArrowLeft, Heart, Maximize2, X, Gift, Pickaxe, LayoutGrid, Flame, ArrowUpRight, Undo2, Users, User, Loader2, MessageSquare } from 'lucide-react';
-import { motion, LayoutGroup, AnimatePresence, useScroll, useTransform } from 'framer-motion';
+import { motion, LayoutGroup, AnimatePresence } from 'framer-motion';
 import { usemultiNookStore } from '../stores/multiNookStore';
 
 import { invoke } from '@tauri-apps/api/core';
@@ -426,19 +426,33 @@ const Home = () => {
     const [isSearchExpanded, setIsSearchExpanded] = useState(false);
     const searchInputRef = useRef<HTMLInputElement>(null);
 
+    const isMountedRef = useRef(true);
+    useEffect(() => {
+        return () => { isMountedRef.current = false; };
+    }, []);
+
     // Drops-enabled categories tracking (by game_id)
     const [dropsGameIds, setDropsGameIds] = useState<Map<string, DropCampaign>>(new Map());
     // Drops by game name (for stream cards which have game_name)
     const [dropsGameNames, setDropsGameNames] = useState<Map<string, DropCampaign>>(new Map());
 
     const scrollContainerRef = useRef<HTMLDivElement>(null);
-    const { scrollY } = useScroll({ container: scrollContainerRef });
-    
-    // Smooth scroll-linked math for the compact Top UI floating pill
-    const heroOpacity = useTransform(scrollY, [10, 80], [1, 0]);
-    // The floating Pill Title fades in strictly as the Hero finishes fading out
-    const compactTitleOpacity = useTransform(scrollY, [60, 100], [0, 1]);
-    const compactTitleY = useTransform(scrollY, [60, 100], [10, 0]);
+    const heroSentinelRef = useRef<HTMLDivElement>(null);
+    const [isScrolledPastHero, setIsScrolledPastHero] = useState(false);
+
+    useEffect(() => {
+        const container = scrollContainerRef.current;
+        const sentinel = heroSentinelRef.current;
+        if (!container || !sentinel) return;
+
+        const observer = new IntersectionObserver(
+            ([entry]) => setIsScrolledPastHero(!entry.isIntersecting),
+            { root: container, rootMargin: '0px', threshold: 0 }
+        );
+        observer.observe(sentinel);
+        return () => observer.disconnect();
+    }, []);
+
     const loadingRef = useRef(false);
     
     // Debounce ref for Hype Train status refresh
@@ -783,23 +797,25 @@ const Home = () => {
 
         invoke('get_streams_by_game', { gameId: category.id, cursor: null, limit: 40 })
             .then(res => {
+                if (!isMountedRef.current) return;
                 const [streams, cursor] = res as [TwitchStream[], string | null];
                 setCategoryStreams(streams);
                 setCategoryStreamsCursor(cursor);
                 setHasMoreCategoryStreams(!!cursor && streams.length > 0);
             })
             .catch(e => {
+                if (!isMountedRef.current) return;
                 Logger.error('Failed to load category streams:', e);
                 setCategoryStreams([]);
                 setCategoryStreamsCursor(null);
                 setHasMoreCategoryStreams(false);
             })
-            .finally(() => setIsLoadingCategoryStreams(false));
+            .finally(() => { if (isMountedRef.current) setIsLoadingCategoryStreams(false); });
 
         invoke('get_category_info', { gameName: category.name })
-            .then(details => setCategoryDetails(details as CategoryInfo | null))
-            .catch(e => Logger.error('Failed to load category details:', e))
-            .finally(() => setIsLoadingCategoryDetails(false));
+            .then(details => { if (isMountedRef.current) setCategoryDetails(details as CategoryInfo | null); })
+            .catch(e => { if (isMountedRef.current) Logger.error('Failed to load category details:', e); })
+            .finally(() => { if (isMountedRef.current) setIsLoadingCategoryDetails(false); });
     };
 
     // Load streams by game name when navigating from badge overlay (category has no ID)
@@ -819,23 +835,25 @@ const Home = () => {
 
         invoke('get_streams_by_game_name', { gameName: gameName, excludeUserLogin: null, cursor: null, limit: 40 })
             .then(res => {
+                if (!isMountedRef.current) return;
                 const [streams, cursor] = res as [TwitchStream[], string | null];
                 setCategoryStreams(streams);
                 setCategoryStreamsCursor(cursor);
                 setHasMoreCategoryStreams(!!cursor && streams.length > 0);
             })
             .catch(e => {
+                if (!isMountedRef.current) return;
                 Logger.error('Failed to load category streams by name:', e);
                 setCategoryStreams([]);
                 setCategoryStreamsCursor(null);
                 setHasMoreCategoryStreams(false);
             })
-            .finally(() => setIsLoadingCategoryStreams(false));
+            .finally(() => { if (isMountedRef.current) setIsLoadingCategoryStreams(false); });
 
         invoke('get_category_info', { gameName: gameName })
-            .then(details => setCategoryDetails(details as CategoryInfo | null))
-            .catch(e => Logger.error('Failed to load category details:', e))
-            .finally(() => setIsLoadingCategoryDetails(false));
+            .then(details => { if (isMountedRef.current) setCategoryDetails(details as CategoryInfo | null); })
+            .catch(e => { if (isMountedRef.current) Logger.error('Failed to load category details:', e); })
+            .finally(() => { if (isMountedRef.current) setIsLoadingCategoryDetails(false); });
     };
 
     // Effect to handle category view re-mount or navigation from badge overlay
@@ -850,18 +868,20 @@ const Home = () => {
                     setIsLoadingCategoryStreams(true);
                     invoke('get_streams_by_game', { gameId: selectedCategory.id, cursor: null, limit: 40 })
                         .then(res => {
+                            if (!isMountedRef.current) return;
                             const [streams, cursor] = res as [TwitchStream[], string | null];
                             setCategoryStreams(streams);
                             setCategoryStreamsCursor(cursor);
                             setHasMoreCategoryStreams(!!cursor && streams.length > 0);
                         })
                         .catch(e => {
+                            if (!isMountedRef.current) return;
                             Logger.error('Failed to load category streams:', e);
                             setCategoryStreams([]);
                             setCategoryStreamsCursor(null);
                             setHasMoreCategoryStreams(false);
                         })
-                        .finally(() => setIsLoadingCategoryStreams(false));
+                        .finally(() => { if (isMountedRef.current) setIsLoadingCategoryStreams(false); });
                 }
             } else if (selectedCategory.name) {
                 // Badge overlay navigation — category has no ID, load by name
@@ -1606,14 +1626,18 @@ const Home = () => {
                             </Tooltip>
 
                             {/* Tiny Category Pill - Dropping in playfully */}
-                            <motion.div
-                                style={{ opacity: compactTitleOpacity, y: compactTitleY }}
+                            <div
+                                style={{ 
+                                    opacity: isScrolledPastHero ? 1 : 0, 
+                                    transform: `translateY(${isScrolledPastHero ? 0 : 10}px)`,
+                                    transition: 'opacity 0.2s ease, transform 0.2s ease'
+                                }}
                                 className="h-[44px] glass-panel rounded-xl px-4 flex items-center shadow-lg pointer-events-auto bg-background/80 backdrop-blur-md border border-white/5"
                             >
                                 <span className="font-bold text-sm truncate max-w-[200px] sm:max-w-[400px]">
                                     {selectedCategory.name}
                                 </span>
-                            </motion.div>
+                            </div>
                         </div>
                         
                         {/* Return to Stream Button (In Category Mode) */}
@@ -1633,8 +1657,10 @@ const Home = () => {
                 
                 {/* NATURAL SCROLLING HERO BANNER */}
                 {activeTab === 'category' && selectedCategory && (
-                    <motion.div 
-                        style={{ opacity: heroOpacity }}
+                    <>
+                    <div ref={heroSentinelRef} className="h-px w-full -mt-px pointer-events-none" aria-hidden="true" />
+                    <div 
+                        style={{ opacity: isScrolledPastHero ? 0 : 1, transition: 'opacity 0.15s ease' }}
                         className="flex gap-4 sm:gap-6 w-full max-w-[900px] items-start pb-6 mt-2 ml-[56px] relative z-10"
                     >
                         {/* Hero Box Art */}
@@ -1755,7 +1781,8 @@ const Home = () => {
                                 )}
                             </div>
                         </div>
-                    </motion.div>
+                    </div>
+                    </>
                 )}
 
                 {/* Only show full LoadingWidget during initial app load, not user-initiated login */}
