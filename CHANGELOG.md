@@ -1,3 +1,10 @@
+## [7.2.2] - 2026-05-07
+### 🐛 Bug Fixes
+- Fullscreen now fills the entire display when the app window isn't maximized
+- Fixed blue border / chrome leak when re-entering fullscreen from a maximized window
+- Window correctly returns to maximized after exiting fullscreen, no more drift off-screen
+- Closes #125 (items 1 and 2) — special thanks to @swott for filing the very first issue on the repo
+
 ## [7.2.1] - 2026-05-07
 ### 🐛 Bug Fixes
 - Fullscreen now fills the entire display when the app window isn't maximized
@@ -1119,4 +1126,5 @@ ATTENTION: ALL USERS LOG OUT OF TWITCH THEN LOG BACK IN FOR SOME CHANGES OT TAKE
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
