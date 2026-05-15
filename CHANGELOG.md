@@ -1,3 +1,19 @@
+## [7.3.0] - 2026-05-15
+### ✨ Features
+- **Enhanced Streaming Options**: You can now enable support for h265 and AV1 codecs, unlocking higher quality tiers (like 1440p and 2160p) on compatible streams!
+- **Improved Quality Selection**: The player now accurately reflects the actual quality being streamed, even if Streamlink had to automatically select a different one due to availability. You'll receive a notification if a fallback occurs.
+- **Quality Fallback Notifications**: Get informed when the stream automatically switches to a different quality than your preference due to stream limitations.
+
+### 🐛 Bug Fixes
+- Corrected an issue where Streamlink might hang indefinitely when trying to resolve stream URLs under certain network conditions. Thanks to <@Rainy> on Discord for the feedback!
+- Ensured that Streamlink uses anonymous authentication when starting multi-viewer sessions to prevent potential conflicts.
+- Resolved a bug where certain Twitch badges or emotes might not render correctly in chat.
+- Ensured that the correct VOD is selected when viewing offline chat for a streamer.
+
+### 🔧 Maintenance
+- Streamlined how Twitch authentication tokens are managed, improving reliability and security.
+- Updated dependencies and improved internal logging for better diagnostics.
+
 ## [7.2.2] - 2026-05-07
 ### 🐛 Bug Fixes
 - Fullscreen now fills the entire display when the app window isn't maximized
@@ -1126,5 +1142,6 @@ ATTENTION: ALL USERS LOG OUT OF TWITCH THEN LOG BACK IN FOR SOME CHANGES OT TAKE
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
