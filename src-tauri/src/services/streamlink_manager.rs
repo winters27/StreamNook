@@ -662,8 +662,14 @@ impl StreamlinkManager {
         Ok(qualities)
     }
 
-    /// Try the requested quality; on a quality-not-found error, fall back to the
-    /// closest available quality. Returns (stream_url, actual_quality_used).
+    /// Try the requested quality; if it fails AND the requested quality isn't
+    /// in the stream's available list, fall back to the closest available.
+    /// Returns (stream_url, actual_quality_used).
+    ///
+    /// Why probe instead of pattern-match the error: Streamlink's error wording
+    /// for "quality not available" varies by plugin version, ad-block state,
+    /// and TTV.LOL pre-filtering. Probing the master playlist gives an
+    /// authoritative answer instead of relying on stderr substrings.
     pub async fn get_stream_url_with_fallback(
         url: &str,
         quality: &str,
@@ -677,13 +683,9 @@ impl StreamlinkManager {
         {
             Ok(stream_url) => Ok((stream_url, quality.to_string())),
             Err(err) => {
-                let err_text = format!("{:#}", err).to_lowercase();
-                let is_quality_error = err_text.contains("could not be found")
-                    || err_text.contains("specified stream");
-                if !is_quality_error {
-                    return Err(err);
-                }
-
+                // Probe what's actually offered. If the probe itself fails
+                // (network, auth, plugin error), the original failure was
+                // almost certainly the same root cause: bubble it up.
                 let available = match Self::get_qualities_authed(
                     url,
                     path,
@@ -695,6 +697,17 @@ impl StreamlinkManager {
                     Ok(q) if !q.is_empty() => q,
                     _ => return Err(err),
                 };
+
+                // If the requested quality IS in the available list, the
+                // failure wasn't "quality unavailable"; it was something else
+                // (transient network, manifest fetch, etc.). Don't silently
+                // downgrade — surface the real error.
+                let already_offered = available
+                    .iter()
+                    .any(|q| q.eq_ignore_ascii_case(quality));
+                if already_offered {
+                    return Err(err);
+                }
 
                 let closest = match pick_closest_quality(quality, &available) {
                     Some(c) if !c.eq_ignore_ascii_case(quality) => c,
