@@ -3,6 +3,7 @@ use crate::services::drops_service::DropsService;
 use crate::services::emote_service::EmoteService;
 use crate::services::layout_service::LayoutService;
 use crate::services::mining_service::MiningService;
+use crate::services::twitch_auth_service::TwitchAuthService;
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 use tokio::sync::{Mutex as TokioMutex, RwLock};
@@ -86,6 +87,22 @@ pub struct StreamlinkSettings {
     /// Whether proxy optimization has been run at least once (replaces volatile localStorage flag)
     #[serde(default)]
     pub proxy_optimized_once: bool,
+    /// Request Twitch's Enhanced Broadcasting variants (h265 + AV1 in addition
+    /// to h264). On channels using Enhanced Broadcasting this unlocks 1440p60
+    /// (AV1) and 720p60 (HEVC) tiers that are otherwise hidden — h264-only
+    /// requests are served just the 480p fallback there. Default on.
+    /// See [[Brain/references/Streamlink_Enhanced_Broadcasting]].
+    #[serde(default = "default_true")]
+    pub enhanced_codecs: bool,
+    /// Pass the viewer's Twitch OAuth token to Streamlink so the master
+    /// playlist returns QUAD_HD / ULTRA_HD tiers (1440p / 2160p). Opt-in
+    /// because Streamlink's client-integrity fallback can hang on bad tokens.
+    /// We pre-validate against `id.twitch.tv/oauth2/validate` and skip the
+    /// header if the check fails. NOTE: TTVLOL `--twitch-proxy-playlist`
+    /// silently ignores this header — turn off proxy routing for the auth
+    /// to take effect (loses ad-blocking).
+    #[serde(default)]
+    pub use_twitch_auth: bool,
 }
 
 impl Default for StreamlinkSettings {
@@ -103,6 +120,8 @@ impl Default for StreamlinkSettings {
             last_applied_proxy_id: None,
             proxy_auto_optimized: true,
             proxy_optimized_once: false,
+            enhanced_codecs: true,
+            use_twitch_auth: false,
         }
     }
 }
@@ -365,4 +384,8 @@ pub struct AppState {
     pub background_service: Arc<TokioMutex<BackgroundService>>,
     pub layout_service: Arc<LayoutService>,
     pub emote_service: Arc<RwLock<EmoteService>>,
+    /// Single owner of the Twitch web auth cookie. All code that previously
+    /// scraped the cookie via `webview_cookie::read_twitch_web_auth_token`
+    /// goes through this service instead.
+    pub twitch_auth: TwitchAuthService,
 }

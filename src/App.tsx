@@ -554,6 +554,26 @@ function App() {
     checkForFirstTimeSetup();
   }, [settings.streamlink_path, settings.setup_complete, updateSettings]);
 
+  // Ctrl+Shift+C → force-open the changelog overlay against the current
+  // app version (fetches real release notes from GitHub). Useful for
+  // re-reading what's new without juggling last_seen_version in settings.
+  useEffect(() => {
+    const onKey = async (e: KeyboardEvent) => {
+      if (e.ctrlKey && e.shiftKey && (e.key === 'C' || e.key === 'c')) {
+        e.preventDefault();
+        try {
+          const currentVersion = await invoke<string>('get_current_app_version');
+          setChangelogVersion(currentVersion);
+          setShowChangelog(true);
+        } catch (err) {
+          Logger.error('[App] Failed to force-open changelog:', err);
+        }
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
   // Check if we need to show the changelog after an update (and force relogin if needed)
   useEffect(() => {
     const checkForVersionChange = async () => {

@@ -38,6 +38,8 @@ const PlayerSettings = () => {
     last_applied_proxy_id: undefined,
     proxy_auto_optimized: true,
     proxy_optimized_once: false,
+    enhanced_codecs: true,
+    use_twitch_auth: false,
   };
 
   const streamlink = settings.streamlink || streamlinkDefaults;
@@ -334,6 +336,40 @@ const PlayerSettings = () => {
           />
         </div>
 
+        {/* Modern codecs (h265 + AV1) */}
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <span className="text-sm font-medium text-textPrimary">Allow h265 + AV1 codecs</span>
+            <p className="text-xs text-textSecondary">Request AV1 and HEVC stream variants in addition to h264. Some Twitch channels ship more efficient encodings at the same resolution. Turn off if you see decode errors on older hardware.</p>
+          </div>
+          <Toggle
+            enabled={streamlink.enhanced_codecs ?? true}
+            onChange={() =>
+              updateSettings({
+                ...settings,
+                streamlink: { ...streamlink, enhanced_codecs: !(streamlink.enhanced_codecs ?? true) },
+              })
+            }
+          />
+        </div>
+
+        {/* Twitch login passthrough for 1440p / 2160p */}
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <span className="text-sm font-medium text-textPrimary">Use Twitch login for 1440p / Source</span>
+            <p className="text-xs text-textSecondary">Adds 1440p / 2160p to the quality menu on streams that broadcast in those tiers. When TTVLOL Proxy Routing is also on, both run together — 1080p and below come from the ad-free proxy, 1440p comes from your authenticated session.</p>
+          </div>
+          <Toggle
+            enabled={streamlink.use_twitch_auth ?? false}
+            onChange={() =>
+              updateSettings({
+                ...settings,
+                streamlink: { ...streamlink, use_twitch_auth: !(streamlink.use_twitch_auth ?? false) },
+              })
+            }
+          />
+        </div>
+
         {/* HLS Live Edge */}
         <div>
           <label className="block text-sm font-medium text-textPrimary mb-2">
@@ -576,16 +612,18 @@ const PlayerSettings = () => {
             }
             className="w-full glass-input text-textPrimary text-sm px-3 py-2"
           >
-            <option value="best">Best (Highest Available)</option>
-            <option value="1080p60">1080p 60fps</option>
-            <option value="1080p">1080p</option>
-            <option value="720p60">720p 60fps</option>
-            <option value="720p">720p</option>
-            <option value="480p">480p</option>
-            <option value="360p">360p</option>
-            <option value="160p">160p (Lowest)</option>
+            {/* Quality strings match Twitch's player UI. The Rust closest-match
+                picker + equivalence rule reconcile naming with whatever string
+                Streamlink actually returns for the channel (`480p` vs `480p30`
+                etc. — both show up in the wild). */}
+            <option value="best">Auto (Source)</option>
+            <option value="1440p60">1440p60</option>
+            <option value="1080p60">1080p60</option>
+            <option value="720p60">720p60</option>
+            <option value="480p30">480p30</option>
+            <option value="360p30">360p30</option>
+            <option value="160p30">160p30</option>
             <option value="audio_only">Audio Only</option>
-            <option value="worst">Worst (Fallback)</option>
           </select>
           <p className="text-xs text-textSecondary mt-1">
             Quality to use when starting streams (you can change quality anytime using the player controls)

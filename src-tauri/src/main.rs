@@ -181,6 +181,9 @@ fn main() {
                 drops_service.clone(),
             )));
 
+            let twitch_auth =
+                services::twitch_auth_service::TwitchAuthService::new(app_handle.clone());
+
             let app_state = AppState {
                 settings: settings_arc,
                 drops_service,
@@ -188,6 +191,7 @@ fn main() {
                 background_service: background_service.clone(),
                 layout_service: layout_service.clone(),
                 emote_service: emote_service.clone(),
+                twitch_auth,
             };
 
             // Clone the app_state before managing it

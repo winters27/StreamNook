@@ -1,21 +1,59 @@
 import React from 'react';
 
 /**
+ * Color palette for `<@username>` mention pills. Each entry is a Tailwind
+ * class trio (bg / border / text) so the JIT picks them up via static string
+ * scanning — do NOT build these class names dynamically.
+ *
+ * Discord assigns role colors per user; we do the same idea by hashing the
+ * username so the same person always gets the same color across changelog
+ * entries while different reporters visually distinguish.
+ */
+const MENTION_PALETTE = [
+    { bg: 'bg-violet-500/20', border: 'border-violet-400/50', text: 'text-violet-200' },
+    { bg: 'bg-pink-500/20',   border: 'border-pink-400/50',   text: 'text-pink-200' },
+    { bg: 'bg-cyan-500/20',   border: 'border-cyan-400/50',   text: 'text-cyan-200' },
+    { bg: 'bg-emerald-500/20',border: 'border-emerald-400/50',text: 'text-emerald-200' },
+    { bg: 'bg-amber-500/20',  border: 'border-amber-400/50',  text: 'text-amber-200' },
+    { bg: 'bg-rose-500/20',   border: 'border-rose-400/50',   text: 'text-rose-200' },
+    { bg: 'bg-sky-500/20',    border: 'border-sky-400/50',    text: 'text-sky-200' },
+    { bg: 'bg-fuchsia-500/20',border: 'border-fuchsia-400/50',text: 'text-fuchsia-200' },
+];
+
+const pickMentionPalette = (username: string) => {
+    // djb2-ish hash so same username -> same color across reloads.
+    let h = 5381;
+    for (let i = 0; i < username.length; i++) {
+        h = ((h << 5) + h + username.charCodeAt(i)) >>> 0;
+    }
+    return MENTION_PALETTE[h % MENTION_PALETTE.length];
+};
+
+/**
  * Parse inline markdown formatting and return React elements
- * Handles: **bold**, *italic*, `code`, and [links](url)
+ * Handles: **bold**, *italic*, `code`, [links](url), and <@username> mentions
  */
 export const parseInlineMarkdown = (text: string): React.ReactNode[] => {
     const elements: React.ReactNode[] = [];
     let currentIndex = 0;
     let keyIndex = 0;
 
-    // Combined regex for all inline markdown patterns
-    // Order matters: **bold** before *italic* to handle ** correctly
+    // Combined regex for all inline markdown patterns.
+    // Order matters:
+    //   - `code` first so text inside backticks is consumed before anything
+    //     else (otherwise `<@user>` inside backticks renders BOTH as a code
+    //     pill AND a mention pill — the overlap check only catches
+    //     "starts-inside" cases).
+    //   - `link` next so `[text](url)` wins over any sub-tokens.
+    //   - `**bold**` before `*italic*` so `**` isn't eaten by italic.
+    //   - `mention` last so it only renders when not nested inside other
+    //     formatting (e.g. inside `**<@x>**` the bold wins, no double pill).
     const patterns = [
-        { regex: /\*\*(.+?)\*\*/g, type: 'bold' },
-        { regex: /\*(.+?)\*/g, type: 'italic' },
         { regex: /`(.+?)`/g, type: 'code' },
         { regex: /\[(.+?)\]\((.+?)\)/g, type: 'link' },
+        { regex: /\*\*(.+?)\*\*/g, type: 'bold' },
+        { regex: /\*(.+?)\*/g, type: 'italic' },
+        { regex: /<@([\w][\w-]*)>/g, type: 'mention' },
     ];
 
     // Find all matches and their positions
@@ -98,6 +136,28 @@ export const parseInlineMarkdown = (text: string): React.ReactNode[] => {
                     )
                 );
                 break;
+            case 'mention': {
+                // Discord-style credit pill. Used in changelog entries to thank
+                // community members who reported issues (e.g. `<@Rainy>`).
+                // Color is hashed from the username so each person stays
+                // consistent across entries; different people get different
+                // pills. See MENTION_PALETTE above.
+                const palette = pickMentionPalette(match.content);
+                elements.push(
+                    React.createElement(
+                        'span',
+                        {
+                            key: `mention-${keyIndex++}`,
+                            className:
+                                'inline-flex items-center px-2 py-0.5 rounded-full ' +
+                                `${palette.bg} border ${palette.border} ${palette.text} ` +
+                                'text-xs font-medium align-baseline',
+                        },
+                        `@${match.content}`
+                    )
+                );
+                break;
+            }
         }
 
         currentIndex = match.index + match.length;

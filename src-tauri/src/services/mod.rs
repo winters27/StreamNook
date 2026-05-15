@@ -2,6 +2,7 @@ pub mod background_service;
 pub mod badge_polling_service;
 pub mod badge_service;
 
+pub mod auth_proxy;
 pub mod cache_service;
 pub mod channel_points_service;
 pub mod channel_points_websocket_service;
@@ -28,6 +29,7 @@ pub mod proxy_health;
 pub mod seventv_auth_service;
 pub mod stream_server;
 pub mod streamlink_manager;
+pub mod twitch_auth_service;
 pub mod twitch_service;
 pub mod universal_cache_service;
 pub mod user_message_history_service;

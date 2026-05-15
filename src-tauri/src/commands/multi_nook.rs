@@ -120,13 +120,15 @@ pub async fn start_multi_nook(
     // Get the effective Streamlink path
     let streamlink_path = StreamlinkManager::get_effective_path(custom_path.as_deref());
 
-    // Start Streamlink to get the HLS stream URL
+    // Start Streamlink to get the HLS stream URL (anonymous — see
+    // start_stream comment for why we don't auto-pass the OAuth token).
     let stream_url = StreamlinkManager::get_stream_url_with_settings(
         &url,
         &quality,
         &streamlink_path,
         &streamlink_args,
         &streamlink_settings,
+        None,
     )
     .await
     .map_err(|e| e.to_string())?;

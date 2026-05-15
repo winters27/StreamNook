@@ -34,6 +34,14 @@ export interface StreamlinkSettings {
   proxy_auto_optimized?: boolean;
   /** Whether proxy optimization has been run at least once */
   proxy_optimized_once?: boolean;
+  /** Request h265 + AV1 in addition to h264. Unlocks Twitch Enhanced
+   *  Broadcasting tiers (1440p60 AV1, 720p60 HEVC). Default on. */
+  enhanced_codecs?: boolean;
+  /** Pass the viewer's Twitch OAuth token to Streamlink so the master playlist
+   *  exposes QUAD_HD/ULTRA_HD tiers. Pre-validated server-side. Opt-in because
+   *  a rejected token sends Streamlink down its client-integrity Chromium
+   *  fallback. Has no effect when `use_proxy` is on — TTVLOL strips the header. */
+  use_twitch_auth?: boolean;
 }
 
 export type RecoveryMode = 'Automatic' | 'Relaxed' | 'ManualOnly';

@@ -4,7 +4,27 @@ import { listen } from '@tauri-apps/api/event';
 import type { Settings, TwitchUser, TwitchStream, UserInfo, TwitchCategory, HypeTrainData, TwitchVideo, ModLogEvent } from '../types';
 import { trackActivity, isStreamlinkError, sendStreamlinkDiagnostics } from '../services/logService';
 import { Logger, setDiagnosticsEnabled } from '../utils/logger';
+import { qualitiesEquivalent } from '../utils/quality';
 import { upsertUser } from '../services/supabaseService';
+
+type StreamStartResult = { url: string; quality: string };
+
+/**
+ * Notify the user when Streamlink had to fall back to a different quality
+ * because the saved preference wasn't offered for this stream. Silent when
+ * the two are equivalent (e.g. user has "480" saved and the channel calls
+ * its 480 stream "480p30") — that's a naming-convention difference, not a
+ * real quality change.
+ */
+function maybeToastQualityFallback(
+  requested: string,
+  actual: string,
+  addToast: (msg: string, type: 'info' | 'success' | 'warning' | 'error' | 'live') => void,
+) {
+  if (qualitiesEquivalent(requested, actual)) return;
+  Logger.info(`[Stream] Quality fallback: ${requested} -> ${actual}`);
+  addToast(`Quality "${requested}" unavailable, using "${actual}"`, 'info');
+}
 
 export interface Toast {
   id: number;
@@ -107,6 +127,10 @@ interface AppState {
   hasMoreRecommended: boolean;
   isLoadingMore: boolean;
   streamUrl: string | null;
+  // The quality Streamlink is actually serving right now (canonical name from
+  // the playlist). May differ from `settings.quality` if the saved preference
+  // wasn't offered for this stream and we fell back to the closest match.
+  activeQuality: string | null;
   currentStream: TwitchStream | null;
   currentMediaType: 'live' | 'clip' | 'video' | 'offline_chat' | null;
   originalMediaUrl: string | null;
@@ -281,6 +305,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   hasMoreRecommended: true,
   isLoadingMore: false,
   streamUrl: null,
+  activeQuality: null,
   currentStream: null,
   currentMediaType: null,
   originalMediaUrl: null,
@@ -503,7 +528,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
 
       // Clear current stream state
-      set({ streamUrl: null, currentStream: null, currentMediaType: null });
+      set({ streamUrl: null, activeQuality: null, currentStream: null, currentMediaType: null });
 
       // Step 3: Find the next best stream based on mode
       const switchMode = settings.auto_switch?.mode ?? 'same_category';
@@ -920,7 +945,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         return;
       }
 
-      const streamUrl = await invoke('start_stream', { url: url, quality: settings.quality }) as string;
+      const result = await invoke<StreamStartResult>('start_stream', { url: url, quality: settings.quality });
+      maybeToastQualityFallback(settings.quality, result.quality, get().addToast);
       const parsedInfo: TwitchStream = {
         id: info.id || '',
         user_id: info.broadcaster_id || info.user_id || '',
@@ -934,9 +960,10 @@ export const useAppStore = create<AppState>((set, get) => ({
         started_at: info.created_at || new Date().toISOString(),
       };
 
-      set({ 
-        streamUrl: streamUrl, 
-        currentStream: parsedInfo, 
+      set({
+        streamUrl: result.url,
+        activeQuality: result.quality,
+        currentStream: parsedInfo,
         currentMediaType: type,
         originalMediaUrl: url,
         isHomeActive: false,
@@ -948,7 +975,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     } catch (e: unknown) {
       Logger.error(`Failed to start ${type}:`, e);
       get().addToast(`Failed to load ${type}: ${String(e)}`, 'error');
-      set({ isHomeActive: true, currentMediaType: null, currentStream: null, streamUrl: null });
+      set({ isHomeActive: true, currentMediaType: null, currentStream: null, streamUrl: null, activeQuality: null });
     } finally {
       set({ isLoading: false });
     }
@@ -987,7 +1014,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         Logger.warn('Could not disconnect EventSub:', e);
       }
 
-      set({ streamUrl: null, currentStream: null, currentMediaType: null, currentHypeTrain: null, streamOriginCategory: null });
+      set({ streamUrl: null, activeQuality: null, currentStream: null, currentMediaType: null, currentHypeTrain: null, streamOriginCategory: null });
 
       // Update user context for error reporting (stream stopped)
       saveUserContextToLocalStorage(get().currentUser, null);
@@ -1041,11 +1068,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       const url = `https://twitch.tv/${channel}`;
       Logger.debug(`[Stream] Restarting: ${url} at quality: ${quality}`);
       
-      const newStreamUrl = await invoke<string>('start_stream', { url, quality });
-      Logger.debug('[Stream] Restarted successfully:', newStreamUrl);
-      
-      set({ streamUrl: newStreamUrl, currentStream: streamInfo });
-      
+      const result = await invoke<StreamStartResult>('start_stream', { url, quality });
+      Logger.debug('[Stream] Restarted successfully:', result.url);
+      maybeToastQualityFallback(quality, result.quality, get().addToast);
+
+      set({ streamUrl: result.url, activeQuality: result.quality, currentStream: streamInfo });
+
       // Show toast notification
       get().addToast('Stream restarted with new settings', 'success');
     } catch (e) {
@@ -1098,19 +1126,26 @@ export const useAppStore = create<AppState>((set, get) => ({
       const { currentMediaType, originalMediaUrl } = get();
       const targetUrl = (currentMediaType !== 'live' && originalMediaUrl) ? originalMediaUrl : `https://twitch.tv/${currentStream.user_login}`;
 
-      const url = await invoke('change_stream_quality', {
+      const result = await invoke<StreamStartResult>('change_stream_quality', {
         url: targetUrl,
         quality: quality
-      }) as string;
+      });
 
-      // Update settings to persist the quality choice
+      // Persist the user's choice (the *intent*), not the actually-played
+      // quality — next stream might offer the requested one even if this one
+      // didn't.
       const newSettings = { ...get().settings, quality: quality };
       await invoke('save_settings', { settings: newSettings });
 
-      set({ streamUrl: url, settings: newSettings, isLoading: false });
-      get().addToast(`Quality changed to ${quality}`, 'success');
-      Logger.debug('[Quality] Stream URL updated:', url);
-      Logger.debug('[Quality] Settings updated with new quality:', quality);
+      set({ streamUrl: result.url, activeQuality: result.quality, settings: newSettings, isLoading: false });
+      if (qualitiesEquivalent(quality, result.quality)) {
+        get().addToast(`Quality changed to ${result.quality}`, 'success');
+      } else {
+        Logger.info(`[Stream] Quality fallback: ${quality} -> ${result.quality}`);
+        get().addToast(`Quality "${quality}" unavailable, switched to "${result.quality}"`, 'info');
+      }
+      Logger.debug('[Quality] Stream URL updated:', result.url);
+      Logger.debug('[Quality] Settings updated with new quality preference:', quality);
     } catch (e) {
       Logger.error('Failed to change quality:', e);
       get().addToast(`Failed to change quality: ${e}`, 'error');
@@ -1135,7 +1170,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         return;
       }
 
-      const url = await invoke('start_stream', { url: `https://twitch.tv/${channel}`, quality: get().settings.quality }) as string;
+      const requestedQuality = get().settings.quality;
+      const result = await invoke<StreamStartResult>('start_stream', { url: `https://twitch.tv/${channel}`, quality: requestedQuality });
+      maybeToastQualityFallback(requestedQuality, result.quality, get().addToast);
 
       // Use the provided stream info, or find it from followed streams, or fetch it
       let info: TwitchStream;
@@ -1180,7 +1217,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
       }
 
-      set({ streamUrl: url, currentStream: info, currentMediaType: 'live', originalMediaUrl: null, isHomeActive: false });
+      set({ streamUrl: result.url, activeQuality: result.quality, currentStream: info, currentMediaType: 'live', originalMediaUrl: null, isHomeActive: false });
 
       // Save user context for error reporting
       saveUserContextToLocalStorage(get().currentUser, info);
@@ -1576,8 +1613,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       // Try to fetch the latest video for the streamer
       let latestVideoUrl: string | null = null;
       let resolvedStreamUrl: string | null = null;
+      let resolvedQuality: string | null = null;
       let streamContextForUI = { ...info };
-      
+
       if (info.user_id) {
         try {
           const videos = await invoke<TwitchVideo[]>('get_user_videos', {
@@ -1589,18 +1627,22 @@ export const useAppStore = create<AppState>((set, get) => ({
             const latestVod = videos[0];
             latestVideoUrl = `https://twitch.tv/videos/${latestVod.id}`;
             Logger.debug(`[Offline Chat] Found recent VOD for ${channel}: ${latestVideoUrl}`);
-            
-            // Enrich the stream UI context with accurate VOD metadata 
+
+            // Enrich the stream UI context with accurate VOD metadata
             streamContextForUI = {
               ...info,
               title: latestVod.title,
               started_at: latestVod.created_at,
               viewer_count: latestVod.view_count
             };
-            
+
             // Resolve the actual playback URL using Streamlink
             try {
-              resolvedStreamUrl = await invoke<string>('start_stream', { url: latestVideoUrl, quality: get().settings.quality });
+              const requestedQuality = get().settings.quality;
+              const result = await invoke<StreamStartResult>('start_stream', { url: latestVideoUrl, quality: requestedQuality });
+              resolvedStreamUrl = result.url;
+              resolvedQuality = result.quality;
+              maybeToastQualityFallback(requestedQuality, result.quality, get().addToast);
               Logger.debug(`[Offline Chat] Resolved VOD playback URL: ${resolvedStreamUrl}`);
             } catch (resolveError) {
               Logger.warn(`[Offline Chat] Could not resolve playback URL for VOD, falling back to banner:`, resolveError);
@@ -1611,12 +1653,13 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
       }
 
-      set({ 
-        streamUrl: resolvedStreamUrl || 'offline', 
-        currentStream: streamContextForUI, 
-        currentMediaType: 'offline_chat', 
+      set({
+        streamUrl: resolvedStreamUrl || 'offline',
+        activeQuality: resolvedQuality,
+        currentStream: streamContextForUI,
+        currentMediaType: 'offline_chat',
         originalMediaUrl: latestVideoUrl,
-        isHomeActive: false 
+        isHomeActive: false
       });
 
       // Connect chat

@@ -410,6 +410,7 @@ impl StreamlinkManager {
         path: &str,
         args: &str,
         settings: &crate::models::settings::StreamlinkSettings,
+        oauth_token: Option<&str>,
     ) -> Result<String> {
         // Debug logging to understand what's being passed
         debug!("[Streamlink] Path: '{}'", path);
@@ -515,6 +516,23 @@ impl StreamlinkManager {
             cmd.arg("--http-no-ssl-verify");
         }
 
+        // Allow h265/AV1 in addition to h264 — needed because 1440p on
+        // Enhanced Broadcasting channels is AV1-only.
+        if settings.enhanced_codecs {
+            cmd.arg("--twitch-supported-codecs=h264,h265,av1");
+        }
+
+        // Auth header → 1440p / 2160p tiers in the manifest.
+        // `--webbrowser-timeout=2` bounds the worst case if Twitch ever
+        // pushes streamlink into its client-integrity Chromium fallback.
+        if let Some(token) = oauth_token {
+            if !token.is_empty() {
+                cmd.arg("--twitch-api-header")
+                    .arg(format!("Authorization=OAuth {}", token));
+                cmd.arg("--webbrowser-timeout=2");
+            }
+        }
+
         // Add user-defined args (like ttvlol proxy args)
         // NOTE: We DON'T add settings.proxy_playlist separately because
         // the ttvlol args are already in `args` when ttvlol_plugin is enabled.
@@ -526,13 +544,19 @@ impl StreamlinkManager {
 
         debug!("[Streamlink] Executing command...");
 
-        // Add timeout to prevent hanging if Streamlink or proxy servers are unresponsive
-        // Use tokio::time::timeout to limit how long we wait for Streamlink
-        let timeout_duration = std::time::Duration::from_secs(30);
+        // Bound the wait so a hung Streamlink subprocess can't lock the UI. We
+        // pad on top of the user's `--stream-timeout` (default 60s) so
+        // Streamlink's own timeout fires first with a useful error message —
+        // the wrapper here only catches the case where Streamlink itself hangs
+        // past its own deadline. Floor of 45s for users who lowered the setting
+        // below what TTVLOL proxies typically need.
+        let wrapper_secs = (settings.stream_timeout as u64).saturating_add(15).max(45);
+        let timeout_duration = std::time::Duration::from_secs(wrapper_secs);
         let output = tokio::time::timeout(timeout_duration, cmd.output())
             .await
             .map_err(|_| anyhow::anyhow!(
-                "Streamlink timed out after 30 seconds. This may be due to slow proxy servers or network issues. Try disabling ttvlol plugin or check your network connection."
+                "Streamlink timed out after {} seconds. This may be due to slow proxy servers or network issues. Try disabling ttvlol plugin or check your network connection.",
+                wrapper_secs
             ))?
             .context("Failed to run Streamlink")?;
 
@@ -577,7 +601,7 @@ impl StreamlinkManager {
     ) -> Result<String> {
         // Use default settings for backwards compatibility
         let settings = crate::models::settings::StreamlinkSettings::default();
-        Self::get_stream_url_with_settings(url, quality, path, args, &settings).await
+        Self::get_stream_url_with_settings(url, quality, path, args, &settings, None).await
     }
 
     pub async fn get_stream_metadata(url: &str, path: &str) -> Result<StreamMetadata> {
@@ -599,16 +623,427 @@ impl StreamlinkManager {
     }
 
     pub async fn get_qualities(url: &str, path: &str) -> Result<Vec<String>> {
-        let output = Command::new(path).arg(url).arg("--json").output().await?;
+        Self::get_qualities_authed(url, path, None, true).await
+    }
+
+    /// Authed variant — passes the OAuth token and enhanced-codecs flag so the
+    /// returned quality list matches what start_stream can actually fetch.
+    /// Without these, the in-player quality menu won't even list 1440p / 2160p
+    /// because Twitch hides them from anonymous + h264-only manifests.
+    pub async fn get_qualities_authed(
+        url: &str,
+        path: &str,
+        oauth_token: Option<&str>,
+        enhanced_codecs: bool,
+    ) -> Result<Vec<String>> {
+        let mut cmd = Command::new(path);
+        cmd.arg(url).arg("--json");
+        if enhanced_codecs {
+            cmd.arg("--twitch-supported-codecs=h264,h265,av1");
+        }
+        if let Some(token) = oauth_token {
+            if !token.is_empty() {
+                cmd.arg("--twitch-api-header")
+                    .arg(format!("Authorization=OAuth {}", token));
+                cmd.arg("--webbrowser-timeout=2");
+            }
+        }
+        let output = cmd.output().await?;
 
         let json: serde_json::Value = serde_json::from_slice(&output.stdout)?;
-        let qualities: Vec<String> = json["streams"]
+        let mut qualities: Vec<String> = json["streams"]
             .as_object()
             .ok_or(anyhow::anyhow!("No streams"))?
             .keys()
             .cloned()
             .collect();
 
+        sort_qualities_descending(&mut qualities);
         Ok(qualities)
+    }
+
+    /// Try the requested quality; on a quality-not-found error, fall back to the
+    /// closest available quality. Returns (stream_url, actual_quality_used).
+    pub async fn get_stream_url_with_fallback(
+        url: &str,
+        quality: &str,
+        path: &str,
+        args: &str,
+        settings: &crate::models::settings::StreamlinkSettings,
+        oauth_token: Option<&str>,
+    ) -> Result<(String, String)> {
+        match Self::get_stream_url_with_settings(url, quality, path, args, settings, oauth_token)
+            .await
+        {
+            Ok(stream_url) => Ok((stream_url, quality.to_string())),
+            Err(err) => {
+                let err_text = format!("{:#}", err).to_lowercase();
+                let is_quality_error = err_text.contains("could not be found")
+                    || err_text.contains("specified stream");
+                if !is_quality_error {
+                    return Err(err);
+                }
+
+                let available = match Self::get_qualities_authed(
+                    url,
+                    path,
+                    oauth_token,
+                    settings.enhanced_codecs,
+                )
+                .await
+                {
+                    Ok(q) if !q.is_empty() => q,
+                    _ => return Err(err),
+                };
+
+                let closest = match pick_closest_quality(quality, &available) {
+                    Some(c) if !c.eq_ignore_ascii_case(quality) => c,
+                    _ => return Err(err),
+                };
+
+                log::info!(
+                    "[Streamlink] Quality '{}' unavailable; falling back to closest '{}'. Available: {:?}",
+                    quality, closest, available
+                );
+
+                let stream_url = Self::get_stream_url_with_settings(
+                    url,
+                    &closest,
+                    path,
+                    args,
+                    settings,
+                    oauth_token,
+                )
+                .await?;
+                Ok((stream_url, closest))
+            }
+        }
+    }
+}
+
+/// Parse the leading resolution height from a quality string (e.g. "480p30" -> 480).
+/// Returns None for non-resolution qualities like "best", "worst", "audio_only".
+fn parse_quality_height(q: &str) -> Option<u32> {
+    let digits: String = q
+        .trim()
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    if digits.is_empty() {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+/// Parse the framerate suffix from a quality string (e.g. "720p60" -> 60, "720p" -> None).
+fn parse_quality_fps(q: &str) -> Option<u32> {
+    let lower = q.trim().to_lowercase();
+    let after_p = lower.split_once('p')?.1;
+    let digits: String = after_p.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+/// Sort quality strings into the order we surface in the player's quality
+/// menu. Resolutions come first, descending by height and then framerate
+/// (so 1440p60 outranks 1080p60 outranks 720p60). The non-resolution
+/// sentinels follow in a fixed order: `best` (shortcut for highest tier
+/// available), then `audio_only`, then `worst`. Anything else falls at the
+/// end alphabetically. Comparison is case-insensitive.
+fn sort_qualities_descending(qualities: &mut [String]) {
+    fn rank(q: &str) -> (u8, u32, u32, String) {
+        // Lower outer-tuple element sorts earlier. We use four tiers:
+        //   0 = numeric resolution (sort by -height, -fps)
+        //   1 = "best"
+        //   2 = "audio_only" / "audio-only" / "audio"
+        //   3 = "worst"
+        //   4 = unknown sentinel (alphabetical)
+        let lower = q.trim().to_lowercase();
+        if let Some(h) = parse_quality_height(&lower) {
+            let fps = parse_quality_fps(&lower).unwrap_or(0);
+            // Negate via u32::MAX - x so default ascending sort becomes descending.
+            return (0, u32::MAX - h, u32::MAX - fps, String::new());
+        }
+        match lower.as_str() {
+            "best" | "source" => (1, 0, 0, String::new()),
+            "audio_only" | "audio-only" | "audio" => (2, 0, 0, String::new()),
+            "worst" => (3, 0, 0, String::new()),
+            _ => (4, 0, 0, lower),
+        }
+    }
+    qualities.sort_by_key(|q| rank(q));
+}
+
+/// Pick the closest available quality to the requested one.
+/// Tiebreak: prefer higher resolution, then closer (or higher) framerate.
+pub fn pick_closest_quality(requested: &str, available: &[String]) -> Option<String> {
+    if available.is_empty() {
+        return None;
+    }
+
+    if let Some(exact) = available.iter().find(|q| q.eq_ignore_ascii_case(requested)) {
+        return Some(exact.clone());
+    }
+
+    let req_height = match parse_quality_height(requested) {
+        Some(h) => h,
+        None => {
+            return available
+                .iter()
+                .find(|q| q.eq_ignore_ascii_case("best"))
+                .cloned()
+                .or_else(|| available.first().cloned());
+        }
+    };
+    let req_fps = parse_quality_fps(requested);
+
+    let mut candidates: Vec<(&String, u32, Option<u32>)> = available
+        .iter()
+        .filter_map(|q| Some((q, parse_quality_height(q)?, parse_quality_fps(q))))
+        .collect();
+
+    if candidates.is_empty() {
+        return available
+            .iter()
+            .find(|q| q.eq_ignore_ascii_case("best"))
+            .cloned();
+    }
+
+    candidates.sort_by(|a, b| {
+        let da = (a.1 as i64 - req_height as i64).abs();
+        let db = (b.1 as i64 - req_height as i64).abs();
+        da.cmp(&db)
+            .then_with(|| b.1.cmp(&a.1))
+            .then_with(|| match (a.2, b.2, req_fps) {
+                (Some(af), Some(bf), Some(rf)) => {
+                    let fa = (af as i64 - rf as i64).abs();
+                    let fb = (bf as i64 - rf as i64).abs();
+                    fa.cmp(&fb).then_with(|| bf.cmp(&af))
+                }
+                (Some(af), Some(bf), None) => bf.cmp(&af),
+                (Some(_), None, _) => std::cmp::Ordering::Less,
+                (None, Some(_), _) => std::cmp::Ordering::Greater,
+                (None, None, _) => std::cmp::Ordering::Equal,
+            })
+    });
+
+    Some(candidates[0].0.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn s(v: &[&str]) -> Vec<String> {
+        v.iter().map(|x| x.to_string()).collect()
+    }
+
+    #[test]
+    fn picks_exact_when_present() {
+        let avail = s(&["audio_only", "360p", "480p", "720p60", "best", "worst"]);
+        assert_eq!(
+            pick_closest_quality("480p", &avail).as_deref(),
+            Some("480p")
+        );
+    }
+
+    #[test]
+    fn picks_closest_when_fps_suffix_missing() {
+        // User saved "480p30", channel only offers "480p" (no fps suffix) etc.
+        let avail = s(&["audio_only", "360p", "480p", "720p60", "best", "worst"]);
+        assert_eq!(
+            pick_closest_quality("480p30", &avail).as_deref(),
+            Some("480p")
+        );
+    }
+
+    #[test]
+    fn picks_closest_when_height_missing() {
+        // User saved "480p30", channel only has 360p and 720p.
+        let avail = s(&["audio_only", "360p", "720p60", "best", "worst"]);
+        // 480 - 360 = 120; 720 - 480 = 240. Closest is 360p.
+        assert_eq!(
+            pick_closest_quality("480p30", &avail).as_deref(),
+            Some("360p")
+        );
+    }
+
+    #[test]
+    fn ties_prefer_higher_resolution() {
+        // 360 and 600 are both 120 away from 480; prefer 600 (higher).
+        let avail = s(&["360p", "600p", "best"]);
+        assert_eq!(
+            pick_closest_quality("480p30", &avail).as_deref(),
+            Some("600p")
+        );
+    }
+
+    #[test]
+    fn picks_matching_fps_on_tie() {
+        let avail = s(&["720p30", "720p60", "best"]);
+        assert_eq!(
+            pick_closest_quality("480p30", &avail).as_deref(),
+            Some("720p30")
+        );
+    }
+
+    #[test]
+    fn best_request_with_only_best_falls_through() {
+        let avail = s(&["360p", "best"]);
+        assert_eq!(
+            pick_closest_quality("best", &avail).as_deref(),
+            Some("best")
+        );
+    }
+
+    #[test]
+    fn empty_available_returns_none() {
+        assert_eq!(pick_closest_quality("480p30", &[]), None);
+    }
+
+    #[test]
+    fn picks_1080p_when_user_wants_1440p_but_stream_only_has_1080() {
+        // 1440p60 saved; channel maxes out at 1080p60. Fall down to 1080p60.
+        let avail = s(&["audio_only", "480p30", "720p60", "1080p60", "best", "worst"]);
+        assert_eq!(
+            pick_closest_quality("1440p60", &avail).as_deref(),
+            Some("1080p60")
+        );
+    }
+
+    #[test]
+    fn picks_1440p_when_offered() {
+        // Channel offers 1440p (Twitch is rolling this out). User has 1440p60 saved.
+        let avail = s(&["audio_only", "720p60", "1080p60", "1440p60", "best"]);
+        assert_eq!(
+            pick_closest_quality("1440p60", &avail).as_deref(),
+            Some("1440p60")
+        );
+    }
+
+    #[test]
+    fn handles_bare_resolution_alias() {
+        // User saved "480" (no `p`); channel uses "480p30". Picker must match.
+        let avail = s(&["audio_only", "360p", "480p30", "720p60", "best"]);
+        assert_eq!(
+            pick_closest_quality("480", &avail).as_deref(),
+            Some("480p30")
+        );
+    }
+
+    // Dropdown values match Twitch's player UI ("480p30" etc.). Streamlink in
+    // the wild returns one of two shapes for the same Twitch stream:
+    //   - caedrel-style: "audio_only, 160p, 360p, 480p, 720p60, 1080p60, best"
+    //   - nickmercs-style: "audio_only, 160p30, 360p30, 480p30, 720p60, 1080p60, best"
+    // Both must reconcile silently with the dropdown's saved value.
+
+    #[test]
+    fn dropdown_value_matches_caedrel_format() {
+        let avail = s(&[
+            "audio_only",
+            "160p",
+            "360p",
+            "480p",
+            "720p60",
+            "1080p60",
+            "worst",
+            "best",
+        ]);
+        assert_eq!(
+            pick_closest_quality("480p30", &avail).as_deref(),
+            Some("480p")
+        );
+        assert_eq!(
+            pick_closest_quality("360p30", &avail).as_deref(),
+            Some("360p")
+        );
+        assert_eq!(
+            pick_closest_quality("160p30", &avail).as_deref(),
+            Some("160p")
+        );
+    }
+
+    #[test]
+    fn dropdown_value_matches_nickmercs_format() {
+        let avail = s(&[
+            "audio_only",
+            "160p30",
+            "360p30",
+            "480p30",
+            "720p60",
+            "1080p60",
+            "worst",
+            "best",
+        ]);
+        assert_eq!(
+            pick_closest_quality("480p30", &avail).as_deref(),
+            Some("480p30")
+        );
+    }
+
+    #[test]
+    fn high_tier_dropdown_finds_60fps_exact() {
+        let avail = s(&[
+            "audio_only",
+            "160p",
+            "360p",
+            "480p",
+            "720p60",
+            "1080p60",
+            "best",
+        ]);
+        assert_eq!(
+            pick_closest_quality("1080p60", &avail).as_deref(),
+            Some("1080p60")
+        );
+        assert_eq!(
+            pick_closest_quality("720p60", &avail).as_deref(),
+            Some("720p60")
+        );
+    }
+
+    #[test]
+    fn sorts_qualities_highest_resolution_first() {
+        let mut q: Vec<String> = vec![
+            "1080p60",
+            "1440p60",
+            "160p30",
+            "360p30",
+            "480p30",
+            "720p60",
+            "audio_only",
+            "best",
+            "worst",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+        sort_qualities_descending(&mut q);
+        assert_eq!(
+            q,
+            vec![
+                "1440p60",
+                "1080p60",
+                "720p60",
+                "480p30",
+                "360p30",
+                "160p30",
+                "best",
+                "audio_only",
+                "worst",
+            ]
+        );
+    }
+
+    #[test]
+    fn sort_breaks_height_ties_by_fps() {
+        let mut q: Vec<String> = vec!["720p30", "720p60", "1080p30", "1080p60"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        sort_qualities_descending(&mut q);
+        assert_eq!(q, vec!["1080p60", "1080p30", "720p60", "720p30"]);
     }
 }

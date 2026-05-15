@@ -186,12 +186,6 @@ body {
   text-size-adjust: 100%;
 }
 
-/* Crisp pixel rendering for emotes, badges, and icons */
-.crisp-image {
-  image-rendering: -webkit-optimize-contrast;
-  image-rendering: crisp-edges;
-}
-
 /* Glass effect utility classes - Theme aware */
 .glass-panel {
   background-color: var(--color-background-secondary);

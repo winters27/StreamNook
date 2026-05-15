@@ -594,7 +594,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
           srcSet={srcSet}
           alt={segment.content}
           loading="lazy"
-          className={`inline-block h-7 w-auto max-w-[128px] cursor-pointer crisp-image ${inGrid ? '' : 'align-middle'} ${marginClass} hover:scale-110 transition-transform ${isOverlay ? 'z-10 drop-shadow-[0_0_2px_rgba(0,0,0,0.5)] hover:drop-shadow-[0_0_4px_rgba(234,179,8,0.8)]' : ''}`}
+          className={`inline-block h-7 w-auto max-w-[128px] cursor-pointer ${inGrid ? '' : 'align-middle'} ${marginClass} hover:scale-110 transition-transform ${isOverlay ? 'z-10 drop-shadow-[0_0_2px_rgba(0,0,0,0.5)] hover:drop-shadow-[0_0_4px_rgba(234,179,8,0.8)]' : ''}`}
           style={gridStyle}
           referrerPolicy="no-referrer"
           onContextMenu={(e) => {
@@ -632,7 +632,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
             src={emojiSrc}
             alt={segment.content}
             loading="lazy"
-            className={`inline h-5 w-5 ${inGrid ? '' : 'align-middle'} ${marginClass} crisp-image`}
+            className={`inline h-5 w-5 ${inGrid ? '' : 'align-middle'} ${marginClass}`}
             style={gridStyle}
             onError={(e) => {
               e.currentTarget.style.display = 'none';
@@ -652,7 +652,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
               src={segment.cheermoteUrl}
               alt={segment.content}
               loading="lazy"
-              className="inline-block h-7 w-auto align-middle crisp-image"
+              className="inline-block h-7 w-auto align-middle"
               referrerPolicy="no-referrer"
               onError={(e) => {
                 e.currentTarget.style.display = 'none';
@@ -953,7 +953,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
                   src={getTwitchBadgeUrl(badge.key, badge.info)}
                   alt={badge.info.title}
                   loading="lazy"
-                  className="w-5 h-5 inline-block cursor-pointer hover:scale-110 transition-transform crisp-image"
+                  className="w-5 h-5 inline-block cursor-pointer hover:scale-110 transition-transform"
                   onClick={() => onBadgeClick?.(badge.key, badge.info)}
                   onError={(e) => {
                     Logger.warn('[Badge] Failed to load badge:', badge.key, badge.info.image_url_1x);
@@ -973,7 +973,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
                   src={getBadgeImageUrl(seventvBadge)}
                   fallbackUrls={getBadgeFallbackUrls(seventvBadge.id).slice(1)}
                   alt={seventvBadge.description || seventvBadge.name}
-                  className="w-5 h-5 inline-block crisp-image"
+                  className="w-5 h-5 inline-block"
                 />
               </button>
             </Tooltip>
@@ -983,7 +983,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
               <img
                 src={badge.imageUrl}
                 alt={badge.title}
-                className="w-5 h-5 inline-block crisp-image"
+                className="w-5 h-5 inline-block"
                 onError={(e) => {
                   e.currentTarget.style.display = 'none';
                 }}
@@ -1090,7 +1090,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
                   src={getTwitchBadgeUrl(badge.key, badge.info)}
                   alt={badge.info.title}
                   loading="lazy"
-                  className="w-5 h-5 inline-block cursor-pointer hover:scale-110 transition-transform crisp-image"
+                  className="w-5 h-5 inline-block cursor-pointer hover:scale-110 transition-transform"
                   onClick={() => onBadgeClick?.(badge.key, badge.info)}
                   onError={(e) => {
                     Logger.warn('[Badge] Failed to load badge:', badge.key, badge.info.image_url_1x);
@@ -1110,7 +1110,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
                   src={getBadgeImageUrl(seventvBadge)}
                   fallbackUrls={getBadgeFallbackUrls(seventvBadge.id).slice(1)}
                   alt={seventvBadge.description || seventvBadge.name}
-                  className="w-5 h-5 inline-block crisp-image"
+                  className="w-5 h-5 inline-block"
                 />
               </button>
             </Tooltip>
@@ -1120,7 +1120,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
               <img
                 src={badge.imageUrl}
                 alt={badge.title}
-                className="w-5 h-5 inline-block crisp-image"
+                className="w-5 h-5 inline-block"
                 onError={(e) => {
                   e.currentTarget.style.display = 'none';
                 }}
@@ -1243,7 +1243,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
                 <img
                   src={getTwitchBadgeUrl(badge.key, badge.info)}
                   alt={badge.info.title}
-                  className="w-5 h-5 inline-block cursor-pointer hover:scale-110 transition-transform crisp-image"
+                  className="w-5 h-5 inline-block cursor-pointer hover:scale-110 transition-transform"
                   onClick={() => onBadgeClick?.(badge.key, badge.info)}
                   onError={(e) => {
                     Logger.warn('[Badge] Failed to load badge:', badge.key, badge.info.image_url_1x);
@@ -1263,7 +1263,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
                   src={getBadgeImageUrl(seventvBadge)}
                   fallbackUrls={getBadgeFallbackUrls(seventvBadge.id).slice(1)}
                   alt={seventvBadge.description || seventvBadge.name}
-                  className="w-5 h-5 inline-block crisp-image"
+                  className="w-5 h-5 inline-block"
                 />
               </button>
             </Tooltip>
@@ -1273,7 +1273,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
               <img
                 src={badge.imageUrl}
                 alt={badge.title}
-                className="w-5 h-5 inline-block crisp-image"
+                className="w-5 h-5 inline-block"
                 onError={(e) => {
                   e.currentTarget.style.display = 'none';
                 }}
@@ -1353,7 +1353,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
                 <img
                   src={getTwitchBadgeUrl(badge.key, badge.info)}
                   alt={badge.info.title}
-                  className="w-5 h-5 inline-block cursor-pointer hover:scale-110 transition-transform crisp-image"
+                  className="w-5 h-5 inline-block cursor-pointer hover:scale-110 transition-transform"
                   onClick={() => onBadgeClick?.(badge.key, badge.info)}
                   onError={(e) => {
                     Logger.warn('[Badge] Failed to load badge:', badge.key, badge.info.image_url_1x);
@@ -1373,7 +1373,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
                   src={getBadgeImageUrl(seventvBadge)}
                   fallbackUrls={getBadgeFallbackUrls(seventvBadge.id).slice(1)}
                   alt={seventvBadge.description || seventvBadge.name}
-                  className="w-5 h-5 inline-block crisp-image"
+                  className="w-5 h-5 inline-block"
                 />
               </button>
             </Tooltip>
@@ -1383,7 +1383,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
               <img
                 src={badge.imageUrl}
                 alt={badge.title}
-                className="w-5 h-5 inline-block crisp-image"
+                className="w-5 h-5 inline-block"
                 onError={(e) => {
                   e.currentTarget.style.display = 'none';
                 }}
@@ -1444,7 +1444,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
                 <img
                   src={getBadgeImageUrl(userBadge)}
                   alt={userBadge.description || userBadge.name}
-                  className="w-5 h-5 inline-block crisp-image"
+                  className="w-5 h-5 inline-block"
                   onError={(e) => {
                     e.currentTarget.style.display = 'none';
                   }}
@@ -1770,7 +1770,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
                   <img
                     src={channelProfileImage}
                     alt={`${fetchedChannelName || 'Channel'} profile`}
-                    className="w-5 h-5 cursor-pointer hover:scale-110 transition-transform object-cover crisp-image"
+                    className="w-5 h-5 cursor-pointer hover:scale-110 transition-transform object-cover"
                     onClick={async () => {
                       if (fetchedChannelName) {
                         try {
@@ -1795,7 +1795,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
                     <img
                       src={getTwitchBadgeUrl(badge.key, badge.info)}
                       alt={badge.info.title}
-                      className="w-5 h-5 cursor-pointer hover:scale-110 transition-transform crisp-image"
+                      className="w-5 h-5 cursor-pointer hover:scale-110 transition-transform"
                       onClick={() => onBadgeClick?.(badge.key, badge.info)}
                       onError={(e) => {
                         // Hide broken badge images
@@ -1816,7 +1816,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
                       src={getBadgeImageUrl(seventvBadge)}
                       fallbackUrls={getBadgeFallbackUrls(seventvBadge.id).slice(1)}
                       alt={seventvBadge.description || seventvBadge.name}
-                      className="w-5 h-5 crisp-image"
+                      className="w-5 h-5"
                     />
                   </button>
                 </Tooltip>
@@ -1827,7 +1827,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
                   <img
                     src={badge.imageUrl}
                     alt={badge.title}
-                    className="w-5 h-5 crisp-image"
+                    className="w-5 h-5"
                     onError={(e) => {
                       e.currentTarget.style.display = 'none';
                     }}

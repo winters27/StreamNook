@@ -1,10 +1,24 @@
 use crate::models::settings::AppState;
+use crate::services::auth_proxy;
 use crate::services::stream_server::StreamServer;
 use crate::services::streamlink_manager::{StreamlinkDiagnostics, StreamlinkManager};
+use crate::services::twitch_auth_service::AuthError;
 use anyhow::Result;
 use log::debug;
+use serde::Serialize;
 use std::path::PathBuf;
 use tauri::State;
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StreamStartResult {
+    /// Local proxy URL (or direct MP4 for clips) the player should load.
+    pub url: String,
+    /// The literal quality Streamlink actually served. May differ from the
+    /// requested quality if the requested one wasn't offered for this stream
+    /// (closest-match fallback). The frontend compares this against the user's
+    /// saved preference to decide whether to notify.
+    pub quality: String,
+}
 
 /// Check if the ttvlol plugin (twitch.py) actually exists
 /// Uses the same 3-step resolution as get_plugins_directory:
@@ -104,7 +118,7 @@ pub async fn start_stream(
     url: String,
     quality: String,
     state: State<'_, AppState>,
-) -> Result<String, String> {
+) -> Result<StreamStartResult, String> {
     debug!("[Streaming] start_stream called for URL: {}", url);
 
     // Get settings values and determine which args to use
@@ -168,16 +182,71 @@ pub async fn start_stream(
 
     debug!("[Streaming] Final args to be used: '{}'", streamlink_args);
 
+    // Splice mode: proxy on + auth on → spin up our local splice server and
+    // replace streamlink's proxy URL with it. The server fetches both TTVLOL
+    // (ad-free, 1080p ceiling) and authed (with 1440p) masters and merges
+    // them — see services/auth_proxy.rs.
+    let splice_active = streamlink_settings.use_proxy && streamlink_settings.use_twitch_auth;
+    let is_vod_or_clip =
+        url.contains("/videos/") || url.contains("/clip/") || url.contains("clips.twitch.tv");
+    let twitch_auth = state.twitch_auth.clone();
+
+    let streamlink_args = if splice_active && !is_vod_or_clip && !streamlink_args.is_empty() {
+        match auth_proxy::ensure_running(&streamlink_args, twitch_auth.clone()).await {
+            Ok(port) => {
+                let new_arg = auth_proxy::streamlink_proxy_arg(port);
+                log::info!("[Streaming] splice mode active → {}", new_arg);
+                new_arg
+            }
+            Err(e) => {
+                log::warn!(
+                    "[Streaming] splice server failed to start ({}); falling back to plain TTVLOL",
+                    e
+                );
+                streamlink_args
+            }
+        }
+    } else {
+        streamlink_args
+    };
+
     // Use the custom path if set, otherwise fallback to bundled/development paths
     let streamlink_path = StreamlinkManager::get_effective_path(custom_path.as_deref());
 
-    // Start Streamlink with enhanced settings to get stream URL
-    let stream_url = StreamlinkManager::get_stream_url_with_settings(
+    // Direct auth-only mode (no proxy): pass the cookie to streamlink itself.
+    // In splice mode the server handles auth internally, so streamlink doesn't
+    // need the header (and the proxy URL would strip it anyway).
+    let oauth_token = if streamlink_settings.use_twitch_auth && !splice_active {
+        match twitch_auth.get_token().await {
+            Ok(t) => {
+                log::info!(
+                    "[Streaming] auth: WebView2 cookie acquired (len={})",
+                    t.len()
+                );
+                Some(t)
+            }
+            Err(AuthError::NotLoggedIn) => {
+                log::info!(
+                    "[Streaming] auth: not logged in to twitch.tv in WebView; using anonymous"
+                );
+                None
+            }
+            Err(e) => {
+                log::warn!("[Streaming] auth service error: {}; using anonymous", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let (stream_url, actual_quality) = StreamlinkManager::get_stream_url_with_fallback(
         &url,
         &quality,
         &streamlink_path,
         &streamlink_args,
         &streamlink_settings,
+        oauth_token.as_deref(),
     )
     .await
     .map_err(|e| e.to_string())?;
@@ -195,7 +264,10 @@ pub async fn start_stream(
             "[Streaming] Stream URL is an MP4 (likely a Clip), bypassing proxy: {}",
             stream_url
         );
-        return Ok(stream_url);
+        return Ok(StreamStartResult {
+            url: stream_url,
+            quality: actual_quality,
+        });
     }
 
     // Start local HTTP server to proxy the stream
@@ -203,11 +275,14 @@ pub async fn start_stream(
         .await
         .map_err(|e| e.to_string())?;
 
-    Ok(format!(
-        "http://localhost:{}/stream.m3u8?t={}",
-        port,
-        chrono::Utc::now().timestamp_millis()
-    ))
+    Ok(StreamStartResult {
+        url: format!(
+            "http://localhost:{}/stream.m3u8?t={}",
+            port,
+            chrono::Utc::now().timestamp_millis()
+        ),
+        quality: actual_quality,
+    })
 }
 
 #[tauri::command]
@@ -220,18 +295,32 @@ pub async fn get_stream_qualities(
     url: String,
     state: State<'_, AppState>,
 ) -> Result<Vec<String>, String> {
-    // Get the custom path from settings if set
-    let custom_path = {
+    let (custom_path, enhanced_codecs, use_twitch_auth) = {
         let settings = state.settings.lock().unwrap();
-        settings.streamlink.custom_streamlink_path.clone()
+        (
+            settings.streamlink.custom_streamlink_path.clone(),
+            settings.streamlink.enhanced_codecs,
+            settings.streamlink.use_twitch_auth,
+        )
     };
-
-    // Use custom path if set, otherwise fallback to bundled/development paths
     let streamlink_path = StreamlinkManager::get_effective_path(custom_path.as_deref());
 
-    StreamlinkManager::get_qualities(&url, &streamlink_path)
-        .await
-        .map_err(|e| e.to_string())
+    // Mirror start_stream's auth source so the in-player quality menu
+    // probe sees the same expanded variant list start_stream can serve.
+    let oauth_token = if use_twitch_auth {
+        state.twitch_auth.get_token().await.ok()
+    } else {
+        None
+    };
+
+    StreamlinkManager::get_qualities_authed(
+        &url,
+        &streamlink_path,
+        oauth_token.as_deref(),
+        enhanced_codecs,
+    )
+    .await
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -239,7 +328,7 @@ pub async fn change_stream_quality(
     url: String,
     quality: String,
     state: State<'_, AppState>,
-) -> Result<String, String> {
+) -> Result<StreamStartResult, String> {
     // Don't stop the server - just update the stream URL
     // The server will keep running on the same port
     start_stream(url, quality, state).await

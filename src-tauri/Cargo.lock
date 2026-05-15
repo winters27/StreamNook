@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "StreamNook"
-version = "7.2.1"
+version = "7.2.2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -52,6 +52,8 @@ dependencies = [
  "urlencoding",
  "uuid 1.23.0",
  "warp",
+ "webview2-com",
+ "windows",
 ]
 
 [[package]]

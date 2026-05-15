@@ -52,7 +52,7 @@ const VideoPlayer = () => {
   const hlsRef = useRef<Hls | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const progressUpdateIntervalRef = useRef<number | null>(null);
-  const { streamUrl, settings, getAvailableQualities, changeStreamQuality, handleStreamOffline, isAutoSwitching, currentStream, currentUser, restartStream, exitStream, toggleHome, isHomeActive, streamOriginCategory, setHomeActiveTab, setHomeSelectedCategory, triggerChatRefresh, isAuthenticated, currentMediaType } = useAppStore();
+  const { streamUrl, settings, activeQuality, getAvailableQualities, changeStreamQuality, handleStreamOffline, isAutoSwitching, currentStream, currentUser, restartStream, exitStream, toggleHome, isHomeActive, streamOriginCategory, setHomeActiveTab, setHomeSelectedCategory, triggerChatRefresh, isAuthenticated, currentMediaType } = useAppStore();
   // Stabilize handleStreamOffline in a ref so createPlayer's identity stays stable.
   // Without this, every Zustand set() call recreates handleStreamOffline, which changes
   // createPlayer's reference, which re-fires the player creation effect — causing double
@@ -134,8 +134,14 @@ const VideoPlayer = () => {
     const container = containerRef.current;
     if (!container || availableQualities.length === 0) return;
 
+    // Reflect the quality actually playing (activeQuality) in the menu state,
+    // not the saved preference (settings.quality). They diverge whenever
+    // Streamlink fell back to the closest available quality because the
+    // saved preference wasn't offered for this stream.
+    const displayedQuality = activeQuality ?? settings.quality;
+
     Logger.debug('[Quality] Setting up menu with Streamlink qualities:', availableQualities);
-    Logger.debug('[Quality] Current selected quality from settings:', settings.quality);
+    Logger.debug('[Quality] Active quality:', activeQuality, 'saved preference:', settings.quality);
 
     setTimeout(() => {
       const settingsMenu = container.querySelector('.plyr__menu');
@@ -156,7 +162,7 @@ const VideoPlayer = () => {
       }
 
       // Determine the display value - use the actual quality being streamed
-      const currentQualityDisplay = settings.quality.charAt(0).toUpperCase() + settings.quality.slice(1);
+      const currentQualityDisplay = displayedQuality.charAt(0).toUpperCase() + displayedQuality.slice(1);
 
       // Create quality menu item in main settings
       const settingsHome = settingsMenu.querySelector('[role="menu"]');
@@ -201,7 +207,7 @@ const VideoPlayer = () => {
               type="button" 
               data-quality="${quality}"
               role="menuitemradio"
-              aria-checked="${quality.toLowerCase() === settings.quality.toLowerCase() ? 'true' : 'false'}"
+              aria-checked="${quality.toLowerCase() === displayedQuality.toLowerCase() ? 'true' : 'false'}"
             >
               <span>${quality.charAt(0).toUpperCase() + quality.slice(1)}</span>
             </button>
@@ -254,7 +260,7 @@ const VideoPlayer = () => {
         });
       }
     }, 200);
-  }, [availableQualities, settings.quality, changeStreamQuality]);
+  }, [availableQualities, settings.quality, activeQuality, changeStreamQuality]);
 
   // Update time display for live streams to show "LIVE" or time behind
   const updateLiveTimeDisplay = useCallback(() => {
