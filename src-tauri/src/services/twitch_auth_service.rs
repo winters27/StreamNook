@@ -5,7 +5,7 @@
 // supported API surface and the only one that doesn't fight Chromium for
 // the locked SQLite file or care about encryption schema changes.
 //
-// Architecture (see chat on 2026-05-15):
+// Architecture:
 //   - One instance per app, owned by `AppState`.
 //   - Callers (auth_proxy, streamlink invoker, quality probe) request the
 //     token via `get_token()`; they never touch cookies directly.

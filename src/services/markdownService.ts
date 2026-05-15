@@ -138,7 +138,7 @@ export const parseInlineMarkdown = (text: string): React.ReactNode[] => {
                 break;
             case 'mention': {
                 // Discord-style credit pill. Used in changelog entries to thank
-                // community members who reported issues (e.g. `<@Rainy>`).
+                // community members who reported issues (syntax: `<@username>`).
                 // Color is hashed from the username so each person stays
                 // consistent across entries; different people get different
                 // pills. See MENTION_PALETTE above.
