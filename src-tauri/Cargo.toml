@@ -70,7 +70,7 @@ tauri-plugin-clipboard-manager = "2.3.2"
 # Versions pinned to Tauri 2.10's resolved transitive graph.
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.38"
-windows = "0.61"
+windows = "0.62"
 
 
 [features]
