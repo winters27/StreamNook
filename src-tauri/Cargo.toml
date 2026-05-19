@@ -69,7 +69,7 @@ tauri-plugin-clipboard-manager = "2.3.2"
 # cookie via WebView2's official cookie manager API (no SQLite scraping).
 # Versions pinned to Tauri 2.10's resolved transitive graph.
 [target.'cfg(windows)'.dependencies]
-webview2-com = "0.38"
+webview2-com = "0.39"
 windows = "0.61"
 
 
