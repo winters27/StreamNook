@@ -1,3 +1,28 @@
+## [7.4.0] - 2026-05-22
+### ✨ Features
+- **StreamNook MultiChat (Experimental): A full standalone chat client built right into StreamNook. Open any channel's chat in its own window with no video stream required, and run as many at once as you want. Right-click a stream tile and pick "Pop out chat", or use the pop-out button at the top of any active stream's chat widget. Each MultiChat window keeps running even when the main app is hidden to the system tray.
+- **StreamNook Identity Badge**: A new community badge for every StreamNook user, reflecting your rank (#N) based on when you joined. See it in chat, on user profiles, and check out the new StreamNook tab in the Badges Overlay!
+- **User Chat Overrides**: Customize your chat experience by setting local nicknames and custom colors for other users directly from their profile card. Only you see these changes!
+- **Custom Chat Highlight Phrases**: Define your own keywords or phrases to highlight in chat, complete with custom colors and sounds. Never miss an important message again!
+- **User-Defined Custom Chat Commands**: Create your own slash commands or even plain-text triggers that expand into longer messages or templates. Perfect for quick responses or custom emotes.
+- **New Moderator Commands**: `/clearmessages` allows for locally clearing recent chat messages visually (only on your screen). `/usercard <username>` quickly opens any user's profile card.
+- **System Tray Integration**: StreamNook now lives in your system tray, ensuring MultiChat windows stay active even when the main app is hidden. Easily restore the main window or open new MultiChat windows from the tray menu.
+- **Cross-Window Settings Sync**: All your settings now synchronize in real-time across all open StreamNook windows, so changes made in one window instantly apply everywhere else.
+- **Enhanced User Profiles**: User profile cards now display the streamer's full channel banner image, not just their offline placeholder.
+- **Stream Context Menu Action**: A new 'Pop out chat' option in the stream context menu allows you to quickly open any stream's chat in a dedicated MultiChat window without starting the video stream.
+
+### 🐛 Bug Fixes
+- **Channel Points Redemption**: Resolved issues with channel points redemption by updating our system to match recent Twitch API changes, ensuring all rewards can be redeemed as expected. All redemptions now include a confirmation step to prevent accidental spending.
+- **Stale Badge Information**: Fixed an issue where some badge details (like event dates) were not updating correctly, causing outdated availability information. Badge metadata now aggressively refreshes to ensure accuracy.
+- **Multi-Channel Emote Display**: Repaired a bug that prevented third-party emotes (7TV, FFZ, BTTV) from correctly displaying in newly joined channels, particularly in MultiChat popout windows.
+- **Chat Scroll Stability**: Significantly improved chat scrolling smoothness, eliminating visual 'shimmering' or 'jumping' that occurred when new messages arrived and content (emotes, badges, timestamps) resolved.
+- **Chat Message Dividers**: Adjusted chat message dividers to anchor to the top of each message, preventing layout shifts and improving overall chat fluidity.
+- **Window Aspect Ratio**: Corrected an issue where the main window's aspect ratio would not adjust properly when its chat panel was dynamically hidden because a MultiChat popout was active for the same channel.
+- **Minor UI Polish**: Squashed several small bugs related to UI element positioning and hover states in overlays (Badge Detail, Drops, Badges Overlay).
+
+### 🔧 Maintenance
+- Refactored internal notification sound system for better performance and consistency.
+
 ## [7.3.3] - 2026-05-18
 ### 🐛 Bug Fixes
 - Fixed an issue where the Follow and Subscribe buttons could become unresponsive after restarting a stream or being automatically redirected to a new channel by a raid. StreamNook now ensures all necessary channel information is always correctly loaded to keep these features working seamlessly. Thanks to <@rainyyay> for the report!.
@@ -1181,6 +1206,7 @@ ATTENTION: ALL USERS LOG OUT OF TWITCH THEN LOG BACK IN FOR SOME CHANGES OT TAKE
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
