@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useEffect, memo } from 'react';
+import React, { useMemo, useState, useEffect, memo, useSyncExternalStore } from 'react';
 import { Gift } from 'lucide-react';
 import { Tooltip } from './ui/Tooltip';
 import { parseMessage } from '../services/twitchChat';
@@ -10,8 +10,14 @@ import { FallbackImage } from './FallbackImage';
 import { getCosmeticsWithFallback, getThirdPartyBadgesFromMemoryCache, getCosmeticsFromMemoryCache, getTwitchBadgesWithFallback } from '../services/cosmeticsCache';
 import type { ThirdPartyBadge as ThirdPartyBadgeType } from '../services/thirdPartyBadges';
 import { useAppStore } from '../stores/AppStore';
+import { openBadgesWithBadgeInMain } from '../utils/openBadgesInMain';
 import { useChatUserStore } from '../stores/chatUserStore';
 import { queueBadgeForCaching, getCachedBadgeUrl } from '../services/badgeImageCacheService';
+import { isStreamNookUser, getStreamNookUserNumber, subscribeStreamNookRegistryVersion, getStreamNookRegistryVersion } from '../services/supabaseService';
+import { StreamNookBadge } from './StreamNookBadge';
+import { matchHighlightPhrase, type HighlightMatch } from '../utils/chatHighlightMatcher';
+import { playSoundThrottled } from '../utils/notificationSound';
+import { getDisplayedName, getColorOverride } from '../utils/userChatOverrides';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 // 7TV cosmetics have complex dynamic structures that vary by API version
@@ -245,6 +251,8 @@ const chatMessageAreEqual = (prevProps: ChatMessageProps, nextProps: ChatMessage
 const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, onUsernameClick, onReplyClick, isHighlighted = false, moderationContext = null, onEmoteRightClick, onMessageCopy, onUsernameRightClick, onBadgeClick, emotes, isModerator = false, broadcasterId }: ChatMessageProps) {
   const { settings, currentUser, currentStream } = useAppStore();
   const chatDesign = settings.chat_design;
+  // Re-render this row when the StreamNook registry updates (async load / new signup)
+  useSyncExternalStore(subscribeStreamNookRegistryVersion, getStreamNookRegistryVersion, getStreamNookRegistryVersion);
   const parsed = useMemo(() => {
     // Extract channel ID from the message tags if available
     // For shared chat messages, use source-room-id instead of room-id for badge lookup
@@ -418,6 +426,27 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
   // Extract userId once to prevent re-renders
   const userId = useMemo(() => parsed.tags.get('user-id'), [parsed.tags]);
 
+  // Per-user nickname/color overrides. The original display name + username
+  // stay in the click payload (so the profile card still opens to the real
+  // person) and in the IRC mention insertion path (Twitch only resolves real
+  // @logins, never nicknames). Render path swaps in the nickname.
+  const userOverrides = settings.chat_customization?.user_overrides;
+  const originalDisplayName = useMemo(
+    () => parsed.tags.get('display-name') || parsed.username,
+    [parsed.tags, parsed.username],
+  );
+  const effectiveDisplayName = useMemo(
+    () => getDisplayedName(userId, originalDisplayName, userOverrides),
+    [userId, originalDisplayName, userOverrides],
+  );
+  // Color override layers under the user's 7TV paint when one is selected
+  // (the paint computes against this base color), or replaces parsed.color
+  // outright when no paint is in play.
+  const effectiveColor = useMemo(
+    () => getColorOverride(userId, userOverrides) ?? parsed.color,
+    [userId, userOverrides, parsed.color],
+  );
+
   // Initialize state from synchronous memory cache (avoids null -> data flash)
   const [seventvBadge, setSeventvBadge] = useState<SevenTVBadgeWithSelection | null>(() => {
     if (!userId) return null;
@@ -436,6 +465,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
   const [broadcasterType] = useState<string | null>(null);
   const [isMentioned, setIsMentioned] = useState(false);
   const [isReplyToMe, setIsReplyToMe] = useState(false);
+  const highlightPhrases = settings.chat_highlights?.phrases;
 
   // PHASE 3.1d - OPTIMIZED: Check if this message mentions the current user or is a reply to them
   // NO REGEX - simple case-insensitive string check is much faster
@@ -447,7 +477,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
     const mentionTarget = `@${currentUser.username.toLowerCase()}`;
     const contentLower = parsed.content.toLowerCase();
     const mentionIndex = contentLower.indexOf(mentionTarget);
-    
+
     // Check for word boundary after mention (space, punctuation, or end of string)
     let mentioned = false;
     if (mentionIndex !== -1) {
@@ -468,6 +498,38 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
     const isReply = replyUserId === currentUser.user_id;
     setIsReplyToMe(isReply);
   }, [parsed.content, parsed.replyInfo, currentUser]);
+
+  // User-defined highlight phrases. Computed synchronously so sound playback
+  // (which fires in a separate effect below) sees the same value as the
+  // initial render — avoiding a race where isMentioned hasn't settled yet.
+  // Pre-checks for own-mention / reply-to-me happen inline so this useMemo
+  // doesn't have to wait for the async useState effect that fills those flags.
+  const phraseMatch = useMemo<HighlightMatch | null>(() => {
+    if (!currentUser) return matchHighlightPhrase(parsed.content, highlightPhrases);
+    const mentionTarget = `@${currentUser.username.toLowerCase()}`;
+    if (parsed.content.toLowerCase().includes(mentionTarget)) return null;
+    if (parsed.replyInfo?.parentUserId === currentUser.user_id) return null;
+    return matchHighlightPhrase(parsed.content, highlightPhrases);
+  }, [parsed.content, parsed.replyInfo, currentUser, highlightPhrases]);
+
+  // Fire the phrase's sound on first render if one is configured. Cooldown +
+  // backfill guard (see notificationSound.ts) make this safe to call on every
+  // matched message — historical replays don't trigger, and fast-repeating
+  // matches are throttled per phrase.
+  useEffect(() => {
+    if (!phraseMatch?.sound_id) return;
+    const sentTsRaw = parsed.tags.get('tmi-sent-ts');
+    const sentTs = sentTsRaw ? parseInt(sentTsRaw, 10) : NaN;
+    playSoundThrottled({
+      key: phraseMatch.phrase_id,
+      soundId: phraseMatch.sound_id,
+      cooldownMs: phraseMatch.cooldown_ms,
+      sentAtMs: Number.isFinite(sentTs) ? sentTs : null,
+    });
+    // Only fire once per mount per match — phraseMatch is memoized so this
+    // effect only re-runs when the message itself changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phraseMatch]);
 
   // Fetch 7TV user cosmetics and third-party badges (only if not already loaded from cache)
   useEffect(() => {
@@ -554,15 +616,16 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
     }
   }, [seventvBadge, seventvPaint]);
 
-  // Create username style with paint
+  // Create username style with paint. effectiveColor is the override-aware
+  // base color; the 7TV paint (if present) renders on top of it.
   const usernameStyle = useMemo(() => {
     if (!seventvPaint) {
-      return { color: parsed.color };
+      return { color: effectiveColor };
     }
 
     // Use the new computePaintStyle function
-    return computePaintStyle(seventvPaint, parsed.color);
-  }, [seventvPaint, parsed.color]);
+    return computePaintStyle(seventvPaint, effectiveColor);
+  }, [seventvPaint, effectiveColor]);
 
 
   const renderSegment = (segment: EmoteSegment, key: string, inGrid: boolean, isOverlay: boolean = false) => {
@@ -807,6 +870,31 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
   // Check if this is a highlighted message (channel points redemption)
   const isHighlightedMessage = msgId === 'highlighted-message' || sourceMsgId === 'highlighted-message';
 
+  // Other chat-surfaced channel-points redemptions. They piggyback on the highlight
+  // render path: same gradient background + a small label pill at the top right.
+  // `custom-reward-id` is set on PRIVMSGs from custom rewards with "Skip the line for chat".
+  // The named msg-id values cover the automatic message-style rewards.
+  const customRewardId = parsed.tags.get('custom-reward-id');
+  const hasCustomReward = !!customRewardId;
+  const isGigantifiedEmote =
+    msgId === 'gigantified-emote-message' || sourceMsgId === 'gigantified-emote-message';
+  const isAnimatedMessage =
+    msgId === 'animated-message' || sourceMsgId === 'animated-message';
+  const isSubModeBypass =
+    msgId === 'skip-subs-mode-message' || sourceMsgId === 'skip-subs-mode-message';
+  const redemptionLabel: string | null = isHighlightedMessage
+    ? 'Redeemed Highlight My Message'
+    : isGigantifiedEmote
+      ? 'Sent a Gigantified Emote'
+      : isAnimatedMessage
+        ? 'Sent an Animated Message'
+        : isSubModeBypass
+          ? 'Sent a Message in Sub-Only Mode'
+          : hasCustomReward
+            ? 'Redeemed a channel points reward'
+            : null;
+  const isRedemption = redemptionLabel !== null;
+
   // Check if this is a bits cheer message
   const bitsAmount = parsed.tags.get('bits');
   const isBitsCheer = bitsAmount && parseInt(bitsAmount, 10) > 0;
@@ -911,7 +999,9 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
 
     const bitsTierColor = getBitsTierColor(bitsCount);
 
-    // Helper function to render username as clickable
+    // Helper function to render username as clickable. Render path uses the
+    // effective display name (so nicknames apply); the click payload keeps
+    // the real display name so the profile card opens to the true identity.
     const renderClickableUsername = (username: string, displayName?: string) => {
       const userIdForClick = userId;
       return (
@@ -932,7 +1022,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
               }
             }}
           >
-            {displayName || username}
+            {effectiveDisplayName || displayName || username}
           </span>
         </Tooltip>
       );
@@ -940,10 +1030,35 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
 
     // Helper function to render badges
     const renderBadges = () => {
-      if (parsed.badges.length === 0 && !seventvBadge && thirdPartyBadges.length === 0) return null;
+      const senderUserId = parsed.tags.get('user-id');
+      const isSN = isStreamNookUser(senderUserId);
+      if (import.meta.env.DEV && typeof window !== 'undefined') {
+        const w = window as any;
+        if (!w.__snChatDebug) w.__snChatDebug = { totalCalls: 0, uniqueSenders: [], snHits: [], last10: [] };
+        w.__snChatDebug.totalCalls++;
+        w.__snChatDebug.last10.push({ senderUserId, isSN, displayName: parsed.tags.get('display-name') });
+        if (w.__snChatDebug.last10.length > 10) w.__snChatDebug.last10.shift();
+        if (!w.__snChatDebug.uniqueSenders.some((s: any) => s.senderUserId === senderUserId)) {
+          w.__snChatDebug.uniqueSenders.push({
+            senderUserId,
+            isSN,
+            displayName: parsed.tags.get('display-name'),
+          });
+        }
+        if (isSN) {
+          w.__snChatDebug.snHits.push({
+            senderUserId,
+            displayName: parsed.tags.get('display-name'),
+            at: new Date().toISOString(),
+          });
+        }
+      }
+
+      if (parsed.badges.length === 0 && !seventvBadge && thirdPartyBadges.length === 0 && !isSN) return null;
 
       return (
         <span className="inline-flex items-center gap-1 mr-1">
+          {isSN && <StreamNookBadge userNumber={getStreamNookUserNumber(senderUserId)} />}
           {parsed.badges.map((badge, idx) => {
             // Handle both old format (key/info) and new format (name/version)
             if (!badge.info) return null;
@@ -966,7 +1081,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
           {seventvBadge && (
             <Tooltip content={`Click for details: ${seventvBadge.description || seventvBadge.name}`} side="top">
               <button
-                onClick={() => useAppStore.getState().openBadgesWithBadge(seventvBadge.id)}
+                onClick={() => openBadgesWithBadgeInMain(seventvBadge.id)}
                 className="inline-block cursor-pointer hover:scale-110 transition-transform"
               >
                 <FallbackImage
@@ -998,7 +1113,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
     const eventPadding = calculateHalfPadding(chatDesign?.message_spacing ?? 8);
 
     return (
-      <div key={messageId} className="px-3 border-b border-borderSubtle bits-gradient" style={{ paddingTop: `${eventPadding}px`, paddingBottom: `${eventPadding}px` }}>
+      <div key={messageId} className="px-3 border-t border-borderSubtle bits-gradient" style={{ paddingTop: `${eventPadding}px`, paddingBottom: `${eventPadding}px` }}>
         <div className="flex items-center gap-2.5">
           <div className="flex-shrink-0">
             {/* Bits/gem icon */}
@@ -1049,7 +1164,9 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
     const isSharedChat = msgId === 'sharedchatnotice';
     const isFromDifferentChannel = isSharedChat && isFromSharedChat;
 
-    // Helper function to render username as clickable
+    // Helper function to render username as clickable. Render path uses the
+    // effective display name (so nicknames apply); the click payload keeps
+    // the real display name so the profile card opens to the true identity.
     const renderClickableUsername = (username: string, displayName?: string) => {
       const userIdForClick = userId;
       return (
@@ -1070,7 +1187,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
               }
             }}
           >
-            {displayName || username}
+            {effectiveDisplayName || displayName || username}
           </span>
         </Tooltip>
       );
@@ -1078,10 +1195,35 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
 
     // Helper function to render badges
     const renderBadges = () => {
-      if (parsed.badges.length === 0 && !seventvBadge && thirdPartyBadges.length === 0) return null;
+      const senderUserId = parsed.tags.get('user-id');
+      const isSN = isStreamNookUser(senderUserId);
+      if (import.meta.env.DEV && typeof window !== 'undefined') {
+        const w = window as any;
+        if (!w.__snChatDebug) w.__snChatDebug = { totalCalls: 0, uniqueSenders: [], snHits: [], last10: [] };
+        w.__snChatDebug.totalCalls++;
+        w.__snChatDebug.last10.push({ senderUserId, isSN, displayName: parsed.tags.get('display-name') });
+        if (w.__snChatDebug.last10.length > 10) w.__snChatDebug.last10.shift();
+        if (!w.__snChatDebug.uniqueSenders.some((s: any) => s.senderUserId === senderUserId)) {
+          w.__snChatDebug.uniqueSenders.push({
+            senderUserId,
+            isSN,
+            displayName: parsed.tags.get('display-name'),
+          });
+        }
+        if (isSN) {
+          w.__snChatDebug.snHits.push({
+            senderUserId,
+            displayName: parsed.tags.get('display-name'),
+            at: new Date().toISOString(),
+          });
+        }
+      }
+
+      if (parsed.badges.length === 0 && !seventvBadge && thirdPartyBadges.length === 0 && !isSN) return null;
 
       return (
         <span className="inline-flex items-center gap-1 mr-1">
+          {isSN && <StreamNookBadge userNumber={getStreamNookUserNumber(senderUserId)} />}
           {parsed.badges.map((badge, idx) => {
             if (!badge.info) return null;
             return (
@@ -1103,7 +1245,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
           {seventvBadge && (
             <Tooltip content={`Click for details: ${seventvBadge.description || seventvBadge.name}`} side="top">
               <button
-                onClick={() => useAppStore.getState().openBadgesWithBadge(seventvBadge.id)}
+                onClick={() => openBadgesWithBadgeInMain(seventvBadge.id)}
                 className="inline-block cursor-pointer hover:scale-110 transition-transform"
               >
                 <FallbackImage
@@ -1135,7 +1277,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
     const eventPadding = calculateHalfPadding(chatDesign?.message_spacing ?? 8);
 
     return (
-      <div key={messageId} className="px-3 border-b border-borderSubtle donation-gradient" style={{ paddingTop: `${eventPadding}px`, paddingBottom: `${eventPadding}px` }}>
+      <div key={messageId} className="px-3 border-t border-borderSubtle donation-gradient" style={{ paddingTop: `${eventPadding}px`, paddingBottom: `${eventPadding}px` }}>
         {/* Shared chat indicator */}
         {isFromDifferentChannel && (
           <div className="flex items-center gap-1.5 mb-2 pb-2 border-b border-borderSubtle">
@@ -1224,7 +1366,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
               }
             }}
           >
-            {displayNameProp || username}
+            {effectiveDisplayName || displayNameProp || username}
           </span>
         </Tooltip>
       );
@@ -1232,10 +1374,35 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
 
     // Helper function to render badges
     const renderBadges = () => {
-      if (parsed.badges.length === 0 && !seventvBadge && thirdPartyBadges.length === 0) return null;
+      const senderUserId = parsed.tags.get('user-id');
+      const isSN = isStreamNookUser(senderUserId);
+      if (import.meta.env.DEV && typeof window !== 'undefined') {
+        const w = window as any;
+        if (!w.__snChatDebug) w.__snChatDebug = { totalCalls: 0, uniqueSenders: [], snHits: [], last10: [] };
+        w.__snChatDebug.totalCalls++;
+        w.__snChatDebug.last10.push({ senderUserId, isSN, displayName: parsed.tags.get('display-name') });
+        if (w.__snChatDebug.last10.length > 10) w.__snChatDebug.last10.shift();
+        if (!w.__snChatDebug.uniqueSenders.some((s: any) => s.senderUserId === senderUserId)) {
+          w.__snChatDebug.uniqueSenders.push({
+            senderUserId,
+            isSN,
+            displayName: parsed.tags.get('display-name'),
+          });
+        }
+        if (isSN) {
+          w.__snChatDebug.snHits.push({
+            senderUserId,
+            displayName: parsed.tags.get('display-name'),
+            at: new Date().toISOString(),
+          });
+        }
+      }
+
+      if (parsed.badges.length === 0 && !seventvBadge && thirdPartyBadges.length === 0 && !isSN) return null;
 
       return (
         <span className="inline-flex items-center gap-1 mr-1">
+          {isSN && <StreamNookBadge userNumber={getStreamNookUserNumber(senderUserId)} />}
           {parsed.badges.map((badge, idx) => {
             if (!badge.info) return null;
             return (
@@ -1256,7 +1423,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
           {seventvBadge && (
             <Tooltip content={`Click for details: ${seventvBadge.description || seventvBadge.name}`} side="top">
               <button
-                onClick={() => useAppStore.getState().openBadgesWithBadge(seventvBadge.id)}
+                onClick={() => openBadgesWithBadgeInMain(seventvBadge.id)}
                 className="inline-block cursor-pointer hover:scale-110 transition-transform"
               >
                 <FallbackImage
@@ -1288,7 +1455,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
     const eventPadding = calculateHalfPadding(chatDesign?.message_spacing ?? 8);
 
     return (
-      <div key={messageId} className="px-3 border-b border-borderSubtle watchstreak-gradient" style={{ paddingTop: `${eventPadding}px`, paddingBottom: `${eventPadding}px` }}>
+      <div key={messageId} className="px-3 border-t border-borderSubtle watchstreak-gradient" style={{ paddingTop: `${eventPadding}px`, paddingBottom: `${eventPadding}px` }}>
         <div className="flex items-center gap-2.5">
           <div className="flex-shrink-0">
             {/* Fire/Watch Streak icon from Twitch */}
@@ -1342,10 +1509,35 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
 
     // Helper function to render badges
     const renderBadges = () => {
-      if (parsed.badges.length === 0 && !seventvBadge && thirdPartyBadges.length === 0) return null;
+      const senderUserId = parsed.tags.get('user-id');
+      const isSN = isStreamNookUser(senderUserId);
+      if (import.meta.env.DEV && typeof window !== 'undefined') {
+        const w = window as any;
+        if (!w.__snChatDebug) w.__snChatDebug = { totalCalls: 0, uniqueSenders: [], snHits: [], last10: [] };
+        w.__snChatDebug.totalCalls++;
+        w.__snChatDebug.last10.push({ senderUserId, isSN, displayName: parsed.tags.get('display-name') });
+        if (w.__snChatDebug.last10.length > 10) w.__snChatDebug.last10.shift();
+        if (!w.__snChatDebug.uniqueSenders.some((s: any) => s.senderUserId === senderUserId)) {
+          w.__snChatDebug.uniqueSenders.push({
+            senderUserId,
+            isSN,
+            displayName: parsed.tags.get('display-name'),
+          });
+        }
+        if (isSN) {
+          w.__snChatDebug.snHits.push({
+            senderUserId,
+            displayName: parsed.tags.get('display-name'),
+            at: new Date().toISOString(),
+          });
+        }
+      }
+
+      if (parsed.badges.length === 0 && !seventvBadge && thirdPartyBadges.length === 0 && !isSN) return null;
 
       return (
         <span className="inline-flex items-center align-middle gap-1 mr-1">
+          {isSN && <StreamNookBadge userNumber={getStreamNookUserNumber(senderUserId)} />}
           {parsed.badges.map((badge, idx) => {
             if (!badge.info) return null;
             return (
@@ -1366,7 +1558,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
           {seventvBadge && (
             <Tooltip content={`Click for details: ${seventvBadge.description || seventvBadge.name}`} side="top">
               <button
-                onClick={() => useAppStore.getState().openBadgesWithBadge(seventvBadge.id)}
+                onClick={() => openBadgesWithBadgeInMain(seventvBadge.id)}
                 className="inline-block cursor-pointer hover:scale-110 transition-transform"
               >
                 <FallbackImage
@@ -1429,12 +1621,17 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
       const userPaint = userCosmetics?.paints.find((p) => p.selected);
       const userBadge = userCosmetics?.badges.find((b) => b.selected);
 
+      // Resolve a per-recipient color override (separate from the message
+      // author's override at the top of the component). Falls back to Twitch
+      // purple when nothing is set, matching the prior behavior here.
+      const recipientBaseColor = getColorOverride(userIdProp, userOverrides) ?? '#9147FF';
+
       const userStyle = useMemo(() => {
         if (!userPaint) {
-          return { color: '#9147FF' }; // Default Twitch purple
+          return { color: recipientBaseColor };
         }
-        return computePaintStyle(userPaint, '#9147FF');
-      }, [userPaint]);
+        return computePaintStyle(userPaint, recipientBaseColor);
+      }, [userPaint, recipientBaseColor]);
 
       return (
         <span className="inline-flex items-center align-middle">
@@ -1469,7 +1666,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
                 }
               }}
             >
-              {displayName || username}
+              {getDisplayedName(userIdProp, displayName || username, userOverrides)}
             </span>
           </Tooltip>
         </span>
@@ -1531,7 +1728,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
                     }
                   }}
                 >
-                  {matchedName}
+                  {effectiveDisplayName || matchedName}
                 </span>
               </Tooltip>
             </span>
@@ -1584,7 +1781,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
     const eventPadding = calculateHalfPadding(chatDesign?.message_spacing ?? 8);
 
     return (
-      <div key={messageId} className="px-3 border-b border-borderSubtle subscription-gradient" style={{ paddingTop: `${eventPadding}px`, paddingBottom: `${eventPadding}px` }}>
+      <div key={messageId} className="px-3 border-t border-borderSubtle subscription-gradient" style={{ paddingTop: `${eventPadding}px`, paddingBottom: `${eventPadding}px` }}>
         {/* Shared chat indicator */}
         {isFromDifferentChannel && (
           <div className="flex items-center gap-1.5 mb-2 pb-2 border-b border-borderSubtle">
@@ -1691,6 +1888,9 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
   } else if (isReplyToMe && chatDesign?.mention_animation !== false) {
     animationClass = 'animate-reply-flash';
     borderLeftColor = chatDesign?.reply_color ?? '#ff6b6b';
+  } else if (phraseMatch) {
+    animationClass = 'animate-phrase-highlight';
+    borderLeftColor = phraseMatch.color;
   } else if (isHighlighted) {
     animationClass = 'animate-highlight-flash';
   }
@@ -1705,18 +1905,55 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
   }
 
   // Build border class based on settings
-  const borderClass = chatDesign?.show_dividers !== false ? 'border-b border-borderSubtle' : '';
+  // Divider anchored to the TOP of each message instead of the bottom. That
+  // way the very last visible message has no line at its bottom edge — so
+  // when a new message arrives, the "absolute bottom" of the chat has no
+  // 1px line that needs to move with the layout. Removes the tiny vertical
+  // shimmer Brandon flagged.
+  const borderClass = chatDesign?.show_dividers !== false ? 'border-t border-borderSubtle' : '';
+
+  // StreamNook badge: regular-message render path (the 5th badge render site).
+  // Bits, donation, watchstreak, and subscription messages each have their own
+  // renderBadges() helper above; everything else (regular text, replies, actions,
+  // mentions, and the user's own outgoing messages) flows through the JSX below.
+  const senderUserId = parsed.tags.get('user-id');
+  const isSN = isStreamNookUser(senderUserId);
+  if (import.meta.env.DEV && typeof window !== 'undefined') {
+    const w = window as any;
+    if (!w.__snChatDebug) w.__snChatDebug = { totalCalls: 0, uniqueSenders: [], snHits: [], last10: [] };
+    w.__snChatDebug.totalCalls++;
+    w.__snChatDebug.last10.push({ senderUserId, isSN, displayName: parsed.tags.get('display-name'), path: 'regular' });
+    if (w.__snChatDebug.last10.length > 10) w.__snChatDebug.last10.shift();
+    if (!w.__snChatDebug.uniqueSenders.some((s: any) => s.senderUserId === senderUserId)) {
+      w.__snChatDebug.uniqueSenders.push({
+        senderUserId,
+        isSN,
+        displayName: parsed.tags.get('display-name'),
+      });
+    }
+    if (isSN) {
+      w.__snChatDebug.snHits.push({
+        senderUserId,
+        displayName: parsed.tags.get('display-name'),
+        at: new Date().toISOString(),
+        path: 'regular',
+      });
+    }
+  }
 
   return (
     <div
       className={`group relative px-3 hover:bg-glass transition-colors ${borderClass} ${animationClass
-        } ${isHighlightedMessage ? 'highlight-message-gradient' : ''
+        } ${isRedemption ? 'highlight-message-gradient' : ''
         } ${isFirstMessage ? 'bg-gradient-to-r from-purple-500/20 via-purple-400/10 to-transparent' : ''} ${isFromSharedChat ? 'border-l-2 border-l-accent/50 bg-accent/5' : ''
         } ${backgroundClass} ${moderationContext ? 'opacity-50' : ''}`}
       style={{
         ...messageStyle,
-        borderLeftColor: (isMentioned || isReplyToMe) && borderLeftColor ? borderLeftColor : undefined,
-        borderLeftWidth: (isMentioned || isReplyToMe) ? '4px' : undefined,
+        borderLeftColor: (isMentioned || isReplyToMe || phraseMatch) && borderLeftColor ? borderLeftColor : undefined,
+        borderLeftWidth: (isMentioned || isReplyToMe || phraseMatch) ? '4px' : undefined,
+        ...(phraseMatch
+          ? ({ '--phrase-flash-color': phraseMatch.color } as React.CSSProperties)
+          : {}),
       }}
     >
 
@@ -1726,14 +1963,14 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
           <span className="text-xs text-purple-400 font-normal opacity-60">First message in chat</span>
         </div>
       )}
-      {/* Highlighted message indicator */}
-      {isHighlightedMessage && (
+      {/* Channel points redemption indicator (highlight, gigantify, animate, skip-subs-mode, custom reward) */}
+      {redemptionLabel && (
         <div className="flex items-center justify-end gap-1">
           <svg className="w-3 h-3 text-cyan-400 opacity-60" viewBox="0 0 20 20" fill="currentColor">
             <path d="M10 6a4 4 0 014 4h-2a2 2 0 00-2-2V6z" />
             <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-2 0a6 6 0 11-12 0 6 6 0 0112 0z" clipRule="evenodd" />
           </svg>
-          <span className="text-xs text-cyan-400 font-normal opacity-60">Redeemed Highlight My Message</span>
+          <span className="text-xs text-cyan-400 font-normal opacity-60">{redemptionLabel}</span>
         </div>
       )}
       {/* Reply indicator */}
@@ -1747,23 +1984,25 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
               <svg className="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
               </svg>
-              <span className="font-semibold">{parsed.replyInfo.parentDisplayName}</span>
+              <span className="font-semibold">{getDisplayedName(parsed.replyInfo.parentUserId, parsed.replyInfo.parentDisplayName, userOverrides)}</span>
               <span className="truncate flex-1">{parsed.replyInfo.parentMsgBody}</span>
             </div>
           </div>
         </Tooltip>
       )}
 
-      <div className="flex items-start">
-        {/* Timestamp - displayed first before everything */}
+      <div>
+        {/* Timestamp - own line above the badges/name/message when enabled */}
         {formattedTimestamp && (
-          <span className="text-textSecondary text-xs mr-1.5 opacity-60 flex-shrink-0 mt-0.5">{formattedTimestamp}</span>
+          <div className="text-textSecondary text-[10px] opacity-50 leading-tight mb-0.5">{formattedTimestamp}</div>
         )}
         {/* Badges and Message content - inline flow so wrapped text starts at left edge */}
-        <div className="flex-1 min-w-0">
+        <div className="min-w-0">
           {/* Badges */}
-          {(isFromSharedChat && channelProfileImage) || parsed.badges.length > 0 || seventvBadge || thirdPartyBadges.length > 0 ? (
+          {isSN || (isFromSharedChat && channelProfileImage) || parsed.badges.length > 0 || seventvBadge || thirdPartyBadges.length > 0 ? (
             <span className="inline-flex items-center gap-1 mr-1.5 align-middle">
+              {/* StreamNook user identity badge (only visible to other StreamNook users) */}
+              {isSN && <StreamNookBadge userNumber={getStreamNookUserNumber(senderUserId)} />}
               {/* Shared chat channel profile image badge */}
               {isFromSharedChat && channelProfileImage && (
                 <Tooltip content={`Chatting from ${fetchedChannelName || 'shared channel'}`} side="top">
@@ -1809,7 +2048,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
               {seventvBadge && (
                 <Tooltip content={`Click for details: ${seventvBadge.description || seventvBadge.name}`} side="top">
                   <button
-                    onClick={() => useAppStore.getState().openBadgesWithBadge(seventvBadge.id)}
+                    onClick={() => openBadgesWithBadgeInMain(seventvBadge.id)}
                     className="inline-block cursor-pointer hover:scale-110 transition-transform"
                   >
                     <FallbackImage

@@ -1,5 +1,6 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useSyncExternalStore } from 'react';
 import { useAppStore } from '../stores/AppStore';
+import { openBadgesWithPaintInMain } from '../utils/openBadgesInMain';
 import { X, User, ExternalLink, Link, Unlink, Maximize2, Settings, Crown } from 'lucide-react';
 import { computePaintStyle, getBadgeImageUrls, getBadgeFallbackUrls, queueCosmeticForCaching } from '../services/seventvService';
 import { FallbackImage } from './FallbackImage';
@@ -14,6 +15,12 @@ import {
   CachedProfile
 } from '../services/cosmeticsCache';
 import { clearUserCache as clear7TVCache } from '../services/seventvService';
+import {
+  getStreamNookUserNumber,
+  subscribeStreamNookRegistryVersion,
+  getStreamNookRegistryVersion,
+} from '../services/supabaseService';
+import { StreamNookTierCard } from './StreamNookBadge';
 import { invoke } from '@tauri-apps/api/core';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -49,6 +56,11 @@ interface ChatIdentityBadge {
 
 const ProfileModal = ({ isOpen, onClose }: ProfileModalProps) => {
   const { isAuthenticated, currentUser, loginToTwitch, logoutFromTwitch, isLoading, currentStream } = useAppStore();
+
+  // Re-render whenever the StreamNook registry loads/updates so the tier card
+  // surfaces as soon as the lookup resolves.
+  useSyncExternalStore(subscribeStreamNookRegistryVersion, getStreamNookRegistryVersion, getStreamNookRegistryVersion);
+  const streamNookUserNumber = currentUser?.user_id ? getStreamNookUserNumber(currentUser.user_id) : null;
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const [twitchBadges, setTwitchBadges] = useState<TwitchBadge[]>([]);
   const [thirdPartyBadges, setThirdPartyBadges] = useState<ThirdPartyBadge[]>([]);
@@ -440,7 +452,7 @@ const ProfileModal = ({ isOpen, onClose }: ProfileModalProps) => {
                         {seventvPaint && (
                           <Tooltip content={`Click to view paint details: ${seventvPaint.name}`} side="top">
                             <button
-                              onClick={() => useAppStore.getState().openBadgesWithPaint(seventvPaint.id)}
+                              onClick={() => openBadgesWithPaintInMain(seventvPaint.id)}
                               className="inline-block px-3 py-1 rounded-full text-xs font-bold cursor-pointer hover:ring-1 hover:ring-accent/50 transition-all"
                               style={computePaintStyle(seventvPaint as any, '#29b6f6')}
                             >
@@ -472,6 +484,19 @@ const ProfileModal = ({ isOpen, onClose }: ProfileModalProps) => {
                         )}
                       </div>
                     </div>
+
+                    {/* StreamNook Identity: tier card showing rank in the StreamNook community.
+                        Only renders for users who appear in the registry. */}
+                    {streamNookUserNumber !== null && (
+                      <div className="glass-panel rounded-xl p-5">
+                        <h4 className="text-sm font-semibold text-textPrimary uppercase tracking-wide mb-4">
+                          StreamNook Identity
+                        </h4>
+                        <div className="flex justify-center">
+                          <StreamNookTierCard userNumber={streamNookUserNumber} skipCypher />
+                        </div>
+                      </div>
+                    )}
 
                     {/* Twitch Global Badges */}
                     <div className="glass-panel rounded-xl p-5">

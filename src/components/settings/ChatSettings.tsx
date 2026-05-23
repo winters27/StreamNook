@@ -1,5 +1,8 @@
 import { useAppStore } from '../../stores/AppStore';
 import ColorWheelPicker from '../ColorWheelPicker';
+import HighlightPhrasesSettings from './HighlightPhrasesSettings';
+import UserOverridesSettings from './UserOverridesSettings';
+import UserCommandsSettings from './UserCommandsSettings';
 
 // Toggle component for reuse
 const Toggle = ({ enabled, onChange }: { enabled: boolean; onChange: () => void }) => (
@@ -343,6 +346,12 @@ const ChatSettings = () => {
           />
         </div>
       </div>
+
+      <HighlightPhrasesSettings />
+
+      <UserCommandsSettings />
+
+      <UserOverridesSettings />
     </div>
   );
 };

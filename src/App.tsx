@@ -2,7 +2,8 @@ import { useEffect, useState, useRef } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useAppStore, type WhisperImportProgress } from './stores/AppStore';
 import { useContextMenuStore } from './stores/contextMenuStore';
-import { trackPresence, isSupabaseConfigured, incrementStat } from './services/supabaseService';
+import { listenForSettingsUpdates } from './utils/settingsBroadcast';
+import { trackPresence, isSupabaseConfigured, incrementStat, subscribeToStreamNookRegistry } from './services/supabaseService';
 import TitleBar from './components/TitleBar';
 import VideoPlayer from './components/VideoPlayer';
 import ChatWidget from './components/ChatWidget';
@@ -55,11 +56,20 @@ const WEBVIEW_RELOGIN_MIGRATION_KEY = 'streamnook-webview-relogin-v4.9.1';
 const V220_RELOGIN_MIGRATION_KEY = 'streamnook-relogin-v2.2.0';
 
 // Default sizes for different placements (outside component to avoid recreating on each render)
-const DEFAULT_CHAT_WIDTH = 384; // For 'right' placement
+const DEFAULT_CHAT_WIDTH = 402; // For 'right' placement
 const DEFAULT_CHAT_HEIGHT = 200; // For 'bottom' placement
 
 function App() {
-  const { loadSettings, chatPlacement, isLoading, streamUrl, currentMediaType, checkAuthStatus, showProfileOverlay, setShowProfileOverlay, addToast, showBadgesOverlay, setShowBadgesOverlay, badgesOverlayInitialPaintId, badgesOverlayInitialBadgeId, showWhispersOverlay, setShowWhispersOverlay, settings, updateSettings, isTheaterMode, isHomeActive, loadActiveDropsCache, profileModalUser, setProfileModalUser } = useAppStore();
+  const { loadSettings, chatPlacement, isLoading, streamUrl, currentMediaType, checkAuthStatus, showProfileOverlay, setShowProfileOverlay, addToast, showBadgesOverlay, setShowBadgesOverlay, badgesOverlayInitialPaintId, badgesOverlayInitialBadgeId, badgesOverlayInitialStreamNook, showWhispersOverlay, setShowWhispersOverlay, settings, updateSettings, isTheaterMode, isHomeActive, loadActiveDropsCache, profileModalUser, setProfileModalUser } = useAppStore();
+  // Channels owned by StreamNook MultiChat popouts. When the currently-watched
+  // channel is in here, the in-app chat panel collapses so the popout becomes
+  // the sole chat surface — no duplicate chat across windows.
+  const channelsInPopouts = useAppStore((s) => s.channelsInPopouts);
+  const currentStream = useAppStore((s) => s.currentStream);
+  const activeChatChannelInPopout = !!(
+    currentStream?.user_login &&
+    channelsInPopouts.has(currentStream.user_login.toLowerCase())
+  );
 
   const [chatSize, setChatSize] = useState(chatPlacement === 'bottom' ? DEFAULT_CHAT_HEIGHT : DEFAULT_CHAT_WIDTH);
   const [modLogsSize, setModLogsSize] = useState(300); // Default Mod Logs size
@@ -97,6 +107,12 @@ function App() {
   const isMultiNookActiveRef = useRef(false);
   const multiNookSlotsLengthRef = useRef(0);
   const isAdjustingRef = useRef(false);
+  // When the current channel's chat is owned by a MultiChat popout, main's
+  // chat panel JSX is gone — the video player container expands to fill the
+  // freed width, but stays 16:9 so the user sees side black bars. The
+  // aspect-ratio resize handler needs to know about this and treat chat as
+  // hidden for that calculation so the window shrinks to remove the bars.
+  const activeChatChannelInPopoutRef = useRef(false);
 
   // Handle placement changes - preserve video dimensions when moving chat around
   useEffect(() => {
@@ -299,8 +315,29 @@ function App() {
   }, []);
 
   useEffect(() => {
+    if (!isSupabaseConfigured()) return;
+    const cleanup = subscribeToStreamNookRegistry();
+    return () => { cleanup?.(); };
+  }, []);
+
+  useEffect(() => {
     let isMounted = true;
     const cleanupFunctions: (() => void)[] = [];
+
+    // Cross-window settings sync: when another window saves settings, refresh
+    // ours so user-edited values (highlights, custom commands, nicknames, etc.)
+    // show up everywhere without needing to reopen this window.
+    let unlistenSettingsSync: (() => void) | undefined;
+    void listenForSettingsUpdates(() => {
+      void useAppStore.getState().loadSettings();
+    }).then((unlisten) => {
+      if (!isMounted) {
+        unlisten();
+        return;
+      }
+      unlistenSettingsSync = unlisten;
+    });
+    cleanupFunctions.push(() => unlistenSettingsSync?.());
 
     const initializeApp = async () => {
       await loadSettings();
@@ -797,6 +834,10 @@ function App() {
     multiNookSlotsLengthRef.current = visibleSlotsLength;
   }, [visibleSlotsLength]);
 
+  useEffect(() => {
+    activeChatChannelInPopoutRef.current = activeChatChannelInPopout;
+  }, [activeChatChannelInPopout]);
+
   // Track watch time and streams watched in Supabase
   useEffect(() => {
     if (!streamUrl || !isSupabaseConfigured()) return;
@@ -828,8 +869,13 @@ function App() {
     const adjustWindowForAspectRatio = async () => {
       // Use refs for values that might be stale in closures
       const lockEnabled = aspectRatioLockEnabledRef.current;
-      const currentChatSize = chatSizeRef.current;
-      const currentChatPlacement = chatPlacementRef.current;
+      // When the current channel's chat is owned by a MultiChat popout, the
+      // in-app chat panel JSX is gone — treat chat as effectively hidden so
+      // the resize calculation shrinks the window and the player fills it
+      // cleanly at 16:9 instead of growing wider than 16:9 with side bars.
+      const chatHiddenByPopout = activeChatChannelInPopoutRef.current;
+      const currentChatSize = chatHiddenByPopout ? 0 : chatSizeRef.current;
+      const currentChatPlacement = chatHiddenByPopout ? 'hidden' : chatPlacementRef.current;
       const theaterMode = isTheaterModeRef.current;
       const currentStreamUrl = streamUrlRef.current;
       const currentIsMultiNookActive = isMultiNookActiveRef.current;
@@ -923,7 +969,7 @@ function App() {
 
     // Initial adjustment when settings change
     adjustWindowForAspectRatio();
-  }, [settings.video_player?.lock_aspect_ratio, chatSize, chatPlacement, streamUrl, isTheaterMode, isMultiNookActive, visibleSlotsLength]);
+  }, [settings.video_player?.lock_aspect_ratio, chatSize, chatPlacement, streamUrl, isTheaterMode, isMultiNookActive, visibleSlotsLength, activeChatChannelInPopout]);
 
   // Separate effect for the resize listener - only set up once and use refs
   useEffect(() => {
@@ -934,8 +980,9 @@ function App() {
     const adjustWindowForAspectRatio = async () => {
       // Use refs for current values
       const lockEnabled = aspectRatioLockEnabledRef.current;
-      const currentChatSize = chatSizeRef.current;
-      const currentChatPlacement = chatPlacementRef.current;
+      const chatHiddenByPopout = activeChatChannelInPopoutRef.current;
+      const currentChatSize = chatHiddenByPopout ? 0 : chatSizeRef.current;
+      const currentChatPlacement = chatHiddenByPopout ? 'hidden' : chatPlacementRef.current;
       const theaterMode = isTheaterModeRef.current;
       const currentStreamUrl = streamUrlRef.current;
       const currentIsMultiNookActive = isMultiNookActiveRef.current;
@@ -1274,8 +1321,11 @@ function App() {
                       )}
                     </AnimatePresence>
                   </div>
-                  {/* Chat */}
-                  {chatPlacement !== 'hidden' && (currentMediaType === 'live' || currentMediaType === 'offline_chat' || isMultiNookActive) && (
+                  {/* Chat — gated on whether this channel is currently owned
+                      by a StreamNook MultiChat popout. When it is, the popout
+                      becomes the sole chat surface and we collapse the in-app
+                      chat panel entirely (no duplicate chat across windows). */}
+                  {chatPlacement !== 'hidden' && (currentMediaType === 'live' || currentMediaType === 'offline_chat' || isMultiNookActive) && !activeChatChannelInPopout && (
                     <motion.div
                       initial={{ opacity: 0, width: chatPlacement === 'right' ? 0 : undefined, height: chatPlacement === 'bottom' ? 0 : undefined }}
                       animate={{ 
@@ -1369,6 +1419,7 @@ function App() {
             onBadgeClick={(badge, setId) => setSelectedBadge({ badge, setId })}
             initialPaintId={badgesOverlayInitialPaintId}
             initialBadgeId={badgesOverlayInitialBadgeId}
+            initialStreamNook={badgesOverlayInitialStreamNook}
           />
         )}
       </AnimatePresence>

@@ -72,11 +72,13 @@ const CommandItem: React.FC<{
           {command.description}
         </span>
         <span className={`flex-shrink-0 text-[9px] font-semibold tracking-wider px-1.5 py-0.5 rounded-md uppercase ${
-          command.category === 'Moderator' || command.category === 'Chat Flow' 
-            ? 'bg-green-500/20 text-green-300' 
-            : command.category === 'Everyone'
-              ? 'bg-white/10 text-white/50'
-              : 'bg-purple-500/20 text-purple-300'
+          command.category === 'Custom'
+            ? 'bg-amber-500/20 text-amber-300'
+            : command.category === 'Moderator' || command.category === 'Chat Flow'
+              ? 'bg-green-500/20 text-green-300'
+              : command.category === 'Everyone'
+                ? 'bg-white/10 text-white/50'
+                : 'bg-purple-500/20 text-purple-300'
         }`}>
           {command.category}
         </span>

@@ -324,9 +324,19 @@ pub async fn get_badges_missing_metadata() -> Result<Vec<(String, String)>, Stri
             let metadata_key = format!("metadata:{}-v{}", badge_set.set_id, version.id);
 
             // Check local cache only - don't trigger GitHub download
-            if !manifest.entries.contains_key(&metadata_key) {
+            let entry = manifest.entries.get(&metadata_key);
+            let needs_refetch = match entry {
+                None => true,
+                Some(e) => {
+                    // Stale entries scraped before the timezone-converter fix have a date
+                    // range in human form but no ISO timestamp, which the UI can't classify.
+                    let more_info = e.data.get("more_info").and_then(|v| v.as_str());
+                    crate::commands::badge_metadata::is_more_info_stale(more_info)
+                }
+            };
+            if needs_refetch {
                 debug!(
-                    "[Badges] Missing metadata for: {} v{} ({})",
+                    "[Badges] Missing or stale metadata for: {} v{} ({})",
                     badge_set.set_id, version.id, version.title
                 );
                 missing.push((badge_set.set_id.clone(), version.id.clone()));

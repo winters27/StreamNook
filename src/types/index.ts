@@ -129,6 +129,63 @@ export interface ChatDesignSettings {
   show_timestamp_seconds?: boolean; // Include seconds in timestamps
 }
 
+export interface HighlightPhrase {
+  id: string;
+  pattern: string;
+  enabled: boolean;
+  case_sensitive: boolean;
+  whole_word: boolean;
+  is_regex: boolean;
+  color: string;
+  // Optional sound played when the phrase matches. null/undefined = silent.
+  sound_id?: string | null;
+  // Per-phrase cooldown for the sound, in seconds. Default 3.
+  cooldown_seconds?: number;
+}
+
+export interface ChatHighlightSettings {
+  phrases: HighlightPhrase[];
+}
+
+// Per-user customization. nickname and color are independent: either can be set
+// without the other. Keyed by Twitch user_id (stable across name changes).
+export interface UserChatOverride {
+  user_id: string;
+  // Last-seen real username, captured purely so the Settings UI can show the
+  // user "Bob → Robert" without re-fetching. Not load-bearing.
+  username?: string;
+  nickname?: string | null;
+  color?: string | null;
+}
+
+export interface ChatCustomizationSettings {
+  user_overrides?: Record<string, UserChatOverride>;
+}
+
+// User-defined slash command. Trigger is the bare word matched at the start
+// (and optionally end) of a message. Expansion is the templated message body.
+// See `expandUserCommand` in utils/chatCommands.ts for the full placeholder
+// grammar — {N}, {N+}, {*}, {{ }}, and dotted fields (user.name, user.id,
+// channel.name, channel.id, stream.title, stream.game, stream.uptime).
+export interface UserSlashCommand {
+  id: string;
+  trigger: string;
+  expansion: string;
+  description?: string;
+  enabled: boolean;
+  // When true (default), the trigger only matches messages starting with `/`
+  // and the leading slash is stripped before matching. When false, the trigger
+  // matches plain text and the message body is rewritten in place.
+  require_slash?: boolean;
+  // When true, the trigger also matches at the END of a message (suffix mode),
+  // not just the start. Useful for shortcut catchphrases. Default false.
+  also_match_suffix?: boolean;
+}
+
+export interface ChatCommandsSettings {
+  user_commands: UserSlashCommand[];
+}
+
 export interface LiveNotificationSettings {
   enabled: boolean;
   play_sound: boolean;
@@ -273,6 +330,9 @@ export interface Settings {
   drops: DropsSettings;
   favorite_streamers: string[];
   chat_design?: ChatDesignSettings;
+  chat_highlights?: ChatHighlightSettings;
+  chat_customization?: ChatCustomizationSettings;
+  chat_commands?: ChatCommandsSettings;
   live_notifications?: LiveNotificationSettings;
   last_seen_version?: string;
   auto_switch?: AutoSwitchSettings;

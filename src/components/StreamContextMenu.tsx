@@ -2,7 +2,7 @@ import React, { useEffect, useRef } from 'react';
 import { useContextMenuStore } from '../stores/contextMenuStore';
 import { useAppStore } from '../stores/AppStore';
 import { usemultiNookStore } from '../stores/multiNookStore';
-import { LayoutGrid, Heart, UserPlus, UserMinus, Loader2, Scissors, Copy, ClipboardPaste, Type, User } from 'lucide-react';
+import { LayoutGrid, Heart, UserPlus, UserMinus, Loader2, Scissors, Copy, ClipboardPaste, Type, User, MessageSquarePlus } from 'lucide-react';
 import { Logger } from '../utils/logger';
 import { invoke } from '@tauri-apps/api/core';
 
@@ -24,9 +24,10 @@ export const StreamContextMenu: React.FC = () => {
     }, [isOpen, closeMenu]);
 
     // Handle collision detection / positioning
-    // 200px approx width, 140px approx height
-    const MENU_WIDTH = 200; 
-    const MENU_HEIGHT = 140;
+    // 200px approx width, 180px approx height (5 actions: View Profile, Add to
+    // MultiNook, Open in MultiChat, Favorite, Follow)
+    const MENU_WIDTH = 200;
+    const MENU_HEIGHT = 180;
     
     let safeX = x;
     let safeY = y;
@@ -209,12 +210,31 @@ export const StreamContextMenu: React.FC = () => {
     const handleMultiNook = (e: React.MouseEvent) => {
         e.stopPropagation();
         if (!hasRoomForMultiNook) return;
-        
+
         // Trigger flying animation from context menu click position
         usemultiNookStore.getState().triggerAddAnimation(safeX, safeY, stream.user_login);
         addSlot(stream.user_login);
-        
+
         closeMenu();
+    };
+
+    // Open the streamer's chat in a new MultiChat popout window without
+    // starting their stream. Useful when you want chat-only mode without
+    // committing CPU/bandwidth to playing the video — the popout polls live
+    // metadata (viewer count, uptime, etc.) but never starts Streamlink.
+    const handleOpenInMultiChat = async (e: React.MouseEvent) => {
+        e.stopPropagation();
+        closeMenu();
+        try {
+            const { openMultiChatWindow } = await import('../utils/multichatWindow');
+            await openMultiChatWindow({
+                channel: stream.user_login,
+                channelId: stream.user_id || undefined,
+                channelName: stream.user_name || undefined,
+            });
+        } catch (err) {
+            Logger.error('[StreamContextMenu] openMultiChatWindow failed:', err);
+        }
     };
 
     const handleFollow = (e: React.MouseEvent) => {
@@ -287,13 +307,23 @@ export const StreamContextMenu: React.FC = () => {
                     onClick={handleMultiNook}
                     disabled={!hasRoomForMultiNook}
                     className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
-                        hasRoomForMultiNook 
-                            ? 'text-textSecondary hover:text-white hover:bg-glass-hover' 
+                        hasRoomForMultiNook
+                            ? 'text-textSecondary hover:text-white hover:bg-glass-hover'
                             : 'text-textMuted opacity-50 cursor-not-allowed'
                     }`}
                 >
                     <LayoutGrid size={16} />
                     <span>Add to MultiNook</span>
+                </button>
+
+                {/* Open chat in MultiChat — spawns a popout window pre-loaded
+                    with this channel. Doesn't start the stream; chat only. */}
+                <button
+                    onClick={handleOpenInMultiChat}
+                    className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-textSecondary hover:text-accent hover:bg-glass-hover transition-all"
+                >
+                    <MessageSquarePlus size={16} />
+                    <span>Pop out chat</span>
                 </button>
 
                 {/* Favorite */}

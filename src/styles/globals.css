@@ -421,6 +421,28 @@ body {
   border-left-width: 4px;
 }
 
+/* User-defined highlight phrase flash. Color flows in via the inline
+   --phrase-flash-color custom property so each phrase animates in its own hue. */
+@keyframes phrase-highlight-flash {
+  0% {
+    background-color: color-mix(in srgb, var(--phrase-flash-color) 35%, transparent);
+    border-left-color: var(--phrase-flash-color);
+  }
+  50% {
+    background-color: color-mix(in srgb, var(--phrase-flash-color) 18%, transparent);
+    border-left-color: var(--phrase-flash-color);
+  }
+  100% {
+    background-color: transparent;
+    border-left-color: transparent;
+  }
+}
+
+.animate-phrase-highlight {
+  animation: phrase-highlight-flash 2s ease-out;
+  border-left-width: 4px;
+}
+
 /* Iridescent gradient animation for subscription messages */
 @keyframes iridescent-sub {
   0% {
@@ -2455,3 +2477,35 @@ body {
 .animate-panel-slide-up {
   animation: panel-slide-up-in 0.25s ease-out;
 }
+
+/* StreamNook Ethereal tier (user #1). Black text whose multi-layer text-shadow
+   melts continuously between purple, indigo, and blue on an 8s cycle. The
+   inner halo carries most of the visible color shift; outer halos drift more
+   subtly to keep the overall feel ambient. Deliberate exception to the no-glow
+   rule; scoped to this one tier only. */
+.sn-ethereal-text {
+  color: #000;
+  animation: sn-ethereal-glow 8s ease-in-out infinite;
+}
+
+@keyframes sn-ethereal-glow {
+  0%, 100% {
+    text-shadow:
+      0 0 4px rgba(216, 180, 254, 1),      /* purple-300 (strong magenta-violet) */
+      0 0 11px rgba(168, 85, 247, 0.8),    /* purple-500 */
+      0 0 22px rgba(99, 102, 241, 0.55);   /* indigo-500 */
+  }
+  33% {
+    text-shadow:
+      0 0 4px rgba(167, 139, 250, 1),      /* violet-400 (mid violet) */
+      0 0 11px rgba(99, 102, 241, 0.8),    /* indigo-500 */
+      0 0 22px rgba(59, 130, 246, 0.55);   /* blue-500 */
+  }
+  66% {
+    text-shadow:
+      0 0 4px rgba(96, 165, 250, 1),       /* blue-400 (clear blue) */
+      0 0 11px rgba(79, 70, 229, 0.8),     /* indigo-600 */
+      0 0 22px rgba(139, 92, 246, 0.55);   /* violet-500 */
+  }
+}
+

@@ -1,6 +1,49 @@
 import { invoke } from '@tauri-apps/api/core';
+import { open as openExternalUrl } from '@tauri-apps/plugin-shell';
 import { useAppStore } from '../stores/AppStore';
 import { Logger } from './logger';
+import {
+  expandUserCommand,
+  findUserCommand,
+  formatStreamUptime,
+  RESERVED_TRIGGERS,
+  type TemplateContext,
+} from './chatCommands';
+
+// Build a TemplateContext from the current AppStore + supplied args. Centralized
+// so plain-text expansions (ChatWidget) and slash-command expansions (this
+// file) populate the same set of placeholders.
+export function buildTemplateContext(
+  args: string[],
+  broadcasterId: string,
+  broadcasterLogin: string,
+): TemplateContext {
+  const state = useAppStore.getState();
+  const currentUser = state.currentUser;
+  const currentStream = state.currentStream;
+  return {
+    user_name: currentUser?.display_name || currentUser?.username || currentUser?.login || '',
+    user_id: currentUser?.user_id || '',
+    channel_name: currentStream?.user_name || currentStream?.user_login || broadcasterLogin || '',
+    channel_id: currentStream?.user_id || broadcasterId || '',
+    stream_title: currentStream?.title || '',
+    stream_game: currentStream?.game_name || '',
+    stream_uptime: formatStreamUptime(currentStream?.started_at),
+    args,
+  };
+}
+
+// Open a URL in the OS default browser. Used by /openurl, /popout, and a few
+// places that don't want the in-app WebView.
+async function openInBrowser(url: string): Promise<void> {
+  await openExternalUrl(url);
+}
+
+// Emit a synthetic system message into chat (no IRC send). Surface used by
+// /uptime, /chatters, /user, /mods, /vips, etc.
+function emitSystemMessage(message: string): void {
+  window.dispatchEvent(new CustomEvent('twitch-system-message', { detail: { message } }));
+}
 
 interface UserLookupResult {
   id: string;
@@ -21,10 +64,10 @@ async function lookupUser(username: string): Promise<UserLookupResult | null> {
 }
 
 export const handleSlashCommand = async (
-  message: string, 
-  broadcasterId: string, 
+  message: string,
+  broadcasterId: string,
   broadcasterLogin: string,
-  _sendMessageToChat: (msg: string) => void
+  sendMessageToChat: (msg: string) => void
 ): Promise<boolean> => {
   if (!message.startsWith('/')) return false;
 
@@ -33,6 +76,34 @@ export const handleSlashCommand = async (
   const argsWithoutCommand = args.slice(1);
 
   const addToast = useAppStore.getState().addToast;
+
+  // User-defined slash commands. Built-in triggers (RESERVED_TRIGGERS) always
+  // win — the switch below catches them regardless of what the user typed in
+  // settings. Plain-text (non-slash) user commands are handled by ChatWidget
+  // before this function is called.
+  if (!RESERVED_TRIGGERS.has(command)) {
+    const state = useAppStore.getState();
+    const userCommand = findUserCommand(command, state.settings.chat_commands?.user_commands, true);
+    if (userCommand) {
+      const ctx = buildTemplateContext(argsWithoutCommand, broadcasterId, broadcasterLogin);
+      const expansion = expandUserCommand(userCommand.expansion, ctx);
+      if (expansion.missing_args.length > 0) {
+        addToast(
+          `/${command} expects argument${expansion.missing_args.length > 1 ? 's' : ''} ${expansion.missing_args
+            .map((i) => `{${i}}`)
+            .join(', ')}`,
+          'error',
+        );
+        return true;
+      }
+      if (!expansion.text) {
+        addToast(`/${command} expanded to an empty message`, 'error');
+        return true;
+      }
+      sendMessageToChat(expansion.text);
+      return true;
+    }
+  }
 
   try {
     switch (command) {
@@ -484,6 +555,124 @@ export const handleSlashCommand = async (
       // ────────────────────────────────────────────────────────
       case 'me':
         return false; // Let IRC handle it
+
+      // ────────────────────────────────────────────────────────
+      // StreamNook-native QoL commands (client-side only)
+      // ────────────────────────────────────────────────────────
+      case 'clearmessages': {
+        // Wipe the current pane's local message buffer. Purely visual — does
+        // NOT call the moderator /clear command. ChatMessageList listens.
+        window.dispatchEvent(new CustomEvent('streamnook-clear-local-chat'));
+        emitSystemMessage('Cleared messages in this chat (visual only).');
+        return true;
+      }
+      case 'openurl': {
+        if (argsWithoutCommand.length === 0) {
+          addToast('Usage: /openurl <url>', 'info');
+          return true;
+        }
+        const target = argsWithoutCommand[0];
+        try {
+          // Bare-minimum URL guard so users don't accidentally shell-out odd
+          // strings via this command. Allow http/https/twitch protocols.
+          const parsed = new URL(target.includes('://') ? target : `https://${target}`);
+          if (!['http:', 'https:'].includes(parsed.protocol)) {
+            addToast(`Refused to open ${parsed.protocol} URL`, 'error');
+            return true;
+          }
+          await openInBrowser(parsed.toString());
+        } catch {
+          addToast(`Not a valid URL: ${target}`, 'error');
+        }
+        return true;
+      }
+      case 'popout': {
+        const channelLogin = (argsWithoutCommand[0] || broadcasterLogin || '').replace('@', '').toLowerCase();
+        if (!channelLogin) {
+          addToast('Usage: /popout [channel]', 'info');
+          return true;
+        }
+        await openInBrowser(`https://www.twitch.tv/popout/${channelLogin}/chat?popout=`);
+        return true;
+      }
+      case 'popup': {
+        const channelLogin = (argsWithoutCommand[0] || broadcasterLogin || '').replace('@', '').toLowerCase();
+        if (!channelLogin) {
+          addToast('Usage: /popup [channel]', 'info');
+          return true;
+        }
+        try {
+          // Dynamic import so this module doesn't pull in the WebviewWindow
+          // dependency for users who never run this command.
+          const { openMultiChatWindow } = await import('./multichatWindow');
+          // Look up the user_id when the target isn't the current channel —
+          // MultiChat panes prefer a stable id but degrade to login lookup.
+          let channelId: string | undefined;
+          const currentStream = useAppStore.getState().currentStream;
+          if (currentStream?.user_login?.toLowerCase() === channelLogin) {
+            channelId = currentStream.user_id;
+          } else {
+            const lookup = await invoke<UserLookupResult | null>('get_user_by_login', { login: channelLogin }).catch(() => null);
+            channelId = lookup?.id;
+          }
+          await openMultiChatWindow({ channel: channelLogin, channelId });
+        } catch (err) {
+          Logger.error('[Command Handler] /popup failed:', err);
+          addToast('Failed to open MultiChat window', 'error');
+        }
+        return true;
+      }
+      case 'uptime': {
+        const currentStream = useAppStore.getState().currentStream;
+        if (!currentStream?.started_at) {
+          emitSystemMessage('This channel is offline.');
+          return true;
+        }
+        const uptime = formatStreamUptime(currentStream.started_at);
+        const channelName = currentStream.user_name || currentStream.user_login || 'This channel';
+        emitSystemMessage(`${channelName} has been live for ${uptime}.`);
+        return true;
+      }
+      case 'usercard': {
+        if (argsWithoutCommand.length === 0) {
+          addToast('Usage: /usercard <user>', 'info');
+          return true;
+        }
+        const username = argsWithoutCommand[0].replace('@', '');
+        const user = await lookupUser(username);
+        if (!user) {
+          addToast(`User ${username} not found`, 'error');
+          return true;
+        }
+        // Routed through a custom event so the active pane (main chat or any
+        // MultiChat window) can decide where to open the card.
+        window.dispatchEvent(new CustomEvent('streamnook-open-user-card', {
+          detail: { userId: user.id, username: user.login, displayName: user.display_name },
+        }));
+        return true;
+      }
+      case 'banid': {
+        if (argsWithoutCommand.length < 1) {
+          addToast('Usage: /banid <userID> [reason]', 'info');
+          return true;
+        }
+        const targetUserId = argsWithoutCommand[0];
+        // Twitch user IDs are numeric. Reject obvious typos early so the user
+        // gets a clearer error than the Helix 400.
+        if (!/^\d+$/.test(targetUserId)) {
+          addToast('User ID must be numeric — did you mean /ban?', 'error');
+          return true;
+        }
+        const reason = argsWithoutCommand.slice(1).join(' ');
+        try {
+          await invoke('ban_user', { broadcasterId, targetUserId, duration: null, reason: reason || null });
+          addToast(`Banned user ID ${targetUserId}`, 'success');
+        } catch (err: unknown) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          addToast(`Ban failed: ${errMsg}`, 'error');
+        }
+        return true;
+      }
 
       // ────────────────────────────────────────────────────────
       // Commands that show usage info or are client-side only

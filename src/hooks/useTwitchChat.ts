@@ -1,1174 +1,136 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
-import { invoke } from '@tauri-apps/api/core';
-import { useAppStore } from '../stores/AppStore';
-import { fetchRecentMessagesAsIRC } from '../services/ivrService';
+// Backwards-compatible thin wrapper around the per-channel chatConnectionStore.
+//
+// Historically this file owned ~1200 lines of WebSocket bridge code, message
+// routing, optimistic-send replacement, reconnect/health-check logic, and per-
+// channel cache state — all scoped to a single "current channel." That logic
+// now lives in `src/stores/chatConnectionStore.ts` and supports concurrent
+// channels (one IRC connection, N reference-counted subscribers).
+//
+// This hook preserves the exact return shape ChatWidget consumes so the main
+// app continues to work without any caller-side changes:
+//
+//   const { messages, connectChat, sendMessage, isConnected, error, setPaused,
+//           deletedMessageIds, clearedUserContexts, roomState, userBadges }
+//     = useTwitchChat();
+//
+// New code (MultiChat tabs, etc.) should call the store directly via
+// `useChannelChat(channel)` + `acquireChannel` / `releaseChannel`.
 
+import { useCallback, useEffect, useRef } from 'react';
+import {
+  acquireChannel,
+  releaseChannel,
+  sendChannelMessage,
+  setChannelPaused,
+  useChannelChat,
+  type ClearedUserEntry,
+  type RoomState,
+  type SendUserInfo,
+} from '../stores/chatConnectionStore';
 import { Logger } from '../utils/logger';
-// Hardcoded message limit for optimal performance and stability
-const CHAT_HISTORY_MAX = 100;
-// Buffer size to allow when chat is paused (scrolled up)
-const CHAT_BUFFER_SIZE = 150;
-// Total max including buffer
-const CHAT_MAX_WITH_BUFFER = CHAT_HISTORY_MAX + CHAT_BUFFER_SIZE;
 
-// Deletion event types from IRC
-interface ClearMsgEvent {
-  type: 'CLEARMSG';
-  target_msg_id: string;
-  login: string;
+// Re-export the moderation type so existing imports (`useTwitchChat`-relative)
+// keep working: ChatWidget pulls this from various places.
+export type { ModerationContext, ClearedUserEntry, RoomState } from '../stores/chatConnectionStore';
+
+export interface UseTwitchChatReturn {
+  messages: any[];
+  connectChat: (channel: string, roomId?: string) => Promise<void>;
+  sendMessage: (
+    messageText: string,
+    userInfo: SendUserInfo,
+    replyParentMsgId?: string,
+  ) => Promise<void>;
+  isConnected: boolean;
+  error: string | null;
+  setPaused: (paused: boolean) => void;
+  deletedMessageIds: Set<string>;
+  clearedUserContexts: Map<string, ClearedUserEntry>;
+  roomState: RoomState;
+  userBadges: string | null;
 }
 
-interface ClearChatEvent {
-  type: 'CLEARCHAT';
-  target_user_id?: string;
-  target_user?: string;
-  ban_duration?: number;
-}
-
-// Moderation context for cleared messages
-export interface ModerationContext {
-  type: 'timeout' | 'ban' | 'deleted';
-  duration?: number; // seconds, only for timeouts
-  username?: string; // affected user
-}
-
-// Internal tracking for CLEARCHAT — scopes moderation to specific messages
-interface ClearedUserEntry {
-  context: ModerationContext;
-  affectedMessageIds: Set<string>;
-}
-
-export const useTwitchChat = () => {
-  const [messages, setMessages] = useState<any[]>([]);
-  const [isPausedForBuffer, setIsPausedForBuffer] = useState(false);
-  const [isConnected, setIsConnected] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  // Track deleted message IDs for showing "[deleted]" styling
-  const [deletedMessageIds, setDeletedMessageIds] = useState<Set<string>>(new Set());
-  // Track users whose messages are cleared (timeout/ban) with per-message scoping
-  const [clearedUserContexts, setClearedUserContexts] = useState<Map<string, ClearedUserEntry>>(new Map());
-
-  // Room state tracking (followers-only, subs-only, slow, etc.)
-  const [roomState, setRoomState] = useState<{
-    followersOnly: number; // -1 = off, 0 = all followers, >0 = minutes
-    slow: number;
-    subsOnly: boolean;
-    emoteOnly: boolean;
-    r9k: boolean;
-  }>({ followersOnly: -1, slow: 0, subsOnly: false, emoteOnly: false, r9k: false });
-
-  // Expose the current user's IRC badges to determine chat privilege bypasses
-  const [userBadges, setUserBadges] = useState<string | null>(null);
-
-  // Listen for locally emitted system messages (like /mods command results)
-  useEffect(() => {
-    const handleSystemMessage = (e: CustomEvent) => {
-      const message = e.detail?.message;
-      if (!message) return;
-      
-      const sysMsgId = `sys-cmd-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-      
-      setMessages(prev => {
-        const limit = isPausedForBufferRef.current ? CHAT_MAX_WITH_BUFFER : CHAT_HISTORY_MAX;
-        
-        const updated = [...prev, {
-          id: sysMsgId,
-          username: 'System',
-          display_name: 'Twitch',
-          color: '#9147ff', // Twitch purple
-          badges: [{ key: 'staff/1', info: {} }], // Use staff badge for official look
-          content: message,
-          segments: [{ type: 'text', content: message }],
-          is_action: false,
-          is_first_message: false,
-          is_mentioned: false,
-          is_from_shared_chat: false,
-          tags: new Map([
-            ['user-id', 'tw-system'], 
-            ['id', sysMsgId]
-          ]),
-        } as unknown as any]; // Cast to avoid deep type checking
-        
-        if (updated.length > limit) {
-          return updated.slice(updated.length - limit);
-        }
-        return updated;
-      });
-    };
-
-    window.addEventListener('twitch-system-message', handleSystemMessage as EventListener);
-    return () => {
-      window.removeEventListener('twitch-system-message', handleSystemMessage as EventListener);
-    };
-  }, []);
-
-  // Use refs for all mutable state that needs to be accessed in callbacks
-  const wsRef = useRef<WebSocket | null>(null);
-  const seenMessageIdsRef = useRef<Set<string>>(new Set());
-  const isConnectingRef = useRef(false);
+export const useTwitchChat = (): UseTwitchChatReturn => {
+  // Track which channel this hook instance currently owns. The shim acquires
+  // on connectChat() and releases on unmount or on switching channels — same
+  // lifecycle the prior single-instance hook had, but now routed through the
+  // ref-counted store so multiple consumers (MultiChat + main app) share one
+  // underlying IRC connection.
   const currentChannelRef = useRef<string | null>(null);
-  const currentUserIdRef = useRef<string | null>(null);
-  const isPausedForBufferRef = useRef(false);
-  // Ref for synchronous access to messages (needed for optimistic reply tags)
-  const messagesRef = useRef<any[]>([]);
 
-
-  // Track the user's badge string from IRC for optimistic updates
-  const userBadgesFromIrcRef = useRef<string | null>(null);
-
-  // Track intentional disconnects to prevent reconnection attempts
-  const isIntentionalDisconnectRef = useRef(false);
-
-  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const reconnectAttemptsRef = useRef<number>(0);
-  const maxReconnectAttempts = 10;
-  const healthCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const lastMessageTimeRef = useRef<number>(Date.now());
-  const isConnectedRef = useRef(false);
-  // Ref for the NOTICE error auto-clear timer (prevents stale timer leaks)
-  const noticeErrorTimerRef = useRef<NodeJS.Timeout | null>(null);
-
-  // Keep ref in sync with state
-  useEffect(() => {
-    isPausedForBufferRef.current = isPausedForBuffer;
-  }, [isPausedForBuffer]);
-
-  useEffect(() => {
-    isConnectedRef.current = isConnected;
-  }, [isConnected]);
-
-  // Keep messagesRef in sync for synchronous access in sendMessage
-  useEffect(() => {
-    messagesRef.current = messages;
-  }, [messages]);
-
-  // Cleanup function to properly close WebSocket and clear handlers
-  // Note: We do NOT call stop_chat here because the Rust backend handles its own
-  // cleanup at the start of start_chat. Calling stop_chat from here causes a race
-  // condition where channels get cleared during reconnection attempts (e.g., after PIP mode).
-  const cleanupWebSocket = useCallback((stopBackend: boolean = false) => {
-    // Clear any pending reconnect
-    if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current);
-      reconnectTimeoutRef.current = null;
-    }
-
-    // Clear health check interval
-    if (healthCheckIntervalRef.current) {
-      clearInterval(healthCheckIntervalRef.current);
-      healthCheckIntervalRef.current = null;
-    }
-
-    // Close existing WebSocket if any
-    if (wsRef.current) {
-      const ws = wsRef.current;
-
-      // Remove event handlers to prevent any callbacks during cleanup
-      ws.onmessage = null;
-      ws.onerror = null;
-      ws.onclose = null;
-      ws.onopen = null;
-
-      if (ws.readyState !== WebSocket.CLOSED && ws.readyState !== WebSocket.CLOSING) {
-        Logger.debug('[Chat] Closing existing WebSocket connection');
-        ws.close(1000, 'Cleanup'); // Normal closure
-      }
-
-      wsRef.current = null;
-    }
-
-    // Reset room state on cleanup (channel switch / disconnect)
-    setRoomState({ followersOnly: -1, slow: 0, subsOnly: false, emoteOnly: false, r9k: false });
-    setUserBadges(null);
-
-    // Only stop the backend IRC service when explicitly requested (e.g., channel switch or app cleanup)
-    // The Rust start_chat already calls stop() at its beginning, so we don't need to call it
-    // during normal reconnection flows.
-    if (stopBackend) {
-      invoke('stop_chat').catch(err => {
-        Logger.warn('[Chat] Failed to stop backend chat service:', err);
-      });
-    }
-  }, []);
+  const snapshot = useChannelChat(currentChannelRef.current);
 
   const connectChat = useCallback(async (channel: string, roomId?: string) => {
-    // Prevent duplicate connection attempts to the same channel
-    if (isConnectingRef.current && currentChannelRef.current === channel) {
-      Logger.debug('[Chat] Already connecting to this channel, skipping duplicate request');
+    const targetKey = channel.toLowerCase();
+    const previous = currentChannelRef.current;
+
+    if (previous === targetKey) {
+      // Same channel — refresh room-id only if a new one was provided.
+      if (roomId) {
+        // Acquiring again is idempotent (just bumps the ref count) but also
+        // updates the channelId if it was null before. Pair it with a release
+        // so the ref count stays balanced.
+        await acquireChannel(targetKey, roomId);
+        await releaseChannel(targetKey);
+      }
       return;
     }
 
-    Logger.debug(`[Chat] Attempting to connect to channel: ${channel}`);
-
-    // Mark as intentional disconnect before cleanup
-    isIntentionalDisconnectRef.current = true;
-
-    // Clean up any existing connection first
-    cleanupWebSocket();
-
-    isConnectingRef.current = true;
-    currentChannelRef.current = channel;
-    setError(null);
-
-    // Clear old messages, seen IDs, and moderation contexts
-    setMessages([]);
-    seenMessageIdsRef.current = new Set();
-    setDeletedMessageIds(new Set());
-    setClearedUserContexts(new Map());
-
-    // Initialize badge cache BEFORE fetching IVR messages
-    // This ensures historical messages have badges populated correctly
-    if (roomId) {
-      try {
-        Logger.debug('[Chat] Initializing badge cache before fetching recent messages');
-        const { initializeBadgeCache } = await import('../services/twitchBadges');
-        await initializeBadgeCache(roomId);
-      } catch (err) {
-        Logger.warn('[Chat] Failed to initialize badge cache:', err);
-        // Continue anyway - badges may not display but chat will still work
-      }
-    }
-
-    // Fetch recent messages from IVR API if roomId is provided
-    // Route through Rust backend for proper parsing and layout calculation
-    if (roomId) {
-      try {
-        Logger.debug('[Chat] Fetching recent messages from IVR API for:', channel);
-        const recentMessagesRaw = await fetchRecentMessagesAsIRC(channel, roomId);
-        if (recentMessagesRaw.length > 0) {
-          Logger.debug(`[Chat] Parsing ${recentMessagesRaw.length} recent messages through Rust backend`);
-          
-          // Parse historical messages through Rust for proper layout calculation
-          // This ensures historical messages get the same accurate heights as live messages
-          // Add retry logic to handle Tauri IPC initialization timing issues
-          let parsedMessages: any[] | null = null;
-          let parseAttempts = 0;
-          const maxParseAttempts = 3;
-          
-          while (parseAttempts < maxParseAttempts && !parsedMessages) {
-            try {
-              // Small delay on retries to allow Tauri IPC to initialize
-              if (parseAttempts > 0) {
-                await new Promise(resolve => setTimeout(resolve, 200 * parseAttempts));
-                Logger.debug(`[Chat] Retrying parse_historical_messages (attempt ${parseAttempts + 1}/${maxParseAttempts})`);
-              }
-              
-              parsedMessages = await invoke<any[]>('parse_historical_messages', { 
-                messages: recentMessagesRaw,
-                channelName: channel
-              });
-            } catch (parseErr: any) {
-              parseAttempts++;
-              // Check if it's an IPC connection error (Tauri not ready)
-              const isIpcError = parseErr?.message?.includes('Failed to fetch') || 
-                                 parseErr?.message?.includes('ERR_CONNECTION_REFUSED') ||
-                                 parseErr?.toString?.().includes('Failed to fetch');
-              
-              if (isIpcError && parseAttempts < maxParseAttempts) {
-                Logger.warn(`[Chat] Tauri IPC not ready, will retry (attempt ${parseAttempts}/${maxParseAttempts})`);
-                continue;
-              }
-              
-              // Final attempt failed or non-IPC error
-              Logger.warn('[Chat] Rust parsing failed, falling back to raw IRC strings:', parseErr);
-              break;
-            }
-          }
-          
-          if (parsedMessages && parsedMessages.length > 0) {
-            Logger.debug(`[Chat] Received ${parsedMessages.length} parsed messages from Rust backend`);
-            // Add message IDs to seen set
-            parsedMessages.forEach(msg => {
-              if (msg.id) {
-                seenMessageIdsRef.current.add(msg.id);
-              }
-            });
-            setMessages(parsedMessages);
-          } else {
-            // Fallback to raw IRC strings if Rust parsing failed
-            Logger.debug('[Chat] Using raw IRC strings as fallback');
-            recentMessagesRaw.forEach(msg => {
-              const idMatch = msg.match(/(?:^|;)id=([^;]+)/);
-              if (idMatch) {
-                seenMessageIdsRef.current.add(idMatch[1]);
-              }
-            });
-            setMessages(recentMessagesRaw);
-          }
-        }
-      } catch (err) {
-        Logger.error('[Chat] Failed to fetch recent messages:', err);
-        // Continue without recent messages - not a critical failure
-      }
-    }
-
-    // Reset reconnect attempts for new channel
-    reconnectAttemptsRef.current = 0;
-
-    // Allow time for cleanup to complete
-    await new Promise(resolve => setTimeout(resolve, 150));
-
-    // Clear the intentional disconnect flag now that we're starting a new connection
-    isIntentionalDisconnectRef.current = false;
-
+    // Switching channels: acquire the new one first (so the bridge stays up
+    // if it's the same Rust connection) then release the previous.
     try {
-      Logger.debug('[Chat] Invoking start_chat command');
-      const port = await invoke<number>('start_chat', { channel });
-      Logger.debug(`[Chat] Received port: ${port}`);
-
-      // Retry logic for WebSocket connection
-      const connectWithRetry = async (retries = 5): Promise<WebSocket> => {
-        for (let i = 0; i < retries; i++) {
-          try {
-            // Wait longer on each retry, but try immediately on first attempt
-            const delay = i === 0 ? 10 : 500 + (i * 500);
-            if (delay > 10) {
-              Logger.debug(`[Chat] Waiting ${delay}ms before connection attempt ${i + 1}/${retries}`);
-              await new Promise(resolve => setTimeout(resolve, delay));
-            }
-
-            // Check if we've been cleaned up or channel changed
-            if (currentChannelRef.current !== channel) {
-              throw new Error('Channel changed during connection attempt');
-            }
-
-            const wsUrl = `ws://localhost:${port}`;
-            Logger.debug(`[Chat] Connecting to ${wsUrl}`);
-            const ws = new WebSocket(wsUrl);
-
-            // Wait for connection to open or fail
-            await new Promise<void>((resolve, reject) => {
-              const timeout = setTimeout(() => {
-                Logger.debug('[Chat] Connection timeout');
-                reject(new Error('Connection timeout'));
-              }, 5000);
-
-              ws.onopen = () => {
-                clearTimeout(timeout);
-                Logger.debug('[Chat] WebSocket connected successfully');
-                resolve();
-              };
-
-              ws.onerror = (err) => {
-                clearTimeout(timeout);
-                Logger.error('[Chat] WebSocket connection error:', err);
-                reject(new Error('Connection failed'));
-              };
-            });
-
-            return ws;
-          } catch (err) {
-            Logger.error(`[Chat] Connection attempt ${i + 1} failed:`, err);
-            if (i === retries - 1) throw err;
-          }
-        }
-        throw new Error('All connection attempts failed');
-      };
-
-      const newWs = await connectWithRetry();
-
-      // Store the WebSocket reference
-      wsRef.current = newWs;
-
-      // Set connected state immediately since connectWithRetry already waited for connection
-      Logger.debug('[Chat] Setting connected state to true');
-      setIsConnected(true);
-      reconnectAttemptsRef.current = 0;
-      lastMessageTimeRef.current = Date.now();
-
-      newWs.onmessage = (event) => {
-        const message = event.data;
-
-        // Update last message time for health monitoring
-        lastMessageTimeRef.current = Date.now();
-
-        // Handle connection warnings
-        if (message.startsWith('CONNECTION_WARNING:')) {
-          const warning = message.split(':')[1];
-          Logger.warn('[Chat] Connection warning:', warning);
-          setError(`Warning: ${warning}`);
-          return;
-        }
-
-        // Handle reconnection notifications - silently in the background
-        if (message === 'RECONNECTED') {
-          Logger.debug('[Chat] Backend reconnected to Twitch IRC');
-          setIsConnected(true);
-          setError(null);
-          reconnectAttemptsRef.current = 0;
-          lastMessageTimeRef.current = Date.now();
-          return;
-        }
-
-        if (message.startsWith('RECONNECTING:')) {
-          const attempt = message.split(':')[1];
-          Logger.debug(`[Chat] Backend attempting to reconnect (attempt ${attempt})`);
-          setIsConnected(false);
-          return;
-        }
-
-        if (message.startsWith('RECONNECT_FAILED:')) {
-          const attempt = message.split(':')[1];
-          Logger.debug(`[Chat] Reconnection attempt ${attempt} failed`);
-          return;
-        }
-
-        if (message === 'RECONNECT_STOPPED') {
-          Logger.debug('[Chat] Reconnection stopped by backend');
-          setError('Connection stopped');
-          setIsConnected(false);
-          return;
-        }
-
-        if (message === 'RECONNECT_EXHAUSTED') {
-          Logger.debug('[Chat] Max reconnection attempts reached');
-          setError('Unable to reconnect to chat. Please refresh.');
-          setIsConnected(false);
-          return;
-        }
-
-        // Handle USER_BADGES message from backend - contains user's IRC badges
-        if (message.startsWith('USER_BADGES:')) {
-          const badges = message.substring('USER_BADGES:'.length);
-          Logger.debug('[Chat] Received user badges from IRC:', badges);
-          userBadgesFromIrcRef.current = badges;
-          setUserBadges(badges);
-          return;
-        }
-
-        // Handle HEARTBEAT message from backend - just proves connection is alive
-        // Don't add to messages, just update health check timestamp
-        if (message === 'HEARTBEAT') {
-          // lastMessageTimeRef is already updated at top of onmessage
-          // Clear any stale connection errors since we just received proof of life
-          setError(null);
-          return;
-        }
-
-        // Handle IRC_CONNECTED and IRC_RECONNECTING status messages
-        if (message === 'IRC_CONNECTED') {
-          Logger.debug('[Chat] IRC connection established');
-          setIsConnected(true);
-          setError(null);
-          return;
-        }
-
-        if (message === 'IRC_RECONNECTING') {
-          Logger.debug('[Chat] IRC reconnecting...');
-          setError('Reconnecting to chat...');
-          return;
-        }
-
-        // Check if message is JSON (new format with layout, or deletion events)
-        if (message.startsWith('{')) {
-          try {
-            const parsed = JSON.parse(message);
-
-            // Handle CLEARMSG event - single message deleted by mod
-            if (parsed.type === 'CLEARMSG' && parsed.target_msg_id) {
-              Logger.debug('[Chat] CLEARMSG: Message deleted by mod:', parsed.target_msg_id, 'user:', parsed.login);
-              setDeletedMessageIds(prev => {
-                const newSet = new Set(prev);
-                newSet.add(parsed.target_msg_id);
-                return newSet;
-              });
-              return;
-            }
-
-            // Handle CLEARCHAT event - user timed out/banned or chat cleared
-            if (parsed.type === 'CLEARCHAT') {
-              if (parsed.target_user_id) {
-                // Determine moderation type based on ban_duration
-                // If ban_duration is present (even 0), it's a timeout
-                // If ban_duration is absent/undefined, it's a permanent ban
-                const moderationType: 'timeout' | 'ban' = 
-                  parsed.ban_duration !== undefined && parsed.ban_duration !== null 
-                    ? 'timeout' 
-                    : 'ban';
-                
-                Logger.debug(
-                  '[Chat] CLEARCHAT:', 
-                  moderationType === 'timeout' 
-                    ? `User timed out for ${parsed.ban_duration}s:` 
-                    : 'User banned:',
-                  parsed.target_user
-                );
-                
-                // Snapshot current message IDs belonging to this user
-                // so only pre-existing messages get the moderation overlay
-                const affectedIds = new Set<string>();
-                for (const msg of messagesRef.current) {
-                  const msgUserId = typeof msg !== 'string'
-                    ? msg.user_id
-                    : msg.match?.(/user-id=([^;]+)/)?.[1];
-                  const msgId = typeof msg !== 'string'
-                    ? msg.id
-                    : msg.match?.(/(?:^|;)id=([^;]+)/)?.[1];
-                  if (msgUserId === parsed.target_user_id && msgId) {
-                    affectedIds.add(msgId);
-                  }
-                }
-
-                setClearedUserContexts(prev => {
-                  const newMap = new Map(prev);
-                  newMap.set(parsed.target_user_id, {
-                    context: {
-                      type: moderationType,
-                      duration: parsed.ban_duration,
-                      username: parsed.target_user,
-                    },
-                    affectedMessageIds: affectedIds,
-                  });
-                  return newMap;
-                });
-              } else {
-                // Full chat clear - this is rare, usually mod action
-                Logger.debug('[Chat] CLEARCHAT: Full chat clear');
-              }
-              return;
-            }
-
-            if (parsed.type === 'NOTICE') {
-              Logger.debug('[Chat] NOTICE:', parsed.msg_id, parsed.message);
-              
-              // Local IRC Mod Log Fallback - Catches settings changes that EventSub misses (e.g., subs-only) or token failures
-              const msgId = parsed.msg_id;
-              if (msgId) {
-                const modActionMap: Record<string, string> = {
-                  'host_on': 'host',
-                  'host_off': 'unhost',
-                  'slow_on': 'slow_mode_on',
-                  'slow_off': 'slow_mode_off',
-                  'subs_on': 'subscriber_only_on',
-                  'subs_off': 'subscriber_only_off',
-                  'emote_only_on': 'emote_only_on',
-                  'emote_only_off': 'emote_only_off',
-                  'followers_on': 'follower_only_on',
-                  'followers_off': 'follower_only_off',
-                  'followers_on_zero': 'follower_only_on',
-                  'timeout_success': 'timeout',
-                  'ban_success': 'ban',
-                  'unban_success': 'unban',
-                  'untimeout_success': 'untimeout',
-                  'clear_chat': 'clear_chat'
-                };
-
-                if (modActionMap[msgId]) {
-                  const state = useAppStore.getState();
-                  const recentEventSubAction = msgId.replace('_on', '').replace('_off', '').replace('_success', '');
-                  const recentlyAdded = state.modLogs.some(l => 
-                    (l.action === recentEventSubAction || l.action === modActionMap[msgId]) && 
-                    new Date(l.timestamp).getTime() > Date.now() - 2000
-                  );
-
-                  if (!recentlyAdded) {
-                    state.addModLog({
-                      id: `irc-${Date.now()}-${Math.random()}`,
-                      action: modActionMap[msgId],
-                      timestamp: new Date().toISOString(),
-                      moderator_name: 'Twitch System',
-                      target_user_name: 'Stream/Settings',
-                      reason: parsed.message,
-                      details: parsed
-                    });
-                  }
-                }
-              }
-
-              // Only remove optimistic messages for known rejection msg-ids
-              const rejectionIds = new Set([
-                'msg_followersonly', 'msg_followersonly_followed', 'msg_followersonly_zero',
-                'msg_subsonly', 'msg_slowmode', 'msg_r9k', 'msg_verified_email',
-                'msg_ratelimit', 'msg_duplicate', 'msg_banned', 'msg_timedout',
-                'msg_rejected', 'msg_rejected_mandatory', 'msg_requires_verified_phone_number',
-              ]);
-
-              if (parsed.msg_id && rejectionIds.has(parsed.msg_id)) {
-                // Remove the most recent optimistic message (sent within last 5s as safety bound)
-                const cutoff = Date.now() - 5000;
-                setMessages(prev => {
-                  for (let i = prev.length - 1; i >= 0; i--) {
-                    const msg = prev[i];
-                    if (typeof msg === 'string' && msg.includes('id=local-')) {
-                      const tsMatch = msg.match(/tmi-sent-ts=(\d+)/);
-                      const ts = tsMatch ? parseInt(tsMatch[1], 10) : 0;
-                      if (ts >= cutoff) {
-                        Logger.debug('[Chat] Removing rejected optimistic message at index', i);
-                        const updated = [...prev];
-                        updated.splice(i, 1);
-                        return updated;
-                      }
-                    }
-                  }
-                  return prev;
-                });
-              }
-
-              // Surface the notice text as an inline system message
-              if (parsed.message) {
-                Logger.debug('[Chat] Injecting NOTICE as inline message:', parsed.message);
-                
-                const sysMsgId = `notice-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-                
-                // Add to seen so it doesn't get processed again if somehow duplicated
-                seenMessageIdsRef.current.add(sysMsgId);
-                
-                setMessages(prev => {
-                  const limit = isPausedForBufferRef.current ? CHAT_MAX_WITH_BUFFER : CHAT_HISTORY_MAX;
-                  
-                  const updated = [...prev, {
-                    id: sysMsgId,
-                    username: 'System',
-                    display_name: 'Twitch',
-                    color: '#9147ff', // Twitch purple
-                    badges: [{ key: 'staff/1', info: {} }], // Use staff badge for official look
-                    content: parsed.message,
-                    segments: [{ type: 'text', content: parsed.message }],
-                    is_action: false,
-                    is_first_message: false,
-                    is_mentioned: false,
-                    is_from_shared_chat: false,
-                    tags: new Map([
-                      ['user-id', 'tw-system'], 
-                      ['id', sysMsgId]
-                    ]),
-                  } as unknown as any]; // Cast to avoid deep type checking for BackendChatMessage vs string
-                  
-                  if (updated.length > limit) {
-                    return updated.slice(updated.length - limit);
-                  }
-                  return updated;
-                });
-                
-                // Still set the error state just in case it's needed elsewhere, but shorter duration
-                if (noticeErrorTimerRef.current) {
-                  clearTimeout(noticeErrorTimerRef.current);
-                }
-                setError(parsed.message);
-                noticeErrorTimerRef.current = setTimeout(() => setError(null), 3000);
-              }
-              return;
-            }
-
-            // Handle ROOMSTATE events — MERGE, don't overwrite (partial updates)
-            if (parsed.type === 'ROOMSTATE') {
-              Logger.debug('[Chat] ROOMSTATE update:', parsed);
-              setRoomState(prev => ({
-                followersOnly: parsed.followers_only ?? prev.followersOnly,
-                slow: parsed.slow ?? prev.slow,
-                subsOnly: parsed.subs_only ?? prev.subsOnly,
-                emoteOnly: parsed.emote_only ?? prev.emoteOnly,
-                r9k: parsed.r9k ?? prev.r9k,
-              }));
-              return;
-            }
-
-            // It's a structured ChatMessage
-            const messageId = parsed.id;
-
-            if (messageId) {
-              if (seenMessageIdsRef.current.has(messageId)) {
-                // If we have an optimistic message with this ID (unlikely for uuid, but possible if we sync IDs), replace it?
-                // Actually backend generates UUIDs.
-                // We might want to match optimistic messages by content if possible?
-                // The current logic matches by "id=local-..." vs regex content.
-                // Let's keep simple duplicate check first.
-                Logger.debug('[Chat] Duplicate JSON message', messageId);
-                return;
-              }
-
-              // Check if we can replace an optimistic message
-              if (parsed.user_id === currentUserIdRef.current) {
-                // Update cached badges for future optimistic messages.
-                // `userBadgesFromIrcRef` is a STRING in IRC tag format.
-                // JSON messages provide badges as an array.
-                if (Array.isArray(parsed.badges)) {
-                  userBadgesFromIrcRef.current = parsed.badges
-                    .map((b: any) => `${b.name}/${b.version}`)
-                    .join(',');
-                }
-
-                setMessages(prevMessages => {
-                  // Calculate limit
-                  const limit = isPausedForBufferRef.current ? CHAT_MAX_WITH_BUFFER : CHAT_HISTORY_MAX;
-
-                  // Find optimistic message to replace
-                  const optimisticIndex = prevMessages.findIndex(msg => {
-                    if (typeof msg !== 'string') return false;
-                    if (!msg.includes('id=local-')) return false;
-
-                    // Extract content from optimistic string
-                    const localContentMatch = msg.match(/PRIVMSG #\w+ :(.+)$/);
-                    const localContent = localContentMatch ? localContentMatch[1] : null;
-
-                    return localContent === parsed.content;
-                  });
-
-                  let updated;
-                  if (optimisticIndex !== -1) {
-                    Logger.debug('[Chat] Replacing optimistic string with backend object at index', optimisticIndex);
-                    updated = [...prevMessages];
-                    updated[optimisticIndex] = parsed;
-                  } else {
-                    updated = [...prevMessages, parsed];
-                  }
-
-                  seenMessageIdsRef.current.add(messageId);
-
-                  if (updated.length > limit) {
-                    return updated.slice(updated.length - limit);
-                  }
-                  return updated;
-                });
-                return;
-              }
-
-              seenMessageIdsRef.current.add(messageId);
-
-              setMessages(prev => {
-                const updated = [...prev, parsed];
-                const limit = isPausedForBufferRef.current ? CHAT_MAX_WITH_BUFFER : CHAT_HISTORY_MAX;
-                if (updated.length > limit) {
-                  return updated.slice(updated.length - limit);
-                }
-                return updated;
-              });
-              return;
-            }
-          } catch (e) {
-            Logger.error('[Chat] Failed to parse JSON message:', e);
-          }
-        }
-
-        // Legacy/System message handling (strings)
-        Logger.debug('[Chat] Received string message:', message);
-
-        // Check for USERNOTICE (subscription events) and dispatch custom event
-        if (message.includes('USERNOTICE')) {
-          // Extract relevant fields from USERNOTICE
-          const loginMatch = message.match(/(?:^|;)login=([^;]+)/);
-          const msgIdMatch = message.match(/(?:^|;)msg-id=([^;]+)/);
-          const displayNameMatch = message.match(/(?:^|;)display-name=([^;]+)/);
-          
-          const login = loginMatch ? loginMatch[1] : null;
-          const msgId = msgIdMatch ? msgIdMatch[1] : null;
-          const displayName = displayNameMatch ? displayNameMatch[1] : null;
-          
-          // Check if this is a subscription-related event
-          const subTypes = ['sub', 'resub', 'subgift', 'submysterygift', 'giftpaidupgrade', 'primepaidupgrade', 'anongiftpaidupgrade'];
-          if (login && msgId && subTypes.includes(msgId)) {
-            Logger.debug('[Chat] Detected subscription event:', { login, msgId, displayName });
-            
-            // Dispatch a custom event for subscription detection
-            const subscriptionEvent = new CustomEvent('twitch-subscription-detected', {
-              detail: {
-                login: login.toLowerCase(),
-                msgId,
-                displayName,
-                rawMessage: message
-              }
-            });
-            window.dispatchEvent(subscriptionEvent);
-          }
-        }
-
-        // Extract message ID and user ID from IRC tags
-        // IMPORTANT: Match the actual message ID, not reply-parent-msg-id
-        const idMatch = message.match(/(?:^|;)id=([^;]+)/);
-        const messageId = idMatch ? idMatch[1] : null;
-        const userIdMatch = message.match(/user-id=([^;]+)/);
-        const userId = userIdMatch ? userIdMatch[1] : null;
-
-        // Handle our own messages from the server - replace optimistic version with server version
-        // This ensures we get the correct badges from IRC
-        if (userId && currentUserIdRef.current && userId === currentUserIdRef.current) {
-          Logger.debug('[Chat] Received own message from server:', messageId);
-
-          // Extract badges from the server message and store for future optimistic updates
-          const badgesMatch = message.match(/(?:^|;)badges=([^;]*)/);
-          if (badgesMatch && badgesMatch[1]) {
-            userBadgesFromIrcRef.current = badgesMatch[1];
-            Logger.debug('[Chat] Stored user badges from IRC:', userBadgesFromIrcRef.current);
-          }
-
-          // Find and replace the optimistic message with the server message
-          setMessages(prevMessages => {
-            // Look for an optimistic message (local-*) from the same user with similar content
-            const msgContentMatch = message.match(/PRIVMSG #\w+ :(.+)$/);
-            const serverContent = msgContentMatch ? msgContentMatch[1] : null;
-
-            if (serverContent) {
-              // Find the optimistic message to replace
-              const optimisticIndex = prevMessages.findIndex(msg => {
-                // Check if it's a local/optimistic message (string or object?)
-                // Optimistic are currently strings.
-                if (typeof msg === 'string' && !msg.includes('id=local-')) return false;
-                if (typeof msg !== 'string') return false; // Optimistic are strings for now
-
-                // Check if content matches
-                const localContentMatch = msg.match(/PRIVMSG #\w+ :(.+)$/);
-                const localContent = localContentMatch ? localContentMatch[1] : null;
-
-                return localContent === serverContent;
-              });
-
-              if (optimisticIndex !== -1) {
-                Logger.debug('[Chat] Replacing optimistic message at index', optimisticIndex, 'with server message');
-                const updated = [...prevMessages];
-                updated[optimisticIndex] = message;
-
-                // Add the server message ID to seen set
-                if (messageId) {
-                  seenMessageIdsRef.current.add(messageId);
-                }
-
-                return updated;
-              }
-            }
-
-            // If no optimistic message found to replace, just add the server message
-            // (This handles cases where the optimistic message was already removed)
-            Logger.debug('[Chat] No optimistic message found to replace, adding server message');
-            if (messageId) {
-              seenMessageIdsRef.current.add(messageId);
-            }
-            return [...prevMessages, message];
-          });
-
-          return;
-        }
-
-        if (messageId) {
-          // Check if we've seen this message before using ref
-          if (seenMessageIdsRef.current.has(messageId)) {
-            Logger.debug('[Chat] Duplicate message detected, skipping:', messageId);
-            return;
-          }
-
-          // New message - add to seen set
-          Logger.debug('[Chat] New message:', messageId);
-          seenMessageIdsRef.current.add(messageId);
-
-          // Keep seen IDs manageable
-          if (seenMessageIdsRef.current.size > CHAT_MAX_WITH_BUFFER) {
-            const arr = Array.from(seenMessageIdsRef.current);
-            seenMessageIdsRef.current = new Set(arr.slice(-CHAT_MAX_WITH_BUFFER));
-          }
-
-          // Add message to state
-          setMessages(prevMessages => {
-            const updated = [...prevMessages, message];
-            // Use ref for paused state to get current value
-            const limit = isPausedForBufferRef.current ? CHAT_MAX_WITH_BUFFER : CHAT_HISTORY_MAX;
-
-            if (updated.length > limit) {
-              const trimmed = updated.slice(updated.length - limit);
-              Logger.debug(`[Chat] Total messages: ${trimmed.length} (limit: ${limit})`);
-              return trimmed;
-            }
-            Logger.debug(`[Chat] Total messages: ${updated.length} (limit: ${limit})`);
-            return updated;
-          });
-        } else {
-          // If no ID, just add it (shouldn't happen with Twitch messages)
-          Logger.debug('[Chat] Message without ID, adding anyway');
-          setMessages(prev => [...prev, message]);
-        }
-      };
-
-      newWs.onerror = (error) => {
-        Logger.error('[Chat] WebSocket error:', error);
-        setError('Connection error - attempting to reconnect');
-        setIsConnected(false);
-      };
-
-      newWs.onclose = (event) => {
-        Logger.debug('[Chat] WebSocket closed:', event.code, event.reason);
-        setIsConnected(false);
-
-        // Don't attempt to reconnect if this was an intentional disconnect
-        if (isIntentionalDisconnectRef.current) {
-          Logger.debug('[Chat] Intentional disconnect, not reconnecting');
-          return;
-        }
-
-        // Don't reconnect if channel has changed
-        if (currentChannelRef.current !== channel) {
-          Logger.debug('[Chat] Channel changed, not reconnecting to old channel');
-          return;
-        }
-
-        // Attempt to reconnect the local WebSocket for abnormal closures
-        if (event.code === 1006 || event.code === 1001) {
-          Logger.debug('[Chat] Abnormal closure detected, attempting to reconnect local WebSocket');
-
-          // Clear any existing reconnect timeout
-          if (reconnectTimeoutRef.current) {
-            clearTimeout(reconnectTimeoutRef.current);
-          }
-
-          // Only attempt reconnect if we haven't exceeded max attempts
-          if (reconnectAttemptsRef.current < maxReconnectAttempts && currentChannelRef.current) {
-            reconnectAttemptsRef.current++;
-            const backoffDelay = Math.min(1000 * Math.pow(2, reconnectAttemptsRef.current - 1), 30000);
-
-            Logger.debug(`[Chat] Scheduling reconnect attempt ${reconnectAttemptsRef.current}/${maxReconnectAttempts} in ${backoffDelay}ms`);
-            setError(`Connection lost - reconnecting in ${Math.round(backoffDelay / 1000)}s (attempt ${reconnectAttemptsRef.current}/${maxReconnectAttempts})`);
-
-            reconnectTimeoutRef.current = setTimeout(() => {
-              Logger.debug('[Chat] Executing reconnect attempt');
-              const channelToReconnect = currentChannelRef.current;
-              if (channelToReconnect && !isIntentionalDisconnectRef.current) {
-                // Reset the connecting flag to allow reconnection
-                isConnectingRef.current = false;
-                connectChat(channelToReconnect);
-              }
-            }, backoffDelay);
-          } else if (reconnectAttemptsRef.current >= maxReconnectAttempts) {
-            setError('Connection lost - max reconnection attempts reached. Please refresh the chat.');
-          }
-        } else {
-          setError('Connection closed');
-        }
-      };
-
-      // Start health check monitoring
-      if (healthCheckIntervalRef.current) {
-        clearInterval(healthCheckIntervalRef.current);
+      await acquireChannel(targetKey, roomId ?? null);
+      currentChannelRef.current = targetKey;
+      if (previous) {
+        await releaseChannel(previous);
       }
-
-      healthCheckIntervalRef.current = setInterval(() => {
-        const timeSinceLastMessage = Date.now() - lastMessageTimeRef.current;
-        // With heartbeats every 30s, 2 minutes means ~4 missed heartbeats = real issue
-        const twoMinutes = 2 * 60 * 1000;
-        // 3 minutes without any signal (including heartbeats) = connection is dead
-        const threeMinutes = 3 * 60 * 1000;
-
-        // Use ref for current connected state
-        if (!isConnectedRef.current) {
-          return; // Skip health check if not connected
-        }
-
-        // If no messages (including heartbeats) for 2 minutes, show warning
-        // This should only happen if the WebSocket connection is actually broken
-        if (timeSinceLastMessage > twoMinutes && timeSinceLastMessage <= threeMinutes) {
-          Logger.warn('[Chat] No messages/heartbeats received for 2 minutes, connection may be stale');
-          setError(`Connection may be stale - no data for ${Math.floor(timeSinceLastMessage / 1000)}s`);
-        }
-
-        // If no messages (including heartbeats) for 3 minutes, the WebSocket is likely dead
-        // Perform a silent stream check before deciding whether to reconnect chat or trigger offline
-        if (timeSinceLastMessage > threeMinutes) {
-          Logger.debug('[Chat] No messages/heartbeats for 3+ minutes, connection appears dead');
-
-          const { handleStreamOffline, currentStream, isAutoSwitching } = useAppStore.getState();
-
-          // Only proceed if we have a current stream and aren't already switching
-          if (currentStream && !isAutoSwitching) {
-            // Reset last message time to prevent repeated triggers during this check
-            lastMessageTimeRef.current = Date.now();
-
-            // Perform a silent check to see if the stream is actually online
-            // This prevents the "nuclear" option of tearing down the stream when only chat has stalled
-            // Use IIFE to handle async code inside setInterval callback
-            (async () => {
-              try {
-                Logger.debug('[Chat] Performing silent stream online check before triggering offline...');
-                const isOnline = await invoke<boolean>('check_stream_online', { 
-                  channel: currentStream.user_login 
-                });
-
-                if (isOnline) {
-                  // Stream is still online - this is just a chat connection issue
-                  // Reconnect only the chat, don't trigger the full handleStreamOffline flow
-                  Logger.debug('[Chat] Stream is still online but chat is dead. Reconnecting chat only...');
-                  
-                  // Reset connecting flag and reconnect to the same channel
-                  isConnectingRef.current = false;
-                  connectChat(currentStream.user_login, currentStream.user_id);
-                } else {
-                  // Stream is actually offline - trigger the full offline handling
-                  Logger.debug('[Chat] Stream confirmed offline. Triggering handleStreamOffline...');
-                  handleStreamOffline();
-                }
-              } catch (err) {
-                // If the check fails, fall back to reconnecting chat as a safe default
-                // This is better than potentially tearing down a working stream
-                Logger.warn('[Chat] Failed to check stream status, attempting chat reconnect:', err);
-                isConnectingRef.current = false;
-                connectChat(currentStream.user_login, currentStream.user_id);
-              }
-            })();
-          }
-        }
-      }, 30000); // Check every 30 seconds
-
-      Logger.debug('[Chat] Connection setup complete with health monitoring');
-    } catch (e) {
-      const errorMsg = e instanceof Error ? e.message : String(e);
-      Logger.error('[Chat] Failed to connect to chat:', errorMsg);
-      setError(errorMsg);
-      setIsConnected(false);
-    } finally {
-      isConnectingRef.current = false;
-    }
-  }, [cleanupWebSocket]);
-
-  // Send message with optimistic update, filter out our own messages from server
-  const sendMessage = useCallback(async (messageText: string, userInfo: { username: string; displayName: string; userId: string; color?: string; badges?: string }, replyParentMsgId?: string) => {
-    if (!messageText.trim() || !isConnected) {
-      return;
-    }
-
-    // Store current user ID for filtering
-    currentUserIdRef.current = userInfo.userId;
-
-    // Generate a unique ID for the optimistic message
-    const tempId = `local-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-
-    // Create an optimistic message in IRC format
-    const timestamp = Date.now();
-    const color = userInfo.color || '#8A2BE2';
-    // Prefer provided badges (from fresh user info), fall back to IRC badges
-    const badges = userInfo.badges || userBadgesFromIrcRef.current || '';
-    Logger.debug('[Chat] Using badges for optimistic message:', badges, '(is fresh:', !!userInfo.badges, ')');
-
-    // Build reply tags synchronously if replying
-    // Use messagesRef for synchronous access (setMessages callback is async)
-    let replyTags = '';
-    if (replyParentMsgId) {
-      const currentMessages = messagesRef.current;
-      
-      // Handle both string (IRC format) and object (JSON format) messages
-      const parentMessage = currentMessages.find(msg => {
-        if (typeof msg === 'string') {
-          return msg.includes(`id=${replyParentMsgId}`);
-        } else if (msg && typeof msg === 'object') {
-          return (msg as any).id === replyParentMsgId;
-        }
-        return false;
-      });
-
-      if (parentMessage) {
-        let parentDisplayName = '';
-        let parentUsername = '';
-        let parentUserId = '';
-        let parentMsgBody = '';
-
-        if (typeof parentMessage === 'string') {
-          // IRC string format
-          const parentDisplayNameMatch = parentMessage.match(/display-name=([^;]+)/);
-          const parentUsernameMatch = parentMessage.match(/:(\w+)!\w+@\w+\.tmi\.twitch\.tv PRIVMSG/);
-          const parentUserIdMatch = parentMessage.match(/user-id=([^;]+)/);
-          const parentMsgBodyMatch = parentMessage.match(/PRIVMSG #\w+ :(.+)$/);
-
-          parentDisplayName = parentDisplayNameMatch ? parentDisplayNameMatch[1] : '';
-          parentUsername = parentUsernameMatch ? parentUsernameMatch[1] : '';
-          parentUserId = parentUserIdMatch ? parentUserIdMatch[1] : '';
-          parentMsgBody = parentMsgBodyMatch ? parentMsgBodyMatch[1] : '';
-        } else if (parentMessage && typeof parentMessage === 'object') {
-          // JSON object format
-          const pm = parentMessage as any;
-          parentDisplayName = pm.display_name || '';
-          parentUsername = pm.username || '';
-          parentUserId = pm.user_id || '';
-          parentMsgBody = pm.content || '';
-        }
-
-        const escapedParentMsgBody = parentMsgBody.replace(/\\/g, '\\\\').replace(/;/g, '\\:').replace(/ /g, '\\s').replace(/\r/g, '\\r').replace(/\n/g, '\\n');
-
-        replyTags = `reply-parent-msg-id=${replyParentMsgId};reply-parent-user-id=${parentUserId};reply-parent-user-login=${parentUsername};reply-parent-display-name=${parentDisplayName};reply-parent-msg-body=${escapedParentMsgBody};`;
-      } else {
-        replyTags = `reply-parent-msg-id=${replyParentMsgId};`;
-      }
-    }
-
-    const optimisticMessage = `@badge-info=;badges=${badges};color=${color};display-name=${userInfo.displayName};emotes=;first-msg=0;flags=;id=${tempId};mod=0;${replyTags}returning-chatter=0;room-id=;subscriber=0;tmi-sent-ts=${timestamp};turbo=0;user-id=${userInfo.userId};user-type= :${userInfo.username}!${userInfo.username}@${userInfo.username}.tmi.twitch.tv PRIVMSG #${currentChannelRef.current} :${messageText}`;
-
-    // Add to seen IDs and messages
-    seenMessageIdsRef.current.add(tempId);
-    setMessages(prev => [...prev, optimisticMessage]);
-
-    try {
-      await invoke('send_chat_message', {
-        message: messageText,
-        replyParentMsgId: replyParentMsgId || null
-      });
-      Logger.debug('[Chat] Message sent successfully:', messageText, replyParentMsgId ? `(replying to ${replyParentMsgId})` : '');
     } catch (err) {
-      Logger.error('[Chat] Failed to send message:', err);
-
-      // Remove the optimistic message on error
-      setMessages(prev => prev.filter(msg => {
-        if (typeof msg === 'string') {
-          return !msg.includes(`id=${tempId}`);
-        }
-        // For objects, check the id property
-        return msg?.id !== tempId;
-      }));
-      seenMessageIdsRef.current.delete(tempId);
-
+      Logger.error('[useTwitchChat] connectChat failed:', err);
+      // If acquire failed, don't leak the previous reference.
       throw err;
     }
-  }, [isConnected]);
-
-  // Handle visibility change to keep connection alive
-  useEffect(() => {
-    const handleVisibilityChange = () => {
-      if (document.hidden) {
-        Logger.debug('[Chat] App minimized/hidden - connection will be maintained');
-      } else {
-        Logger.debug('[Chat] App visible again');
-        // Check if connection is still alive
-        const ws = wsRef.current;
-        if (ws && ws.readyState !== WebSocket.OPEN && currentChannelRef.current && !isIntentionalDisconnectRef.current) {
-          Logger.debug('[Chat] Connection lost while hidden, reconnecting...');
-          isConnectingRef.current = false;
-          connectChat(currentChannelRef.current);
-        }
-      }
-    };
-
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-
-    return () => {
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-    };
-  }, [connectChat]);
-
-  // Cleanup on unmount - pass true to also stop the backend IRC service
-  useEffect(() => {
-    return () => {
-      Logger.debug('[Chat] Cleanup: unmounting');
-      isIntentionalDisconnectRef.current = true;
-      if (noticeErrorTimerRef.current) {
-        clearTimeout(noticeErrorTimerRef.current);
-      }
-      cleanupWebSocket(true); // Stop backend when component unmounts
-    };
-  }, [cleanupWebSocket]);
-
-  // Trim messages back to normal limit (called when resuming from pause)
-  const trimToLimit = useCallback(() => {
-    setMessages(prev => {
-      if (prev.length > CHAT_HISTORY_MAX) {
-        Logger.debug(`[Chat] Trimming from ${prev.length} to ${CHAT_HISTORY_MAX} messages`);
-        return prev.slice(prev.length - CHAT_HISTORY_MAX);
-      }
-      return prev;
-    });
   }, []);
 
-  // Set pause state for buffering
+  const sendMessage = useCallback(
+    async (messageText: string, userInfo: SendUserInfo, replyParentMsgId?: string) => {
+      const channel = currentChannelRef.current;
+      if (!channel) {
+        Logger.warn('[useTwitchChat] sendMessage called with no active channel');
+        return;
+      }
+      await sendChannelMessage(channel, messageText, userInfo, replyParentMsgId);
+    },
+    [],
+  );
+
   const setPaused = useCallback((paused: boolean) => {
-    Logger.debug(`[Chat] Buffer pause state: ${paused}`);
-    setIsPausedForBuffer(paused);
+    const channel = currentChannelRef.current;
+    if (!channel) return;
+    setChannelPaused(channel, paused);
+  }, []);
 
-    // If unpausing, trim messages back to limit
-    if (!paused) {
-      trimToLimit();
-    }
-  }, [trimToLimit]);
+  // Release on unmount so the store's ref count drops cleanly.
+  useEffect(() => {
+    return () => {
+      const channel = currentChannelRef.current;
+      if (channel) {
+        Logger.debug(`[useTwitchChat] Unmount: releasing ${channel}`);
+        void releaseChannel(channel);
+        currentChannelRef.current = null;
+      }
+    };
+  }, []);
 
-  return { messages, connectChat, sendMessage, isConnected, error, setPaused, deletedMessageIds, clearedUserContexts, roomState, userBadges };
+  return {
+    messages: snapshot.messages,
+    connectChat,
+    sendMessage,
+    isConnected: snapshot.isConnected,
+    error: snapshot.error,
+    setPaused,
+    deletedMessageIds: snapshot.deletedMessageIds,
+    clearedUserContexts: snapshot.clearedUserContexts,
+    roomState: snapshot.roomState,
+    userBadges: snapshot.userBadges,
+  };
 };

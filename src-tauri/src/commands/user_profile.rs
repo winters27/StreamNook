@@ -49,6 +49,10 @@ pub struct TwitchUserProfile {
     pub offline_image_url: String,
     pub view_count: i64,
     pub created_at: String,
+    /// Channel header banner URL from twitch.tv profile page (GQL `User.bannerImageURL`).
+    /// Distinct from `offline_image_url` (the video player's offline placeholder).
+    #[serde(default)]
+    pub banner_image_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -221,15 +225,23 @@ pub async fn get_user_profile_complete(
     );
 
     // Fetch all data sources in parallel
-    let (twitch_result, badges_result, seventv_result, ivr_result) = tokio::join!(
+    let (twitch_result, banner_result, badges_result, seventv_result, ivr_result) = tokio::join!(
         fetch_twitch_profile(&user_id),
+        fetch_twitch_banner(&username),
         fetch_badge_data(&user_id, &username, &channel_id, &channel_name),
         fetch_seventv_cosmetics(&user_id),
         fetch_ivr_data(&username, &channel_name)
     );
 
+    let twitch_profile = twitch_result.ok().map(|mut p| {
+        if p.banner_image_url.is_none() {
+            p.banner_image_url = banner_result.ok().flatten();
+        }
+        p
+    });
+
     let profile = UserProfileComplete {
-        twitch_profile: twitch_result.ok(),
+        twitch_profile,
         badges: badges_result.unwrap_or_else(|_| BadgeData {
             display_badges: vec![],
             earned_badges: vec![],
@@ -327,6 +339,53 @@ async fn fetch_twitch_profile(user_id: &str) -> Result<TwitchUserProfile, String
         .into_iter()
         .next()
         .ok_or_else(|| "User not found".to_string())
+}
+
+/// Fetch the channel page banner URL via anonymous Twitch GQL.
+/// Helix's offline_image_url is a different thing (offline video-player placeholder);
+/// the actual profile-page header banner is only exposed through GQL.
+async fn fetch_twitch_banner(login: &str) -> Result<Option<String>, String> {
+    let client = reqwest::Client::new();
+
+    let query = r#"
+        query StreamNookBanner($login: String!) {
+            user(login: $login) {
+                bannerImageURL
+            }
+        }
+    "#;
+
+    let body = serde_json::json!({
+        "operationName": "StreamNookBanner",
+        "query": query,
+        "variables": { "login": login.to_lowercase() }
+    });
+
+    let response = client
+        .post("https://gql.twitch.tv/gql")
+        .header("Client-ID", env!("TWITCH_WEB_CLIENT_ID"))
+        .header("Accept", "*/*")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Banner GQL request failed: {}", e))?;
+
+    if !response.status().is_success() {
+        return Err(format!("Banner GQL error: {}", response.status()));
+    }
+
+    let json: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse banner GQL response: {}", e))?;
+
+    Ok(json
+        .get("data")
+        .and_then(|d| d.get("user"))
+        .and_then(|u| u.get("bannerImageURL"))
+        .and_then(|b| b.as_str())
+        .filter(|s| !s.is_empty())
+        .map(String::from))
 }
 
 async fn fetch_badge_data(

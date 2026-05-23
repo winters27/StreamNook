@@ -9,7 +9,8 @@
     "automation-*",
     "whisper-scraper",
     "twitch-login",
-    "drops-login"
+    "drops-login",
+    "multichat-*"
   ],
   "permissions": [
     "core:window:allow-close",
@@ -36,6 +37,11 @@
     "core:event:allow-listen",
     "core:event:allow-emit",
     "core:event:default",
+    "core:window:allow-hide",
+    "core:window:allow-show",
+    "core:window:allow-unminimize",
+    "core:window:allow-is-visible",
+    "core:tray:default",
     "shell:allow-open",
     "deep-link:default",
     "dialog:default",

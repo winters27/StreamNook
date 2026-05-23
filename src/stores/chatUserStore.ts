@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { getCosmeticsFromMemoryCache, getCosmeticsWithFallback } from '../services/cosmeticsCache';
+import { snapshotOverrides } from '../utils/userChatOverrides';
 
 /**
  * Represents a user who has chatted in the current channel.
@@ -119,21 +120,26 @@ export const useChatUserStore = create<ChatUserStore>((set, get) => ({
   getMatchingUsers: (query: string, limit = 5) => {
     const { users } = get();
     const queryLower = query.toLowerCase();
-    
-    // Filter users whose username or displayName starts with query
+    const overrides = snapshotOverrides();
+
+    // Filter users whose username, displayName, or (user-set) nickname starts
+    // with the query. Inserting an @mention still uses user.username (the real
+    // Twitch login) because Twitch IRC doesn't resolve nicknames.
     const matches: ChatUser[] = [];
     for (const user of users.values()) {
+      const nick = overrides[user.userId]?.nickname?.toLowerCase();
       if (
         user.username.toLowerCase().startsWith(queryLower) ||
-        user.displayName.toLowerCase().startsWith(queryLower)
+        user.displayName.toLowerCase().startsWith(queryLower) ||
+        (nick && nick.startsWith(queryLower))
       ) {
         matches.push(user);
       }
     }
-    
+
     // Sort by recency (most recent first)
     matches.sort((a, b) => b.lastSeen - a.lastSeen);
-    
+
     return matches.slice(0, limit);
   },
   

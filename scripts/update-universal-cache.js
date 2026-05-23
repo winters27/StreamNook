@@ -29,6 +29,11 @@ const FORCE_REFRESH_ALL = process.env.FORCE_REFRESH_ALL === 'true' || process.ar
 // Badges older than this will be refreshed to check for updates
 const MAX_CACHE_AGE_DAYS = 7;
 
+// Schema version for badge-metadata entries. Bump when scraper output changes
+// in a way that makes older entries invalid; older entries are then re-fetched
+// on the next run regardless of age.
+const METADATA_SCHEMA_VERSION = 2;
+
 // Rate limiting for BadgeBase
 const BADGEBASE_DELAY_MS = 300;
 
@@ -200,8 +205,17 @@ function extractMoreInfo(html) {
   if (match) {
     let text = match[1];
 
-    // Extract timestamps from timezone-converter spans
-    text = text.replace(/<span[^>]*class="[^"]*timezone-converter[^"]*"[^>]*data-original="([^"]*)"[^>]*>[^<]*<\/span>/gi, '$1');
+    // Extract ISO timestamps from timezone-converter elements. Two known shapes:
+    //   legacy: <span class="timezone-converter" data-original="2025-12-04T15:00:00Z">…</span>
+    //   new:    <time class="timezone-converter" datetime="2026-05-21T16:00:00Z">21 May, 16:00 UTC</time>
+    // Both attribute orders are accepted so timestamps survive into more_info.
+    const converterPatterns = [
+      /<(?:span|time)[^>]*\bclass="[^"]*timezone-converter[^"]*"[^>]*\b(?:data-original|datetime)="([^"]*)"[^>]*>[^<]*<\/(?:span|time)>/gi,
+      /<(?:span|time)[^>]*\b(?:data-original|datetime)="([^"]*)"[^>]*\bclass="[^"]*timezone-converter[^"]*"[^>]*>[^<]*<\/(?:span|time)>/gi,
+    ];
+    for (const pattern of converterPatterns) {
+      text = text.replace(pattern, '$1');
+    }
 
     // Remove HTML tags
     text = text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
@@ -328,6 +342,12 @@ async function main() {
               shouldFetch = true;
               isRefresh = true;
             }
+            // Entry was written under an older schema; re-fetch so the new
+            // scraper output replaces it (e.g. ISO timestamps in more_info).
+            else if ((existing.metadata.version || 1) < METADATA_SCHEMA_VERSION) {
+              shouldFetch = true;
+              isRefresh = true;
+            }
             // Check if the cache is older than MAX_CACHE_AGE_DAYS
             else if (existing.metadata.timestamp &&
               (currentTimestamp - existing.metadata.timestamp) > maxAgeSeconds) {
@@ -364,7 +384,7 @@ async function main() {
               timestamp: getTimestamp(),
               expiry_days: 0, // Never expire
               source: 'badgebase',
-              version: 1,
+              version: METADATA_SCHEMA_VERSION,
             },
           };
 

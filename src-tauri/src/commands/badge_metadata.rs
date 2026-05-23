@@ -28,7 +28,7 @@ pub async fn fetch_badge_metadata(
     badge_version: String,
     force: Option<bool>,
 ) -> Result<BadgeMetadata, String> {
-    // Create cache key with metadata prefix to distinguish from badge data
+    // Create cache key with metadata prefix to distinguish from badge data.
     let cache_key = format!("metadata:{}-v{}", badge_set_id, badge_version);
 
     // Construct the info URL for response
@@ -44,13 +44,19 @@ pub async fn fetch_badge_metadata(
         if let Ok(Some(cached)) = get_cached_item(CacheType::Badge, &cache_key).await {
             debug!("[BadgeMetadata] Found in cache: {}", cache_key);
             if let Ok(cached_info) = serde_json::from_value::<BadgeMetadataCached>(cached.data) {
-                // Return full info with URL
-                return Ok(BadgeMetadata {
-                    date_added: cached_info.date_added,
-                    usage_stats: cached_info.usage_stats,
-                    more_info: cached_info.more_info,
-                    info_url: url,
-                });
+                if is_more_info_stale(cached_info.more_info.as_deref()) {
+                    debug!(
+                        "[BadgeMetadata] Cached more_info looks stale, refetching: {}",
+                        cache_key
+                    );
+                } else {
+                    return Ok(BadgeMetadata {
+                        date_added: cached_info.date_added,
+                        usage_stats: cached_info.usage_stats,
+                        more_info: cached_info.more_info,
+                        info_url: url,
+                    });
+                }
             }
         }
     } else {
@@ -119,6 +125,25 @@ pub async fn fetch_badge_metadata(
         more_info,
         info_url: url,
     })
+}
+
+/// Returns true when `more_info` appears to describe an event window but is
+/// missing the ISO 8601 timestamps the UI needs to classify the badge as
+/// Available / Coming Soon / Expired. Caused by older entries scraped before
+/// the timezone-converter element extractor accepted `<time datetime="…">`.
+pub fn is_more_info_stale(more_info: Option<&str>) -> bool {
+    let text = match more_info {
+        Some(t) if !t.is_empty() => t,
+        _ => return false,
+    };
+    let has_iso = Regex::new(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}")
+        .map(|re| re.is_match(text))
+        .unwrap_or(false);
+    if has_iso {
+        return false;
+    }
+    let lower = text.to_lowercase();
+    lower.contains("event duration") || lower.contains(" utc")
 }
 
 fn extract_date_added(document: &Html) -> Option<String> {
@@ -226,17 +251,20 @@ fn extract_text_with_timestamps(element: &scraper::ElementRef, result: &mut Stri
             }
             Node::Element(_) => {
                 if let Some(child_element) = scraper::ElementRef::wrap(child) {
-                    // Check if this is a timezone-converter span
-                    if child_element.value().name() == "span" {
-                        if let Some(class) = child_element.value().attr("class") {
-                            if class.contains("timezone-converter") {
-                                // Extract the data-original attribute
-                                if let Some(original_time) =
-                                    child_element.value().attr("data-original")
-                                {
-                                    result.push_str(&decode_html_entities(original_time));
-                                    continue;
-                                }
+                    // Two known timezone-converter shapes:
+                    //   legacy: <span class="timezone-converter" data-original="2025-12-04T15:00:00Z">
+                    //   new:    <time class="timezone-converter" datetime="2026-05-21T16:00:00Z">21 May, 16:00 UTC</time>
+                    // Accept either tag and prefer either attribute so the ISO timestamp
+                    // ends up in `more_info` instead of the year-less rendered text.
+                    if let Some(class) = child_element.value().attr("class") {
+                        if class.contains("timezone-converter") {
+                            if let Some(iso) = child_element
+                                .value()
+                                .attr("data-original")
+                                .or_else(|| child_element.value().attr("datetime"))
+                            {
+                                result.push_str(&decode_html_entities(iso));
+                                continue;
                             }
                         }
                     }

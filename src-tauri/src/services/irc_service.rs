@@ -33,9 +33,26 @@ static IRC_HANDLE: OnceLock<Mutex<Option<tokio::task::JoinHandle<()>>>> = OnceLo
 static IRC_WRITER: OnceLock<Mutex<Option<Arc<Mutex<tokio::io::WriteHalf<TcpStream>>>>>> =
     OnceLock::new();
 static SHARED_CHAT_ROOMS: OnceLock<Mutex<HashMap<String, Vec<String>>>> = OnceLock::new();
-static USER_BADGES_CACHE: OnceLock<Mutex<Option<String>>> = OnceLock::new();
-static ROOM_STATE_CACHE: OnceLock<Mutex<Option<String>>> = OnceLock::new();
-static CHANNEL_EMOTES: OnceLock<Mutex<Option<EmoteSet>>> = OnceLock::new();
+// Process-wide port of the local WebSocket bridge. Stored so a second
+// `start_chat` call (typically from a popout window like StreamNook MultiChat
+// opening its own JS store) can be made idempotent — instead of tearing the
+// running IRC connection down, we return the existing port and JOIN the new
+// channel onto the connection that's already live.
+static WS_PORT: OnceLock<Mutex<Option<u16>>> = OnceLock::new();
+// Per-channel caches (lowercase channel name -> value). Multi-channel chat
+// (StreamNook MultiChat) needs each JOINed channel to retain its own badges,
+// room state, and emote set so split-mode rendering and late-mount tab opens
+// don't get cross-channel state.
+static USER_BADGES_CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+static ROOM_STATE_CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+static CHANNEL_EMOTES: OnceLock<Mutex<HashMap<String, EmoteSet>>> = OnceLock::new();
+// Per-channel consumer refcount. Each `start_chat` / `join_chat_channel`
+// from a window increments; each `leave_chat_channel` decrements. Actual IRC
+// JOIN / PART only happens at the 0->1 / 1->0 transitions, so a popout
+// opening for xqc while main's ChatWidget is unmounting (also for xqc)
+// doesn't lose the channel — whichever IPC arrives first, the channel stays
+// JOINed as long as any window still wants it.
+static CHANNEL_REFCOUNT: OnceLock<Mutex<HashMap<String, u32>>> = OnceLock::new();
 
 const IRC_SERVER: &str = "irc.chat.twitch.tv";
 const IRC_PORT: u16 = 6667;
@@ -68,23 +85,81 @@ fn get_shared_chat_rooms() -> &'static Mutex<HashMap<String, Vec<String>>> {
     SHARED_CHAT_ROOMS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn get_user_badges_cache() -> &'static Mutex<Option<String>> {
-    USER_BADGES_CACHE.get_or_init(|| Mutex::new(None))
+fn get_user_badges_cache() -> &'static Mutex<HashMap<String, String>> {
+    USER_BADGES_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn get_room_state_cache() -> &'static Mutex<Option<String>> {
-    ROOM_STATE_CACHE.get_or_init(|| Mutex::new(None))
+fn get_room_state_cache() -> &'static Mutex<HashMap<String, String>> {
+    ROOM_STATE_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn get_channel_emotes() -> &'static Mutex<Option<EmoteSet>> {
-    CHANNEL_EMOTES.get_or_init(|| Mutex::new(None))
+fn get_channel_emotes() -> &'static Mutex<HashMap<String, EmoteSet>> {
+    CHANNEL_EMOTES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn get_ws_port() -> &'static Mutex<Option<u16>> {
+    WS_PORT.get_or_init(|| Mutex::new(None))
+}
+
+fn get_channel_refcount() -> &'static Mutex<HashMap<String, u32>> {
+    CHANNEL_REFCOUNT.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+// Extract the channel name (lowercase, no leading #) from a raw IRC line.
+// Used by ROOMSTATE/USERSTATE/CLEARMSG/CLEARCHAT parsing to key per-channel
+// caches and tag synthetic WS messages.
+fn extract_channel_from_irc_line(line: &str) -> Option<String> {
+    let idx = line.find(" #")?;
+    let after = &line[idx + 2..];
+    let end = after.find([' ', '\r', '\n']).unwrap_or(after.len());
+    let name = &after[..end];
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_lowercase())
+    }
 }
 
 impl IrcService {
     pub async fn start(channel: &str, state: &AppState) -> Result<u16> {
         let layout_service = state.layout_service.clone();
         let emote_service = state.emote_service.clone();
-        // Stop any existing chat connection first
+
+        // Idempotency: if the IRC service is already running, don't tear it
+        // down. Instead, JOIN the requested channel onto the existing
+        // connection (if not already joined) and return the existing WS port.
+        // This is critical for multi-window setups — the MultiChat popout's JS
+        // store calls start_chat as its first action, and if we tore down the
+        // main app's connection here every popout would freeze the main app's
+        // chat.
+        {
+            let irc_alive = get_irc_handle().lock().await.is_some();
+            let ws_alive = get_ws_server_handle().lock().await.is_some();
+            let existing_port = *get_ws_port().lock().await;
+            if irc_alive && ws_alive {
+                if let Some(port) = existing_port {
+                    let key = channel.to_lowercase();
+                    // `join_channel` is refcount-aware: it bumps the
+                    // per-channel consumer count and only sends IRC JOIN on
+                    // the 0->1 transition. Best-effort: failures here just
+                    // mean the channel hasn't been added to the existing IRC
+                    // session; the caller will see that messages aren't
+                    // arriving and can recover.
+                    if let Err(e) = Self::join_channel(&key).await {
+                        log::warn!("[IRC Chat] idempotent JOIN failed for {}: {}", key, e);
+                    }
+                    // Fetch emotes for this channel so segment parsing
+                    // matches what the user sees in chat. Cheap when already
+                    // cached on the Rust side from an earlier consumer.
+                    Self::fetch_and_store_emotes(&key, emote_service.clone()).await;
+                    return Ok(port);
+                }
+            }
+        }
+
+        // Stop any partially-alive remnants of a previous connection before
+        // fresh setup. (Idempotent guard above handles the healthy-alive case;
+        // this stop() is for when only some of the handles are present.)
         Self::stop().await?;
 
         debug!(
@@ -92,15 +167,26 @@ impl IrcService {
             channel
         );
 
-        // Store current channel
+        // Store current channel (lowercased so set lookups match IRC frames,
+        // which always carry lowercase channel names).
         get_current_channels()
             .lock()
             .await
-            .insert(channel.to_string());
+            .insert(channel.to_lowercase());
 
-        // Clear caches for new channel
-        *get_user_badges_cache().lock().await = None;
-        *get_room_state_cache().lock().await = None;
+        // Clear all per-channel caches on a fresh start. stop() also clears these,
+        // but be defensive in case start() is called without a preceding stop().
+        get_user_badges_cache().lock().await.clear();
+        get_room_state_cache().lock().await.clear();
+        get_channel_emotes().lock().await.clear();
+        // Seed the consumer refcount: this is the first window to ask for the
+        // initial channel; the IRC JOIN is performed implicitly by
+        // run_irc_connection below, so we just account for it here.
+        {
+            let mut refcounts = get_channel_refcount().lock().await;
+            refcounts.clear();
+            refcounts.insert(channel.to_lowercase(), 1);
+        }
 
         let token = match TwitchService::get_token().await {
             Ok(t) => t,
@@ -138,6 +224,9 @@ impl IrcService {
         });
 
         *get_ws_server_handle().lock().await = Some(handle);
+        // Remember the port so subsequent start_chat calls (from popout
+        // windows etc.) can be served idempotently without tearing down.
+        *get_ws_port().lock().await = Some(port);
 
         // Give the server time to start listening
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
@@ -506,10 +595,17 @@ impl IrcService {
             // Room state updates (slow mode, sub-only, etc.)
             debug!("[IRC Chat] Room state update: {}", trimmed);
 
+            // Extract channel so the synthetic message is routable and the cache
+            // is keyed per channel.
+            let channel_name = extract_channel_from_irc_line(trimmed);
+
             // Forward room state to frontend — only include tags actually present
             // Twitch sends FULL roomstate on join, PARTIAL on setting changes
             let mut room_state = serde_json::Map::new();
             room_state.insert("type".into(), serde_json::json!("ROOMSTATE"));
+            if let Some(ref ch) = channel_name {
+                room_state.insert("channel".into(), serde_json::json!(ch));
+            }
 
             if let Some(v) = Self::extract_tag_value(trimmed, "followers-only") {
                 if let Ok(n) = v.parse::<i64>() {
@@ -539,8 +635,14 @@ impl IrcService {
 
             let room_state_str = serde_json::Value::Object(room_state).to_string();
 
-            // Cache the room state for late-connecting clients
-            *get_room_state_cache().lock().await = Some(room_state_str.clone());
+            // Cache the room state per channel so late-mounting MultiChat tabs
+            // for any subscribed channel get its current state on connect.
+            if let Some(ref ch) = channel_name {
+                get_room_state_cache()
+                    .lock()
+                    .await
+                    .insert(ch.clone(), room_state_str.clone());
+            }
 
             let _ = tx.send(room_state_str);
 
@@ -554,13 +656,30 @@ impl IrcService {
             // It contains the user's badges which we need for optimistic message display
             debug!("[IRC Chat] User state update: {}", trimmed);
 
-            // Extract badges from USERSTATE and cache them
-            if let Some(badges) = Self::extract_tag_value(trimmed, "badges") {
-                debug!("[IRC Chat] Caching user badges from USERSTATE: {}", badges);
-                *get_user_badges_cache().lock().await = Some(badges.clone());
+            // Extract channel so the user's per-channel badges are keyed and the
+            // synthetic wire message carries the channel for frontend routing.
+            let channel_name = extract_channel_from_irc_line(trimmed);
 
-                // Send badges to frontend via special message
-                let badges_message = format!("USER_BADGES:{}", badges);
+            // Extract badges from USERSTATE and cache them per channel
+            if let Some(badges) = Self::extract_tag_value(trimmed, "badges") {
+                debug!(
+                    "[IRC Chat] Caching user badges from USERSTATE for {:?}: {}",
+                    channel_name, badges
+                );
+                if let Some(ref ch) = channel_name {
+                    get_user_badges_cache()
+                        .lock()
+                        .await
+                        .insert(ch.clone(), badges.clone());
+                }
+
+                // Send badges to frontend tagged with the channel they apply to.
+                // Format: USER_BADGES:#<channel>:<badges>. The leading '#' lets
+                // the frontend parser locate the channel-prefix segment unambiguously.
+                let badges_message = match &channel_name {
+                    Some(ch) => format!("USER_BADGES:#{}:{}", ch, badges),
+                    None => format!("USER_BADGES:{}", badges),
+                };
                 let _ = tx.send(badges_message);
             }
 
@@ -579,9 +698,11 @@ impl IrcService {
             debug!("[IRC Chat] Message deleted: {}", trimmed);
 
             if let Some(target_msg_id) = Self::extract_tag_value(trimmed, "target-msg-id") {
-                // Send deletion event to frontend
+                let channel_name = extract_channel_from_irc_line(trimmed);
+                // Send deletion event to frontend, tagged with channel for routing
                 let delete_event = json!({
                     "type": "CLEARMSG",
+                    "channel": channel_name,
                     "target_msg_id": target_msg_id,
                     "login": Self::extract_tag_value(trimmed, "login").unwrap_or_default()
                 });
@@ -595,8 +716,11 @@ impl IrcService {
 
             let target_user_id = Self::extract_tag_value(trimmed, "target-user-id");
             let ban_duration = Self::extract_tag_value(trimmed, "ban-duration");
+            let channel_name = extract_channel_from_irc_line(trimmed);
 
-            // Extract target username from the message content (after the colon at the end)
+            // Extract target username from the message content (after the colon at the end).
+            // For full chat clears there's no trailing " :" so be careful not to misinterpret
+            // an earlier inline colon as the username delimiter.
             let target_user = if let Some(idx) = trimmed.rfind(" :") {
                 Some(trimmed[idx + 2..].trim().to_string())
             } else {
@@ -605,6 +729,7 @@ impl IrcService {
 
             let clear_event = json!({
                 "type": "CLEARCHAT",
+                "channel": channel_name,
                 "target_user_id": target_user_id,
                 "target_user": target_user,
                 "ban_duration": ban_duration.map(|d| d.parse::<u64>().unwrap_or(0))
@@ -766,14 +891,31 @@ impl IrcService {
 
         debug!("[WS] New local WebSocket client connected");
 
-        // Send active roomstate cache immediately so clients don't miss initialization
-        if let Some(state) = get_room_state_cache().lock().await.as_ref() {
-            let _ = local_tx.send(warp::ws::Message::text(state.clone())).await;
+        // Replay cached per-channel state to the new client. The state for each
+        // currently JOINed channel is sent so a late-mounting MultiChat tab
+        // sees room state and user badges without waiting for the next
+        // ROOMSTATE/USERSTATE roundtrip.
+        //
+        // Snapshot under the lock then release before awaiting sends to avoid
+        // holding the cache lock across await points (deadlock risk if the
+        // IRC reader concurrently tries to write).
+        let room_states: Vec<String> = {
+            let cache = get_room_state_cache().lock().await;
+            cache.values().cloned().collect()
+        };
+        for state in room_states {
+            let _ = local_tx.send(warp::ws::Message::text(state)).await;
         }
 
-        // Send active badges cache
-        if let Some(badges) = get_user_badges_cache().lock().await.as_ref() {
-            let badges_message = format!("USER_BADGES:{}", badges);
+        let badge_entries: Vec<(String, String)> = {
+            let cache = get_user_badges_cache().lock().await;
+            cache
+                .iter()
+                .map(|(ch, badges)| (ch.clone(), badges.clone()))
+                .collect()
+        };
+        for (channel, badges) in badge_entries {
+            let badges_message = format!("USER_BADGES:#{}:{}", channel, badges);
             let _ = local_tx.send(warp::ws::Message::text(badges_message)).await;
         }
 
@@ -794,11 +936,38 @@ impl IrcService {
         }
         drop(queue);
 
-        // Forward messages from broadcast to local client
-        while let Ok(text) = rx.recv().await {
-            if local_tx.send(warp::ws::Message::text(text)).await.is_err() {
-                debug!("[WS] Client disconnected");
-                break;
+        // Forward messages from broadcast to local client.
+        //
+        // Note: `while let Ok(text) = rx.recv().await` is wrong here — it exits
+        // on `RecvError::Lagged`, which fires when a subscriber falls behind by
+        // more than the channel capacity. In fast chats a freshly-mounted
+        // MultiChat popout window does enough first-render work that its
+        // browser-side WS read drains slowly, the tokio TCP write blocks, this
+        // receiver stops being polled, the broadcast buffer overflows, and the
+        // next poll returns Lagged. Exiting the loop on Lagged silently closed
+        // the WS — visible to the user as chat "freezing" the moment the
+        // popout opened in a busy channel. Treat Lagged as a recoverable miss:
+        // log it and keep draining; only Closed actually tears the handler
+        // down.
+        loop {
+            match rx.recv().await {
+                Ok(text) => {
+                    if local_tx.send(warp::ws::Message::text(text)).await.is_err() {
+                        debug!("[WS] Client disconnected");
+                        break;
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    log::warn!(
+                        "[WS] Subscriber lagged behind by {} messages; continuing",
+                        n
+                    );
+                    continue;
+                }
+                Err(broadcast::error::RecvError::Closed) => {
+                    debug!("[WS] Broadcast channel closed");
+                    break;
+                }
             }
         }
     }
@@ -808,16 +977,44 @@ impl IrcService {
         reply_parent_msg_id: Option<&str>,
         target_channel: Option<&str>,
     ) -> Result<()> {
-        let channels = get_current_channels().lock().await;
-        if channels.is_empty() {
-            return Err(anyhow::anyhow!("No active chat connection"));
-        }
-
+        // Resolve the target channel without locking the channel set across the
+        // send. Falls back to "the only currently-joined channel" when the caller
+        // didn't supply one (legacy single-channel callers); otherwise uses the
+        // caller's explicit target.
         let channel = match target_channel {
-            Some(c) => c.to_string(),
-            None => channels.iter().next().unwrap().clone(),
+            Some(c) => c.to_lowercase(),
+            None => {
+                let channels = get_current_channels().lock().await;
+                channels
+                    .iter()
+                    .next()
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("No active chat connection"))?
+            }
         };
-        drop(channels);
+
+        // Per-window refcounting doesn't exist on the Rust side yet — each
+        // browser window has its own JS-side refcount, and when one window
+        // releases a channel it issues PART regardless of whether another
+        // window still wants it. So MultiChat can find itself in a state
+        // where it believes it's JOINed but Rust's `current_channels` no
+        // longer contains the channel (and Twitch IRC has likewise PARTed).
+        // Re-JOIN defensively when the caller is sending to a channel we
+        // don't think is active. Cheap on success, recoverable on conflict.
+        let needs_join = !get_current_channels().lock().await.contains(&channel);
+        if needs_join {
+            log::warn!(
+                "[IRC Chat] send_message for {} but channel not in current set; defensive re-JOIN",
+                channel
+            );
+            if let Err(e) = Self::join_channel(&channel).await {
+                return Err(anyhow::anyhow!(
+                    "Failed to re-JOIN channel {} before send: {}",
+                    channel,
+                    e
+                ));
+            }
+        }
 
         let writer_lock = get_irc_writer().lock().await;
         let writer = writer_lock
@@ -846,6 +1043,27 @@ impl IrcService {
     }
 
     pub async fn join_channel(channel: &str) -> Result<()> {
+        let key = channel.to_lowercase();
+
+        // Refcount first. Multiple windows may JOIN the same channel
+        // concurrently (main + N MultiChat popouts); only the first one
+        // actually sends JOIN to IRC. Subsequent consumers just bump the
+        // count so leave_channel knows the channel is still wanted.
+        let new_count = {
+            let mut refcounts = get_channel_refcount().lock().await;
+            let entry = refcounts.entry(key.clone()).or_insert(0);
+            *entry += 1;
+            *entry
+        };
+
+        if new_count > 1 {
+            debug!(
+                "[IRC Chat] join_channel({}): refcount now {}, reusing existing JOIN",
+                key, new_count
+            );
+            return Ok(());
+        }
+
         let writer_lock = get_irc_writer().lock().await;
         let writer = writer_lock
             .as_ref()
@@ -854,16 +1072,12 @@ impl IrcService {
         drop(writer_lock);
 
         let mut w = writer.lock().await;
-        w.write_all(format!("JOIN #{}\r\n", channel.to_lowercase()).as_bytes())
-            .await?;
+        w.write_all(format!("JOIN #{}\r\n", key).as_bytes()).await?;
         w.flush().await?;
 
-        get_current_channels()
-            .lock()
-            .await
-            .insert(channel.to_string());
+        get_current_channels().lock().await.insert(key.clone());
 
-        debug!("[IRC Chat] Joined additional channel: #{}", channel);
+        debug!("[IRC Chat] Joined channel: #{} (first consumer)", key);
 
         // Check for shared chat in the new channel
         if let Ok(broadcaster_info) = TwitchService::get_user_by_login(channel).await {
@@ -874,6 +1088,34 @@ impl IrcService {
     }
 
     pub async fn leave_channel(channel: &str) -> Result<()> {
+        let key = channel.to_lowercase();
+
+        // Refcount first. The MultiChat popout flow fires `start_chat` for
+        // the new window's channel and then unmounts main's ChatWidget,
+        // which fires `leave_chat_channel` for the same channel. Without
+        // refcounting, the unconditional PART here would race with — and
+        // usually lose to — the popout's start_chat, leaving the popout
+        // subscribed to a channel nobody is JOINed to. Only the last
+        // consumer's leave actually PARTs.
+        let new_count = {
+            let mut refcounts = get_channel_refcount().lock().await;
+            let entry = refcounts.entry(key.clone()).or_insert(1);
+            *entry = entry.saturating_sub(1);
+            let n = *entry;
+            if n == 0 {
+                refcounts.remove(&key);
+            }
+            n
+        };
+
+        if new_count > 0 {
+            debug!(
+                "[IRC Chat] leave_channel({}): refcount now {}, keeping JOIN",
+                key, new_count
+            );
+            return Ok(());
+        }
+
         let writer_lock = get_irc_writer().lock().await;
         let writer = writer_lock
             .as_ref()
@@ -882,13 +1124,20 @@ impl IrcService {
         drop(writer_lock);
 
         let mut w = writer.lock().await;
-        w.write_all(format!("PART #{}\r\n", channel.to_lowercase()).as_bytes())
-            .await?;
+        w.write_all(format!("PART #{}\r\n", key).as_bytes()).await?;
         w.flush().await?;
+        drop(w);
 
-        get_current_channels().lock().await.remove(channel);
+        get_current_channels().lock().await.remove(&key);
 
-        debug!("[IRC Chat] Left channel: #{}", channel);
+        // Drop per-channel caches so PARTed channels don't accumulate memory.
+        // If the user re-JOINs later, fetch_and_store_emotes runs again and
+        // USERSTATE/ROOMSTATE refill from the next IRC frames.
+        get_channel_emotes().lock().await.remove(&key);
+        get_user_badges_cache().lock().await.remove(&key);
+        get_room_state_cache().lock().await.remove(&key);
+
+        debug!("[IRC Chat] Left channel: #{} (last consumer)", key);
 
         Ok(())
     }
@@ -900,6 +1149,13 @@ impl IrcService {
     ) {
         debug!("[IRC Chat] Fetching emotes for channel: {}", channel_name);
 
+        // Pull the OAuth token so the cache write here matches what the
+        // frontend's token-bearing fetch produces. Without this, an IRC-side
+        // write can race ahead of the frontend's call and leave the shared
+        // EmoteService cache containing only the 15 hardcoded globals — which
+        // a freshly-opened MultiChat popout then reads and displays.
+        let access_token = TwitchService::get_token().await.ok();
+
         // Get broadcaster ID from channel name
         match TwitchService::get_user_by_login(channel_name).await {
             Ok(user) => {
@@ -908,20 +1164,24 @@ impl IrcService {
                     .fetch_channel_emotes(
                         Some(channel_name.to_string()),
                         Some(user.id.clone()),
-                        None,
+                        access_token,
                     )
                     .await
                 {
                     Ok(emote_set) => {
                         debug!(
-                            "[IRC Chat] Fetched {} total emotes (Twitch: {}, BTTV: {}, 7TV: {}, FFZ: {})",
+                            "[IRC Chat] Fetched {} total emotes for {} (Twitch: {}, BTTV: {}, 7TV: {}, FFZ: {})",
                             emote_set.total_count(),
+                            channel_name,
                             emote_set.twitch.len(),
                             emote_set.bttv.len(),
                             emote_set.seven_tv.len(),
                             emote_set.ffz.len()
                         );
-                        *get_channel_emotes().lock().await = Some(emote_set);
+                        get_channel_emotes()
+                            .lock()
+                            .await
+                            .insert(channel_name.to_lowercase(), emote_set);
                     }
                     Err(e) => {
                         error!("[IRC Chat] Failed to fetch channel emotes: {}", e);
@@ -939,9 +1199,14 @@ impl IrcService {
 
     /// Parse message content into segments (text, emotes, emojis, links)
     /// This is the "endgame" - all parsing done in Rust, zero regex on main thread
+    ///
+    /// `channel` selects which channel's 7TV/FFZ/BTTV emote set to use. Empty string
+    /// (or a channel with no cached emotes) yields no third-party emote matches but
+    /// still parses Twitch native emotes and URLs.
     async fn parse_message_segments(
         content: &str,
         twitch_emotes: &[EmotePos],
+        channel: &str,
     ) -> Vec<MessageSegment> {
         let mut segments = Vec::new();
 
@@ -979,7 +1244,7 @@ impl IrcService {
         // Acquire emote set lock ONCE before the loop to avoid repeated lock acquisition
         // which can cause deadlocks when called inside block_in_place + block_on
         let emote_set_lock = get_channel_emotes().lock().await;
-        let seventv_emotes: Vec<_> = if let Some(emote_set) = emote_set_lock.as_ref() {
+        let seventv_emotes: Vec<_> = if let Some(emote_set) = emote_set_lock.get(channel) {
             emote_set.seven_tv.clone()
         } else {
             Vec::new()
@@ -1012,7 +1277,7 @@ impl IrcService {
                 let text = &content[last_byte..start_byte];
                 if !text.is_empty() {
                     // Parse text for third-party emotes, emojis, and links
-                    segments.extend(Self::parse_text_segment(text).await);
+                    segments.extend(Self::parse_text_segment(text, channel).await);
                 }
             }
 
@@ -1051,7 +1316,7 @@ impl IrcService {
             if let Some(last_byte) = char_to_byte_idx(last_char_index) {
                 let text = &content[last_byte..];
                 if !text.is_empty() {
-                    segments.extend(Self::parse_text_segment(text).await);
+                    segments.extend(Self::parse_text_segment(text, channel).await);
                 }
             }
         }
@@ -1066,16 +1331,19 @@ impl IrcService {
         segments
     }
 
-    /// Parse a text segment for third-party emotes, emojis, and links
-    async fn parse_text_segment(text: &str) -> Vec<MessageSegment> {
+    /// Parse a text segment for third-party emotes, emojis, and links.
+    /// `channel` selects which JOINed channel's emote set to use.
+    async fn parse_text_segment(text: &str, channel: &str) -> Vec<MessageSegment> {
         let mut segments = Vec::new();
 
         // URL regex pattern - matches http://, https://, and www. URLs
         let url_regex = regex::Regex::new(r"(https?://[^\s]+|www\.[^\s]+)").unwrap();
 
-        // Get channel emotes
+        // Get this channel's emotes (returns None if the channel hasn't been
+        // fetched, e.g. just-JOINed; first messages may then render without
+        // third-party emotes until fetch_and_store_emotes lands).
         let emote_set_lock = get_channel_emotes().lock().await;
-        let emote_set = emote_set_lock.as_ref();
+        let emote_set = emote_set_lock.get(channel);
 
         // Build emote lookup maps with priority: 7TV > FFZ > BTTV
         let mut emote_map: HashMap<&str, &Emote> = HashMap::new();
@@ -1463,11 +1731,17 @@ impl IrcService {
             emotes
         };
 
+        // Extract the channel this PRIVMSG was sent to so segment parsing uses
+        // the right per-channel emote set. Falls back to empty string if the
+        // line is malformed (third-party emotes simply won't match).
+        let privmsg_channel = extract_channel_from_irc_line(raw).unwrap_or_default();
+
         // Parse message content into segments (using stripped content)
         let segments = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(Self::parse_message_segments(
                 &content_for_segments,
                 &emotes_adjusted,
+                &privmsg_channel,
             ))
         });
 
@@ -1679,11 +1953,18 @@ impl IrcService {
             }
         }
 
+        // Extract channel from the USERNOTICE line so segment parsing uses the
+        // correct per-channel emote set.
+        let usernotice_channel = extract_channel_from_irc_line(raw).unwrap_or_default();
+
         // Parse message content into segments (if there's user content)
         let segments = if !content.is_empty() {
             tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current()
-                    .block_on(Self::parse_message_segments(&content, &emotes))
+                tokio::runtime::Handle::current().block_on(Self::parse_message_segments(
+                    &content,
+                    &emotes,
+                    &usernotice_channel,
+                ))
             })
         } else {
             Vec::new()
@@ -1827,8 +2108,15 @@ impl IrcService {
         // Clear shared chat rooms
         get_shared_chat_rooms().lock().await.clear();
 
-        // Clear channel emotes
-        *get_channel_emotes().lock().await = None;
+        // Clear all per-channel caches
+        get_channel_emotes().lock().await.clear();
+        get_user_badges_cache().lock().await.clear();
+        get_room_state_cache().lock().await.clear();
+        get_channel_refcount().lock().await.clear();
+
+        // Drop the WS port marker so the next start_chat does a full cold
+        // bring-up rather than thinking a stale port is still serving.
+        *get_ws_port().lock().await = None;
 
         debug!("[IRC Chat] Chat service stopped");
 

@@ -6,7 +6,11 @@ export interface TooltipState {
   content: React.ReactNode | string | null;
   rect: DOMRect | null;
   side: 'top' | 'bottom' | 'left' | 'right';
-  showTooltip: (id: string, content: React.ReactNode | string, rect: DOMRect, side?: 'top' | 'bottom' | 'left' | 'right') => void;
+  // Optional className override for the tooltip container. When set, replaces
+  // the default chrome (rounded-md / bg-black/80 / border) entirely. Used by
+  // StreamNookBadge to render the badge popover as a per-tier pill.
+  containerClassName: string | null;
+  showTooltip: (id: string, content: React.ReactNode | string, rect: DOMRect, side?: 'top' | 'bottom' | 'left' | 'right', containerClassName?: string) => void;
   hideTooltip: (id?: string) => void;
   // A unique ID or ref to track which element triggered the tooltip
   triggerId: string | null;
@@ -17,12 +21,14 @@ export const useTooltipStore = create<TooltipState>((set) => ({
   content: null,
   rect: null,
   side: 'top',
+  containerClassName: null,
   triggerId: null,
-  showTooltip: (id, content, rect, side = 'top') => set({ 
-    isVisible: true, 
-    content, 
-    rect, 
+  showTooltip: (id, content, rect, side = 'top', containerClassName) => set({
+    isVisible: true,
+    content,
+    rect,
     side,
+    containerClassName: containerClassName ?? null,
     triggerId: id
   }),
   hideTooltip: (id?: string) => set((state) => {

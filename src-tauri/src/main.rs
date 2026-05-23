@@ -44,9 +44,24 @@ use services::live_notification_service::LiveNotificationService;
 use services::mining_service::MiningService;
 use services::whisper_service::WhisperService;
 use std::sync::{Arc, Mutex};
-use tauri::{Builder, Manager};
+use tauri::{
+    menu::{Menu, MenuItem, PredefinedMenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    Builder, Emitter, Manager, WindowEvent,
+};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 use tokio::sync::Mutex as TokioMutex;
+
+/// Bring the main StreamNook window forward — used by the tray icon left-click
+/// and the "Show StreamNook" menu item. Restores from minimized if needed and
+/// re-shows if the window was hidden to the tray on close.
+fn show_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
 
 mod commands;
 mod models;
@@ -308,6 +323,61 @@ fn main() {
 
                 initialize_badge_service().await;
             });
+
+            // System tray. Keeps the app running when the user closes the main
+            // window while StreamNook MultiChat popouts are still open. Left
+            // click brings the main window forward; right click opens a menu
+            // with Show / Open MultiChat / Quit.
+            let show_item = MenuItem::with_id(app, "show", "Show StreamNook", true, None::<&str>)?;
+            let open_multichat_item = MenuItem::with_id(
+                app,
+                "open_multichat",
+                "Open MultiChat",
+                true,
+                None::<&str>,
+            )?;
+            let sep = PredefinedMenuItem::separator(app)?;
+            let quit_item = MenuItem::with_id(app, "quit", "Quit StreamNook", true, None::<&str>)?;
+            let tray_menu = Menu::with_items(
+                app,
+                &[&show_item, &open_multichat_item, &sep, &quit_item],
+            )?;
+
+            let _tray = TrayIconBuilder::new()
+                .menu(&tray_menu)
+                .show_menu_on_left_click(false)
+                .tooltip("StreamNook")
+                .icon(app.default_window_icon().unwrap().clone())
+                .on_menu_event(|app_handle, event| match event.id.as_ref() {
+                    "show" => show_main_window(app_handle),
+                    "open_multichat" => {
+                        // Defer to the main window's JS — it already owns the
+                        // openMultiChatWindow helper (URL params, label
+                        // generation, persistence id). The main window is
+                        // always loaded even when hidden, so the event fires
+                        // reliably.
+                        if let Some(main_win) = app_handle.get_webview_window("main") {
+                            let _ = main_win.show();
+                            let _ = main_win.set_focus();
+                            let _ = main_win.emit("tray-open-multichat", ());
+                        }
+                    }
+                    "quit" => {
+                        app_handle.exit(0);
+                    }
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        show_main_window(tray.app_handle());
+                    }
+                })
+                .build(app)?;
 
             Ok(())
         })
@@ -646,6 +716,73 @@ fn main() {
             check_proxy_health,
             generate_optimal_proxy_args,
         ])
+        // Window-event handler. Two behaviors:
+        //
+        // 1. Main window close: if any StreamNook MultiChat popouts are open,
+        //    intercept the close and hide the window to the tray instead.
+        //    Process keeps running, popouts stay alive. If no popouts exist,
+        //    the close proceeds normally (full exit).
+        //
+        // 2. Popout destroyed: when a popout closes, if it was the last
+        //    popout AND the main window is currently hidden (i.e. the user
+        //    previously closed main to the tray expecting the popouts to keep
+        //    the app alive), exit the process. Otherwise the app keeps
+        //    running until the user picks "Quit" from the tray.
+        .on_window_event(|window, event| {
+            let label = window.label().to_string();
+            let app_handle = window.app_handle().clone();
+
+            if label == "main" {
+                if let WindowEvent::CloseRequested { api, .. } = event {
+                    let popouts_open = app_handle
+                        .webview_windows()
+                        .iter()
+                        .any(|(l, _)| l.starts_with("multichat-"));
+                    if popouts_open {
+                        debug!(
+                            "[Main] Close requested with popouts open — hiding main to tray"
+                        );
+                        api.prevent_close();
+                        if let Some(main_win) = app_handle.get_webview_window("main") {
+                            // Tell the JS side it's about to go background so
+                            // it can stop the active stream (Streamlink + video
+                            // + drops monitoring) before we hide. Chat stays
+                            // alive because the popouts still need it — the JS
+                            // handler is intentionally NOT a full stopStream
+                            // (which would tear down the IRC connection too).
+                            let _ = main_win.emit("main-hiding-to-tray", ());
+                            let _ = main_win.hide();
+                        }
+                    }
+                }
+            } else if label.starts_with("multichat-") {
+                if let WindowEvent::Destroyed = event {
+                    // Tell the main window this popout is gone so it can
+                    // drop the popout's channel set from its tracking and
+                    // re-show its own ChatWidget if it was hiding because of
+                    // those channels.
+                    if let Some(main_win) = app_handle.get_webview_window("main") {
+                        let _ = main_win.emit("multichat-popout-closed", &label);
+                    }
+
+                    let still_open = app_handle
+                        .webview_windows()
+                        .iter()
+                        .filter(|(l, _)| l.starts_with("multichat-") && **l != label)
+                        .count();
+                    if still_open == 0 {
+                        if let Some(main_win) = app_handle.get_webview_window("main") {
+                            if !main_win.is_visible().unwrap_or(true) {
+                                debug!(
+                                    "[Main] Last MultiChat closed while main hidden — exiting"
+                                );
+                                app_handle.exit(0);
+                            }
+                        }
+                    }
+                }
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

@@ -1,7 +1,9 @@
-import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import { MessageCircle, UserPlus, UserMinus, Loader2, ChevronDown, ChevronUp } from 'lucide-react';
+import { useState, useEffect, useMemo, useRef, useCallback, useSyncExternalStore } from 'react';
+import { MessageCircle, UserPlus, UserMinus, Loader2, ChevronDown, ChevronUp, Pencil, X } from 'lucide-react';
+import { setUserNickname, setUserColor } from '../utils/userChatOverrides';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../stores/AppStore';
+import { openBadgesWithPaintInMain } from '../utils/openBadgesInMain';
 import { computePaintStyle, getBadgeImageUrls, getBadgeFallbackUrls, queueCosmeticForCaching } from '../services/seventvService';
 import { FallbackImage } from './FallbackImage';
 import { formatIVRDate, formatSubTenure } from '../services/ivrService';
@@ -13,6 +15,9 @@ import {
   CachedProfile
 } from '../services/cosmeticsCache';
 import { Tooltip } from './ui/Tooltip';
+import { getStreamNookUserNumber, subscribeStreamNookRegistryVersion, getStreamNookRegistryVersion } from '../services/supabaseService';
+import { StreamNookBadge } from './StreamNookBadge';
+import streamNookLogo from '../assets/streamnook-logo.png';
 
 interface ParsedMessage {
   username: string;
@@ -58,6 +63,8 @@ interface TwitchUserProfile {
   offline_image_url: string;
   view_count: number;
   created_at: string;
+  /** Channel page header banner. Distinct from offline_image_url (player offline placeholder). */
+  banner_image_url: string | null;
 }
 
 interface BadgeData {
@@ -165,6 +172,189 @@ interface IVRData {
   error: string | null;
 }
 
+interface NicknameEditorProps {
+  userId: string;
+  username: string;
+  displayName: string;
+  // The user's real Twitch color (parsed from the IRC tags). Used as the
+  // initial value of the color picker when no override is set, and as the
+  // visual baseline after "Reset color" is clicked.
+  twitchColor: string;
+}
+
+// Normalize whatever shape the IRC color comes in as into a valid #RRGGBB
+// hex string that <input type="color"> will accept. Empty / malformed input
+// falls back to Twitch's default purple.
+const TWITCH_DEFAULT_COLOR = '#9147FF';
+function normalizeHex(input: string | null | undefined): string {
+  if (!input) return TWITCH_DEFAULT_COLOR;
+  const v = input.trim();
+  if (/^#[0-9a-fA-F]{6}$/.test(v)) return v.toLowerCase();
+  if (/^[0-9a-fA-F]{6}$/.test(v)) return `#${v.toLowerCase()}`;
+  return TWITCH_DEFAULT_COLOR;
+}
+
+// Inline editor for the nickname + color overrides we expose on each user.
+// Reads the current override from the settings store on mount (lazy init)
+// and on userId change. Nickname saves on blur or Enter; color saves on the
+// native color picker's change event.
+const NicknameEditor: React.FC<NicknameEditorProps> = ({ userId, username, displayName, twitchColor }) => {
+  const readCurrentNickname = () =>
+    useAppStore.getState().settings.chat_customization?.user_overrides?.[userId]?.nickname ?? '';
+  const readCurrentColor = () =>
+    useAppStore.getState().settings.chat_customization?.user_overrides?.[userId]?.color ?? '';
+
+  const [draft, setDraft] = useState<string>(readCurrentNickname);
+  const [savedNickname, setSavedNickname] = useState<string>(readCurrentNickname);
+  const [isEditing, setIsEditing] = useState<boolean>(false);
+  const [savedColor, setSavedColor] = useState<string>(readCurrentColor);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  const fallbackColor = normalizeHex(twitchColor);
+  const pickerValue = normalizeHex(savedColor || twitchColor);
+  const hasColorOverride = savedColor.trim().length > 0;
+
+  useEffect(() => {
+    const nextNickname = readCurrentNickname();
+    const nextColor = readCurrentColor();
+    setDraft(nextNickname);
+    setSavedNickname(nextNickname);
+    setSavedColor(nextColor);
+    setIsEditing(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId]);
+
+  useEffect(() => {
+    if (isEditing) {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    }
+  }, [isEditing]);
+
+  const commitNickname = () => {
+    const next = draft.trim();
+    if (next === savedNickname) {
+      setIsEditing(false);
+      return;
+    }
+    setUserNickname(userId, username, next.length > 0 ? next : null);
+    setSavedNickname(next);
+    setIsEditing(false);
+  };
+
+  const cancelNickname = () => {
+    setDraft(savedNickname);
+    setIsEditing(false);
+  };
+
+  const clearNickname = () => {
+    setUserNickname(userId, username, null);
+    setSavedNickname('');
+    setDraft('');
+    setIsEditing(false);
+  };
+
+  const commitColor = (next: string) => {
+    const normalized = normalizeHex(next);
+    if (normalized === savedColor) return;
+    setUserColor(userId, username, normalized);
+    setSavedColor(normalized);
+  };
+
+  const resetColor = () => {
+    setUserColor(userId, username, null);
+    setSavedColor('');
+  };
+
+  return (
+    <div className="space-y-1">
+      {/* Nickname row */}
+      {!isEditing ? (
+        <div className="flex items-center gap-2 px-1 py-1 text-xs text-textSecondary">
+          <span className="text-textMuted">Nickname:</span>
+          {savedNickname ? (
+            <>
+              <span className="text-textPrimary font-medium">{savedNickname}</span>
+              <button
+                onClick={() => setIsEditing(true)}
+                className="ml-auto p-1 hover:text-textPrimary transition-colors"
+                aria-label="Edit nickname"
+              >
+                <Pencil size={12} />
+              </button>
+              <button
+                onClick={clearNickname}
+                className="p-1 hover:text-red-400 transition-colors"
+                aria-label="Clear nickname"
+              >
+                <X size={12} />
+              </button>
+            </>
+          ) : (
+            <button
+              onClick={() => setIsEditing(true)}
+              className="ml-auto inline-flex items-center gap-1 text-textSecondary hover:text-textPrimary transition-colors"
+            >
+              <Pencil size={12} />
+              <span>Set nickname</span>
+            </button>
+          )}
+        </div>
+      ) : (
+        <div className="flex items-center gap-2 px-1 py-1">
+          <span className="text-xs text-textMuted">Nickname:</span>
+          <input
+            ref={inputRef}
+            type="text"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onBlur={commitNickname}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                commitNickname();
+              } else if (e.key === 'Escape') {
+                e.preventDefault();
+                cancelNickname();
+              }
+            }}
+            placeholder={displayName}
+            maxLength={32}
+            className="flex-1 glass-input text-textPrimary text-xs px-2 py-1"
+            spellCheck={false}
+          />
+        </div>
+      )}
+
+      {/* Color row */}
+      <div className="flex items-center gap-2 px-1 py-1 text-xs text-textSecondary">
+        <span className="text-textMuted">Color:</span>
+        <input
+          type="color"
+          value={pickerValue}
+          onChange={(e) => commitColor(e.target.value)}
+          className="w-7 h-7 rounded cursor-pointer bg-transparent border border-borderSubtle"
+          aria-label="Override chat color"
+        />
+        {hasColorOverride ? (
+          <>
+            <span className="font-mono text-textPrimary">{savedColor}</span>
+            <button
+              onClick={resetColor}
+              className="ml-auto p-1 hover:text-red-400 transition-colors"
+              aria-label="Reset color"
+            >
+              <X size={12} />
+            </button>
+          </>
+        ) : (
+          <span className="font-mono">{fallbackColor}<span className="text-textMuted/70 ml-1">(Twitch)</span></span>
+        )}
+      </div>
+    </div>
+  );
+};
+
 const UserProfileCard = ({
   userId,
   username,
@@ -184,7 +374,13 @@ const UserProfileCard = ({
   const [cachedProfile, setCachedProfile] = useState<CachedProfile | null>(null);
   const [isLoadingProfile, setIsLoadingProfile] = useState(true);
   const [showMessages, setShowMessages] = useState(false);
-  const [expandedBadges, setExpandedBadges] = useState(false);
+
+  // Re-render when the StreamNook registry updates so the #N chip appears as soon as it loads
+  useSyncExternalStore(subscribeStreamNookRegistryVersion, getStreamNookRegistryVersion, getStreamNookRegistryVersion);
+  const streamNookUserNumber = getStreamNookUserNumber(userId);
+  if (import.meta.env.DEV && typeof window !== 'undefined') {
+    (window as any).__snProfileDebug = { userId, username, displayName, streamNookUserNumber };
+  }
 
   const [isDragging, setIsDragging] = useState(false);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
@@ -432,6 +628,63 @@ const UserProfileCard = ({
   const twitchProfile = profileData?.twitch_profile;
   const ivrData = profileData?.ivr_data;
 
+  const bannerStyle = useMemo(() => {
+    const bannerUrl = twitchProfile?.banner_image_url || twitchProfile?.offline_image_url;
+    if (bannerUrl) {
+      return {
+        backgroundImage: `url(${bannerUrl})`,
+        backgroundSize: 'cover',
+        backgroundPosition: 'center',
+      } as const;
+    }
+    const accent = color || '#9146FF';
+    return {
+      backgroundImage: `linear-gradient(135deg, ${accent}40 0%, ${accent}10 50%, #9146FF20 100%)`,
+    } as const;
+  }, [twitchProfile?.banner_image_url, twitchProfile?.offline_image_url, color]);
+
+  const handleWhisper = useCallback(async () => {
+    const user = {
+      id: userId,
+      login: username,
+      display_name: displayName,
+      profile_image_url: twitchProfile?.profile_image_url,
+    };
+    if (onStartWhisper) {
+      onStartWhisper(user);
+    } else if (isStandaloneWindow) {
+      try {
+        const { emit } = await import('@tauri-apps/api/event');
+        await emit('start-whisper', user);
+        const { getCurrentWindow } = await import('@tauri-apps/api/window');
+        await getCurrentWindow().close();
+      } catch (err) {
+        Logger.error('Failed to emit whisper event:', err);
+      }
+    } else {
+      useAppStore.getState().openWhisperWithUser(user);
+    }
+    onClose();
+  }, [userId, username, displayName, twitchProfile?.profile_image_url, onStartWhisper, isStandaloneWindow, onClose]);
+
+  const renderBadgeGroup = (
+    label: string,
+    badges: any[],
+    renderItem: (badge: any, index: number) => React.ReactNode,
+  ) => {
+    if (badges.length === 0) return null;
+    return (
+      <div>
+        <p className="text-[10px] text-textSecondary uppercase tracking-wider font-medium mb-2">
+          {label} <span className="text-textSecondary/50 tabular-nums">{badges.length}</span>
+        </p>
+        <div className="flex items-center gap-1.5 flex-wrap">
+          {badges.map(renderItem)}
+        </div>
+      </div>
+    );
+  };
+
   return (
     <>
       {!isStandaloneWindow && (
@@ -445,476 +698,406 @@ const UserProfileCard = ({
         style={isStandaloneWindow ? { backgroundColor: 'rgba(0, 0, 0, 0.75)' } : cardStyle}
         onMouseDown={isStandaloneWindow ? undefined : handleMouseDown}
       >
-        {/* Header with Banner */}
+        {/* Sticky header: banner + floating avatar (absolute, so it can overflow the banner without getting clipped by the scroll body below). */}
         <div className="relative profile-card-header cursor-grab active:cursor-grabbing flex-shrink-0">
-          <div
-            className="h-24 bg-gradient-to-br from-accent/30 via-purple-600/20 to-accent/10"
-            style={{
-              backgroundImage: twitchProfile?.offline_image_url
-                ? `url(${twitchProfile.offline_image_url})`
-                : `linear-gradient(135deg, ${color || '#9146FF'}40 0%, ${color || '#9146FF'}10 50%, #9146FF20 100%)`,
-              backgroundSize: 'cover', backgroundPosition: 'center'
-            }}
-          />
+          <div className="h-24" style={bannerStyle} />
           <div className="absolute -bottom-10 left-4">
-            <div className="w-20 h-20 rounded-full border-4 border-secondary bg-glass overflow-hidden">
+            <div className="w-20 h-20 rounded-full border-4 border-secondary bg-secondary overflow-hidden shadow-lg">
               {twitchProfile?.profile_image_url ? (
                 <img src={twitchProfile.profile_image_url} alt={displayName} className="w-full h-full object-cover" />
               ) : (
                 <div className="w-full h-full flex items-center justify-center bg-accent/20">
-                  <span className="text-3xl font-bold text-textPrimary">{displayName[0].toUpperCase()}</span>
+                  <span className="text-2xl font-bold text-textPrimary">{displayName[0].toUpperCase()}</span>
                 </div>
               )}
             </div>
           </div>
-          <button onClick={onClose} className="absolute top-2 right-2 p-1.5 glass-button text-textSecondary hover:text-textPrimary rounded-full">
+          <button
+            onClick={onClose}
+            className="absolute top-2.5 right-2.5 p-1.5 glass-button text-textSecondary hover:text-textPrimary rounded-full"
+            aria-label="Close profile"
+          >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
             </svg>
           </button>
         </div>
 
-        {/* Profile Info Section - sizes to content, scrolls only when messages shown and space is tight */}
-        <div className={`px-4 pt-12 pb-3 ${showMessages ? 'flex-1 overflow-y-auto min-h-0' : 'flex-shrink-0'} scrollbar-thin`}>
-          {/* Username row with paint badge */}
-          <div className="flex items-center gap-2 mb-1 flex-wrap">
-            <h3 className="text-xl font-bold truncate" style={usernameStyle}>{displayName}</h3>
-            {twitchProfile?.broadcaster_type === 'partner' && (
-              <Tooltip content="Verified Partner" side="top">
-              <div>
-                <svg className="w-5 h-5 flex-shrink-0" viewBox="0 0 16 16" fill="#9146FF">
-                  <path fillRule="evenodd" d="M12.5 3.5 8 2 3.5 3.5 2 8l1.5 4.5L8 14l4.5-1.5L14 8l-1.5-4.5ZM7 11l4.5-4.5L10 5 7 8 5.5 6.5 4 8l3 3Z" clipRule="evenodd" />
-                </svg>
+        {/* Single scroll body. One padded container, vertical rhythm via space-y, no section dividers. */}
+        <div className="flex-1 overflow-y-auto min-h-0 scrollbar-thin">
+          <div className="px-4 pt-12 pb-4 space-y-4">
+            {/* Identity: name + chips inline (Twitch ✓ → 7TV paint → StreamNook #N), handle, bio */}
+            <div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h3 className="text-xl font-bold leading-tight" style={usernameStyle}>{displayName}</h3>
+                {twitchProfile?.broadcaster_type === 'partner' && (
+                  <Tooltip content="Verified Partner" side="top">
+                    <span className="inline-flex flex-shrink-0">
+                      <svg className="w-[18px] h-[18px]" viewBox="0 0 16 16" fill="#9146FF">
+                        <path fillRule="evenodd" d="M12.5 3.5 8 2 3.5 3.5 2 8l1.5 4.5L8 14l4.5-1.5L14 8l-1.5-4.5ZM7 11l4.5-4.5L10 5 7 8 5.5 6.5 4 8l3 3Z" clipRule="evenodd" />
+                      </svg>
+                    </span>
+                  </Tooltip>
+                )}
+                {selectedPaint && (
+                  <Tooltip content={`Paint: ${selectedPaint.name}`} side="top">
+                    <button
+                      onClick={() => openBadgesWithPaintInMain(selectedPaint.id)}
+                      className="px-2 py-0.5 rounded-md text-[11px] font-bold inline-block relative overflow-hidden cursor-pointer hover:ring-1 hover:ring-accent/50 transition-all border border-white/10"
+                      style={{
+                        ...computePaintStyle(selectedPaint as any, color),
+                        WebkitBackgroundClip: 'padding-box',
+                        backgroundClip: 'padding-box',
+                      }}
+                    >
+                      <span
+                        style={{
+                          ...computePaintStyle(selectedPaint as any, color),
+                          filter: 'invert(1) contrast(1.5)',
+                          WebkitBackgroundClip: 'text',
+                          backgroundClip: 'text',
+                        }}
+                      >
+                        {selectedPaint.name}
+                      </span>
+                    </button>
+                  </Tooltip>
+                )}
+                {streamNookUserNumber !== null && (
+                  <Tooltip content="StreamNook user" side="top">
+                    <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-white/5 border border-white/10">
+                      <img src={streamNookLogo} alt="StreamNook" className="w-3.5 h-3.5 object-contain" draggable={false} />
+                      <span className="text-[11px] font-semibold text-textPrimary tabular-nums">#{streamNookUserNumber}</span>
+                    </div>
+                  </Tooltip>
+                )}
               </div>
+              <p className="text-sm text-textSecondary mt-0.5">@{username}</p>
+              {twitchProfile?.description && (
+                <p className="text-sm text-textPrimary/85 mt-2.5 leading-relaxed">{twitchProfile.description}</p>
+              )}
+            </div>
+
+            {/* Relationship: joined / following stats + sub/mod/vip pills (one block, no inner divider) */}
+            <div className="space-y-2">
+              <div className="grid grid-cols-2 gap-2">
+                {twitchProfile && (
+                  <div className="glass-panel rounded-md px-3 py-2">
+                    <p className="text-[10px] text-textSecondary uppercase tracking-wider font-medium">Joined Twitch</p>
+                    <p className="text-sm font-semibold text-textPrimary mt-0.5">{formatDate(twitchProfile.created_at)}</p>
+                  </div>
+                )}
+                {ivrData && (ivrData.following_since || ivrData.status_hidden) ? (
+                  <div className="glass-panel rounded-md px-3 py-2">
+                    <p className="text-[10px] text-textSecondary uppercase tracking-wider font-medium">Following since</p>
+                    {ivrData.status_hidden ? (
+                      <p className="text-sm font-semibold text-textSecondary italic mt-0.5">Hidden</p>
+                    ) : (
+                      <p className="text-sm font-semibold text-textPrimary mt-0.5">{formatIVRDate(ivrData.following_since!)}</p>
+                    )}
+                  </div>
+                ) : ivrData && !isLoadingProfile && (
+                  <div className="glass-panel rounded-md px-3 py-2">
+                    <p className="text-[10px] text-textSecondary uppercase tracking-wider font-medium">Following</p>
+                    <p className="text-sm font-semibold text-textSecondary mt-0.5">Not following</p>
+                  </div>
+                )}
+              </div>
+
+              {ivrData && (ivrData.is_subscribed || ivrData.is_mod || ivrData.is_vip) && (
+                <div className="flex flex-wrap gap-1.5">
+                  {ivrData.is_subscribed && (
+                    <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-purple-500/10 border border-purple-500/20 text-[11px] text-purple-300">
+                      <span className="font-semibold">Subscriber</span>
+                      <span className="text-purple-300/70">{formatSubTenure(ivrData.sub_streak, ivrData.sub_cumulative)}</span>
+                      {ivrData.is_founder && <span className="px-1 py-px rounded bg-purple-500/20 text-[9px] font-bold tracking-wider">FOUNDER</span>}
+                    </span>
+                  )}
+                  {ivrData.is_mod && (
+                    <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-green-500/10 border border-green-500/20 text-[11px] text-green-300">
+                      <span className="font-semibold">Moderator</span>
+                      {ivrData.mod_since && <span className="text-green-300/70">since {formatIVRDate(ivrData.mod_since)}</span>}
+                    </span>
+                  )}
+                  {ivrData.is_vip && (
+                    <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-pink-500/10 border border-pink-500/20 text-[11px] text-pink-300">
+                      <span className="font-semibold">VIP</span>
+                      {ivrData.vip_since && <span className="text-pink-300/70">since {formatIVRDate(ivrData.vip_since)}</span>}
+                    </span>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Badges, provider-grouped inside one panel, no inner scroll.
+                Section also renders when the user has the StreamNook badge but
+                no chat badges, so the StreamNook identity always surfaces. */}
+            {(totalBadgeCount > 0 || streamNookUserNumber !== null) && (
+              <div>
+                <p className="text-[11px] text-textSecondary uppercase tracking-wider font-semibold mb-2">
+                  Badges <span className="text-textSecondary/60 tabular-nums">{totalBadgeCount + (streamNookUserNumber !== null ? 1 : 0)}</span>
+                </p>
+                <div className="glass-panel rounded-md px-3 py-3 space-y-3">
+                {renderBadgeGroup('Twitch', twitchBadges, (b, i) => (
+                  <Tooltip key={`twitch-${b.id}-${i}`} content={b.description ? `${b.title}\n${b.description}` : b.title} side="top">
+                    <img
+                      src={b.src}
+                      srcSet={b.srcSet}
+                      alt={b.title}
+                      className="w-5 h-5 cursor-pointer hover:scale-110 transition-transform"
+                      onError={e => { e.currentTarget.style.display = 'none'; }}
+                    />
+                  </Tooltip>
+                ))}
+                {/* StreamNook badge. Sits between Twitch (the platform) and 7TV
+                    (cosmetic provider). Default click opens BadgesOverlay on the
+                    StreamNook tab via the badge component's own handler. */}
+                {streamNookUserNumber !== null && (
+                  <div>
+                    <p className="text-[10px] text-textSecondary uppercase tracking-wider font-medium mb-2">
+                      StreamNook <span className="text-textSecondary/50 tabular-nums">1</span>
+                    </p>
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <StreamNookBadge userNumber={streamNookUserNumber} />
+                    </div>
+                  </div>
+                )}
+                {renderBadgeGroup('7TV', seventvBadges, (b, i) => (
+                  <Tooltip key={`7tv-${b.id}-${i}`} content={b.title} side="top">
+                    <FallbackImage
+                      src={b.src}
+                      fallbackUrls={b.fallbackUrls}
+                      alt={b.title}
+                      className="w-5 h-5 cursor-pointer hover:scale-110 transition-transform"
+                      onClick={async () => {
+                        try {
+                          const { open } = await import('@tauri-apps/plugin-shell');
+                          await open(`https://7tv.app/badges/${b.id}`);
+                        } catch (err) {
+                          Logger.error('Failed to open URL:', err);
+                        }
+                      }}
+                    />
+                  </Tooltip>
+                ))}
+                {renderBadgeGroup('Other', thirdPartyBadges, (b, i) => (
+                  <Tooltip key={`3p-${b.id}-${i}`} content={`${b.title} (${b.provider?.toUpperCase() || 'Other'})`} side="top">
+                    <img
+                      src={b.src}
+                      srcSet={b.srcSet}
+                      alt={b.title}
+                      className="w-5 h-5 cursor-pointer hover:scale-110 transition-transform"
+                      onError={e => { e.currentTarget.style.display = 'none'; }}
+                    />
+                  </Tooltip>
+                ))}
+              </div>
+            </div>
+          )}
+
+            {/* Personal nickname + chat color (only visible to this user).
+                Doesn't change @mention behavior — Twitch IRC still resolves
+                real logins, and color is purely a display-layer override. */}
+            <NicknameEditor userId={userId} username={username} displayName={displayName} twitchColor={color} />
+
+            {/* Actions: 2x2 grid + messages toggle */}
+            <div className="space-y-2">
+            <div className="grid grid-cols-2 gap-2">
+              <Tooltip content={followLoading ? 'Processing...' : isFollowing ? `Unfollow ${displayName}` : `Follow ${displayName}`} side="top">
+                <button
+                  onClick={handleFollowAction}
+                  disabled={followLoading}
+                  className={`glass-button text-white text-xs py-2.5 px-3 rounded-md text-center transition-colors flex items-center justify-center gap-1.5 w-full ${followLoading
+                    ? 'opacity-50 cursor-wait'
+                    : isFollowing
+                      ? 'hover:bg-red-500/20 border-red-500/30'
+                      : 'hover:bg-green-500/20 border-green-500/30'
+                    }`}
+                >
+                  {followLoading ? (
+                    <>
+                      <Loader2 size={14} className="animate-spin text-purple-400" />
+                      <span>Working...</span>
+                    </>
+                  ) : isFollowing ? (
+                    <>
+                      <UserMinus size={14} className="text-red-400" />
+                      <span>Unfollow</span>
+                    </>
+                  ) : (
+                    <>
+                      <UserPlus size={14} className="text-green-400" />
+                      <span>Follow</span>
+                    </>
+                  )}
+                </button>
               </Tooltip>
-            )}
-            {selectedPaint && (
-              <Tooltip content={`Click to view paint details: ${selectedPaint.name}`} side="top">
+              <button
+                onClick={handleWhisper}
+                className="glass-button text-white text-xs py-2.5 px-3 rounded-md text-center hover:bg-purple-500/20 transition-colors flex items-center justify-center gap-1.5 w-full"
+              >
+                <MessageCircle size={14} className="text-purple-400" />
+                Whisper
+              </button>
               <button
                 onClick={() => {
-                  useAppStore.getState().openBadgesWithPaint(selectedPaint.id);
+                  useAppStore.getState().startOfflineChat(username);
+                  onClose();
                 }}
-                className="px-1.5 py-px rounded text-[9px] font-bold inline-block relative overflow-hidden cursor-pointer hover:ring-1 hover:ring-accent/50 transition-all"
-                style={{
-                  ...computePaintStyle(selectedPaint as any, color),
-                  WebkitBackgroundClip: 'padding-box',
-                  backgroundClip: 'padding-box',
-                }}
+                className="glass-button text-white text-xs py-2.5 px-3 rounded-md text-center hover:bg-accent/20 transition-colors w-full"
               >
-                <span
-                  style={{
-                    ...computePaintStyle(selectedPaint as any, color),
-                    filter: 'invert(1) contrast(1.5)',
-                    WebkitBackgroundClip: 'text',
-                    backgroundClip: 'text',
-                  }}
-                >
-                  🎨 {selectedPaint.name}
-                </span>
+                Join Chat
               </button>
-              </Tooltip>
-            )}
-          </div>
-          <p className="text-sm text-textSecondary mb-3">@{username}</p>
-
-          {/* Bio */}
-          {twitchProfile?.description && (
-            <p className="text-sm text-textSecondary mb-3 line-clamp-2">{twitchProfile.description}</p>
-          )}
-
-          {/* Categorized Badges Section */}
-          {totalBadgeCount > 0 && (
-            <div className="mb-3">
-              <div className="flex items-center justify-between mb-2">
-                <p className="text-[10px] text-textSecondary uppercase font-semibold">Badges ({totalBadgeCount})</p>
-                {totalBadgeCount > 12 && (
-                  <button
-                    onClick={() => setExpandedBadges(!expandedBadges)}
-                    className="flex items-center gap-1 text-[10px] text-accent hover:text-accent/80 transition-colors"
-                  >
-                    {expandedBadges ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-                    {expandedBadges ? 'Collapse' : 'Expand'}
-                  </button>
-                )}
-              </div>
-              
-              <div className={`space-y-2 ${expandedBadges ? '' : 'max-h-[180px]'} overflow-y-auto scrollbar-thin pr-1`}>
-                {/* Twitch Badges */}
-                {twitchBadges.length > 0 && (
-                  <div className="glass-panel rounded p-2">
-                    <p className="text-[9px] text-textSecondary uppercase mb-1.5 font-medium">Twitch</p>
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      {twitchBadges.map((b: any, i: number) => (
-                        <Tooltip key={`twitch-${b.id}-${i}`} content={b.description ? `${b.title}\n${b.description}` : b.title} side="top">
-                        <img
-                          src={b.src}
-                          srcSet={b.srcSet}
-                          alt={b.title}
-                          className="w-5 h-5 cursor-pointer hover:scale-110 transition-transform"
-                          onError={e => { e.currentTarget.style.display = 'none'; }}
-                        />
-                        </Tooltip>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* 7TV Badges */}
-                {seventvBadges.length > 0 && (
-                  <div className="glass-panel rounded p-2">
-                    <p className="text-[9px] text-textSecondary uppercase mb-1.5 font-medium">7TV</p>
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      {seventvBadges.map((b: any, i: number) => (
-                        <Tooltip key={`7tv-${b.id}-${i}`} content={b.title} side="top">
-                        <FallbackImage
-                          src={b.src}
-                          fallbackUrls={b.fallbackUrls}
-                          alt={b.title}
-                          className="w-5 h-5 cursor-pointer hover:scale-110 transition-transform"
-                          onClick={async () => {
-                            try {
-                              const { open } = await import('@tauri-apps/plugin-shell');
-                              await open(`https://7tv.app/badges/${b.id}`);
-                            } catch (err) {
-                              Logger.error('Failed to open URL:', err);
-                            }
-                          }}
-                        />
-                        </Tooltip>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* Third-Party Badges (FFZ, Chatterino, Homies) */}
-                {thirdPartyBadges.length > 0 && (
-                  <div className="glass-panel rounded p-2">
-                    <p className="text-[9px] text-textSecondary uppercase mb-1.5 font-medium">Other</p>
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      {thirdPartyBadges.map((b: any, i: number) => (
-                        <Tooltip key={`3p-${b.id}-${i}`} content={`${b.title} (${b.provider?.toUpperCase() || 'Other'})`} side="top">
-                        <img
-                          src={b.src}
-                          srcSet={b.srcSet}
-                          alt={b.title}
-                          className="w-5 h-5 cursor-pointer hover:scale-110 transition-transform"
-                          onError={e => { e.currentTarget.style.display = 'none'; }}
-                        />
-                        </Tooltip>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
+              <a
+                href={`https://www.twitch.tv/${username}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="glass-button text-white text-xs py-2.5 px-3 rounded-md text-center hover:bg-accent/20 transition-colors flex items-center justify-center w-full"
+              >
+                Open on Twitch
+              </a>
             </div>
-          )}
 
-          {/* Stats Grid */}
-          <div className="grid grid-cols-2 gap-2 mb-3">
-            {ivrData && (ivrData.following_since || ivrData.status_hidden) ? (
-              <div className="glass-panel rounded p-2">
-                <p className="text-[10px] text-textSecondary uppercase">Following Since</p>
-                {ivrData.status_hidden ? (
-                  <p className="text-sm font-bold text-textSecondary italic">Hidden</p>
-                ) : (
-                  <p className="text-sm font-bold text-textPrimary">{formatIVRDate(ivrData.following_since!)}</p>
-                )}
-              </div>
-            ) : ivrData && !isLoadingProfile && (
-              <div className="glass-panel rounded p-2">
-                <p className="text-[10px] text-textSecondary uppercase">Following</p>
-                <p className="text-sm font-bold text-textSecondary">Not following</p>
-              </div>
-            )}
-            {twitchProfile && (
-              <div className="glass-panel rounded p-2">
-                <p className="text-[10px] text-textSecondary uppercase">Joined</p>
-                <p className="text-sm font-bold text-textPrimary">{formatDate(twitchProfile.created_at)}</p>
-              </div>
-            )}
-          </div>
-
-          {/* IVR Info - compact inline display */}
-          {ivrData && (
-            <div className="space-y-1 text-xs mb-3">
-              {ivrData.is_subscribed && (
-                <div className="flex items-center gap-2">
-                  <span className="text-textSecondary">Subbed:</span>
-                  <span className="text-purple-400">{formatSubTenure(ivrData.sub_streak, ivrData.sub_cumulative)}</span>
-                  {ivrData.is_founder && <span className="px-1 py-0.5 bg-purple-500/20 text-purple-400 rounded text-[9px] font-semibold">FOUNDER</span>}
-                </div>
-              )}
-              {ivrData.is_mod && (
-                <div className="flex items-center gap-2">
-                  <span className="text-textSecondary">Mod:</span>
-                  <span className="text-green-400">{ivrData.mod_since ? formatIVRDate(ivrData.mod_since) : 'Yes'}</span>
-                </div>
-              )}
-              {ivrData.is_vip && (
-                <div className="flex items-center gap-2">
-                  <span className="text-textSecondary">VIP:</span>
-                  <span className="text-pink-400">{ivrData.vip_since ? formatIVRDate(ivrData.vip_since) : 'Yes'}</span>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Action Buttons */}
-          <div className="flex gap-2 flex-wrap">
-            {/* Follow/Unfollow Button */}
-            <Tooltip content={followLoading ? 'Processing...' : isFollowing ? `Unfollow ${displayName}` : `Follow ${displayName}`} side="top">
-            <button
-              onClick={handleFollowAction}
-              disabled={followLoading}
-              className={`glass-button text-white text-xs py-2 px-3 rounded text-center transition-colors flex items-center justify-center gap-1.5 min-w-[90px] ${followLoading
-                ? 'opacity-50 cursor-wait'
-                : isFollowing
-                  ? 'hover:bg-red-500/20 border-red-500/30'
-                  : 'hover:bg-green-500/20 border-green-500/30'
-                }`}
-            >
-              {followLoading ? (
-                <>
-                  <Loader2 size={14} className="animate-spin text-purple-400" />
-                  <span className="hidden sm:inline">Working...</span>
-                </>
-              ) : isFollowing ? (
-                <>
-                  <UserMinus size={14} className="text-red-400" />
-                  <span>Unfollow</span>
-                </>
-              ) : (
-                <>
-                  <UserPlus size={14} className="text-green-400" />
-                  <span>Follow</span>
-                </>
-              )}
-            </button>
-            </Tooltip>
-            <button
-              onClick={() => {
-                useAppStore.getState().startOfflineChat(username);
-                onClose();
-              }}
-              className="flex-1 glass-button text-white text-xs py-2 px-3 rounded text-center hover:bg-accent/20 transition-colors"
-            >
-              Join Chat
-            </button>
-            <a href={`https://www.twitch.tv/${username}`} target="_blank" rel="noopener noreferrer" className="flex-1 glass-button text-white text-xs py-2 px-3 rounded text-center hover:bg-accent/20 transition-colors flex items-center justify-center">
-              Twitch
-            </a>
-            <button
-              onClick={async () => {
-                const user = {
-                  id: userId,
-                  login: username,
-                  display_name: displayName,
-                  profile_image_url: twitchProfile?.profile_image_url
-                };
-                if (onStartWhisper) {
-                  onStartWhisper(user);
-                } else if (isStandaloneWindow) {
-                  try {
-                    const { emit } = await import('@tauri-apps/api/event');
-                    await emit('start-whisper', user);
-                    const { getCurrentWindow } = await import('@tauri-apps/api/window');
-                    const currentWindow = getCurrentWindow();
-                    await currentWindow.close();
-                  } catch (err) {
-                    Logger.error('Failed to emit whisper event:', err);
-                  }
-                } else {
-                  useAppStore.getState().openWhisperWithUser(user);
-                }
-                onClose();
-              }}
-              className="glass-button text-white text-xs py-2 px-3 rounded text-center hover:bg-purple-500/20 transition-colors flex items-center justify-center gap-1.5"
-            >
-              <MessageCircle size={14} className="text-purple-400" />
-              Whisper
-            </button>
             <button
               onClick={() => setShowMessages(!showMessages)}
-              className={`flex-1 glass-button text-white text-xs py-2 px-3 rounded text-center transition-colors flex items-center justify-center gap-1.5 ${showMessages ? 'bg-accent/20' : 'hover:bg-accent/20'}`}
+              className={`w-full glass-button text-white text-xs py-2 px-3 rounded-md text-center transition-colors flex items-center justify-center gap-1.5 ${showMessages ? 'bg-accent/15' : 'hover:bg-accent/15'}`}
             >
-              <svg className={`w-3.5 h-3.5 transition-transform ${showMessages ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-              </svg>
-              Messages ({messageHistory.length})
+              {showMessages ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+              {showMessages ? 'Hide' : 'Show'} recent messages
+              <span className="text-textSecondary/70">({messageHistory.length})</span>
             </button>
+
+            {showMessages && (
+              <div className="pt-2">
+                {messageHistory.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center py-6 text-center">
+                    <MessageCircle size={28} className="text-textSecondary/30 mb-2" />
+                    <p className="text-sm text-textSecondary">No messages yet</p>
+                    <p className="text-xs text-textSecondary/60 mt-1">Messages will appear here as they chat</p>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {messageHistory.slice().reverse().map((msg, idx) => (
+                      <div
+                        key={idx}
+                        className="px-3 py-2 glass-panel rounded-md text-sm hover:bg-white/5 transition-colors"
+                      >
+                        <p className="text-textPrimary break-words leading-relaxed">{msg.content}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
-          {/* Moderator Danger Zone */}
-          {isModerator && broadcasterId && (
-            <div className="mt-4 pt-3 border-t border-red-500/20">
-              <div className="flex items-center gap-1.5 mb-2">
-                <svg className="w-3.5 h-3.5 text-red-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
-                <span className="text-[10px] uppercase font-bold text-red-400 tracking-wider">Moderator Actions</span>
-              </div>
-              <div className="grid grid-cols-4 gap-2">
-                {/* Purge (1s Timeout) */}
-                <Tooltip content="Purge recent messages" side="top">
-                  <button
-                    onClick={async () => {
-                      if (onPreFillCommand) {
-                        onPreFillCommand(`/timeout ${username} 1 Purge`);
-                        onClose();
-                        return;
-                      }
-                      try {
-                        const { invoke } = await import('@tauri-apps/api/core');
-                        await invoke('ban_user', { broadcasterId, targetUserId: userId, duration: 1, reason: 'Purge' });
-                        useAppStore.getState().addToast(`Purged messages for ${username}`, 'success');
-                      } catch (err) {
-                        Logger.error('[UserProfileCard] Failed to purge:', err);
-                        useAppStore.getState().addToast('Failed to purge user', 'error');
-                      }
-                    }}
-                    className="p-1.5 glass-button text-xs font-semibold text-white/70 hover:text-white hover:bg-orange-500/20 border hover:border-orange-500/30 rounded flex items-center justify-center transition-colors"
-                  >
-                    Purge
-                  </button>
-                </Tooltip>
-
-                {/* Timeout 10m */}
-                <Tooltip content="Timeout for 10 minutes" side="top">
-                  <button
-                    onClick={async () => {
-                      if (onPreFillCommand) {
-                        onPreFillCommand(`/timeout ${username} 600 `);
-                        onClose();
-                        return;
-                      }
-                      try {
-                        const { invoke } = await import('@tauri-apps/api/core');
-                        await invoke('ban_user', { broadcasterId, targetUserId: userId, duration: 600, reason: null });
-                        useAppStore.getState().addToast(`Timed out ${username} for 10m`, 'success');
-                      } catch (err) {
-                        Logger.error('[UserProfileCard] Failed to timeout:', err);
-                        useAppStore.getState().addToast('Failed to timeout user', 'error');
-                      }
-                    }}
-                    className="p-1.5 glass-button text-xs font-semibold text-white/70 hover:text-white hover:bg-yellow-500/20 border hover:border-yellow-500/30 rounded flex items-center justify-center transition-colors"
-                  >
-                    10m
-                  </button>
-                </Tooltip>
-
-                {/* Timeout 24h */}
-                <Tooltip content="Timeout for 24 hours" side="top">
-                  <button
-                    onClick={async () => {
-                      if (onPreFillCommand) {
-                        onPreFillCommand(`/timeout ${username} 86400 `);
-                        onClose();
-                        return;
-                      }
-                      try {
-                        const { invoke } = await import('@tauri-apps/api/core');
-                        await invoke('ban_user', { broadcasterId, targetUserId: userId, duration: 86400, reason: null });
-                        useAppStore.getState().addToast(`Timed out ${username} for 24h`, 'success');
-                      } catch (err) {
-                        Logger.error('[UserProfileCard] Failed to timeout:', err);
-                        useAppStore.getState().addToast('Failed to timeout user', 'error');
-                      }
-                    }}
-                    className="p-1.5 glass-button text-xs font-semibold text-white/70 hover:text-white hover:bg-orange-600/20 border hover:border-orange-600/30 rounded flex items-center justify-center transition-colors"
-                  >
-                    24h
-                  </button>
-                </Tooltip>
-
-                {/* Ban */}
-                <Tooltip content="Permanently Ban User" side="top">
-                  <button
-                    onClick={async () => {
-                      if (onPreFillCommand) {
-                        onPreFillCommand(`/ban ${username} `);
-                        onClose();
-                        return;
-                      }
-                      if (window.confirm(`Are you sure you want to permanently ban ${username}?`)) {
+            {/* Mod zone. Kept inside body container; red top border is the only divider we keep, as a semantic danger-zone signal */}
+            {isModerator && broadcasterId && (
+              <div className="pt-3 border-t border-red-500/20">
+                <div className="flex items-center gap-1.5 mb-2.5">
+                  <svg className="w-3.5 h-3.5 text-red-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+                  <span className="text-[10px] uppercase font-bold text-red-400 tracking-wider">Moderator Actions</span>
+                </div>
+                <div className="grid grid-cols-4 gap-2">
+                  <Tooltip content="Purge recent messages" side="top">
+                    <button
+                      onClick={async () => {
+                        if (onPreFillCommand) { onPreFillCommand(`/timeout ${username} 1 Purge`); onClose(); return; }
                         try {
                           const { invoke } = await import('@tauri-apps/api/core');
-                          await invoke('ban_user', { broadcasterId, targetUserId: userId, duration: null, reason: null });
-                          useAppStore.getState().addToast(`Banned ${username}`, 'success');
-                          onClose();
+                          await invoke('ban_user', { broadcasterId, targetUserId: userId, duration: 1, reason: 'Purge' });
+                          useAppStore.getState().addToast(`Purged messages for ${username}`, 'success');
                         } catch (err) {
-                          Logger.error('[UserProfileCard] Failed to ban:', err);
-                          useAppStore.getState().addToast('Failed to ban user', 'error');
+                          Logger.error('[UserProfileCard] Failed to purge:', err);
+                          useAppStore.getState().addToast('Failed to purge user', 'error');
+                        }
+                      }}
+                      className="py-1.5 glass-button text-xs font-semibold text-white/70 hover:text-white hover:bg-orange-500/20 border hover:border-orange-500/30 rounded flex items-center justify-center transition-colors"
+                    >
+                      Purge
+                    </button>
+                  </Tooltip>
+                  <Tooltip content="Timeout for 10 minutes" side="top">
+                    <button
+                      onClick={async () => {
+                        if (onPreFillCommand) { onPreFillCommand(`/timeout ${username} 600 `); onClose(); return; }
+                        try {
+                          const { invoke } = await import('@tauri-apps/api/core');
+                          await invoke('ban_user', { broadcasterId, targetUserId: userId, duration: 600, reason: null });
+                          useAppStore.getState().addToast(`Timed out ${username} for 10m`, 'success');
+                        } catch (err) {
+                          Logger.error('[UserProfileCard] Failed to timeout:', err);
+                          useAppStore.getState().addToast('Failed to timeout user', 'error');
+                        }
+                      }}
+                      className="py-1.5 glass-button text-xs font-semibold text-white/70 hover:text-white hover:bg-yellow-500/20 border hover:border-yellow-500/30 rounded flex items-center justify-center transition-colors"
+                    >
+                      10m
+                    </button>
+                  </Tooltip>
+                  <Tooltip content="Timeout for 24 hours" side="top">
+                    <button
+                      onClick={async () => {
+                        if (onPreFillCommand) { onPreFillCommand(`/timeout ${username} 86400 `); onClose(); return; }
+                        try {
+                          const { invoke } = await import('@tauri-apps/api/core');
+                          await invoke('ban_user', { broadcasterId, targetUserId: userId, duration: 86400, reason: null });
+                          useAppStore.getState().addToast(`Timed out ${username} for 24h`, 'success');
+                        } catch (err) {
+                          Logger.error('[UserProfileCard] Failed to timeout:', err);
+                          useAppStore.getState().addToast('Failed to timeout user', 'error');
+                        }
+                      }}
+                      className="py-1.5 glass-button text-xs font-semibold text-white/70 hover:text-white hover:bg-orange-600/20 border hover:border-orange-600/30 rounded flex items-center justify-center transition-colors"
+                    >
+                      24h
+                    </button>
+                  </Tooltip>
+                  <Tooltip content="Permanently Ban User" side="top">
+                    <button
+                      onClick={async () => {
+                        if (onPreFillCommand) { onPreFillCommand(`/ban ${username} `); onClose(); return; }
+                        if (window.confirm(`Are you sure you want to permanently ban ${username}?`)) {
+                          try {
+                            const { invoke } = await import('@tauri-apps/api/core');
+                            await invoke('ban_user', { broadcasterId, targetUserId: userId, duration: null, reason: null });
+                            useAppStore.getState().addToast(`Banned ${username}`, 'success');
+                            onClose();
+                          } catch (err) {
+                            Logger.error('[UserProfileCard] Failed to ban:', err);
+                            useAppStore.getState().addToast('Failed to ban user', 'error');
+                          }
+                        }
+                      }}
+                      className="py-1.5 text-xs font-semibold text-red-200 bg-red-900/50 hover:bg-red-600 border border-red-500/30 rounded flex items-center justify-center transition-colors shadow-lg"
+                    >
+                      Ban
+                    </button>
+                  </Tooltip>
+                </div>
+                <div className="mt-2 text-right">
+                  <button
+                    onClick={async () => {
+                      if (window.confirm(`Unban ${username}?`)) {
+                        try {
+                          const { invoke } = await import('@tauri-apps/api/core');
+                          await invoke('unban_user', { broadcasterId, targetUserId: userId });
+                          useAppStore.getState().addToast(`Unbanned ${username}`, 'success');
+                        } catch (err) {
+                          Logger.error('[UserProfileCard] Failed to unban:', err);
+                          useAppStore.getState().addToast('Failed to unban user', 'error');
                         }
                       }
                     }}
-                    className="p-1.5 text-xs font-semibold text-red-200 bg-red-900/50 hover:bg-red-600 border border-red-500/30 rounded flex items-center justify-center transition-colors shadow-lg"
+                    className="text-[10px] font-medium text-textSecondary hover:text-white hover:underline cursor-pointer"
                   >
-                    Ban
+                    Unban User
                   </button>
-                </Tooltip>
-              </div>
-              <div className="mt-2 text-right">
-                <button
-                  onClick={async () => {
-                    if (window.confirm(`Unban ${username}?`)) {
-                      try {
-                        const { invoke } = await import('@tauri-apps/api/core');
-                        await invoke('unban_user', { broadcasterId, targetUserId: userId });
-                        useAppStore.getState().addToast(`Unbanned ${username}`, 'success');
-                      } catch (err) {
-                        Logger.error('[UserProfileCard] Failed to unban:', err);
-                        useAppStore.getState().addToast('Failed to unban user', 'error');
-                      }
-                    }
-                  }}
-                  className="text-[10px] font-medium text-textSecondary hover:text-white hover:underline cursor-pointer"
-                >
-                  Unban User
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Expandable Messages Section */}
-        {showMessages && (
-          <div className="border-t border-borderSubtle flex-shrink-0 flex flex-col" style={{ minHeight: '200px', maxHeight: '350px' }}>
-            <div className="px-4 py-2.5 border-b border-borderSubtle/50 flex items-center justify-between flex-shrink-0">
-              <p className="text-xs font-semibold text-textSecondary uppercase tracking-wide">
-                Recent Messages
-              </p>
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-[10px] text-textSecondary/60">{messageHistory.length} messages</span>
-                <Tooltip content="Hide messages" side="top">
-                <button
-                  onClick={() => setShowMessages(false)}
-                  className="p-1 text-textSecondary hover:text-textPrimary hover:bg-glass rounded transition-all"
-                >
-                  <ChevronUp size={14} />
-                </button>
-                </Tooltip>
-              </div>
-            </div>
-            <div className="flex-1 px-4 py-3 overflow-y-auto scrollbar-thin">
-              {messageHistory.length === 0 ? (
-                <div className="flex flex-col items-center justify-center py-8 text-center">
-                  <MessageCircle size={32} className="text-textSecondary/30 mb-2" />
-                  <p className="text-sm text-textSecondary">No messages yet</p>
-                  <p className="text-xs text-textSecondary/60 mt-1">Messages will appear here as they chat</p>
                 </div>
-              ) : (
-                <div className="space-y-2.5 pb-2">
-                  {messageHistory.slice().reverse().map((msg, idx) => (
-                    <div 
-                      key={idx} 
-                      className="p-3 glass-panel rounded-lg text-sm hover:bg-white/5 transition-colors group"
-                    >
-                      <p className="text-textPrimary break-words leading-relaxed">{msg.content}</p>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
+              </div>
+            )}
           </div>
-        )}
+        </div>
       </div>
     </>
   );

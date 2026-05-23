@@ -1,6 +1,6 @@
-import { useEffect, useState, useMemo, useRef } from 'react';
+import { useEffect, useState, useMemo, useRef, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
-import { X, ArrowUpDown, RefreshCw, Check, Trophy, Award, ChevronUp, Search } from 'lucide-react';
+import { X, ArrowUpDown, RefreshCw, Check, Trophy, Award, ChevronUp, Search, ExternalLink } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../stores/AppStore';
 import { getAllUserBadgesWithEarned } from '../services/badgeService';
@@ -8,10 +8,17 @@ import { getProfileFromMemoryCache, getFullProfileWithFallback } from '../servic
 import { getUlidTimestamp, getFormattedCreationDate } from '../utils/ulid';
 import { Tooltip } from './ui/Tooltip';
 import { motion } from 'framer-motion';
+import {
+  getStreamNookUserNumber,
+  subscribeStreamNookRegistryVersion,
+  getStreamNookRegistryVersion,
+} from '../services/supabaseService';
+import { StreamNookTierCard } from './StreamNookBadge';
+import streamNookLogo from '../assets/streamnook-logo.png';
 
 import { Logger } from '../utils/logger';
 // Tab navigation types
-type AttainableTab = 'twitch-badges' | '7tv-badges' | '7tv-paints';
+type AttainableTab = 'twitch-badges' | '7tv-badges' | '7tv-paints' | 'streamnook';
 
 interface BadgeVersion {
   id: string;
@@ -92,9 +99,13 @@ interface BadgesOverlayProps {
   onBadgeClick: (badge: BadgeVersion, setId: string) => void;
   initialPaintId?: string | null;
   initialBadgeId?: string | null;
+  /** When true, open with the StreamNook tab active. Set by the AppStore
+      action `openBadgesOnStreamNook()`. Fired by the StreamNook badge in chat
+      rows + UserProfileCard. */
+  initialStreamNook?: boolean;
 }
 
-const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }: BadgesOverlayProps) => {
+const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, initialStreamNook }: BadgesOverlayProps) => {
   const { isAuthenticated, currentUser, currentStream } = useAppStore();
   
   // Tab state
@@ -169,6 +180,19 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
     loadSeventvBadges();
     loadSeventvPaints();
   }, []);
+
+  // Deep-link to the StreamNook tab. Fires synchronously since the tab
+  // content doesn't depend on async-loaded data.
+  useEffect(() => {
+    if (initialStreamNook) {
+      setActiveTab('streamnook');
+    }
+  }, [initialStreamNook]);
+
+  // Re-render when the StreamNook registry updates so the current user's
+  // tier card surfaces inside the StreamNook tab as soon as the registry resolves.
+  useSyncExternalStore(subscribeStreamNookRegistryVersion, getStreamNookRegistryVersion, getStreamNookRegistryVersion);
+  const currentUserStreamNookNumber = currentUser?.user_id ? getStreamNookUserNumber(currentUser.user_id) : null;
 
   // Handle deep link to specific paint
   useEffect(() => {
@@ -1692,7 +1716,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={{ duration: 0.15 }}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm group"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm"
     >
       {/* Hover-sensitive background overlay */}
       <div
@@ -1761,18 +1785,32 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
                 7TV Paints
                 <span className="text-xs opacity-70">({loadingSeventvPaints ? '...' : seventvPaints.length})</span>
               </button>
+
+              <button
+                onClick={() => setActiveTab('streamnook')}
+                className={`px-4 py-2 rounded-lg transition-all flex items-center gap-2 ${
+                  activeTab === 'streamnook'
+                    ? 'glass-button text-violet-200 shadow-[0_0_15px_rgba(167,139,250,0.25)]'
+                    : 'text-textSecondary hover:text-textPrimary'
+                }`}
+              >
+                <img src={streamNookLogo} alt="" className="w-4 h-4 object-contain" draggable={false} />
+                StreamNook
+              </button>
               
-              {/* Search Input */}
-              <div className="relative ml-auto">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-textSecondary" />
-                <input
-                  type="text"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder={`Search ${activeTab === 'twitch-badges' ? 'badges' : activeTab === '7tv-badges' ? '7TV badges' : '7TV paints'}...`}
-                  className="w-48 pl-9 pr-3 py-2 glass-input text-sm text-textPrimary placeholder-textSecondary focus:outline-none transition-colors"
-                />
-              </div>
+              {/* Search Input. Hidden on StreamNook tab (static content, nothing to search) */}
+              {activeTab !== 'streamnook' && (
+                <div className="relative ml-auto">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-textSecondary" />
+                  <input
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder={`Search ${activeTab === 'twitch-badges' ? 'badges' : activeTab === '7tv-badges' ? '7TV badges' : '7TV paints'}...`}
+                    className="w-48 pl-9 pr-3 py-2 glass-input text-sm text-textPrimary placeholder-textSecondary focus:outline-none transition-colors"
+                  />
+                </div>
+              )}
             </div>
             
             {/* Collection Counter - shows collected/total for current tab */}
@@ -2308,9 +2346,74 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId }
               )}
             </>
           )}
+
+          {/* StreamNook Tab. The app's own identity badge with static content
+              (description + tier breakdown + viewer's own card if signed in).
+              Not data-driven from any API; tiers are durable per the Brain. */}
+          {activeTab === 'streamnook' && (
+            <div className="max-w-3xl mx-auto py-6 space-y-8">
+              {/* Hero */}
+              <div className="flex flex-col items-center text-center">
+                <img
+                  src={streamNookLogo}
+                  alt="StreamNook"
+                  className="w-20 h-20 object-contain mb-4"
+                  draggable={false}
+                />
+                <h2 className="text-3xl font-bold text-textPrimary mb-2">StreamNook</h2>
+                <p className="text-sm text-textSecondary uppercase tracking-[0.28em] font-medium">
+                  Community Identity Badge
+                </p>
+              </div>
+
+              {/* Description */}
+              <div className="glass-panel rounded-xl p-6">
+                <p className="text-textPrimary leading-relaxed">
+                  Every member of the StreamNook community gets a permanent rank number,
+                  based on the order they joined, plus a tier label tied to that number.
+                  The badge appears in chat alongside Twitch, 7TV, and FFZ badges, visible
+                  only to other members.
+                </p>
+                <p className="text-textSecondary text-sm leading-relaxed mt-3">
+                  Hover the badge in chat to see the rank reveal. The number is permanent
+                  and never reshuffles. Your tier reflects your spot in the timeline.
+                </p>
+              </div>
+
+              {/* Viewer's own tier card. Only renders when the signed-in user is in the registry */}
+              {currentUserStreamNookNumber !== null && (
+                <div>
+                  <p className="text-[11px] text-textSecondary uppercase tracking-[0.28em] font-semibold mb-3 text-center">
+                    Your Rank
+                  </p>
+                  <div className="flex justify-center">
+                    <StreamNookTierCard userNumber={currentUserStreamNookNumber} skipCypher />
+                  </div>
+                </div>
+              )}
+
+              {/* External link */}
+              <div className="flex justify-center pt-2">
+                <button
+                  onClick={async () => {
+                    try {
+                      const { open } = await import('@tauri-apps/plugin-shell');
+                      await open('https://github.com/winters27/StreamNook');
+                    } catch (err) {
+                      Logger.error('Failed to open StreamNook repo:', err);
+                    }
+                  }}
+                  className="px-5 py-2.5 glass-button text-sm text-textPrimary flex items-center gap-2 hover:bg-white/5 transition-colors"
+                >
+                  View StreamNook on GitHub
+                  <ExternalLink size={14} className="opacity-60" />
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </motion.div>
-      
+
       {/* 7TV Badge Detail Modal */}
       {selectedSeventvBadge && createPortal(
         <div 

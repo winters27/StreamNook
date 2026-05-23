@@ -7,6 +7,10 @@ export interface TooltipProps {
   delay?: number;
   children: React.ReactElement;
   disabled?: boolean;
+  // Optional override for the tooltip container's class list. When provided,
+  // replaces the default chrome entirely (rounded-md, bg-black/80, border…).
+  // Used by callers that need a non-rectangular container, e.g. pill-shaped.
+  containerClassName?: string;
 }
 
 export const Tooltip: React.FC<TooltipProps> = ({
@@ -15,6 +19,7 @@ export const Tooltip: React.FC<TooltipProps> = ({
   delay = 250,
   children,
   disabled = false,
+  containerClassName,
 }) => {
   const showTooltip = useTooltipStore(state => state.showTooltip);
   const hideTooltip = useTooltipStore(state => state.hideTooltip);
@@ -52,7 +57,7 @@ export const Tooltip: React.FC<TooltipProps> = ({
     
     timeoutRef.current = setTimeout(() => {
       const rect = targetElement.getBoundingClientRect();
-      showTooltip(tooltipId, content, rect, side);
+      showTooltip(tooltipId, content, rect, side, containerClassName);
       // It's okay, if we hover over something else, the store overrides it.
     }, delay);
   };
@@ -72,7 +77,7 @@ export const Tooltip: React.FC<TooltipProps> = ({
     }
     const targetElement = e.currentTarget as HTMLElement;
     const rect = targetElement.getBoundingClientRect();
-    showTooltip(tooltipId, content, rect, side);
+    showTooltip(tooltipId, content, rect, side, containerClassName);
   };
 
   const handleBlur = (e: React.FocusEvent) => {

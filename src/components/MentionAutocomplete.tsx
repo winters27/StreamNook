@@ -2,6 +2,9 @@ import React, { useEffect, useRef, useMemo } from 'react';
 import { motion } from 'framer-motion';
 import { ChatUser } from '../stores/chatUserStore';
 import { computePaintStyle } from '../services/seventvService';
+import { useAppStore } from '../stores/AppStore';
+import { getDisplayedName, getColorOverride } from '../utils/userChatOverrides';
+import type { UserChatOverride } from '../types';
 
 interface MentionAutocompleteProps {
   /** List of matching users to display */
@@ -23,14 +26,24 @@ const MentionUserItem: React.FC<{
   onSelect: () => void;
   onHover: () => void;
   itemRef: (el: HTMLButtonElement | null) => void;
-}> = ({ user, isSelected, onSelect, onHover, itemRef }) => {
+  overrides: Record<string, UserChatOverride> | undefined;
+}> = ({ user, isSelected, onSelect, onHover, itemRef, overrides }) => {
+  // Override-aware base color: the user's set color wins over their Twitch
+  // color. 7TV paint (if any) still renders on top.
+  const effectiveColor = getColorOverride(user.userId, overrides) ?? user.color;
+
   // Compute paint style for the user's display name
   const nameStyle = useMemo(() => {
     if (user.paint) {
-      return computePaintStyle(user.paint, user.color);
+      return computePaintStyle(user.paint, effectiveColor);
     }
-    return { color: user.color || '#9147FF' };
-  }, [user.paint, user.color]);
+    return { color: effectiveColor || '#9147FF' };
+  }, [user.paint, effectiveColor]);
+
+  // Effective display label resolves to the user's nickname when one is set.
+  // The @insertion still uses user.username, which Twitch IRC needs.
+  const displayed = getDisplayedName(user.userId, user.displayName, overrides);
+  const showRealName = displayed.toLowerCase() !== user.username.toLowerCase();
 
   return (
     <button
@@ -46,17 +59,17 @@ const MentionUserItem: React.FC<{
       {/* Color indicator dot */}
       <span
         className="w-2 h-2 rounded-full flex-shrink-0"
-        style={{ backgroundColor: user.color || '#9147FF' }}
+        style={{ backgroundColor: effectiveColor || '#9147FF' }}
       />
       {/* Display name with paint styling */}
       <span className="flex-1 min-w-0 truncate">
-        <span 
+        <span
           className="font-semibold"
           style={nameStyle}
         >
-          {user.displayName}
+          {displayed}
         </span>
-        {user.displayName.toLowerCase() !== user.username.toLowerCase() && (
+        {showRealName && (
           <span className="text-textSecondary text-xs ml-1 opacity-70">
             (@{user.username})
           </span>
@@ -78,6 +91,7 @@ const MentionAutocomplete: React.FC<MentionAutocompleteProps> = ({
 }) => {
   const listRef = useRef<HTMLDivElement>(null);
   const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const overrides = useAppStore((s) => s.settings.chat_customization?.user_overrides);
 
   // Scroll selected item into view
   useEffect(() => {
@@ -129,6 +143,7 @@ const MentionAutocomplete: React.FC<MentionAutocompleteProps> = ({
             onSelect={() => onSelect(user)}
             onHover={() => onSelectedIndexChange(index)}
             itemRef={(el) => { itemRefs.current[index] = el; }}
+            overrides={overrides}
           />
         ))}
       </div>

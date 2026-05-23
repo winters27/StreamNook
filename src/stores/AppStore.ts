@@ -6,6 +6,7 @@ import { trackActivity, isStreamlinkError, sendStreamlinkDiagnostics } from '../
 import { Logger, setDiagnosticsEnabled } from '../utils/logger';
 import { qualitiesEquivalent } from '../utils/quality';
 import { upsertUser } from '../services/supabaseService';
+import { emitSettingsUpdated } from '../utils/settingsBroadcast';
 
 type StreamStartResult = { url: string; quality: string };
 
@@ -132,6 +133,13 @@ interface AppState {
   // wasn't offered for this stream and we fell back to the closest match.
   activeQuality: string | null;
   currentStream: TwitchStream | null;
+  /** Lowercase channel logins currently open in any StreamNook MultiChat
+   *  popout window. The main app gates the in-app chat widget on this set —
+   *  if you're watching a stream whose chat already lives in a popout, the
+   *  popout becomes the sole chat surface for that channel (no duplicate
+   *  chat panel in main). Maintained by the tray bridge from events the
+   *  popout windows emit on their channel-list changes. */
+  channelsInPopouts: Set<string>;
   currentMediaType: 'live' | 'clip' | 'video' | 'offline_chat' | null;
   originalMediaUrl: string | null;
   setCurrentStream: (stream: TwitchStream | null) => void;
@@ -145,6 +153,7 @@ interface AppState {
   showBadgesOverlay: boolean;
   badgesOverlayInitialPaintId: string | null;
   badgesOverlayInitialBadgeId: string | null;
+  badgesOverlayInitialStreamNook: boolean;
   showWhispersOverlay: boolean;
   showDashboardOverlay: boolean;
   showStreamlinkMissing: boolean;
@@ -221,6 +230,7 @@ interface AppState {
   setShowBadgesOverlay: (show: boolean) => void;
   openBadgesWithPaint: (paintId: string) => void;
   openBadgesWithBadge: (badgeId: string) => void;
+  openBadgesOnStreamNook: () => void;
   setShowWhispersOverlay: (show: boolean) => void;
   setShowDashboardOverlay: (show: boolean) => void;
   openWhisperWithUser: (user: { id: string; login: string; display_name: string; profile_image_url?: string }) => void;
@@ -307,6 +317,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   streamUrl: null,
   activeQuality: null,
   currentStream: null,
+  channelsInPopouts: new Set<string>(),
   currentMediaType: null,
   originalMediaUrl: null,
   setCurrentStream: (stream: TwitchStream | null) => set({ currentStream: stream }),
@@ -320,6 +331,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   showBadgesOverlay: false,
   badgesOverlayInitialPaintId: null,
   badgesOverlayInitialBadgeId: null,
+  badgesOverlayInitialStreamNook: false,
   showWhispersOverlay: false,
   showDashboardOverlay: false,
   showStreamlinkMissing: false,
@@ -775,7 +787,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
 
     await invoke('save_settings', { settings: newSettings });
-    
+    // Broadcast so any other open windows (main + MultiChats) refresh their
+    // in-memory settings without needing to be reopened. Fire-and-forget; the
+    // helper swallows errors in non-Tauri contexts.
+    void emitSettingsUpdated();
+
     const state = get();
     if (state.isTheaterMode) {
       // Don't un-hide the chat if we're in compact/theater mode, just quietly update the original placement
@@ -1154,6 +1170,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       // didn't.
       const newSettings = { ...get().settings, quality: quality };
       await invoke('save_settings', { settings: newSettings });
+      void emitSettingsUpdated();
 
       set({ streamUrl: result.url, activeQuality: result.quality, settings: newSettings, isLoading: false });
       if (qualitiesEquivalent(quality, result.quality)) {
@@ -1742,16 +1759,25 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   setShowBadgesOverlay: (show: boolean) => {
     if (show) trackActivity('Opened Badges');
-    // Clear initial IDs when closing
-    set({ showBadgesOverlay: show, badgesOverlayInitialPaintId: show ? get().badgesOverlayInitialPaintId : null, badgesOverlayInitialBadgeId: show ? get().badgesOverlayInitialBadgeId : null });
+    // Clear initial deep-link state when closing
+    set({
+      showBadgesOverlay: show,
+      badgesOverlayInitialPaintId: show ? get().badgesOverlayInitialPaintId : null,
+      badgesOverlayInitialBadgeId: show ? get().badgesOverlayInitialBadgeId : null,
+      badgesOverlayInitialStreamNook: show ? get().badgesOverlayInitialStreamNook : false,
+    });
   },
   openBadgesWithPaint: (paintId: string) => {
     trackActivity('Opened Badges with Paint');
-    set({ showBadgesOverlay: true, badgesOverlayInitialPaintId: paintId, badgesOverlayInitialBadgeId: null });
+    set({ showBadgesOverlay: true, badgesOverlayInitialPaintId: paintId, badgesOverlayInitialBadgeId: null, badgesOverlayInitialStreamNook: false });
   },
   openBadgesWithBadge: (badgeId: string) => {
     trackActivity('Opened Badges with Badge');
-    set({ showBadgesOverlay: true, badgesOverlayInitialBadgeId: badgeId, badgesOverlayInitialPaintId: null });
+    set({ showBadgesOverlay: true, badgesOverlayInitialBadgeId: badgeId, badgesOverlayInitialPaintId: null, badgesOverlayInitialStreamNook: false });
+  },
+  openBadgesOnStreamNook: () => {
+    trackActivity('Opened Badges on StreamNook');
+    set({ showBadgesOverlay: true, badgesOverlayInitialStreamNook: true, badgesOverlayInitialPaintId: null, badgesOverlayInitialBadgeId: null });
   },
   setShowWhispersOverlay: (show: boolean) => {
     if (show) trackActivity('Opened Whispers');

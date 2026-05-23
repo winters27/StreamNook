@@ -3,8 +3,14 @@ import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import { useState, useCallback } from "react";
 
+// Default tooltip container chrome. Callers can override via the
+// containerClassName prop on <Tooltip>; when set, this default is replaced
+// entirely so e.g. StreamNookBadge can render a pill-shaped popover.
+const DEFAULT_TOOLTIP_CONTAINER_CLASS =
+  "rounded-md bg-black/80 px-2.5 py-1.5 text-xs font-medium text-textPrimary shadow-xl backdrop-blur-xl border border-white/10 max-w-xs break-words pointer-events-none text-center leading-tight";
+
 export const TooltipManager = () => {
-  const { isVisible, content, rect, side: initialSide } = useTooltipStore();
+  const { isVisible, content, rect, side: initialSide, containerClassName } = useTooltipStore();
   const [dimensions, setDimensions] = useState({ width: 0, height: 0, content: null as any });
 
   // Reset dimensions during render if content changes (React 18 pattern)
@@ -146,8 +152,9 @@ export const TooltipManager = () => {
               left: `${x}px`,
               top: `${y}px`,
             }}
-            // Frosted glass styling: bg-black/80 backdrop-blur-xl border border-white/10 text-xs text-textPrimary
-            className="rounded-md bg-black/80 px-2.5 py-1.5 text-xs font-medium text-textPrimary shadow-xl backdrop-blur-xl border border-white/10 max-w-xs break-words pointer-events-none text-center leading-tight"
+            // Frosted glass styling by default; callers can override via the
+            // containerClassName prop on <Tooltip> for a different shape/skin.
+            className={containerClassName ?? DEFAULT_TOOLTIP_CONTAINER_CLASS}
           >
             {content}
           </motion.div>

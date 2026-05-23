@@ -24,8 +24,17 @@ impl ChatService {
         IrcService::stop().await
     }
 
-    pub async fn join_channel(channel: &str) -> Result<()> {
-        IrcService::join_channel(channel).await
+    pub async fn join_channel(channel: &str, state: &AppState) -> Result<()> {
+        IrcService::join_channel(channel).await?;
+        // Populate the per-channel emote cache for the newly-JOINed channel.
+        // Without this, `parse_text_segment` can't find 7TV/FFZ/BTTV emotes
+        // for messages from this channel (it reads from CHANNEL_EMOTES which
+        // is keyed per channel). Previously every `start_chat` did a full
+        // tear-down + re-fetch which masked the gap; with idempotent `start`,
+        // additional-channel JOINs (channel switching, MultiChat tabs, etc.)
+        // now route through this path.
+        IrcService::fetch_and_store_emotes(channel, state.emote_service.clone()).await;
+        Ok(())
     }
 
     pub async fn leave_channel(channel: &str) -> Result<()> {

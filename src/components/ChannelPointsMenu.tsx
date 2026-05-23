@@ -205,27 +205,11 @@ const ChannelPointsMenu: React.FC<ChannelPointsMenuProps> = ({
       return;
     }
 
-    // Standard redemption
-    setRedeemingId(reward.id);
-    try {
-      const result = await invoke<RedemptionResult>('redeem_channel_reward', {
-        channelId: channelId,
-        rewardId: reward.id,
-        cost: reward.cost,
-      });
-
-      if (result.success) {
-        useAppStore.getState().addToast(`Redeemed: ${reward.title}`, 'success');
-        onBalanceUpdate(); // Refresh balance
-      } else {
-        useAppStore.getState().addToast(result.error_message || 'Redemption failed', 'error');
-      }
-    } catch (err) {
-      Logger.error('[ChannelPointsMenu] Redemption error:', err);
-      useAppStore.getState().addToast(typeof err === 'string' ? err : 'Redemption failed', 'error');
-    } finally {
-      setRedeemingId(null);
-    }
+    // Standard redemption — route through the confirm modal so the user has a chance
+    // to back out before spending points. The actual invoke happens in
+    // handleConfirmRedemption, which branches by reward type.
+    setPendingReward(reward);
+    setShowConfirmModal(true);
   };
 
   const handleSendHighlightedMessage = async () => {
@@ -262,34 +246,56 @@ const ChannelPointsMenu: React.FC<ChannelPointsMenuProps> = ({
   const handleConfirmRedemption = async () => {
     if (!pendingReward) return;
 
+    const reward = pendingReward;
+    const titleLower = reward.title.toLowerCase();
+    const isRandomEmote =
+      titleLower.includes('random') && titleLower.includes('emote');
+
     setShowConfirmModal(false);
-    setRedeemingId(pendingReward.id);
+    setRedeemingId(reward.id);
 
     try {
-      const result = await invoke<RedemptionResult>('unlock_random_emote', {
-        channelId: channelId,
-        cost: pendingReward.cost,
-      });
-
-      if (result.success) {
-        // Show emote reveal popup if we got emote data
-        if (result.unlocked_emote) {
-          setRevealedEmote(result.unlocked_emote);
-          setShowEmoteReveal(true);
+      if (isRandomEmote) {
+        const result = await invoke<RedemptionResult>('unlock_random_emote', {
+          channelId: channelId,
+          cost: reward.cost,
+        });
+        if (result.success) {
+          if (result.unlocked_emote) {
+            setRevealedEmote(result.unlocked_emote);
+            setShowEmoteReveal(true);
+          } else {
+            useAppStore.getState().addToast('🎉 Random emote unlocked!', 'success');
+          }
+          onBalanceUpdate();
+          if (onEmotesChange) onEmotesChange();
         } else {
-          useAppStore.getState().addToast('🎉 Random emote unlocked!', 'success');
-        }
-        onBalanceUpdate();
-        // Trigger emote refresh so new emote appears in picker
-        if (onEmotesChange) {
-          onEmotesChange();
+          useAppStore
+            .getState()
+            .addToast(result.error_message || 'Failed to unlock emote', 'error');
         }
       } else {
-        useAppStore.getState().addToast(result.error_message || 'Failed to unlock emote', 'error');
+        const result = await invoke<RedemptionResult>('redeem_channel_reward', {
+          channelId: channelId,
+          rewardId: reward.id,
+          cost: reward.cost,
+          title: reward.title,
+          prompt: reward.prompt ?? '',
+        });
+        if (result.success) {
+          useAppStore.getState().addToast(`Redeemed: ${reward.title}`, 'success');
+          onBalanceUpdate();
+        } else {
+          useAppStore
+            .getState()
+            .addToast(result.error_message || 'Redemption failed', 'error');
+        }
       }
     } catch (err) {
-      Logger.error('[ChannelPointsMenu] Random emote unlock error:', err);
-      useAppStore.getState().addToast(typeof err === 'string' ? err : 'Failed to unlock', 'error');
+      Logger.error('[ChannelPointsMenu] Redemption error:', err);
+      useAppStore
+        .getState()
+        .addToast(typeof err === 'string' ? err : 'Redemption failed', 'error');
     } finally {
       setRedeemingId(null);
       setPendingReward(null);
@@ -701,9 +707,14 @@ const ChannelPointsMenu: React.FC<ChannelPointsMenuProps> = ({
             {pendingReward.title}
           </div>
 
-          {/* Warning Text */}
+          {/* Warning Text — generic; show the streamer's prompt when available */}
           <div className="text-sm text-textMuted text-center px-6 mb-4">
-            You will receive a random subscriber emote.
+            {pendingReward.prompt
+              ? pendingReward.prompt
+              : pendingReward.title.toLowerCase().includes('random') &&
+                pendingReward.title.toLowerCase().includes('emote')
+                ? 'You will receive a random subscriber emote.'
+                : 'Spend channel points to redeem this reward.'}
             <br />
             <span className="text-yellow-400/80">This cannot be undone.</span>
           </div>

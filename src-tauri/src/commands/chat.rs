@@ -33,8 +33,8 @@ pub async fn send_chat_message(
 }
 
 #[tauri::command]
-pub async fn join_chat_channel(channel: String) -> Result<(), String> {
-    ChatService::join_channel(&channel)
+pub async fn join_chat_channel(channel: String, state: State<'_, AppState>) -> Result<(), String> {
+    ChatService::join_channel(&channel, &state)
         .await
         .map_err(|e| e.to_string())
 }
@@ -60,9 +60,10 @@ pub async fn start_multi_chat(
         .await
         .map_err(|e| e.to_string())?;
 
-    // Join the rest
+    // Join the rest (each call also populates the per-channel emote cache so
+    // 7TV/FFZ/BTTV emotes render for these channels too)
     for channel in channels.iter().skip(1) {
-        ChatService::join_channel(channel)
+        ChatService::join_channel(channel, &state)
             .await
             .unwrap_or_else(|e| {
                 log::error!(

@@ -6,6 +6,7 @@ import { listen } from '@tauri-apps/api/event';
 import { parseEmojisProxied, EmojiSegment } from '../services/emojiService';
 
 import { Logger } from '../utils/logger';
+import { playSound, type SoundId } from '../utils/notificationSound';
 interface LiveNotification {
   streamer_name: string;
   streamer_login: string;
@@ -123,102 +124,14 @@ const TEST_NOTIFICATION_JOKES = [
   "You really woke up and chose gullibility today.",
 ];
 
-let globalAudioContext: AudioContext | null = null;
-
-const getSharedAudioContext = () => {
-  if (!globalAudioContext) {
-    globalAudioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-  }
-  if (globalAudioContext.state === 'suspended') {
-    globalAudioContext.resume().catch(() => {});
-  }
-  return globalAudioContext;
-};
-
 const ToastManager = () => {
   const { toasts, removeToast, addToast, settings } = useAppStore();
 
-  // Function to play a subtle notification sound based on selected type
+  // Thin wrapper so existing callers keep the (soundType?: string) signature.
+  // Actual sound generation lives in utils/notificationSound so chat highlights
+  // can share the same AudioContext + envelope library.
   const playNotificationSound = useCallback((soundType?: string) => {
-    try {
-      const audioContext = getSharedAudioContext();
-      const oscillator = audioContext.createOscillator();
-      const gainNode = audioContext.createGain();
-
-      oscillator.connect(gainNode);
-      gainNode.connect(audioContext.destination);
-
-      const type = soundType || 'boop';
-
-      // Configure sound based on type
-      switch (type) {
-        case 'tick':
-          // Cozy Knock - Warm, wooden knock-like sound
-          oscillator.type = 'triangle';
-          oscillator.frequency.setValueAtTime(280, audioContext.currentTime);
-          oscillator.frequency.exponentialRampToValueAtTime(180, audioContext.currentTime + 0.08);
-          gainNode.gain.setValueAtTime(0, audioContext.currentTime);
-          gainNode.gain.linearRampToValueAtTime(0.08, audioContext.currentTime + 0.01);
-          gainNode.gain.exponentialRampToValueAtTime(0.001, audioContext.currentTime + 0.15);
-          oscillator.start(audioContext.currentTime);
-          oscillator.stop(audioContext.currentTime + 0.15);
-          break;
-
-        case 'soft':
-          // Fireplace Crackle - Warm, layered gentle tone
-          oscillator.type = 'triangle';
-          oscillator.frequency.setValueAtTime(420, audioContext.currentTime);
-          oscillator.frequency.exponentialRampToValueAtTime(320, audioContext.currentTime + 0.3);
-          gainNode.gain.setValueAtTime(0, audioContext.currentTime);
-          gainNode.gain.linearRampToValueAtTime(0.06, audioContext.currentTime + 0.04);
-          gainNode.gain.setValueAtTime(0.05, audioContext.currentTime + 0.15);
-          gainNode.gain.exponentialRampToValueAtTime(0.001, audioContext.currentTime + 0.5);
-          oscillator.start(audioContext.currentTime);
-          oscillator.stop(audioContext.currentTime + 0.5);
-          break;
-
-        case 'whisper':
-          // Raindrop - Soft, gentle water droplet sound
-          oscillator.type = 'sine';
-          oscillator.frequency.setValueAtTime(520, audioContext.currentTime);
-          oscillator.frequency.exponentialRampToValueAtTime(380, audioContext.currentTime + 0.12);
-          gainNode.gain.setValueAtTime(0, audioContext.currentTime);
-          gainNode.gain.linearRampToValueAtTime(0.07, audioContext.currentTime + 0.02);
-          gainNode.gain.exponentialRampToValueAtTime(0.001, audioContext.currentTime + 0.25);
-          oscillator.start(audioContext.currentTime);
-          oscillator.stop(audioContext.currentTime + 0.25);
-          break;
-
-        case 'gentle':
-          // Wind Chime - Ethereal, distant bell-like tone
-          oscillator.type = 'sine';
-          oscillator.frequency.setValueAtTime(550, audioContext.currentTime);
-          oscillator.frequency.setValueAtTime(580, audioContext.currentTime + 0.1);
-          oscillator.frequency.exponentialRampToValueAtTime(480, audioContext.currentTime + 0.6);
-          gainNode.gain.setValueAtTime(0, audioContext.currentTime);
-          gainNode.gain.linearRampToValueAtTime(0.05, audioContext.currentTime + 0.08);
-          gainNode.gain.setValueAtTime(0.04, audioContext.currentTime + 0.25);
-          gainNode.gain.exponentialRampToValueAtTime(0.001, audioContext.currentTime + 0.7);
-          oscillator.start(audioContext.currentTime);
-          oscillator.stop(audioContext.currentTime + 0.7);
-          break;
-
-        case 'boop':
-        default:
-          // Subtle Boop (Default) - The original sound
-          oscillator.type = 'sine';
-          oscillator.frequency.setValueAtTime(800, audioContext.currentTime);
-          oscillator.frequency.exponentialRampToValueAtTime(400, audioContext.currentTime + 0.1);
-          gainNode.gain.setValueAtTime(0, audioContext.currentTime);
-          gainNode.gain.linearRampToValueAtTime(0.15, audioContext.currentTime + 0.05);
-          gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.3);
-          oscillator.start(audioContext.currentTime);
-          oscillator.stop(audioContext.currentTime + 0.3);
-          break;
-      }
-    } catch (error) {
-      Logger.warn('Could not play notification sound:', error);
-    }
+    playSound((soundType as SoundId | undefined) ?? 'boop');
   }, []);
 
   // Listen for live stream notifications from backend

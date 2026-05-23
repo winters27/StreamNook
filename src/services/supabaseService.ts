@@ -678,6 +678,129 @@ export const subscribeToStatsChanges = (
     };
 };
 
+// ============================================================================
+// StreamNook user registry (P2P badge)
+// ============================================================================
+// Backed by the `user_numbers` Postgres view (ROW_NUMBER ordered by users.created_at).
+// Loaded once on app start, kept fresh via a realtime INSERT subscription on `users`.
+
+let snRegistry: Map<string, number> = new Map();
+let snRegistryChannel: RealtimeChannel | null = null;
+let snRegistryLoaded = false;
+let snRegistryLoading: Promise<void> | null = null;
+let snRegistryVersion = 0;
+const snRegistryVersionSubscribers = new Set<() => void>();
+
+const bumpStreamNookRegistryVersion = () => {
+    snRegistryVersion++;
+    for (const cb of snRegistryVersionSubscribers) {
+        try { cb(); } catch (e) { Logger.error('[Supabase] Registry version subscriber error:', e); }
+    }
+};
+
+const loadStreamNookRegistry = async (): Promise<void> => {
+    if (!supabase) return;
+    if (snRegistryLoading) return snRegistryLoading;
+    snRegistryLoading = (async () => {
+        try {
+            const { data, error } = await supabase!
+                .from('user_numbers')
+                .select('id, user_number');
+            if (error) {
+                Logger.error('[Supabase] Failed to load streamnook registry:', error);
+                return;
+            }
+            snRegistry = new Map((data || []).map((r: any) => [r.id as string, r.user_number as number]));
+            snRegistryLoaded = true;
+            Logger.debug('[Supabase] StreamNook registry loaded:', snRegistry.size, 'users');
+            bumpStreamNookRegistryVersion();
+        } catch (e) {
+            Logger.error('[Supabase] loadStreamNookRegistry exception:', e);
+        } finally {
+            snRegistryLoading = null;
+        }
+    })();
+    return snRegistryLoading;
+};
+
+/**
+ * Subscribe to the StreamNook user registry. Idempotent: only the first call
+ * triggers a fetch + opens the realtime channel; subsequent calls just add
+ * listeners. Returns an unsubscribe that tears the channel down when the last
+ * listener leaves.
+ */
+export const subscribeToStreamNookRegistry = (
+    callback?: (map: Map<string, number>) => void
+): (() => void) | null => {
+    if (!supabase) return null;
+
+    const versionCb = () => callback?.(snRegistry);
+    snRegistryVersionSubscribers.add(versionCb);
+
+    if (!snRegistryLoaded) {
+        loadStreamNookRegistry();
+    } else {
+        callback?.(snRegistry);
+    }
+
+    if (!snRegistryChannel) {
+        snRegistryChannel = supabase
+            .channel('streamnook-registry')
+            .on('postgres_changes', {
+                event: 'INSERT',
+                schema: 'public',
+                table: 'users',
+            }, () => {
+                loadStreamNookRegistry();
+            })
+            .subscribe();
+    }
+
+    return () => {
+        snRegistryVersionSubscribers.delete(versionCb);
+        if (snRegistryVersionSubscribers.size === 0 && snRegistryChannel) {
+            snRegistryChannel.unsubscribe();
+            snRegistryChannel = null;
+        }
+    };
+};
+
+/** Sync read: is this Twitch user in the registry? */
+export const isStreamNookUser = (userId: string | undefined | null): boolean => {
+    if (!userId) return false;
+    return snRegistry.has(userId);
+};
+
+/** Sync read: get the user number, or null if not registered. */
+export const getStreamNookUserNumber = (userId: string | undefined | null): number | null => {
+    if (!userId) return null;
+    return snRegistry.get(userId) ?? null;
+};
+
+/** For React useSyncExternalStore: subscribe to version bumps. */
+export const subscribeStreamNookRegistryVersion = (cb: () => void): (() => void) => {
+    snRegistryVersionSubscribers.add(cb);
+    if (!snRegistryLoaded && !snRegistryLoading && supabase) {
+        loadStreamNookRegistry();
+    }
+    return () => { snRegistryVersionSubscribers.delete(cb); };
+};
+
+/** For React useSyncExternalStore: read the current version. */
+export const getStreamNookRegistryVersion = (): number => snRegistryVersion;
+
+if (import.meta.env.DEV && typeof window !== 'undefined') {
+    (window as any).__snDebug = {
+        registry: () => snRegistry,
+        size: () => snRegistry.size,
+        loaded: () => snRegistryLoaded,
+        version: () => snRegistryVersion,
+        isMember: (id: string) => snRegistry.has(id),
+        number: (id: string) => snRegistry.get(id) ?? null,
+        reload: () => loadStreamNookRegistry(),
+    };
+}
+
 // Export default object for convenience
 export default {
     getSupabaseClient,
@@ -694,4 +817,7 @@ export default {
     getGlobalStats,
     getAllUsersWithStats,
     subscribeToStatsChanges,
+    subscribeToStreamNookRegistry,
+    isStreamNookUser,
+    getStreamNookUserNumber,
 };

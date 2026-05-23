@@ -752,11 +752,13 @@ fn parse_automatic_reward(
         _ => reward_type.replace('_', " ").to_string(),
     };
 
-    // Get cost - prefer streamer's custom cost, fallback to minimumCost
-    // Note: cost field is null if streamer hasn't overridden it
+    // Cost lookup for automatic rewards: streamer's override `cost` if set, else
+    // `defaultCost` (the current tiered price the official Twitch web client sends in
+    // the redeem mutation). `minimumCost` is just the floor — sending it instead of
+    // defaultCost causes a server-side REWARD_COST_MISMATCH. Verified against captured
+    // RedeemCustomReward/Unlock* mutations on 2026-05-18.
     let cost = reward["cost"]
         .as_i64()
-        .or_else(|| reward["minimumCost"].as_i64())
         .or_else(|| reward["defaultCost"].as_i64())
         .unwrap_or(0) as i32;
 
@@ -894,13 +896,20 @@ pub async fn redeem_channel_reward(
     channel_id: String,
     reward_id: String,
     cost: i32,
+    title: String,
+    prompt: Option<String>,
 ) -> Result<crate::models::drops::RedemptionResult, String> {
     use crate::services::drops_auth_service::DropsAuthService;
     use reqwest::Client;
     use serde_json::json;
 
-    // Use mobile client ID for redemption (mutation)
+    // Mirrors send_highlighted_message: Android client ID + Android-flow token + dashless IDs.
+    // Persisted query hash captured from the official Twitch web client via scripts/twitch-gql-server.js
+    // (operation renamed server-side from RedeemCommunityPointsCustomReward -> RedeemCustomReward,
+    // and `pricingType` + `prompt` are now required in the input).
     const CLIENT_ID: &str = env!("TWITCH_ANDROID_CLIENT_ID");
+    const REDEEM_CUSTOM_REWARD_HASH: &str =
+        "d56249a7adb4978898ea3412e196688d4ac3cea1c0c2dfd65561d229ea5dcc42";
 
     let token = DropsAuthService::get_token()
         .await
@@ -908,38 +917,33 @@ pub async fn redeem_channel_reward(
 
     let client = HTTP_CLIENT.clone();
 
-    // GQL mutation to redeem a channel reward
-    // Note: This mutation may need a persisted query hash
-    let mutation = r#"
-    mutation RedeemCommunityPointsCustomReward($input: RedeemCommunityPointsCustomRewardInput!) {
-        redeemCommunityPointsCustomReward(input: $input) {
-            redemption {
-                id
-                reward {
-                    id
-                    title
-                    cost
-                }
-            }
-            error {
-                code
-            }
-        }
-    }
-    "#;
+    let transaction_id = uuid::Uuid::new_v4().to_string().replace("-", "");
+    let device_id = uuid::Uuid::new_v4().to_string().replace("-", "");
+    let session_id = uuid::Uuid::new_v4().to_string().replace("-", "")[..16].to_string();
 
     let response = client
         .post("https://gql.twitch.tv/gql")
         .header("Client-Id", CLIENT_ID)
         .header("Authorization", format!("OAuth {}", token))
+        .header("X-Device-Id", &device_id)
+        .header("Client-Session-Id", &session_id)
         .json(&json!({
-            "operationName": "RedeemCommunityPointsCustomReward",
-            "query": mutation,
+            "operationName": "RedeemCustomReward",
             "variables": {
                 "input": {
                     "channelID": channel_id,
+                    "cost": cost,
+                    "pricingType": "POINTS",
+                    "prompt": prompt.unwrap_or_default(),
                     "rewardID": reward_id,
-                    "transactionID": uuid::Uuid::new_v4().to_string()
+                    "title": title,
+                    "transactionID": transaction_id,
+                }
+            },
+            "extensions": {
+                "persistedQuery": {
+                    "version": 1,
+                    "sha256Hash": REDEEM_CUSTOM_REWARD_HASH
                 }
             }
         }))
@@ -947,52 +951,109 @@ pub async fn redeem_channel_reward(
         .await
         .map_err(|e| format!("Failed to redeem reward: {}", e))?;
 
-    let result: serde_json::Value = response
-        .json()
+    let status = response.status();
+    let response_text = response
+        .text()
         .await
-        .map_err(|e| format!("Failed to parse redemption response: {}", e))?;
+        .map_err(|e| format!("Failed to read redemption response body: {}", e))?;
 
-    // Check for errors
-    if let Some(error) = result["data"]["redeemCommunityPointsCustomReward"]["error"].as_object() {
-        let error_code = error
-            .get("code")
-            .and_then(|v| v.as_str())
-            .unwrap_or("UNKNOWN");
-        return Ok(crate::models::drops::RedemptionResult {
-            success: false,
-            error_code: Some(error_code.to_string()),
-            error_message: Some(match error_code {
-                "INSUFFICIENT_POINTS" => "Not enough channel points".to_string(),
-                "NOT_AVAILABLE" => "Reward is not available".to_string(),
-                "MAX_PER_STREAM_EXCEEDED" => "Maximum redemptions per stream reached".to_string(),
-                "MAX_PER_USER_PER_STREAM_EXCEEDED" => {
-                    "You've already redeemed this reward".to_string()
-                }
-                "COOLDOWN" => "Reward is on cooldown".to_string(),
-                _ => format!("Redemption failed: {}", error_code),
-            }),
-            new_balance: None,
-            unlocked_emote: None,
-        });
+    log::info!(
+        "🎁 redeem_channel_reward response (status={}, channel={}, reward={}): {}",
+        status,
+        channel_id,
+        reward_id,
+        &response_text[..response_text.len().min(2000)]
+    );
+
+    let result: serde_json::Value = match serde_json::from_str(&response_text) {
+        Ok(v) => v,
+        Err(e) => {
+            log::error!(
+                "🎁 redeem_channel_reward: failed to parse body as JSON: {} | body: {}",
+                e,
+                &response_text[..response_text.len().min(2000)]
+            );
+            return Err(format!("Failed to parse redemption response: {}", e));
+        }
+    };
+
+    // Surface top-level GraphQL errors (e.g. PersistedQueryNotFound, integrity errors)
+    if let Some(errors) = result["errors"].as_array() {
+        if !errors.is_empty() {
+            let msg = errors[0]["message"]
+                .as_str()
+                .unwrap_or("unknown GraphQL error");
+            let code = errors[0]["extensions"]["code"].as_str().unwrap_or("");
+            log::error!(
+                "🎁 redeem_channel_reward GraphQL errors: {}",
+                serde_json::to_string(&errors).unwrap_or_default()
+            );
+            return Ok(crate::models::drops::RedemptionResult {
+                success: false,
+                error_code: Some(if code.is_empty() {
+                    "GRAPHQL_ERROR".to_string()
+                } else {
+                    code.to_string()
+                }),
+                error_message: Some(format!("Twitch GQL error: {}", msg)),
+                new_balance: None,
+                unlocked_emote: None,
+            });
+        }
     }
 
-    // Check for successful redemption
-    if result["data"]["redeemCommunityPointsCustomReward"]["redemption"].is_object() {
+    // Twitch's new RedeemCustomReward payload shape is just { error, __typename } — no
+    // `redemption` object on success. `error: null` is the success indicator; non-null is failure.
+    let payload = &result["data"]["redeemCommunityPointsCustomReward"];
+    if payload.is_object() {
+        if let Some(error) = payload["error"].as_object() {
+            let error_code = error
+                .get("code")
+                .and_then(|v| v.as_str())
+                .unwrap_or("UNKNOWN");
+            return Ok(crate::models::drops::RedemptionResult {
+                success: false,
+                error_code: Some(error_code.to_string()),
+                error_message: Some(match error_code {
+                    "INSUFFICIENT_POINTS" => "Not enough channel points".to_string(),
+                    "NOT_AVAILABLE" => "Reward is not available".to_string(),
+                    "MAX_PER_STREAM_EXCEEDED" => {
+                        "Maximum redemptions per stream reached".to_string()
+                    }
+                    "MAX_PER_USER_PER_STREAM_EXCEEDED" => {
+                        "You've already redeemed this reward".to_string()
+                    }
+                    "COOLDOWN" => "Reward is on cooldown".to_string(),
+                    "PROPERTIES_MISMATCH" => "Reward changed — refresh and try again".to_string(),
+                    _ => format!("Redemption failed: {}", error_code),
+                }),
+                new_balance: None,
+                unlocked_emote: None,
+            });
+        }
+
+        // error is explicitly null (or missing) on the payload → success
         debug!(
             "🎁 Successfully redeemed reward {} for {} points on channel {}",
             reward_id, cost, channel_id
         );
-
         return Ok(crate::models::drops::RedemptionResult {
             success: true,
             error_code: None,
             error_message: None,
             new_balance: None,
-            unlocked_emote: None, // Backend doesn't return new balance, frontend will refetch
+            unlocked_emote: None,
         });
     }
 
     // Unexpected response
+    log::error!(
+        "🎁 redeem_channel_reward unexpected shape (status={}, channel={}, reward={}): {}",
+        status,
+        channel_id,
+        reward_id,
+        serde_json::to_string(&result).unwrap_or_default()
+    );
     Ok(crate::models::drops::RedemptionResult {
         success: false,
         error_code: Some("UNKNOWN".to_string()),

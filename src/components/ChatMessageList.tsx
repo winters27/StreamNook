@@ -1,8 +1,9 @@
-import React, { useRef, useEffect, useCallback, memo } from 'react';
+import React, { useRef, useEffect, useCallback, useMemo, memo } from 'react';
 import ChatMessage from './ChatMessage';
 import { EmoteSet } from '../services/emoteService';
 import { BackendChatMessage } from '../services/twitchChat';
 import { ModerationContext } from '../hooks/useTwitchChat';
+import { useAppStore } from '../stores/AppStore';
 
 import { Logger } from '../utils/logger';
 interface ChatMessageListProps {
@@ -24,6 +25,10 @@ interface ChatMessageListProps {
   onBadgeClick: (badgeKey: string, badgeInfo: Record<string, unknown>) => void;
   highlightedMessageId: string | null;
   deletedMessageIds: Set<string>;
+  // Messages whose IDs are in this set are filtered out entirely (rendered
+  // nothing). Used by /clearmessages for visual-only chat clears, distinct
+  // from `deletedMessageIds` which renders moderation context (strikethrough).
+  hiddenMessageIds?: Set<string>;
   clearedUserContexts: Map<string, { context: ModerationContext; affectedMessageIds: Set<string> }>;
   emotes: EmoteSet | null;
   getMessageId: (message: string | BackendChatMessage) => string | null;
@@ -53,6 +58,7 @@ const ChatMessageList = memo(function ChatMessageList({
   onUsernameRightClick,
   onBadgeClick,
   highlightedMessageId,
+  hiddenMessageIds,
   deletedMessageIds,
   clearedUserContexts,
   emotes,
@@ -61,9 +67,40 @@ const ChatMessageList = memo(function ChatMessageList({
   broadcasterId,
 }: ChatMessageListProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  // Inner messages-wrapper div. We observe its size with a ResizeObserver so
+  // that any height change (badge/emote/cosmetic images settling in after a
+  // new message's first paint, content-visibility resolving to a slightly
+  // different actual size, etc.) re-pins the scroll to bottom while the user
+  // was already there. Without this, every new message left a brief upward
+  // shimmer for the time between the first scrollTop=scrollHeight call and
+  // when async content finished sizing.
+  const contentRef = useRef<HTMLDivElement>(null);
   const isScrollingProgrammatically = useRef(false);
   const wasAtBottomRef = useRef(true); // Track if we were at bottom BEFORE new messages
   const prevMessageCountRef = useRef(0); // Track previous message count for channel switch detection
+
+  // Per-row CSS `contain-intrinsic-block-size` placeholder size. The browser
+  // uses this for off-screen messages (content-visibility: auto). Picking a
+  // value close to the real rendered height prevents a layout shift on the
+  // FIRST render of each message — the prior hardcoded 50px was tuned for
+  // single-line messages, which was way off when timestamps add a second line.
+  // The `auto` keyword still lets the browser remember the actual size after
+  // first render, so this is just the initial-paint guess.
+  const chatDesign = useAppStore((s) => s.settings.chat_design);
+  const intrinsicSizeCSS = useMemo(() => {
+    const fontSize = chatDesign?.font_size ?? 14;
+    const messageSpacing = chatDesign?.message_spacing ?? 2;
+    // One content line ≈ font_size * 1.5 (browser default leading) plus
+    // top + bottom padding (each = max(4, spacing / 2)) and the optional
+    // 1px divider border underneath.
+    const padding = Math.max(4, messageSpacing / 2) * 2;
+    const contentLine = Math.round(fontSize * 1.5);
+    // Timestamp row is a 10px text line with line-height tight (~1.25) plus
+    // mb-0.5 (~2px). Total ≈ 14-15px when enabled.
+    const timestampHeight = chatDesign?.show_timestamps ? 15 : 0;
+    const total = contentLine + timestampHeight + padding + 1; // +1 for divider
+    return `auto ${total}px`;
+  }, [chatDesign?.font_size, chatDesign?.message_spacing, chatDesign?.show_timestamps]);
   
   // Track if user explicitly scrolled UP via wheel (negative deltaY = scroll up)
   // This is the ONLY reliable way to detect user scroll intent
@@ -101,6 +138,33 @@ const ChatMessageList = memo(function ChatMessageList({
       userScrolledUpRef.current = false;
     }
   }, []);
+
+  // ResizeObserver: re-pin to bottom whenever the inner messages-wrapper
+  // grows (badge/emote images settling, paint shaders sizing, etc.). This is
+  // the secondary safety net beyond the explicit auto-scroll-on-new-message
+  // effect below — it catches any height change the explicit path missed,
+  // and is the actual fix for the "timestamp shimmer" where a new row's
+  // height grows a few pixels after first paint.
+  useEffect(() => {
+    if (!contentRef.current) return;
+    const target = contentRef.current;
+    const ro = new ResizeObserver(() => {
+      if (!containerRef.current) return;
+      if (isPaused) return;
+      // Only re-pin when the user was already at bottom — never YANK them
+      // down if they've scrolled up to read history.
+      if (!wasAtBottomRef.current) return;
+      isScrollingProgrammatically.current = true;
+      containerRef.current.scrollTop = containerRef.current.scrollHeight;
+      // Brief lock so the synthetic scroll event the browser emits doesn't
+      // get interpreted as a "user scrolled away" event.
+      setTimeout(() => {
+        isScrollingProgrammatically.current = false;
+      }, 60);
+    });
+    ro.observe(target);
+    return () => ro.disconnect();
+  }, [isPaused]);
 
   // Auto-scroll to bottom when new messages arrive
   // SIMPLE RULE: If not paused, always scroll to bottom
@@ -222,13 +286,20 @@ const ChatMessageList = memo(function ChatMessageList({
       style={{ overflowAnchor: 'auto' }} // Ensure browser helps anchor to bottom
     >
       {/* Messages container with native virtualization - pt-10 for header */}
-      <div className="flex flex-col min-h-full justify-end pt-10">
+      <div ref={contentRef} className="flex flex-col min-h-full justify-end pt-10">
         {messages.map((message, index) => {
           const messageId = getMessageId(message);
           
+          // /clearmessages — skip rendering entirely for messages snapshotted
+          // into the locally-hidden set. Distinct from the deleted/moderated
+          // path below, which renders strikethrough chrome.
+          if (messageId && hiddenMessageIds?.has(messageId)) {
+            return null;
+          }
+
           // Check if message is deleted/moderated
           let moderationContext: ModerationContext | null = null;
-          
+
           if (messageId && deletedMessageIds.has(messageId)) {
             // Single message deleted by mod
             moderationContext = { type: 'deleted' };
@@ -252,9 +323,13 @@ const ChatMessageList = memo(function ChatMessageList({
               style={{
                 // Native virtualization: browser skips rendering off-screen items
                 contentVisibility: 'auto',
-                // Hint for browser about expected size when not rendered
-                // This prevents scroll jumping when scrolling quickly
-                containIntrinsicBlockSize: 'auto 50px',
+                // Hint for browser about expected size when not rendered.
+                // Computed per-user from font size, spacing, and whether
+                // timestamps are on — the prior fixed 50px caused visible
+                // layout shifts on every new message when timestamps were
+                // enabled (real height was ~45-50px, close enough to the
+                // placeholder that the FIRST-paint mismatch shimmered).
+                containIntrinsicBlockSize: intrinsicSizeCSS,
               }}
             >
               <ChatMessage

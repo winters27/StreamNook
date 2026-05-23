@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useMemo, useCallback, memo } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState, useMemo, useCallback, memo } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import ChatMessageList from './ChatMessageList';
@@ -16,6 +16,7 @@ const ChannelPointsIcon = ({ className = "", size = 14 }: { className?: string; 
 );
 import { MiningStatus } from '../types';
 import { useTwitchChat } from '../hooks/useTwitchChat';
+import { useChannelEmotes, ensureChannelEmotes } from '../stores/chatConnectionStore';
 import { useAppStore } from '../stores/AppStore';
 import { incrementStat } from '../services/supabaseService';
 import ChatMessage from './ChatMessage';
@@ -27,7 +28,7 @@ import ChannelPointsMenu from './ChannelPointsMenu';
 import ModeratorMenu from './chat/ModeratorMenu';
 import ResubNotificationBanner, { ResubNotification } from './ResubNotificationBanner';
 import WatchStreakBanner, { WatchStreakMilestone } from './WatchStreakBanner';
-import { fetchAllEmotes, Emote, EmoteSet, preloadChannelEmotes, queueEmoteForCaching } from '../services/emoteService';
+import { Emote, EmoteSet, preloadChannelEmotes, queueEmoteForCaching } from '../services/emoteService';
 import { preloadThirdPartyBadgeDatabases } from '../services/thirdPartyBadges';
 import { initializeBadges, getBadgeInfo } from '../services/twitchBadges';
 import { parseBadges } from '../services/twitchBadges';
@@ -47,8 +48,14 @@ import { fetchRecentMessagesAsIRC } from '../services/ivrService';
 import { useChatUserStore } from '../stores/chatUserStore';
 import MentionAutocomplete from './MentionAutocomplete';
 import CommandAutocomplete from './chat/CommandAutocomplete';
-import { COMMAND_DEFINITIONS, CommandDefinition } from '../utils/chatCommands';
-import { handleSlashCommand } from '../utils/commandHandler';
+import {
+  COMMAND_DEFINITIONS,
+  CommandDefinition,
+  buildUserCommandDefinitions,
+  matchPlainTextUserCommand,
+  expandUserCommand,
+} from '../utils/chatCommands';
+import { buildTemplateContext, handleSlashCommand } from '../utils/commandHandler';
 
 import { BackendChatMessage } from '../services/twitchChat';
 import { Tooltip } from './ui/Tooltip';
@@ -89,34 +96,59 @@ const ChannelPointsTooltip = ({ anchorRef, customPointsIconUrl, customPointsName
   channelPoints: number | null;
 }) => {
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
+  // Horizontal offset applied to the bubble after viewport-edge clamping.
+  // The arrow stays pinned to the anchor center, so when we shift the bubble
+  // to keep it on-screen (e.g. inside the narrow MultiChat popout where the
+  // anchor sits close to the right edge), the arrow's `left` is recomputed
+  // separately so it still points at the icon below.
+  const [bubbleShift, setBubbleShift] = useState(0);
+  const bubbleRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
+  // Step 1: measure the anchor and stage the centered position. The bubble
+  // isn't rendered yet on this pass (we early-return below when `pos` is null),
+  // so we can't measure its width here.
+  useLayoutEffect(() => {
     const el = anchorRef.current;
     if (!el) return;
-    const update = () => {
-      const rect = el.getBoundingClientRect();
-      setPos({ left: rect.left + rect.width / 2, top: rect.top - 8 });
-    };
-    // Measure immediately
-    update();
+    const rect = el.getBoundingClientRect();
+    setPos({ left: rect.left + rect.width / 2, top: rect.top - 8 });
   }, [anchorRef]);
+
+  // Step 2: now that the bubble is in the DOM (pos is set), measure its
+  // natural width and clamp horizontally so it never escapes the viewport.
+  // 8px margin keeps a breathing buffer at each edge. Re-runs whenever the
+  // bubble's content can change width (custom points name, points number,
+  // loading state) since those swap the rendered text.
+  useLayoutEffect(() => {
+    if (!pos) return;
+    const bubble = bubbleRef.current;
+    if (!bubble) return;
+    const margin = 8;
+    const bubbleRect = bubble.getBoundingClientRect();
+    const half = bubbleRect.width / 2;
+    const minLeft = margin + half;
+    const maxLeft = window.innerWidth - margin - half;
+    const clamped = Math.max(minLeft, Math.min(pos.left, maxLeft));
+    setBubbleShift(clamped - pos.left);
+  }, [pos, customPointsName, channelPoints, isLoadingChannelPoints]);
 
   if (!pos) return null;
 
   return createPortal(
     <div
+      ref={bubbleRef}
       className="fixed px-3 py-1.5 bg-black/95 border border-border rounded-lg shadow-lg z-[9999] min-w-max pointer-events-none"
       style={{
-        left: pos.left,
+        left: pos.left + bubbleShift,
         top: pos.top,
         transform: 'translate(-50%, -100%)',
       }}
     >
       <div className="flex items-center gap-1.5">
         {customPointsIconUrl ? (
-          <img 
-            src={customPointsIconUrl} 
-            alt={customPointsName || "Channel Points"} 
+          <img
+            src={customPointsIconUrl}
+            alt={customPointsName || "Channel Points"}
             className="w-[14px] h-[14px] flex-shrink-0"
           />
         ) : (
@@ -133,7 +165,13 @@ const ChannelPointsTooltip = ({ anchorRef, customPointsIconUrl, customPointsName
           <span className="text-xs text-textSecondary">{customPointsName}</span>
         )}
       </div>
-      <div className="absolute top-full left-1/2 -translate-x-1/2 w-0 h-0 border-l-4 border-r-4 border-t-4 border-transparent border-t-black/95" />
+      {/* Arrow still points at the anchor center even when the bubble has
+          been shifted to stay on-screen — its `left` is the anchor center
+          relative to the (shifted) bubble's left edge. */}
+      <div
+        className="absolute top-full w-0 h-0 border-l-4 border-r-4 border-t-4 border-transparent border-t-black/95"
+        style={{ left: `calc(50% - ${bubbleShift}px)`, transform: 'translateX(-50%)' }}
+      />
     </div>,
     document.body
   );
@@ -307,12 +345,64 @@ const HYPE_MESSAGES = [
   'I AM BECOME HYPE, DESTROYER OF CHILL ☢️🚂',
 ];
 
-const ChatWidget = () => {
+/** Lets ChatWidget render against a caller-supplied channel instead of the
+ *  AppStore's currentStream — same pattern as the MultiNook synthesis branch
+ *  below, but driven by a prop rather than a separate store. Used by the
+ *  StreamNook MultiChat popout window. When this prop is set it takes
+ *  precedence over both `currentStream` and the MultiNook active slot.
+ *
+ *  Required fields (`user_login`, `user_id`) are chat-essential. Everything
+ *  else is optional; the popout polls Helix for the rest (viewer count,
+ *  uptime, title, game) and threads it through so the stream-view chrome
+ *  (header counters, About panel, etc.) renders real values, not zeros. */
+export interface ChatWidgetChannelOverride {
+  user_login: string;
+  user_id: string;
+  user_name?: string;
+  title?: string;
+  game_name?: string;
+  viewer_count?: number;
+  started_at?: string;
+  thumbnail_url?: string;
+  profile_image_url?: string;
+  broadcaster_type?: string;
+  is_live?: boolean;
+}
+
+export interface ChatWidgetProps {
+  channelOverride?: ChatWidgetChannelOverride;
+}
+
+const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
   const { messages, connectChat, sendMessage, isConnected, error, setPaused: setBufferPaused, deletedMessageIds, clearedUserContexts, roomState, userBadges } = useTwitchChat();
   const { currentStream: rawCurrentStream, currentUser, currentHypeTrain, currentMediaType } = useAppStore();
   const { isMultiNookActive, activeChatChannelId, slots } = usemultiNookStore();
-  
+
   const currentStream = useMemo(() => {
+    // Popout (StreamNook MultiChat) channel takes priority. Synthesizes a
+    // TwitchStream from caller-supplied metadata; the popout polls Helix for
+    // viewer count / uptime / game / title and threads them through here.
+    if (channelOverride) {
+      return {
+        id: channelOverride.user_id,
+        user_id: channelOverride.user_id,
+        user_login: channelOverride.user_login,
+        user_name: channelOverride.user_name || channelOverride.user_login,
+        game_id: '',
+        game_name: channelOverride.game_name ?? '',
+        type: channelOverride.is_live === false ? '' : 'live',
+        title: channelOverride.title ?? '',
+        viewer_count: channelOverride.viewer_count ?? 0,
+        started_at: channelOverride.started_at ?? new Date().toISOString(),
+        language: 'en',
+        thumbnail_url: channelOverride.thumbnail_url ?? '',
+        profile_image_url: channelOverride.profile_image_url,
+        broadcaster_type: channelOverride.broadcaster_type,
+        is_live: channelOverride.is_live ?? true,
+        tag_ids: [],
+        is_mature: false,
+      } as TwitchStream;
+    }
     if (isMultiNookActive && activeChatChannelId) {
       const activeSlot = slots.find(s => s.channelId === activeChatChannelId || s.channelLogin === activeChatChannelId);
       if (activeSlot) {
@@ -335,7 +425,7 @@ const ChatWidget = () => {
       }
     }
     return rawCurrentStream;
-  }, [rawCurrentStream, isMultiNookActive, activeChatChannelId, slots]);
+  }, [channelOverride, rawCurrentStream, isMultiNookActive, activeChatChannelId, slots]);
 
   const isModerator = useMemo(() => {
     if (!userBadges) return false;
@@ -346,7 +436,15 @@ const ChatWidget = () => {
   const [messageInput, setMessageInput] = useState('');
   const [activeView, setActiveView] = useState<'chat' | 'about'>('chat');
   const [showEmotePicker, setShowEmotePicker] = useState(false);
-  const [emotes, setEmotes] = useState<EmoteSet | null>(null);
+  // Shared per-channel EmoteSet from chatConnectionStore. Multiple ChatWidget
+  // instances rendering the same channel (e.g. split-mode columns or the
+  // popout opened alongside the main app) hold a single reference instead
+  // of each fetching + caching their own copy. Keyed strictly by lowercase
+  // channel login so 7TV name collisions across channels stay isolated.
+  const emotes = useChannelEmotes(
+    currentStream?.user_login ?? null,
+    currentStream?.user_id ?? null,
+  );
 
 
   // Dynamic smiley icon — cycles on unhover with crossfade animation
@@ -400,6 +498,11 @@ const ChatWidget = () => {
   } | null>(null);
   const userMessageHistory = useRef<Map<string, ParsedMessage[]>>(new Map());
   const connectedChannelRef = useRef<string | null>(null);
+  // Tracks the room_id we connected with so we can detect a late-arriving
+  // broadcaster_id in MultiChat (MultiChatPane resolves channel info async,
+  // so the first connect can happen with an empty user_id; badges fail to
+  // load until we re-trigger acquireChannel with the real id).
+  const connectedRoomIdRef = useRef<string | null>(null);
 
   // Warm up badge cache on mount (non-blocking, runs before messages render)
   useEffect(() => {
@@ -722,8 +825,25 @@ const ChatWidget = () => {
   useEffect(() => {
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
     
+    // Late-arriving room id: same login, but user_id changed from empty to
+    // populated. Re-call connectChat so chatConnectionStore can register the
+    // real broadcaster_id (which it needs to populate the Twitch badge cache).
+    // This is the MultiChat repaint path — main app sets user_id synchronously
+    // before mounting ChatWidget, so this branch is a no-op there.
+    if (
+      currentStream?.user_login &&
+      connectedChannelRef.current === currentStream.user_login &&
+      currentStream.user_id &&
+      !connectedRoomIdRef.current
+    ) {
+      connectedRoomIdRef.current = currentStream.user_id;
+      connectChat(currentStream.user_login, currentStream.user_id);
+      loadEmotes(currentStream.user_login, currentStream.user_id);
+    }
+
     if (currentStream?.user_login && connectedChannelRef.current !== currentStream.user_login) {
       connectedChannelRef.current = currentStream.user_login;
+      connectedRoomIdRef.current = currentStream.user_id || null;
       // Reset pause state when switching channels - ensures chat starts anchored to bottom
       setIsPaused(false);
       setPausedMessageCount(0);
@@ -731,7 +851,16 @@ const ChatWidget = () => {
       mountTimeRef.current = Date.now(); // Reset grace period on channel switch
       // Pass roomId (user_id) to enable fetching recent messages from IVR API
       connectChat(currentStream.user_login, currentStream.user_id);
-      loadEmotes(currentStream.user_login, currentStream.user_id);
+      // Defer emote loading until user_id is known. MultiChat pops in with an
+      // empty user_id (async stream-info poll), so without this guard we'd
+      // fetch globals-only first (Rust caches them under "global"), THEN
+      // re-fetch with the real channel id once it arrives. That double-fetch
+      // is what makes MultiChat feel sluggish on first open AND briefly shows
+      // an empty Twitch tab in the emote picker. The late-arrival branch
+      // above handles the deferred fetch once user_id lands.
+      if (currentStream.user_id) {
+        loadEmotes(currentStream.user_login, currentStream.user_id);
+      }
       userMessageHistory.current.clear();
       clearUsers(); // Clear mention autocomplete user list
       // PHASE 3: Clear Rust user message history when switching channels
@@ -758,22 +887,36 @@ const ChatWidget = () => {
       // Reset to chat view when switching channels
       setActiveView('chat');
       
-      // NEW: Hot-swap backend tracking context if inside MultiNook
-      if (isMultiNookActive) {
+      // NEW: Hot-swap backend tracking context if inside MultiNook.
+      //
+      // Intentionally skipped in popout mode (`channelOverride` set):
+      //   • drops monitoring — Brandon's call; popouts are chat-only, not
+      //     "actively watching", so we don't want to mine drops for them.
+      //   • EventSub disconnect+reconnect — the EventSub service is single-
+      //     broadcaster today. Letting the popout reconnect it would steal
+      //     the connection from the main app's stream and break hype train /
+      //     raid / pin events there. Multi-broadcaster EventSub is its own
+      //     follow-up; until then, popouts piggyback on whatever EventSub
+      //     the main app has connected, or get nothing if main isn't
+      //     watching this channel.
+      //   • register_active_channel — same reason: this marks the "active"
+      //     viewing context for backend bookkeeping (drops, mining,
+      //     analytics). Popouts aren't an active viewing context.
+      if (isMultiNookActive && !channelOverride) {
         Logger.info(`[MultiNook] Hot-swapping backend tracking for ${currentStream.user_login}...`);
-        
+
         // Immediate clean up front-end state
         useAppStore.getState().setCurrentHypeTrain(null);
-        
+
         const channelId = currentStream.user_id;
         const channelName = currentStream.user_login;
-        
+
         if (channelId) {
           // Debounce the backend network shifting (250ms) to prevent UI spamming
           timeoutId = setTimeout(() => {
             invoke('start_drops_monitoring', { channelId, channelName }).catch(e => Logger.warn('[Drops] Failed to hot-swap', e));
             invoke('register_active_channel', { channelId }).catch(() => {});
-            
+
             invoke('disconnect_eventsub')
               .then(() => {
                 // Delay reconnection by 150ms to ensure the OS socket closes safely
@@ -791,7 +934,7 @@ const ChatWidget = () => {
       if (currentStream?.user_login !== connectedChannelRef.current) connectedChannelRef.current = null;
       if (timeoutId) clearTimeout(timeoutId);
     };
-  }, [currentStream?.user_login, currentStream?.user_id, isMultiNookActive]);
+  }, [currentStream?.user_login, currentStream?.user_id, isMultiNookActive, channelOverride]);
 
   // Chat refresh signal — triggered by VideoPlayer's refresh button
   const chatRefreshKey = useAppStore((s) => s.chatRefreshKey);
@@ -931,9 +1074,13 @@ const ChatWidget = () => {
     fetchResubNotification();
   }, [currentStream?.user_login, resubDismissed]);
 
-  // Fetch watch streak milestone when entering a new channel
+  // Fetch watch streak milestone when entering a new channel. Skipped in
+  // popout mode — Brandon's call: popouts are chat-only and shouldn't be
+  // surfacing watch-streak prompts (they require actually watching the
+  // stream to consume).
   useEffect(() => {
     const fetchWatchStreak = async () => {
+      if (channelOverride) return;
       if (!currentStream?.user_id || watchStreakDismissed) return;
 
       try {
@@ -951,7 +1098,7 @@ const ChatWidget = () => {
     };
 
     fetchWatchStreak();
-  }, [currentStream?.user_id, watchStreakDismissed]);
+  }, [currentStream?.user_id, watchStreakDismissed, channelOverride]);
 
   // Fetch pinned chat messages for current channel
   useEffect(() => {
@@ -1143,6 +1290,47 @@ const ChatWidget = () => {
     return idMatch ? idMatch[1] : null;
   }, []);
 
+  // /clearmessages — visual-only clear. Snapshots every currently-rendered
+  // message id into a hidden set so the renderer skips them. New incoming
+  // messages still appear. The set is reset on channel change.
+  const [locallyHiddenMessageIds, setLocallyHiddenMessageIds] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    setLocallyHiddenMessageIds(new Set());
+  }, [currentStream?.user_id]);
+  useEffect(() => {
+    const handler = () => {
+      const ids = new Set<string>();
+      messages.forEach((m) => {
+        const id = getMessageId(m);
+        if (id) ids.add(id);
+      });
+      setLocallyHiddenMessageIds(ids);
+    };
+    window.addEventListener('streamnook-clear-local-chat', handler);
+    return () => window.removeEventListener('streamnook-clear-local-chat', handler);
+  }, [messages, getMessageId]);
+
+  // /usercard — open the profile card from a slash command via a synthetic
+  // mouse-event stub (handleUsernameClick only reads clientX/Y in its fallback
+  // path, which rarely fires for users who can already open the app).
+  useEffect(() => {
+    const handler = (raw: Event) => {
+      const e = raw as CustomEvent<{ userId: string; username: string; displayName: string }>;
+      if (!e.detail?.userId) return;
+      const fakeEvent = {
+        clientX: window.innerWidth / 2,
+        clientY: window.innerHeight / 2,
+      } as unknown as React.MouseEvent;
+      handleUsernameClick(e.detail.userId, e.detail.username, e.detail.displayName, '#9147FF', [], fakeEvent);
+    };
+    window.addEventListener('streamnook-open-user-card', handler);
+    return () => window.removeEventListener('streamnook-open-user-card', handler);
+    // handleUsernameClick is defined later in the component — it's referenced
+    // by name (closure) so we don't need it in deps; React's exhaustive-deps
+    // rule fires but the inner function is stable from the parent definition.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Track paused message count for resume button
   useEffect(() => {
     if (isPaused && pausedMessageCount === 0) {
@@ -1290,10 +1478,14 @@ const ChatWidget = () => {
         .then(([clientId, token]) => initializeBadges(clientId, token, channelId))
         .catch(err => Logger.warn('[ChatWidget] Badge init error (non-blocking):', err));
 
-      // PRIORITY: Fetch emotes first and display immediately
-      // This is the critical path - emotes should appear ASAP
-      const emoteSet = await fetchAllEmotes(channelName, channelId);
-      setEmotes(emoteSet);
+      // PRIORITY: Fetch emotes first and display immediately.
+      // Routes through `ensureChannelEmotes` so the per-channel EmoteSet is
+      // shared with any other ChatWidget instances on the same channel (split
+      // panes, parallel popouts) instead of each holding its own ~MB-scale
+      // copy. The subscription inside `useChannelEmotes` re-renders this
+      // component when the cache populates; we still receive the set here
+      // for the downstream owner-name + favorite-emote effects.
+      const emoteSet = await ensureChannelEmotes(channelName, channelId ?? '');
       setIsLoadingEmotes(false); // Clear loading state immediately after emotes arrive
 
       // Note: We use loading="lazy" on emote picker images instead of preloading
@@ -1453,6 +1645,46 @@ const ChatWidget = () => {
       }
 
       try {
+        // Plain-text user commands (require_slash: false). Run BEFORE the
+        // slash-command intercept so a non-slash trigger expansion can still
+        // start with "/" — the expansion result is re-evaluated as a new
+        // message body, including being able to fire a built-in slash command.
+        if (!messageToSend.startsWith('/')) {
+          const plainMatch = matchPlainTextUserCommand(
+            messageToSend,
+            useAppStore.getState().settings.chat_commands?.user_commands,
+          );
+          if (plainMatch) {
+            const ctx = buildTemplateContext(
+              plainMatch.args,
+              currentStream?.user_id || '',
+              currentStream?.user_login || '',
+            );
+            const expansion = expandUserCommand(plainMatch.command.expansion, ctx);
+            if (expansion.missing_args.length > 0) {
+              useAppStore.getState().addToast(
+                `Trigger "${plainMatch.command.trigger}" expects argument${expansion.missing_args.length > 1 ? 's' : ''} ${expansion.missing_args.map((i) => `{${i}}`).join(', ')}`,
+                'error',
+              );
+              return;
+            }
+            if (!expansion.text) {
+              useAppStore.getState().addToast(`Trigger "${plainMatch.command.trigger}" expanded to an empty message`, 'error');
+              return;
+            }
+            // Re-enter with the expanded text. Replace input and recurse via
+            // setMessageInput so the existing flow handles the slash-command
+            // detection, optimistic send, etc.
+            setMessageInput(expansion.text);
+            // Defer one tick so the input state lands before the next send.
+            setTimeout(() => {
+              const form = inputRef.current?.form;
+              form?.requestSubmit();
+            }, 0);
+            return;
+          }
+        }
+
         // Intercept slash commands
         if (messageToSend.startsWith('/')) {
           const handled = await handleSlashCommand(
@@ -1482,19 +1714,16 @@ const ChatWidget = () => {
           return;
         }
 
-        let badgeString = '';
-        try {
-          const userBadges = await invoke<string>('get_user_badges', { userId: currentUser.user_id, channelId: currentStream?.user_id });
-          badgeString = userBadges;
-        } catch (badgeErr) {
-          Logger.warn('[ChatWidget] Could not fetch user badges:', badgeErr);
-        }
+        // Badges come from the IRC USERSTATE cached inside useTwitchChat
+        // (populated on channel JOIN). The previous per-send Helix round-trip
+        // returned a strictly inferior subset (no tenure, no mod/VIP/etc), so
+        // it's intentionally gone.
         await sendMessage(messageToSend, {
           username: currentUser.login || currentUser.username,
           displayName: currentUser.display_name || currentUser.username,
           userId: currentUser.user_id,
           color: undefined,
-          badges: badgeString
+          badges: ''
         }, replyParentMsgId);
 
         // Track message sent stat for analytics
@@ -1638,15 +1867,18 @@ const ChatWidget = () => {
         const query = value.slice(1).toLowerCase(); // remove '/'
         setCommandQuery(query);
         
-        // Filter commands based on roles
+        // Filter commands based on roles, then append the user's own custom
+        // commands. User commands are always available regardless of role.
         const availableCommands = COMMAND_DEFINITIONS.filter(cmd => {
           if (cmd.category === 'Everyone') return true;
           if (cmd.category === 'Moderator' || cmd.category === 'Chat Flow') return isModerator;
           if (cmd.category === 'Engagement' || cmd.category === 'Broadcaster') return isModerator || isBroadcaster;
           return false;
         });
-        
-        const matches = availableCommands.filter(cmd => cmd.name.toLowerCase().startsWith(query));
+        const userCommands = buildUserCommandDefinitions(settings.chat_commands?.user_commands);
+        const allCommands = [...availableCommands, ...userCommands];
+
+        const matches = allCommands.filter(cmd => cmd.name.toLowerCase().startsWith(query));
         setMatchingCommands(matches);
         setShowCommandAutocomplete(matches.length > 0);
         setCommandSelectedIndex(0);
@@ -1712,7 +1944,7 @@ const ChatWidget = () => {
     setShowMentionAutocomplete(false);
     setMentionQuery('');
     setMentionStartPosition(null);
-  }, [getMatchingUsers, isModerator, isBroadcaster]);
+  }, [getMatchingUsers, isModerator, isBroadcaster, settings.chat_commands?.user_commands]);
 
   // Insert a command string directly from other UI elements (like UserProfileCard)
   const preFillCommand = useCallback((cmdText: string) => {
@@ -2204,6 +2436,48 @@ const ChatWidget = () => {
                 </button>
                 </Tooltip>
                 <div className="flex items-center gap-3 ml-auto">
+                  {/* Pop out chat — opens a separate StreamNook MultiChat window
+                      pre-loaded with the currently watched channel. The window
+                      survives the main app's lifecycle inside one Tauri process.
+                      Hidden when ChatWidget is already inside a popout (channelOverride
+                      set) — popping out of a popout would be confusing. */}
+                  {currentStream && !channelOverride && (
+                    <Tooltip content="Pop out chat" side="top">
+                      <button
+                        type="button"
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          try {
+                            const { openMultiChatWindow } = await import('../utils/multichatWindow');
+                            await openMultiChatWindow({
+                              channel: currentStream.user_login,
+                              channelId: currentStream.user_id || undefined,
+                              channelName: currentStream.user_name || undefined,
+                            });
+                          } catch (err) {
+                            Logger.error('[ChatWidget] Pop out chat failed:', err);
+                          }
+                        }}
+                        className="pointer-events-auto grid h-5 w-5 place-items-center rounded text-textSecondary transition-colors hover:bg-surface-hover hover:text-textPrimary"
+                        aria-label="Pop out chat"
+                      >
+                        <svg
+                          width="12"
+                          height="12"
+                          viewBox="0 0 16 16"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="1.5"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        >
+                          <path d="M9 2h5v5" />
+                          <path d="M14 2L7 9" />
+                          <path d="M13 9v4a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h4" />
+                        </svg>
+                      </button>
+                    </Tooltip>
+                  )}
                   {viewerCount !== null && (
                     <div className="flex items-center gap-1">
                       <svg className="w-3 h-3 text-textSecondary" fill="currentColor" viewBox="0 0 20 20"><path d="M10 12a2 2 0 100-4 2 2 0 000 4z" /><path fillRule="evenodd" d="M.458 10C1.732 5.943 5.522 3 10 3s8.268 2.943 9.542 7c-1.274 4.057-5.064 7-9.542 7S1.732 14.057.458 10zM14 10a4 4 0 11-8 0 4 4 0 018 0z" clipRule="evenodd" /></svg>
@@ -2407,6 +2681,7 @@ const ChatWidget = () => {
                 onBadgeClick={handleBadgeClick}
                 highlightedMessageId={highlightedMessageId}
                 deletedMessageIds={deletedMessageIds}
+                hiddenMessageIds={locallyHiddenMessageIds}
                 clearedUserContexts={clearedUserContexts}
                 emotes={emotes}
                 getMessageId={getMessageId}
