@@ -77,7 +77,7 @@ tauri-plugin-clipboard-manager = "2.3.2"
 # survive encoding without quantization banding. libwebp itself is built from
 # vendored C source by libwebp-sys2 via the cc crate — no CMake required, just
 # the MSVC toolchain that StreamNook already needs for its other native deps.
-xcap = "0.0.14"
+xcap = "0.9.6"
 # png for the static-paint capture path (capture_screen_region). The
 # animated path uses direct DXGI Output Duplication and feeds raw RGBA
 # straight to the WebP encoder, no decode step needed.
