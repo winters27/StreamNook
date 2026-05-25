@@ -60,6 +60,17 @@ pub struct VersionChange {
     pub to: String,
 }
 
+/// Result of comparing the running binary's compiled-in version against the
+/// local components.json. A `desynced: true` result means the in-app updater
+/// silently failed at some point (old binary, newer manifest) and the user
+/// should be prompted to repair before relying on the install.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InstallDesync {
+    pub desynced: bool,
+    pub binary_version: String,
+    pub manifest_version: Option<String>,
+}
+
 impl ComponentManifest {
     /// Create a new manifest with default values
     pub fn new(streamnook_version: &str) -> Self {

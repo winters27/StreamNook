@@ -1,5 +1,5 @@
 use crate::models::components::{
-    BundleUpdateStatus, ComponentChanges, ComponentManifest, VersionChange,
+    BundleUpdateStatus, ComponentChanges, ComponentManifest, InstallDesync, VersionChange,
 };
 use sevenz_rust::decompress_file;
 use std::path::PathBuf;
@@ -61,6 +61,31 @@ pub fn get_local_component_versions() -> Result<ComponentManifest, String> {
 
     ComponentManifest::load_from_file(&components_path)
         .map_err(|e| format!("Failed to load components.json: {}", e))
+}
+
+/// Detect a binary-vs-manifest desync caused by a botched in-app update.
+///
+/// Pre-v7.5.1 builds had an updater that could leave the install in a state
+/// where StreamNook.exe was the old binary but components.json claimed the
+/// new version. This command compares the running binary's compiled-in
+/// version against the local manifest so the UI can surface a repair prompt.
+#[tauri::command]
+pub fn check_install_desync() -> Result<InstallDesync, String> {
+    let binary_version = get_current_app_version();
+    let manifest_version = get_local_component_versions()
+        .ok()
+        .map(|m| m.streamnook.version);
+
+    let desynced = match &manifest_version {
+        Some(v) => v != &binary_version,
+        None => false,
+    };
+
+    Ok(InstallDesync {
+        desynced,
+        binary_version,
+        manifest_version,
+    })
 }
 
 /// Fetch remote component versions from GitHub
@@ -282,17 +307,32 @@ pub async fn extract_bundled_components() -> Result<(), String> {
 /// Download and install bundle update
 #[tauri::command]
 pub async fn download_and_install_bundle(app_handle: tauri::AppHandle) -> Result<(), String> {
-    use tauri::Emitter;
-
-    // Get update info
     let status = check_for_bundle_update().await?;
-
     if !status.update_available {
         return Err("No update available".to_string());
     }
+    install_bundle_from_status(app_handle, status).await
+}
+
+/// Reinstall the latest bundle even when local manifest already claims that version.
+/// Used by the desync repair flow: when binary != manifest, the user clicks Repair
+/// and we re-pull + re-install the latest release, which runs through the hardened
+/// batch script and brings binary and manifest back into lockstep.
+#[tauri::command]
+pub async fn reinstall_latest_bundle(app_handle: tauri::AppHandle) -> Result<(), String> {
+    let status = check_for_bundle_update().await?;
+    install_bundle_from_status(app_handle, status).await
+}
+
+/// Shared install body. Downloads the 7z, extracts it, swaps streamlink, and writes
+/// the hardened batch script that handles the exe + components.json swap in lockstep.
+async fn install_bundle_from_status(
+    app_handle: tauri::AppHandle,
+    status: BundleUpdateStatus,
+) -> Result<(), String> {
+    use tauri::Emitter;
 
     let download_url = status.download_url.ok_or("No download URL available")?;
-
     let bundle_name = status.bundle_name.ok_or("No bundle name available")?;
 
     // Emit progress
@@ -385,30 +425,49 @@ pub async fn download_and_install_bundle(app_handle: tauri::AppHandle) -> Result
             .map_err(|e| format!("Failed to copy streamlink: {}", e))?;
     }
 
-    // Copy components.json
+    // Decide whether components.json copy happens HERE (no exe to swap, just a
+    // component-only update) or DEFERRED into the batch script (exe swap is
+    // needed; components.json must lag the exe so check_for_bundle_update's
+    // local version never claims a version that isn't actually installed).
     let source_components = extract_dir.join("components.json");
-    if source_components.exists() {
+    let source_exe = extract_dir.join("StreamNook.exe");
+
+    if !source_exe.exists() && source_components.exists() {
         std::fs::copy(&source_components, &dest_components)
             .map_err(|e| format!("Failed to copy components.json: {}", e))?;
     }
 
-    // Handle exe update - create batch script to replace and restart
-    let source_exe = extract_dir.join("StreamNook.exe");
+    // Handle exe update - create batch script to replace and restart.
+    // Hardening for v7.5.1: previous version ignored the `copy /y` errorlevel,
+    // so an exe swap that silently failed (file lock, AV scan, etc.) left the
+    // user on the OLD exe while components.json had already been overwritten
+    // by the Rust side above — version reported as new while the running JS
+    // was old. New batch:
+    //   - retries the exe copy up to 5 times with 2-second backoff
+    //   - only copies components.json AFTER the exe copy succeeds, so the
+    //     two stay in lockstep
+    //   - logs every step to %TEMP%\streamnook-update.log
+    //   - on terminal failure, opens the extracted dir in Explorer and pops
+    //     the log in Notepad so the user has a recovery path
     if source_exe.exists() {
         let current_exe = std::env::current_exe()
             .map_err(|e| format!("Failed to get current exe path: {}", e))?;
 
-        // Create batch script that:
-        // 1. Waits for current app to close
-        // 2. Copies the new exe
-        // 3. Starts the new app minimized initially then normal
-        // 4. Cleans up temp files and deletes itself
         let batch_script = format!(
             r#"@echo off
-setlocal
-set "SOURCE={source}"
-set "DEST={dest}"
+setlocal enabledelayedexpansion
+set "SOURCE_EXE={source_exe}"
+set "DEST_EXE={dest_exe}"
+set "SOURCE_COMPONENTS={source_components}"
+set "DEST_COMPONENTS={dest_components}"
 set "TEMPDIR={tempdir}"
+set "EXTRACTDIR={extractdir}"
+set "LOG=%TEMP%\streamnook-update.log"
+set "ERRFILE=%TEMP%\streamnook-update.err"
+
+echo [%date% %time%] Update started > "%LOG%"
+echo Source exe: %SOURCE_EXE% >> "%LOG%"
+echo Dest exe: %DEST_EXE% >> "%LOG%"
 
 :: Wait for the app to fully close
 :waitloop
@@ -416,21 +475,63 @@ timeout /t 1 /nobreak >nul 2>&1
 tasklist /FI "IMAGENAME eq StreamNook.exe" 2>nul | find /I "StreamNook.exe" >nul
 if not errorlevel 1 goto waitloop
 
-:: Copy the new executable
-copy /y "%SOURCE%" "%DEST%" >nul 2>&1
+echo [%date% %time%] StreamNook process closed, beginning exe copy >> "%LOG%"
 
-:: Start the updated app
-start "" "%DEST%"
+set "ATTEMPTS=0"
+:copyloop
+copy /y "%SOURCE_EXE%" "%DEST_EXE%" >nul 2>"%ERRFILE%"
+if not errorlevel 1 goto copysuccess
 
-:: Clean up temp directory (will fail on current batch file, which is fine)
+set /a ATTEMPTS+=1
+echo [%date% %time%] Copy attempt !ATTEMPTS! failed: >> "%LOG%"
+type "%ERRFILE%" >> "%LOG%" 2>nul
+if !ATTEMPTS! GEQ 5 goto copyfailed
+timeout /t 2 /nobreak >nul 2>&1
+goto copyloop
+
+:copysuccess
+echo [%date% %time%] Exe copy succeeded after !ATTEMPTS! retries >> "%LOG%"
+
+:: Now safe to bump components.json so it matches the installed exe
+if exist "%SOURCE_COMPONENTS%" (
+    copy /y "%SOURCE_COMPONENTS%" "%DEST_COMPONENTS%" >nul 2>"%ERRFILE%"
+    if errorlevel 1 (
+        echo [%date% %time%] WARNING: components.json copy failed but exe is installed >> "%LOG%"
+        type "%ERRFILE%" >> "%LOG%" 2>nul
+    ) else (
+        echo [%date% %time%] components.json updated >> "%LOG%"
+    )
+)
+
+echo [%date% %time%] Starting new exe >> "%LOG%"
+start "" "%DEST_EXE%"
+
+del "%ERRFILE%" >nul 2>&1
 rd /s /q "%TEMPDIR%" >nul 2>&1
+exit /b 0
 
-:: Exit without showing any window artifacts
-exit
+:copyfailed
+echo [%date% %time%] Update FAILED after 5 retries. >> "%LOG%"
+echo [%date% %time%] Manually copy %SOURCE_EXE% to %DEST_EXE% to complete the update. >> "%LOG%"
+echo [%date% %time%] components.json was NOT updated, so the app will continue to prompt for v{latest_version_for_log}. >> "%LOG%"
+
+:: Surface the failure to the user. Explorer lands them in the extracted folder
+:: where the new StreamNook.exe is sitting; Notepad shows them the log.
+start "" "explorer.exe" "%EXTRACTDIR%"
+start "" "notepad.exe" "%LOG%"
+
+:: Restart the OLD exe so the user isn't left with no app open at all.
+start "" "%DEST_EXE%"
+del "%ERRFILE%" >nul 2>&1
+exit /b 1
 "#,
-            source = source_exe.to_string_lossy(),
-            dest = current_exe.to_string_lossy(),
-            tempdir = temp_dir.to_string_lossy()
+            source_exe = source_exe.to_string_lossy(),
+            dest_exe = current_exe.to_string_lossy(),
+            source_components = source_components.to_string_lossy(),
+            dest_components = dest_components.to_string_lossy(),
+            tempdir = temp_dir.to_string_lossy(),
+            extractdir = extract_dir.to_string_lossy(),
+            latest_version_for_log = status.latest_version,
         );
 
         let batch_path = temp_dir.join("update.bat");

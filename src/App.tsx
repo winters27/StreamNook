@@ -18,6 +18,8 @@ import { MultiNookView } from './components/multi-nook/MultiNookView';
 import MultiNookChatSwitcher from './components/multi-nook/MultiNookChatSwitcher';
 import LoadingWidget from './components/LoadingWidget';
 import ToastManager from './components/ToastManager';
+import DesyncRepairDialog from './components/DesyncRepairDialog';
+import AnnouncementsBanner from './components/AnnouncementsBanner';
 import { TooltipManager } from './components/ui/TooltipManager';
 import { Tooltip } from './components/ui/Tooltip';
 import { SearchProfileModal } from './components/SearchProfileModal';
@@ -1447,6 +1449,8 @@ function App() {
         onClose={() => setShowSetupWizard(false)}
       />
       <StreamlinkMissingDialog />
+      <DesyncRepairDialog />
+      <AnnouncementsBanner />
       <ToastManager />
       <TooltipManager />
       <CommandPalette />

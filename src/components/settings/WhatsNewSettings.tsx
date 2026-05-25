@@ -108,8 +108,21 @@ const ReleaseBody = ({ content }: { content: string }) => {
                 }
 
                 if (trimmed.startsWith('# ')) return <h3 key={i} className="text-base font-bold text-textPrimary mt-6 mb-3">{parseInlineMarkdown(trimmed.replace('# ', ''))}</h3>;
-                if (trimmed.startsWith('## ')) return <h4 key={i} className="text-sm font-bold text-textPrimary mt-5 mb-2">{parseInlineMarkdown(trimmed.replace('## ', ''))}</h4>;
+                // ## is the "banner / headline" level used at the top of a release
+                // body to call out a major launch. Renders larger than the
+                // ### section headers below so the eye lands here first.
+                if (trimmed.startsWith('## ')) return <h4 key={i} className="text-lg font-bold text-textPrimary mt-6 mb-3">{parseInlineMarkdown(trimmed.replace('## ', ''))}</h4>;
                 if (trimmed.startsWith('### ')) return <h5 key={i} className="text-sm font-semibold text-textPrimary mt-4 mb-1">{parseInlineMarkdown(trimmed.replace('### ', ''))}</h5>;
+                // Blockquotes (>) render as a left-bordered subtle callout. Used
+                // to set off the body of a release headline from the regular
+                // bullets that follow.
+                if (trimmed.startsWith('> ')) {
+                    return (
+                        <div key={i} className="border-l-2 border-accent/40 pl-4 py-1 my-2 text-textSecondary">
+                            {parseInlineMarkdown(trimmed.replace('> ', ''))}
+                        </div>
+                    );
+                }
                 if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
                     return (
                         <div key={i} className="flex items-start gap-3 ml-2">

@@ -1,3 +1,4 @@
+pub mod announcements;
 pub mod app;
 pub mod automation;
 pub mod badge_metadata;

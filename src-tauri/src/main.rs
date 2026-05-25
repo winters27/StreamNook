@@ -27,8 +27,8 @@
 #![allow(clippy::collapsible_match)]
 
 use commands::{
-    app::*, automation::*, badge_metadata::*, badge_service::*, badges::*, cache::*,
-    channel_panels::*, chat::*, chat_identity::*, components::*, cosmetics_cache::*,
+    announcements::*, app::*, automation::*, badge_metadata::*, badge_service::*, badges::*,
+    cache::*, channel_panels::*, chat::*, chat_identity::*, components::*, cosmetics_cache::*,
     diagnostic_logging::*, discord::*, drops::*, emoji::*, emotes::*, eventsub::*, hype_train::*,
     layout::*, logs::*, magne::*, multi_nook::*, profile_cache::*, proxy_health::*, resub::*,
     screen_capture::*, settings::*, seventv::*, seventv_cosmetics::*, seventv_cosmetics_fetch::*,
@@ -638,9 +638,13 @@ fn main() {
             get_local_component_versions,
             get_remote_component_versions,
             check_for_bundle_update,
+            check_install_desync,
             extract_bundled_components,
             extract_bundled_components,
             download_and_install_bundle,
+            reinstall_latest_bundle,
+            // Announcements
+            fetch_announcements,
             // Layout commands (message history only - height calculation removed)
             get_user_message_history,
             get_user_message_history_limited,
