@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "StreamNook"
-version = "7.5.0"
+version = "7.5.1"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -3100,6 +3100,20 @@ dependencies = [
  "cc",
  "cfg-if",
  "libc",
+ "pkg-config",
+ "vcpkg",
+]
+
+[[package]]
+name = "libwebp-sys2"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6dc3d00aeaa1d6bf4f35f3003bc1835135e0fb41f2fc19082a3f98d619792505"
+dependencies = [
+ "cc",
+ "cfg-if",
+ "libc",
+ "libwebp-sys2 0.1.11",
  "pkg-config",
  "vcpkg",
 ]
@@ -7243,11 +7257,11 @@ dependencies = [
 
 [[package]]
 name = "webp-animation"
-version = "0.9.0"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e3a656b424e13a9e8b35f2cb7f96ff81c9d796b7ce3b6966cd4f8fd4a15feba4"
+checksum = "dcf0c124cbce8c045bc972736d9f9f116bbd8243fd75ea1b68db429d809de44d"
 dependencies = [
- "libwebp-sys2",
+ "libwebp-sys2 0.2.0",
  "log",
 ]
 

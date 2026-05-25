@@ -82,7 +82,7 @@ xcap = "0.0.14"
 # animated path uses direct DXGI Output Duplication and feeds raw RGBA
 # straight to the WebP encoder, no decode step needed.
 image = { version = "0.25", default-features = false, features = ["png"] }
-webp-animation = "0.9"
+webp-animation = "0.10"
 
 # webview2-com powers services/twitch_auth_service.rs (CookieManager).
 # The windows crate features cover both that and the DXGI Output
