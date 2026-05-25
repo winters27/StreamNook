@@ -26,23 +26,6 @@
 ### 🧹 Housekeeping
 - The old 'Profile Modal' has been removed as its functionality is now integrated into the new StreamNook cosmetics system and improved search features.
 
-## [7.5.0] - 2026-05-25
-### ✨ Features
-- **Command Palette**: A brand new global Command Palette (Ctrl/Cmd+K) lets you quickly search for and execute any app command, setting, streamer, or snippet. It also integrates live Twitch searches and recently chatted users for lightning-fast navigation.
-- **StreamNook Cosmetics**: Unleash your unique style with the new StreamNook cosmetics system! Browse and equip special badges from the dedicated 'StreamNook' tab in the Badges Overlay, with support for animated designs and acquisition via Ko-fi.
-- **Advanced Chat Customization**: Take control of your chat with new global emote scaling and spacing settings. Introduce new highlight types for specific users, badges, or built-in events like first-time chatters, returning users, self-messages, and raids, all with configurable colors. Important highlights can now flash your window title when unfocused.
-- **Smart Chat Input**: Added 'Bypass Duplicate' to send identical messages without triggering Twitch's filter, and 'Quick Send' (Ctrl/Cmd+Enter) to send messages while keeping your input, perfect for rapid-fire responses.
-- **Improved Streamlink Management**: StreamNook can now automatically detect existing Streamlink installations on your system (e.g., from Program Files, Scoop, Chocolatey) and validate custom paths, making setup much smoother. Plus, diagnostic logging is now more robust for easier troubleshooting.
-- **Native Screen Capture**: Integrated native screen capture capabilities, enabling high-quality static PNGs and animated WebP exports of UI elements. This will power future sharing features, like exporting your StreamNook profile card.
-
-### 🐛 Bug Fixes
-- **Streamlink Error Reporting**: Fixed an issue where Streamlink errors were sometimes silently swallowed, making it difficult to diagnose streaming problems. StreamNook now captures comprehensive diagnostic logs to provide clearer error messages.
-- **Update Notifications**: Refined the update notification process to be less intrusive. Update availability is now passively displayed in the title bar, and toasts directing you to the 'What's New' section for details.
-- **Chat Display Consistency**: Ensured consistent display for deleted messages and corrected the toast notification type for channel points.
-
-### 🧹 Housekeeping
-- The old 'Profile Modal' has been removed as its functionality is now integrated into the new StreamNook cosmetics system and improved search features.
-
 ## [7.4.0] - 2026-05-22
 ### ✨ Features
 - **StreamNook MultiChat (Experimental): A full standalone chat client built right into StreamNook. Open any channel's chat in its own window with no video stream required, and run as many at once as you want. Right-click a stream tile and pick "Pop out chat", or use the pop-out button at the top of any active stream's chat widget. Each MultiChat window keeps running even when the main app is hidden to the system tray.
