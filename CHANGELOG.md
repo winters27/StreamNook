@@ -1,3 +1,29 @@
+## [7.5.2] - 2026-05-25
+## 📚 New: Deeper Chat Logs for Power Users
+> Ever wonder what someone said five minutes ago, or what a specific user's chat history looks like in a channel? Our new chat log system pulls from multiple sources (Twitch, Justlog, Robotty) to give you a comprehensive, merged view of historical messages. Perfect for moderation or just satisfying curiosity.
+
+---
+
+### ✨ Features
+- **Chat Log History**: View a user's full chat history in any channel, aggregated from multiple sources, by right-clicking their username.
+- **Enhanced User Profiles**: Profile cards now display more details, including a user's last broadcast, total channels followed, and detailed subscription information (tier, type, gifter).
+- **Improved Chat Popout Windows**: Popout chat windows now intelligently anchor to your cursor's position when opened and come with larger, more user-friendly default dimensions.
+
+### 🐛 Bug Fixes
+- **Ad-Free Assurance**: Resolved an issue where outdated TTVLOL Streamlink plugins could prevent ad-blocking from working correctly, ensuring a consistent ad-free experience.
+- **Drops Mining Reliability**: Fixed drops mining getting stuck on offline channels and improved task management to prevent "ghost" mining sessions.
+- **Channel Points Accuracy**: Eliminated a bug that caused duplicate channel points events to appear in chat.
+- **Changelog Display**: The in-app changelog overlay now correctly renders all markdown content, including banners and structured sections, without accidental truncation.
+- **Windows Update Experience**: Fixed the brief flash of a console window that previously occurred during auto-updates on Windows.
+
+### ⚡ Performance
+- **Faster App Startup & Responsiveness**: Major architectural improvements to our internal HTTP client and caching systems mean the app starts faster, feels snappier, and consumes fewer resources.
+- **Optimized Chat Rendering**: Chat messages now render more smoothly with reduced flickering, and the app uses significantly less memory for chat history, especially in busy channels.
+- **Smarter Background Tasks**: Non-critical background polling (like viewer counts and pinned messages) now intelligently pauses when the window is minimized or not visible, reducing CPU and network usage.
+
+### 🔧 Maintenance
+- Removed Magne RPC integration.
+
 ## [7.5.1] - 2026-05-25
 ## 🎉 New: StreamNook has its own badges
 
@@ -1251,6 +1277,7 @@ ATTENTION: ALL USERS LOG OUT OF TWITCH THEN LOG BACK IN FOR SOME CHANGES OT TAKE
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
