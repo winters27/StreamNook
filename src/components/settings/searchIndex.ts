@@ -328,6 +328,34 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
   },
   {
     tab: 'Chat',
+    section: 'Emote Tab Completion',
+    sectionId: 'settings-section-emote-tab-completion',
+    title: 'Emote Tab Completion',
+    description: 'Tab cycles forward through matching emotes in the chat input, Shift+Tab cycles back.'
+  },
+  {
+    tab: 'Chat',
+    section: 'Emote Tab Completion',
+    sectionId: 'settings-section-emote-tab-completion',
+    title: 'Enable Tab Completion',
+    description: 'Press Tab while typing a partial emote name to insert the best-matching emote.'
+  },
+  {
+    tab: 'Chat',
+    section: 'Emote Tab Completion',
+    sectionId: 'settings-section-emote-tab-completion',
+    title: 'Match Mode',
+    description: 'Whether the tab carousel ranks matches by prefix (starts with) or by substring (contains).'
+  },
+  {
+    tab: 'Chat',
+    section: 'Emote Tab Completion',
+    sectionId: 'settings-section-emote-tab-completion',
+    title: 'Include Chat Users',
+    description: 'Also cycle through display names of users currently in chat.'
+  },
+  {
+    tab: 'Chat',
     section: 'User Overrides',
     title: 'User Overrides',
     description: 'Nicknames you\'ve set for individual chatters. Only visible to you. Set or clear a nickname from the user\'s profile card in chat.'

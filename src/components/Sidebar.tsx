@@ -6,6 +6,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { getSidebarSettings, type SidebarMode } from './settings/InterfaceSettings';
 
 import { useContextMenuStore } from '../stores/contextMenuStore';
+import { usemultiNookStore } from '../stores/multiNookStore';
 import { Tooltip } from './ui/Tooltip';
 
 import { Logger } from '../utils/logger';
@@ -452,7 +453,16 @@ const Sidebar = () => {
         return 0;
     });
 
-    const handleStreamClick = (stream: TwitchStream) => {
+    const handleStreamClick = (e: React.MouseEvent, stream: TwitchStream) => {
+        // Ctrl/Cmd+click adds the stream to multinook instead of switching to it.
+        // The flying-card animation originates from the click point so it visually
+        // matches the right-click context-menu "Add to MultiNook" action.
+        if (e.ctrlKey || e.metaKey) {
+            e.preventDefault();
+            usemultiNookStore.getState().triggerAddAnimation(e.clientX, e.clientY, stream.user_login);
+            usemultiNookStore.getState().addSlot(stream.user_login);
+            return;
+        }
         // Exit home/PIP mode when clicking on a new stream from sidebar
         // This ensures the user goes directly to the stream view
         if (isHomeActive) {
@@ -510,7 +520,7 @@ const Sidebar = () => {
                         }
                         ${showExpanded ? 'gap-2 justify-start' : 'gap-0 justify-center'}
                     `}
-                    onClick={() => handleStreamClick(stream)}
+                    onClick={(e) => handleStreamClick(e, stream)}
                     onContextMenu={(e) => useContextMenuStore.getState().openMenu(e, stream)}
                 >
                 {/* Avatar with live indicator */}
@@ -650,11 +660,13 @@ const Sidebar = () => {
                 </defs>
             </svg>
 
-            {/* Edge trigger zone for hidden mode */}
+            {/* Edge trigger zone for hidden mode. z-[50] sits above Home's
+                full-screen overlay (z-40) so hover-to-reveal works in home
+                view, but stays below modal dialogs (which render later in DOM). */}
             {sidebarMode === 'hidden' && !visible && (
                 <div
                     ref={edgeTriggerRef}
-                    className="fixed left-0 top-0 h-full z-40"
+                    className="fixed left-0 top-0 h-full z-50"
                     style={{ width: HIDDEN_TRIGGER_ZONE }}
                     onMouseEnter={() => setIsEdgeHovered(true)}
                 />
@@ -669,9 +681,9 @@ const Sidebar = () => {
             <div
                 ref={sidebarRef}
                 className={`
-                    h-full border-r border-borderSubtle flex flex-col flex-shrink-0 
+                    h-full border-r border-borderSubtle flex flex-col flex-shrink-0
                     transition-[width,min-width,opacity,transform,background-color,backdrop-filter] duration-300 ease-[cubic-bezier(0.4,0,0.2,1)]
-                    ${isOverlay ? 'fixed left-0 top-0 z-30 mt-8' : 'relative'}
+                    ${isOverlay ? 'fixed left-0 top-0 z-50 mt-8' : 'relative'}
                     ${showExpanded ? 'backdrop-blur-xl' : 'bg-tertiary'}
                 `}
                 style={{

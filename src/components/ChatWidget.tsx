@@ -48,6 +48,8 @@ import { fetchRecentMessagesAsIRC } from '../services/ivrService';
 import { useChatUserStore } from '../stores/chatUserStore';
 import MentionAutocomplete from './MentionAutocomplete';
 import CommandAutocomplete from './chat/CommandAutocomplete';
+import EmoteAutocomplete from './chat/EmoteAutocomplete';
+import { getWordRange, EmoteTabCandidate } from '../utils/chatInputWord';
 import {
   COMMAND_DEFINITIONS,
   CommandDefinition,
@@ -533,6 +535,23 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
   const [commandQuery, setCommandQuery] = useState('');
   const [commandSelectedIndex, setCommandSelectedIndex] = useState(0);
   const [matchingCommands, setMatchingCommands] = useState<CommandDefinition[]>([]);
+
+  // Emote tab completion state. The currently-inserted match is matches[index];
+  // the carousel shows N back / current / N forward as preview.
+  interface EmoteTabState {
+    matches: EmoteTabCandidate[];
+    index: number;
+    /** Cursor position right after the inserted token. */
+    expectedCursor: number;
+    /** Text the textarea is expected to contain at the moment Tab is processed. */
+    expectedValue: string;
+    /** Word boundaries of the original (pre-replacement) query. */
+    originalStart: number;
+    originalQuery: string;
+    /** Length of the currently-inserted token (name + optional trailing space). */
+    currentLen: number;
+  }
+  const [emoteTabState, setEmoteTabState] = useState<EmoteTabState | null>(null);
 
   // Dynamically compute if the current input is a valid, fully-formed command
   const commandState = useMemo(() => {
@@ -1900,6 +1919,29 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
       }
     }
     
+    // Emote tab completion (only when no other autocomplete is active).
+    if (e.key === 'Tab') {
+      const used = handleEmoteTabPress(e.shiftKey);
+      if (used) {
+        e.preventDefault();
+        return;
+      }
+    }
+
+    // Any other key beyond Tab/Shift drops the tab-cycle state. We can't gate
+    // this inside handleInputChange because non-printing keys (arrows, Home)
+    // also move the cursor away from the expected position.
+    if (
+      e.key !== 'Tab' &&
+      e.key !== 'Shift' &&
+      e.key !== 'Control' &&
+      e.key !== 'Alt' &&
+      e.key !== 'Meta' &&
+      emoteTabState
+    ) {
+      setEmoteTabState(null);
+    }
+
     // Normal Enter to send message. Ctrl+Enter is "Quick Send" — sends but
     // keeps the message in the input box for rapid-fire re-send. Shift+Enter
     // still inserts a newline (textarea default behavior).
@@ -1930,7 +1972,11 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
   const handleInputChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const value = e.target.value;
     const cursorPos = e.target.selectionStart || value.length;
-    
+
+    // User typed/edited the input (controlled setMessageInput from Tab doesn't
+    // fire this event), so any Tab-cycle in progress no longer matches.
+    if (emoteTabState) setEmoteTabState(null);
+
     setMessageInput(value);
     
     // Check for Command Autocomplete (slash commands)
@@ -2021,7 +2067,7 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
     setShowMentionAutocomplete(false);
     setMentionQuery('');
     setMentionStartPosition(null);
-  }, [getMatchingUsers, isModerator, isBroadcaster, settings.chat_commands?.user_commands]);
+  }, [getMatchingUsers, isModerator, isBroadcaster, settings.chat_commands?.user_commands, emoteTabState]);
 
   // Insert a command string directly from other UI elements (like UserProfileCard)
   const preFillCommand = useCallback((cmdText: string) => {
@@ -2087,6 +2133,184 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
     setMessageInput(prev => prev + (prev ? ' ' : '') + emoteName + ' ');
     inputRef.current?.focus({ preventScroll: true });
   };
+
+  /**
+   * Build a ranked, deduplicated list of tab-completion candidates for the
+   * partial word the user is typing:
+   *   - All loaded emote sets feed the matcher.
+   *   - Optionally chatter display names are appended at the lowest tier.
+   *   - Match mode is prefix-only ("starts_with") or substring ("includes").
+   *   - Dedupe by case-folded name so cross-provider duplicates collapse.
+   *
+   * Ranking is a strict (providerTier, favoriteRank, alphabetical) tuple so a
+   * favorited Twitch emote never jumps over a non-favorited 7TV match. Provider
+   * tiers, lowest = best: 7tv (0), bttv (1), ffz (2), twitch (3), chatter (4).
+   * Within a provider, favorited emotes come first, then alphabetical.
+   */
+  const TAB_MATCH_LIMIT = 50;
+  const PROVIDER_TIER: Record<Emote['provider'], number> = {
+    '7tv': 0,
+    bttv: 1,
+    ffz: 2,
+    twitch: 3,
+  };
+  const getMatchingEmoteTokens = useCallback((query: string): EmoteTabCandidate[] => {
+    if (!query) return [];
+    const mode: 'starts_with' | 'includes' = settings.chat_input?.emote_tab_complete_match_mode ?? 'starts_with';
+    const includeChatters = settings.chat_input?.emote_tab_complete_include_chatters ?? true;
+    const q = query.toLowerCase();
+    const seen = new Set<string>();
+    type Ranked = { item: EmoteTabCandidate; providerTier: number; favoriteRank: number };
+    const ranked: Ranked[] = [];
+
+    const stripAt = q.startsWith('@') ? q.slice(1) : q;
+    const isAtQuery = q.startsWith('@');
+    const test = (token: string) => {
+      const t = token.toLowerCase();
+      return mode === 'starts_with' ? t.startsWith(stripAt) : t.includes(stripAt);
+    };
+
+    if (emotes && !isAtQuery) {
+      const favoriteIds = new Set(favoriteEmotes.map(f => f.id));
+      // Walk providers in tier order so the seen-set drops cross-provider dupes
+      // in favor of the higher-tier provider (e.g. a 7TV "Kappa" wins over the
+      // Twitch one).
+      const ordered: Array<[Emote['provider'], Emote[] | undefined]> = [
+        ['7tv', emotes['7tv']],
+        ['bttv', emotes.bttv],
+        ['ffz', emotes.ffz],
+        ['twitch', emotes.twitch],
+      ];
+      for (const [provider, list] of ordered) {
+        if (!list) continue;
+        for (const e of list) {
+          const key = e.name.toLowerCase();
+          if (seen.has(key)) continue;
+          if (!test(e.name)) continue;
+          seen.add(key);
+          ranked.push({
+            providerTier: PROVIDER_TIER[provider],
+            favoriteRank: favoriteIds.has(e.id) ? 0 : 1,
+            item: {
+              name: e.name,
+              priority: PROVIDER_TIER[provider],
+              emote: {
+                id: e.id,
+                name: e.name,
+                url: e.url,
+                localUrl: e.localUrl,
+                provider: e.provider,
+                isZeroWidth: e.isZeroWidth,
+              },
+            },
+          });
+        }
+      }
+    }
+
+    if (includeChatters) {
+      const chatters = getMatchingUsers(stripAt);
+      for (const u of chatters) {
+        const dn = u.displayName || u.username;
+        const key = dn.toLowerCase();
+        if (seen.has(key)) continue;
+        if (!test(dn) && !test(u.username)) continue;
+        seen.add(key);
+        ranked.push({
+          providerTier: 4, // chatters always after every emote provider
+          favoriteRank: 1,
+          item: {
+            name: (isAtQuery ? '@' : '') + dn,
+            priority: 4,
+            chatter: { username: u.username, displayName: dn },
+          },
+        });
+      }
+    }
+
+    ranked.sort((a, b) => {
+      if (a.providerTier !== b.providerTier) return a.providerTier - b.providerTier;
+      if (a.favoriteRank !== b.favoriteRank) return a.favoriteRank - b.favoriteRank;
+      return a.item.name.localeCompare(b.item.name);
+    });
+
+    return ranked.slice(0, TAB_MATCH_LIMIT).map(r => r.item);
+  }, [emotes, favoriteEmotes, getMatchingUsers, settings.chat_input]);
+
+  /**
+   * Replace the word at the cursor with the next (or previous, if backwards)
+   * matching token. Maintains tab state across consecutive Tab presses so
+   * pressing Tab again cycles through the same candidate list. State invalidates
+   * when the user edits the input or moves the cursor elsewhere.
+   */
+  const handleEmoteTabPress = useCallback((isBackwards: boolean) => {
+    if (!(settings.chat_input?.emote_tab_complete_enabled ?? true)) return false;
+    const textarea = inputRef.current;
+    if (!textarea) return false;
+    const cursor = textarea.selectionStart ?? messageInput.length;
+    if (textarea.selectionEnd !== cursor) return false; // active selection -> bail
+
+    let matches: EmoteTabCandidate[];
+    let nextIndex: number;
+    let originalStart: number;
+    let originalQuery: string;
+
+    const stateMatchesCurrent =
+      emoteTabState &&
+      emoteTabState.expectedValue === messageInput &&
+      emoteTabState.expectedCursor === cursor &&
+      emoteTabState.matches.length > 0;
+
+    if (stateMatchesCurrent) {
+      matches = emoteTabState!.matches;
+      nextIndex = isBackwards ? emoteTabState!.index - 1 : emoteTabState!.index + 1;
+      nextIndex = ((nextIndex % matches.length) + matches.length) % matches.length;
+      originalStart = emoteTabState!.originalStart;
+      originalQuery = emoteTabState!.originalQuery;
+    } else {
+      const [ws, we] = getWordRange(messageInput, cursor);
+      if (cursor === ws) return false;
+      const word = messageInput.slice(ws, we);
+      if (!word || word === ' ') return false;
+      matches = getMatchingEmoteTokens(word);
+      if (matches.length === 0) return false;
+      nextIndex = 0;
+      originalStart = ws;
+      originalQuery = word;
+    }
+
+    const match = matches[nextIndex];
+    const prevTokenLen = stateMatchesCurrent ? emoteTabState!.currentLen : originalQuery.length;
+    const before = messageInput.slice(0, originalStart);
+    const after = messageInput.slice(originalStart + prevTokenLen);
+    // Only add a trailing space if there isn't already one immediately after.
+    const addTrailingSpace = after.length === 0 || after[0] !== ' ';
+    const replacement = match.name + (addTrailingSpace ? ' ' : '');
+    const newValue = before + replacement + after;
+    const newCursor = originalStart + replacement.length;
+
+    setMessageInput(newValue);
+
+    setEmoteTabState({
+      matches,
+      index: nextIndex,
+      expectedCursor: newCursor,
+      expectedValue: newValue,
+      originalStart,
+      originalQuery,
+      currentLen: replacement.length,
+    });
+
+    setTimeout(() => {
+      const ta = inputRef.current;
+      if (ta) {
+        ta.focus({ preventScroll: true });
+        ta.setSelectionRange(newCursor, newCursor);
+      }
+    }, 0);
+
+    return true;
+  }, [emoteTabState, messageInput, getMatchingEmoteTokens, settings.chat_input]);
 
   const handleEmoteRightClick = (emoteName: string) => {
     setMessageInput(prev => {
@@ -3157,6 +3381,14 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
                       onSelectedIndexChange={setMentionSelectedIndex}
                     />
                   )}
+                  {/* Emote tab completion carousel */}
+                  {emoteTabState && !showMentionAutocomplete && !showCommandAutocomplete && (
+                    <EmoteAutocomplete
+                      current={emoteTabState.matches[emoteTabState.index]}
+                      backwards={emoteTabState.matches.slice(Math.max(0, emoteTabState.index - 3), emoteTabState.index)}
+                      forwards={emoteTabState.matches.slice(emoteTabState.index + 1, emoteTabState.index + 4)}
+                    />
+                  )}
                   <textarea 
                     ref={inputRef} 
                     value={messageInput} 
@@ -3196,6 +3428,7 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
                       // Delay hiding to allow click on autocomplete
                       setTimeout(() => setShowMentionAutocomplete(false), 150);
                       setTimeout(() => setShowCommandAutocomplete(false), 150);
+                      setEmoteTabState(null);
                     }}
                   />
                 </div>

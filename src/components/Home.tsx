@@ -1143,7 +1143,16 @@ const Home = () => {
         return url.replace(/-\d+x\d+\.(jpg|jpeg|png)$/i, '-1200x1600.$1');
     };
 
-    const handleStreamClick = (stream: TwitchStream) => {
+    const handleStreamClick = (e: React.MouseEvent, stream: TwitchStream) => {
+        // Ctrl/Cmd+click adds the stream to multinook instead of switching to it.
+        // The flying-card animation originates from the click point so it visually
+        // matches the right-click context-menu "Add to MultiNook" action.
+        if (e.ctrlKey || e.metaKey) {
+            e.preventDefault();
+            usemultiNookStore.getState().triggerAddAnimation(e.clientX, e.clientY, stream.user_login);
+            usemultiNookStore.getState().addSlot(stream.user_login);
+            return;
+        }
         // Track which category this stream was started from (if any)
         useAppStore.getState().setStreamOriginCategory(
             activeTab === 'category' && selectedCategory ? selectedCategory : null
@@ -1981,7 +1990,7 @@ const Home = () => {
                                                                     : `glass-panel cursor-pointer hover:bg-glass-hover ${isOverlayMode ? '!bg-black/40 !border-white/5' : ''} ${hasDrops ? 'ring-2 ring-accent/60' : ''}`
                                                         }`}
                                                         style={!isQueued && hasDrops ? { boxShadow: '0 0 12px var(--color-accent-muted)' } : undefined}
-                                                        onClick={() => !isQueued && handleStreamClick(stream)}
+                                                        onClick={(e) => !isQueued && handleStreamClick(e, stream)}
                                                         onContextMenu={(e) => !isQueued && useContextMenuStore.getState().openMenu(e, stream)}
                                                     >
                                                         {isQueued && !isSuckingUp ? (
@@ -2314,7 +2323,7 @@ const Home = () => {
                                                                 ? `glass-panel cursor-default ${isOverlayMode ? '!bg-black/40 !border-white/5' : ''}`
                                                                 : `glass-panel cursor-pointer hover:bg-glass-hover ${isOverlayMode ? '!bg-black/40 !border-white/5' : ''} ${stream.has_shared_chat === true ? 'iridescent-border' : ''}`
                                                     }`}
-                                                    onClick={() => !isQueued && handleStreamClick(stream)}
+                                                    onClick={(e) => !isQueued && handleStreamClick(e, stream)}
                                                     onContextMenu={(e) => !isQueued && useContextMenuStore.getState().openMenu(e, stream)}
                                                 >
                                                     {isQueued && !isSuckingUp ? (

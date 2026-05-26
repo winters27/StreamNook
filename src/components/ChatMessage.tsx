@@ -673,9 +673,64 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
         />
       );
 
-      const tooltipContent = settings?.chat_design?.compact_emote_tooltips
+      // Big-preview tooltip mirroring the emote-picker's hover card. Compact
+      // mode short-circuits to just the name (for users who find the
+      // upscaled image distracting). The non-compact path now shows a 4x
+      // preview, name, provider, optional Zero-Width chip, and the
+      // "Right-click to copy" hint at the bottom so the copy affordance
+      // still surfaces.
+      const isCompactTooltip = !!settings?.chat_design?.compact_emote_tooltips;
+      // Provider detection mirrors the srcSet logic a few lines up.
+      const is7TVEmote = !!segment.emoteId && (
+        emoteUrl.includes('7tv') ||
+        ((segment.emoteId.length === 24 || segment.emoteId.length === 26) &&
+          !emoteUrl.includes('jtvnw.net') &&
+          !emoteUrl.includes('frankerfacez') &&
+          !emoteUrl.includes('betterttv'))
+      );
+      const providerLabel =
+        is7TVEmote || emoteUrl.includes('7tv') ? '7TV'
+        : emoteUrl.includes('betterttv') ? 'BetterTTV'
+        : emoteUrl.includes('frankerfacez') ? 'FrankerFaceZ'
+        : emoteUrl.includes('jtvnw.net') ? 'Twitch'
+        : 'Emote';
+      const previewUrl = is7TVEmote && segment.emoteId
+        ? `https://cdn.7tv.app/emote/${segment.emoteId}/4x.avif`
+        : emoteUrl;
+      const tooltipContent: React.ReactNode | string = isCompactTooltip
         ? segment.content
-        : `Right-click to copy${segment.isZeroWidth ? ' (Zero-Width)' : ''}: ${segment.content}`;
+        : (
+          <div className="flex flex-col items-center gap-1.5 py-0.5">
+            <img
+              src={previewUrl}
+              alt={segment.content}
+              className="h-16 w-auto max-w-[96px] object-contain mx-auto drop-shadow-md"
+              referrerPolicy="no-referrer"
+              onError={(e) => {
+                // 7TV fallback chain: 4x avif → 2x → 1x. Matches the
+                // picker's EmoteGridItem tooltip behavior.
+                if (is7TVEmote && segment.emoteId) {
+                  const t = e.currentTarget;
+                  if (t.src.includes('/4x.avif')) {
+                    t.src = `https://cdn.7tv.app/emote/${segment.emoteId}/2x.avif`;
+                  } else if (t.src.includes('/2x.avif')) {
+                    t.src = `https://cdn.7tv.app/emote/${segment.emoteId}/1x.avif`;
+                  }
+                }
+              }}
+            />
+            <div className="text-center flex flex-col items-center gap-0.5">
+              <span className="font-bold text-[13px] leading-tight">{segment.content}</span>
+              <span className="text-[10px] text-white/60 leading-tight">{providerLabel}</span>
+              {segment.isZeroWidth && (
+                <span className="text-[9px] font-bold tracking-wider uppercase text-yellow-400 mt-0.5 mix-blend-screen drop-shadow-sm">
+                  Zero-Width
+                </span>
+              )}
+              <span className="text-[10px] text-white/50 mt-0.5">Right-click to copy</span>
+            </div>
+          </div>
+        );
       return (
         <Tooltip key={key} content={tooltipContent} side="top">
           {isOverlay && !inGrid ? (

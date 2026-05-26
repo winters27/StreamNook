@@ -276,6 +276,54 @@ const ChatSettings = () => {
       </SettingsSection>
 
       <SettingsSection
+        label="Emote Tab Completion"
+        description="Type part of an emote name in chat and press Tab to cycle through matching emotes. Shift+Tab cycles backwards."
+        id="settings-section-emote-tab-completion"
+      >
+        <SettingsRow
+          title="Enable Tab Completion"
+          description="Press Tab while typing to insert the best-matching emote. Press Tab again to cycle to the next match."
+          control={
+            <Toggle
+              enabled={settings.chat_input?.emote_tab_complete_enabled ?? true}
+              onChange={() =>
+                setInput({
+                  emote_tab_complete_enabled: !(settings.chat_input?.emote_tab_complete_enabled ?? true),
+                })
+              }
+            />
+          }
+        />
+        <SettingsRow
+          title="Match Mode"
+          description='"Starts With" only matches emotes that begin with what you typed. "Contains" matches anywhere in the name.'
+        >
+          <SegmentedSelect<'starts_with' | 'includes'>
+            value={settings.chat_input?.emote_tab_complete_match_mode ?? 'starts_with'}
+            options={[
+              { value: 'starts_with', label: 'Starts With' },
+              { value: 'includes', label: 'Contains' },
+            ]}
+            onChange={(v) => setInput({ emote_tab_complete_match_mode: v })}
+          />
+        </SettingsRow>
+        <SettingsRow
+          title="Include Chat Users"
+          description="Also cycle through display names of users currently in chat."
+          control={
+            <Toggle
+              enabled={settings.chat_input?.emote_tab_complete_include_chatters ?? true}
+              onChange={() =>
+                setInput({
+                  emote_tab_complete_include_chatters: !(settings.chat_input?.emote_tab_complete_include_chatters ?? true),
+                })
+              }
+            />
+          }
+        />
+      </SettingsSection>
+
+      <SettingsSection
         label="Render Style"
         description="How specific message classes look in chat."
       >

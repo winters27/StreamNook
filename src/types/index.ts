@@ -294,6 +294,11 @@ export interface ChatInputSettings {
   // Ctrl+Enter sends the message AND keeps it in the input box. Plain Enter
   // still sends + clears like normal.
   quick_send?: boolean;
+  // Emote tab completion in the chat input. Tab cycles forward through
+  // matching emotes/chatters, Shift+Tab cycles back.
+  emote_tab_complete_enabled?: boolean;
+  emote_tab_complete_match_mode?: 'starts_with' | 'includes';
+  emote_tab_complete_include_chatters?: boolean;
 }
 
 export interface LiveNotificationSettings {

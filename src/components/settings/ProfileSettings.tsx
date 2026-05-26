@@ -157,7 +157,17 @@ const ProfileSettings = () => {
         if (!mountedRef.current) return;
         const result = event.payload;
         if (result.success) {
-          setChatIdentityBadges(result.badges);
+          // Dedupe by (id, version). Belt-and-braces against any path
+          // that emits duplicates — seen in the wild as every badge
+          // appearing twice in the grid until a hard refresh.
+          const seen = new Set<string>();
+          const deduped = (result.badges as ChatIdentityBadge[]).filter((b) => {
+            const key = `${b.id}-${b.version}`;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+          });
+          setChatIdentityBadges(deduped);
         }
         setIsFetchingIdentity(false);
       });
@@ -226,8 +236,6 @@ const ProfileSettings = () => {
       }
 
       if (mountedRef.current) setIsLoadingBadges(false);
-
-      fetchChatIdentity();
     };
 
     loadProfile();

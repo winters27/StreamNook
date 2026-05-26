@@ -715,6 +715,7 @@ const SETTINGS_CATALOG: SettingsEntry[] = [
   { tab: 'Chat', section: 'Highlight Phrases', keywords: 'highlights phrases keywords alerts' },
   { tab: 'Chat', section: 'User Overrides', keywords: 'user overrides nicknames colors per-user' },
   { tab: 'Chat', section: 'Custom Commands', keywords: 'custom commands slash macros' },
+  { tab: 'Chat', section: 'Emote Tab Completion', keywords: 'emote tab completion autocomplete carousel kappa cycle shift starts contains match' },
 
   // Theme
   { tab: 'Theme', keywords: 'theme color accent skin dark light' },
