@@ -1,3 +1,18 @@
+## [7.5.4] - 2026-05-25
+## ✨ New: Emote Tab Completion in Chat!
+> Typing in chat just got a whole lot smarter. Now you can type a few letters of an emote or a username, press `Tab`, and StreamNook will instantly suggest and cycle through matching emotes from Twitch, 7TV, BTTV, FFZ, and even current chatters! No more remembering full emote names, just fluid conversation.
+
+---
+
+### ✨ Features
+- **Emote Tab Completion**: Type a partial emote name or username in chat, press `Tab` to cycle through suggestions in a slick carousel, and Shift+Tab to cycle backward. Customize matching modes (starts with/contains) and if chatters are included in Chat Settings. Thanks to <@FROGGICON> for the suggestion!
+- **MultiNook Shortcut**: Quickly add any stream to MultiNook by Ctrl+clicking a stream card on the Home page or in the sidebar. Thanks to <@FROGGICON> for the suggestion!
+- **Enhanced Emote Tooltips**: Hover over any emote in chat for a richer preview showing the full emote name, provider (Twitch, 7TV, BTTV, FFZ), a larger image, and a 'Zero-Width' indicator if applicable. Thanks to <@FROGGICON> for the suggestion!
+
+### 🐛 Bug Fixes
+- Resolved an issue where some chat identity badges in Profile Settings would appear duplicated. Spotted by <@grim_7tv>, much appreciated!
+- Fixed a layering bug where the sidebar might be obscured by other fullscreen elements when in 'hidden' or 'overlay' mode.
+
 ## [7.5.3] - 2026-05-25
 ## ✨ New: Emote Tab Completion in Chat!
 > Typing in chat just got a whole lot smarter. Now you can type a few letters of an emote or a username, press `Tab`, and StreamNook will instantly suggest and cycle through matching emotes from Twitch, 7TV, BTTV, FFZ, and even current chatters! No more remembering full emote names, just fluid conversation.
@@ -1292,6 +1307,7 @@ ATTENTION: ALL USERS LOG OUT OF TWITCH THEN LOG BACK IN FOR SOME CHANGES OT TAKE
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
