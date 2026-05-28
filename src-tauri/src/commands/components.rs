@@ -540,27 +540,29 @@ exit /b 1
 
         let _ = app_handle.emit("bundle-update-progress", "Restarting...");
 
-        // Launch the batch script directly with CREATE_NO_WINDOW + DETACHED_PROCESS.
-        // The previous VBS wrapper (`WshShell.Run "...", 0, False`) was meant to
-        // hide the window but cmd.exe still flashed briefly on creation before
-        // WshShell could enforce the hidden style — visible as a black square
-        // popping up during install. CREATE_NO_WINDOW tells the OS to never
-        // allocate a console for this process tree, so neither the cmd host
-        // nor any of the timeout/tasklist/copy children render a window.
-        // DETACHED_PROCESS disconnects the batch from our exiting parent
-        // process so it survives the std::process::exit below cleanly.
-        #[cfg(target_os = "windows")]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            const DETACHED_PROCESS: u32 = 0x0000_0008;
+        // Launch the batch through a VBS wrapper run via wscript with window
+        // style 0 (hidden). wscript gives the batch a real (hidden) console, so
+        // its console-dependent commands (`timeout`, the `tasklist | find` wait
+        // loop) run correctly. Do NOT spawn cmd directly with
+        // CREATE_NO_WINDOW | DETACHED_PROCESS: the OS ignores CREATE_NO_WINDOW
+        // when DETACHED_PROCESS is also set, which surfaces a visible console
+        // and breaks the wait loop. A brief flash on creation is accepted in
+        // exchange for a relaunch path that reliably completes.
+        let vbs_script = format!(
+            r#"Set WshShell = CreateObject("WScript.Shell")
+WshShell.Run """{batch}""", 0, False
+"#,
+            batch = batch_path.to_string_lossy().replace("\\", "\\\\")
+        );
 
-            std::process::Command::new("cmd")
-                .args(["/c", batch_path.to_string_lossy().as_ref()])
-                .creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS)
-                .spawn()
-                .map_err(|e| format!("Failed to run update script: {}", e))?;
-        }
+        let vbs_path = temp_dir.join("update_launcher.vbs");
+        std::fs::write(&vbs_path, vbs_script)
+            .map_err(|e| format!("Failed to write VBS launcher: {}", e))?;
+
+        std::process::Command::new("wscript")
+            .arg(&vbs_path)
+            .spawn()
+            .map_err(|e| format!("Failed to run update script: {}", e))?;
 
         // Exit the app
         std::process::exit(0);
