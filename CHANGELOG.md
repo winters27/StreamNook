@@ -1,3 +1,31 @@
+## [7.5.5] - 2026-05-27
+## ✨ New: Live 7TV Emote & Cosmetic Updates
+> Your chat just got smarter! Emote sets now update instantly when mods add, remove, or rename 7TV emotes. Plus, 7TV paints and badges for other chatters appear live, not on delay. It's a faster, more dynamic chat experience, keeping you connected to the pulse of your favorite communities.
+
+---
+
+### ✨ Features
+- **7TV Live Events**: Get immediate updates for emote set changes and see chatters' 7TV cosmetics refresh in real-time.
+- **Chat Client Badge Gallery**: Explore a new section in the Badges Overlay to discover and track badges from popular third-party chat clients like FrankerFaceZ, Chatterino, Chatsen, Chatty, DankChat, and Homies. See which ones you own, how many users have them, and easily access their project pages.
+- **Stripe Payments Integration**: StreamNook now offers Stripe for donations and subscriptions via streamnook.app, providing a streamlined and secure experience for supporters. Existing Ko-fi subscribers can easily migrate their support.
+- **Lifetime Channel Points**: Track the total channel points you've auto-claimed across all your StreamNook sessions, now persisted even after restarting the app.
+- **Enhanced Drops & Rewards UI**: The Drops Center and Game Detail panels now feature a clearer rewards showcase with progress timelines, making it easier to track your journey towards coveted drop rewards.
+- **7TV Emote Update Notices**: A new chat setting lets you toggle system messages for live 7TV emote set changes, giving you control over chat notifications.
+
+### 🐛 Bug Fixes
+- **Improved Drops Statistics**: Corrected calculations for 'Total Drops Claimed' and 'Drops in Progress' in the Drops Center, providing a more accurate overview of your earned and active drops.
+- **Instant 7TV Cosmetic Updates**: Fixed an issue where changing your 7TV paint or badge in Profile Settings wouldn't immediately reflect in chat or your profile card until an app restart. Changes are now instant across the app.
+- **Robust 7TV Cosmetic Fetching**: Enhanced reliability for fetching 7TV user cosmetics, reducing instances of blank paints/badges due to transient API errors or overly complex batch requests.
+- **Accurate 7TV Paint Shadows**: 7TV paint shadows now render correctly in the Badges Overlay, matching their appearance in chat and on user profiles.
+
+### ⚡ Performance
+- **Optimized Chat Rendering**: Removed display of third-party chat client badges from individual chat messages, improving chat rendering performance and reducing visual clutter. These badges are now exclusively viewable in the new Chat Client Badge Gallery.
+
+### 🔧 Maintenance
+- **Updated Support Experience**: Streamlined the Support settings tab, removing the direct developer contact section to centralize support through the Discord community and streamnook.app. Your contact options are now clearer and more effective.
+- **UI Polish**: Applied "liquid glass" visual refinements to overlays and panels, enhancing the overall aesthetic and consistency across the application.
+- **Internal Payment System Upgrade**: Major internal upgrades to support new payment pathways via streamnook.app, including a refined system for awarding cosmetics based on payment tiers.
+
 ## [7.5.4] - 2026-05-25
 ## ✨ New: Emote Tab Completion in Chat!
 > Typing in chat just got a whole lot smarter. Now you can type a few letters of an emote or a username, press `Tab`, and StreamNook will instantly suggest and cycle through matching emotes from Twitch, 7TV, BTTV, FFZ, and even current chatters! No more remembering full emote names, just fluid conversation.
@@ -1307,6 +1335,7 @@ ATTENTION: ALL USERS LOG OUT OF TWITCH THEN LOG BACK IN FOR SOME CHANGES OT TAKE
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
