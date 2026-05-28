@@ -1,3 +1,7 @@
+## [7.5.6] - 2026-05-27
+### 🐛 Bug Fixes
+- Improved the application update process on Windows, preventing a brief command prompt window from appearing and ensuring updates complete reliably in the background.
+
 ## [7.5.5] - 2026-05-27
 ## ✨ New: Live 7TV Emote & Cosmetic Updates
 > Your chat just got smarter! Emote sets now update instantly when mods add, remove, or rename 7TV emotes. Plus, 7TV paints and badges for other chatters appear live, not on delay. It's a faster, more dynamic chat experience, keeping you connected to the pulse of your favorite communities.
@@ -1335,6 +1339,7 @@ ATTENTION: ALL USERS LOG OUT OF TWITCH THEN LOG BACK IN FOR SOME CHANGES OT TAKE
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
