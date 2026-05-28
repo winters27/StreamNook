@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo, useRef, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
-import { X, ArrowUpDown, RefreshCw, Check, Trophy, Award, ChevronUp, Search, ExternalLink } from 'lucide-react';
+import { X, ArrowUpDown, RefreshCw, Check, Trophy, Award, ChevronUp, ChevronDown, Search, ExternalLink } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../stores/AppStore';
 import { getAllUserBadgesWithEarned } from '../services/badgeService';
@@ -23,10 +23,34 @@ import type { CosmeticCatalogEntry } from '../services/supabaseService';
 import { StreamNookTierCard } from './StreamNookBadge';
 import { COSMETIC_ASSET_BY_SLUG } from './cosmeticAssets';
 import streamNookLogo from '../assets/streamnook-logo.png';
+import chatterinoLogo from '../assets/chatterino-logo.svg';
 
 import { Logger } from '../utils/logger';
 // Tab navigation types
-type AttainableTab = 'twitch-badges' | '7tv-badges' | '7tv-paints' | 'streamnook';
+type AttainableTab = 'twitch-badges' | '7tv-badges' | '7tv-paints' | 'streamnook' | 'chat-clients';
+
+// One distinct third-party chat-client badge (mirrors Rust ThirdPartyGalleryBadge).
+interface ChatClientBadge {
+  id: string;
+  provider: 'ffz' | 'chatterino' | 'homies' | 'chatsen' | 'chatty' | 'dankchat';
+  title: string;
+  image_1x: string;
+  image_2x: string;
+  image_4x: string;
+  user_count: number;
+  owned: boolean;
+  click_url: string | null;
+}
+
+// Display order + friendly labels for the chat-client sections.
+const CHAT_CLIENT_PROVIDERS: { key: ChatClientBadge['provider']; label: string }[] = [
+  { key: 'ffz', label: 'FrankerFaceZ' },
+  { key: 'chatterino', label: 'Chatterino' },
+  { key: 'chatsen', label: 'Chatsen' },
+  { key: 'chatty', label: 'Chatty' },
+  { key: 'dankchat', label: 'DankChat' },
+  { key: 'homies', label: 'Homies' },
+];
 
 interface BadgeVersion {
   id: string;
@@ -181,12 +205,20 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
   const [userOwned7TVPaintIds, setUserOwned7TVPaintIds] = useState<Set<string>>(new Set());
   const [loadingUser7TVCosmetics, setLoadingUser7TVCosmetics] = useState(false);
 
+  // Chat-client (third-party) badge gallery state
+  const [chatClientBadges, setChatClientBadges] = useState<ChatClientBadge[]>([]);
+  const [loadingChatClientBadges, setLoadingChatClientBadges] = useState(false);
+  const [chatClientBadgesError, setChatClientBadgesError] = useState<string | null>(null);
+  const [collapsedClientSections, setCollapsedClientSections] = useState<Set<string>>(new Set());
+
   // Load all data on mount (eager load for tab counts)
   useEffect(() => {
     loadBadges();
     // Eager load 7TV data for tab counts
     loadSeventvBadges();
     loadSeventvPaints();
+    // Eager load chat-client badges for the tab count
+    loadChatClientBadges();
   }, []);
 
   // Deep-link to the StreamNook tab. Fires synchronously since the tab
@@ -384,12 +416,35 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
     }
   };
 
+  // Load chat-client (third-party) badges when tab is activated
+  const loadChatClientBadges = async () => {
+    if (chatClientBadges.length > 0 || loadingChatClientBadges) return;
+
+    setLoadingChatClientBadges(true);
+    setChatClientBadgesError(null);
+    try {
+      Logger.debug('[Attainables] Fetching chat-client badges...');
+      const badges = await invoke<ChatClientBadge[]>('get_all_third_party_badges', {
+        viewerUserId: currentUser?.user_id ?? null,
+      });
+      setChatClientBadges(badges);
+      Logger.debug(`[Attainables] Loaded ${badges.length} chat-client badges`);
+    } catch (err) {
+      Logger.error('[Attainables] Failed to load chat-client badges:', err);
+      setChatClientBadgesError('Failed to load chat-client badges');
+    } finally {
+      setLoadingChatClientBadges(false);
+    }
+  };
+
   // Load data when tab changes
   useEffect(() => {
     if (activeTab === '7tv-badges') {
       loadSeventvBadges();
     } else if (activeTab === '7tv-paints') {
       loadSeventvPaints();
+    } else if (activeTab === 'chat-clients') {
+      loadChatClientBadges();
     }
   }, [activeTab]);
 
@@ -506,23 +561,24 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
     return 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
   };
 
-  // Generate CSS text-shadow from 7TV paint shadows
+  // Build a CSS drop-shadow filter from a 7TV paint's shadows. Mirrors
+  // computeDropShadows in seventvService.ts (one drop-shadow() per layer, blur
+  // 1:1) so the overlay renders shadows identically to chat/profile. Returns a
+  // ready-to-use filter value, or 'none' when the paint has no shadows.
   const generatePaintShadow = (paint: SevenTVGlobalPaint): string => {
     if (!paint.data?.shadows || paint.data.shadows.length === 0) {
       return 'none';
     }
 
-    // Convert each shadow to CSS text-shadow format
-    // Format: offsetX offsetY blur color
-    const shadows = paint.data.shadows.map(shadow => {
-      const offsetX = shadow.offsetX || 0;
-      const offsetY = shadow.offsetY || 0;
-      const blur = (shadow.blur || 0) * 10; // Scale up blur for visibility
-      const color = shadow.color?.hex || '#000000';
-      return `${offsetX}px ${offsetY}px ${blur}px ${color}`;
-    });
-
-    return shadows.join(', ');
+    return paint.data.shadows
+      .map(shadow => {
+        const offsetX = shadow.offsetX || 0;
+        const offsetY = shadow.offsetY || 0;
+        const blur = shadow.blur || 0;
+        const color = shadow.color?.hex || '#000000';
+        return `drop-shadow(${color} ${offsetX}px ${offsetY}px ${blur}px)`;
+      })
+      .join(' ');
   };
 
   // Check if user has collected a specific badge
@@ -1733,7 +1789,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={{ duration: 0.15 }}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-2xl"
     >
       {/* Hover-sensitive background overlay */}
       <div
@@ -1747,7 +1803,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
         exit={{ opacity: 0, scale: 0.95, y: 15 }}
         transition={{ type: "spring", stiffness: 350, damping: 25 }}
         style={{ willChange: "transform, opacity" }}
-        className="bg-secondary border border-borderSubtle rounded-lg shadow-2xl w-[90vw] h-[85vh] max-w-7xl flex flex-col relative z-10"
+        className="liquid-glass-panel w-[90vw] h-[85vh] max-w-7xl flex flex-col relative z-10 overflow-hidden"
       >
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-borderSubtle">
@@ -1765,7 +1821,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
                 <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M11.571 4.714h1.715v5.143H11.57zm4.715 0H18v5.143h-1.714zM6 0L1.714 4.286v15.428h5.143V24l4.286-4.286h3.428L22.286 12V0zm14.571 11.143l-3.428 3.428h-3.429l-3 3v-3H6.857V1.714h13.714Z"/>
                 </svg>
-                Twitch Badges
+                Badges
                 <span className="text-xs opacity-70">({badgesWithMetadata.length})</span>
               </button>
               
@@ -1782,7 +1838,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
                   <path d="M7.15395 19.9258L14.5546 7.02104L15.4673 5.43884L13.0004 1.13724L12.3097 0.0247596H1.8995L0.666057 2.17556L0 3.31276L1.23344 5.46356V5.51301H9.12745L2.96025 16.267L2.09685 17.7998L3.33029 19.9506V20H7.15395" />
                   <path d="M17.4655 19.9257H21.2398L26.1736 11.3225L27.037 9.83924L25.8036 7.68844V7.63899H22.0046L19.5377 11.9406L19.365 12.262L16.8981 7.96038L16.7255 7.63899L14.2586 11.9406L13.5679 13.1272L17.2682 19.5796L17.4655 19.9257Z" />
                 </svg>
-                7TV Badges
+                Badges
                 <span className="text-xs opacity-70">({loadingSeventvBadges ? '...' : seventvBadges.length})</span>
               </button>
               
@@ -1799,7 +1855,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
                   <path d="M7.15395 19.9258L14.5546 7.02104L15.4673 5.43884L13.0004 1.13724L12.3097 0.0247596H1.8995L0.666057 2.17556L0 3.31276L1.23344 5.46356V5.51301H9.12745L2.96025 16.267L2.09685 17.7998L3.33029 19.9506V20H7.15395" />
                   <path d="M17.4655 19.9257H21.2398L26.1736 11.3225L27.037 9.83924L25.8036 7.68844V7.63899H22.0046L19.5377 11.9406L19.365 12.262L16.8981 7.96038L16.7255 7.63899L14.2586 11.9406L13.5679 13.1272L17.2682 19.5796L17.4655 19.9257Z" />
                 </svg>
-                7TV Paints
+                Paints
                 <span className="text-xs opacity-70">({loadingSeventvPaints ? '...' : seventvPaints.length})</span>
               </button>
 
@@ -1812,9 +1868,22 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
                 }`}
               >
                 <img src={streamNookLogo} alt="" className="w-4 h-4 object-contain" draggable={false} />
-                StreamNook
+                Badges
               </button>
-              
+
+              <button
+                onClick={() => setActiveTab('chat-clients')}
+                className={`px-4 py-2 rounded-lg transition-all flex items-center gap-2 ${
+                  activeTab === 'chat-clients'
+                    ? 'glass-button text-[#29b6f6] shadow-[0_0_15px_rgba(41,182,246,0.3)]'
+                    : 'text-textSecondary hover:text-textPrimary'
+                }`}
+              >
+                <img src={chatterinoLogo} alt="" className="w-4 h-4 object-contain" draggable={false} />
+                Chat Clients
+                <span className="text-xs opacity-70">({loadingChatClientBadges ? '...' : chatClientBadges.length})</span>
+              </button>
+
               {/* Search Input. Hidden on StreamNook tab (static content, nothing to search) */}
               {activeTab !== 'streamnook' && (
                 <div className="relative ml-auto">
@@ -1823,7 +1892,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
                     type="text"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder={`Search ${activeTab === 'twitch-badges' ? 'badges' : activeTab === '7tv-badges' ? '7TV badges' : '7TV paints'}...`}
+                    placeholder={`Search ${activeTab === 'twitch-badges' ? 'badges' : activeTab === '7tv-badges' ? '7TV badges' : activeTab === 'chat-clients' ? 'chat-client badges' : '7TV paints'}...`}
                     className="w-48 pl-9 pr-3 py-2 glass-input text-sm text-textPrimary placeholder-textSecondary focus:outline-none transition-colors"
                   />
                 </div>
@@ -1875,6 +1944,17 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
                         <span className="text-textSecondary"> / {seventvPaints.length} owned</span>
                       </span>
                     )}
+                  </div>
+                )}
+
+                {/* Chat Clients Counter */}
+                {activeTab === 'chat-clients' && chatClientBadges.length > 0 && (
+                  <div className="flex items-center gap-2 px-3 py-1.5 glass-badge">
+                    <Check size={14} className="text-[#29b6f6]" />
+                    <span className="text-sm text-textPrimary">
+                      <span className="font-semibold text-[#29b6f6]">{chatClientBadges.filter(b => b.owned).length}</span>
+                      <span className="text-textSecondary"> / {chatClientBadges.length} owned</span>
+                    </span>
                   </div>
                 )}
               </>
@@ -2174,9 +2254,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
                             <Check size={12} className="text-white" />
                           </div>
                         )}
-                        <div className={`w-18 h-18 flex items-center justify-center bg-transparent group-hover:scale-110 transition-transform duration-200 ${
-                          isOwned ? 'ring-1 ring-[#29b6f6]/30' : ''
-                        }`}>
+                        <div className="w-18 h-18 flex items-center justify-center bg-transparent group-hover:scale-110 transition-transform duration-200">
                           <img
                             src={getSeventvBadgeImageUrl(badge)}
                             alt={badge.name}
@@ -2330,10 +2408,8 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
                               <Check size={12} className="text-white" />
                             </div>
                           )}
-                          <div 
-                            className={`w-full h-14 flex items-center justify-center rounded-lg group-hover:scale-110 transition-transform duration-200 overflow-hidden bg-transparent relative ${
-                              isOwned ? 'ring-1 ring-[#29b6f6]/30' : ''
-                            }`}
+                          <div
+                            className="w-full h-14 flex items-center justify-center rounded-lg group-hover:scale-110 transition-transform duration-200 overflow-hidden bg-transparent relative"
                           >
                             {/* Use CSS background-image approach for ALL paint types per 7TV docs */}
                             <span 
@@ -2344,7 +2420,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
                                 backgroundClip: 'text',
                                 WebkitBackgroundClip: 'text',
                                 WebkitTextFillColor: 'transparent',
-                                filter: generatePaintShadow(paint) !== 'none' ? `drop-shadow(${generatePaintShadow(paint).split(',')[0]})` : 'none'
+                                filter: generatePaintShadow(paint)
                               }}
                             >
                               {paint.name}
@@ -2450,16 +2526,18 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
                 </div>
               )}
 
-              {/* Ko-fi link. Replaces the prior GitHub link as the canonical
-                  "do something next" CTA at the bottom of the StreamNook tab. */}
+              {/* Canonical "do something next" CTA. streamnook.app handles
+                  Twitch sign-in + Stripe checkout with pre-attached identity. */}
               <div className="flex justify-center pt-2">
                 <button
                   onClick={async () => {
                     try {
                       const { open } = await import('@tauri-apps/plugin-shell');
-                      await open('https://ko-fi.com/streamnook');
+                      const userLogin = currentUser?.login || currentUser?.username;
+                      const handle = userLogin ? `&handle=${encodeURIComponent(userLogin)}` : '';
+                      await open(`https://streamnook.app/support?tier=subscriber${handle}`);
                     } catch (err) {
-                      Logger.error('Failed to open Ko-fi page:', err);
+                      Logger.error('Failed to open support page:', err);
                     }
                   }}
                   className="px-5 py-2.5 glass-button text-sm text-textPrimary flex items-center gap-2 hover:bg-white/5 transition-colors"
@@ -2469,6 +2547,117 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
                 </button>
               </div>
             </div>
+          )}
+
+          {/* ========== CHAT CLIENTS TAB ========== */}
+          {/* Browsable gallery of third-party chat-client badges (FFZ, Chatterino,
+              Homies, Chatsen, Chatty, DankChat), grouped into collapsible sections.
+              These are assigned by each client to its devs/donors, so "owned" means
+              the signed-in viewer's Twitch ID is in that badge's user list. */}
+          {activeTab === 'chat-clients' && (
+            <>
+              {loadingChatClientBadges && (
+                <div className="flex items-center justify-center h-full">
+                  <div className="text-center">
+                    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#29b6f6] mx-auto mb-4"></div>
+                    <p className="text-textSecondary">Loading chat-client badges...</p>
+                  </div>
+                </div>
+              )}
+
+              {chatClientBadgesError && (
+                <div className="flex items-center justify-center h-full">
+                  <div className="text-center">
+                    <p className="text-red-400 mb-4">{chatClientBadgesError}</p>
+                    <button
+                      onClick={() => { setChatClientBadges([]); loadChatClientBadges(); }}
+                      className="px-4 py-2 glass-button text-[#29b6f6]"
+                    >
+                      Retry
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {!loadingChatClientBadges && !chatClientBadgesError && chatClientBadges.length === 0 && (
+                <div className="flex items-center justify-center h-full">
+                  <p className="text-textSecondary">No chat-client badges found</p>
+                </div>
+              )}
+
+              {!loadingChatClientBadges && !chatClientBadgesError && chatClientBadges.length > 0 && (
+                <div className="space-y-6">
+                  {CHAT_CLIENT_PROVIDERS.map(({ key, label }) => {
+                    const all = chatClientBadges.filter(b => b.provider === key);
+                    const q = searchQuery.trim().toLowerCase();
+                    const badges = q ? all.filter(b => b.title.toLowerCase().includes(q)) : all;
+                    if (badges.length === 0) return null;
+                    const collapsed = collapsedClientSections.has(key);
+                    return (
+                      <div key={key}>
+                        <button
+                          onClick={() => setCollapsedClientSections(prev => {
+                            const next = new Set(prev);
+                            if (next.has(key)) next.delete(key); else next.add(key);
+                            return next;
+                          })}
+                          className="w-full flex items-center gap-2 mb-3 group"
+                        >
+                          <span className="text-[11px] text-textSecondary uppercase tracking-[0.2em] font-semibold group-hover:text-textPrimary transition-colors">
+                            {label}
+                          </span>
+                          <span className="text-xs text-textSecondary/60">({badges.length})</span>
+                          {collapsed
+                            ? <ChevronDown size={16} className="text-textSecondary ml-auto" />
+                            : <ChevronUp size={16} className="text-textSecondary ml-auto" />}
+                        </button>
+                        {!collapsed && (
+                          <div className="grid grid-cols-8 gap-2">
+                            {badges.map((badge) => (
+                              <button
+                                key={badge.id}
+                                onClick={async () => {
+                                  if (!badge.click_url) return;
+                                  try {
+                                    const { open } = await import('@tauri-apps/plugin-shell');
+                                    await open(badge.click_url);
+                                  } catch (err) {
+                                    Logger.error('Failed to open badge link:', err);
+                                  }
+                                }}
+                                className={`flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-white/5 transition-all duration-200 group cursor-pointer relative ${
+                                  badge.owned ? 'ring-2 ring-[#29b6f6]/50 bg-[#29b6f6]/10' : ''
+                                }`}
+                                title={badge.user_count > 0 ? `${badge.title} · ${badge.user_count} user${badge.user_count !== 1 ? 's' : ''}` : badge.title}
+                              >
+                                {badge.owned && (
+                                  <div className="absolute top-1 right-1 w-5 h-5 bg-[#29b6f6] rounded-full flex items-center justify-center shadow-lg z-10">
+                                    <Check size={12} className="text-white" />
+                                  </div>
+                                )}
+                                <div className="w-18 h-18 flex items-center justify-center bg-transparent group-hover:scale-110 transition-transform duration-200">
+                                  <img
+                                    src={badge.image_4x || badge.image_2x || badge.image_1x}
+                                    alt={badge.title}
+                                    className="w-16 h-16 object-contain"
+                                    loading="lazy"
+                                  />
+                                </div>
+                                <span className={`text-xs text-center line-clamp-2 transition-colors font-medium ${
+                                  badge.owned ? 'text-[#29b6f6]' : 'text-textSecondary group-hover:text-textPrimary'
+                                }`}>
+                                  {badge.title}
+                                </span>
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </>
           )}
         </div>
       </motion.div>
@@ -2563,7 +2752,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
                     backgroundClip: 'text',
                     WebkitBackgroundClip: 'text',
                     WebkitTextFillColor: 'transparent',
-                    filter: generatePaintShadow(selectedSeventvPaint) !== 'none' ? `drop-shadow(${generatePaintShadow(selectedSeventvPaint).split(',')[0]})` : 'none'
+                    filter: generatePaintShadow(selectedSeventvPaint)
                   }}
                 >
                   {currentUser?.display_name || currentUser?.login || 'YourName'}
@@ -2622,21 +2811,27 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
             if (!currentUser?.user_id) return;
             await setActiveCosmetic(currentUser.user_id, isActive ? null : cosmetic.slug);
           };
+          // streamnook.app is the only purchase path. ko_fi_url is intentionally
+          // ignored — Ko-fi is retired. Fall back to the generic support page if
+          // a catalog row somehow has no stripe_url.
+          const supportUrl = cosmetic.stripe_url || 'https://streamnook.app/support';
           const handleGet = async () => {
-            if (!cosmetic.ko_fi_url) return;
+            if (!supportUrl) return;
             try {
               const { open } = await import('@tauri-apps/plugin-shell');
-              await open(cosmetic.ko_fi_url);
+              const userLogin = currentUser?.login || currentUser?.username;
+              const handle = userLogin ? `${supportUrl.includes('?') ? '&' : '?'}handle=${encodeURIComponent(userLogin)}` : '';
+              await open(supportUrl + handle);
             } catch (err) {
-              Logger.error('Failed to open Ko-fi URL:', err);
+              Logger.error('Failed to open support URL:', err);
             }
           };
           const acquireLabel = cosmetic.is_default
             ? 'Free for every StreamNook member'
             : cosmetic.payment_type === 'Subscription'
-              ? 'Awarded for an active Ko-fi monthly subscription'
+              ? 'Awarded for an active monthly subscription'
               : cosmetic.payment_type === 'Donation'
-                ? 'Awarded for a one-time Ko-fi donation'
+                ? 'Awarded for a one-time donation'
                 : null;
           return (
             <div
@@ -2708,12 +2903,12 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
                       >
                         {isActive ? 'Equipped — tap to unequip' : 'Equip'}
                       </button>
-                    ) : cosmetic.ko_fi_url ? (
+                    ) : supportUrl ? (
                       <button
                         onClick={handleGet}
                         className="flex-1 px-4 py-2 text-sm font-medium glass-button text-textPrimary hover:bg-white/5 transition-all flex items-center justify-center gap-2"
                       >
-                        Get it on Ko-fi
+                        Support StreamNook
                         <ExternalLink size={14} className="opacity-60" />
                       </button>
                     ) : null}

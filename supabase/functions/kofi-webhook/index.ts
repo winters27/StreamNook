@@ -40,19 +40,6 @@ const log = (msg: string, extra?: Record<string, unknown>) => {
   else console.log(`[kofi-webhook] ${msg}`);
 };
 
-const cosmeticSlugFor = (payload: KofiPayload): string | null => {
-  // Subscription -> animated gold subscriber; Donation -> static gold
-  // supporter. Other Ko-fi payment types (Commission, Shop Order) fall
-  // through unawarded but still get logged for audit.
-  if (payload.type === "Subscription" || payload.is_subscription_payment) {
-    return "streamnook-subscriber";
-  }
-  if (payload.type === "Donation") {
-    return "streamnook-supporter";
-  }
-  return null;
-};
-
 const parseAmount = (raw: string | undefined): number => {
   if (!raw) return 0;
   const n = parseFloat(raw);
@@ -60,23 +47,50 @@ const parseAmount = (raw: string | undefined): number => {
 };
 
 /**
- * Load the catalog row for a cosmetic slug. We need `min_amount` to gate
- * the award on a minimum-payment threshold. Returns null if the row is
- * missing (catalog not seeded yet or slug renamed).
+ * Pick the highest-tier cosmetic the payment amount qualifies for.
+ *
+ * The selection ignores Ko-fi's payment_type (Donation vs Subscription) by
+ * design: a one-time $5 tip and a $5 monthly sub both clear the subscriber
+ * threshold from the donor's perspective. Tiering is amount-driven only, so
+ * adding a new $10 "patron" badge with min_amount = 10 is a pure catalog
+ * insert with no webhook change required.
+ *
+ * Order: min_amount DESC, then sort_order DESC as a tiebreaker (sort_order
+ * encodes catalog prominence — subscriber=20 > supporter=10 — and breaks
+ * ties for tiers that happen to share a price). Returns null if the amount
+ * doesn't clear any catalog row, or if Ko-fi sent a non-monetary event type
+ * we don't recognize.
  */
-const loadCosmetic = async (
-  slug: string,
-): Promise<{ slug: string; min_amount: number | null } | null> => {
-  const { data, error } = await supabase
-    .from("cosmetics")
-    .select("slug, min_amount")
-    .eq("slug", slug)
-    .maybeSingle();
-  if (error) {
-    log("cosmetic catalog lookup failed", { slug, error: error.message });
+const pickCosmeticByAmount = async (
+  payload: KofiPayload,
+  amount: number,
+): Promise<{ slug: string; min_amount: number } | null> => {
+  // Gate on Ko-fi event types that carry money. Commission / Shop Order
+  // payloads still get logged for audit but won't award a badge.
+  if (
+    payload.type !== "Donation" &&
+    payload.type !== "Subscription" &&
+    !payload.is_subscription_payment
+  ) {
     return null;
   }
-  return data;
+
+  const { data, error } = await supabase
+    .from("cosmetics")
+    .select("slug, min_amount, sort_order")
+    .not("min_amount", "is", null)
+    .order("min_amount", { ascending: false })
+    .order("sort_order", { ascending: false });
+  if (error) {
+    log("cosmetic catalog scan failed", { error: error.message });
+    return null;
+  }
+
+  for (const row of data ?? []) {
+    const minAmount = Number(row.min_amount ?? 0);
+    if (amount >= minAmount) return { slug: row.slug, min_amount: minAmount };
+  }
+  return null;
 };
 
 const extractTwitchHandleCandidates = (msg: string | undefined): string[] => {
@@ -305,29 +319,19 @@ Deno.serve(async (req) => {
 
   const email = payload.email?.trim().toLowerCase() || null;
   const matched = await matchUser(payload, email);
-  const candidateSlug = cosmeticSlugFor(payload);
 
-  // Amount gating. The candidate cosmetic's `min_amount` from the catalog
-  // is compared against the parsed payment amount. Below-minimum payments
-  // skip BOTH the cosmetic award AND the subscriber-month increment, so
-  // future tiered-month badges don't credit under-min payers either.
-  // Currency assumption: numeric comparison against the raw amount field,
-  // implicitly USD. Non-USD donations are treated by raw number; if that
-  // bites later, swap to a currency-aware conversion.
+  // Amount-driven tier selection. The catalog's min_amount column gates
+  // entry; pickCosmeticByAmount picks the highest-tier row the payment
+  // clears. Currency assumption: numeric comparison against the raw amount
+  // field, implicitly USD. Non-USD donations are treated by raw number; if
+  // that bites later, swap to a currency-aware conversion.
   const actualAmount = parseAmount(payload.amount);
-  let qualifyingSlug: string | null = null;
-  let belowMinReason: { min: number; actual: number } | null = null;
-  if (matched && candidateSlug) {
-    const cosmeticRow = await loadCosmetic(candidateSlug);
-    if (cosmeticRow) {
-      const minAmount = Number(cosmeticRow.min_amount ?? 0);
-      if (actualAmount >= minAmount) {
-        qualifyingSlug = candidateSlug;
-      } else {
-        belowMinReason = { min: minAmount, actual: actualAmount };
-      }
-    }
-  }
+  const qualified = matched ? await pickCosmeticByAmount(payload, actualAmount) : null;
+  const qualifyingSlug = qualified?.slug ?? null;
+  const belowMinReason: { min: number; actual: number } | null =
+    matched && !qualified && (payload.type === "Donation" || payload.type === "Subscription" || payload.is_subscription_payment)
+      ? { min: 0, actual: actualAmount } // exact min unknowable when nothing matched; keep audit shape
+      : null;
 
   let awarded = false;
   if (matched && qualifyingSlug) {
@@ -376,7 +380,6 @@ Deno.serve(async (req) => {
     amount: actualAmount,
     matched: matched?.userId ?? null,
     via: matched?.via ?? null,
-    candidate_cosmetic: candidateSlug,
     qualifying_cosmetic: qualifyingSlug,
     awarded,
     subscriber_months: subscriberMonths,

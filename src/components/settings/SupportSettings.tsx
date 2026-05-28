@@ -3,33 +3,11 @@ import { AlertTriangle, AlertCircle, RefreshCw, Trash2, ExternalLink } from 'luc
 import { useAppStore } from '../../stores/AppStore';
 import { getLogs, clearLogs, type LogEntry } from '../../services/logService';
 import { Tooltip } from '../ui/Tooltip';
-import { SettingsSection, SettingsRow } from './_primitives';
+import { SettingsSection } from './_primitives';
 import streamnookLogo from '../../assets/streamnook-logo.png';
 
 import { Logger } from '../../utils/logger';
-interface LanyardData {
-    discord_user: {
-        id: string;
-        username: string;
-        avatar: string;
-        discriminator: string;
-        global_name: string | null;
-    };
-    discord_status: 'online' | 'idle' | 'dnd' | 'offline';
-    activities: Array<{
-        name: string;
-        type: number;
-        state?: string;
-        details?: string;
-    }>;
-}
 
-interface LanyardResponse {
-    success: boolean;
-    data: LanyardData;
-}
-
-const DEVELOPER_DISCORD_ID = '681989594341834765';
 const COMMUNITY_DISCORD_INVITE_CODE = '2xvuF9TES7';
 const COMMUNITY_DISCORD_INVITE = `https://discord.gg/${COMMUNITY_DISCORD_INVITE_CODE}`;
 
@@ -60,31 +38,9 @@ const SupportSettings = () => {
     const { settings, updateSettings, addToast } = useAppStore();
     const [logs, setLogs] = useState<LogEntry[]>([]);
     const [filter, setFilter] = useState<'all' | 'errors' | 'warnings'>('all');
-    const [lanyardData, setLanyardData] = useState<LanyardData | null>(null);
-    const [lanyardLoading, setLanyardLoading] = useState(true);
     const [serverData, setServerData] = useState<DiscordInviteData | null>(null);
 
     const errorReportingEnabled = settings.error_reporting_enabled !== false;
-
-    useEffect(() => {
-        const fetchLanyardData = async () => {
-            try {
-                const response = await fetch(`https://api.lanyard.rest/v1/users/${DEVELOPER_DISCORD_ID}`);
-                const data: LanyardResponse = await response.json();
-                if (data.success) {
-                    setLanyardData(data.data);
-                }
-            } catch (error) {
-                Logger.error('Failed to fetch Lanyard data:', error);
-            } finally {
-                setLanyardLoading(false);
-            }
-        };
-
-        fetchLanyardData();
-        const interval = setInterval(fetchLanyardData, 30000);
-        return () => clearInterval(interval);
-    }, []);
 
     useEffect(() => {
         const updateLogs = async () => {
@@ -167,50 +123,9 @@ const SupportSettings = () => {
         }
     };
 
-    const getStatusColor = (status: string) => {
-        switch (status) {
-            case 'online':
-                return 'bg-green-500';
-            case 'idle':
-                return 'bg-yellow-500';
-            case 'dnd':
-                return 'bg-red-500';
-            default:
-                return 'bg-gray-500';
-        }
-    };
-
-    const getStatusLabel = (status: string) => {
-        switch (status) {
-            case 'online':
-                return 'Online';
-            case 'idle':
-                return 'Idle';
-            case 'dnd':
-                return 'Do Not Disturb';
-            default:
-                return 'Offline';
-        }
-    };
-
-    const getAvatarUrl = (userId: string, avatarHash: string) => {
-        const extension = avatarHash.startsWith('a_') ? 'gif' : 'png';
-        return `https://cdn.discordapp.com/avatars/${userId}/${avatarHash}.${extension}?size=64`;
-    };
-
     const getServerIconUrl = (guildId: string, iconHash: string) => {
         const extension = iconHash.startsWith('a_') ? 'gif' : 'png';
         return `https://cdn.discordapp.com/icons/${guildId}/${iconHash}.${extension}?size=128`;
-    };
-
-    const handleMessageOnDiscord = async () => {
-        try {
-            const { open } = await import('@tauri-apps/plugin-shell');
-            await open(`https://discord.com/users/${DEVELOPER_DISCORD_ID}`);
-        } catch (err) {
-            Logger.error('Failed to open Discord URL:', err);
-            window.open(`https://discord.com/users/${DEVELOPER_DISCORD_ID}`, '_blank');
-        }
     };
 
     const handleJoinCommunity = async () => {
@@ -228,21 +143,21 @@ const SupportSettings = () => {
             <SettingsSection
                 label="Anonymous Error Reporting"
                 description="Automatically send anonymous error reports when something goes wrong. No personal data is collected."
+                bare
             >
-                <SettingsRow
-                    title="Help improve StreamNook"
-                    description={
-                        errorReportingEnabled
-                            ? 'Error reports are being sent to help diagnose issues'
-                            : 'Error reporting is disabled'
-                    }
-                    control={
-                        <Toggle
-                            enabled={errorReportingEnabled}
-                            onChange={handleToggleErrorReporting}
-                        />
-                    }
-                />
+                <div className="glass-panel p-4 rounded-lg">
+                    <div className="flex items-start justify-between gap-4">
+                        <div className="min-w-0 flex-1">
+                            <p className="text-sm font-medium text-textPrimary">Help improve StreamNook</p>
+                            <p className="text-xs text-textSecondary mt-0.5">
+                                {errorReportingEnabled
+                                    ? 'Error reports are being sent to help diagnose issues'
+                                    : 'Error reporting is disabled'}
+                            </p>
+                        </div>
+                        <Toggle enabled={errorReportingEnabled} onChange={handleToggleErrorReporting} />
+                    </div>
+                </div>
             </SettingsSection>
 
             <SettingsSection label="Session Statistics" bare>
@@ -379,82 +294,6 @@ const SupportSettings = () => {
                             Join the Discord
                         </button>
                     </div>
-                </div>
-            </SettingsSection>
-
-            <SettingsSection
-                label="Contact Developer"
-                description="Send the developer a direct message for one-off questions or private feedback."
-                bare
-            >
-                <div className="glass-panel p-4 rounded-lg">
-                    {lanyardLoading ? (
-                        <div className="flex items-center justify-center py-4">
-                            <RefreshCw className="w-5 h-5 animate-spin text-textSecondary" />
-                        </div>
-                    ) : lanyardData ? (
-                        <div className="flex items-center gap-4">
-                            <div className="relative flex-shrink-0">
-                                <img
-                                    src={getAvatarUrl(lanyardData.discord_user.id, lanyardData.discord_user.avatar)}
-                                    alt={lanyardData.discord_user.username}
-                                    className="w-12 h-12 rounded-full"
-                                />
-                                <Tooltip content={getStatusLabel(lanyardData.discord_status)} side="top">
-                                    <div
-                                        className={`absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full border-[1.5px] border-background ${getStatusColor(lanyardData.discord_status)}`}
-                                        style={lanyardData.discord_status === 'online' ? {
-                                            animation: 'pulse-glow 2s ease-in-out infinite'
-                                        } : undefined}
-                                    />
-                                </Tooltip>
-                            </div>
-
-                            <div className="flex-1 min-w-0">
-                                <p className="text-sm font-medium text-textPrimary truncate">
-                                    {lanyardData.discord_user.global_name || lanyardData.discord_user.username}
-                                </p>
-                                <p className="text-xs text-textSecondary">
-                                    @{lanyardData.discord_user.username}
-                                </p>
-                                {lanyardData.activities && lanyardData.activities.length > 0 && (
-                                    <p className="text-xs text-textMuted mt-0.5 truncate">
-                                        {lanyardData.activities[0].type === 0 && `Playing ${lanyardData.activities[0].name}`}
-                                        {lanyardData.activities[0].type === 2 && `Listening to ${lanyardData.activities[0].state || lanyardData.activities[0].name}`}
-                                        {lanyardData.activities[0].type === 3 && `Watching ${lanyardData.activities[0].name}`}
-                                        {lanyardData.activities[0].type === 4 && lanyardData.activities[0].state}
-                                        {lanyardData.activities[0].type === 5 && `Competing in ${lanyardData.activities[0].name}`}
-                                    </p>
-                                )}
-                            </div>
-
-                            <button
-                                onClick={handleMessageOnDiscord}
-                                className="glass-button px-4 py-2 rounded-lg flex items-center gap-2 text-sm font-medium hover:bg-accent/20 transition-colors"
-                            >
-                                <ExternalLink className="w-4 h-4" />
-                                Message on Discord
-                            </button>
-                        </div>
-                    ) : (
-                        <div className="flex items-center justify-between">
-                            <div>
-                                <p className="text-sm text-textPrimary font-medium">
-                                    Contact the Developer
-                                </p>
-                                <p className="text-xs text-textSecondary mt-1">
-                                    Have questions or feedback? Reach out on Discord.
-                                </p>
-                            </div>
-                            <button
-                                onClick={handleMessageOnDiscord}
-                                className="glass-button px-4 py-2 rounded-lg flex items-center gap-2 text-sm font-medium hover:bg-accent/20 transition-colors"
-                            >
-                                <ExternalLink className="w-4 h-4" />
-                                Message on Discord
-                            </button>
-                        </div>
-                    )}
                 </div>
             </SettingsSection>
         </div>

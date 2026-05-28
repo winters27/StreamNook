@@ -992,6 +992,7 @@ export interface CosmeticCatalogEntry {
     animated: boolean;
     payment_type: string | null;
     ko_fi_url: string | null;
+    stripe_url: string | null;
     sort_order: number;
     is_active: boolean;
     is_default: boolean;

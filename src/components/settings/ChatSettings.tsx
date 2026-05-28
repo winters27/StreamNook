@@ -43,6 +43,7 @@ const ChatSettings = () => {
     hide_shared_chat: stored?.hide_shared_chat ?? false,
     paint_mentions_in_body: stored?.paint_mentions_in_body ?? true,
     compact_emote_tooltips: stored?.compact_emote_tooltips ?? false,
+    seventv_emote_notices: stored?.seventv_emote_notices ?? true,
   };
 
   const setDesign = (patch: Partial<typeof cd>) => {
@@ -372,6 +373,17 @@ const ChatSettings = () => {
             <Toggle
               enabled={cd.compact_emote_tooltips}
               onChange={() => setDesign({ compact_emote_tooltips: !cd.compact_emote_tooltips })}
+            />
+          }
+        />
+
+        <SettingsRow
+          title="7TV emote update notices"
+          description="Show a chat notice when a channel's 7TV emote set changes live (a mod adds, removes, or renames an emote). The new emote is usable right away either way."
+          control={
+            <Toggle
+              enabled={cd.seventv_emote_notices ?? true}
+              onChange={() => setDesign({ seventv_emote_notices: !(cd.seventv_emote_notices ?? true) })}
             />
           }
         />

@@ -1,4 +1,14 @@
 {
   "version": 1,
-  "announcements": []
+  "announcements": [
+    {
+      "id": "20260527-1200-support-moving-to-streamnook-app",
+      "severity": "info",
+      "title": "Support is moving to streamnook.app",
+      "body": "Donations and subscriptions are moving from Ko-fi to streamnook.app. Existing Ko-fi monthly subscribers: please cancel your Ko-fi subscription and re-subscribe at streamnook.app — your Subscriber badge stays yours either way. New supporters: streamnook.app handles Twitch sign-in and Stripe checkout in one step, so your support is credited to your account automatically.",
+      "action_label": "Go to streamnook.app",
+      "action_url": "https://streamnook.app/support",
+      "dismissible": true
+    }
+  ]
 }

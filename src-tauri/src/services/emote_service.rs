@@ -210,6 +210,14 @@ impl EmoteService {
         Ok(emote_set)
     }
 
+    /// Drop a channel's cached emote set so the next fetch re-pulls fresh from
+    /// the providers. Used when the 7TV EventAPI reports an emote set change, so
+    /// a freshly opened window (which reads through this cache) does not serve a
+    /// stale set until the 5 minute TTL expires.
+    pub async fn invalidate_channel(&self, channel_id: &str) {
+        self.cache.write().await.remove(channel_id);
+    }
+
     /// Get emote by name from cached emote set
     pub async fn get_emote_by_name(
         &self,

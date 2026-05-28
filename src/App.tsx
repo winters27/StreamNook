@@ -34,6 +34,7 @@ import Sidebar from './components/Sidebar';
 import ErrorBoundary from './components/ErrorBoundary';
 import { StreamContextMenu } from './components/StreamContextMenu';
 import { listen } from '@tauri-apps/api/event';
+import { handleSeventvEmoteSetUpdate, handleSeventvCosmeticUpdate, type EmoteSetUpdatePayload, type CosmeticUpdatePayload } from './services/seventvEventApi';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
 import { getThemeById, applyTheme, DEFAULT_THEME_ID, getThemeByIdWithCustom } from './themes';
@@ -412,6 +413,18 @@ function App() {
           Logger.warn(`[App] Failed to set up listener for ${event}:`, e);
         }
       };
+
+      // Live 7TV emote-set updates (add/remove/rename) pushed from the shared
+      // EventAPI socket in Rust. Updates this window's emote cache + notices.
+      await addListener<EmoteSetUpdatePayload>('7tv://emote-set-update', (event) => {
+        void handleSeventvEmoteSetUpdate(event.payload);
+      });
+
+      // Live 7TV cosmetics (paints/badges) for present users, delivered over the
+      // same EventAPI socket. Re-resolves via GQL into the shared cosmetics cache.
+      await addListener<CosmeticUpdatePayload>('7tv://cosmetic-update', (event) => {
+        void handleSeventvCosmeticUpdate(event.payload);
+      });
 
       await addListener<{ points_earned: number }>('channel-points-claimed', (event) => {
         const claim = event.payload;

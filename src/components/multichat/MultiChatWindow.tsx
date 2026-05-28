@@ -495,6 +495,71 @@ export default function MultiChatWindow() {
     };
   }, []);
 
+  // Live 7TV emote-set updates pushed from the shared EventAPI socket in Rust.
+  // This popout has its own per-window emote cache + chat store, so it applies
+  // the change independently of the main window.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { listen } = await import('@tauri-apps/api/event');
+        const { handleSeventvEmoteSetUpdate } = await import('../../services/seventvEventApi');
+        const u = await listen<{
+          channel: string;
+          channel_id: string;
+          actor_name: string;
+          added: string[];
+          removed: string[];
+          renamed: { old: string; new: string }[];
+        }>('7tv://emote-set-update', (event) => {
+          void handleSeventvEmoteSetUpdate(event.payload);
+        });
+        if (cancelled) {
+          u();
+          return;
+        }
+        unlisten = u;
+      } catch (err) {
+        Logger.warn('[MultiChatWindow] listen 7tv://emote-set-update failed:', err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
+  // Live 7TV cosmetics (paints/badges) for present users, delivered over the
+  // same EventAPI socket. Re-resolves via GQL into this window's cosmetics cache.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { listen } = await import('@tauri-apps/api/event');
+        const { handleSeventvCosmeticUpdate } = await import('../../services/seventvEventApi');
+        const u = await listen<{ twitch_id: string; action: string }>(
+          '7tv://cosmetic-update',
+          (event) => {
+            void handleSeventvCosmeticUpdate(event.payload);
+          },
+        );
+        if (cancelled) {
+          u();
+          return;
+        }
+        unlisten = u;
+      } catch (err) {
+        Logger.warn('[MultiChatWindow] listen 7tv://cosmetic-update failed:', err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
   // Keyboard shortcuts scoped to this popout window. Tauri webviews don't
   // implement default browser behavior for these chords, so claiming them
   // doesn't fight the user agent:

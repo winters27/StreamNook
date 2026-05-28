@@ -223,21 +223,21 @@ export default function GameDetailPanel({
     if (!isOpen) return null;
 
     return (
-        <>
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6">
             {/* Backdrop */}
             <div
-                className="absolute inset-0 bg-black/40 backdrop-blur-sm z-20"
+                className="absolute inset-0 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200"
                 onClick={onClose}
             />
 
-            {/* Panel - Using glass-panel for theme-aware styling */}
-            <div className="absolute top-0 right-0 bottom-0 w-[85vw] sm:w-[70vw] md:w-[50vw] lg:w-[40vw] xl:w-[30vw] 2xl:w-96 max-w-md glass-panel z-30 flex flex-col animate-slide-in-right border-l border-borderLight shadow-2xl">
+            {/* Centered modal shell. Matches the app's modal primitive (cf. ChannelPickerModal). */}
+            <div className="relative w-full max-w-lg max-h-[85vh] bg-background rounded-xl shadow-2xl border border-borderLight overflow-hidden flex flex-col animate-in fade-in zoom-in-95 duration-200">
                 {/* Header */}
-                <div className="flex items-center gap-3 p-4 border-b border-borderLight bg-background/80">
+                <div className="flex items-center gap-3 px-5 py-4 border-b border-borderLight bg-backgroundSecondary">
                     <img
                         src={boxArtUrl}
                         alt={game.name}
-                        className="w-14 h-[74px] rounded-lg object-cover border border-borderLight shadow-md"
+                        className="w-20 aspect-[3/4] rounded-lg object-cover border border-borderLight shadow-md"
                     />
                     <div className="flex-1 min-w-0">
                         <h3 className="font-bold text-textPrimary text-base truncate">
@@ -277,6 +277,113 @@ export default function GameDetailPanel({
 
                 {/* Content - Scrollable */}
                 <div className="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-6">
+                    {/* Rewards showcase: every reward this game's active campaigns offer, with your progress */}
+                    {(() => {
+                        const seen = new Set<string>();
+                        // Mirror Your Collection's ownership signal: a drop is owned if its benefit
+                        // id is in the permanent inventory (completedDrops), not only when this
+                        // session's progress shows is_claimed.
+                        const completedBenefitIds = new Set(completedDrops.map(d => d.id));
+                        const rewards = campaignsWithMergedProgress
+                            .flatMap(c => c.time_based_drops)
+                            .filter(drop => {
+                                if (seen.has(drop.id)) return false;
+                                seen.add(drop.id);
+                                return true;
+                            })
+                            .map(drop => {
+                                const dp = drop.progress || progress.find(p => p.drop_id === drop.id);
+                                const benefit = drop.benefit_edges?.[0];
+                                const required = dp?.required_minutes_watched || drop.required_minutes_watched || 0;
+                                const benefitOwned = drop.benefit_edges?.some(b => completedBenefitIds.has(b.id)) || false;
+                                const badgeOwned = !!benefit?.name && earnedBadgeTitles.has(benefit.name.toLowerCase().trim());
+                                // "Owned" = claimed this session OR already in the permanent inventory.
+                                const isClaimed = dp?.is_claimed === true || benefitOwned || badgeOwned;
+                                const current = isClaimed ? required : (dp?.current_minutes_watched || 0);
+                                const percent = required > 0 ? Math.min((current / required) * 100, 100) : 0;
+                                return {
+                                    dropId: drop.id,
+                                    image: benefit?.image_url || '',
+                                    name: benefit?.name || drop.name,
+                                    requiredMinutes: required,
+                                    percent,
+                                    isClaimed,
+                                    isReady: !isClaimed && percent >= 100,
+                                    isInProgress: !isClaimed && percent > 0 && percent < 100,
+                                    isMineable: isDropMineable(drop, game.inventory_items),
+                                };
+                            })
+                            .sort((a, b) => {
+                                const am = a.requiredMinutes > 0 ? a.requiredMinutes : Number.MAX_SAFE_INTEGER;
+                                const bm = b.requiredMinutes > 0 ? b.requiredMinutes : Number.MAX_SAFE_INTEGER;
+                                return am - bm;
+                            });
+
+                        if (rewards.length === 0) return null;
+                        const earnedCount = rewards.filter(r => r.isClaimed).length;
+
+                        return (
+                            <div className="glass-panel p-4">
+                                <div className="flex items-center gap-2 mb-3">
+                                    <Gift size={16} className="text-accent" />
+                                    <h4 className="text-sm font-bold text-textPrimary">Rewards</h4>
+                                    <span className="text-[10px] font-mono text-textMuted bg-background/50 px-2 py-0.5 rounded ml-auto">
+                                        {earnedCount}/{rewards.length} earned
+                                    </span>
+                                </div>
+                                <div className="grid grid-cols-4 sm:grid-cols-5 gap-2.5">
+                                    {rewards.map(r => (
+                                        <Tooltip
+                                            key={r.dropId}
+                                            content={r.requiredMinutes > 0 ? `${r.name} · ${r.requiredMinutes}m` : r.name}
+                                            delay={200}
+                                            side="top"
+                                        >
+                                            <div className="relative aspect-square rounded-lg border border-borderLight bg-background overflow-hidden">
+                                                {r.image ? (
+                                                    <img
+                                                        src={r.image}
+                                                        alt={r.name}
+                                                        loading="lazy"
+                                                        className={`w-full h-full object-contain p-1.5 ${r.isClaimed ? 'opacity-40' : ''}`}
+                                                    />
+                                                ) : (
+                                                    <div className="w-full h-full flex items-center justify-center">
+                                                        <Gift size={20} className="text-textMuted" />
+                                                    </div>
+                                                )}
+
+                                                {r.isClaimed && (
+                                                    <div className="absolute top-1 right-1 w-4 h-4 rounded-full bg-green-500 flex items-center justify-center border border-background">
+                                                        <Check size={9} className="text-white" />
+                                                    </div>
+                                                )}
+
+                                                {r.isReady && (
+                                                    <div className="absolute top-1 right-1 w-4 h-4 rounded-full bg-yellow-500 flex items-center justify-center border border-background">
+                                                        <span className="text-[8px] font-bold text-black">!</span>
+                                                    </div>
+                                                )}
+
+                                                {!r.isMineable && !r.isClaimed && (
+                                                    <div className="absolute top-1 left-1 text-yellow-500">
+                                                        <Ban size={11} />
+                                                    </div>
+                                                )}
+
+                                                {(r.isInProgress || r.isReady) && (
+                                                    <div className="absolute inset-x-0 bottom-0 h-1 bg-background/70">
+                                                        <div className="h-full bg-accent" style={{ width: `${r.percent}%` }} />
+                                                    </div>
+                                                )}
+                                            </div>
+                                        </Tooltip>
+                                    ))}
+                                </div>
+                            </div>
+                        );
+                    })()}
+
                     {/* Currently Mining Section - Shows ONLY drops from the specific campaign being mined */}
                     {(() => {
                         // Get the current campaign being mined (from miningStatus)
@@ -447,7 +554,7 @@ export default function GameDetailPanel({
                                     {isMiningThisGame && (
                                         <button
                                             onClick={onStopMining}
-                                            className="flex items-center gap-1.5 px-2.5 py-1.5 bg-red-500/20 hover:bg-red-500/30 text-red-400 rounded-lg text-xs font-medium transition-colors border border-red-500/30"
+                                            className="glass-button px-2.5 py-1.5 text-xs font-medium text-red-400 flex items-center gap-1.5"
                                         >
                                             <Pause size={12} />
                                             Stop
@@ -1189,7 +1296,7 @@ export default function GameDetailPanel({
                     })()}
                 </div>
             </div>
-        </>
+        </div>
     );
 }
 
@@ -1241,14 +1348,6 @@ function CampaignCard({
     // Pass inventory items to check them as a fallback source for required_minutes_watched
     const isMineable = isCampaignMineable(campaign, inventoryItems);
     const dropType = getCampaignDropType(campaign, inventoryItems);
-
-    // Calculate total watch time required
-    const totalMinutesRequired = campaign.time_based_drops.reduce(
-        (sum, drop) => sum + (drop.required_minutes_watched || 0),
-        0
-    );
-
-
 
     // Get all drop rewards with their images - directly from drops
     const dropRewards = campaign.time_based_drops.map(drop => {
@@ -1325,7 +1424,7 @@ function CampaignCard({
                             e.stopPropagation();
                             onStartMining();
                         }}
-                        className="text-xs bg-accent/20 hover:bg-accent text-accent hover:text-white px-3 py-1.5 rounded-lg border border-accent/30 transition-all font-semibold flex items-center gap-1.5"
+                        className="glass-button px-3 py-1.5 text-xs font-semibold text-accent flex items-center gap-1.5"
                     >
                         <Play size={12} fill="currentColor" />
                         Mine
@@ -1348,122 +1447,98 @@ function CampaignCard({
                 )}
             </div>
 
-            {/* Gift Rewards Preview - Show available rewards */}
-            {campaign.time_based_drops.length > 0 && (
-                <div className="mb-3 p-2.5 rounded-lg bg-gradient-to-r from-purple-500/10 to-accent/10 border border-purple-500/20">
-                    <div className="flex items-center gap-2 mb-2">
-                        <Gift size={12} className="text-purple-400" />
-                        <span className="text-[10px] font-semibold text-purple-400 uppercase tracking-wide">
-                            {campaign.time_based_drops.length} Reward{campaign.time_based_drops.length !== 1 ? 's' : ''} Available
-                        </span>
-                        <span className="text-[10px] text-textMuted ml-auto">
-                            <Clock size={10} className="inline mr-1" />
-                            {Math.floor(totalMinutesRequired / 60)}h {totalMinutesRequired % 60}m total
-                        </span>
-                    </div>
-                    <div className="space-y-2">
-                        {dropRewards.map((reward) => {
-                            // Calculate current minutes watched for display
-                            const dropProgress = resolveDropProgress(reward.dropId);
-                            const currentMins = dropProgress
-                                ? (dropProgress.is_claimed ? reward.requiredMinutes : Math.round(dropProgress.current_minutes_watched))
-                                : 0;
-                            
-                            return (
-                                <div
-                                    key={reward.dropId}
-                                    className={`group relative flex items-center gap-3 p-2.5 rounded-lg transition-all ${reward.isClaimed
-                                        ? 'bg-green-500/20 border border-green-500/30'
-                                        : reward.isInProgress
-                                            ? 'bg-accent/20 border border-accent/30'
-                                            : 'bg-background/50 border border-borderLight hover:border-purple-500/30'
-                                        }`}
-                                >
-                                    {/* Larger Drop Image */}
-                                    <div className="relative w-14 h-14 rounded-lg overflow-hidden bg-background shrink-0 border border-borderLight">
-                                        {reward.imageUrl ? (
-                                            <img
-                                                src={reward.imageUrl}
-                                                alt={reward.benefitName}
-                                                className={`w-full h-full object-contain p-1 ${reward.isClaimed ? 'opacity-60' : ''}`}
-                                                loading="lazy"
-                                            />
-                                        ) : (
-                                            <div className="w-full h-full flex items-center justify-center">
-                                                <Gift size={24} className="text-purple-400" />
-                                            </div>
-                                        )}
-                                        {reward.isClaimed && (
-                                            <div className="absolute inset-0 bg-green-500/40 flex items-center justify-center">
-                                                <Check size={20} className="text-white" />
-                                            </div>
-                                        )}
-                                    </div>
+            {/* Reward checkpoint timeline. Drops in a campaign share one cumulative
+                watch-time counter, so this is a single fill bar with a marker per
+                reward milestone, ordered low to high. */}
+            {(() => {
+                const timed = dropRewards
+                    .filter(r => (r.requiredMinutes || 0) > 0)
+                    .slice()
+                    .sort((a, b) => a.requiredMinutes - b.requiredMinutes);
 
-                                    {/* Drop Info with Progress */}
-                                    <div className="min-w-0 flex-1">
-                                        <div className="flex items-center gap-1.5 mb-1">
-                                            <p className="text-xs font-medium text-textPrimary truncate">
-                                                {reward.benefitName}
-                                            </p>
-                                            {reward.isGloballyCompleted && (
-                                                <span className="px-1.5 py-0.5 text-[9px] font-semibold rounded bg-purple-500/20 text-purple-400 border border-purple-500/30 shrink-0">
-                                                    Already Owned
-                                                </span>
-                                            )}
+                if (timed.length === 0) return null;
+
+                const maxRequired = timed[timed.length - 1].requiredMinutes;
+                const currentMinutes = Math.min(
+                    timed.reduce((mx, r) => {
+                        const dp = resolveDropProgress(r.dropId);
+                        const cur = r.isClaimed ? r.requiredMinutes : (dp ? Math.round(dp.current_minutes_watched) : 0);
+                        return Math.max(mx, cur);
+                    }, 0),
+                    maxRequired
+                );
+                const fillPercent = maxRequired > 0 ? Math.min((currentMinutes / maxRequired) * 100, 100) : 0;
+                const nextReward = timed.find(r => !r.isClaimed && currentMinutes < r.requiredMinutes);
+                const ready = dropRewards.filter(r => !r.isClaimed && r.progressPercent >= 100);
+
+                return (
+                    <div>
+                        <div className="flex items-center justify-between mb-2.5 text-[10px]">
+                            <span className="text-textMuted font-mono">{currentMinutes}/{maxRequired}m</span>
+                            <span className="text-textMuted truncate pl-2">
+                                {nextReward
+                                    ? <>next: <span className="text-textSecondary">{nextReward.benefitName}</span> in {nextReward.requiredMinutes - currentMinutes}m</>
+                                    : `All ${timed.length} reward${timed.length !== 1 ? 's' : ''} reached`}
+                            </span>
+                        </div>
+
+                        {/* Single fill bar with a checkpoint marker per reward milestone */}
+                        <div className="relative h-3">
+                            <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 h-1.5 rounded-full bg-background border border-borderLight overflow-hidden">
+                                <div
+                                    className={`h-full rounded-full ${isMiningThisCampaign ? 'bg-accent animate-progress-shimmer' : 'bg-accent'}`}
+                                    style={{ width: `${fillPercent}%` }}
+                                />
+                            </div>
+                            {timed.map(r => {
+                                const pos = maxRequired > 0 ? (r.requiredMinutes / maxRequired) * 100 : 0;
+                                const reached = r.isClaimed || currentMinutes >= r.requiredMinutes;
+                                return (
+                                    <Tooltip
+                                        key={r.dropId}
+                                        content={`${r.benefitName} · ${r.requiredMinutes}m${r.isClaimed ? ' · claimed' : reached ? ' · ready' : ''}`}
+                                        delay={150}
+                                        side="top"
+                                    >
+                                        <div
+                                            className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2"
+                                            style={{ left: `${pos}%` }}
+                                        >
+                                            <div className={`w-3 h-3 rounded-full border-2 flex items-center justify-center transition-colors ${
+                                                r.isClaimed
+                                                    ? 'bg-green-500 border-green-500'
+                                                    : reached
+                                                        ? 'bg-yellow-500 border-yellow-500'
+                                                        : 'bg-background border-borderLight'
+                                            }`}>
+                                                {r.isClaimed && <Check size={7} className="text-white" />}
+                                            </div>
                                         </div>
-                                        
-                                        {reward.isMineable ? (
-                                            <>
-                                                {/* Progress Bar */}
-                                                <div className="h-1.5 w-full bg-background rounded-full overflow-hidden border border-borderLight mb-1">
-                                                    <div
-                                                        className={`h-full rounded-full transition-all ${reward.isClaimed
-                                                            ? 'bg-green-500'
-                                                            : reward.isInProgress
-                                                                ? 'bg-accent animate-progress-shimmer'
-                                                                : 'bg-accent/40'
-                                                            }`}
-                                                        style={{ width: `${Math.min(reward.progressPercent, 100)}%` }}
-                                                    />
-                                                </div>
-                                        {/* Minutes Progress */}
-                                                <div className="flex items-center justify-between">
-                                                    <span className={`text-[10px] font-mono ${reward.isClaimed ? 'text-green-400' : reward.isInProgress ? 'text-accent' : 'text-textMuted'}`}>
-                                                        {`${currentMins}/${reward.requiredMinutes}m`}
-                                                    </span>
-                                                    {/* Show Claim button for 100% complete drops that haven't been claimed */}
-                                                    {!reward.isClaimed && reward.progressPercent >= 100 ? (
-                                                        <button
-                                                            onClick={(e) => {
-                                                                e.stopPropagation();
-                                                                const dropProg = resolveDropProgress(reward.dropId);
-                                                                onClaimDrop(reward.dropId, dropProg?.drop_instance_id);
-                                                            }}
-                                                            className="px-2 py-0.5 bg-green-500 hover:bg-green-400 text-white text-[10px] font-bold rounded transition-all animate-pulse"
-                                                        >
-                                                            Claim
-                                                        </button>
-                                                    ) : (
-                                                        <span className={`text-[10px] font-semibold ${reward.isClaimed ? 'text-green-400' : 'text-textMuted'}`}>
-                                                            {reward.isClaimed ? (reward.isGloballyCompleted ? 'Previously Earned' : 'Claimed') : `${Math.round(reward.progressPercent)}%`}
-                                                        </span>
-                                                    )}
-                                                </div>
-                                            </>
-                                        ) : (
-                                            <p className="text-[10px] text-yellow-500 flex items-center gap-1 mt-1">
-                                                <Ban size={10} />
-                                                Event only - subscribe or gift sub to earn
-                                            </p>
-                                        )}
-                                    </div>
-                                </div>
-                            );
-                        })}
+                                    </Tooltip>
+                                );
+                            })}
+                        </div>
+
+                        {ready.length > 0 && (
+                            <div className="mt-3 flex flex-wrap gap-1.5">
+                                {ready.map(r => (
+                                    <button
+                                        key={r.dropId}
+                                        onClick={(e) => {
+                                            e.stopPropagation();
+                                            const dp = resolveDropProgress(r.dropId);
+                                            onClaimDrop(r.dropId, dp?.drop_instance_id);
+                                        }}
+                                        className="px-2.5 py-1 bg-green-500 hover:bg-green-400 text-white text-[10px] font-bold rounded transition-all max-w-[160px] truncate"
+                                    >
+                                        Claim {r.benefitName}
+                                    </button>
+                                ))}
+                            </div>
+                        )}
                     </div>
-                </div>
-            )}
+                );
+            })()}
         </div>
     );
 }

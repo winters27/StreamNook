@@ -1796,8 +1796,18 @@ export default function DropsCenter() {
                     <DropsStatsTab
                         statistics={statistics ? {
                             ...statistics,
-                            // Override with accurate count from inventory data
-                            total_drops_claimed: unifiedGames.reduce((sum, game) => sum + game.total_claimed, 0)
+                            // Drops Claimed = the account's permanent earned-drops inventory
+                            // (completed_drops). Fall back to drops claimed in currently-listed
+                            // campaigns only when the permanent inventory is empty.
+                            total_drops_claimed: completedDrops.length > 0
+                                ? completedDrops.reduce((sum, d) => sum + (d.total_count || 1), 0)
+                                : unifiedGames.reduce((sum, game) => sum + game.total_claimed, 0),
+                            // In Progress = drops the account is actively working on, from the
+                            // freshest inventory snapshot; fall back to the live mining count.
+                            drops_in_progress: Math.max(
+                                inventoryItems.reduce((sum, item) => sum + item.drops_in_progress, 0),
+                                statistics.drops_in_progress
+                            ),
                         } : null}
                         miningStatus={miningStatus}
                         onStopMining={handleStopMining}

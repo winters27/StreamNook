@@ -2,17 +2,20 @@ import { create } from 'zustand';
 import {
   getCosmeticsFromMemoryCache,
   getCosmeticsWithFallback,
-  getThirdPartyBadgesFromMemoryCache,
-  getTwitchBadgesWithFallback,
+  subscribeToCosmetics,
 } from '../services/cosmeticsCache';
 import { snapshotOverrides } from '../utils/userChatOverrides';
 
 /**
  * Represents a user who has chatted in the current channel.
  * Used for @ mention autocomplete suggestions and as the canonical store for
- * a user's 7TV paint + 7TV badge + third-party (FFZ / Chatterino / Homies)
- * badges. Per-message components subscribe to these instead of each
- * maintaining its own useState + cosmetics-fetch effect.
+ * a user's 7TV paint + 7TV badge. Per-message components subscribe to these
+ * instead of each maintaining its own useState + cosmetics-fetch effect.
+ *
+ * Third-party chat-client badges (FFZ / Chatterino / Homies / Chatsen / Chatty /
+ * DankChat) are intentionally NOT resolved here: doing it per chatter meant a
+ * network round-trip per user just for badges that clutter chat. They now load
+ * only when a user's profile is opened (see UserProfileCard).
  */
 export interface ChatUser {
   userId: string;
@@ -25,8 +28,6 @@ export interface ChatUser {
   paint?: any;
   /** Currently-selected 7TV badge if available */
   seventvBadge?: any;
-  /** FFZ / Chatterino / Homies badges, populated alongside cosmetics */
-  thirdPartyBadges?: any[];
 }
 
 interface ChatUserStore {
@@ -36,12 +37,12 @@ interface ChatUserStore {
   usernameToId: Map<string, string>;
   
   /**
-   * Add or update a user when they send a message.
-   * channelId/channelName are used to fetch third-party badges (which are
-   * channel-scoped on the Rust side). Pass them whenever possible.
+   * Add or update a user when they send a message. channelContext is accepted
+   * for call-site compatibility but no longer used (third-party badges are not
+   * resolved in chat anymore).
    */
   addUser: (
-    user: Omit<ChatUser, 'lastSeen' | 'paint' | 'seventvBadge' | 'thirdPartyBadges'>,
+    user: Omit<ChatUser, 'lastSeen' | 'paint' | 'seventvBadge'>,
     channelContext?: { channelId: string; channelName: string },
   ) => void;
   
@@ -72,7 +73,6 @@ interface ChatUserStore {
 // pay nothing.
 type CosmeticUpdate = { paint: any; seventvBadge: any };
 const pendingCosmeticUpdates = new Map<string, CosmeticUpdate>();
-const pendingThirdPartyUpdates = new Map<string, any[]>();
 let pendingFlushScheduled = false;
 
 function scheduleStoreFlush() {
@@ -80,23 +80,15 @@ function scheduleStoreFlush() {
   pendingFlushScheduled = true;
   queueMicrotask(() => {
     pendingFlushScheduled = false;
-    if (pendingCosmeticUpdates.size === 0 && pendingThirdPartyUpdates.size === 0) return;
+    if (pendingCosmeticUpdates.size === 0) return;
     const cosmeticUpdates = new Map(pendingCosmeticUpdates);
     pendingCosmeticUpdates.clear();
-    const tpUpdates = new Map(pendingThirdPartyUpdates);
-    pendingThirdPartyUpdates.clear();
     useChatUserStore.setState((state) => {
       const newUsers = new Map(state.users);
       for (const [uid, { paint, seventvBadge }] of cosmeticUpdates) {
         const current = newUsers.get(uid);
         if (current) {
           newUsers.set(uid, { ...current, paint, seventvBadge });
-        }
-      }
-      for (const [uid, badges] of tpUpdates) {
-        const current = newUsers.get(uid);
-        if (current) {
-          newUsers.set(uid, { ...current, thirdPartyBadges: badges });
         }
       }
       return { users: newUsers };
@@ -109,47 +101,16 @@ function enqueueCosmeticUpdate(userId: string, paint: any, seventvBadge: any) {
   scheduleStoreFlush();
 }
 
-function enqueueThirdPartyUpdate(userId: string, badges: any[]) {
-  pendingThirdPartyUpdates.set(userId, badges);
-  scheduleStoreFlush();
-}
-
-// Fire the third-party badge fetch for a user and write the result into the
-// store when it lands. Sets thirdPartyBadges to [] on failure / empty result
-// so the "already resolved" check below works deterministically.
-function resolveThirdPartyBadges(
-  userId: string,
-  username: string,
-  channelContext: { channelId: string; channelName: string },
-) {
-  const cached = getThirdPartyBadgesFromMemoryCache(userId);
-  if (cached) {
-    enqueueThirdPartyUpdate(userId, cached);
-    return;
-  }
-  // getTwitchBadgesWithFallback populates the third-party cache as a side
-  // effect; we read it out after the call returns.
-  getTwitchBadgesWithFallback(userId, username, channelContext.channelId, channelContext.channelName)
-    .then(() => {
-      enqueueThirdPartyUpdate(userId, getThirdPartyBadgesFromMemoryCache(userId) || []);
-    })
-    .catch(() => {
-      enqueueThirdPartyUpdate(userId, []);
-    });
-}
-
 export const useChatUserStore = create<ChatUserStore>((set, get) => ({
   users: new Map(),
   usernameToId: new Map(),
   
-  addUser: (user, channelContext) => {
+  addUser: (user, _channelContext) => {
     const existingUser = get().users.get(user.userId);
 
     // Fast path: cosmetics already resolved for this user. Update color/lastSeen
     // in place and skip the cache lookup entirely. paint OR seventvBadge being
-    // non-undefined is the "cosmetics resolved" sentinel; thirdPartyBadges has
-    // its own sentinel because it can resolve on a separate channel-context
-    // pass.
+    // non-undefined is the "cosmetics resolved" sentinel.
     const cosmeticsResolved =
       existingUser !== undefined &&
       (existingUser.paint !== undefined || existingUser.seventvBadge !== undefined);
@@ -165,14 +126,6 @@ export const useChatUserStore = create<ChatUserStore>((set, get) => ({
         newUsernameToId.set(user.username.toLowerCase(), user.userId);
         return { users: newUsers, usernameToId: newUsernameToId };
       });
-
-      // Third-party badges piggyback off cosmeticsResolved but resolve
-      // independently — they need channelId/channelName which only get passed
-      // by callers that have them. If we haven't resolved them yet AND we now
-      // have channel context, fire the resolve.
-      if (existingUser!.thirdPartyBadges === undefined && channelContext) {
-        resolveThirdPartyBadges(user.userId, user.username, channelContext);
-      }
       return;
     }
 
@@ -185,7 +138,6 @@ export const useChatUserStore = create<ChatUserStore>((set, get) => ({
         lastSeen: Date.now(),
         paint: existingUser?.paint,
         seventvBadge: existingUser?.seventvBadge,
-        thirdPartyBadges: existingUser?.thirdPartyBadges,
       });
       newUsernameToId.set(user.username.toLowerCase(), user.userId);
       return { users: newUsers, usernameToId: newUsernameToId };
@@ -208,10 +160,6 @@ export const useChatUserStore = create<ChatUserStore>((set, get) => ({
       getCosmeticsWithFallback(user.userId)
         .then(applyCosmetics)
         .catch(() => {});
-    }
-
-    if (channelContext) {
-      resolveThirdPartyBadges(user.userId, user.username, channelContext);
     }
   },
   
@@ -254,3 +202,27 @@ export const useChatUserStore = create<ChatUserStore>((set, get) => ({
     set({ users: new Map(), usernameToId: new Map() });
   },
 }));
+
+// Reactive bridge from the shared cosmetics cache into the per-user chat
+// store. Anything that writes to cosmeticsCache (chat's own addUser fetch,
+// profile-card refresh, ProfileSettings, future surfaces) lands here, and
+// we refresh the matching user's paint/badge in the store so their chat
+// row repaints. Without this bridge a transient empty result earlier in
+// the session stays stuck on screen even after a later fetch succeeded.
+subscribeToCosmetics((userId, cosmetics) => {
+  const state = useChatUserStore.getState();
+  const existing = state.users.get(userId);
+  if (!existing) return;
+
+  const nextPaint = cosmetics?.paints?.find((p: any) => p.selected) ?? null;
+  const nextBadge = cosmetics?.badges?.find((b: any) => b.selected) ?? null;
+
+  // Identity-compare by id so we skip an enqueue when nothing changed.
+  const samePaint = (existing.paint?.id ?? null) === (nextPaint?.id ?? null);
+  const sameBadge = (existing.seventvBadge?.id ?? null) === (nextBadge?.id ?? null);
+  if (samePaint && sameBadge && existing.paint !== undefined && existing.seventvBadge !== undefined) {
+    return;
+  }
+
+  enqueueCosmeticUpdate(userId, nextPaint, nextBadge);
+});

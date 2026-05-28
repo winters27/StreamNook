@@ -15,7 +15,7 @@ export default function DropsOverlay() {
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
           transition={{ duration: 0.15 }}
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-2xl"
         >
           {/* Hover-sensitive background overlay */}
           <div
@@ -29,10 +29,10 @@ export default function DropsOverlay() {
             exit={{ opacity: 0, scale: 0.95, y: 15 }}
             transition={{ type: "spring", stiffness: 350, damping: 25 }}
             style={{ willChange: "transform, opacity" }}
-            className="w-[95vw] max-w-[1800px] h-[90vh] bg-background rounded-xl shadow-2xl border border-borderLight flex flex-col overflow-hidden relative z-10"
+            className="w-[95vw] max-w-[1800px] h-[90vh] liquid-glass-panel flex flex-col overflow-hidden relative z-10"
           >
         {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-borderLight bg-backgroundSecondary">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-borderSubtle">
           <h2 className="text-lg font-semibold text-textPrimary flex items-center gap-2">
             <Gift size={20} className="text-accent" />
             Drops & Channel Points

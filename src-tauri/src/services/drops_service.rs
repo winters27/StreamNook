@@ -142,6 +142,8 @@ pub struct DropsService {
     drop_progress: Arc<RwLock<HashMap<String, DropProgress>>>,
     claimed_drops: Arc<RwLock<Vec<ClaimedDrop>>>,
     channel_points_history: Arc<RwLock<Vec<ChannelPointsClaim>>>,
+    /// Cumulative channel points the app has auto-claimed, persisted across sessions.
+    lifetime_points_mined: Arc<RwLock<i64>>,
     channel_points_balances: Arc<RwLock<HashMap<String, ChannelPointsBalance>>>,
     monitoring_active: Arc<RwLock<bool>>,
     current_channel: Arc<RwLock<Option<(String, String)>>>, // (channel_id, channel_name)
@@ -150,6 +152,41 @@ pub struct DropsService {
     attempted_claims: Arc<RwLock<std::collections::HashSet<String>>>, // Track drops we've already attempted to claim
     device_id: String,
     session_id: String,
+}
+
+/// File (in the app data dir) that persists lifetime drops-mining stats across sessions.
+const LIFETIME_STATS_FILE: &str = "drops_lifetime_stats.json";
+
+fn lifetime_stats_path() -> Option<std::path::PathBuf> {
+    crate::services::cache_service::get_app_data_dir()
+        .ok()
+        .map(|dir| dir.join(LIFETIME_STATS_FILE))
+}
+
+/// Read the persisted cumulative auto-claimed channel points. Returns 0 if absent or unreadable.
+fn load_lifetime_points_mined() -> i64 {
+    let path = match lifetime_stats_path() {
+        Some(p) => p,
+        None => return 0,
+    };
+    match std::fs::read_to_string(&path) {
+        Ok(contents) => serde_json::from_str::<serde_json::Value>(&contents)
+            .ok()
+            .and_then(|v| v["points_mined"].as_i64())
+            .unwrap_or(0),
+        Err(_) => 0,
+    }
+}
+
+/// Persist the cumulative auto-claimed channel points. Best-effort; IO errors are ignored.
+fn save_lifetime_points_mined(points: i64) {
+    if let Some(path) = lifetime_stats_path() {
+        if let Ok(json) =
+            serde_json::to_string_pretty(&serde_json::json!({ "points_mined": points }))
+        {
+            let _ = std::fs::write(&path, json);
+        }
+    }
 }
 
 impl DropsService {
@@ -170,6 +207,7 @@ impl DropsService {
             drop_progress: Arc::new(RwLock::new(HashMap::new())),
             claimed_drops: Arc::new(RwLock::new(Vec::new())),
             channel_points_history: Arc::new(RwLock::new(Vec::new())),
+            lifetime_points_mined: Arc::new(RwLock::new(load_lifetime_points_mined())),
             channel_points_balances: Arc::new(RwLock::new(HashMap::new())),
             monitoring_active: Arc::new(RwLock::new(false)),
             current_channel: Arc::new(RwLock::new(None)),
@@ -1320,8 +1358,10 @@ impl DropsService {
         let channel_points_history = self.channel_points_history.read().await;
         let drop_progress = self.drop_progress.read().await;
 
+        // Lifetime cumulative of points the app has auto-claimed, persisted across sessions,
+        // rather than only this session's history. Clamp into the i32 wire type.
         let total_channel_points_earned: i32 =
-            channel_points_history.iter().map(|c| c.points_earned).sum();
+            (*self.lifetime_points_mined.read().await).clamp(0, i32::MAX as i64) as i32;
 
         let drops_in_progress = drop_progress
             .values()
@@ -1352,8 +1392,19 @@ impl DropsService {
     }
 
     pub async fn add_channel_points_claim(&self, claim: ChannelPointsClaim) {
-        let mut history = self.channel_points_history.write().await;
-        history.push(claim);
+        let claimed_points = claim.points_earned.max(0) as i64;
+        {
+            let mut history = self.channel_points_history.write().await;
+            history.push(claim);
+        }
+        if claimed_points > 0 {
+            let total = {
+                let mut lifetime = self.lifetime_points_mined.write().await;
+                *lifetime += claimed_points;
+                *lifetime
+            };
+            save_lifetime_points_mined(total);
+        }
     }
 
     pub async fn get_channel_points_balance(
@@ -1395,6 +1446,7 @@ impl DropsService {
         let drop_progress = self.drop_progress.clone();
         let claimed_drops = self.claimed_drops.clone();
         let channel_points_history = self.channel_points_history.clone();
+        let lifetime_points_mined = self.lifetime_points_mined.clone();
         let channel_points_balances = self.channel_points_balances.clone();
         let monitoring_active = self.monitoring_active.clone();
         let current_channel = self.current_channel.clone();
@@ -1452,8 +1504,22 @@ impl DropsService {
                                         );
 
                                         // Add to history
-                                        let mut history = channel_points_history.write().await;
-                                        history.push(claim.clone());
+                                        {
+                                            let mut history = channel_points_history.write().await;
+                                            history.push(claim.clone());
+                                        }
+
+                                        // Accumulate lifetime auto-claimed points (persisted across sessions)
+                                        let claimed_points = claim.points_earned.max(0) as i64;
+                                        if claimed_points > 0 {
+                                            let total = {
+                                                let mut lifetime =
+                                                    lifetime_points_mined.write().await;
+                                                *lifetime += claimed_points;
+                                                *lifetime
+                                            };
+                                            save_lifetime_points_mined(total);
+                                        }
 
                                         // Notify about successful claim
                                         if current_settings.notify_on_points_claimed {

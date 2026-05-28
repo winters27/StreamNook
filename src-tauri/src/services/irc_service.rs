@@ -362,7 +362,15 @@ impl IrcService {
             debug!("[IRC Chat] Joined channel: #{}", initial_channel);
 
             // Fetch channel emotes
-            Self::fetch_and_store_emotes(initial_channel, Arc::clone(&emote_service)).await;
+            let initial_channel_id =
+                Self::fetch_and_store_emotes(initial_channel, Arc::clone(&emote_service)).await;
+
+            // Subscribe the initial channel to the 7TV EventAPI (live emote set
+            // updates). Idempotent, so the IRC reconnect loop re-calling this is
+            // a no-op for an already-subscribed channel.
+            if let Some(cid) = initial_channel_id {
+                crate::services::seventv_eventapi::subscribe_channel(initial_channel, &cid).await;
+            }
 
             // Send connection success notification
             let _ = tx.send("IRC_CONNECTED".to_string());
@@ -1080,9 +1088,11 @@ impl IrcService {
 
         debug!("[IRC Chat] Joined channel: #{} (first consumer)", key);
 
-        // Check for shared chat in the new channel
+        // Check for shared chat in the new channel, and subscribe it to the 7TV
+        // EventAPI for live emote set updates. Both reuse the same lookup.
         if let Ok(broadcaster_info) = TwitchService::get_user_by_login(channel).await {
             Self::check_shared_chat_status(&broadcaster_info.id).await;
+            crate::services::seventv_eventapi::subscribe_channel(&key, &broadcaster_info.id).await;
         }
 
         Ok(())
@@ -1138,16 +1148,21 @@ impl IrcService {
         get_user_badges_cache().lock().await.remove(&key);
         get_room_state_cache().lock().await.remove(&key);
 
+        // Stop receiving 7TV EventAPI updates for this channel.
+        crate::services::seventv_eventapi::unsubscribe_channel(&key).await;
+
         debug!("[IRC Chat] Left channel: #{} (last consumer)", key);
 
         Ok(())
     }
 
-    /// Fetch and store channel emotes for the current channel
+    /// Fetch and store channel emotes for the current channel. Returns the
+    /// resolved Twitch channel id (broadcaster user id) on success so callers
+    /// can drive the 7TV EventAPI subscription off the same lookup.
     pub async fn fetch_and_store_emotes(
         channel_name: &str,
         emote_service: Arc<tokio::sync::RwLock<EmoteService>>,
-    ) {
+    ) -> Option<String> {
         debug!("[IRC Chat] Fetching emotes for channel: {}", channel_name);
 
         // Pull the OAuth token so the cache write here matches what the
@@ -1160,40 +1175,44 @@ impl IrcService {
         // Get broadcaster ID from channel name
         match TwitchService::get_user_by_login(channel_name).await {
             Ok(user) => {
-                let emote_svc = emote_service.read().await;
-                match emote_svc
-                    .fetch_channel_emotes(
-                        Some(channel_name.to_string()),
-                        Some(user.id.clone()),
-                        access_token,
-                    )
-                    .await
                 {
-                    Ok(emote_set) => {
-                        debug!(
-                            "[IRC Chat] Fetched {} total emotes for {} (Twitch: {}, BTTV: {}, 7TV: {}, FFZ: {})",
-                            emote_set.total_count(),
-                            channel_name,
-                            emote_set.twitch.len(),
-                            emote_set.bttv.len(),
-                            emote_set.seven_tv.len(),
-                            emote_set.ffz.len()
-                        );
-                        get_channel_emotes()
-                            .lock()
-                            .await
-                            .insert(channel_name.to_lowercase(), emote_set);
-                    }
-                    Err(e) => {
-                        error!("[IRC Chat] Failed to fetch channel emotes: {}", e);
+                    let emote_svc = emote_service.read().await;
+                    match emote_svc
+                        .fetch_channel_emotes(
+                            Some(channel_name.to_string()),
+                            Some(user.id.clone()),
+                            access_token,
+                        )
+                        .await
+                    {
+                        Ok(emote_set) => {
+                            debug!(
+                                "[IRC Chat] Fetched {} total emotes for {} (Twitch: {}, BTTV: {}, 7TV: {}, FFZ: {})",
+                                emote_set.total_count(),
+                                channel_name,
+                                emote_set.twitch.len(),
+                                emote_set.bttv.len(),
+                                emote_set.seven_tv.len(),
+                                emote_set.ffz.len()
+                            );
+                            get_channel_emotes()
+                                .lock()
+                                .await
+                                .insert(channel_name.to_lowercase(), emote_set);
+                        }
+                        Err(e) => {
+                            error!("[IRC Chat] Failed to fetch channel emotes: {}", e);
+                        }
                     }
                 }
+                Some(user.id)
             }
             Err(e) => {
                 error!(
                     "[IRC Chat] Failed to get user info for {}: {}",
                     channel_name, e
                 );
+                None
             }
         }
     }
@@ -2114,6 +2133,10 @@ impl IrcService {
         get_user_badges_cache().lock().await.clear();
         get_room_state_cache().lock().await.clear();
         get_channel_refcount().lock().await.clear();
+
+        // Drop all 7TV EventAPI subscriptions so the idle socket stops
+        // receiving updates for channels nobody is viewing anymore.
+        crate::services::seventv_eventapi::clear_all().await;
 
         // Drop the WS port marker so the next start_chat does a full cold
         // bring-up rather than thinking a stale port is still serving.

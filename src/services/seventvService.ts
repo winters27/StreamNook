@@ -86,15 +86,30 @@ interface UserCosmeticsResponse {
   seventvUserId?: string; // The user's 7TV profile ID
 }
 
-// Cache for 7TV user data
-const userCache = new Map<string, { data: UserCosmeticsResponse; timestamp: number }>();
-const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
+// Cache for 7TV user data.
+//   - Successful lookups (user is on 7TV, with or without inventory; or user
+//     genuinely not on 7TV) ride the full TTL — they're stable answers.
+//   - Hard failures (network error, 5xx, retry-exhausted) get a much shorter
+//     TTL so a transient 7TV blip can't strand a real user without a paint
+//     for 5 minutes. The next request retries.
+const userCache = new Map<string, { data: UserCosmeticsResponse; hardFail: boolean; timestamp: number }>();
+const CACHE_DURATION = 5 * 60 * 1000;
+const HARD_FAIL_CACHE_DURATION = 30 * 1000;
+
+// Public result shape for getUserCosmetics. hardFail distinguishes "we never
+// got a real answer from 7TV" from "API said this user has no cosmetics."
+// Callers (cosmeticsCache.ts) use this to decide whether to short-TTL the
+// outer cache too.
+export interface UserCosmeticsResult {
+  data: UserCosmeticsResponse;
+  hardFail: boolean;
+}
 
 // Cache for cosmetic file paths (id -> localPath) to avoid repeated IPC calls
 let cachedCosmeticFiles: Record<string, string> | null = null;
 
 // Track pending requests to prevent duplicate fetches
-const pendingRequests = new Map<string, Promise<UserCosmeticsResponse | null>>();
+const pendingRequests = new Map<string, Promise<UserCosmeticsResult>>();
 let filesInitializationPromise: Promise<void> | null = null;
 
 // GraphQL query fragments
@@ -421,8 +436,22 @@ function parseUserCosmetics(
 //
 // 7TV's `users.userByConnection` is a per-user field, so we use GraphQL
 // aliasing (`u_<id>: users { userByConnection(...) { ... } }`) to multiplex N
-// users into one request. Chunked at BATCH_MAX_SIZE to bound payload size.
-const BATCH_MAX_SIZE = 25;
+// users into one request. Chunked at BATCH_MAX_SIZE to stay under 7TV's
+// server-side query-complexity limit (about 400). Each aliased user with the
+// full paint field selection scores about 71, so 5 users (about 355) is the
+// largest chunk that passes. 6 or more is rejected outright with
+// "Query is too complex." and the ENTIRE batch returns null, stranding every
+// user in it without cosmetics. Do NOT raise this without re-checking 7TV's
+// live complexity ceiling first.
+const BATCH_MAX_SIZE = 5;
+// Cap parallel in-flight chunks so an extreme cold-start burst (e.g.
+// scrollback dump from a 10k-viewer hype-train channel join → 40+ chunks)
+// doesn't fire dozens of concurrent HTTP requests at 7TV. Five is the
+// sweet spot: 125 users in flight at any moment is plenty for snappy
+// resolution while staying polite to the upstream API. Bigger drains
+// process the rest in subsequent waves, still way faster than the
+// pre-fix sequential O(N/25).
+const MAX_PARALLEL_CHUNKS = 5;
 type CosmeticsResolver = (data: UserCosmeticsResponse | null) => void;
 const batchQueue = new Map<string, CosmeticsResolver[]>();
 let batchScheduled = false;
@@ -456,8 +485,19 @@ const drainBatch = async () => {
   const cachedFiles = cachedCosmeticFiles || {};
   const ids = Array.from(snapshot.keys());
 
+  // Build the chunk list, then run them through a worker-pool so at most
+  // MAX_PARALLEL_CHUNKS are in flight at once. Previously this awaited each
+  // chunk in sequence, so a flood of new chatters at channel-join paid
+  // O(N/25) sequential round-trips before the last user's paint resolved.
+  // Unbounded parallelism would resolve fastest but risks 429s from 7TV on
+  // extreme bursts; the worker-pool gets most of the win while staying
+  // polite to the upstream API.
+  const chunks: string[][] = [];
   for (let i = 0; i < ids.length; i += BATCH_MAX_SIZE) {
-    const chunk = ids.slice(i, i + BATCH_MAX_SIZE);
+    chunks.push(ids.slice(i, i + BATCH_MAX_SIZE));
+  }
+
+  const runChunk = async (chunk: string[]) => {
     const query = `{ ${chunk
       .map(
         (id) =>
@@ -467,8 +507,23 @@ const drainBatch = async () => {
 
     try {
       const response = await requestGql({ query });
+
+      // requestGql swallows errors and returns undefined after exhausting its
+      // retries (network error, 5xx, or 7TV rejecting the query outright, e.g.
+      // "Query is too complex."). A missing data payload is a HARD FAILURE for
+      // the whole chunk, not a confirmed "these users have no cosmetics."
+      // Resolve null so getUserCosmetics marks the entry hardFail (short TTL)
+      // and self-heals on the next read, instead of caching a bogus empty for
+      // the full 5-minute TTL and stranding everyone in the chunk.
+      if (!response?.data) {
+        for (const id of chunk) {
+          snapshot.get(id)?.forEach((r) => r(null));
+        }
+        return;
+      }
+
       for (const id of chunk) {
-        const userByConnection = response?.data?.[`u_${id}`]?.userByConnection;
+        const userByConnection = response.data[`u_${id}`]?.userByConnection;
         const result = userByConnection
           ? parseUserCosmetics(userByConnection, cachedFiles)
           : { paints: [], badges: [], seventvUserId: undefined };
@@ -480,19 +535,32 @@ const drainBatch = async () => {
         snapshot.get(id)?.forEach((r) => r(null));
       }
     }
-  }
+  };
+
+  let chunkIdx = 0;
+  const worker = async () => {
+    while (chunkIdx < chunks.length) {
+      const myIdx = chunkIdx++;
+      await runChunk(chunks[myIdx]);
+    }
+  };
+  const workerCount = Math.min(MAX_PARALLEL_CHUNKS, chunks.length);
+  await Promise.all(Array.from({ length: workerCount }, worker));
 };
 
 // Fetch user cosmetics from 7TV v4 API.
 // Content-first: lazy cache initialization in the background; cached URLs are
 // used only if already in memory. Requests for distinct users in the same tick
 // are batched into one HTTP round-trip via requestUserCosmeticsBatched above.
-export async function getUserCosmetics(twitchId: string): Promise<UserCosmeticsResponse | null> {
+export async function getUserCosmetics(twitchId: string): Promise<UserCosmeticsResult> {
   const cached = userCache.get(twitchId);
   const now = Date.now();
 
-  if (cached && (now - cached.timestamp) < CACHE_DURATION) {
-    return cached.data;
+  if (cached) {
+    const ttl = cached.hardFail ? HARD_FAIL_CACHE_DURATION : CACHE_DURATION;
+    if ((now - cached.timestamp) < ttl) {
+      return { data: cached.data, hardFail: cached.hardFail };
+    }
   }
 
   if (cachedCosmeticFiles === null && !filesInitializationPromise) {
@@ -513,17 +581,26 @@ export async function getUserCosmetics(twitchId: string): Promise<UserCosmeticsR
     return pending;
   }
 
-  const request = (async () => {
+  const request: Promise<UserCosmeticsResult> = (async () => {
     try {
+      // requestUserCosmeticsBatched returns null only for hard failures
+      // (network error, retry-exhausted batch query). Successful responses
+      // — including ones that legitimately say "this user has no 7TV
+      // account / no inventory" — return a UserCosmeticsResponse with
+      // empty arrays + seventvUserId undefined.
       const result = await requestUserCosmeticsBatched(twitchId);
-      const settled = result ?? { paints: [], badges: [], seventvUserId: undefined };
-      userCache.set(twitchId, { data: settled, timestamp: now });
-      return settled;
+      if (result === null) {
+        const empty: UserCosmeticsResponse = { paints: [], badges: [], seventvUserId: undefined };
+        userCache.set(twitchId, { data: empty, hardFail: true, timestamp: now });
+        return { data: empty, hardFail: true };
+      }
+      userCache.set(twitchId, { data: result, hardFail: false, timestamp: now });
+      return { data: result, hardFail: false };
     } catch (error) {
       Logger.error('[7TV] Failed to fetch user cosmetics:', error);
-      const emptyResult = { paints: [], badges: [], seventvUserId: undefined };
-      userCache.set(twitchId, { data: emptyResult, timestamp: now });
-      return emptyResult;
+      const empty: UserCosmeticsResponse = { paints: [], badges: [], seventvUserId: undefined };
+      userCache.set(twitchId, { data: empty, hardFail: true, timestamp: now });
+      return { data: empty, hardFail: true };
     } finally {
       pendingRequests.delete(twitchId);
     }
@@ -533,9 +610,11 @@ export async function getUserCosmetics(twitchId: string): Promise<UserCosmeticsR
   return request;
 }
 
-// Legacy function for backwards compatibility
-export async function fetch7TVUserData(twitchUserId: string) {
-  return getUserCosmetics(twitchUserId);
+// Legacy function for backwards compatibility — unwraps to the historical
+// `UserCosmeticsResponse | null` shape (null = hard failure).
+export async function fetch7TVUserData(twitchUserId: string): Promise<UserCosmeticsResponse | null> {
+  const { data, hardFail } = await getUserCosmetics(twitchUserId);
+  return hardFail ? null : data;
 }
 
 // Compute paint style layers

@@ -654,10 +654,4 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
     title: 'Join the Discord',
     description: 'Open the StreamNook community Discord invite'
   },
-  {
-    tab: 'Support',
-    section: 'Contact Developer',
-    title: 'Contact Developer',
-    description: 'Send the developer a direct message for one-off questions or private feedback.'
-  },
 ];

@@ -1,4 +1,4 @@
-use crate::services::badge_service::{BadgeService, UserBadgesResponse};
+use crate::services::badge_service::{BadgeService, ThirdPartyGalleryBadge, UserBadgesResponse};
 use crate::services::twitch_service::TwitchService;
 use log::debug;
 use std::sync::Arc;
@@ -280,4 +280,35 @@ pub async fn get_global_badge_collection(username: String) -> Result<Vec<String>
     service
         .fetch_global_badge_collection_from_gql(&username, &token)
         .await
+}
+
+/// Get the full distinct badge set for every third-party chat client (FFZ,
+/// Chatterino, Homies, Chatsen, Chatty, DankChat) for the browse gallery.
+/// Pass the current user's Twitch ID to flag which badges they own.
+#[tauri::command]
+pub async fn get_all_third_party_badges(
+    viewer_user_id: Option<String>,
+) -> Result<Vec<ThirdPartyGalleryBadge>, String> {
+    let service_lock = get_service().await?;
+
+    // Auto-initialize if not ready yet
+    {
+        let service_guard = service_lock.read().await;
+        if service_guard.is_none() {
+            drop(service_guard);
+            initialize_badge_service().await;
+        }
+    }
+
+    let service_guard = service_lock.read().await;
+    let service = service_guard
+        .as_ref()
+        .ok_or_else(|| "Badge service failed to initialize".to_string())?;
+
+    // Make sure the databases are warm (no-op if cache is fresh).
+    let _ = service.fetch_third_party_badges().await;
+
+    Ok(service
+        .get_all_third_party_badges(viewer_user_id.as_deref())
+        .await)
 }

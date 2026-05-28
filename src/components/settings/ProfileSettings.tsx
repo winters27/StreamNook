@@ -45,7 +45,7 @@ import {
   pauseCardAnimations,
   type CaptureMode,
 } from '../../utils/shareProfile';
-import { clearCosmeticsMemoryCache } from '../../services/cosmeticsCache';
+import { clearCosmeticsMemoryCache, invalidateUserCosmetics, getCosmeticsWithFallback } from '../../services/cosmeticsCache';
 import { invoke } from '@tauri-apps/api/core';
 import { Logger } from '../../utils/logger';
 
@@ -356,7 +356,14 @@ const ProfileSettings = () => {
       if (result.success && mountedRef.current) {
         setSeventvPaint(paint);
         setAllSeventvPaints((prev) => prev.map((p) => ({ ...p, selected: p.id === paintId })));
+        // Drop both layers of cached cosmetics for this user, then trigger a
+        // fresh fetch so the cosmetics-cache subscription notifies chat rows
+        // with the new selection immediately.
         clear7TVCache();
+        if (currentUser?.user_id) {
+          invalidateUserCosmetics(currentUser.user_id);
+          void getCosmeticsWithFallback(currentUser.user_id).catch(() => {});
+        }
       }
     } catch (e: unknown) {
       Logger.error('[ProfileSettings] Failed to update paint:', e);
@@ -381,6 +388,10 @@ const ProfileSettings = () => {
       if (result.success && mountedRef.current) {
         setSeventvBadges((prev) => prev.map((b) => ({ ...b, selected: b.id === badgeId })));
         clear7TVCache();
+        if (currentUser?.user_id) {
+          invalidateUserCosmetics(currentUser.user_id);
+          void getCosmeticsWithFallback(currentUser.user_id).catch(() => {});
+        }
       }
     } catch (e: unknown) {
       Logger.error('[ProfileSettings] Failed to update badge:', e);

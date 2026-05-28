@@ -44,8 +44,65 @@ export class LruMap<K, V> {
     }
   }
   has(key: K): boolean { return this.map.has(key); }
+  delete(key: K): boolean { return this.map.delete(key); }
   clear(): void { this.map.clear(); }
   get size(): number { return this.map.size; }
+}
+
+// Self-healing on transient 7TV failures. A "hard fail" (network error /
+// 5xx / retry-exhausted) used to live in cache for the whole session,
+// stranding the user without a paint until restart. We now mark hard-fail
+// results with a timestamp and re-fetch on the next read after the TTL.
+// Successful responses (including legitimate "user has no 7TV" answers) do
+// NOT get this mark — they ride the normal LRU indefinitely, since they're
+// stable answers that don't need to be re-asked.
+const HARD_FAIL_RETRY_MS = 30_000;
+const hardFailTimestamps = new Map<string, number>();
+
+const isHardFailExpired = (userId: string): boolean => {
+  const t = hardFailTimestamps.get(userId);
+  return t !== undefined && Date.now() - t > HARD_FAIL_RETRY_MS;
+};
+
+const hasHardFailMark = (userId: string): boolean => hardFailTimestamps.has(userId);
+
+// Reactive subscription so anything that depends on a user's cosmetics
+// (chatUserStore, future surfaces) gets a push when the cache is updated.
+// Without this, a paint that arrived via a profile-card fetch was invisible
+// to the chat row that had already cached a "no paint" answer earlier.
+type CosmeticsListener = (userId: string, cosmetics: CachedCosmetics) => void;
+const cosmeticsListeners = new Set<CosmeticsListener>();
+
+export function subscribeToCosmetics(listener: CosmeticsListener): () => void {
+  cosmeticsListeners.add(listener);
+  return () => { cosmeticsListeners.delete(listener); };
+}
+
+function publishCosmetics(userId: string, cosmetics: CachedCosmetics, hardFail = false): void {
+  inMemoryCosmeticsCache.set(userId, cosmetics);
+  // The short-TTL "retry me" mark only applies to hard failures (network /
+  // 5xx / retry-exhausted). A successful response that says the user has
+  // no 7TV cosmetics is a stable answer — full LRU TTL applies. Without
+  // this distinction, every non-7TV user in chat would re-trigger fetches
+  // every 30s from any caller that wasn't deduped by addUser's short-circuit.
+  if (hardFail) {
+    hardFailTimestamps.set(userId, Date.now());
+  } else {
+    hardFailTimestamps.delete(userId);
+  }
+  for (const listener of cosmeticsListeners) {
+    try { listener(userId, cosmetics); } catch (e) { Logger.warn('[cosmeticsCache] listener threw:', e); }
+  }
+}
+
+/**
+ * Drop a user's cached cosmetics so the next read fetches fresh.
+ * Use when the user changes their own paint/badge — the LRU entry would
+ * otherwise serve the stale selection until LRU eviction.
+ */
+export function invalidateUserCosmetics(userId: string): void {
+  inMemoryCosmeticsCache.delete(userId);
+  hardFailTimestamps.delete(userId);
 }
 
 // Caps sized for a heavy viewing session. Profile entries are the largest
@@ -76,7 +133,14 @@ const pendingProfileRequests = new Map<string, Promise<CachedProfile>>();
  * Returns null if not in memory cache - use this for initial state
  */
 export function getCosmeticsFromMemoryCache(userId: string): CachedCosmetics | null {
-  return inMemoryCosmeticsCache.get(userId) || null;
+  const cached = inMemoryCosmeticsCache.get(userId);
+  if (!cached) return null;
+  // Treat hard-failed entries as a miss once their retry TTL has elapsed,
+  // so the caller (chat addUser, autocomplete, etc.) re-fetches on demand.
+  if (hasHardFailMark(userId) && isHardFailExpired(userId)) {
+    return null;
+  }
+  return cached;
 }
 
 /**
@@ -92,9 +156,11 @@ export function getThirdPartyBadgesFromMemoryCache(userId: string): any[] | null
  * Image caching is handled by the seventvService internally
  */
 export async function getCosmeticsWithFallback(userId: string): Promise<CachedCosmetics> {
-  // 1. Try in-memory cache first (instant, synchronous)
+  // 1. Try in-memory cache first (instant, synchronous). A hard-failed entry
+  //    past its retry TTL is treated as a miss so a transient 7TV failure
+  //    earlier in the session doesn't strand the user without a paint.
   const memoryCached = inMemoryCosmeticsCache.get(userId);
-  if (memoryCached) {
+  if (memoryCached && !(hasHardFailMark(userId) && isHardFailExpired(userId))) {
     return memoryCached;
   }
 
@@ -107,16 +173,15 @@ export async function getCosmeticsWithFallback(userId: string): Promise<CachedCo
   // 3. Create a new request and track it
   const request = (async (): Promise<CachedCosmetics> => {
     try {
-      // Fetch from API (fresh data) - seventvService handles its own 5-minute memory caching
+      // Fetch from API. seventvService returns a wrapper that flags hard
+      // failures vs. successful responses (including legitimate empties).
       const { getUserCosmetics } = await import('./seventvService');
-      const cosmetics = await getUserCosmetics(userId);
+      const { data, hardFail } = await getUserCosmetics(userId);
 
-      const result = cosmetics || { paints: [], badges: [] };
+      // Publish so listeners (chatUserStore et al.) react.
+      publishCosmetics(userId, data, hardFail);
 
-      // Store in memory cache for this session (synchronous access)
-      inMemoryCosmeticsCache.set(userId, result);
-
-      return result;
+      return data;
     } finally {
       pendingCosmeticsRequests.delete(userId);
     }
@@ -323,7 +388,7 @@ export async function refreshProfileInBackground(
       getAllUserBadgesWithEarned(userId, username, effectiveChannelId, effectiveChannelName),
       (async () => {
         const { getUserCosmetics } = await import('./seventvService');
-        return await getUserCosmetics(userId) || { paints: [], badges: [] };
+        return await getUserCosmetics(userId);
       })()
     ]);
 
@@ -357,20 +422,25 @@ export async function refreshProfileInBackground(
       inMemoryTwitchBadgesCache.set(twitchCacheKey, twitchBadges);
     }
     if (seventvCosmeticsResult.status === 'fulfilled') {
-      inMemoryCosmeticsCache.set(userId, seventvCosmeticsResult.value);
+      const { data, hardFail } = seventvCosmeticsResult.value;
+      publishCosmetics(userId, data, hardFail);
     }
     if (thirdPartyBadges.length > 0) {
       inMemoryThirdPartyBadgesCache.set(userId, thirdPartyBadges);
     }
 
     // Update full profile cache
+    const seventvCosmeticsForProfile: CachedCosmetics =
+      seventvCosmeticsResult.status === 'fulfilled'
+        ? seventvCosmeticsResult.value.data
+        : inMemoryCosmeticsCache.get(userId) || { paints: [], badges: [] };
     const profile: CachedProfile = {
       userId,
       username,
       channelId: effectiveChannelId,
       channelName: effectiveChannelName,
       twitchBadges: twitchBadges.length > 0 ? twitchBadges : inMemoryTwitchBadgesCache.get(twitchCacheKey) || [],
-      seventvCosmetics: seventvCosmeticsResult.status === 'fulfilled' ? seventvCosmeticsResult.value : inMemoryCosmeticsCache.get(userId) || { paints: [], badges: [] },
+      seventvCosmetics: seventvCosmeticsForProfile,
       thirdPartyBadges: thirdPartyBadges.length > 0 ? thirdPartyBadges : inMemoryThirdPartyBadgesCache.get(userId) || [],
       lastUpdated: Date.now()
     };
@@ -387,6 +457,7 @@ export async function refreshProfileInBackground(
  */
 export function clearCosmeticsMemoryCache(): void {
   inMemoryCosmeticsCache.clear();
+  hardFailTimestamps.clear();
   pendingCosmeticsRequests.clear();
   inMemoryThirdPartyBadgesCache.clear();
   pendingThirdPartyBadgesRequests.clear();

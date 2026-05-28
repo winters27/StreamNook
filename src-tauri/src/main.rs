@@ -324,6 +324,11 @@ fn main() {
             let app_handle = app.handle().clone();
             let live_notif_service = live_notification_service.clone();
 
+            // Start the shared 7TV EventAPI WebSocket client (live emote set
+            // updates, and later cosmetics). It idle-connects and subscribes
+            // per channel as the IRC service JOINs/PARTs them.
+            services::seventv_eventapi::init(app_handle.clone(), emote_service.clone());
+
             // Register deep link scheme on Windows
             #[cfg(windows)]
             {
@@ -674,6 +679,7 @@ fn main() {
             clear_badge_cache_unified,
             clear_channel_badge_cache_unified,
             get_global_badge_collection,
+            get_all_third_party_badges,
             // Badge Metadata commands
             fetch_badge_metadata,
             // Cache commands

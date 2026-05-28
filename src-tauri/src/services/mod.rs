@@ -27,6 +27,7 @@ pub mod multi_nook_server;
 pub mod profile_cache_service;
 pub mod proxy_health;
 pub mod seventv_auth_service;
+pub mod seventv_eventapi;
 pub mod stream_server;
 pub mod streamlink_manager;
 pub mod twitch_auth_service;

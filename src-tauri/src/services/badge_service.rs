@@ -181,6 +181,9 @@ pub enum BadgeProvider {
     FFZ,
     Chatterino,
     Homies,
+    Chatsen,
+    Chatty,
+    DankChat,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -188,6 +191,21 @@ pub struct UserBadgesResponse {
     pub display_badges: Vec<UserBadge>,
     pub earned_badges: Vec<UserBadge>,
     pub third_party_badges: Vec<UserBadge>,
+}
+
+/// One distinct third-party badge for the browse gallery (not per-user). The
+/// gallery groups these by `provider` into collapsible sections.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThirdPartyGalleryBadge {
+    pub id: String,
+    pub provider: BadgeProvider,
+    pub title: String,
+    pub image_1x: String,
+    pub image_2x: String,
+    pub image_4x: String,
+    pub user_count: usize,
+    pub owned: bool,
+    pub click_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -243,6 +261,49 @@ struct HomiesBadge {
     users: Vec<String>,
 }
 
+// Chatsen: GET https://api.chatsen.app/account/badges (bare JSON array, served as
+// text/plain, 403 without a browser User-Agent which our http_client already sends).
+#[derive(Debug, Clone, Deserialize)]
+struct ChatsenBadge {
+    id: String,
+    name: String,
+    #[serde(default)]
+    mipmap: Vec<String>,
+    #[serde(default)]
+    users: Vec<String>,
+}
+
+// Chatty (tduva): GET https://tduva.com/res/badges (bare JSON array). Currently only
+// re-hosts FFZ badges, so it overlaps with the FFZ provider.
+#[derive(Debug, Clone, Deserialize)]
+struct ChattyBadge {
+    id: String,
+    #[serde(default)]
+    version: Option<String>,
+    #[serde(default)]
+    meta_title: Option<String>,
+    image_url: String,
+    #[serde(default)]
+    image_url_2: Option<String>,
+    #[serde(default)]
+    image_url_4: Option<String>,
+    #[serde(default)]
+    meta_url: Option<String>,
+    #[serde(default)]
+    userids: Vec<String>,
+}
+
+// DankChat (flex3r): GET https://flxrs.com/api/badges (bare JSON array). Single image
+// url per badge (often an animated gif), `type` doubles as the name.
+#[derive(Debug, Clone, Deserialize)]
+struct DankChatBadge {
+    #[serde(rename = "type")]
+    badge_type: String,
+    url: String,
+    #[serde(default)]
+    users: Vec<String>,
+}
+
 // ============================================================================
 // TWITCH HELIX STRUCTS
 // ============================================================================
@@ -278,6 +339,9 @@ struct ThirdPartyCache {
     ffz: Option<FFZBadgesResponse>,
     chatterino: Option<ChatterinoBadgesResponse>,
     homies: Option<HomiesBadgesResponse>,
+    chatsen: Option<Vec<ChatsenBadge>>,
+    chatty: Option<Vec<ChattyBadge>>,
+    dankchat: Option<Vec<DankChatBadge>>,
     last_updated: SystemTime,
 }
 
@@ -298,6 +362,9 @@ impl BadgeCache {
                 ffz: None,
                 chatterino: None,
                 homies: None,
+                chatsen: None,
+                chatty: None,
+                dankchat: None,
                 last_updated: UNIX_EPOCH,
             },
             // Cache last badge string for up to 1000 users
@@ -472,11 +539,63 @@ impl BadgeService {
 
         let homies_badges = Self::merge_homies_responses(homies1_result, homies2_result).await;
 
+        // Fetch Chatsen badges (bare array; relies on the client's browser User-Agent
+        // to avoid the 403 the endpoint returns for programmatic UAs).
+        let chatsen_result = self
+            .http_client
+            .get("https://api.chatsen.app/account/badges")
+            .send()
+            .await;
+        let chatsen_badges = if let Ok(response) = chatsen_result {
+            if response.status().is_success() {
+                response.json::<Vec<ChatsenBadge>>().await.ok()
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // Fetch Chatty (tduva) badges (bare array).
+        let chatty_result = self
+            .http_client
+            .get("https://tduva.com/res/badges")
+            .send()
+            .await;
+        let chatty_badges = if let Ok(response) = chatty_result {
+            if response.status().is_success() {
+                response.json::<Vec<ChattyBadge>>().await.ok()
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // Fetch DankChat (flex3r) badges (bare array).
+        let dankchat_result = self
+            .http_client
+            .get("https://flxrs.com/api/badges")
+            .send()
+            .await;
+        let dankchat_badges = if let Ok(response) = dankchat_result {
+            if response.status().is_success() {
+                response.json::<Vec<DankChatBadge>>().await.ok()
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         // Update cache
         let mut cache = self.cache.write().await;
         cache.third_party.ffz = ffz_badges;
         cache.third_party.chatterino = chatterino_badges;
         cache.third_party.homies = homies_badges;
+        cache.third_party.chatsen = chatsen_badges;
+        cache.third_party.chatty = chatty_badges;
+        cache.third_party.dankchat = dankchat_badges;
         cache.third_party.last_updated = SystemTime::now();
 
         Ok(())
@@ -1110,7 +1229,297 @@ impl BadgeService {
             }
         }
 
+        // Chatsen badges
+        if let Some(chatsen) = &cache.third_party.chatsen {
+            for badge in chatsen {
+                if badge.users.iter().any(|u| u == user_id) {
+                    let image = badge.mipmap.last().cloned().unwrap_or_default();
+                    badges.push(UserBadge {
+                        badge_info: BadgeInfo {
+                            id: format!("chatsen-{}", badge.id),
+                            set_id: "chatsen".to_string(),
+                            version: "1".to_string(),
+                            title: badge.name.clone(),
+                            description: String::new(),
+                            image_1x: badge.mipmap.first().cloned().unwrap_or_default(),
+                            image_2x: image.clone(),
+                            image_4x: image,
+                            click_action: None,
+                            click_url: Some("https://chatsen.app".to_string()),
+                        },
+                        provider: BadgeProvider::Chatsen,
+                    });
+                }
+            }
+        }
+
+        // Chatty (tduva) badges
+        if let Some(chatty) = &cache.third_party.chatty {
+            for badge in chatty {
+                if badge.userids.iter().any(|u| u == user_id) {
+                    let image_4x = badge
+                        .image_url_4
+                        .clone()
+                        .or_else(|| badge.image_url_2.clone())
+                        .unwrap_or_else(|| badge.image_url.clone());
+                    badges.push(UserBadge {
+                        badge_info: BadgeInfo {
+                            id: format!(
+                                "chatty-{}-{}",
+                                badge.id,
+                                badge.version.clone().unwrap_or_default()
+                            ),
+                            set_id: "chatty".to_string(),
+                            version: badge.version.clone().unwrap_or_else(|| "1".to_string()),
+                            title: badge.meta_title.clone().unwrap_or_else(|| badge.id.clone()),
+                            description: String::new(),
+                            image_1x: badge.image_url.clone(),
+                            image_2x: badge
+                                .image_url_2
+                                .clone()
+                                .unwrap_or_else(|| badge.image_url.clone()),
+                            image_4x,
+                            click_action: None,
+                            click_url: badge
+                                .meta_url
+                                .clone()
+                                .or_else(|| Some("https://chatty.github.io".to_string())),
+                        },
+                        provider: BadgeProvider::Chatty,
+                    });
+                }
+            }
+        }
+
+        // DankChat (flex3r) badges
+        if let Some(dankchat) = &cache.third_party.dankchat {
+            for badge in dankchat {
+                if badge.users.iter().any(|u| u == user_id) {
+                    badges.push(UserBadge {
+                        badge_info: BadgeInfo {
+                            id: format!("dankchat-{}", badge.badge_type),
+                            set_id: "dankchat".to_string(),
+                            version: "1".to_string(),
+                            title: badge.badge_type.clone(),
+                            description: String::new(),
+                            image_1x: badge.url.clone(),
+                            image_2x: badge.url.clone(),
+                            image_4x: badge.url.clone(),
+                            click_action: None,
+                            click_url: Some("https://github.com/flex3r/DankChat".to_string()),
+                        },
+                        provider: BadgeProvider::DankChat,
+                    });
+                }
+            }
+        }
+
+        // Collapse duplicate titles so a profile shows each distinct badge once.
+        // Covers FFZ badges re-hosted by Chatty (same title via two providers) and a
+        // user matching multiple per-user entries that share one title.
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        badges.retain(|b| seen.insert(b.badge_info.title.to_lowercase()));
+
         badges
+    }
+
+    /// Build the full distinct badge set for every third-party provider, for the
+    /// browse gallery (one entry per distinct badge, not per user). When
+    /// `viewer_user_id` is provided, each badge is flagged `owned` if that user
+    /// has it, and `user_count` reports how many users carry it.
+    pub async fn get_all_third_party_badges(
+        &self,
+        viewer_user_id: Option<&str>,
+    ) -> Vec<ThirdPartyGalleryBadge> {
+        let cache = self.cache.read().await;
+        let mut out: Vec<ThirdPartyGalleryBadge> = Vec::new();
+
+        // FFZ. `users` is keyed by badge_id (as a string) -> [numeric user_id].
+        if let Some(ffz) = &cache.third_party.ffz {
+            let viewer_num = viewer_user_id.and_then(|uid| uid.parse::<u32>().ok());
+            for badge in &ffz.badges {
+                let holders = ffz.users.get(&badge.id.to_string());
+                let user_count = holders.map(|h| h.len()).unwrap_or(0);
+                let owned = match (viewer_num, holders) {
+                    (Some(n), Some(h)) => h.contains(&n),
+                    _ => false,
+                };
+                let img_1x = badge.urls.get("1").cloned().unwrap_or_default();
+                let img_2x = badge
+                    .urls
+                    .get("2")
+                    .cloned()
+                    .unwrap_or_else(|| img_1x.clone());
+                let img_4x = badge
+                    .urls
+                    .get("4")
+                    .cloned()
+                    .unwrap_or_else(|| img_2x.clone());
+                out.push(ThirdPartyGalleryBadge {
+                    id: format!("ffz-{}", badge.id),
+                    provider: BadgeProvider::FFZ,
+                    title: badge
+                        .title
+                        .clone()
+                        .or_else(|| badge.name.clone())
+                        .unwrap_or_else(|| format!("FFZ Badge {}", badge.id)),
+                    image_1x: img_1x,
+                    image_2x: img_2x,
+                    image_4x: img_4x,
+                    user_count,
+                    owned,
+                    click_url: Some("https://www.frankerfacez.com/badges".to_string()),
+                });
+            }
+        }
+
+        // Chatterino
+        if let Some(chatterino) = &cache.third_party.chatterino {
+            for badge in &chatterino.badges {
+                let owned = viewer_user_id
+                    .map(|uid| badge.users.iter().any(|u| u == uid))
+                    .unwrap_or(false);
+                out.push(ThirdPartyGalleryBadge {
+                    id: format!("chatterino-{}", badge.tooltip),
+                    provider: BadgeProvider::Chatterino,
+                    title: badge.tooltip.clone(),
+                    image_1x: badge.image1.clone(),
+                    image_2x: badge.image2.clone().unwrap_or_else(|| badge.image1.clone()),
+                    image_4x: badge
+                        .image3
+                        .clone()
+                        .or_else(|| badge.image2.clone())
+                        .unwrap_or_else(|| badge.image1.clone()),
+                    user_count: badge.users.len(),
+                    owned,
+                    click_url: Some("https://chatterino.com/".to_string()),
+                });
+            }
+        }
+
+        // Homies
+        if let Some(homies) = &cache.third_party.homies {
+            for badge in &homies.badges {
+                let owned = viewer_user_id
+                    .map(|uid| badge.users.iter().any(|u| u == uid))
+                    .unwrap_or(false);
+                out.push(ThirdPartyGalleryBadge {
+                    id: format!("homies-{}", badge.tooltip),
+                    provider: BadgeProvider::Homies,
+                    title: badge.tooltip.clone(),
+                    image_1x: badge.image1.clone(),
+                    image_2x: badge.image2.clone().unwrap_or_else(|| badge.image1.clone()),
+                    image_4x: badge
+                        .image3
+                        .clone()
+                        .or_else(|| badge.image2.clone())
+                        .unwrap_or_else(|| badge.image1.clone()),
+                    user_count: badge.users.len(),
+                    owned,
+                    click_url: Some("https://chatterinohomies.com/".to_string()),
+                });
+            }
+        }
+
+        // Chatsen
+        if let Some(chatsen) = &cache.third_party.chatsen {
+            for badge in chatsen {
+                let owned = viewer_user_id
+                    .map(|uid| badge.users.iter().any(|u| u == uid))
+                    .unwrap_or(false);
+                let img_1x = badge.mipmap.first().cloned().unwrap_or_default();
+                let img_4x = badge
+                    .mipmap
+                    .last()
+                    .cloned()
+                    .unwrap_or_else(|| img_1x.clone());
+                out.push(ThirdPartyGalleryBadge {
+                    id: format!("chatsen-{}", badge.id),
+                    provider: BadgeProvider::Chatsen,
+                    title: badge.name.clone(),
+                    image_1x: img_1x,
+                    image_2x: img_4x.clone(),
+                    image_4x: img_4x,
+                    user_count: badge.users.len(),
+                    owned,
+                    click_url: Some("https://chatsen.app".to_string()),
+                });
+            }
+        }
+
+        // Chatty (tduva)
+        if let Some(chatty) = &cache.third_party.chatty {
+            for badge in chatty {
+                let owned = viewer_user_id
+                    .map(|uid| badge.userids.iter().any(|u| u == uid))
+                    .unwrap_or(false);
+                let img_4x = badge
+                    .image_url_4
+                    .clone()
+                    .or_else(|| badge.image_url_2.clone())
+                    .unwrap_or_else(|| badge.image_url.clone());
+                out.push(ThirdPartyGalleryBadge {
+                    id: format!(
+                        "chatty-{}-{}",
+                        badge.id,
+                        badge.version.clone().unwrap_or_default()
+                    ),
+                    provider: BadgeProvider::Chatty,
+                    title: badge.meta_title.clone().unwrap_or_else(|| badge.id.clone()),
+                    image_1x: badge.image_url.clone(),
+                    image_2x: badge
+                        .image_url_2
+                        .clone()
+                        .unwrap_or_else(|| badge.image_url.clone()),
+                    image_4x: img_4x,
+                    user_count: badge.userids.len(),
+                    owned,
+                    click_url: badge
+                        .meta_url
+                        .clone()
+                        .or_else(|| Some("https://chatty.github.io".to_string())),
+                });
+            }
+        }
+
+        // DankChat (flex3r)
+        if let Some(dankchat) = &cache.third_party.dankchat {
+            for badge in dankchat {
+                let owned = viewer_user_id
+                    .map(|uid| badge.users.iter().any(|u| u == uid))
+                    .unwrap_or(false);
+                out.push(ThirdPartyGalleryBadge {
+                    id: format!("dankchat-{}", badge.badge_type),
+                    provider: BadgeProvider::DankChat,
+                    title: badge.badge_type.clone(),
+                    image_1x: badge.url.clone(),
+                    image_2x: badge.url.clone(),
+                    image_4x: badge.url.clone(),
+                    user_count: badge.users.len(),
+                    owned,
+                    click_url: Some("https://github.com/flex3r/DankChat".to_string()),
+                });
+            }
+        }
+
+        // Collapse entries that share a (provider, title) into one tile. Some feeds
+        // (notably Chatty's FFZ re-host) emit one entry PER USER under the same title
+        // (e.g. 122x "FFZ:AP Supporter"), which would otherwise flood the gallery.
+        // Merging sums the user counts and keeps the badge "owned" if any matched.
+        let mut deduped: Vec<ThirdPartyGalleryBadge> = Vec::with_capacity(out.len());
+        let mut index: HashMap<(String, String), usize> = HashMap::new();
+        for badge in out {
+            let key = (format!("{:?}", badge.provider), badge.title.clone());
+            if let Some(&i) = index.get(&key) {
+                deduped[i].user_count += badge.user_count;
+                deduped[i].owned = deduped[i].owned || badge.owned;
+            } else {
+                index.insert(key, deduped.len());
+                deduped.push(badge);
+            }
+        }
+
+        deduped
     }
 
     // ========================================================================
@@ -1146,6 +1555,9 @@ impl BadgeService {
         cache.third_party.ffz = None;
         cache.third_party.chatterino = None;
         cache.third_party.homies = None;
+        cache.third_party.chatsen = None;
+        cache.third_party.chatty = None;
+        cache.third_party.dankchat = None;
         cache.third_party.last_updated = UNIX_EPOCH;
         cache.user_badge_strings.clear();
     }

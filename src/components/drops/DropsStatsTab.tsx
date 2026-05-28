@@ -49,7 +49,7 @@ export default function DropsStatsTab({
                     <StatCard
                         icon={<TrendingUp size={20} />}
                         value={statistics.active_campaigns}
-                        label="Active Campaigns"
+                        label="Available Campaigns"
                         color="green"
                     />
                     <StatCard
@@ -133,7 +133,7 @@ export default function DropsStatsTab({
                         <div className="mt-4 flex justify-end">
                             <button
                                 onClick={onStopMining}
-                                className="px-4 py-2 bg-red-500/20 hover:bg-red-500/30 text-red-300 rounded-lg text-xs font-semibold flex items-center gap-2 transition-colors border border-red-500/20 hover:border-red-500/50"
+                                className="glass-button px-4 py-2 text-xs font-semibold text-red-300 flex items-center gap-2"
                             >
                                 <Pause size={14} />
                                 Stop Mining

@@ -7,7 +7,7 @@ import { getCachedEmojiUrl, parseEmojisSync } from '../services/emojiService';
 import { calculateHalfPadding } from '../utils/chatLayoutUtils';
 import { computePaintStyle, getBadgeImageUrl, getBadgeFallbackUrls, queueCosmeticForCaching } from '../services/seventvService';
 import { FallbackImage } from './FallbackImage';
-import { getCosmeticsWithFallback, getThirdPartyBadgesFromMemoryCache } from '../services/cosmeticsCache';
+import { getCosmeticsWithFallback } from '../services/cosmeticsCache';
 import type { ThirdPartyBadge as ThirdPartyBadgeType } from '../services/thirdPartyBadges';
 import { useAppStore } from '../stores/AppStore';
 import { openBadgesWithBadgeInMain } from '../utils/openBadgesInMain';
@@ -466,15 +466,12 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
   const seventvBadge = useChatUserStore(
     (s) => (userId ? s.users.get(userId)?.seventvBadge : undefined),
   ) as SevenTVBadgeWithSelection | null | undefined;
-  const thirdPartyBadgesFromStore = useChatUserStore(
-    (s) => (userId ? s.users.get(userId)?.thirdPartyBadges : undefined),
-  ) as ThirdPartyBadgeType[] | undefined;
-  // If the store doesn't have third-party badges yet (e.g., this is a message
-  // from before channel context was available), fall back to a one-shot read
-  // from the per-user cache. Empty array if neither source has data.
-  const thirdPartyBadges: ThirdPartyBadgeType[] =
-    thirdPartyBadgesFromStore ??
-    (userId ? (getThirdPartyBadgesFromMemoryCache(userId) || []) : []);
+  // Third-party chat-client badges (FFZ / Chatterino / Homies / Chatsen / Chatty /
+  // DankChat) are intentionally NOT shown in chat. They are resolved only when a
+  // user's profile is opened (avoids a per-chatter network round-trip and keeps
+  // chat to Twitch + 7TV + StreamNook badges). Kept as an empty array so the
+  // badge-render blocks below stay structurally intact.
+  const thirdPartyBadges: ThirdPartyBadgeType[] = [];
   const [broadcasterType] = useState<string | null>(null);
   const [isMentioned, setIsMentioned] = useState(false);
   const [isReplyToMe, setIsReplyToMe] = useState(false);

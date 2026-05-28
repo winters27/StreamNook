@@ -408,8 +408,8 @@ const UserProfileCard = ({
   // Re-render when the StreamNook registry updates so the #N chip appears as soon as it loads
   useSyncExternalStore(subscribeStreamNookRegistryVersion, getStreamNookRegistryVersion, getStreamNookRegistryVersion);
   // Re-render when the cosmetics registry updates so this user's owned-but-not-active
-  // StreamNook badges appear / refresh as ownership changes (e.g. grant from a Ko-fi
-  // donation lands while the popup is open).
+  // StreamNook badges appear / refresh as ownership changes (e.g. a grant from a
+  // streamnook.app purchase lands while the popup is open).
   useSyncExternalStore(subscribeCosmeticsVersion, getCosmeticsVersion, getCosmeticsVersion);
   const streamNookUserNumber = getStreamNookUserNumber(userId);
   // Only enumerate owned StreamNook cosmetics for users who are actually in the

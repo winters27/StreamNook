@@ -144,6 +144,9 @@ export interface ChatDesignSettings {
   // Use compact emote tooltips (just the name) instead of the upscaled
   // emote preview. Default false (preview tooltip is the current behavior).
   compact_emote_tooltips?: boolean;
+  // Show an in-chat notice when a channel's 7TV emote set changes live (a mod
+  // adds, removes, or renames an emote). Default true.
+  seventv_emote_notices?: boolean;
 }
 
 export interface HighlightPhrase {
