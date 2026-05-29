@@ -1,3 +1,28 @@
+## [7.6.0] - 2026-05-29
+### ✨ Features
+- **StreamNook Identity**: Curate your favorite badges (Twitch, 7TV, BTTV, FFZ, Chatterino, and more) to display in chat, configurable in the new Accounts settings.
+- **Multi-Account Support**: Seamlessly link multiple Twitch accounts. Send messages in chat from any of your linked accounts with a new 'Send As' picker.
+- **BetterTTV Badges**: Full integration for BetterTTV badges, including contributor badges and the unique BTTV Pro loyalty badges (now discoverable in a dedicated tab in the Badges gallery).
+- **Persistent Mod Logs**: For moderators, a new Moderation Logs pane displays a persistent, real-time history of mod actions for the current channel. Configurable in new Moderation settings.
+- **Real-time Moderation Events**: Live moderation events (bans, timeouts, deletes) are now streamed from Twitch via EventSub to enrich your moderation logs, even for channels you're not actively streaming.
+- **Hype Train Confetti**: Celebrate every Hype Train level-up with a dazzling confetti burst animation.
+- **Enhanced MultiChat**: Pop out all MultiNook chats into a single MultiChat window, which now tracks all opened popout channels.
+- **Rich Chat Feedback**: Message sending now provides authoritative Twitch message IDs and detailed reasons if a message is dropped (e.g., by AutoMod).
+- **Automated Installer Deployment**: Faster, more reliable downloads for new releases via Cloudflare R2 CDN.
+
+### 🐛 Bug Fixes
+- **MultiNook Ad-Blocking**: Fixed an issue where MultiNook streams could still display ads even when the ad-block proxy was enabled.
+- **IRC Reconnects**: Improved IRC connection stability; all joined chat channels now correctly re-establish after an IRC disconnect.
+- **7TV Cosmetics Display**: Resolved an issue where your own 7TV paint and badge might not consistently appear after connecting or re-authenticating.
+- **EventSub Error Reporting**: Improved error reporting for EventSub subscription failures, providing better diagnostic information.
+- **Chat Resizer**: Enhanced the responsiveness and usability of the chat and mod log resizer handles.
+- **Hype Train UI**: Refined the visual styling and animation of the Hype Train progress bar and level-up celebration.
+- **Moderation Actions**: Updated Twitch API endpoints for deleting messages and clearing chat, providing more robust actions and detailed error messages.
+
+### 🔧 Maintenance
+- **Local Crash Logs**: Replaced Discord webhook error reporting with a privacy-focused local crash log. Errors are now saved directly on your machine for optional review, instead of being sent externally.
+- **Settings Navigation**: Added an ability to deep-link directly to specific settings tabs for improved navigation experience.
+
 ## [7.5.6] - 2026-05-27
 ### 🐛 Bug Fixes
 - Improved the application update process on Windows, preventing a brief command prompt window from appearing and ensuring updates complete reliably in the background.
@@ -1339,6 +1364,7 @@ ATTENTION: ALL USERS LOG OUT OF TWITCH THEN LOG BACK IN FOR SOME CHANGES OT TAKE
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
