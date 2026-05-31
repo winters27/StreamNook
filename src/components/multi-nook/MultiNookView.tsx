@@ -315,7 +315,7 @@ export const MultiNookView: React.FC = () => {
                   })}
                 </SortableContext>
                 
-                {/* The user wants odd leftover streams on top (an upward-pointing pyramid). */}
+                {/* Odd leftover streams sit on top (an upward-pointing pyramid). */}
                 {/* Flexbox naturally flows left-to-right, putting leftovers on the bottom. */}
                 {/* We reverse the pyramid visually by inserting a flex break with an exact CSS order */}
                 {/* that forces the first visual row to carry the deficit. */}

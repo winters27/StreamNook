@@ -420,12 +420,6 @@ pub async fn get_watch_streaks_batch(
 
         debug!("[WatchStreak] Raw batch response: {}", response_text);
 
-        // TEMPORARY: Dump to file for AI diagnostics
-        let _ = std::fs::write(
-            "C:\\Users\\Brandon\\Desktop\\StreamNook\\docs\\DEBUG_GQL_RESPONSE.json",
-            &response_text,
-        );
-
         // A batched query returns an array of response objects
         let parsed: Vec<WatchStreakResponse> = serde_json::from_str(&response_text)
             .map_err(|e| format!("Failed to parse response: {}", e))?;

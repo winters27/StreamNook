@@ -39,6 +39,23 @@ export function removeAccount(userId: string): Promise<void> {
   return invoke('remove_twitch_account', { userId });
 }
 
+/**
+ * Make a linked account the main (the one you watch and stream as). Moves its
+ * token into the primary slot and demotes the previous main to a linked account
+ * (kept, never deleted). Resolves with the newly-active account.
+ */
+export function setActiveAccount(userId: string): Promise<StoredAccount> {
+  return invoke<StoredAccount>('set_active_twitch_account', { userId });
+}
+
+/**
+ * Sign out of the current main. Resolves with the account that was promoted to
+ * main in its place, or `null` if that was the last account (a full sign-out).
+ */
+export function signOutActiveAccount(): Promise<StoredAccount | null> {
+  return invoke<StoredAccount | null>('sign_out_active_twitch_account');
+}
+
 // ── Per-account 7TV (for editing a linked account's cosmetics) ───────────────
 
 export interface SevenTVAccountStatus {

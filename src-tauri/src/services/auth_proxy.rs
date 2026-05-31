@@ -476,9 +476,8 @@ fn extract_high_tier_blocks(master: &str) -> Vec<String> {
     out
 }
 
-/// Matches Python's `urllib.parse.quote(s, safe=":/")` — percent-encodes
-/// everything except RFC 3986 unreserved chars + `:` and `/`. The TTVLOL
-/// proxies require URLs in this shape.
+/// Percent-encodes everything except RFC 3986 unreserved chars + `:` and `/`.
+/// The TTVLOL proxies require URLs in this shape.
 fn quote_safe_colon_slash(s: &str) -> String {
     let mut out = String::with_capacity(s.len() * 2);
     for ch in s.chars() {
@@ -542,8 +541,8 @@ mod tests {
     }
 
     #[test]
-    fn quote_matches_python_safe_colon_slash() {
-        // Mirrors Python's urllib.parse.quote(url, safe=":/")
+    fn quote_encodes_all_but_colon_slash() {
+        // Verifies every byte except `:` and `/` is percent-encoded.
         let raw = "https://eu.luminous.dev/playlist/nickmercs.m3u8?platform=web&supported_codecs=av1,h264,h265";
         let got = quote_safe_colon_slash(raw);
         assert_eq!(

@@ -1,5 +1,4 @@
-// Stripe webhook handler — companion to kofi-webhook for the streamnook.app
-// cutover. We listen for:
+// Stripe webhook handler for streamnook.app payments. We listen for:
 //   - checkout.session.completed       → one-time Supporter donations
 //   - invoice.payment_succeeded        → recurring Subscriber renewals
 //   - customer.subscription.updated    → status + cancel_at_period_end + period_end changes
@@ -104,8 +103,8 @@ async function pickQualifyingCosmetic(
   }
   // Subscription tier ALWAYS gets the subscriber slug if amount qualifies.
   // For supporter donations, pick the highest-tier slug the amount clears.
-  // This matches the kofi-webhook design — adding a $10 patron tier later
-  // is a pure catalog insert with no webhook change required.
+  // Tiers are catalog-driven: adding a $10 patron tier later is a pure
+  // catalog insert with no webhook change required.
   const dollars = amountCents / 100;
   if (tier === "subscriber") {
     const row = (data ?? []).find(r => r.slug === "streamnook-subscriber");

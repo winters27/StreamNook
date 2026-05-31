@@ -259,7 +259,15 @@ const EMPTY_THIRD_PARTY: ThirdPartyBadgeType[] = [];
 // Memoized ChatMessage component to prevent unnecessary re-renders
 // This is critical for preventing animation restarts when new messages arrive
 const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, onUsernameClick, onReplyClick, isHighlighted = false, moderationContext = null, onEmoteRightClick, onMessageCopy, onUsernameRightClick, onBadgeClick, emotes, isModerator = false, broadcasterId }: ChatMessageProps) {
-  const { settings, currentUser, currentStream } = useAppStore();
+  // Field selectors, NOT a whole-store subscription. This component is mounted
+  // once per chat row, so subscribing to the entire store made every row
+  // re-render on every unrelated store tick (hours-watched, viewer count, etc.).
+  // On a high-traffic channel that render storm pegs the main thread and freezes
+  // the video. Selecting only what we read means a row re-renders only when its
+  // own inputs change.
+  const settings = useAppStore((s) => s.settings);
+  const currentUser = useAppStore((s) => s.currentUser);
+  const currentStream = useAppStore((s) => s.currentStream);
   const chatDesign = settings.chat_design;
   // Re-render this row when the StreamNook registry updates (async load / new signup)
   useSyncExternalStore(subscribeStreamNookRegistryVersion, getStreamNookRegistryVersion, getStreamNookRegistryVersion);
@@ -2017,10 +2025,10 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
 
   // Build border class based on settings
   // Divider anchored to the TOP of each message instead of the bottom. That
-  // way the very last visible message has no line at its bottom edge — so
+  // way the very last visible message has no line at its bottom edge, so
   // when a new message arrives, the "absolute bottom" of the chat has no
-  // 1px line that needs to move with the layout. Removes the tiny vertical
-  // shimmer Brandon flagged.
+  // 1px line that needs to move with the layout. Removes a tiny vertical
+  // shimmer at the bottom edge.
   const borderClass = chatDesign?.show_dividers !== false ? 'border-t border-borderSubtle' : '';
 
   // StreamNook badge: regular-message render path (the 5th badge render site).

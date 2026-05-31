@@ -50,6 +50,34 @@ pub(crate) fn get_app_data_dir() -> Result<PathBuf> {
     Err(anyhow::anyhow!("Could not determine app data directory"))
 }
 
+/// Per-account WebView2 user-data folder for Twitch *web* sessions
+/// (`app_data_dir/twitch_web_profiles/<account_id>`). Child webviews that load
+/// twitch.tv (the subscribe page, the device-code activation page) are built
+/// with this as their `data_directory`, so each linked account keeps its own
+/// isolated, persistent browser session. Switching the main account therefore
+/// switches the web session too, and a re-login can never silently inherit a
+/// different account's session. Mirrors the 7TV per-account profile pattern.
+pub(crate) fn twitch_web_profile_dir(account_id: &str) -> Result<PathBuf> {
+    let mut path = get_app_data_dir()?;
+    path.push("twitch_web_profiles");
+    path.push(account_id);
+    fs::create_dir_all(&path)?;
+    Ok(path)
+}
+
+/// Best-effort removal of an account's Twitch web profile (called when the
+/// account is unlinked or fully signed out, so a removed account leaves no
+/// lingering browser session behind).
+pub(crate) fn delete_twitch_web_profile(account_id: &str) {
+    if let Ok(mut base) = get_app_data_dir() {
+        base.push("twitch_web_profiles");
+        base.push(account_id);
+        if base.exists() {
+            let _ = fs::remove_dir_all(&base);
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct DeviceCodeResponse {
     device_code: String,
@@ -227,6 +255,34 @@ impl TwitchService {
         })
     }
 
+    /// Write a token to ALL primary-slot storage (file + cookies + keyring). This
+    /// is the single definition of "occupying the primary slot", so login,
+    /// refresh, and account-switch all persist it identically. `refresh_token`
+    /// deliberately does NOT call this: keeping refresh a pure transform is what
+    /// stops a SECONDARY account's refresh (via `AccountStore::get_token_for`)
+    /// from silently clobbering the primary's token.
+    pub(crate) async fn persist_primary_token(token: &StorableToken) -> Result<()> {
+        Self::store_token_to_file(token)?;
+        let _ = Self::store_token_to_cookies(token).await;
+        if let Ok(entry) = Entry::new(KEYRING_SERVICE, KEYRING_USERNAME) {
+            if let Ok(json) = serde_json::to_string(token) {
+                let _ = entry.set_password(&json);
+            }
+        }
+        Ok(())
+    }
+
+    /// Read whatever token currently occupies the primary slot (file first, then
+    /// cookies). The account registry uses this to capture the outgoing main's
+    /// token before a switch so the old main can be preserved as a linked
+    /// secondary instead of being lost.
+    pub(crate) async fn load_primary_token() -> Result<StorableToken> {
+        if let Ok(token) = Self::load_token_from_file() {
+            return Ok(token);
+        }
+        Self::load_token_from_cookies().await
+    }
+
     async fn delete_cookies() -> Result<()> {
         let cookie_jar = CookieJarService::new_main()?;
         cookie_jar.clear().await?;
@@ -234,7 +290,7 @@ impl TwitchService {
         Ok(())
     }
 
-    // Device Code Flow - the main login method (like Python app)
+    // Device Code Flow - the main login method
     pub async fn login(_state: &AppState, app_handle: tauri::AppHandle) -> Result<String> {
         let client = crate::services::http::client().clone();
 
@@ -590,14 +646,12 @@ impl TwitchService {
             expires_at: expires_at.timestamp(),
         };
 
-        // Store the refreshed token
-        Self::store_token_to_file(&new_storable_token)?;
-
-        // Also try keyring as backup
-        if let Ok(entry) = Entry::new(KEYRING_SERVICE, KEYRING_USERNAME) {
-            let _ = entry.set_password(&serde_json::to_string(&new_storable_token)?);
-        }
-
+        // Pure transform: the caller decides where this token is stored. The
+        // primary callers below persist it via `persist_primary_token`; the
+        // secondary-account path (`AccountStore::get_token_for`) persists it only
+        // to that account's own store. Persisting here would write EVERY refresh
+        // into the primary slot, including a secondary's, which silently swaps
+        // the main account out from under the user.
         Ok(new_storable_token)
     }
 
@@ -618,8 +672,9 @@ impl TwitchService {
                         match Self::refresh_token(&token.refresh_token).await {
                             Ok(new_token) => {
                                 token = new_token;
-                                // Also update cookies with refreshed token
-                                let _ = Self::store_token_to_cookies(&token).await;
+                                // Persist the refreshed primary token everywhere
+                                // (file + cookies + keyring).
+                                let _ = Self::persist_primary_token(&token).await;
                             }
                             Err(e) => {
                                 error!("[GET_TOKEN] Failed to refresh token: {:?}", e);
@@ -659,9 +714,8 @@ impl TwitchService {
                                 match Self::refresh_token(&cookie_token.refresh_token).await {
                                     Ok(new_token) => {
                                         cookie_token = new_token.clone();
-                                        // Update both file and cookies
-                                        let _ = Self::store_token_to_file(&new_token);
-                                        let _ = Self::store_token_to_cookies(&new_token).await;
+                                        // Persist to all primary-slot storage.
+                                        let _ = Self::persist_primary_token(&new_token).await;
                                     }
                                     Err(e) => {
                                         error!(
@@ -734,7 +788,7 @@ impl TwitchService {
                                         match Self::refresh_token(&token.refresh_token).await {
                                             Ok(new_token) => {
                                                 token = new_token;
-                                                let _ = Self::store_token_to_cookies(&token).await;
+                                                let _ = Self::persist_primary_token(&token).await;
                                             }
                                             Err(e) => {
                                                 error!(
@@ -919,8 +973,9 @@ impl TwitchService {
         debug!("🔄 [Auth Debug] Force refreshing token...");
         let new_token = Self::refresh_token(&token.refresh_token).await?;
 
-        // Update all storage locations
-        let _ = Self::store_token_to_cookies(&new_token).await;
+        // This is an explicit PRIMARY refresh, so persist to all primary-slot
+        // storage (file + cookies + keyring).
+        let _ = Self::persist_primary_token(&new_token).await;
 
         debug!("🔄 [Auth Debug] Token refreshed successfully!");
         Ok(new_token.access_token)

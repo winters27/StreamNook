@@ -260,24 +260,44 @@ impl AccountStore {
             }
         }
         Self::delete_secondary_token(user_id)?;
+        // Drop the account's isolated Twitch web session too, so an unlinked
+        // account leaves no lingering browser profile behind.
+        crate::services::twitch_service::delete_twitch_web_profile(user_id);
         let mut accounts = Self::list();
         accounts.retain(|a| a.user_id != user_id);
         Self::save(&accounts)?;
         Ok(())
     }
 
-    /// Record the current login as the primary account in the registry. Cheap:
-    /// when the registry already lists this user as primary it does no network
-    /// work. Called on startup with the user id Twitch's validate endpoint
-    /// already returned, so a re-login as a different account self-heals. Always
-    /// best-effort: any failure is logged and swallowed so login is never broken.
+    /// Record the current login as the main account in the registry, and keep a
+    /// backup copy of its token so it can be demoted losslessly later. Called on
+    /// startup with the user id Twitch's validate endpoint already returned.
+    ///
+    /// Non-destructive: when a DIFFERENT account is found occupying the primary
+    /// slot (a re-login as someone else), the previous main is demoted to a
+    /// linked account rather than deleted. Always best-effort: any failure is
+    /// logged and swallowed so login is never broken.
     pub async fn reconcile_primary(validated_user_id: &str) {
-        if let Some(p) = Self::primary() {
+        let accounts = Self::list();
+        let current_primary = accounts.iter().find(|a| a.is_primary).cloned();
+
+        // Fast path: the registry already agrees with the signed-in account.
+        // Mirror the live slot token into this account's own store as a backup,
+        // so if a different account later takes the slot, this one can be demoted
+        // to a usable linked account without losing its token.
+        if let Some(p) = &current_primary {
             if p.user_id == validated_user_id {
-                return; // already correct, no work needed
+                if let Ok(token) = TwitchService::load_primary_token().await {
+                    let _ = Self::store_secondary_token(validated_user_id, &token);
+                }
+                return;
             }
         }
 
+        // A different account now occupies the primary slot. Record it as the new
+        // main WITHOUT deleting the previous one: the old main is demoted to a
+        // linked account (its token was mirrored on a prior clean startup, so it
+        // usually survives intact; worst case it just needs a re-link).
         let info = match TwitchService::get_user_info().await {
             Ok(i) => i,
             Err(e) => {
@@ -286,35 +306,156 @@ impl AccountStore {
             }
         };
 
-        let mut accounts = Self::list();
-        // If the new primary was previously linked as a secondary, clean up its
-        // secondary token: the primary slot now owns this account's token.
-        if accounts
-            .iter()
-            .any(|a| !a.is_primary && a.user_id == info.id)
-        {
-            let _ = Self::delete_secondary_token(&info.id);
+        let mut next = accounts;
+        // Demote everyone; the new main is re-marked below.
+        for a in next.iter_mut() {
+            a.is_primary = false;
         }
-        // Drop the OLD primary entry entirely (its token lived in the primary
-        // slot, not the secondary store, so it cannot become a usable secondary)
-        // and any duplicate of the new primary id. Genuine secondaries own their
-        // own tokens and are preserved untouched.
-        accounts.retain(|a| !a.is_primary && a.user_id != info.id);
-        accounts.insert(
-            0,
-            StoredAccount {
-                user_id: info.id,
-                login: info.login,
-                display_name: info.display_name,
-                avatar_url: info.profile_image_url,
-                is_primary: true,
-                added_at: 0,
-            },
-        );
+        // The new main's token lives in the primary slot now, so a stale
+        // secondary copy (if it was previously a linked account) is redundant.
+        let _ = Self::delete_secondary_token(&info.id);
 
-        match Self::save(&accounts) {
-            Ok(_) => debug!("[accounts] primary recorded in registry"),
+        if let Some(existing) = next.iter_mut().find(|a| a.user_id == info.id) {
+            existing.is_primary = true;
+            existing.login = info.login;
+            existing.display_name = info.display_name;
+            existing.avatar_url = info.profile_image_url;
+        } else {
+            next.insert(
+                0,
+                StoredAccount {
+                    user_id: info.id,
+                    login: info.login,
+                    display_name: info.display_name,
+                    avatar_url: info.profile_image_url,
+                    is_primary: true,
+                    added_at: 0,
+                },
+            );
+        }
+
+        match Self::save(&next) {
+            Ok(_) => debug!("[accounts] primary reconciled (non-destructive)"),
             Err(e) => warn!("[accounts] failed to record primary: {}", e),
         }
+    }
+
+    /// Promote a linked account to the active (main) account: the one you watch
+    /// and stream as. Lossless and non-destructive:
+    ///   1. capture the outgoing main's token from the primary slot and file it
+    ///      in that account's own store, so the old main survives as a linked
+    ///      account you can switch back to;
+    ///   2. move the target account's token into the primary slot;
+    ///   3. flip the `is_primary` flags, keeping every account in the registry.
+    ///
+    /// Errors (without changing anything) if the target is unknown or has no
+    /// usable stored token, so a failed switch never strands the current main.
+    pub async fn set_active(user_id: &str) -> Result<StoredAccount> {
+        let accounts = Self::list();
+        let target = accounts
+            .iter()
+            .find(|a| a.user_id == user_id)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("That account is not linked."))?;
+
+        if target.is_primary {
+            return Ok(target); // already the main
+        }
+
+        // Resolve the target's token BEFORE touching the primary slot, so any
+        // failure here leaves the current main fully intact.
+        let target_token = Self::load_secondary_token(user_id).map_err(|_| {
+            anyhow::anyhow!(
+                "@{} needs to be signed in again before it can become your main.",
+                target.login
+            )
+        })?;
+
+        // Preserve the outgoing main losslessly: copy its slot token into its own
+        // store so it becomes a normal linked account.
+        if let Some(old) = accounts.iter().find(|a| a.is_primary) {
+            if let Ok(old_token) = TwitchService::load_primary_token().await {
+                let _ = Self::store_secondary_token(&old.user_id, &old_token);
+            }
+        }
+
+        // Move the target's token into the primary slot, then drop its secondary
+        // copy so the token has exactly one home.
+        TwitchService::persist_primary_token(&target_token).await?;
+        let _ = Self::delete_secondary_token(user_id);
+
+        let mut next = accounts;
+        for a in next.iter_mut() {
+            a.is_primary = a.user_id == user_id;
+        }
+        Self::save(&next)?;
+        debug!("[accounts] switched main account to @{}", target.login);
+        Self::get(user_id).ok_or_else(|| anyhow::anyhow!("Account vanished after switch"))
+    }
+
+    /// Sign out of the current main. If other accounts are linked, the most
+    /// recently added one is promoted to main (so signing out lands you on a
+    /// linked account instead of fully logged out) and returned; the signed-out
+    /// account is removed entirely. If it was the only account, this is a full
+    /// logout and returns `None`.
+    pub async fn sign_out_active() -> Result<Option<StoredAccount>> {
+        let accounts = Self::list();
+        let leaving_id = accounts
+            .iter()
+            .find(|a| a.is_primary)
+            .map(|p| p.user_id.clone());
+
+        // Promotion candidates: every linked account other than the one leaving,
+        // most-recently-added first.
+        let mut candidates: Vec<StoredAccount> = accounts
+            .iter()
+            .filter(|a| Some(&a.user_id) != leaving_id.as_ref())
+            .cloned()
+            .collect();
+        candidates.sort_by(|a, b| b.added_at.cmp(&a.added_at));
+
+        // Pick the first candidate that actually has a usable token to promote.
+        let promote = candidates.into_iter().find_map(|c| {
+            Self::load_secondary_token(&c.user_id)
+                .ok()
+                .map(|tok| (c, tok))
+        });
+
+        // Clear the outgoing main's web session + primary slot, drop any backup
+        // copy of its token, and remove its isolated Twitch web profile.
+        let _ = TwitchService::logout().await;
+        if let Some(lid) = &leaving_id {
+            let _ = Self::delete_secondary_token(lid);
+            crate::services::twitch_service::delete_twitch_web_profile(lid);
+        }
+
+        if let Some((next, next_token)) = promote {
+            // Promote the chosen account into the now-empty primary slot.
+            TwitchService::persist_primary_token(&next_token).await?;
+            let _ = Self::delete_secondary_token(&next.user_id);
+
+            let mut rebuilt: Vec<StoredAccount> = Self::list()
+                .into_iter()
+                .filter(|a| Some(&a.user_id) != leaving_id.as_ref())
+                .collect();
+            for a in rebuilt.iter_mut() {
+                a.is_primary = a.user_id == next.user_id;
+            }
+            Self::save(&rebuilt)?;
+            debug!("[accounts] signed out main; promoted @{}", next.login);
+            return Ok(Some(next));
+        }
+
+        // Nothing to promote: a full logout. Drop the lone (now tokenless)
+        // primary entry so the registry doesn't keep a ghost.
+        if let Some(lid) = &leaving_id {
+            let remaining: Vec<StoredAccount> = Self::list()
+                .into_iter()
+                .filter(|a| &a.user_id != lid)
+                .collect();
+            let _ = Self::save(&remaining);
+        }
+        debug!("[accounts] signed out; no other account to promote (full logout)");
+        Ok(None)
     }
 }

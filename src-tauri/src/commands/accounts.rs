@@ -81,3 +81,25 @@ pub async fn add_twitch_account(app: AppHandle) -> Result<StoredAccount, String>
 pub async fn remove_twitch_account(user_id: String) -> Result<(), String> {
     AccountStore::remove_secondary(&user_id).map_err(|e| e.to_string())
 }
+
+/// Promote a linked account to the main account you watch and stream as. Moves
+/// its token into the primary slot and demotes the previous main to a linked
+/// account (kept, never deleted). Returns the newly-active account. The frontend
+/// re-establishes the watched identity (and reconnects chat) afterward.
+#[tauri::command]
+pub async fn set_active_twitch_account(user_id: String) -> Result<StoredAccount, String> {
+    AccountStore::set_active(&user_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Sign out of the current main. If other accounts are linked, the most recently
+/// added one is promoted to main and returned; otherwise this is a full sign-out
+/// and returns `null`. The frontend re-establishes identity when an account is
+/// returned, or drops to the logged-out state when it is null.
+#[tauri::command]
+pub async fn sign_out_active_twitch_account() -> Result<Option<StoredAccount>, String> {
+    AccountStore::sign_out_active()
+        .await
+        .map_err(|e| e.to_string())
+}

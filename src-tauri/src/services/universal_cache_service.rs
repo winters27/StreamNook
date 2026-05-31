@@ -23,6 +23,21 @@ static ASYNC_MANIFEST_LOCK: Lazy<TokioMutex<()>> = Lazy::new(|| TokioMutex::new(
 // Flag to prevent concurrent downloads
 static DOWNLOAD_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
+// One shared HTTP client for ALL cache-file downloads (emotes + badges).
+// Reusing a single client keeps its connection pool warm, so concurrent
+// downloads to the same CDN host multiplex over one HTTP/2 connection instead
+// of each paying a fresh TCP + TLS handshake. The timeouts are load-bearing:
+// without them a hung/half-open CDN response would await forever, never freeing
+// its download-queue slot, and a few of those would permanently wedge caching.
+static DOWNLOAD_CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
+    reqwest::Client::builder()
+        .user_agent("StreamNook/1.0")
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .expect("failed to build shared cache-download HTTP client")
+});
+
 // In-memory mirror of the on-disk manifest. Initialized from disk on first
 // access; every subsequent read/write hits memory only. A background task
 // flushes dirty state to disk on a 5-second debounce (or on next tick if a
@@ -941,12 +956,9 @@ pub async fn cache_file(
         id, cache_type
     );
 
-    // Download file
-    let client = reqwest::Client::builder()
-        .user_agent("StreamNook/1.0")
-        .build()?;
-
-    let response = client.get(&url).send().await?;
+    // Download via the shared pooled client so this request reuses a warm
+    // connection (HTTP/2 multiplexing) and is bounded by the client's timeouts.
+    let response = DOWNLOAD_CLIENT.get(&url).send().await?;
 
     if !response.status().is_success() {
         return Err(anyhow::anyhow!(

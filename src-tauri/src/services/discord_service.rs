@@ -35,12 +35,8 @@ lazy_static! {
     }));
 }
 
-// ---
-// START: MOVED lazy_static! BLOCK
-// ---
-// This block is now at the top-level, outside of the `impl` block.
+// Regex patterns for normalizing game names before matching.
 lazy_static! {
-    // Compile the regex patterns from your Python script
     static ref CLEAN_PATTERNS: Vec<Regex> = vec![
         Regex::new(r"[®™©]").unwrap(), // Remove trademark symbols
         Regex::new(r"\s*\(.*?\)").unwrap(), // (demo), (beta), etc.
@@ -56,16 +52,13 @@ lazy_static! {
         ["the", "a", "an", "of", "in", "on", "at", "to", "for"]
         .iter().cloned().collect();
 }
-// ---
-// END: MOVED lazy_static! BLOCK
-// ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct DiscordApp {
     id: String,
     name: String,
     #[serde(default)]
-    icon_hash: Option<String>, // <--- CORRECTED
+    icon_hash: Option<String>,
     #[serde(default)]
     cover_image: Option<String>,
     #[serde(default)]
@@ -336,17 +329,12 @@ impl DiscordService {
         Ok(())
     }
 
-    // ---
-    // Start: CORRECTED resolve_game_image and NEW matching logic
-    // ---
-
     /// Resolve game name to Discord game image URL
     async fn resolve_game_image(game_name: &str) -> Result<String> {
         // Fetch Discord's detectable games list
         let apps = Self::fetch_discord_detectables().await?;
 
-        // Try to match the game
-        // We pass a threshold, just like the Python version
+        // Try to match the game, passing a similarity threshold.
         if let Some(matched_app) = Self::match_game(&apps, game_name, 0.6) {
             // Prefer cover_image, fallback to icon_hash
             if let Some(cover) = &matched_app.cover_image {
@@ -356,11 +344,10 @@ impl DiscordService {
                 ));
             }
             if let Some(icon_hash) = &matched_app.icon_hash {
-                // <--- CORRECTED
                 return Ok(format!(
                     "https://cdn.discordapp.com/app-icons/{}/{}.png?size=512",
                     matched_app.id, icon_hash
-                )); // <--- CORRECTED
+                ));
             }
         }
 
@@ -383,12 +370,7 @@ impl DiscordService {
         Ok(apps)
     }
 
-    // --- Start: New Matching Logic Ported from Python ---
-    // (These functions are inside the `impl` block,
-    //  but they correctly reference the `lazy_static!`
-    //  vars defined at the module level)
-
-    /// Normalize string for comparison (Python's _norm)
+    /// Normalize string for comparison (trim + lowercase).
     fn norm(s: &str) -> String {
         s.trim().to_lowercase()
     }
@@ -413,7 +395,7 @@ impl DiscordService {
         Self::norm(&cleaned.split_whitespace().collect::<Vec<_>>().join(" "))
     }
 
-    /// Calculate similarity score (Python's _similarity_score)
+    /// Calculate similarity score between two strings.
     fn similarity_score(s1: &str, s2: &str) -> f64 {
         let mut score = 0.0;
         score
@@ -422,7 +404,6 @@ impl DiscordService {
     /// Extract the core game name (first part before colon or dash)
     fn extract_core_name(name: &str) -> String {
         for sep in [':', '–', '—', '-'] {
-            // Added missing '-' from python ' - '
             if let Some((before, _)) = name.split_once(sep) {
                 return before.trim().to_string();
             }
@@ -439,7 +420,7 @@ impl DiscordService {
             .collect()
     }
 
-    /// The new match_game, which implements the Python logic
+    /// Match a game name to the closest detectable app above the threshold.
     fn match_game(apps: &[DiscordApp], game_name: &str, threshold: f64) -> Option<DiscordApp> {
         if game_name.is_empty() {
             return None;
@@ -471,7 +452,7 @@ impl DiscordService {
                 let cn_core = Self::norm(&Self::extract_core_name(&check_name));
                 let cn_tokens = Self::tokenize(&check_name);
 
-                // Start scoring cascade, just like the Python script
+                // Start scoring cascade.
                 if g_norm == cn_norm {
                     score = 1.0;
                 } else if g_clean == cn_clean {

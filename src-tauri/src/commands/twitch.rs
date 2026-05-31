@@ -1,7 +1,10 @@
 use crate::models::settings::AppState;
 use crate::models::stream::{TwitchClip, TwitchStream, TwitchVideo};
 use crate::models::user::{ChannelInfo, UserInfo};
-use crate::services::twitch_service::{DeviceCodeInfo, TokenHealthStatus, TwitchService};
+use crate::services::account_store::AccountStore;
+use crate::services::twitch_service::{
+    twitch_web_profile_dir, DeviceCodeInfo, TokenHealthStatus, TwitchService,
+};
 use crate::services::whisper_history_service::{
     WhisperHistoryService, WhisperMessage, WhisperThread,
 };
@@ -9,7 +12,7 @@ use crate::services::whisper_service::WhisperService;
 use anyhow::Result;
 use log::{debug, error};
 use std::sync::Arc;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, State, WebviewUrl, WebviewWindowBuilder};
 use tokio::sync::Mutex as TokioMutex;
 
 // Device Code Flow - the main login command
@@ -127,6 +130,77 @@ pub async fn clear_webview_data(app: AppHandle) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// Open the device-code activation page in the embedded login window, isolated
+/// to the active account's Twitch web profile. A per-account profile means a
+/// re-login lands on the same account (its web session persists) and can never
+/// silently authorize whichever account a shared browser session happened to be
+/// holding. Falls back to the default profile only when no account is linked yet
+/// (the very first sign-in).
+#[tauri::command]
+pub async fn open_twitch_login_window(app: AppHandle, url: String) -> Result<(), String> {
+    let parsed = url
+        .parse()
+        .map_err(|e| format!("Invalid login URL: {}", e))?;
+
+    let mut builder = WebviewWindowBuilder::new(&app, "twitch-login", WebviewUrl::External(parsed))
+        .title("Log in to Twitch")
+        .inner_size(500.0, 700.0)
+        .center()
+        .resizable(true)
+        .minimizable(true)
+        .maximizable(false);
+
+    if let Some(primary) = AccountStore::primary() {
+        builder = builder
+            .data_directory(twitch_web_profile_dir(&primary.user_id).map_err(|e| e.to_string())?);
+    }
+
+    builder
+        .build()
+        .map_err(|e| format!("Failed to open login window: {}", e))?;
+    Ok(())
+}
+
+/// Open the Twitch subscribe page for a channel, isolated to the active (main)
+/// account's Twitch web profile, so you subscribe as the account you watch and
+/// stream as rather than whichever account a shared browser session held.
+/// Returns the window label so the caller can auto-close it when a subscription
+/// is detected.
+#[tauri::command]
+pub async fn open_subscribe_window(
+    app: AppHandle,
+    channel_login: String,
+    title: Option<String>,
+) -> Result<String, String> {
+    let label = format!(
+        "subscribe-{}-{}",
+        channel_login,
+        chrono::Utc::now().timestamp_millis()
+    );
+    let url = format!("https://www.twitch.tv/subs/{}", channel_login);
+    let parsed = url
+        .parse()
+        .map_err(|e| format!("Invalid subscribe URL: {}", e))?;
+
+    let mut builder = WebviewWindowBuilder::new(&app, &label, WebviewUrl::External(parsed))
+        .title(title.unwrap_or_else(|| format!("Subscribe to {}", channel_login)))
+        .inner_size(800.0, 900.0)
+        .center()
+        .resizable(true)
+        .minimizable(true)
+        .maximizable(true);
+
+    if let Some(primary) = AccountStore::primary() {
+        builder = builder
+            .data_directory(twitch_web_profile_dir(&primary.user_id).map_err(|e| e.to_string())?);
+    }
+
+    builder
+        .build()
+        .map_err(|e| format!("Failed to open subscribe window: {}", e))?;
+    Ok(label)
 }
 
 /// Check if stored credentials exist (for showing appropriate toasts)

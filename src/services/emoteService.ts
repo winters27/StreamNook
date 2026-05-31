@@ -33,10 +33,16 @@ const cachedEmoteFiles: Map<string, string> = new Map();
 // Pending downloads to prevent duplicate requests
 const pendingDownloads: Map<string, Promise<string | null>> = new Map();
 
-// Queue system for downloads - balanced approach
-// Caching is a background optimization, NOT blocking for the user
-const MAX_CONCURRENT_DOWNLOADS = 3;
-const MIN_DELAY_BETWEEN_DOWNLOADS_MS = 50; // Minimal gap between downloads
+// Queue system for downloads. Deliberately STREAM-POLITE: caching is a
+// background optimization that must NEVER compete with the live video for
+// bandwidth or main-thread time. We keep it to a single serial download with a
+// real gap between each, so the stream always wins. Reusing one pooled HTTP/2
+// client (DOWNLOAD_CLIENT in universal_cache_service.rs) keeps even this serial
+// trickle cheap per request, so going from 3 concurrent to 1 costs almost
+// nothing in fill time while removing the bandwidth contention that made the
+// stream stutter.
+const MAX_CONCURRENT_DOWNLOADS = 1;
+const MIN_DELAY_BETWEEN_DOWNLOADS_MS = 250; // Real gap so caching yields to the stream
 const downloadQueue: Array<{ id: string, url: string }> = [];
 let activeDownloads = 0;
 let processingScheduled = false;

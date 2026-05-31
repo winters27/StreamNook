@@ -184,37 +184,21 @@ const ChannelPointsTooltip = ({ anchorRef, customPointsIconUrl, customPointsName
   );
 };
 
-// Emote Grid Item - TRUE lazy loading with IntersectionObserver
-// Image src only set when element enters viewport
+// Emote Grid Item. Browser-native virtualization via CSS content-visibility
+// (the same approach the chat list uses): off-screen cells skip layout + paint
+// and the browser can release their decoded bitmap, so the picker's live memory
+// stays bounded to the visible window instead of growing with every cell
+// scrolled past. That, plus native loading="lazy", is also what stops opening a
+// large set from stalling the renderer (which was freezing the stream): there
+// is no longer a per-cell IntersectionObserver + state, and mounting hundreds
+// of those was the bulk of the open-the-picker cost.
 const EmoteGridItem = memo(({ emote, isFavorited, onInsert, onToggleFavorite }: {
   emote: Emote;
   isFavorited: boolean;
   onInsert: () => void;
   onToggleFavorite: () => void;
 }) => {
-  const [isVisible, setIsVisible] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
-  
-  // IntersectionObserver to detect when emote scrolls into view
-  useEffect(() => {
-    const element = containerRef.current;
-    if (!element) return;
-    
-    const observer = new IntersectionObserver(
-      (entries) => {
-        entries.forEach(entry => {
-          if (entry.isIntersecting) {
-            setIsVisible(true);
-            observer.disconnect(); // Once visible, stop observing
-          }
-        });
-      },
-      { rootMargin: '100px' } // Start loading 100px before entering viewport
-    );
-    
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, []);
+  const is7tv = emote.provider === '7tv';
 
   return (
     <Tooltip 
@@ -249,32 +233,44 @@ const EmoteGridItem = memo(({ emote, isFavorited, onInsert, onToggleFavorite }: 
         </div>
       }
     >
-      <div 
-        ref={containerRef}
+      <div
         className="relative group flex items-center justify-center focus:outline-none w-full h-full min-h-8"
+        style={{ contentVisibility: 'auto', containIntrinsicBlockSize: '40px' }}
       >
         <button onClick={onInsert} className={`flex items-center justify-center p-1 w-full h-full min-w-8 min-h-8 hover:bg-glass rounded transition-colors ${emote.isZeroWidth ? 'ring-1 ring-yellow-400/50 bg-yellow-400/10' : ''}`}>
-          {isVisible ? (
-            <img
-              src={emote.localUrl || emote.url}
-              srcSet={emote.provider === '7tv' ? `https://cdn.7tv.app/emote/${emote.id}/1x.avif 1x, https://cdn.7tv.app/emote/${emote.id}/2x.avif 2x, https://cdn.7tv.app/emote/${emote.id}/3x.avif 3x, https://cdn.7tv.app/emote/${emote.id}/4x.avif 4x` : undefined}
-              alt={emote.name}
-              referrerPolicy="no-referrer"
-              className={`max-h-8 w-auto max-w-full object-contain ${emote.isZeroWidth ? 'drop-shadow-[0_0_3px_rgba(234,179,8,0.6)]' : ''}`}
-
-              onError={(e) => {
-                const target = e.currentTarget;
-                if (emote.localUrl && target.src !== emote.url) {
-                  target.src = emote.url;
-                } else {
-                  target.style.opacity = '0.3';
+          <img
+            src={is7tv ? `https://cdn.7tv.app/emote/${emote.id}/2x.avif` : (emote.localUrl || emote.url)}
+            srcSet={is7tv ? `https://cdn.7tv.app/emote/${emote.id}/1x.avif 1x, https://cdn.7tv.app/emote/${emote.id}/2x.avif 2x` : undefined}
+            alt={emote.name}
+            loading="lazy"
+            decoding="async"
+            referrerPolicy="no-referrer"
+            className={`max-h-8 w-auto max-w-full object-contain ${emote.isZeroWidth ? 'drop-shadow-[0_0_3px_rgba(234,179,8,0.6)]' : ''}`}
+            onError={(e) => {
+              const t = e.currentTarget;
+              if (is7tv) {
+                // A given size/format sometimes 404s or serves broken even when
+                // others exist. Walk every size+format until one loads, so the
+                // slot is always filled (scaled to fit) instead of left blank.
+                t.srcset = '';
+                const ladder = ['2x', '1x', '3x', '4x'].flatMap((s) => [
+                  `https://cdn.7tv.app/emote/${emote.id}/${s}.avif`,
+                  `https://cdn.7tv.app/emote/${emote.id}/${s}.webp`,
+                ]);
+                let step = Number(t.dataset.fb || '0');
+                while (step < ladder.length && ladder[step] === t.src) step++;
+                if (step < ladder.length) {
+                  t.dataset.fb = String(step + 1);
+                  t.src = ladder[step];
+                  return;
                 }
-              }}
-            />
-          ) : (
-            // Placeholder while not visible - same size to prevent layout shift
-            <div className="h-8 w-8 max-w-full bg-glass/30 rounded animate-pulse opacity-50" />
-          )}
+                t.style.opacity = '0.3';
+                return;
+              }
+              if (emote.localUrl && t.src !== emote.url) t.src = emote.url;
+              else t.style.opacity = '0.3';
+            }}
+          />
         </button>
         <Tooltip content={isFavorited ? 'Remove from favorites' : 'Add to favorites'}>
         <button
@@ -383,8 +379,15 @@ export interface ChatWidgetProps {
 
 const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
   const { messages, connectChat, sendMessage, isConnected, error, setPaused: setBufferPaused, deletedMessageIds, clearedUserContexts, roomState, userBadges } = useTwitchChat();
-  const { currentStream: rawCurrentStream, currentUser, currentHypeTrain, currentMediaType } = useAppStore();
-  const { isMultiNookActive, activeChatChannelId, slots } = usemultiNookStore();
+  // Field selectors instead of whole-store subscriptions: ChatWidget re-renders
+  // only when these specific fields change, not on every unrelated store tick.
+  const rawCurrentStream = useAppStore((s) => s.currentStream);
+  const currentUser = useAppStore((s) => s.currentUser);
+  const currentHypeTrain = useAppStore((s) => s.currentHypeTrain);
+  const currentMediaType = useAppStore((s) => s.currentMediaType);
+  const isMultiNookActive = usemultiNookStore((s) => s.isMultiNookActive);
+  const activeChatChannelId = usemultiNookStore((s) => s.activeChatChannelId);
+  const slots = usemultiNookStore((s) => s.slots);
 
   const currentStream = useMemo(() => {
     // Popout (StreamNook MultiChat) channel takes priority. Synthesizes a
@@ -504,7 +507,7 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
   const [celebrationId, setCelebrationId] = useState(0);
 
 
-  const { settings } = useAppStore();
+  const settings = useAppStore((s) => s.settings);
   const [selectedUser, setSelectedUser] = useState<{
     userId: string;
     username: string;
@@ -542,7 +545,11 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
   const [mentionQuery, setMentionQuery] = useState('');
   const [mentionSelectedIndex, setMentionSelectedIndex] = useState(0);
   const [mentionStartPosition, setMentionStartPosition] = useState<number | null>(null);
-  const { addUser, getMatchingUsers, clearUsers } = useChatUserStore();
+  // These are stable store actions (vanilla zustand never recreates them), so we
+  // read them imperatively rather than subscribing. Subscribing here made the
+  // whole ChatWidget re-render on every chatUserStore write, and addUser fires
+  // once per chatter, so on a busy channel that was a constant re-render storm.
+  const { addUser, getMatchingUsers, clearUsers } = useChatUserStore.getState();
 
   // / command autocomplete state
   const [showCommandAutocomplete, setShowCommandAutocomplete] = useState(false);
@@ -1005,11 +1012,11 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
       // Reset to chat view when switching channels
       setActiveView('chat');
       
-      // NEW: Hot-swap backend tracking context if inside MultiNook.
+      // Hot-swap backend tracking context if inside MultiNook.
       //
       // Intentionally skipped in popout mode (`channelOverride` set):
-      //   • drops monitoring — Brandon's call; popouts are chat-only, not
-      //     "actively watching", so we don't want to mine drops for them.
+      //   • drops monitoring: popouts are chat-only, not "actively
+      //     watching", so we don't mine drops for them.
       //   • EventSub disconnect+reconnect — the EventSub service is single-
       //     broadcaster today. Letting the popout reconnect it would steal
       //     the connection from the main app's stream and break hype train /
@@ -1193,7 +1200,7 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
   }, [currentStream?.user_login, resubDismissed]);
 
   // Fetch watch streak milestone when entering a new channel. Skipped in
-  // popout mode — Brandon's call: popouts are chat-only and shouldn't be
+  // popout mode: popouts are chat-only and shouldn't be
   // surfacing watch-streak prompts (they require actually watching the
   // stream to consume).
   useEffect(() => {

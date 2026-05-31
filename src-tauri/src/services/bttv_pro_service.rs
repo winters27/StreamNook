@@ -14,8 +14,7 @@
 // at all, so a lookup either resolves fast (Pro) or times out (everyone else).
 // We therefore resolve on demand, off the profile card's critical path, and
 // cache the answer (including the negative one) so the vast majority of non-Pro
-// users aren't re-queried on every profile open. This mirrors how Chatterino
-// surfaces its "BTTV Pro" badge.
+// users aren't re-queried on every profile open.
 
 use futures_util::{SinkExt, StreamExt};
 use lru::LruCache;

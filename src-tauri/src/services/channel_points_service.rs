@@ -685,7 +685,7 @@ impl ChannelPointsService {
     }
 
     /// Send watch payload to earn channel points
-    /// Uses the stable spade.twitch.tv/track endpoint (ported from mining_service.rs)
+    /// Uses the stable spade.twitch.tv/track endpoint.
     async fn send_watch_payload(
         &self,
         channel_id: &str,

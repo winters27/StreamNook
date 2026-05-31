@@ -253,6 +253,12 @@ interface AppState {
   toggleTheaterMode: () => void;
   loginToTwitch: () => Promise<void>;
   logoutFromTwitch: () => Promise<void>;
+  /** Make a linked account the main (watch & stream as it), then re-establish identity. */
+  setActiveAccount: (userId: string) => Promise<void>;
+  /** Sign out of the main; promote a linked account if one exists, else full sign-out. */
+  signOutActiveAccount: () => Promise<void>;
+  /** Internal: refresh watched identity + follows + accounts + chat after the primary slot changes. */
+  reestablishIdentityAfterSwitch: () => Promise<void>;
   checkAuthStatus: () => Promise<void>;
   toggleFavoriteStreamer: (userId: string) => Promise<void>;
   isFavoriteStreamer: (userId: string) => boolean;
@@ -1844,7 +1850,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({ isLoading: true });
       Logger.debug('Starting Twitch Device Code login...');
 
-      // Use Device Code flow (like Python app)
+      // Use Device Code flow
       const [verificationUri, userCode] = await invoke('twitch_login') as [string, string];
 
       Logger.debug('Device code received:', userCode);
@@ -1853,27 +1859,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       // Show the user code to the user
       get().addToast(`Enter code ${userCode} at twitch.tv/activate`, 'info');
 
-      // Open the verification URL in an in-app WebView window
-      // This ensures Twitch session cookies are stored in WebView2's shared profile
-      // which enables follow/unfollow and other web-based features
+      // Open the verification URL in an in-app WebView window, isolated to the
+      // active account's Twitch web profile. A per-account profile means each
+      // account keeps its own browser session, so a re-login lands on the same
+      // account and can't silently inherit a different account's web session.
       try {
-        const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
-        const loginWindow = new WebviewWindow('twitch-login', {
-          url: verificationUri,
-          title: 'Log in to Twitch',
-          width: 500,
-          height: 700,
-          center: true,
-          resizable: true,
-          minimizable: true,
-          maximizable: false,
-        });
-
-        loginWindow.once('tauri://error', (e) => {
-          Logger.error('Failed to open login window:', e);
-          get().addToast(`Please visit ${verificationUri} and enter code: ${userCode}`, 'warning');
-        });
-
+        await invoke('open_twitch_login_window', { url: verificationUri });
         Logger.debug('In-app login window opened successfully');
       } catch (e) {
         Logger.error('Failed to open login window:', e);
@@ -1961,6 +1952,61 @@ export const useAppStore = create<AppState>((set, get) => ({
     } catch (e) {
       Logger.error('Logout failed:', e);
       get().addToast('Failed to logout. Please try again.', 'error');
+    }
+  },
+
+  // Re-establish the watched identity after the primary slot's token changed
+  // (an account switch or a sign-out that promoted another account). Mirrors the
+  // post-login refresh: re-read who we are, reload follows + the account list,
+  // and reconnect chat so the IRC connection re-auths as the new identity.
+  reestablishIdentityAfterSwitch: async () => {
+    await get().checkAuthStatus();
+    await get().loadFollowedStreams();
+    try {
+      const { useSendAccountStore } = await import('./sendAccountStore');
+      await useSendAccountStore.getState().loadAccounts();
+    } catch (e) {
+      Logger.warn('[Accounts] Could not refresh account list after switch:', e);
+    }
+    try {
+      const { reconnectAllChannels } = await import('./chatConnectionStore');
+      await reconnectAllChannels();
+    } catch (e) {
+      Logger.warn('[Accounts] Chat reconnect after switch failed:', e);
+    }
+  },
+
+  setActiveAccount: async (userId: string) => {
+    trackActivity('Switched main account');
+    try {
+      const { setActiveAccount } = await import('../services/accountService');
+      const account = await setActiveAccount(userId);
+      await get().reestablishIdentityAfterSwitch();
+      get().addToast(`Now watching as @${account.login}`, 'success');
+    } catch (e) {
+      Logger.error('Switch main account failed:', e);
+      get().addToast(typeof e === 'string' ? e : 'Could not switch main account', 'error');
+      throw e;
+    }
+  },
+
+  signOutActiveAccount: async () => {
+    trackActivity('Signed out of main account');
+    try {
+      const { signOutActiveAccount } = await import('../services/accountService');
+      const promoted = await signOutActiveAccount();
+      if (promoted) {
+        // Signing out the main landed us on a linked account instead of fully out.
+        await get().reestablishIdentityAfterSwitch();
+        get().addToast(`Signed out. Now watching as @${promoted.login}`, 'success');
+      } else {
+        // That was the last account: a full sign-out.
+        set({ isAuthenticated: false, currentUser: null, followedStreams: [] });
+        get().addToast('Successfully signed out from Twitch', 'success');
+      }
+    } catch (e) {
+      Logger.error('Sign out of main failed:', e);
+      get().addToast('Failed to sign out. Please try again.', 'error');
     }
   },
 

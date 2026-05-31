@@ -36,7 +36,7 @@ const GOLD: ColorPair[] = [
   { front: '#FFB300', back: '#CC8F00' },
 ];
 
-// "Physics" tuning (ported from Cooper Goeke's confetti pen).
+// "Physics" tuning for confetti and sequin fall.
 const GRAVITY_CONFETTI = 0.3;
 const GRAVITY_SEQUINS = 0.55;
 const DRAG_CONFETTI = 0.075;

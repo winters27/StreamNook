@@ -164,8 +164,7 @@ export function useChannelSocial({ userId, userLogin, userName, enabled = true }
     }
   }, [userLogin, userId, isFollowing, followLoading]);
 
-  // Track the subscribe window so we can auto-close it on a successful sub
-  const subscribeWindowRef = useRef<WebviewWindow | null>(null);
+  // Track the subscribe window's label so we can auto-close it on a successful sub
   const subscribeWindowLabelRef = useRef<string | null>(null);
 
   // Listen for subscription events to auto-close the subscribe window
@@ -193,7 +192,6 @@ export function useChannelSocial({ userId, userLogin, userName, enabled = true }
           Logger.warn('[useChannelSocial] Failed to close subscribe window:', e);
         }
 
-        subscribeWindowRef.current = null;
         subscribeWindowLabelRef.current = null;
       }
     };
@@ -204,36 +202,22 @@ export function useChannelSocial({ userId, userLogin, userName, enabled = true }
     };
   }, [enabled, currentUser?.login]);
 
-  // Open the Twitch subscribe page for this channel in a dedicated window
-  const handleSubscribeClick = useCallback(() => {
+  // Open the Twitch subscribe page for this channel in a dedicated window,
+  // isolated to the active (main) account's Twitch web profile so you subscribe
+  // as the account you watch and stream as. The backend returns the window label
+  // so the subscription listener above can auto-close it.
+  const handleSubscribeClick = useCallback(async () => {
     if (!userLogin) return;
-
-    const windowLabel = `subscribe-${userLogin}-${Date.now()}`;
-    subscribeWindowLabelRef.current = windowLabel;
-
-    const webview = new WebviewWindow(windowLabel, {
-      url: `https://www.twitch.tv/subs/${userLogin}`,
-      title: `Subscribe to ${userName || userLogin}`,
-      width: 800,
-      height: 900,
-      center: true,
-      resizable: true,
-      minimizable: true,
-      maximizable: true,
-    });
-
-    subscribeWindowRef.current = webview;
-
-    webview.once('tauri://error', (e) => {
+    try {
+      const label = await invoke<string>('open_subscribe_window', {
+        channelLogin: userLogin,
+        title: `Subscribe to ${userName || userLogin}`,
+      });
+      subscribeWindowLabelRef.current = label;
+    } catch (e) {
       Logger.error('[useChannelSocial] Error opening subscribe window:', e);
-      subscribeWindowRef.current = null;
       subscribeWindowLabelRef.current = null;
-    });
-
-    webview.once('tauri://destroyed', () => {
-      subscribeWindowRef.current = null;
-      subscribeWindowLabelRef.current = null;
-    });
+    }
   }, [userLogin, userName]);
 
   return {

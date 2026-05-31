@@ -496,6 +496,16 @@ async function reconnectAll() {
   }
 }
 
+/**
+ * Force every open chat channel to tear down and reconnect. Used after switching
+ * the main account: the IRC connection authenticates as the main, so it must
+ * re-auth as the new identity for sends (slash-commands, IRC fallback) and
+ * user-state to be correct. No-op when no channels are open.
+ */
+export async function reconnectAllChannels(): Promise<void> {
+  await reconnectAll();
+}
+
 async function connectBridgeForFirstChannel(
   channel: string,
   channelId: string | null,
@@ -1505,8 +1515,8 @@ export function useChannelMessageCount(channel: string | null | undefined): numb
 /** True when this message mentions `login` (case-insensitive). Handles both
  *  the parsed-object form (Rust ChatMessage with optional `is_mentioned` set
  *  by the segment parser) and the raw IRC-string fallback (regex-scan the
- *  PRIVMSG body for `@login`). Used by the unread-mention counter — Brandon's
- *  call to only surface unread badges for @ mentions of the signed-in user. */
+ *  PRIVMSG body for `@login`). Used by the unread-mention counter, which only
+ *  surfaces unread badges for @ mentions of the signed-in user. */
 function messageMentionsLogin(msg: unknown, login: string): boolean {
   if (!msg || !login) return false;
   if (typeof msg === 'object') {
