@@ -5,17 +5,16 @@
 ---
 
 ### ✨ Features
-- **Seamless Account Switching**: Promote any linked account to your 'main' account (the one you watch and stream as) directly from Settings. Your chat identity, follows, and other Twitch data will automatically update.
-- **Isolated Web Sessions**: Twitch login and subscribe pages now open in isolated browser profiles per account, preventing session conflicts and ensuring you're always logged in as the intended user.
-- **Redesigned Linked Accounts Settings**: A clearer, more intuitive interface in Settings to manage your primary viewing account and linked accounts for sending chat.
+- **Seamless Account Switching**: Promote any linked account to your 'main' account (the one you watch and stream as) directly from Settings. Your chat identity, follows, and other Twitch data will automatically update.- **Seamless Account Switching**: Promote any linked account to your 'main' account (the one you watch and stream as) directly from Settings. Your chat identity, follows, and other Twitch data will automatically update.
 
-### ⚡ Performance
-- **Smoother Chat & Emote Picker**: Significant optimizations to chat message rendering and the emote picker, reducing UI lag and improving responsiveness, especially in busy channels or with many emotes.
-- **Stream-Polite Caching**: Background downloads for emotes and other cached data now yield to your live stream, ensuring a smoother, more stable viewing experience without stutters from resource contention.
+### 🐛 Bug Fixes
+- **Reliable Chat Pause**: Chat now pauses immediately on user scroll intent (wheel or touch), preventing frustrating fights with auto-scroll and ensuring a more responsive experience.
 
 ### 🔧 Maintenance
-- Minor backend and configuration updates for improved stability.
+- Minor backend and configuration updates for improved stability.- Minor backend and configuration updates for improved stability.
 
+### ⚡ Performance
+- **Smoother Chat & Emote Picker**: Significant optimizations to chat message rendering and the emote picker, reducing UI lag and improving responsiveness, especially in busy channels or with many emotes.- **Smoother Chat & Emote Picker**: Significant optimizations to chat message rendering and the emote picker, reducing UI lag and improving responsiveness, especially in busy channels or with many emotes.
 ## [7.6.0] - 2026-05-29
 ### ✨ Features
 - **StreamNook Identity**: Curate your favorite badges (Twitch, 7TV, BTTV, FFZ, Chatterino, and more) to display in chat, configurable in the new Accounts settings.
@@ -1382,19 +1381,4 @@ ATTENTION: ALL USERS LOG OUT OF TWITCH THEN LOG BACK IN FOR SOME CHANGES OT TAKE
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
