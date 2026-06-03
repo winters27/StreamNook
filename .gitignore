@@ -35,6 +35,10 @@ RELEASE.md
 .env.local
 .env.*.local
 
+# Supabase local CLI scaffolding (migrations, edge functions, link state) -
+# backend lives with the Supabase project, not the desktop app repo.
+supabase/
+
 # System
 .DS_Store
 Thumbs.db
