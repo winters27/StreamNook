@@ -1,3 +1,15 @@
+## [7.7.2] - 2026-06-03
+## 🎉 New: Inline Link Previews in Chat
+> Sharing a link in chat just got a whole lot more engaging! StreamNook now automatically generates rich, interactive previews for YouTube videos, X/Twitter posts and profiles, Giphy GIFs, and most other webpages. See titles, descriptions, and thumbnails directly in your chat, making conversations smoother and more informative.
+
+---
+
+### ✨ Features
+- **Inline Link Previews**: Supported links now display rich cards in chat with titles, descriptions, and thumbnails for a variety of services including YouTube, X (Twitter), Giphy, and general webpages.
+
+### 🔧 Maintenance
+- Various performance improvements, notably in high-speed-chat streams.
+
 ## [7.7.1] - 2026-06-02
 ### ✨ Features
 - **Permanent Perks for Supporters & Subscribers**: Your commitment now grants permanent access to special profile backgrounds and StreamNook Atmospheres! Once unlocked (by being a Supporter or Subscriber), these cosmetics are yours forever, even if your active support ends. The 7TV Paint background is now a Supporter perk, and Atmospheres are a Subscriber perk.
@@ -1407,6 +1419,7 @@ ATTENTION: ALL USERS LOG OUT OF TWITCH THEN LOG BACK IN FOR SOME CHANGES OT TAKE
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
