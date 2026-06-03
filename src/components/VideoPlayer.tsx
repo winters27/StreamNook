@@ -3,7 +3,7 @@ import Hls from 'hls.js';
 import Plyr from 'plyr';
 import 'plyr/dist/plyr.css';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Loader2, RefreshCcw, Home, LayoutGrid } from 'lucide-react';
+import { Loader2, RefreshCcw, Home, LayoutGrid, Shield, ShieldCheck, ShieldAlert } from 'lucide-react';
 import { Heart, HeartBreak, ArrowLeft, X as XIcon } from 'phosphor-react';
 import { useAppStore } from '../stores/AppStore';
 import { usemultiNookStore } from '../stores/multiNookStore';
@@ -11,6 +11,7 @@ import { useChannelSocial } from '../hooks/useChannelSocial';
 import StreamTitleWithEmojis from './StreamTitleWithEmojis';
 import { Tooltip } from './ui/Tooltip';
 import { registerPlayerControls, type PlayerControls } from '../keybindings';
+import { qualitiesEquivalent } from '../utils/quality';
 
 import { Logger } from '../utils/logger';
 
@@ -53,7 +54,7 @@ const VideoPlayer = () => {
   const hlsRef = useRef<Hls | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const progressUpdateIntervalRef = useRef<number | null>(null);
-  const { streamUrl, settings, activeQuality, getAvailableQualities, changeStreamQuality, handleStreamOffline, isAutoSwitching, currentStream, restartStream, exitStream, toggleHome, isHomeActive, streamOriginCategory, setHomeActiveTab, setHomeSelectedCategory, triggerChatRefresh, isAuthenticated, currentMediaType } = useAppStore();
+  const { streamUrl, settings, activeQuality, adSource, getAvailableQualities, changeStreamQuality, handleStreamOffline, isAutoSwitching, currentStream, restartStream, exitStream, toggleHome, isHomeActive, streamOriginCategory, setHomeActiveTab, setHomeSelectedCategory, triggerChatRefresh, isAuthenticated, currentMediaType } = useAppStore();
   // Stabilize handleStreamOffline in a ref so createPlayer's identity stays stable.
   // Without this, every Zustand set() call recreates handleStreamOffline, which changes
   // createPlayer's reference, which re-fires the player creation effect — causing double
@@ -72,10 +73,29 @@ const VideoPlayer = () => {
   const isLiveRef = useRef<boolean>(true);
   const userInitiatedPauseRef = useRef<boolean>(false);
   const [availableQualities, setAvailableQualities] = useState<string[]>([]);
+  // Tracked as STATE (not just the playerRef) so the quality-menu effect
+  // re-runs the moment the player is created. The quality list now resolves
+  // instantly, so it can arrive before Plyr exists; gating the menu on a ref
+  // alone meant the effect fired once (no player) and never again.
+  const [playerReady, setPlayerReady] = useState(false);
   // Overlay visibility state (works in both normal and fullscreen modes)
   const [showOverlay, setShowOverlay] = useState(false);
   const overlayTimerRef = useRef<NodeJS.Timeout | null>(null);
   const OVERLAY_HIDE_DELAY = 2600; // Match Plyr's native control hide timing (2.6s)
+
+  // Transient top-left "stream note" (ad source + any quality fallback). Shows
+  // briefly when a new live stream resolves, then fades. Replaces the per-stream
+  // toasts, which fired on nearly every stream and were overbearing.
+  const [showStreamNote, setShowStreamNote] = useState(false);
+  useEffect(() => {
+    if (!(streamUrl && currentMediaType === 'live' && adSource)) {
+      setShowStreamNote(false);
+      return;
+    }
+    setShowStreamNote(true);
+    const t = setTimeout(() => setShowStreamNote(false), 6000);
+    return () => clearTimeout(t);
+  }, [streamUrl, currentMediaType, adSource]);
 
   // Memory Leak Prevention Refs for closures / timeouts
   const volumeDebounceRef = useRef<NodeJS.Timeout | null>(null);
@@ -152,10 +172,18 @@ const VideoPlayer = () => {
     Logger.debug('[Quality] Setting up menu with Streamlink qualities:', availableQualities);
     Logger.debug('[Quality] Active quality:', activeQuality, 'saved preference:', settings.quality);
 
-    setTimeout(() => {
+    let attempts = 0;
+    const buildMenu = () => {
       const settingsMenu = container.querySelector('.plyr__menu');
       if (!settingsMenu) {
-        Logger.warn('[Quality] Could not find Plyr settings menu');
+        // Plyr is created on hls.js MANIFEST_PARSED, which can land AFTER the
+        // quality list resolves (resolution is instant now). Retry until the
+        // menu DOM exists instead of bailing on the first miss.
+        if (attempts++ < 25) {
+          setTimeout(buildMenu, 200);
+        } else {
+          Logger.warn('[Quality] Could not find Plyr settings menu');
+        }
         return;
       }
 
@@ -263,12 +291,13 @@ const VideoPlayer = () => {
             qualitySubmenu.setAttribute('hidden', '');
             settingsHome.removeAttribute('hidden');
 
-            // Change stream quality via Streamlink
+            // Re-resolve the stream at the chosen quality.
             await changeStreamQuality(selectedQuality);
           });
         });
       }
-    }, 200);
+    };
+    buildMenu();
   }, [availableQualities, settings.quality, activeQuality, changeStreamQuality]);
 
   // Update time display for live streams to show "LIVE" or time behind
@@ -366,6 +395,7 @@ const VideoPlayer = () => {
         Logger.warn('Error destroying existing Plyr:', e);
       }
       playerRef.current = null;
+      setPlayerReady(false);
     }
 
     Logger.debug('Creating HLS.js player for URL:', streamUrl);
@@ -534,6 +564,7 @@ const VideoPlayer = () => {
           });
 
           playerRef.current = player;
+          setPlayerReady(true);
 
           player.on('enterfullscreen', () => syncTauriWindowFullscreen(true));
           player.on('exitfullscreen', () => syncTauriWindowFullscreen(false));
@@ -1147,12 +1178,14 @@ const VideoPlayer = () => {
     };
   }, []);
 
-  // Update quality menu when qualities become available
+  // Build the quality menu once BOTH the quality list and the player are ready,
+  // in whichever order they arrive. `playerReady` is state, so this re-runs when
+  // Plyr is created (a ref wouldn't), and the list can now arrive instantly.
   useEffect(() => {
-    if (availableQualities.length > 0 && playerRef.current) {
+    if (availableQualities.length > 0 && playerReady) {
       updateQualityMenu();
     }
-  }, [availableQualities, updateQualityMenu]);
+  }, [availableQualities, playerReady, updateQualityMenu]);
 
   // Start overlay hide timer - use ref to avoid dependency issues
   const startOverlayHideTimer = useCallback(() => {
@@ -1341,6 +1374,56 @@ const VideoPlayer = () => {
                 >
                   <XIcon size={16} weight="bold" /> Exit Chat
                 </button>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Transient stream note — top-left. Replaces the per-stream toasts: how
+          this stream is ad-free (your entitlement vs the proxy) plus any quality
+          fallback, shown briefly then faded. */}
+      <AnimatePresence>
+        {showStreamNote && !showOverlay && adSource && currentMediaType === 'live' && (
+          <motion.div
+            initial={{ opacity: 0, x: -8 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: -8 }}
+            transition={{ duration: 0.3, ease: 'easeInOut' }}
+            className="absolute top-4 left-4 z-50 max-w-xs pointer-events-none"
+          >
+            <div className="glass-panel p-3 rounded-lg border border-accent/30 bg-background/80 backdrop-blur-md">
+              <div className="flex items-start gap-2">
+                {adSource.entitled ? (
+                  <ShieldCheck className="w-4 h-4 text-emerald-400 flex-shrink-0 mt-0.5" />
+                ) : adSource.mode === 'auth-only' ? (
+                  <ShieldAlert className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" />
+                ) : (
+                  <Shield className="w-4 h-4 text-accent flex-shrink-0 mt-0.5" />
+                )}
+                <div className="space-y-1">
+                  <p className="text-textPrimary text-xs font-medium">
+                    {adSource.entitled
+                      ? adSource.mode === 'turbo'
+                        ? 'Ad-free via Twitch Turbo'
+                        : 'Ad-free via your subscription'
+                      : adSource.mode === 'auth-only'
+                        ? 'Ad-blocking unavailable'
+                        : 'Ad-blocking proxy active'}
+                  </p>
+                  <p className="text-textSecondary text-xs leading-relaxed">
+                    {adSource.entitled
+                      ? 'Playing directly from Twitch. No proxy.'
+                      : adSource.mode === 'auth-only'
+                        ? 'Ads may appear on this stream.'
+                        : `Routing through ${adSource.region || 'a proxy'} for an ad-free stream.`}
+                  </p>
+                  {activeQuality && !qualitiesEquivalent(settings.quality, activeQuality) && (
+                    <p className="text-textMuted text-[10px] leading-relaxed">
+                      Playing {activeQuality} ({settings.quality} unavailable).
+                    </p>
+                  )}
+                </div>
               </div>
             </div>
           </motion.div>

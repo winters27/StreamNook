@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { Dropdown } from '../ui/Dropdown';
 import { ChevronDown, ChevronRight, Palette, Trash2, Save, X, Wand2 } from 'lucide-react';
 import { useAppStore } from '../../stores/AppStore';
 import ThemeColorPicker from '../ThemeColorPicker';
@@ -279,17 +280,13 @@ const ThemeCreator = ({ editingTheme, onClose, onSave, onDelete }: ThemeCreatorP
             Start from Base Theme
           </label>
           <div className="flex items-center gap-3">
-            <select
+            <Dropdown
               value={baseThemeId}
-              onChange={(e) => handleBaseThemeChange(e.target.value)}
-              className="flex-1 px-4 py-2.5 glass-input text-textPrimary text-sm"
-            >
-              {themes.map((theme) => (
-                <option key={theme.id} value={theme.id}>
-                  {theme.name}
-                </option>
-              ))}
-            </select>
+              onChange={handleBaseThemeChange}
+              className="flex-1"
+              ariaLabel="Base theme"
+              options={themes.map((theme) => ({ value: theme.id, label: theme.name }))}
+            />
             <Tooltip content="Reset to base theme" side="top">
             <button
               onClick={() => handleBaseThemeChange(baseThemeId)}

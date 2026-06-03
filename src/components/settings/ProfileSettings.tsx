@@ -1,7 +1,10 @@
-import { useState, useEffect, useRef, useSyncExternalStore } from 'react';
+import { useState, useEffect, useRef, useSyncExternalStore, useMemo, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useAppStore } from '../../stores/AppStore';
+import { refreshAtmosphere } from '../../stores/chatUserStore';
+import { AtmosphereBackground } from '../AtmosphereBackground';
+import { getPreviewEmotes, previewEmoteUrl, rollPreviewChat, type PreviewEmote } from '../../utils/previewChat';
 import { openBadgesWithPaintInMain, openBadgesOnStreamNookInMain } from '../../utils/openBadgesInMain';
 import streamNookLogo from '../../assets/streamnook-logo.png';
 import { User, Link, Unlink, Image as ImageIcon, Film, Heart, Check } from 'lucide-react';
@@ -32,10 +35,15 @@ import {
   getOwnedCosmeticSlugs,
   getActiveCosmeticSlug,
   setActiveCosmetic,
+  getProfilePrefs,
+  setProfileTheme,
+  setHiddenSections,
 } from '../../services/supabaseService';
 import type { CosmeticCatalogEntry } from '../../services/supabaseService';
 import { getIdentityWithCache, setIdentity } from '../../services/identityService';
-import { getTier, StreamNookBadge } from '../StreamNookBadge';
+import { isSubscriber } from '../../services/subscriberService';
+import { listAtmospheres, getAtmosphere } from '../../services/atmospheres';
+import { getTier, getTierAccent, StreamNookBadge } from '../StreamNookBadge';
 import { COSMETIC_ASSET_BY_SLUG } from '../cosmeticAssets';
 import {
   captureProfileCard,
@@ -51,6 +59,7 @@ import { buildBttvProBadge, resolveBttvProUrl } from '../../services/bttvProBadg
 import { invoke } from '@tauri-apps/api/core';
 import { Logger } from '../../utils/logger';
 import LinkedAccountsSection from './LinkedAccountsSection';
+import ProfileOverview from './ProfileOverview';
 
 export interface ChatIdentityCache {
   badges: ChatIdentityBadge[];
@@ -74,6 +83,26 @@ interface ChatIdentityBadge {
   is_selected: boolean;
 }
 
+// Twitch badge image URLs are universal (`/badges/v1/<imageId>/<scale>`), so the
+// image id renders the same badge for any viewer. We store `twitch:<imageId>` in
+// the loadout (not set/version, which only resolves GLOBAL badges from a warm
+// cache) so other clients can render even channel-scoped badges cross-client.
+const extractTwitchBadgeImageId = (imageUrl: string): string | null => {
+  const m = /\/badges\/v1\/([^/]+)/.exec(imageUrl);
+  return m ? m[1] : null;
+};
+
+// Public-profile sections the member can hide from other viewers (keys match
+// ProfileOverview's `sectionHidden`). Subs/spend are never persisted, so they're
+// not toggleable here.
+const VISIBILITY_SECTIONS: Array<{ key: string; label: string }> = [
+  { key: 'roast', label: 'Hours watched' },
+  { key: 'twitch', label: 'Your Twitch (age, followers, type)' },
+  { key: 'lifetime', label: 'Lifetime stats' },
+  { key: 'emotes', label: 'Top emotes' },
+  { key: 'accolades', label: 'Accolades' },
+];
+
 // Selection indicator for the loadout pickers — a flat checkmark chip in the
 // item's top-right corner (replaces the old status dot). `accent` for Twitch /
 // StreamNook selections, the 7TV blue for 7TV cosmetics. Intentionally flat:
@@ -92,6 +121,9 @@ const ProfileSettings = () => {
   const { isAuthenticated, currentUser, loginToTwitch, currentStream, addToast } = useAppStore();
   const profileCardRef = useRef<HTMLDivElement>(null);
   const [isSharing, setIsSharing] = useState(false);
+  // Inner Profile sub-tab. Overview (stats showcase) is the default landing
+  // view; Customize holds the identity editor that used to be the whole pane.
+  const [profileTab, setProfileTab] = useState<'overview' | 'customize'>('overview');
   // Capture-progress UI state. `captureStage` drives which sub-component
   // shows: 'recording' = determinate bar tied to elapsed/estimated; one
   // 'finalizing' = indeterminate spinner once the wall-clock has caught
@@ -140,6 +172,16 @@ const ProfileSettings = () => {
   const [selfBttvProBadge, setSelfBttvProBadge] = useState<ReturnType<typeof buildBttvProBadge> | null>(null);
   const [seventvBadges, setSeventvBadges] = useState<SevenTVBadge[]>([]);
   const [seventvPaint, setSeventvPaint] = useState<SevenTVPaint | null>(null);
+  const [profileTheme, setProfileThemeState] = useState('tier');
+  // The cosmetic currently hovered in the picker, for the live preview card.
+  const [previewThemeId, setPreviewThemeId] = useState<string | null>(null);
+  // Live 7TV global emotes for the mock chat message (fetched once, cached).
+  const [previewEmotes, setPreviewEmotes] = useState<PreviewEmote[]>([]);
+  useEffect(() => { getPreviewEmotes().then(setPreviewEmotes).catch(() => {}); }, []);
+  // Sections the member has hidden from their public profile.
+  const [hiddenSecs, setHiddenSecs] = useState<string[]>([]);
+  const [loadoutLoaded, setLoadoutLoaded] = useState(false);
+  const [subscribed, setSubscribed] = useState(false);
   const [allSeventvPaints, setAllSeventvPaints] = useState<SevenTVPaint[]>([]);
   const [seventvUserId, setSeventvUserId] = useState<string | null>(null);
   const [, setHas7TVAccountChecked] = useState(false);
@@ -289,10 +331,66 @@ const ProfileSettings = () => {
     if (!currentUser?.user_id) return;
     getIdentityWithCache(currentUser.user_id)
       .then((lo) => {
-        if (mountedRef.current) setLoadout({ customized: lo.customized, badges: lo.badges });
+        if (mountedRef.current) {
+          setLoadout({ customized: lo.customized, badges: lo.badges });
+          setLoadoutLoaded(true);
+        }
       })
       .catch(() => {});
   }, [currentUser?.user_id]);
+
+  // Keep the chosen Twitch global badge mirrored into the cross-client loadout
+  // (as `twitch:<imageId>`) so other members resolve it in the profile overlay.
+  // Self-healing: runs once the loadout has loaded AND a badge is selected, and
+  // rewrites whenever the selection changes. Guarded on loadoutLoaded so it never
+  // clobbers the (not-yet-loaded) third-party badges. Chat is unaffected (it
+  // draws Twitch badges from live IRC tags; the resolve endpoint drops this key).
+  useEffect(() => {
+    if (!loadoutLoaded || !currentUser?.user_id) return;
+    const selected = chatIdentityBadges.find((b) => b.is_selected);
+    if (!selected) return;
+    const imageId = extractTwitchBadgeImageId(selected.image_url);
+    if (!imageId) return;
+    const key = `twitch:${imageId}`;
+    if (loadout.badges.includes(key)) return; // already in sync
+    const nextBadges = [key, ...loadout.badges.filter((k) => !k.startsWith('twitch:'))];
+    setLoadout({ customized: true, badges: nextBadges });
+    void setIdentity(currentUser.user_id, nextBadges, null, true);
+  }, [loadoutLoaded, chatIdentityBadges, loadout.badges, currentUser?.user_id]);
+
+  // Load the "use my 7TV paint as my profile theme" preference + premium status
+  // (the paint theme is a premium / supporter feature).
+  useEffect(() => {
+    if (!currentUser?.user_id) return;
+    getProfilePrefs(currentUser.user_id)
+      .then((p) => {
+        if (mountedRef.current) {
+          setProfileThemeState(p.profileTheme);
+          setHiddenSecs(p.hiddenSections);
+        }
+      })
+      .catch(() => {});
+    isSubscriber(currentUser.user_id)
+      .then((s) => { if (mountedRef.current) setSubscribed(s); })
+      .catch(() => {});
+  }, [currentUser?.user_id]);
+
+  const selectProfileTheme = (id: string, subscriberOnly: boolean) => {
+    if (!currentUser?.user_id) return;
+    if (subscriberOnly && !subscribed) return; // locked until subscribed
+    setProfileThemeState(id);
+    void setProfileTheme(currentUser.user_id, id);
+    // Push the new theme to chat immediately (no Supabase read race) so our own
+    // messages update in real time; switching away from an Atmosphere clears it.
+    refreshAtmosphere(currentUser.user_id, getAtmosphere(id) ? id : null);
+  };
+
+  const toggleSectionVisibility = (key: string) => {
+    if (!currentUser?.user_id) return;
+    const next = hiddenSecs.includes(key) ? hiddenSecs.filter((k) => k !== key) : [...hiddenSecs, key];
+    setHiddenSecs(next);
+    void setHiddenSections(currentUser.user_id, next);
+  };
 
   // Resolve YOUR BTTV Pro badge so it can be offered as a toggle in the picker
   // below. Pro is WebSocket-only and not in the server-resolved third-party list,
@@ -662,6 +760,55 @@ const ProfileSettings = () => {
     void setIdentity(currentUser.user_id, next.badges, null, true);
   };
   const tier = streamNookUserNumber !== null ? getTier(streamNookUserNumber) : null;
+  // The real tier accent (its color), so the "Tier aura" swatch + preview match
+  // what the profile actually shows instead of a generic gray.
+  const tierAccent = streamNookUserNumber !== null ? getTierAccent(streamNookUserNumber) : null;
+
+  // Base profile-BACKGROUND options: tier (free) + the member's 7TV paint
+  // (subscriber). StreamNook Atmospheres are their OWN cosmetic section (a paid
+  // StreamNook cosmetic that also decorates chat), not lumped in here.
+  const baseThemeOptions: Array<{ id: string; name: string; subscriberOnly: boolean; swatch: CSSProperties }> = [
+    {
+      id: 'tier',
+      name: 'Tier aura',
+      subscriberOnly: false,
+      swatch: tierAccent
+        ? {
+            backgroundColor: '#0d0e14',
+            backgroundImage: `radial-gradient(ellipse 130% 95% at 50% 12%, rgba(${tierAccent.rgb}, 0.6), transparent 62%)`,
+          }
+        : { background: 'linear-gradient(135deg, rgba(226,232,240,0.20), rgba(148,163,184,0.10))' },
+    },
+    ...(seventvPaint
+      ? [
+          {
+            id: 'paint',
+            name: '7TV Paint',
+            subscriberOnly: true,
+            swatch: ((): CSSProperties => {
+              const p = computePaintStyle(seventvPaint as any, '#9146FF');
+              return {
+                backgroundImage: p.backgroundImage,
+                backgroundColor:
+                  typeof p.backgroundColor === 'string' && !p.backgroundColor.startsWith('var')
+                    ? p.backgroundColor
+                    : undefined,
+                backgroundSize: 'cover',
+              };
+            })(),
+          },
+        ]
+      : []),
+  ];
+
+  // Live preview: the hovered cosmetic (or the active one when nothing hovered).
+  const activePreviewId = previewThemeId ?? profileTheme;
+  const previewAtm = getAtmosphere(activePreviewId);
+  const previewLocked = (previewAtm !== null || activePreviewId === 'paint') && !subscribed;
+  // A fresh random sample line (+ maybe a 7TV emote) each time the previewed
+  // cosmetic changes, so the mock chat reads like real, varied chat.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const previewChat = useMemo(() => rollPreviewChat(previewEmotes), [activePreviewId, previewEmotes]);
 
   if (!isAuthenticated || !currentUser) {
     return (
@@ -743,6 +890,25 @@ const ProfileSettings = () => {
           </>,
           heroActionsTarget,
         )}
+
+      {/* Inner Profile tabs: Overview (stats showcase) vs Customize (identity
+          editor). The profile card below stays visible on both. */}
+      <div className="flex w-fit items-center gap-1 rounded-lg border border-white/[0.06] bg-white/[0.03] p-1">
+        {(['overview', 'customize'] as const).map((t) => (
+          <button
+            key={t}
+            type="button"
+            onClick={() => setProfileTab(t)}
+            className={`rounded-md px-3 py-1.5 text-[13px] font-medium capitalize transition-colors ${
+              profileTab === t
+                ? 'bg-white/[0.08] text-textPrimary'
+                : 'text-textSecondary hover:text-textPrimary'
+            }`}
+          >
+            {t}
+          </button>
+        ))}
+      </div>
 
       <div ref={profileCardRef} className="relative overflow-hidden flex items-center gap-8 p-6 glass-panel rounded-xl">
         {/* Tier aura backdrop — Ethereal gets violet, Mythic gets amber.
@@ -844,13 +1010,13 @@ const ProfileSettings = () => {
         )}
         </div>
 
-      {/* Universal intro for the whole identity editor. Every section below —
-          Twitch global badges, StreamNook cosmetics, 7TV paints/badges, and
-          other third-party badges — controls what renders next to your name in
-          chat, so the guidance lives here once instead of per-section. */}
-      <p className="text-xs text-textSecondary">
-        Customize your identity. Choose what shows next to your name in chat.
-      </p>
+      {/* Intro for the identity editor. Shown only on the Customize sub-tab;
+          the Overview sub-tab renders its own stats view instead. */}
+      {profileTab === 'customize' && (
+        <p className="text-xs text-textSecondary">
+          Customize your identity. Choose what shows next to your name in chat.
+        </p>
+      )}
 
       {/* Capture-progress card. Renders BELOW the profile card so it
           stays outside DXGI's capture rect — anything painted over the
@@ -915,6 +1081,26 @@ const ProfileSettings = () => {
         )}
       </AnimatePresence>
 
+      {profileTab === 'overview' && (
+        <ProfileOverview
+          userId={currentUser.user_id}
+          login={currentUser.login || currentUser.username || ''}
+          broadcasterType={currentUser.broadcaster_type || ''}
+          streamNookUserNumber={streamNookUserNumber}
+          seventvPaintCount={allSeventvPaints.length}
+          seventvBadgeCount={seventvBadges.length}
+          ownedCosmeticsCount={ownedCosmetics.length}
+        />
+      )}
+
+      {profileTab === 'customize' && (
+        <>
+      <div className="px-1 pt-0.5">
+        <h3 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-textMuted">Cosmetics</h3>
+        <p className="mt-0.5 text-[11px] leading-relaxed text-textSecondary">
+          Your StreamNook identity: badges, your profile background, and animated Atmospheres.
+        </p>
+      </div>
       {streamNookUserNumber !== null && currentUser?.user_id && ownedCosmetics.length > 0 && (
         <div className="glass-panel rounded-xl p-5">
           <div className="flex items-center gap-1.5 mb-4">
@@ -933,7 +1119,7 @@ const ProfileSettings = () => {
               </button>
             </Tooltip>
             <h4 className="text-sm font-semibold text-textPrimary uppercase tracking-wide">
-              Cosmetics
+              Badges
             </h4>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -983,6 +1169,265 @@ const ProfileSettings = () => {
           )}
         </div>
       )}
+
+      {/* Live preview: a mini StreamNook profile card AND a chat message, both
+          showing the hovered (or active) cosmetic, so you see its full extent. An
+          Atmosphere themes BOTH; a 7TV paint only the background + name. */}
+      <div className="space-y-2">
+        <div className="flex items-center gap-2 px-1">
+          <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-textMuted">Preview</span>
+          {previewLocked && (
+            <span className="rounded-full border border-amber-400/30 bg-amber-400/15 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-amber-200/90">
+              Subscribe to unlock
+            </span>
+          )}
+        </div>
+
+        {/* Mini profile card — same element sizes as the real overlay (40px
+            avatar, text-sm name, 18px badge row), just fewer sections. */}
+        <div className="relative overflow-hidden rounded-xl border border-white/10 bg-[rgba(14,14,18,0.96)]">
+          {previewAtm ? (
+            <AtmosphereBackground atm={previewAtm} variant="profile" />
+          ) : activePreviewId === 'paint' && seventvPaint ? (
+            (() => {
+              const ps = computePaintStyle(seventvPaint as any, '#9146FF');
+              return (
+                <div
+                  className="pointer-events-none absolute inset-x-0 top-0 h-2/5"
+                  style={{
+                    backgroundImage: ps.backgroundImage,
+                    backgroundColor:
+                      typeof ps.backgroundColor === 'string' && !ps.backgroundColor.startsWith('var')
+                        ? ps.backgroundColor
+                        : undefined,
+                    backgroundSize: 'cover',
+                    backgroundPosition: 'center',
+                    opacity: 0.26,
+                    filter: 'blur(18px)',
+                    WebkitMaskImage: 'linear-gradient(to bottom, black, transparent)',
+                    maskImage: 'linear-gradient(to bottom, black, transparent)',
+                  }}
+                />
+              );
+            })()
+          ) : tierAccent ? (
+            <div
+              className="pointer-events-none absolute inset-0"
+              style={{ background: `radial-gradient(ellipse 90% 75% at 50% 0%, rgba(${tierAccent.rgb}, 0.3), transparent 72%)` }}
+            />
+          ) : null}
+          <div className="relative">
+            <div className="flex items-center gap-3 border-b border-white/[0.06] p-3">
+              <span className="flex h-10 w-10 flex-shrink-0 items-center justify-center overflow-hidden rounded-full bg-white/[0.04] ring-1 ring-inset ring-white/10">
+                {currentUser.profile_image_url ? (
+                  <img src={currentUser.profile_image_url} alt="" className="h-full w-full object-cover" />
+                ) : (
+                  <User size={18} className="text-textSecondary" />
+                )}
+              </span>
+              <div className="min-w-0 flex-1">
+                <div
+                  className="truncate text-sm font-semibold text-textPrimary"
+                  style={seventvPaint ? computePaintStyle(seventvPaint as any, '#9146FF') : undefined}
+                >
+                  {currentUser.display_name || currentUser.login}
+                </div>
+                <div className="truncate text-[11px] text-textMuted">@{currentUser.login}</div>
+                {streamNookUserNumber !== null && currentUser?.user_id && (
+                  <div className="mt-1.5 flex items-center gap-1">
+                    <StreamNookBadge userId={currentUser.user_id} userNumber={streamNookUserNumber} side="bottom" />
+                  </div>
+                )}
+              </div>
+              {streamNookUserNumber !== null && (
+                <div className="flex flex-shrink-0 flex-col items-center pr-1">
+                  <div className="text-[8px] uppercase tracking-[0.22em] text-white/35">Rank</div>
+                  <div
+                    className="text-xl font-bold leading-none tabular-nums"
+                    style={tierAccent ? { color: `rgb(${tierAccent.rgb})` } : undefined}
+                  >
+                    #{streamNookUserNumber.toLocaleString()}
+                  </div>
+                </div>
+              )}
+            </div>
+            <div className="grid grid-cols-3 gap-2 p-3">
+              {[
+                ['Hours', '2.4k'],
+                ['Followers', '318'],
+                ['Cosmetics', '7'],
+              ].map(([label, value]) => (
+                <div
+                  key={label}
+                  className="rounded-md border border-white/[0.06] bg-black/30 px-2 py-1.5 backdrop-blur-sm"
+                >
+                  <div className="text-[8px] font-medium uppercase tracking-wide text-textMuted">{label}</div>
+                  <div className="text-xs font-bold tabular-nums text-textPrimary">{value}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Mock chat message — real chat sizes (text-sm message, 20px badges),
+            capped near a real chat column width so it doesn't span the settings. */}
+        <div className="relative isolate max-w-[403px] overflow-hidden rounded-lg border border-white/[0.06] px-3 py-1.5">
+          {previewAtm && <AtmosphereBackground atm={previewAtm} variant="chat" />}
+          <div className="relative flex items-center gap-1.5 text-sm leading-relaxed">
+            <span className="text-[11px] text-textMuted">3:45</span>
+            {streamNookUserNumber !== null && currentUser?.user_id && (
+              <StreamNookBadge userId={currentUser.user_id} userNumber={streamNookUserNumber} side="top" />
+            )}
+            <span
+              className="flex-shrink-0 font-semibold"
+              style={seventvPaint ? computePaintStyle(seventvPaint as any, '#9146FF') : undefined}
+            >
+              {currentUser.display_name || currentUser.login}
+            </span>
+            <span className="flex min-w-0 items-center gap-1 text-textSecondary">
+              <span className="truncate">{previewChat.text}</span>
+              {previewChat.emotes.map((e, i) => (
+                <img
+                  key={`${e.id}-${i}`}
+                  src={previewEmoteUrl(e.id)}
+                  alt={e.name}
+                  title={e.name}
+                  className="h-6 w-auto flex-shrink-0 object-contain"
+                  onError={(ev) => {
+                    (ev.currentTarget as HTMLImageElement).style.display = 'none';
+                  }}
+                />
+              ))}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {/* Profile background: the basic backdrop source (tier or your 7TV paint).
+          A paint only changes the BACKGROUND, not chat. */}
+      <div className="glass-panel rounded-xl p-5">
+        <h4 className="text-sm font-semibold text-textPrimary">Profile background</h4>
+        <p className="mt-0.5 text-[12px] leading-relaxed text-textSecondary">
+          Just your profile background. The tier aura is free; using your equipped 7TV paint is a
+          subscriber perk. A paint only changes the background, not your chat.
+        </p>
+        <div className="mt-3 space-y-2">
+          {baseThemeOptions.map((opt) => {
+            const selected = profileTheme === opt.id;
+            const locked = opt.subscriberOnly && !subscribed;
+            return (
+              <button
+                key={opt.id}
+                type="button"
+                onClick={() => selectProfileTheme(opt.id, opt.subscriberOnly)}
+                onMouseEnter={() => setPreviewThemeId(opt.id)}
+                onMouseLeave={() => setPreviewThemeId(null)}
+                className={`flex w-full items-center gap-3 rounded-lg border p-2.5 text-left transition-colors ${
+                  selected
+                    ? 'border-accent/50 bg-accent/[0.06]'
+                    : 'border-white/[0.06] hover:border-white/[0.12] hover:bg-white/[0.03]'
+                } ${locked ? 'cursor-not-allowed opacity-50' : ''}`}
+              >
+                <span
+                  className="h-9 w-9 flex-shrink-0 rounded-md ring-1 ring-inset ring-white/10"
+                  style={opt.swatch}
+                />
+                <span className="flex-1 text-sm font-medium text-textPrimary">{opt.name}</span>
+                {opt.subscriberOnly && !subscribed && (
+                  <span className="rounded-full border border-amber-400/30 bg-amber-400/10 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-amber-300/90">
+                    Subscriber
+                  </span>
+                )}
+                {selected && <Check size={16} className="text-accent" />}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* StreamNook Atmospheres: our own profile cosmetic that decorates BOTH the
+          profile background AND chat messages (the whole package, unlike a paint
+          which is only a background). A subscriber perk. Click the active one to
+          remove it (back to the tier aura). */}
+      <div className="glass-panel rounded-xl p-5">
+        <div className="mb-1.5 flex items-center gap-1.5">
+          <img src={streamNookLogo} alt="" className="h-4 w-4 object-contain" draggable={false} />
+          <h4 className="text-sm font-semibold uppercase tracking-wide text-textPrimary">Atmospheres</h4>
+          {!subscribed && (
+            <span className="rounded-full border border-amber-400/30 bg-amber-400/10 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-amber-300/90">
+              Subscriber
+            </span>
+          )}
+        </div>
+        <p className="text-[12px] leading-relaxed text-textSecondary">
+          The whole package, not just a background: an Atmosphere themes your profile AND decorates
+          your chat messages with the same animated look. Tap the active one to remove it.
+        </p>
+        <div className="mt-3 space-y-2">
+          {listAtmospheres().map((a) => {
+            const selected = profileTheme === a.id;
+            const locked = !subscribed;
+            return (
+              <button
+                key={a.id}
+                type="button"
+                onClick={() => (selected ? selectProfileTheme('tier', false) : selectProfileTheme(a.id, true))}
+                onMouseEnter={() => setPreviewThemeId(a.id)}
+                onMouseLeave={() => setPreviewThemeId(null)}
+                className={`flex w-full items-center gap-3 rounded-lg border p-2.5 text-left transition-colors ${
+                  selected
+                    ? 'border-accent/50 bg-accent/[0.06]'
+                    : 'border-white/[0.06] hover:border-white/[0.12] hover:bg-white/[0.03]'
+                } ${locked ? 'cursor-not-allowed opacity-50' : ''}`}
+              >
+                <span
+                  className="h-9 w-14 flex-shrink-0 rounded-md ring-1 ring-inset ring-white/10"
+                  style={{ background: a.swatch }}
+                />
+                <span className="flex-1 text-sm font-medium text-textPrimary">{a.name}</span>
+                {selected && <span className="text-[10px] font-medium text-textMuted">Active</span>}
+                {selected && <Check size={16} className="text-accent" />}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Profile visibility: per-section hide/unhide for the PUBLIC profile (what
+          other StreamNook users see in the overlay). Self view always shows all. */}
+      <div className="glass-panel rounded-xl p-5">
+        <h4 className="text-sm font-semibold text-textPrimary">Profile visibility</h4>
+        <p className="mt-0.5 text-[12px] leading-relaxed text-textSecondary">
+          Choose what shows on your public profile (what other StreamNook users see when they open
+          it). Your subscriptions and spend are always private.
+        </p>
+        <div className="mt-3 space-y-0.5">
+          {VISIBILITY_SECTIONS.map((s) => {
+            const visible = !hiddenSecs.includes(s.key);
+            return (
+              <div key={s.key} className="flex items-center justify-between gap-3 px-1 py-1.5">
+                <span className="text-sm text-textPrimary">{s.label}</span>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={visible}
+                  onClick={() => toggleSectionVisibility(s.key)}
+                  className={`relative inline-flex h-5 w-9 flex-shrink-0 items-center rounded-full transition-colors ${
+                    visible ? 'bg-accent' : 'bg-white/[0.12]'
+                  }`}
+                  aria-label={`${visible ? 'Hide' : 'Show'} ${s.label}`}
+                >
+                  <span
+                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                      visible ? 'translate-x-[18px]' : 'translate-x-0.5'
+                    }`}
+                  />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      </div>
 
       <div className="glass-panel rounded-xl p-5">
         <div className="flex items-center justify-between mb-4">
@@ -1198,6 +1643,8 @@ const ProfileSettings = () => {
       )}
 
       <LinkedAccountsSection />
+        </>
+      )}
     </div>
   );
 };

@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { Settings, TrendingUp, X, Plus, Ban, Star, Shield, Lock, Users, ListFilter, LayoutList, Activity, Loader2 } from 'lucide-react';
 import { Logger } from '../../utils/logger';
 import { useAppStore } from '../../stores/AppStore';
+import { Dropdown } from '../ui/Dropdown';
 
 type RecoveryMode = 'Automatic' | 'Relaxed' | 'ManualOnly';
 
@@ -361,15 +362,17 @@ export default function DropsSettingsTab({
                                     Priority Strategy
                                 </h4>
 
-                                <select
+                                <Dropdown
                                     value={settings.priority_mode}
-                                    onChange={(e) => onUpdateSettings({ priority_mode: e.target.value as DropsSettings['priority_mode'] })}
-                                    className="w-full px-4 py-2.5 bg-background border border-borderLight rounded-lg text-textPrimary focus:border-accent focus:outline-none cursor-pointer"
-                                >
-                                    <option value="PriorityOnly">Priority Games Only</option>
-                                    <option value="EndingSoonest">Campaigns Ending Soonest</option>
-                                    <option value="LowAvailFirst">Low Availability First</option>
-                                </select>
+                                    onChange={(v) => onUpdateSettings({ priority_mode: v })}
+                                    className="w-full px-4 py-2.5"
+                                    ariaLabel="Priority strategy"
+                                    options={[
+                                        { value: 'PriorityOnly', label: 'Priority Games Only' },
+                                        { value: 'EndingSoonest', label: 'Campaigns Ending Soonest' },
+                                        { value: 'LowAvailFirst', label: 'Low Availability First' },
+                                    ]}
+                                />
 
                                 <p className="text-xs text-textSecondary mt-2 px-1">
                                     Determines which drop campaigns are mined first when multiple are available.
@@ -527,20 +530,22 @@ export default function DropsSettingsTab({
                                     <label className="block text-sm font-medium text-textPrimary mb-2">
                                         Recovery Mode
                                     </label>
-                                    <select
+                                    <Dropdown
                                         value={settings.recovery_settings?.recovery_mode ?? 'Automatic'}
-                                        onChange={(e) => onUpdateSettings({
+                                        onChange={(v) => onUpdateSettings({
                                             recovery_settings: {
                                                 ...settings.recovery_settings,
-                                                recovery_mode: e.target.value as RecoveryMode
+                                                recovery_mode: v
                                             }
                                         })}
-                                        className="w-full px-4 py-2.5 bg-background border border-borderLight rounded-lg text-textPrimary focus:border-accent focus:outline-none cursor-pointer"
-                                    >
-                                        <option value="Automatic">Automatic (7 min threshold)</option>
-                                        <option value="Relaxed">Relaxed (15 min threshold)</option>
-                                        <option value="ManualOnly">Manual Only (notify but don't switch)</option>
-                                    </select>
+                                        className="w-full px-4 py-2.5"
+                                        ariaLabel="Recovery mode"
+                                        options={[
+                                            { value: 'Automatic', label: 'Automatic (7 min threshold)' },
+                                            { value: 'Relaxed', label: 'Relaxed (15 min threshold)' },
+                                            { value: 'ManualOnly', label: "Manual Only (notify but don't switch)" },
+                                        ]}
+                                    />
                                     <p className="text-xs text-textSecondary mt-1">
                                         How aggressively to handle stuck mining sessions
                                     </p>

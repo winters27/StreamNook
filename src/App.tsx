@@ -3,13 +3,14 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { useAppStore, type WhisperImportProgress } from './stores/AppStore';
 import { useContextMenuStore } from './stores/contextMenuStore';
 import { listenForSettingsUpdates } from './utils/settingsBroadcast';
-import { trackPresence, isSupabaseConfigured, incrementStat, subscribeToStreamNookRegistry, subscribeToCosmeticsRegistry } from './services/supabaseService';
+import { trackPresence, isSupabaseConfigured, incrementStat, incrementChannelWatch, subscribeToStreamNookRegistry, subscribeToCosmeticsRegistry } from './services/supabaseService';
 import TitleBar from './components/TitleBar';
 import VideoPlayer from './components/VideoPlayer';
 import ChatWidget from './components/ChatWidget';
 import { ModLogsWidget } from './components/chat/ModLogsWidget';
 import Home from './components/Home';
 import SettingsDialog from './components/SettingsDialog';
+import PublicProfileOverlay from './components/PublicProfileOverlay';
 import CommandPalette from './components/CommandPalette';
 import { useCommandPaletteHotkey } from './hooks/useCommandPaletteHotkey';
 import { useKeybindings } from './keybindings';
@@ -19,7 +20,6 @@ import { MultiNookView } from './components/multi-nook/MultiNookView';
 import MultiNookChatSwitcher from './components/multi-nook/MultiNookChatSwitcher';
 import LoadingWidget from './components/LoadingWidget';
 import ToastManager from './components/ToastManager';
-import DesyncRepairDialog from './components/DesyncRepairDialog';
 import AnnouncementsBanner from './components/AnnouncementsBanner';
 import { TooltipManager } from './components/ui/TooltipManager';
 import { Tooltip } from './components/ui/Tooltip';
@@ -30,7 +30,6 @@ import BadgeDetailOverlay from './components/BadgeDetailOverlay';
 import ChangelogOverlay from './components/ChangelogOverlay';
 import WhispersWidget from './components/WhispersWidget';
 import SetupWizard from './components/SetupWizard';
-import StreamlinkMissingDialog from './components/StreamlinkMissingDialog';
 import Sidebar from './components/Sidebar';
 import ErrorBoundary from './components/ErrorBoundary';
 import { StreamContextMenu } from './components/StreamContextMenu';
@@ -39,7 +38,7 @@ import { applyModerateEvent } from './utils/applyModerateEvent';
 import { handleSeventvEmoteSetUpdate, handleSeventvCosmeticUpdate, type EmoteSetUpdatePayload, type CosmeticUpdatePayload } from './services/seventvEventApi';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
-import { getThemeById, applyTheme, DEFAULT_THEME_ID, getThemeByIdWithCustom } from './themes';
+import { getThemeById, applyTheme, DEFAULT_THEME_ID, getThemeByIdWithCustom, applyGlassStrength, DEFAULT_GLASS_TRANSPARENCY } from './themes';
 import { getSelectedCompactViewPreset } from './constants/compactViewPresets';
 
 import { Logger } from './utils/logger';
@@ -262,6 +261,21 @@ function App() {
 
     return () => {
       window.removeEventListener('show-badge-detail', handleBadgeDetail as EventListener);
+    };
+  }, []);
+
+  // Ad auto-pivot: the backend escapes a leaked ad by re-resolving through a
+  // clean proxy region and emitting `ad-pivot` with the fresh player URL.
+  useEffect(() => {
+    const unlistenPromise = listen<{ url: string; region?: string; channel?: string }>(
+      'ad-pivot',
+      (event) => {
+        const { url, region } = event.payload;
+        if (url) useAppStore.getState().applyAdPivot(url, region);
+      }
+    );
+    return () => {
+      unlistenPromise.then((unlisten) => unlisten());
     };
   }, []);
 
@@ -607,23 +621,23 @@ function App() {
       Logger.debug('[App] Applying theme:', theme.name);
       applyTheme(theme);
     }
-  }, [settings.theme, settings.custom_themes]);
+    // Global glassiness is independent of the palette, so re-assert it whenever
+    // the theme is (re)applied as well as when the slider itself changes.
+    applyGlassStrength(settings.glass_transparency ?? DEFAULT_GLASS_TRANSPARENCY);
+  }, [settings.theme, settings.custom_themes, settings.glass_transparency]);
 
-  // Check if we need to show the first-time setup wizard.
-  // Settings default streamlink_path to the bundled location, so verifying streamlink
-  // doesn't tell us anything useful about whether the user has gone through the auth /
-  // drops / whispers steps. Drive purely off setup_complete: if it's false, show the
-  // wizard. Step 1 inside the wizard handles the components check itself and
-  // auto-advances when bundled streamlink is detected.
+  // Check if we need to show the first-time setup wizard. Drive purely off
+  // setup_complete: if it's false, show the wizard. (Gate on `quality` only as a
+  // "settings have hydrated" signal.)
   useEffect(() => {
-    if (settings.streamlink_path === undefined) return;
+    if (settings.quality === undefined) return; // wait until settings hydrate
     if (settings.setup_complete) {
       Logger.debug('[App] Setup already complete, skipping wizard');
       return;
     }
     Logger.debug('[App] Setup not complete - showing wizard');
     setShowSetupWizard(true);
-  }, [settings.streamlink_path, settings.setup_complete]);
+  }, [settings.quality, settings.setup_complete]);
 
   // Ctrl+Shift+C → force-open the changelog overlay against the current
   // app version (fetches real release notes from GitHub). Useful for
@@ -742,10 +756,10 @@ function App() {
     };
 
     // Only run after settings are loaded
-    if (settings.streamlink_path !== undefined) {
+    if (settings.quality !== undefined) {
       checkForVersionChange();
     }
-  }, [settings.streamlink_path, updateSettings, addToast]);
+  }, [settings.quality, updateSettings, addToast]);
 
   // Handle changelog close - update the last seen version
   const handleChangelogClose = async () => {
@@ -885,10 +899,18 @@ function App() {
 
     // Track watch time every minute
     const watchTimeInterval = setInterval(() => {
-      const { isAuthenticated: stillAuth, currentUser: user } = useAppStore.getState();
+      const { isAuthenticated: stillAuth, currentUser: user, currentStream: cs } = useAppStore.getState();
       if (stillAuth && user?.user_id) {
         // Increment by 1/60 of an hour (1 minute)
         incrementStat(user.user_id, 'hours_watched', 1 / 60);
+        // Per-channel watch minute for the favorite-channel stat.
+        if (cs?.user_id) {
+          incrementChannelWatch(user.user_id, {
+            id: cs.user_id,
+            login: cs.user_login,
+            name: cs.user_name || cs.user_login,
+          });
+        }
       }
     }, 60000); // Every minute
 
@@ -1301,7 +1323,7 @@ function App() {
                 transition={{ duration: 0.2 }}
                 className="absolute inset-0 z-50 bg-black"
               >
-                <LoadingWidget useFunnyMessages={true} showProxyNote={settings.ttvlol_plugin?.enabled ?? false} />
+                <LoadingWidget useFunnyMessages={true} showProxyNote={settings.streamlink?.use_proxy ?? false} />
               </motion.div>
             )}
           </AnimatePresence>
@@ -1365,7 +1387,7 @@ function App() {
                           transition={{ duration: 0.2 }}
                           className="absolute inset-0 z-20"
                         >
-                          <LoadingWidget useFunnyMessages={true} showProxyNote={settings.ttvlol_plugin?.enabled ?? false} />
+                          <LoadingWidget useFunnyMessages={true} showProxyNote={settings.streamlink?.use_proxy ?? false} />
                         </motion.div>
                       )}
                     </AnimatePresence>
@@ -1473,6 +1495,7 @@ function App() {
       </div>
       </ErrorBoundary>
       <SettingsDialog />
+      <PublicProfileOverlay />
       <DropsOverlay />
 
       {profileModalUser && (
@@ -1520,8 +1543,6 @@ function App() {
         isOpen={showSetupWizard}
         onClose={() => setShowSetupWizard(false)}
       />
-      <StreamlinkMissingDialog />
-      <DesyncRepairDialog />
       <AnnouncementsBanner />
       <ToastManager />
       <TooltipManager />

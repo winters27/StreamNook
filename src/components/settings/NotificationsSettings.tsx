@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Dropdown } from '../ui/Dropdown';
 import { useAppStore } from '../../stores/AppStore';
 import { invoke } from '@tauri-apps/api/core';
 import { Bell } from 'lucide-react';
@@ -230,17 +231,19 @@ const NotificationsSettings = () => {
                 title="Sound Style"
                 description="All sounds are designed to be pleasant and non-intrusive"
               >
-                <select
+                <Dropdown
                   value={liveNotifications.sound_type || 'boop'}
-                  onChange={(e) => updateLiveNotifications({ sound_type: e.target.value })}
-                  className="w-full glass-input text-textPrimary text-sm px-3 py-2"
-                >
-                  <option value="boop">Subtle Boop (Default)</option>
-                  <option value="tick">Cozy Knock</option>
-                  <option value="soft">Fireplace Crackle</option>
-                  <option value="whisper">Raindrop</option>
-                  <option value="gentle">Wind Chime</option>
-                </select>
+                  onChange={(v) => updateLiveNotifications({ sound_type: v })}
+                  className="w-full"
+                  ariaLabel="Notification sound"
+                  options={[
+                    { value: 'boop', label: 'Subtle Boop (Default)' },
+                    { value: 'tick', label: 'Cozy Knock' },
+                    { value: 'soft', label: 'Fireplace Crackle' },
+                    { value: 'whisper', label: 'Raindrop' },
+                    { value: 'gentle', label: 'Wind Chime' },
+                  ]}
+                />
               </SettingsRow>
             )}
 

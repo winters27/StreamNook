@@ -1523,7 +1523,7 @@ const Home = () => {
                                 <button
                                     onClick={() => { setActiveTab('following'); setIsSearchExpanded(false); }}
                                     className={`group relative px-3 py-1.5 text-sm font-medium rounded-lg transition-all duration-300 whitespace-nowrap ${activeTab === 'following'
-                                        ? 'text-white'
+                                        ? 'text-textPrimary'
                                         : 'text-textSecondary hover:text-textPrimary'
                                         }`}
                                 >
@@ -1547,7 +1547,7 @@ const Home = () => {
                             <button
                                 onClick={() => { setActiveTab('recommended'); setIsSearchExpanded(false); }}
                                 className={`group relative px-3 py-1.5 text-sm font-medium rounded-lg transition-all duration-300 whitespace-nowrap ${activeTab === 'recommended'
-                                    ? 'text-white'
+                                    ? 'text-textPrimary'
                                     : 'text-textSecondary hover:text-textPrimary'
                                     }`}
                             >
@@ -1563,7 +1563,7 @@ const Home = () => {
                             <button
                                 onClick={handleBrowseClick}
                                 className={`group relative px-3 py-1.5 text-sm font-medium rounded-lg transition-all duration-300 whitespace-nowrap ${activeTab === 'browse'
-                                    ? 'text-white'
+                                    ? 'text-textPrimary'
                                     : 'text-textSecondary hover:text-textPrimary'
                                     }`}
                             >
@@ -1580,7 +1580,7 @@ const Home = () => {
                                 <button
                                     onClick={() => setActiveTab('search')}
                                     className={`group relative px-3 py-1.5 text-sm font-medium rounded-lg transition-all duration-300 whitespace-nowrap ${activeTab === 'search'
-                                        ? 'text-white'
+                                        ? 'text-textPrimary'
                                         : 'text-textSecondary hover:text-textPrimary'
                                         }`}
                                 >
@@ -1659,7 +1659,7 @@ const Home = () => {
                                             }
                                         }}
                                         disabled={isSearching}
-                                        className={`p-1.5 rounded-full transition-all text-white/60 hover:text-white hover:bg-white/10 ${isSearching ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+                                        className={`p-1.5 rounded-full transition-all text-white/60 hover:text-textPrimary hover:bg-white/10 ${isSearching ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
                                     >
                                         <X size={16} />
                                     </button>
@@ -1674,7 +1674,7 @@ const Home = () => {
                     <Tooltip content="Return to Stream" side="bottom">
                     <button
                         onClick={toggleHome}
-                        className="absolute right-4 flex items-center gap-1.5 px-3 py-1.5 glass-button text-accent shadow-[0_0_15px_rgba(var(--color-accent-rgb),0.2)] text-sm font-medium rounded-lg transition-all hover:text-white"
+                        className="absolute right-4 flex items-center gap-1.5 px-3 py-1.5 glass-button text-accent shadow-[0_0_15px_rgba(var(--color-accent-rgb),0.2)] text-sm font-medium rounded-lg transition-all hover:text-textPrimary"
                     >
                         <Maximize2 size={14} />
                         <span className="hidden sm:inline">Return</span>
@@ -1723,7 +1723,7 @@ const Home = () => {
                             <Tooltip content="Return to Stream" side="left">
                                 <button
                                     onClick={toggleHome}
-                                    className="flex items-center gap-1.5 px-3 h-[44px] glass-button text-accent shadow-[0_0_15px_rgba(var(--color-accent-rgb),0.2)] text-sm font-medium rounded-xl transition-all hover:text-white pointer-events-auto backdrop-blur-md"
+                                    className="flex items-center gap-1.5 px-3 h-[44px] glass-button text-accent shadow-[0_0_15px_rgba(var(--color-accent-rgb),0.2)] text-sm font-medium rounded-xl transition-all hover:text-textPrimary pointer-events-auto backdrop-blur-md"
                                 >
                                     <Maximize2 size={14} />
                                     <span className="hidden sm:inline">Return</span>
@@ -1837,7 +1837,7 @@ const Home = () => {
                                                         setIsDescriptionClamped(false);
                                                         setIsDescriptionExpanded(true); 
                                                     }}
-                                                    className="text-[12px] font-bold text-accent hover:text-white pointer-events-auto transition-colors"
+                                                    className="text-[12px] font-bold text-accent hover:text-textPrimary pointer-events-auto transition-colors"
                                                 >
                                                     Read More
                                                 </button>
@@ -2462,7 +2462,7 @@ const Home = () => {
                                                                             e.stopPropagation(); 
                                                                             useAppStore.getState().setProfileModalUser(stream); 
                                                                         }}
-                                                                        className="flex items-center gap-1 text-textSecondary text-xs hover:text-white hover:bg-white/10 px-1.5 py-0.5 -mx-1.5 -my-0.5 rounded transition-all cursor-pointer text-left focus:outline-none w-max max-w-full"
+                                                                        className="flex items-center gap-1 text-textSecondary text-xs hover:text-textPrimary hover:bg-glass-hover px-1.5 py-0.5 -mx-1.5 -my-0.5 rounded transition-all cursor-pointer text-left focus:outline-none w-max max-w-full"
                                                                     >
                                                                         <span className="truncate">{stream.user_name}</span>
                                                                         {stream.broadcaster_type === 'partner' && (
@@ -2484,7 +2484,7 @@ const Home = () => {
                                                                                         });
                                                                                     }
                                                                                 }}
-                                                                                className="flex items-center gap-1 text-textSecondary text-xs hover:text-white hover:bg-white/10 px-1.5 py-0.5 -mx-1.5 -my-0.5 rounded transition-all text-left cursor-pointer focus:outline-none overflow-hidden"
+                                                                                className="flex items-center gap-1 text-textMuted text-xs hover:text-textPrimary hover:bg-glass-hover px-1.5 py-0.5 -mx-1.5 -my-0.5 rounded transition-all text-left cursor-pointer focus:outline-none overflow-hidden"
                                                                             >
                                                                                 <span className="line-clamp-1">{stream.game_name}</span>
                                                                                 {hasDrops && (
@@ -2506,7 +2506,7 @@ const Home = () => {
                                                                             fill={isFavorite ? "url(#glass-heart-fill)" : "none"}
                                                                             stroke={isFavorite ? "url(#glass-heart-stroke)" : "currentColor"}
                                                                             strokeWidth={isFavorite ? 1.5 : 2}
-                                                                            className={`transition-all duration-300 ${isFavorite ? 'drop-shadow-[0_4px_8px_rgba(236,72,153,0.5)]' : 'text-textSecondary hover:text-white opacity-0 group-hover:opacity-100'} ${animatingHearts.has(stream.user_id) ? 'animate-heart-break' : ''}`}
+                                                                            className={`transition-all duration-300 ${isFavorite ? 'drop-shadow-[0_4px_8px_rgba(236,72,153,0.5)]' : 'text-textSecondary hover:text-textPrimary opacity-0 group-hover:opacity-100'} ${animatingHearts.has(stream.user_id) ? 'animate-heart-break' : ''}`}
                                                                         />
                                                                     </button>
                                                                     </Tooltip>
@@ -2599,7 +2599,7 @@ const Home = () => {
                                                                         e.stopPropagation();
                                                                         setProfileModalUser(user);
                                                                     }}
-                                                                    className="p-[7px] rounded-lg glass-button text-textSecondary hover:text-white hover:bg-white/20 transition-all border border-white/10 hover:border-white/30 shadow-lg"
+                                                                    className="p-[7px] rounded-lg glass-button text-textSecondary hover:text-textPrimary hover:bg-white/20 transition-all border border-white/10 hover:border-white/30 shadow-lg"
                                                                 >
                                                                     <User size={14} strokeWidth={2.5} />
                                                                 </button>

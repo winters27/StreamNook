@@ -28,6 +28,18 @@ enum ChannelSwitchOutcome {
     Exhausted,
 }
 
+/// Result of one periodic recovery-watchdog pass over the current channel.
+/// `Continue` means no recovery action was needed (or the mode is
+/// ManualOnly, so we only notified) and the caller should keep mining the
+/// current channel. `Switched` means we pivoted to a new live channel.
+/// `Exhausted` means nothing live was left — mining was stopped + the user
+/// notified, so the caller should `break`.
+enum RecoveryOutcome {
+    Continue,
+    Switched,
+    Exhausted,
+}
+
 // Use Android app client ID for drops-related queries
 const CLIENT_ID: &str = env!("TWITCH_ANDROID_CLIENT_ID");
 
@@ -123,200 +135,8 @@ impl MiningService {
                         current_minutes, required_minutes, drop_id
                     );
 
-                    // Update mining status with new progress
-                    {
-                        let mut status = mining_status.write().await;
-                        if let Some(ref mut current_drop) = status.current_drop {
-                            debug!(
-                                "Comparing current_drop.drop_id: {} with payload drop_id: {}",
-                                current_drop.drop_id, drop_id
-                            );
-                            if current_drop.drop_id == drop_id {
-                                debug!(
-                                    "✅ Updated drop progress from WebSocket: {}/{} minutes for drop {}",
-                                    current_minutes, required_minutes, drop_id
-                                );
-                                current_drop.current_minutes = current_minutes;
-                                current_drop.required_minutes = required_minutes;
-                                current_drop.progress_percentage =
-                                    (current_minutes as f32 / required_minutes as f32) * 100.0;
-
-                                // Update estimated completion
-                                if current_minutes > 0 && current_minutes < required_minutes {
-                                    let remaining_minutes = required_minutes - current_minutes;
-                                    current_drop.estimated_completion = Some(
-                                        Utc::now() + Duration::minutes(remaining_minutes as i64),
-                                    );
-                                } else {
-                                    current_drop.estimated_completion = None;
-                                }
-
-                                status.last_update = Utc::now();
-
-                                // Emit updated status to frontend
-                                let current_status = status.clone();
-                                // Drop the lock before emitting to avoid holding it during emit (though emit shouldn't block much)
-                                drop(status);
-                                let _ = app_handle.emit("mining-status-update", &current_status);
-                            } else {
-                                debug!("⚠️ Drop ID mismatch in mining status update. Got {}, expected {}", drop_id, current_drop.drop_id);
-
-                                // We have a mismatch. Attempts to find the correct drop info and update status.
-                                drop(status); // Release lock before calling drops_service
-
-                                let drops_service_lock = drops_service.lock().await;
-                                // Access cached campaigns via internal method or field if exposed (it is public in struct but field access might be tricky if not pub)
-                                // Only cached_campaigns is needed. It is pub in DropsService struct?
-                                // Looking at view_file of drops_service.rs, cached_campaigns field is NOT pub.
-                                // But `get_all_active_campaigns_cached` returns Vec<DropCampaign>.
-                                let _ = drops_service_lock;
-                                // Wait, we can't access fields if they are private.
-                                // But we can call `get_all_active_campaigns_cached`.
-                                // However, that is async and we are in a async block.
-                                // Since we already have the lock, we can't call async methods on it if we hold the lock?
-                                // `websockets_listener` has `drops_service` which is `Arc<Mutex<DropsService>>`?
-                                // In `services/mining_service.rs`, `drops_service` is `Arc<Mutex<DropsService>>`.
-                                // But `DropsService` methods take `&self`.
-                                // If we lock it, we get `MutexGuard<DropsService>`. We can't call async methods on `&self` easily if we hold the guard?
-                                // Actually `DropsService` methods are async.
-
-                                drop(drops_service_lock);
-
-                                // We need to query drops service for campaigns to find the drop name.
-                                // We'll just define a helper block
-                                let campaigns_result = drops_service.lock().await.get_all_active_campaigns_cached().await;
-
-                                if let Ok(campaigns) = campaigns_result {
-                                    // Search for the drop
-                                    let mut found_drop_info = None;
-                                    for campaign in campaigns {
-                                        if let Some(drop) = campaign.time_based_drops.iter().find(|d| d.id == drop_id) {
-                                            // Found it!
-                                            let progress_percentage = (current_minutes as f32 / required_minutes as f32) * 100.0;
-
-                                            let estimated_completion = if current_minutes > 0 && current_minutes < required_minutes {
-                                                let remaining_minutes = required_minutes - current_minutes;
-                                                Some(Utc::now() + chrono::Duration::minutes(remaining_minutes as i64))
-                                            } else {
-                                                None
-                                            };
-
-                                            // Determine drop name
-                                            let drop_name = if let Some(benefit) = drop.benefit_edges.first() {
-                                                benefit.name.clone()
-                                            } else {
-                                                drop.name.clone()
-                                            };
-
-                                            // Get drop image from benefit_edges
-                                            let drop_image = drop.benefit_edges.first().map(|b| b.image_url.clone());
-
-                                            found_drop_info = Some(CurrentDropInfo {
-                                                drop_id: drop.id.clone(),
-                                                drop_name,
-                                                drop_image,
-                                                campaign_name: campaign.name.clone(),
-                                                game_name: campaign.game_name.clone(),
-                                                current_minutes,
-                                                required_minutes,
-                                                progress_percentage,
-                                                estimated_completion
-                                            });
-                                            break;
-                                        }
-                                    }
-
-                                    if let Some(new_drop_info) = found_drop_info {
-                                        debug!("✅ Found metadata for mismatched drop: {} ({})", new_drop_info.drop_name, new_drop_info.game_name);
-
-                                        // ONLY update current_drop if this is a mineable drop (required_minutes > 0)
-                                        // Subscription drops (0 required minutes) should NOT override the current mining target
-                                        if new_drop_info.required_minutes > 0 {
-                                            let mut status = mining_status.write().await;
-                                            status.current_drop = Some(new_drop_info);
-                                            status.last_update = Utc::now();
-
-                                            // Emit
-                                            let current_status = status.clone();
-                                            drop(status);
-                                            let _ = app_handle.emit("mining-status-update", &current_status);
-                                        } else {
-                                            debug!("⏭️ Skipping subscription drop (0 required minutes) - not updating current_drop");
-                                        }
-                                    } else {
-                                        // This is normal - the drop might be from a different campaign in the same game
-                                        // The inventory polling will provide accurate data for all drops
-                                        debug!("ℹ️ Drop {} is being tracked by inventory polling (not in campaigns cache)", drop_id);
-                                    }
-                                }
-                            }
-                        } else {
-                            debug!("⚠️ No current_drop in mining status during update. Attempting to recover...");
-                             drop(status); // Release lock
-
-                            // Same recovery logic as above
-                            let campaigns_result = drops_service.lock().await.get_all_active_campaigns_cached().await;
-
-                             if let Ok(campaigns) = campaigns_result {
-                                // Search for the drop
-                                let mut found_drop_info = None;
-                                for campaign in campaigns {
-                                    if let Some(drop) = campaign.time_based_drops.iter().find(|d| d.id == drop_id) {
-                                        // Found it!
-                                        let drop_name = if let Some(benefit) = drop.benefit_edges.first() {
-                                            benefit.name.clone()
-                                        } else {
-                                            drop.name.clone()
-                                        };
-
-                                        let estimated_completion = if current_minutes > 0 && current_minutes < required_minutes {
-                                             let remaining_minutes = required_minutes - current_minutes;
-                                             Some(Utc::now() + chrono::Duration::minutes(remaining_minutes as i64))
-                                        } else {
-                                             None
-                                        };
-
-                                        // Get drop image from benefit_edges
-                                        let drop_image = drop.benefit_edges.first().map(|b| b.image_url.clone());
-
-                                        found_drop_info = Some(CurrentDropInfo {
-                                            drop_id: drop.id.clone(),
-                                            drop_name,
-                                            drop_image,
-                                            campaign_name: campaign.name.clone(),
-                                            game_name: campaign.game_name.clone(),
-                                            current_minutes,
-                                            required_minutes,
-                                            progress_percentage: (current_minutes as f32 / required_minutes as f32) * 100.0,
-                                            estimated_completion
-                                        });
-                                        break;
-                                    }
-                                }
-
-                                if let Some(new_drop_info) = found_drop_info {
-                                    debug!("✅ Recovered drop info from scratch: {} ({})", new_drop_info.drop_name, new_drop_info.game_name);
-
-                                    // ONLY update current_drop if this is a mineable drop (required_minutes > 0)
-                                    // Subscription drops (0 required minutes) should NOT be set as current mining target
-                                    if new_drop_info.required_minutes > 0 {
-                                        let mut status = mining_status.write().await;
-                                        status.current_drop = Some(new_drop_info);
-                                        status.last_update = Utc::now();
-
-                                         // Emit
-                                        let current_status = status.clone();
-                                        drop(status);
-                                        let _ = app_handle.emit("mining-status-update", &current_status);
-                                    } else {
-                                        debug!("⏭️ Skipping subscription drop (0 required minutes) - not setting as current_drop");
-                                    }
-                                }
-                             }
-                        }
-                    }
-
-                    // Also update the drops service progress cache
+                    // Update the shared progress cache FIRST so the display
+                    // selection below sees the freshest value for this drop.
                     drops_service
                         .lock()
                         .await
@@ -326,6 +146,44 @@ impl MiningService {
                             required_minutes,
                         )
                         .await;
+
+                    // Re-pick the drop to DISPLAY: the one in the game we are
+                    // currently mining that is closest to completion (fewest
+                    // watch-minutes remaining). This is single-sourced through
+                    // select_display_drop so every surface shows the same value,
+                    // it never flips between rewards just because their progress
+                    // events arrive out of order, and it advances to the next
+                    // reward the instant the current one completes.
+                    let mining_game = {
+                        let status = mining_status.read().await;
+                        status
+                            .current_channel
+                            .as_ref()
+                            .map(|c| c.game_name.clone())
+                            .or_else(|| status.current_drop.as_ref().map(|d| d.game_name.clone()))
+                    };
+
+                    if let Some(game) = mining_game {
+                        if let Some(new_drop) =
+                            Self::select_display_drop(&drops_service, &game).await
+                        {
+                            let mut status = mining_status.write().await;
+                            let changed = match status.current_drop {
+                                Some(ref d) => {
+                                    d.drop_id != new_drop.drop_id
+                                        || d.current_minutes != new_drop.current_minutes
+                                }
+                                None => true,
+                            };
+                            if changed {
+                                status.current_drop = Some(new_drop);
+                                status.last_update = Utc::now();
+                                let current_status = status.clone();
+                                drop(status);
+                                let _ = app_handle.emit("mining-status-update", &current_status);
+                            }
+                        }
+                    }
                 }
             });
         });
@@ -335,6 +193,96 @@ impl MiningService {
         *listener_id = Some(event_id);
 
         debug!("✅ WebSocket event listener registered");
+    }
+
+    /// Pick the drop to DISPLAY while mining: among the current game's mineable
+    /// (required > 0), unclaimed, still-incomplete drops, the one finishing
+    /// FIRST (fewest watch-minutes remaining). A campaign's rewards unlock at
+    /// rising thresholds (e.g. 60 / 120 / 180 min) and watching counts toward
+    /// all of them at once, so the lowest remaining is the next to be granted.
+    ///
+    /// This is the single source of truth for "current drop" so the title-bar
+    /// dropdown and the game/category cards always show the same percentage,
+    /// it never flips between rewards as progress events arrive out of order,
+    /// and it advances to the next-closest reward the instant one completes.
+    /// Returns None only when every mineable drop in the game is claimed or
+    /// complete (the caller then leaves the previous value in place).
+    async fn select_display_drop(
+        drops_service: &Arc<tokio::sync::Mutex<DropsService>>,
+        game_name: &str,
+    ) -> Option<CurrentDropInfo> {
+        let (campaigns, progress) = {
+            let svc = drops_service.lock().await;
+            let campaigns = svc
+                .get_all_active_campaigns_cached()
+                .await
+                .unwrap_or_default();
+            let progress = svc.get_drop_progress().await;
+            (campaigns, progress)
+        };
+
+        // (remaining_minutes, info) for the closest-to-completion drop so far.
+        let mut best: Option<(i32, CurrentDropInfo)> = None;
+
+        for campaign in &campaigns {
+            if !campaign.game_name.eq_ignore_ascii_case(game_name) {
+                continue;
+            }
+            for drop in &campaign.time_based_drops {
+                let required = drop.required_minutes_watched;
+                if required <= 0 {
+                    continue; // subscription / non-mineable drop
+                }
+
+                // Prefer the live progress cache; fall back to embedded progress.
+                let cached = progress.iter().find(|p| p.drop_id == drop.id);
+                let is_claimed = cached
+                    .map(|p| p.is_claimed)
+                    .or_else(|| drop.progress.as_ref().map(|p| p.is_claimed))
+                    .unwrap_or(false);
+                if is_claimed {
+                    continue;
+                }
+                let current = cached
+                    .map(|p| p.current_minutes_watched)
+                    .or_else(|| drop.progress.as_ref().map(|p| p.current_minutes_watched))
+                    .unwrap_or(0);
+                if current >= required {
+                    continue; // already complete, pivot past it
+                }
+
+                let remaining = required - current;
+                let is_closer = best.as_ref().map(|(br, _)| remaining < *br).unwrap_or(true);
+                if is_closer {
+                    let (drop_name, drop_image) = match drop.benefit_edges.first() {
+                        Some(b) => (b.name.clone(), Some(b.image_url.clone())),
+                        None => (drop.name.clone(), None),
+                    };
+                    let progress_percentage = (current as f32 / required as f32) * 100.0;
+                    let estimated_completion = if current > 0 {
+                        Some(Utc::now() + Duration::minutes(remaining as i64))
+                    } else {
+                        None
+                    };
+                    best = Some((
+                        remaining,
+                        CurrentDropInfo {
+                            drop_id: drop.id.clone(),
+                            drop_name,
+                            drop_image,
+                            campaign_name: campaign.name.clone(),
+                            game_name: campaign.game_name.clone(),
+                            current_minutes: current,
+                            required_minutes: required,
+                            progress_percentage,
+                            estimated_completion,
+                        },
+                    ));
+                }
+            }
+        }
+
+        best.map(|(_, info)| info)
     }
 
     pub async fn get_mining_status(&self) -> MiningStatus {
@@ -435,6 +383,7 @@ impl MiningService {
         let cached_user_id = self.cached_user_id.clone();
         let websocket_service = self.websocket_service.clone();
         let mining_session_id = self.mining_session_id.clone();
+        let recovery_state = self.recovery_state.clone();
 
         tokio::spawn(async move {
             debug!(
@@ -604,6 +553,7 @@ impl MiningService {
                                 let settings_clone = settings.clone();
                                 let eligible_channels_clone = eligible_channels.clone();
                                 let cached_user_id_clone = cached_user_id.clone();
+                                let recovery_state_clone = recovery_state.clone();
                                 let mining_session_id_clone = mining_session_id.clone();
 
                                 tokio::spawn(async move {
@@ -613,12 +563,18 @@ impl MiningService {
                                         tokio::time::interval(tokio::time::Duration::from_secs(60));
                                     let mut consecutive_failures = 0;
                                     let mut channel_index = 0;
-                                    // Tick counter for explicit liveness check. Twitch's spade
+                                    // Tick counter for the recovery watchdog. Twitch's spade
                                     // endpoint accepts watch payloads for offline streams without
-                                    // erroring, so the failure-based switch path won't trigger.
-                                    // Every 5 ticks (= 5 min) we explicitly verify the channel is
-                                    // still live and force the switch path if it isn't.
+                                    // erroring, so payload success is NOT a liveness signal. Every
+                                    // `check_every_ticks` minutes we run the full recovery check
+                                    // (offline / game-swap / stale-progress) and switch if needed.
                                     let mut ticks_since_status_check: u32 = 0;
+                                    let check_every_ticks = (settings_clone
+                                        .recovery_settings
+                                        .stream_status_check_interval_seconds
+                                        / 60)
+                                        .max(1)
+                                        as u32;
 
                                     loop {
                                         if !*is_running_clone.read().await {
@@ -633,60 +589,39 @@ impl MiningService {
                                             break;
                                         }
 
-                                        // Every 5 minutes verify the channel is actually live.
-                                        // Twitch's spade endpoint silently accepts watch payloads
-                                        // to offline streams, so we can't rely on payload failures
-                                        // to detect offline. This is our authoritative signal.
+                                        // Periodically run the full recovery watchdog (offline /
+                                        // game-swap / stale-progress detection + auto-switch),
+                                        // honoring the user's recovery settings. Twitch's spade
+                                        // endpoint silently accepts watch payloads for offline
+                                        // streams, so payload success is not a liveness signal —
+                                        // this explicit check is the authoritative one.
                                         ticks_since_status_check += 1;
-                                        if ticks_since_status_check >= 5 {
+                                        if ticks_since_status_check >= check_every_ticks {
                                             ticks_since_status_check = 0;
-                                            match Self::check_channel_status(
+                                            match Self::run_recovery_check(
                                                 &client_clone,
-                                                &current_channel.id,
                                                 &token_clone,
+                                                &eligible_channels_clone,
+                                                &mut current_channel,
+                                                &mut current_broadcast_id,
+                                                &mut channel_index,
+                                                &target_campaign_clone,
+                                                &settings_clone,
+                                                &recovery_state_clone,
+                                                &mining_status_clone,
+                                                &app_handle_clone,
+                                                &is_running_clone,
+                                                true,
                                             )
                                             .await
                                             {
-                                                Ok(None) => {
-                                                    debug!(
-                                                        "📡 Periodic liveness check: {} is offline. Switching.",
-                                                        current_channel.name
-                                                    );
-                                                    match Self::perform_channel_switch(
-                                                        &client_clone,
-                                                        &token_clone,
-                                                        &eligible_channels_clone,
-                                                        &mut current_channel,
-                                                        &mut current_broadcast_id,
-                                                        &mut channel_index,
-                                                        &target_campaign_clone,
-                                                        &settings_clone,
-                                                        &mining_status_clone,
-                                                        &app_handle_clone,
-                                                        &is_running_clone,
-                                                    )
-                                                    .await
-                                                    {
-                                                        ChannelSwitchOutcome::Switched => {
-                                                            consecutive_failures = 0;
-                                                            interval.tick().await;
-                                                            continue;
-                                                        }
-                                                        ChannelSwitchOutcome::Exhausted => break,
-                                                    }
+                                                RecoveryOutcome::Switched => {
+                                                    consecutive_failures = 0;
+                                                    interval.tick().await;
+                                                    continue;
                                                 }
-                                                Ok(Some(_)) => {
-                                                    debug!(
-                                                        "📡 Periodic liveness check: {} still live",
-                                                        current_channel.name
-                                                    );
-                                                }
-                                                Err(e) => {
-                                                    debug!(
-                                                        "⚠️ Periodic liveness check failed (network): {}",
-                                                        e
-                                                    );
-                                                }
+                                                RecoveryOutcome::Exhausted => break,
+                                                RecoveryOutcome::Continue => {}
                                             }
                                         }
 
@@ -742,6 +677,7 @@ impl MiningService {
                                                         channel_index,
                                                         &target_campaign_clone,
                                                         &settings_clone,
+                                                        &recovery_state_clone,
                                                     )
                                                     .await
                                                     {
@@ -1024,8 +960,15 @@ impl MiningService {
                                                 }
 
                                                 all_drops_with_progress.sort_by(|a, b| {
-                                                    b.7.partial_cmp(&a.7)
-                                                        .unwrap_or(std::cmp::Ordering::Equal)
+                                                    // Finishing first = fewest watch-minutes
+                                                    // remaining (required - current). Tiebreak on
+                                                    // higher progress %.
+                                                    let rem_a = a.6 - a.5;
+                                                    let rem_b = b.6 - b.5;
+                                                    rem_a.cmp(&rem_b).then(
+                                                        b.7.partial_cmp(&a.7)
+                                                            .unwrap_or(std::cmp::Ordering::Equal),
+                                                    )
                                                 });
 
                                                 if let Some((
@@ -1253,6 +1196,7 @@ impl MiningService {
         let cached_user_id = self.cached_user_id.clone();
         let websocket_service = self.websocket_service.clone();
         let mining_session_id = self.mining_session_id.clone();
+        let recovery_state = self.recovery_state.clone();
 
         tokio::spawn(async move {
             debug!(
@@ -1364,9 +1308,15 @@ impl MiningService {
                                         })
                                         .collect();
 
-                                    // Sort by progress percentage descending (highest first = closest to completion)
+                                    // Finishing first = fewest watch-minutes remaining
+                                    // (required - current). Tiebreak on higher progress %.
                                     drops_with_progress.sort_by(|a, b| {
-                                        b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal)
+                                        let rem_a = a.0.required_minutes_watched - a.1;
+                                        let rem_b = b.0.required_minutes_watched - b.1;
+                                        rem_a.cmp(&rem_b).then(
+                                            b.2.partial_cmp(&a.2)
+                                                .unwrap_or(std::cmp::Ordering::Equal),
+                                        )
                                     });
 
                                     debug!("📊 Sorted drops by progress (highest first):");
@@ -1509,6 +1459,7 @@ impl MiningService {
                                 let eligible_channels_clone = eligible_channels.clone();
                                 let cached_user_id_clone = cached_user_id.clone();
                                 let watch_session_channel = best_channel.name.clone(); // Track this session's channel
+                                let recovery_state_clone = recovery_state.clone();
                                 let mining_session_id_clone = mining_session_id.clone();
 
                                 tokio::spawn(async move {
@@ -1518,12 +1469,18 @@ impl MiningService {
                                         tokio::time::interval(tokio::time::Duration::from_secs(60));
                                     let mut consecutive_failures = 0;
                                     let mut channel_index = 0; // Track current channel index
-                                                               // Tick counter for explicit liveness check. Twitch's spade
+                                                               // Tick counter for the recovery watchdog. Twitch's spade
                                                                // endpoint accepts watch payloads for offline streams without
-                                                               // erroring, so the failure-based switch path won't trigger.
-                                                               // Every 5 ticks (= 5 min) we explicitly verify the channel is
-                                                               // still live and force the switch path if it isn't.
+                                                               // erroring, so payload success is NOT a liveness signal. Every
+                                                               // `check_every_ticks` minutes we run the full recovery check
+                                                               // (offline / game-swap / stale-progress) and switch if needed.
                                     let mut ticks_since_status_check: u32 = 0;
+                                    let check_every_ticks = (settings_clone
+                                        .recovery_settings
+                                        .stream_status_check_interval_seconds
+                                        / 60)
+                                        .max(1)
+                                        as u32;
 
                                     loop {
                                         // Check if still running
@@ -1555,60 +1512,39 @@ impl MiningService {
                                             }
                                         }
 
-                                        // Every 5 minutes verify the channel is actually live.
-                                        // Twitch's spade endpoint silently accepts watch payloads
-                                        // to offline streams, so we can't rely on payload failures
-                                        // to detect offline. This is our authoritative signal.
+                                        // Periodically run the full recovery watchdog (offline /
+                                        // game-swap / stale-progress detection + auto-switch),
+                                        // honoring the user's recovery settings. Twitch's spade
+                                        // endpoint silently accepts watch payloads for offline
+                                        // streams, so payload success is not a liveness signal —
+                                        // this explicit check is the authoritative one.
                                         ticks_since_status_check += 1;
-                                        if ticks_since_status_check >= 5 {
+                                        if ticks_since_status_check >= check_every_ticks {
                                             ticks_since_status_check = 0;
-                                            match Self::check_channel_status(
+                                            match Self::run_recovery_check(
                                                 &client_clone,
-                                                &current_channel.id,
                                                 &token_clone,
+                                                &eligible_channels_clone,
+                                                &mut current_channel,
+                                                &mut current_broadcast_id,
+                                                &mut channel_index,
+                                                &target_campaign_clone,
+                                                &settings_clone,
+                                                &recovery_state_clone,
+                                                &mining_status_clone,
+                                                &app_handle_clone,
+                                                &is_running_clone,
+                                                true,
                                             )
                                             .await
                                             {
-                                                Ok(None) => {
-                                                    debug!(
-                                                        "📡 Periodic liveness check: {} is offline. Switching.",
-                                                        current_channel.name
-                                                    );
-                                                    match Self::perform_channel_switch(
-                                                        &client_clone,
-                                                        &token_clone,
-                                                        &eligible_channels_clone,
-                                                        &mut current_channel,
-                                                        &mut current_broadcast_id,
-                                                        &mut channel_index,
-                                                        &target_campaign_clone,
-                                                        &settings_clone,
-                                                        &mining_status_clone,
-                                                        &app_handle_clone,
-                                                        &is_running_clone,
-                                                    )
-                                                    .await
-                                                    {
-                                                        ChannelSwitchOutcome::Switched => {
-                                                            consecutive_failures = 0;
-                                                            interval.tick().await;
-                                                            continue;
-                                                        }
-                                                        ChannelSwitchOutcome::Exhausted => break,
-                                                    }
+                                                RecoveryOutcome::Switched => {
+                                                    consecutive_failures = 0;
+                                                    interval.tick().await;
+                                                    continue;
                                                 }
-                                                Ok(Some(_)) => {
-                                                    debug!(
-                                                        "📡 Periodic liveness check: {} still live",
-                                                        current_channel.name
-                                                    );
-                                                }
-                                                Err(e) => {
-                                                    debug!(
-                                                        "⚠️ Periodic liveness check failed (network): {}",
-                                                        e
-                                                    );
-                                                }
+                                                RecoveryOutcome::Exhausted => break,
+                                                RecoveryOutcome::Continue => {}
                                             }
                                         }
 
@@ -1665,6 +1601,7 @@ impl MiningService {
                                                         channel_index,
                                                         &target_campaign_clone,
                                                         &settings_clone,
+                                                        &recovery_state_clone,
                                                     )
                                                     .await
                                                     {
@@ -1956,8 +1893,15 @@ impl MiningService {
 
                                                 // Sort by progress percentage (highest first) to show the drop closest to completion
                                                 all_drops_with_progress.sort_by(|a, b| {
-                                                    b.7.partial_cmp(&a.7)
-                                                        .unwrap_or(std::cmp::Ordering::Equal)
+                                                    // Finishing first = fewest watch-minutes
+                                                    // remaining (required - current). Tiebreak on
+                                                    // higher progress %.
+                                                    let rem_a = a.6 - a.5;
+                                                    let rem_b = b.6 - b.5;
+                                                    rem_a.cmp(&rem_b).then(
+                                                        b.7.partial_cmp(&a.7)
+                                                            .unwrap_or(std::cmp::Ordering::Equal),
+                                                    )
                                                 });
 
                                                 // Update current_drop with the drop that has the highest progress
@@ -2213,6 +2157,7 @@ impl MiningService {
         let cached_user_id = self.cached_user_id.clone();
         let websocket_service = self.websocket_service.clone();
         let mining_session_id = self.mining_session_id.clone();
+        let recovery_state = self.recovery_state.clone();
 
         tokio::spawn(async move {
             debug!(
@@ -2424,6 +2369,12 @@ impl MiningService {
                                 let token_clone = token.clone();
                                 let is_running_clone = is_running.clone();
                                 let cached_user_id_clone = cached_user_id.clone();
+                                let mining_status_clone = mining_status.clone();
+                                let app_handle_clone = app_handle.clone();
+                                let eligible_channels_clone = eligible_channels.clone();
+                                let recovery_state_clone = recovery_state.clone();
+                                let settings_clone = settings.clone();
+                                let target_campaign_clone = vec![campaign.clone()];
                                 let mining_session_id_clone = mining_session_id.clone();
 
                                 // Abort the prior iteration's watch-payload +
@@ -2433,6 +2384,16 @@ impl MiningService {
                                 }
 
                                 let watch_payload_handle = tokio::spawn(async move {
+                                    let mut current_channel = best_channel_clone;
+                                    let mut current_broadcast_id = broadcast_id_clone;
+                                    let mut channel_index = 0usize;
+                                    let mut ticks_since_status_check: u32 = 0;
+                                    let check_every_ticks = (settings_clone
+                                        .recovery_settings
+                                        .stream_status_check_interval_seconds
+                                        / 60)
+                                        .max(1)
+                                        as u32;
                                     let mut interval =
                                         tokio::time::interval(tokio::time::Duration::from_secs(60));
                                     loop {
@@ -2447,12 +2408,47 @@ impl MiningService {
                                             break;
                                         }
 
+                                        // Recovery watchdog: offline / game-swap / stale-progress
+                                        // detection + auto-switch. Spade silently accepts payloads
+                                        // for offline streams, so this explicit check is the
+                                        // authoritative liveness signal. stop_on_exhaustion is false
+                                        // here: if this campaign runs dry we just break and let the
+                                        // outer loop re-evaluate every campaign rather than stopping.
+                                        ticks_since_status_check += 1;
+                                        if ticks_since_status_check >= check_every_ticks {
+                                            ticks_since_status_check = 0;
+                                            match Self::run_recovery_check(
+                                                &client_clone,
+                                                &token_clone,
+                                                &eligible_channels_clone,
+                                                &mut current_channel,
+                                                &mut current_broadcast_id,
+                                                &mut channel_index,
+                                                &target_campaign_clone,
+                                                &settings_clone,
+                                                &recovery_state_clone,
+                                                &mining_status_clone,
+                                                &app_handle_clone,
+                                                &is_running_clone,
+                                                false,
+                                            )
+                                            .await
+                                            {
+                                                RecoveryOutcome::Switched => {
+                                                    interval.tick().await;
+                                                    continue;
+                                                }
+                                                RecoveryOutcome::Exhausted => break,
+                                                RecoveryOutcome::Continue => {}
+                                            }
+                                        }
+
                                         // Send watch payload
                                         debug!("📡 Sending watch payload...");
                                         match Self::send_watch_payload(
                                             &client_clone,
-                                            &best_channel_clone,
-                                            &broadcast_id_clone,
+                                            &current_channel,
+                                            &current_broadcast_id,
                                             &token_clone,
                                             &cached_user_id_clone,
                                         )
@@ -2601,8 +2597,15 @@ impl MiningService {
                                                 }
 
                                                 all_drops_with_progress.sort_by(|a, b| {
-                                                    b.7.partial_cmp(&a.7)
-                                                        .unwrap_or(std::cmp::Ordering::Equal)
+                                                    // Finishing first = fewest watch-minutes
+                                                    // remaining (required - current). Tiebreak on
+                                                    // higher progress %.
+                                                    let rem_a = a.6 - a.5;
+                                                    let rem_b = b.6 - b.5;
+                                                    rem_a.cmp(&rem_b).then(
+                                                        b.7.partial_cmp(&a.7)
+                                                            .unwrap_or(std::cmp::Ordering::Equal),
+                                                    )
                                                 });
 
                                                 if let Some((
@@ -3583,6 +3586,7 @@ impl MiningService {
         channels: &[MiningChannel],
         current_channel_id: &str,
         current_index: usize,
+        recovery_state: &Arc<RwLock<RecoveryWatchdogState>>,
     ) -> Option<(MiningChannel, String, usize)> {
         debug!(
             "🔄 Attempting to switch from channel index {} (have {} cached channels)...",
@@ -3597,6 +3601,17 @@ impl MiningService {
 
             // Skip the current failing channel
             if next_channel.id == current_channel_id {
+                continue;
+            }
+
+            // Skip channels on the temporary recovery blacklist (recently went
+            // offline / swapped game / stalled).
+            if recovery_state
+                .read()
+                .await
+                .is_streamer_blacklisted(&next_channel.id)
+            {
+                debug!("⛔ Skipping blacklisted channel {}", next_channel.name);
                 continue;
             }
 
@@ -3657,6 +3672,7 @@ impl MiningService {
         current_index: usize,
         campaigns: &[DropCampaign],
         settings: &DropsSettings,
+        recovery_state: &Arc<RwLock<RecoveryWatchdogState>>,
     ) -> Option<(MiningChannel, String, Vec<MiningChannel>, usize)> {
         debug!("🔄 Attempting channel switch with potential refresh...");
 
@@ -3667,6 +3683,7 @@ impl MiningService {
             cached_channels,
             current_channel_id,
             current_index,
+            recovery_state,
         )
         .await
         {
@@ -3694,6 +3711,16 @@ impl MiningService {
                 for (index, channel) in fresh_channels.iter().enumerate() {
                     // Skip the current failing channel
                     if channel.id == current_channel_id {
+                        continue;
+                    }
+
+                    // Skip channels on the temporary recovery blacklist.
+                    if recovery_state
+                        .read()
+                        .await
+                        .is_streamer_blacklisted(&channel.id)
+                    {
+                        debug!("⛔ Skipping blacklisted fresh channel {}", channel.name);
                         continue;
                     }
 
@@ -3769,6 +3796,7 @@ impl MiningService {
         channel_index: &mut usize,
         target_campaign: &[DropCampaign],
         settings: &DropsSettings,
+        recovery_state: &Arc<RwLock<RecoveryWatchdogState>>,
         mining_status: &Arc<RwLock<MiningStatus>>,
         app_handle: &AppHandle,
         is_running: &Arc<RwLock<bool>>,
@@ -3782,6 +3810,7 @@ impl MiningService {
             *channel_index,
             target_campaign,
             settings,
+            recovery_state,
         )
         .await
         {
@@ -3796,7 +3825,8 @@ impl MiningService {
                     *eligible = fresh_channels.clone();
                 }
 
-                if let Ok(mut status) = mining_status.try_write() {
+                {
+                    let mut status = mining_status.write().await;
                     status.current_channel = Some(new_channel.clone());
                     status.eligible_channels = fresh_channels;
                     status.last_update = Utc::now();
@@ -3822,14 +3852,10 @@ impl MiningService {
                 ChannelSwitchOutcome::Switched
             }
             None => {
-                debug!("❌ No channels available after API refresh, stopping mining");
-                Self::stop_mining_no_channels(
-                    is_running,
-                    mining_status,
-                    app_handle,
-                    "All streams for this campaign are offline. Mining has been stopped.",
-                )
-                .await;
+                // No live, non-blacklisted channel was found. The caller decides
+                // whether to stop entirely (manual single-campaign mining) or just
+                // break and let an outer loop re-evaluate (auto-mining).
+                debug!("❌ No live channels available after API refresh");
                 ChannelSwitchOutcome::Exhausted
             }
         }
@@ -4299,5 +4325,207 @@ impl MiningService {
             );
             ch.clone()
         })
+    }
+
+    /// One periodic pass of the recovery watchdog over the current channel.
+    ///
+    /// This is the authoritative liveness signal for mining: Twitch's spade
+    /// endpoint silently accepts watch payloads for offline streams, so a
+    /// successful payload does NOT mean the channel is still live. Every
+    /// `stream_status_check_interval_seconds` we explicitly verify the channel
+    /// and pivot if it went offline, switched out of the drops game, or stopped
+    /// making progress — honoring the user's configured recovery settings.
+    #[allow(clippy::too_many_arguments)]
+    async fn run_recovery_check(
+        client: &Client,
+        token: &str,
+        eligible_channels: &Arc<RwLock<Vec<MiningChannel>>>,
+        current_channel: &mut MiningChannel,
+        current_broadcast_id: &mut String,
+        channel_index: &mut usize,
+        target_campaign: &[DropCampaign],
+        settings: &DropsSettings,
+        recovery_state: &Arc<RwLock<RecoveryWatchdogState>>,
+        mining_status: &Arc<RwLock<MiningStatus>>,
+        app_handle: &AppHandle,
+        is_running: &Arc<RwLock<bool>>,
+        // When true (single-campaign manual mining), running out of live channels
+        // stops mining and notifies the user. When false (auto-mining), we just
+        // report Exhausted and let the outer loop re-evaluate other campaigns.
+        stop_on_exhaustion: bool,
+    ) -> RecoveryOutcome {
+        let recovery = &settings.recovery_settings;
+        let manual_only = recovery.recovery_mode == RecoveryMode::ManualOnly;
+
+        // Feed the stale-progress timer from the latest observed progress so a
+        // healthy, advancing mine never trips the stale detector. Also expire
+        // any blacklist entries whose cooldown window has elapsed.
+        {
+            let current_minutes = {
+                let status = mining_status.read().await;
+                status
+                    .current_drop
+                    .as_ref()
+                    .map(|d| d.current_minutes)
+                    .unwrap_or(0)
+            };
+            let mut state = recovery_state.write().await;
+            state.cleanup_expired();
+            state.update_progress(current_minutes);
+            state.last_stream_status_check = Some(Utc::now());
+        }
+
+        // Authoritative liveness + game-category check in a single query.
+        let reason: Option<BlacklistReason> =
+            match Self::check_channel_status_extended(client, &current_channel.id, token).await {
+                // Stream is offline.
+                Ok(None) => {
+                    debug!("📴 Recovery: {} is offline", current_channel.name);
+                    Self::emit_recovery_event(
+                        app_handle,
+                        RecoveryEventType::StreamerWentOffline,
+                        RecoveryEventDetails {
+                            from_channel: Some(current_channel.name.clone()),
+                            to_channel: None,
+                            from_campaign: None,
+                            to_campaign: None,
+                            reason: "Stream went offline".to_string(),
+                        },
+                        recovery.notify_on_recovery_action,
+                    );
+                    Some(BlacklistReason::WentOffline)
+                }
+                // Still live — check for a game-category change, then stale progress.
+                Ok(Some(status)) => {
+                    let mut found: Option<BlacklistReason> = None;
+
+                    if recovery.detect_game_category_change {
+                        if let Some(ref current_game_id) = status.current_game_id {
+                            if current_game_id != &current_channel.game_id {
+                                let new_game = status
+                                    .current_game_name
+                                    .clone()
+                                    .unwrap_or_else(|| "Unknown".to_string());
+                                debug!(
+                                    "🎮 Recovery: {} switched game from {} to {}",
+                                    current_channel.name, current_channel.game_name, new_game
+                                );
+                                Self::emit_recovery_event(
+                                    app_handle,
+                                    RecoveryEventType::GameCategoryChanged,
+                                    RecoveryEventDetails {
+                                        from_channel: Some(current_channel.name.clone()),
+                                        to_channel: None,
+                                        from_campaign: Some(current_channel.game_name.clone()),
+                                        to_campaign: Some(new_game.clone()),
+                                        reason: format!(
+                                            "Streamer switched from {} to {}",
+                                            current_channel.game_name, new_game
+                                        ),
+                                    },
+                                    recovery.notify_on_recovery_action,
+                                );
+                                found = Some(BlacklistReason::GameCategoryChanged);
+                            }
+                        }
+                    }
+
+                    if found.is_none() {
+                        // Stale-progress check emits its own event and respects
+                        // the mode/threshold internally.
+                        found = Self::handle_stale_progress_check(
+                            recovery_state,
+                            settings,
+                            current_channel,
+                            app_handle,
+                        )
+                        .await;
+                    }
+
+                    found
+                }
+                // Transient network error — don't act on it, retry next pass.
+                Err(e) => {
+                    debug!("⚠️ Recovery liveness check failed (network): {}", e);
+                    None
+                }
+            };
+
+        let reason = match reason {
+            Some(r) => r,
+            None => return RecoveryOutcome::Continue,
+        };
+
+        // Manual-only mode: we already notified above; never auto-switch.
+        if manual_only {
+            debug!("📢 Recovery: manual-only mode — notified user, not switching");
+            return RecoveryOutcome::Continue;
+        }
+
+        // Blacklist the current channel so the switch (and future passes) skip
+        // it for the configured cooldown.
+        {
+            let mut state = recovery_state.write().await;
+            state.blacklist_streamer(
+                current_channel.id.clone(),
+                current_channel.name.clone(),
+                reason,
+                recovery.streamer_blacklist_duration_seconds,
+            );
+        }
+
+        // Pivot to the best live, non-blacklisted channel in the campaign.
+        let from_channel = current_channel.name.clone();
+        match Self::perform_channel_switch(
+            client,
+            token,
+            eligible_channels,
+            current_channel,
+            current_broadcast_id,
+            channel_index,
+            target_campaign,
+            settings,
+            recovery_state,
+            mining_status,
+            app_handle,
+            is_running,
+        )
+        .await
+        {
+            ChannelSwitchOutcome::Switched => {
+                // Reset the stale timer + expected game for the freshly selected
+                // channel so it gets a full window before being judged.
+                {
+                    let mut state = recovery_state.write().await;
+                    state.last_progress_increase_at = Some(Utc::now());
+                    state.expected_game_category = Some(current_channel.game_id.clone());
+                }
+                Self::emit_recovery_event(
+                    app_handle,
+                    RecoveryEventType::StreamerSwitched,
+                    RecoveryEventDetails {
+                        from_channel: Some(from_channel),
+                        to_channel: Some(current_channel.name.clone()),
+                        from_campaign: None,
+                        to_campaign: None,
+                        reason: "Switched to a live channel".to_string(),
+                    },
+                    recovery.notify_on_recovery_action,
+                );
+                RecoveryOutcome::Switched
+            }
+            ChannelSwitchOutcome::Exhausted => {
+                if stop_on_exhaustion {
+                    Self::stop_mining_no_channels(
+                        is_running,
+                        mining_status,
+                        app_handle,
+                        "All streams for this campaign are offline. Mining has been stopped.",
+                    )
+                    .await;
+                }
+                RecoveryOutcome::Exhausted
+            }
+        }
     }
 }

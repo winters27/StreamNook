@@ -9,6 +9,7 @@
 import { useMemo, useState } from 'react';
 import { Star, Pencil, Trash2, Plus, Save, X as XIcon, Copy } from 'lucide-react';
 import { useAppStore } from '../../stores/AppStore';
+import { Dropdown } from '../ui/Dropdown';
 import { useSnippetStore } from '../../stores/snippetStore';
 import { getBuiltInSnippets, type Snippet } from '../../utils/commandPaletteCopypastas';
 import { copyToClipboard } from '../../utils/commandPaletteSources';
@@ -451,15 +452,13 @@ function AddCustomForm({ onDone }: { onDone: () => void }) {
           placeholder="Title (shown in palette)"
           className="rounded-md border border-white/10 bg-black/30 px-3 py-1.5 text-sm text-textPrimary"
         />
-        <select
+        <Dropdown
           value={category}
-          onChange={(e) => setCategory(e.target.value as Snippet['category'])}
-          className="rounded-md border border-white/10 bg-black/30 px-3 py-1.5 text-sm text-textPrimary"
-        >
-          {SNIPPET_CATEGORIES.map((c) => (
-            <option key={c} value={c}>{c}</option>
-          ))}
-        </select>
+          onChange={setCategory}
+          className="w-full"
+          ariaLabel="Snippet category"
+          options={SNIPPET_CATEGORIES.map((c) => ({ value: c as Snippet['category'], label: String(c) }))}
+        />
       </div>
       <textarea
         value={content}

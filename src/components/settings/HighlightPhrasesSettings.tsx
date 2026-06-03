@@ -1,4 +1,5 @@
 import { useMemo } from 'react';
+import { Dropdown } from '../ui/Dropdown';
 import { ChevronDown, ChevronUp, Plus, Trash2, Volume2 } from 'lucide-react';
 import { useAppStore } from '../../stores/AppStore';
 import { validateHighlightPhrase } from '../../utils/chatHighlightMatcher';
@@ -184,22 +185,19 @@ const HighlightPhrasesSettings = () => {
               <div className="flex items-center gap-3 pl-11 text-xs text-textSecondary">
                 <label className="inline-flex items-center gap-2">
                   <span>Sound</span>
-                  <select
+                  <Dropdown
                     value={phrase.sound_id ?? ''}
-                    onChange={(e) =>
+                    onChange={(v) =>
                       updatePhrase(phrase.id, {
-                        sound_id: e.target.value === '' ? null : (e.target.value as SoundId),
+                        sound_id: v === '' ? null : (v as SoundId),
                       })
                     }
-                    className="glass-input text-textPrimary text-xs px-2 py-1"
-                  >
-                    <option value="">None</option>
-                    {SOUND_OPTIONS.map((id) => (
-                      <option key={id} value={id}>
-                        {SOUND_LABELS[id]}
-                      </option>
-                    ))}
-                  </select>
+                    ariaLabel="Highlight sound"
+                    options={[
+                      { value: '', label: 'None' },
+                      ...SOUND_OPTIONS.map((id) => ({ value: id, label: SOUND_LABELS[id] })),
+                    ]}
+                  />
                 </label>
 
                 {phrase.sound_id && (

@@ -1,5 +1,5 @@
 use crate::models::components::{
-    BundleUpdateStatus, ComponentChanges, ComponentManifest, InstallDesync, VersionChange,
+    BundleUpdateStatus, ComponentChanges, ComponentManifest, VersionChange,
 };
 use sevenz_rust::decompress_file;
 use std::path::PathBuf;
@@ -19,35 +19,12 @@ fn get_components_json_path() -> Result<PathBuf, String> {
     Ok(exe_dir.join("components.json"))
 }
 
-/// Get the path to bundled streamlink directory (portable)
-fn get_bundled_streamlink_dir() -> Result<PathBuf, String> {
-    let exe_dir = get_exe_directory()?;
-    Ok(exe_dir.join("streamlink"))
-}
-
-/// Get the path to the bundled streamlink executable (portable)
-/// Located at: <exe_directory>/streamlink/bin/streamlinkw.exe
-/// NOTE: We use streamlinkw.exe (not streamlink.exe) because:
-/// - streamlinkw.exe is designed for GUI applications (doesn't force terminal window)
-/// - StreamNook is a GUI application
-#[tauri::command]
-pub fn get_bundled_streamlink_path() -> Result<String, String> {
-    let streamlink_dir = get_bundled_streamlink_dir()?;
-    let exe_path = streamlink_dir.join("bin").join("streamlinkw.exe");
-    Ok(exe_path.to_string_lossy().to_string())
-}
-
-/// Check if bundled components are installed (portable)
-/// Uses streamlinkw.exe (designed for GUI apps)
+/// Whether onboarding's "components" step is satisfied. StreamNook is now a
+/// self-contained native client (no external Streamlink/plugin to provision), so
+/// there is nothing to install — always true.
 #[tauri::command]
 pub fn check_components_installed() -> Result<bool, String> {
-    let streamlink_dir = get_bundled_streamlink_dir()?;
-    let streamlink_exe = streamlink_dir.join("bin").join("streamlinkw.exe");
-    let plugin_path = streamlink_dir.join("plugins").join("twitch.py");
-    let components_json = get_components_json_path()?;
-
-    let installed = streamlink_exe.exists() && plugin_path.exists() && components_json.exists();
-    Ok(installed)
+    Ok(true)
 }
 
 /// Get local component versions from components.json
@@ -61,31 +38,6 @@ pub fn get_local_component_versions() -> Result<ComponentManifest, String> {
 
     ComponentManifest::load_from_file(&components_path)
         .map_err(|e| format!("Failed to load components.json: {}", e))
-}
-
-/// Detect a binary-vs-manifest desync caused by a botched in-app update.
-///
-/// Pre-v7.5.1 builds had an updater that could leave the install in a state
-/// where StreamNook.exe was the old binary but components.json claimed the
-/// new version. This command compares the running binary's compiled-in
-/// version against the local manifest so the UI can surface a repair prompt.
-#[tauri::command]
-pub fn check_install_desync() -> Result<InstallDesync, String> {
-    let binary_version = get_current_app_version();
-    let manifest_version = get_local_component_versions()
-        .ok()
-        .map(|m| m.streamnook.version);
-
-    let desynced = match &manifest_version {
-        Some(v) => v != &binary_version,
-        None => false,
-    };
-
-    Ok(InstallDesync {
-        desynced,
-        binary_version,
-        manifest_version,
-    })
 }
 
 /// Fetch remote component versions from GitHub
@@ -150,15 +102,6 @@ fn get_current_app_version() -> String {
 /// Check for bundle updates
 #[tauri::command]
 pub async fn check_for_bundle_update() -> Result<BundleUpdateStatus, String> {
-    // Try to get local manifest, with fallback to exe directory
-    let local = match get_local_component_versions() {
-        Ok(m) => Some(m),
-        Err(_) => {
-            // Try to copy from exe directory
-            try_copy_components_from_exe()
-        }
-    };
-
     // Fetch remote version info
     let mut builder = reqwest::Client::builder().user_agent("StreamNook");
 
@@ -186,35 +129,33 @@ pub async fn check_for_bundle_update() -> Result<BundleUpdateStatus, String> {
         .await
         .map_err(|e| format!("Failed to parse remote components.json: {}", e))?;
 
-    // Build status based on whether we have local manifest or not
-    let mut status = if let Some(ref local_manifest) = local {
-        local_manifest.compare(&remote)
-    } else {
-        // No local manifest - use app's built-in version
-        let current_version = get_current_app_version();
-        let update_available = current_version != remote.streamnook.version;
+    // The running binary's compiled-in version is the single source of truth for
+    // "what's installed." We no longer consult the local components.json: the
+    // exe-only bundle intentionally leaves it stale, so trusting it would falsely
+    // report that an update is available.
+    let current_version = get_current_app_version();
+    let update_available = current_version != remote.streamnook.version;
 
-        BundleUpdateStatus {
-            update_available,
-            current_version,
-            latest_version: remote.streamnook.version.clone(),
-            download_url: None,
-            bundle_name: None,
-            download_size: None,
-            component_changes: if update_available {
-                Some(ComponentChanges {
-                    streamnook: Some(VersionChange {
-                        from: get_current_app_version(),
-                        to: remote.streamnook.version.clone(),
-                    }),
-                    streamlink: None, // Unknown without local manifest
-                    ttvlol: None,
-                })
-            } else {
-                None
-            },
-            release_notes: None,
-        }
+    let mut status = BundleUpdateStatus {
+        update_available,
+        current_version: current_version.clone(),
+        latest_version: remote.streamnook.version.clone(),
+        download_url: None,
+        bundle_name: None,
+        download_size: None,
+        component_changes: if update_available {
+            Some(ComponentChanges {
+                streamnook: Some(VersionChange {
+                    from: current_version,
+                    to: remote.streamnook.version.clone(),
+                }),
+                streamlink: None,
+                ttvlol: None,
+            })
+        } else {
+            None
+        },
+        release_notes: None,
     };
 
     // Set deterministic download URLs since we bypassed the API
@@ -267,40 +208,10 @@ pub async fn check_for_bundle_update() -> Result<BundleUpdateStatus, String> {
     Ok(status)
 }
 
-/// Extract bundled components from exe directory to AppData on first run
+/// Legacy onboarding hook. Streamlink is no longer bundled or required, so there
+/// is nothing to extract — kept as a no-op so the setup wizard's flow stays intact.
 #[tauri::command]
 pub async fn extract_bundled_components() -> Result<(), String> {
-    // Get the exe directory (where StreamNook.exe is located)
-    let exe_path = std::env::current_exe().map_err(|e| format!("Failed to get exe path: {}", e))?;
-    let exe_dir = exe_path.parent().ok_or("Failed to get exe directory")?;
-
-    // Source paths (next to exe)
-    let source_streamlink = exe_dir.join("streamlink");
-    let source_components = exe_dir.join("components.json");
-
-    // Destination paths (in AppData)
-    let dest_streamlink = get_bundled_streamlink_dir()?;
-    let dest_components = get_components_json_path()?;
-
-    // Check if source exists
-    if !source_streamlink.exists() {
-        return Err("Bundled streamlink not found next to exe".to_string());
-    }
-
-    // Create destination directory
-    std::fs::create_dir_all(&dest_streamlink)
-        .map_err(|e| format!("Failed to create streamlink directory: {}", e))?;
-
-    // Copy streamlink directory recursively
-    copy_dir_all(&source_streamlink, &dest_streamlink)
-        .map_err(|e| format!("Failed to copy streamlink: {}", e))?;
-
-    // Copy components.json
-    if source_components.exists() {
-        std::fs::copy(&source_components, &dest_components)
-            .map_err(|e| format!("Failed to copy components.json: {}", e))?;
-    }
-
     Ok(())
 }
 
@@ -314,18 +225,8 @@ pub async fn download_and_install_bundle(app_handle: tauri::AppHandle) -> Result
     install_bundle_from_status(app_handle, status).await
 }
 
-/// Reinstall the latest bundle even when local manifest already claims that version.
-/// Used by the desync repair flow: when binary != manifest, the user clicks Repair
-/// and we re-pull + re-install the latest release, which runs through the hardened
-/// batch script and brings binary and manifest back into lockstep.
-#[tauri::command]
-pub async fn reinstall_latest_bundle(app_handle: tauri::AppHandle) -> Result<(), String> {
-    let status = check_for_bundle_update().await?;
-    install_bundle_from_status(app_handle, status).await
-}
-
-/// Shared install body. Downloads the 7z, extracts it, swaps streamlink, and writes
-/// the hardened batch script that handles the exe + components.json swap in lockstep.
+/// Shared install body. Downloads the exe-only 7z, extracts it, and writes the
+/// hardened batch script that swaps StreamNook.exe and restarts.
 async fn install_bundle_from_status(
     app_handle: tauri::AppHandle,
     status: BundleUpdateStatus,
@@ -376,54 +277,9 @@ async fn install_bundle_from_status(
 
     let _ = app_handle.emit("bundle-update-progress", "Installing components...");
 
-    // Get destination paths
-    let dest_streamlink = get_bundled_streamlink_dir()?;
+    // Manifest destination. (Streamlink is no longer bundled, so the updater
+    // only swaps StreamNook.exe + components.json.)
     let dest_components = get_components_json_path()?;
-
-    // Copy streamlink directory
-    let source_streamlink = extract_dir.join("streamlink");
-    if source_streamlink.exists() {
-        // Remove old streamlink
-        if dest_streamlink.exists() {
-            // Force kill any running streamlink processes to release file locks
-            #[cfg(target_os = "windows")]
-            {
-                let _ = std::process::Command::new("taskkill")
-                    .args(["/F", "/IM", "streamlinkw.exe", "/T"])
-                    .output();
-            }
-
-            // Retry removal loop to handle race conditions with file locks
-            let mut attempts = 0;
-            loop {
-                attempts += 1;
-                match std::fs::remove_dir_all(&dest_streamlink) {
-                    Ok(_) => break,
-                    Err(e) => {
-                        if attempts >= 5 {
-                            return Err(format!(
-                                "Failed to remove old streamlink after {} attempts. Please ensure Streamlink is not running. Error: {}",
-                                attempts, e
-                            ));
-                        }
-
-                        // Wait before retrying
-                        std::thread::sleep(std::time::Duration::from_millis(1000));
-
-                        // Try killing again on retry to ensure it's dead
-                        #[cfg(target_os = "windows")]
-                        {
-                            let _ = std::process::Command::new("taskkill")
-                                .args(["/F", "/IM", "streamlinkw.exe", "/T"])
-                                .output();
-                        }
-                    }
-                }
-            }
-        }
-        copy_dir_all(&source_streamlink, &dest_streamlink)
-            .map_err(|e| format!("Failed to copy streamlink: {}", e))?;
-    }
 
     // Decide whether components.json copy happens HERE (no exe to swap, just a
     // component-only update) or DEFERRED into the batch script (exe swap is
@@ -572,26 +428,6 @@ WshShell.Run """{batch}""", 0, False
     let _ = std::fs::remove_dir_all(&temp_dir);
 
     let _ = app_handle.emit("bundle-update-progress", "Update complete!");
-
-    Ok(())
-}
-
-/// Recursively copy a directory
-fn copy_dir_all(src: &PathBuf, dst: &PathBuf) -> std::io::Result<()> {
-    std::fs::create_dir_all(dst)?;
-
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        let ty = entry.file_type()?;
-        let src_path = entry.path();
-        let dst_path = dst.join(entry.file_name());
-
-        if ty.is_dir() {
-            copy_dir_all(&src_path, &dst_path)?;
-        } else {
-            std::fs::copy(&src_path, &dst_path)?;
-        }
-    }
 
     Ok(())
 }

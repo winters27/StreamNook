@@ -99,12 +99,20 @@ impl TwitchAuthService {
             return Ok(t);
         }
 
-        let token = fetch_from_webview(&self.inner.app).await?;
+        let token = fetch_from_webview(&self.inner.app, "auth-token").await?;
         *self.inner.cache.write().await = Some(CachedToken {
             value: token.clone(),
             cached_at: Instant::now(),
         });
         Ok(token)
+    }
+
+    /// Returns the twitch.tv `unique_id` (Device-ID) cookie if present. The real
+    /// Twitch web player sends this on the playback-token request; Twitch uses it
+    /// together with the OAuth token to reflect account ad entitlements (Turbo,
+    /// per-channel sub). Not cached — cheap, fetched once per stream start.
+    pub async fn get_device_id(&self) -> Option<String> {
+        fetch_from_webview(&self.inner.app, "unique_id").await.ok()
     }
 
     /// Drop the cached token. Call this when a Twitch API or Streamlink
@@ -136,7 +144,7 @@ impl TwitchAuthService {
 // ---------------------------------------------------------------------------
 
 #[cfg(windows)]
-async fn fetch_from_webview(app: &AppHandle) -> Result<String, AuthError> {
+async fn fetch_from_webview(app: &AppHandle, cookie_name: &str) -> Result<String, AuthError> {
     use tauri::Manager;
 
     let webview = app
@@ -150,8 +158,10 @@ async fn fetch_from_webview(app: &AppHandle) -> Result<String, AuthError> {
         Arc::new(std::sync::Mutex::new(Some(tx)));
 
     let tx_for_closure = tx_slot.clone();
+    let target = cookie_name.to_string();
     let with_webview_result = webview.with_webview(move |platform_webview| {
-        let setup_result = unsafe { request_cookies(platform_webview, tx_for_closure.clone()) };
+        let setup_result =
+            unsafe { request_cookies(platform_webview, tx_for_closure.clone(), target.clone()) };
         if let Err(e) = setup_result {
             if let Some(sender) = tx_for_closure.lock().unwrap().take() {
                 let _ = sender.send(Err(AuthError::Internal(format!(
@@ -176,6 +186,7 @@ async fn fetch_from_webview(app: &AppHandle) -> Result<String, AuthError> {
 unsafe fn request_cookies(
     platform_webview: tauri::webview::PlatformWebview,
     tx_slot: Arc<std::sync::Mutex<Option<oneshot::Sender<Result<String, AuthError>>>>>,
+    target: String,
 ) -> windows::core::Result<()> {
     use webview2_com::GetCookiesCompletedHandler;
     use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_2;
@@ -189,7 +200,7 @@ unsafe fn request_cookies(
     let uri = HSTRING::from("https://twitch.tv");
 
     let handler = GetCookiesCompletedHandler::create(Box::new(move |error_code, cookie_list| {
-        let result = extract_auth_token(error_code, cookie_list);
+        let result = extract_cookie(error_code, cookie_list, &target);
         if let Some(sender) = tx_slot.lock().unwrap().take() {
             let _ = sender.send(result);
         }
@@ -201,9 +212,10 @@ unsafe fn request_cookies(
 }
 
 #[cfg(windows)]
-fn extract_auth_token(
+fn extract_cookie(
     completion: windows::core::Result<()>,
     cookie_list: Option<webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2CookieList>,
+    target: &str,
 ) -> Result<String, AuthError> {
     use webview2_com::take_pwstr;
     use windows::core::PWSTR;
@@ -226,7 +238,7 @@ fn extract_auth_token(
             .map_err(|e| AuthError::Internal(format!("cookie.Name: {}", e)))?;
         let name = take_pwstr(name_ptr);
 
-        if name == "auth-token" {
+        if name == target {
             let mut value_ptr = PWSTR::null();
             unsafe { cookie.Value(&mut value_ptr as *mut PWSTR) }
                 .map_err(|e| AuthError::Internal(format!("cookie.Value: {}", e)))?;
@@ -241,6 +253,6 @@ fn extract_auth_token(
 }
 
 #[cfg(not(windows))]
-async fn fetch_from_webview(_app: &AppHandle) -> Result<String, AuthError> {
+async fn fetch_from_webview(_app: &AppHandle, _cookie_name: &str) -> Result<String, AuthError> {
     Err(AuthError::WebViewUnavailable)
 }

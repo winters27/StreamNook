@@ -8,7 +8,6 @@ import {
     User,
     Package,
     AlertCircle,
-    FolderOpen,
     MessageCircle,
     Wand2,
     CheckCircle2,
@@ -16,7 +15,6 @@ import {
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
-import { open } from '@tauri-apps/plugin-dialog';
 import { useAppStore } from '../stores/AppStore';
 import streamnookLogo from '../assets/streamnook-logo.png';
 
@@ -58,8 +56,6 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
         mainAuthenticated: false,
     });
     const [error, setError] = useState<string | null>(null);
-    const [customStreamlinkPath, setCustomStreamlinkPath] = useState<string | null>(null);
-    const [isSelectingFolder, setIsSelectingFolder] = useState(false);
 
     const { addToast, settings, updateSettings, isAuthenticated, checkAuthStatus, loginToTwitch, whisperImportState, setWhisperImportState, resetWhisperImportState } = useAppStore();
     const [whisperImportStarted, setWhisperImportStarted] = useState(false);
@@ -103,14 +99,7 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
         try {
             await invoke('extract_bundled_components');
             setStatus(prev => ({ ...prev, componentsInstalled: true }));
-
-            const bundledPath = await invoke('get_bundled_streamlink_path') as string;
-            await updateSettings({
-                ...settings,
-                streamlink_path: bundledPath,
-            });
-
-            addToast('Components installed successfully!', 'success');
+            addToast('Setup complete!', 'success');
             setCurrentStep(2);
         } catch (e) {
             Logger.error('Failed to extract components:', e);
@@ -121,61 +110,6 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
             setIsExtracting(false);
         }
     }, [settings, updateSettings, addToast]);
-
-    // streamlinkw.exe directly so we don't grab the CLI variant that would flash a terminal on every launch
-    const handleSelectFolder = useCallback(async () => {
-        try {
-            setIsSelectingFolder(true);
-            const selected = await open({
-                multiple: false,
-                filters: [{ name: 'streamlinkw.exe', extensions: ['exe'] }],
-                title: 'Select streamlinkw.exe',
-            });
-
-            if (selected && typeof selected === 'string') {
-                setCustomStreamlinkPath(selected);
-            }
-        } catch (error) {
-            Logger.error('Failed to open file picker:', error);
-            addToast('Failed to open file picker', 'error');
-        } finally {
-            setIsSelectingFolder(false);
-        }
-    }, [addToast]);
-
-    const handleUseCustomPath = useCallback(async () => {
-        if (!customStreamlinkPath) {
-            addToast('Select streamlinkw.exe first', 'warning');
-            return;
-        }
-
-        const streamlinkDefaults = {
-            low_latency_enabled: true,
-            hls_live_edge: 3,
-            stream_timeout: 60,
-            retry_streams: 3,
-            disable_hosting: true,
-            skip_ssl_verify: false,
-            use_proxy: true,
-            proxy_playlist: '--twitch-proxy-playlist=https://lb-na.cdn-perfprod.com,https://eu.luminous.dev --twitch-proxy-playlist-fallback',
-        };
-
-        const currentStreamlink = settings.streamlink || streamlinkDefaults;
-        const newSettings = {
-            ...settings,
-            streamlink: {
-                ...currentStreamlink,
-                custom_streamlink_path: customStreamlinkPath
-            }
-        };
-
-        await updateSettings(newSettings);
-        setStatus(prev => ({ ...prev, componentsInstalled: true, extractionError: null }));
-        setError(null);
-        addToast('Custom Streamlink path saved!', 'success');
-
-        setCurrentStep(2);
-    }, [customStreamlinkPath, settings, updateSettings, addToast]);
 
     // Initial bundled-component and drops-auth checks fire once per wizard open.
     // Kept off the isAuthenticated dep on purpose: re-running checkComponentsInstalled
@@ -388,103 +322,6 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                             </h1>
                             <p className="text-textSecondary text-base max-w-md">
                                 Streamlink and the ad blocker are in place. Moving on.
-                            </p>
-                        </>
-                    );
-                }
-
-                if (status.extractionError) {
-                    return (
-                        <>
-                            <AlertCircle
-                                size={56}
-                                strokeWidth={1.4}
-                                className={`mb-10 ${customStreamlinkPath ? 'text-success' : 'text-warning'}`}
-                            />
-                            <h1 className="text-4xl font-medium text-textPrimary tracking-tight mb-4">
-                                {customStreamlinkPath ? 'Path looks good' : "Couldn't auto-install"}
-                            </h1>
-                            <p className="text-textSecondary text-base max-w-md mb-8">
-                                {customStreamlinkPath
-                                    ? 'Confirm the path below to continue with your own Streamlink install.'
-                                    : 'Point at an existing streamlinkw.exe, or retry the auto-install.'}
-                            </p>
-
-                            {!customStreamlinkPath && (
-                                <div className="flex items-start gap-2 text-warning text-xs px-4 py-2.5 rounded-lg mb-6 max-w-md bg-warning/[0.06] border border-warning/20">
-                                    <AlertCircle size={14} className="flex-shrink-0 mt-0.5" />
-                                    <span className="text-left break-words">{status.extractionError}</span>
-                                </div>
-                            )}
-
-                            <div className="w-full max-w-md glass-panel rounded-xl p-5">
-                                <p className="text-sm text-textPrimary font-medium mb-3 text-left">
-                                    Select streamlinkw.exe
-                                </p>
-                                <div className="flex gap-2 mb-3">
-                                    <input
-                                        type="text"
-                                        value={customStreamlinkPath || ''}
-                                        readOnly
-                                        placeholder="No file selected"
-                                        className="flex-1 min-w-0 glass-input text-textPrimary text-sm px-3 py-2 rounded-lg truncate"
-                                    />
-                                    <button
-                                        onClick={handleSelectFolder}
-                                        disabled={isSelectingFolder}
-                                        className="glass-button px-3.5 py-2 text-textPrimary text-sm font-medium rounded-lg flex items-center gap-2 disabled:opacity-50 flex-shrink-0"
-                                    >
-                                        <FolderOpen size={15} />
-                                        {isSelectingFolder ? '...' : 'Browse'}
-                                    </button>
-                                </div>
-                                {customStreamlinkPath && (
-                                    <p className="text-xs text-textMuted mb-3 break-all text-left">
-                                        <span className="font-mono text-success">
-                                            {customStreamlinkPath.length > 56 ? '...' + customStreamlinkPath.slice(-56) : customStreamlinkPath}
-                                        </span>
-                                    </p>
-                                )}
-                                <button
-                                    onClick={handleUseCustomPath}
-                                    disabled={!customStreamlinkPath}
-                                    className="glass-button w-full flex items-center justify-center gap-2 px-4 py-2.5 text-textPrimary rounded-lg font-medium text-sm disabled:opacity-40 disabled:cursor-not-allowed"
-                                >
-                                    Use this path
-                                </button>
-                            </div>
-
-                            <div className="flex items-center gap-3 w-full max-w-md my-5">
-                                <div className="flex-1 h-px bg-borderSubtle" />
-                                <span className="text-xs text-textMuted">or</span>
-                                <div className="flex-1 h-px bg-borderSubtle" />
-                            </div>
-
-                            <button
-                                onClick={extractComponents}
-                                disabled={isExtracting}
-                                className="glass-button flex items-center justify-center gap-2 px-5 py-2.5 text-textPrimary rounded-lg font-medium text-sm"
-                            >
-                                {isExtracting ? (
-                                    <>
-                                        <Loader2 size={15} className="animate-spin" />
-                                        Retrying
-                                    </>
-                                ) : (
-                                    'Try auto-install again'
-                                )}
-                            </button>
-
-                            <p className="text-xs text-textMuted mt-5">
-                                Need Streamlink?{' '}
-                                <a
-                                    href="https://streamlink.github.io/install.html#windows-portable"
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="text-accent hover:text-accent-hover inline-flex items-center gap-1"
-                                >
-                                    Download portable <ExternalLink size={10} />
-                                </a>
                             </p>
                         </>
                     );

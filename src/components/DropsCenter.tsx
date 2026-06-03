@@ -4,7 +4,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { useAppStore } from '../stores/AppStore';
 import { listen, emit } from '@tauri-apps/api/event';
-import { Search, Gift, MonitorPlay, BarChart3, Settings as SettingsIcon, Package } from 'lucide-react';
+import { Search, Gift, MonitorPlay, BarChart3, Settings as SettingsIcon, Package, ArrowDownUp } from 'lucide-react';
+import { Dropdown } from './ui/Dropdown';
 import {
     UnifiedGame, DropCampaign, DropProgress, DropsStatistics,
     MiningStatus, DropsDeviceCodeInfo, InventoryResponse, InventoryItem, CompletedDrop
@@ -71,6 +72,8 @@ export default function DropsCenter() {
     // UI State
     const [activeTab, setActiveTab] = useState<Tab>('games');
     const [searchTerm, setSearchTerm] = useState('');
+    // Game grid sort: 'recommended' = relevance order, 'newest'/'oldest' = by most-recent campaign release.
+    const [sortMode, setSortMode] = useState<'recommended' | 'newest' | 'oldest'>('recommended');
     const [selectedGame, setSelectedGame] = useState<UnifiedGame | null>(null);
     const [, setIsLoadingGameDetail] = useState(false);
     const { addToast, setShowDropsOverlay, currentUser, dropsSearchTerm, setDropsSearchTerm } = useAppStore();
@@ -120,13 +123,35 @@ export default function DropsCenter() {
             );
         }
         
-        // Sort: favorites first, then by existing sort order
+        // A game's "release recency" = the most recent campaign start among its
+        // active campaigns (newest campaign to come out for that game).
+        const releaseTime = (g: UnifiedGame) => {
+            let t = 0;
+            for (const c of g.active_campaigns) {
+                const ms = Date.parse(c.start_at);
+                if (!Number.isNaN(ms) && ms > t) t = ms;
+            }
+            return t;
+        };
+
+        // Sort: still-mineable favorites pinned first, then by the selected sort mode.
         return [...games].sort((a, b) => {
-            const aIsFavorite = favoriteGames.some(pg => pg.toLowerCase() === a.name.toLowerCase());
-            const bIsFavorite = favoriteGames.some(pg => pg.toLowerCase() === b.name.toLowerCase());
-            
-            // Favorites first
+            // A favorite that's fully claimed is "done", so it drops out of the top
+            // pin and sinks to the bottom with the other completed games.
+            const aIsFavorite = favoriteGames.some(pg => pg.toLowerCase() === a.name.toLowerCase()) && !a.all_drops_claimed;
+            const bIsFavorite = favoriteGames.some(pg => pg.toLowerCase() === b.name.toLowerCase()) && !b.all_drops_claimed;
+
+            // Active favorites first
             if (aIsFavorite !== bIsFavorite) return aIsFavorite ? -1 : 1;
+
+            // Explicit date sort: newest or oldest by most-recent campaign release.
+            if (sortMode === 'newest' || sortMode === 'oldest') {
+                const diff = releaseTime(b) - releaseTime(a); // newest-first baseline
+                if (diff !== 0) return sortMode === 'newest' ? diff : -diff;
+                return a.name.localeCompare(b.name);
+            }
+
+            // Recommended (default) relevance order:
             // Mining games next
             if (a.is_mining !== b.is_mining) return a.is_mining ? -1 : 1;
             // Completed games (all drops claimed) go to bottom
@@ -139,7 +164,7 @@ export default function DropsCenter() {
             }
             return a.name.localeCompare(b.name);
         });
-    }, [unifiedGames, searchTerm, dropsSettings?.favorite_games]);
+    }, [unifiedGames, searchTerm, dropsSettings?.favorite_games, sortMode]);
 
     // Fetch earned badges on mount for badge drop ownership verification
     useEffect(() => {
@@ -880,13 +905,23 @@ export default function DropsCenter() {
                 return game;
             };
 
+            // A campaign only belongs in the games grid if it has something you can
+            // still mine: at least one watch-time (mineable) drop. Event/special
+            // campaigns with no watch-time drops have "nothing to mine", so we skip
+            // them instead of surfacing dead entries that read "nothing to mine".
+            const campaignIsMineable = (c: DropCampaign): boolean =>
+                (c.time_based_drops || []).some(d =>
+                    typeof d.is_mineable === 'boolean'
+                        ? d.is_mineable
+                        : (d.required_minutes_watched || 0) > 0 ||
+                          (d.progress?.required_minutes_watched || 0) > 0
+                );
+
             // Process Active Campaigns and merge progress data from inventory
             if (campaignsData) {
                 campaignsData.forEach(campaign => {
-                    const game = getOrCreateGame(campaign.game_id, campaign.game_name, campaign.image_url);
-                    
-                    // IMPORTANT: Merge progress data into each drop BEFORE adding to game
-                    // This ensures the campaign's time_based_drops have accurate progress
+                    // IMPORTANT: Merge progress data into each drop BEFORE the mineable
+                    // check + adding to game, so embedded/inventory progress is counted.
                     const campaignWithProgress = {
                         ...campaign,
                         time_based_drops: campaign.time_based_drops.map(drop => {
@@ -917,6 +952,12 @@ export default function DropsCenter() {
                         })
                     };
                     
+                    // Skip campaigns with nothing to mine (all event/special drops).
+                    if (!campaignIsMineable(campaignWithProgress)) {
+                        return;
+                    }
+
+                    const game = getOrCreateGame(campaign.game_id, campaign.game_name, campaign.image_url);
                     game.active_campaigns.push(campaignWithProgress);
                     game.total_active_drops += campaign.time_based_drops.length;
 
@@ -951,6 +992,28 @@ export default function DropsCenter() {
             const miningGameName = activeMiningStatus?.current_drop?.game_name?.toLowerCase() ||
                 activeMiningStatus?.current_channel?.game_name?.toLowerCase();
 
+            // Drops the user has genuinely EARNED, from unambiguous sources only: the
+            // permanent gameEventDrops list + any inventory drop explicitly is_claimed.
+            // Match by benefit id AND benefit NAME (the same reward is reissued under new
+            // instances with new ids). NOTE: NOT claimed-by-index or "100% watched" here;
+            // those over-matched in-progress drops as earned.
+            const ownedBenefitIds = new Set<string>((inventoryData?.completed_drops || []).map(d => d.id));
+            const ownedBenefitNames = new Set<string>(
+                (inventoryData?.completed_drops || []).map(d => (d.name || '').toLowerCase().trim()).filter(Boolean)
+            );
+            const ownedDropIds = new Set<string>();
+            inventoryData?.items?.forEach(item => {
+                item.campaign.time_based_drops.forEach(drop => {
+                    if (drop.progress?.is_claimed === true) {
+                        ownedDropIds.add(drop.id);
+                        drop.benefit_edges?.forEach(b => {
+                            ownedBenefitIds.add(b.id);
+                            if (b.name) ownedBenefitNames.add(b.name.toLowerCase().trim());
+                        });
+                    }
+                });
+            });
+
             // Update is_mining flag and calculate all_drops_claimed for each game
             gamesMap.forEach(game => {
                 if (activeMiningStatus?.is_mining && miningGameName) {
@@ -965,8 +1028,20 @@ export default function DropsCenter() {
                     game.active_campaigns.forEach(campaign => {
                         campaign.time_based_drops.forEach(drop => {
                             totalDropsInCampaigns++;
-                            const prog = progressData?.find(p => p.drop_id === drop.id);
-                            if (prog?.is_claimed) {
+                            const dp = progressData?.find(p => p.drop_id === drop.id) || drop.progress;
+                            // Claimed here, OR already earned elsewhere (by benefit id/name) but
+                            // ONLY when this drop isn't itself in progress. A drop with watch-time
+                            // is being actively mined and must not be counted as already-earned.
+                            const hasCurrentProgress = !!dp && ((dp.current_minutes_watched || 0) > 0 || dp.is_claimed === true);
+                            const owned = dp?.is_claimed === true
+                                || (!hasCurrentProgress && (
+                                    ownedDropIds.has(drop.id)
+                                    || (drop.benefit_edges?.some(b =>
+                                        ownedBenefitIds.has(b.id) ||
+                                        (!!b.name && ownedBenefitNames.has(b.name.toLowerCase().trim()))
+                                    ) ?? false)
+                                ));
+                            if (owned) {
                                 claimedDropsCount++;
                             }
                         });
@@ -981,7 +1056,10 @@ export default function DropsCenter() {
                 }
             });
 
-            setUnifiedGames(Array.from(gamesMap.values()).sort((a, b) => {
+            // Only surface games that have at least one campaign with something left to
+            // mine. Games whose campaigns are all event-only, or that only appear via
+            // earned inventory, have nothing actionable here and live in the Inventory tab.
+            setUnifiedGames(Array.from(gamesMap.values()).filter(g => g.active_campaigns.length > 0).sort((a, b) => {
                 // Mining games first
                 if (a.is_mining !== b.is_mining) return a.is_mining ? -1 : 1;
                 // Completed games (all drops claimed) go to bottom
@@ -1128,6 +1206,7 @@ export default function DropsCenter() {
         let unlistenProgress: (() => void) | undefined;
         let unlistenComplete: (() => void) | undefined;
         let unlistenNoChannels: (() => void) | undefined;
+        let unlistenRecovery: (() => void) | undefined;
 
         const setupListeners = async () => {
             const uStatus = await listen<MiningStatus>('mining-status-update', (event) => {
@@ -1234,6 +1313,15 @@ export default function DropsCenter() {
             });
             if (isMounted) unlistenNoChannels = uNoChannels; else uNoChannels();
 
+            // Listen for recovery-watchdog actions (auto-switch on offline / game-swap /
+            // stalled progress). Surfaced as a toast when "Notify on Recovery Actions" is on.
+            const uRecovery = await listen<{ title: string; message: string; type: string }>('mining-recovery-notification', (event) => {
+                Logger.debug('[DropsCenter] Mining recovery action:', event.payload);
+                const toastType = event.payload.type === 'error' ? 'error' : 'warning';
+                addToast(event.payload.message || event.payload.title || 'Mining recovery action', toastType);
+            });
+            if (isMounted) unlistenRecovery = uRecovery; else uRecovery();
+
             const uProgress = await listen<{ drop_id: string; current_minutes: number; required_minutes: number; timestamp: number; campaign_id?: string; }>('drops-progress-update', (event) => {
                 Logger.debug('[DropsCenter] Received drops-progress-update:', event.payload);
 
@@ -1266,81 +1354,25 @@ export default function DropsCenter() {
                     }
                 });
 
-                // Also update miningStatus.current_drop - prioritize showing the drop closest to completion
-                // This ensures we show the most relevant progress (nearest to being claimable)
+                // Update the displayed drop's minutes IN PLACE when this event is
+                // for it. WHICH drop is shown (the one finishing first) is decided
+                // by the backend and pushed via 'mining-status-update', so we never
+                // re-select here. That single source of truth is what stops the
+                // percentage from flipping between rewards as their progress events
+                // arrive out of order, and it advances to the next reward the instant
+                // the current one completes.
                 setMiningStatus((prev) => {
-                    if (!prev || !prev.is_mining) return prev;
-
-                    const dropId = event.payload.drop_id;
-                    const currentMinutes = event.payload.current_minutes;
-                    const requiredMinutes = event.payload.required_minutes;
-                    const newDropPercent = requiredMinutes > 0 ? (currentMinutes / requiredMinutes) * 100 : 0;
-                    const isNewDropComplete = currentMinutes >= requiredMinutes;
-
-                    // Calculate current drop's completion percentage
-                    const currentDropPercent = prev.current_drop && prev.current_drop.required_minutes > 0
-                        ? (prev.current_drop.current_minutes / prev.current_drop.required_minutes) * 100
-                        : 0;
-                    const isCurrentDropComplete = prev.current_drop
-                        ? prev.current_drop.current_minutes >= prev.current_drop.required_minutes
-                        : false;
-
-                    // If current_drop exists and matches this update, just update its progress
-                    if (prev.current_drop && prev.current_drop.drop_id === dropId) {
-                        Logger.debug('[DropsCenter] Updating existing current_drop progress:', currentMinutes, '/', requiredMinutes);
-                        return {
-                            ...prev,
-                            current_drop: {
-                                ...prev.current_drop,
-                                current_minutes: currentMinutes,
-                                required_minutes: requiredMinutes
-                            },
-                            last_update: event.payload.timestamp.toString()
-                        };
-                    }
-
-                    // Decide whether to switch to the new drop
-                    // Priority: Show the drop that is closest to completion but NOT yet complete
-                    // If both are incomplete, show the one with higher progress %
-                    // If current is complete and new is incomplete, switch to the new one
-                    // If both are complete, keep showing the current one (user can claim it)
-                    let shouldSwitch = false;
-
-                    if (!prev.current_drop) {
-                        // No current drop - use the new one
-                        shouldSwitch = true;
-                        Logger.debug('[DropsCenter] No current drop, using new drop');
-                    } else if (isCurrentDropComplete && !isNewDropComplete) {
-                        // Current is complete (ready to claim), new is not - switch to show the in-progress one
-                        shouldSwitch = true;
-                        Logger.debug('[DropsCenter] Current drop complete, switching to incomplete drop');
-                    } else if (!isCurrentDropComplete && !isNewDropComplete) {
-                        // Both incomplete - show the one closer to completion (higher %)
-                        if (newDropPercent > currentDropPercent) {
-                            shouldSwitch = true;
-                            Logger.debug('[DropsCenter] New drop has higher progress:', newDropPercent.toFixed(1), '% vs', currentDropPercent.toFixed(1), '%');
-                        }
-                    }
-                    // If both are complete, keep the current one (don't switch)
-
-                    if (shouldSwitch) {
-                        Logger.debug('[DropsCenter] Switching to drop:', dropId, '(', currentMinutes, '/', requiredMinutes, 'minutes)');
-                        return {
-                            ...prev,
-                            current_drop: {
-                                campaign_id: event.payload.campaign_id || prev.current_drop?.campaign_id || '',
-                                campaign_name: prev.current_drop?.campaign_name || prev.current_campaign || 'Unknown Campaign',
-                                drop_id: dropId,
-                                drop_name: prev.current_drop?.drop_name || 'Drop in Progress',
-                                required_minutes: requiredMinutes,
-                                current_minutes: currentMinutes,
-                                game_name: prev.current_channel?.game_name || prev.current_drop?.game_name || 'Unknown Game'
-                            },
-                            last_update: event.payload.timestamp.toString()
-                        };
-                    }
-
-                    return prev;
+                    if (!prev || !prev.is_mining || !prev.current_drop) return prev;
+                    if (prev.current_drop.drop_id !== event.payload.drop_id) return prev;
+                    return {
+                        ...prev,
+                        current_drop: {
+                            ...prev.current_drop,
+                            current_minutes: event.payload.current_minutes,
+                            required_minutes: event.payload.required_minutes
+                        },
+                        last_update: event.payload.timestamp.toString()
+                    };
                 });
             });
             if (isMounted) unlistenProgress = uProgress; else uProgress();
@@ -1353,6 +1385,7 @@ export default function DropsCenter() {
             if (unlistenProgress) unlistenProgress();
             if (unlistenComplete) unlistenComplete();
             if (unlistenNoChannels) unlistenNoChannels();
+            if (unlistenRecovery) unlistenRecovery();
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [addToast]);
@@ -1609,8 +1642,23 @@ export default function DropsCenter() {
                 />
             )}
 
+            {/* Liquid-glass heart gradients for the favorite hearts on game cards. */}
+            <svg width="0" height="0" className="absolute pointer-events-none">
+                <defs>
+                    <linearGradient id="drops-glass-heart-fill" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="rgba(255, 255, 255, 0.4)" />
+                        <stop offset="30%" stopColor="rgba(236, 72, 153, 0.2)" />
+                        <stop offset="100%" stopColor="rgba(236, 72, 153, 0.6)" />
+                    </linearGradient>
+                    <linearGradient id="drops-glass-heart-stroke" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="rgba(255, 255, 255, 0.8)" />
+                        <stop offset="100%" stopColor="rgba(255, 255, 255, 0.1)" />
+                    </linearGradient>
+                </defs>
+            </svg>
+
             {/* Header with Tabs */}
-            <div className="flex items-center justify-center gap-2 px-4 py-3 bg-backgroundSecondary border-b border-borderLight shrink-0 relative">
+            <div className="flex items-center justify-center gap-2 px-4 py-3 bg-backgroundSecondary border-b border-borderLight shrink-0 relative z-20">
                 {/* Tab Navigation - Framer Motion Sliding Highlight Style (Centered) */}
                 <LayoutGroup>
                 <div className="flex items-center glass-panel px-1.5 py-1 rounded-xl">
@@ -1695,6 +1743,21 @@ export default function DropsCenter() {
 
                 {/* Right side: Search + Logout (Absolutely positioned) */}
                 <div className="absolute right-4 flex items-center gap-3">
+                    {activeTab === 'games' && (
+                        <Dropdown
+                            value={sortMode}
+                            onChange={setSortMode}
+                            triggerPrefix="Sort"
+                            align="right"
+                            ariaLabel="Sort games"
+                            leadingIcon={<ArrowDownUp size={13} />}
+                            options={[
+                                { value: 'recommended', label: 'Recommended' },
+                                { value: 'newest', label: 'Newest' },
+                                { value: 'oldest', label: 'Oldest' },
+                            ]}
+                        />
+                    )}
                     {activeTab === 'games' && (
                         <div className="relative">
                             <input

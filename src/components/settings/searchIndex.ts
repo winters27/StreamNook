@@ -92,73 +92,31 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
   },
   {
     tab: 'Player',
-    section: 'Streamlink',
-    sectionId: 'settings-section-streamlink-location',
-    title: 'Streamlink',
-    description: 'Configure Streamlink installation location'
-  },
-  {
-    tab: 'Player',
-    section: 'Streamlink Optimization',
-    sectionId: 'settings-section-streamlink-optimization',
-    title: 'Streamlink Optimization',
-    description: 'Tune streaming behavior and codec support'
-  },
-  {
-    tab: 'Player',
-    section: 'Streamlink Optimization',
-    sectionId: 'settings-section-streamlink-optimization',
-    title: 'Twitch Low Latency Mode',
-    description: 'Uses Twitch\'s low latency streaming (forces --twitch-low-latency)'
-  },
-  {
-    tab: 'Player',
-    section: 'Streamlink Optimization',
-    sectionId: 'settings-section-streamlink-optimization',
+    section: 'Streaming',
+    sectionId: 'settings-section-streaming',
     title: 'Allow h265 + AV1 codecs',
-    description: 'Request AV1 and HEVC stream variants in addition to h264. Some channels ship more efficient encodings at the same resolution. Turn off if you see decode errors on older hardware.'
+    description: 'Request AV1 and HEVC stream variants in addition to h264. Turn off if you see decode errors on older hardware.'
   },
   {
     tab: 'Player',
-    section: 'Streamlink Optimization',
-    sectionId: 'settings-section-streamlink-optimization',
-    title: 'HLS Live Edge',
-    description: 'How many segments from the live edge to stay (lower = less latency, less stability)'
-  },
-  {
-    tab: 'Player',
-    section: 'Streamlink Optimization',
-    sectionId: 'settings-section-streamlink-optimization',
-    title: 'Stream Timeout',
-    description: 'How long to wait for stream response before timing out'
-  },
-  {
-    tab: 'Player',
-    section: 'Streamlink Optimization',
-    sectionId: 'settings-section-streamlink-optimization',
-    title: 'Auto-Retry Count',
-    description: 'Number of times to automatically retry on stream errors (0 = no retry)'
-  },
-  {
-    tab: 'Player',
-    section: 'Streamlink Optimization',
-    sectionId: 'settings-section-streamlink-optimization',
-    title: 'Disable Hosting',
-    description: 'Skip streams that are hosting other channels'
-  },
-  {
-    tab: 'Player',
-    section: 'Streamlink Optimization',
-    sectionId: 'settings-section-streamlink-optimization',
+    section: 'Streaming',
+    sectionId: 'settings-section-streaming',
     title: 'Use Proxy Routing',
     description: 'Route playlists through CDN proxies (recommended for ad-blocking)'
   },
   {
     tab: 'Player',
-    section: 'Streamlink Optimization',
-    sectionId: 'settings-section-streamlink-optimization',
-    title: 'Skip SSL Verification',
-    description: 'Only enable if you have connection issues (not recommended)'
+    section: 'Streaming',
+    sectionId: 'settings-section-streaming',
+    title: 'Connection Timeout',
+    description: 'How long to keep retrying to resolve a stream before giving up'
+  },
+  {
+    tab: 'Player',
+    section: 'Streaming',
+    sectionId: 'settings-section-streaming',
+    title: 'Auto-Retry Delay',
+    description: 'Seconds to wait between resolve attempts while a stream is not available yet'
   },
   {
     tab: 'Player',
@@ -440,18 +398,6 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
     section: 'Discord',
     title: 'Discord Rich Presence',
     description: 'Show what you\'re watching on Discord'
-  },
-  {
-    tab: 'Integrations',
-    section: 'TTV LOL Ad Blocker Plugin',
-    title: 'TTV LOL Ad Blocker Plugin',
-    description: 'Manage the TTV LOL ad-blocking integration'
-  },
-  {
-    tab: 'Integrations',
-    section: 'TTV LOL Ad Blocker Plugin',
-    title: 'Enable TTV LOL Plugin',
-    description: 'Block ads on Twitch streams using the TTV LOL plugin'
   },
 
   // === Notifications ===

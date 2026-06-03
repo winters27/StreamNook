@@ -4,7 +4,7 @@
  * Runs on every app launch to ensure proxy routing is enabled and optimized.
  * 
  * Behavior:
- * - First launch: force-enables use_proxy + ttvlol_plugin, runs health check, applies fastest proxy
+ * - First launch: force-enables use_proxy, runs health check, applies fastest proxy
  * - Subsequent launches (auto-optimized): re-checks silently, updates if meaningfully faster
  * - Manual override: respects user's intentional proxy selection, does NOT override
  * - Network-failure resilient: never overwrites good config with nothing
@@ -36,7 +36,7 @@ export async function runProxyOptimization(): Promise<void> {
     const streamlink = settings.streamlink;
 
     // Guard: settings not yet loaded from disk
-    if (!streamlink || settings.streamlink_path === undefined) {
+    if (!streamlink) {
       Logger.warn('[ProxyOptimizer] Settings not loaded yet, skipping');
       return;
     }
@@ -70,13 +70,12 @@ export async function runProxyOptimization(): Promise<void> {
     if (!streamlink.proxy_optimized_once) {
       Logger.info('[ProxyOptimizer] First-time proxy optimization starting...');
 
-      // Force-enable proxy routing and ttvlol plugin
-      if (!streamlink.use_proxy || !settings.ttvlol_plugin?.enabled) {
-        Logger.info('[ProxyOptimizer] Auto-enabling proxy routing and ttvlol plugin');
+      // Force-enable proxy routing
+      if (!streamlink.use_proxy) {
+        Logger.info('[ProxyOptimizer] Auto-enabling proxy routing');
         await updateSettings({
           ...settings,
           streamlink: { ...streamlink, use_proxy: true },
-          ttvlol_plugin: { ...settings.ttvlol_plugin, enabled: true },
         });
       }
 

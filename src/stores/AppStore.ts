@@ -5,26 +5,45 @@ import type { Settings, TwitchUser, TwitchStream, UserInfo, TwitchCategory, Hype
 import { trackActivity } from '../services/logService';
 import { Logger, setDiagnosticsEnabled } from '../utils/logger';
 import { qualitiesEquivalent } from '../utils/quality';
-import { upsertUser } from '../services/supabaseService';
+import { upsertUser, grantActiveSeasonalAccolades, grantCakeDayAccolade } from '../services/supabaseService';
 import { emitSettingsUpdated } from '../utils/settingsBroadcast';
 
-type StreamStartResult = { url: string; quality: string };
+type StreamStartResult = {
+  url: string;
+  quality: string;
+  /** How the live stream resolved: 'turbo' | 'subscribed' | 'hide_ads' | 'proxy' | 'auth-only'. */
+  mode?: string;
+  /** True when Twitch's own entitlement (Turbo / channel sub) is serving an ad-free stream, no proxy. */
+  entitled?: boolean;
+  /** Proxy region (e.g. 'EU') when the ad-block proxy was used. */
+  proxy_region?: string;
+  /** Quality menu the resolver discovered (variant names + best/worst). */
+  available?: string[];
+};
+
+/** The current stream's ad source, surfaced as an unobtrusive note in the player. */
+export type AdSource = {
+  mode: string;
+  entitled: boolean;
+  region?: string;
+};
+
+/** Derive the player ad-source note from a stream start result. */
+function adSourceFrom(result: StreamStartResult): AdSource | null {
+  if (!result.mode) return null;
+  return { mode: result.mode, entitled: !!result.entitled, region: result.proxy_region };
+}
 
 /**
- * Notify the user when Streamlink had to fall back to a different quality
- * because the saved preference wasn't offered for this stream. Silent when
- * the two are equivalent (e.g. user has "480" saved and the channel calls
- * its 480 stream "480p30") — that's a naming-convention difference, not a
- * real quality change.
+ * Log when Streamlink fell back to a different quality because the saved
+ * preference wasn't offered for this stream. No longer toasts: that fired on
+ * nearly every stream and was overbearing. The player surfaces the fallback as
+ * part of its unobtrusive top-left stream note instead. Silent when the two are
+ * equivalent (e.g. "480" vs "480p30"), which is just a naming difference.
  */
-function maybeToastQualityFallback(
-  requested: string,
-  actual: string,
-  addToast: (msg: string, type: 'info' | 'success' | 'warning' | 'error' | 'live') => void,
-) {
+function logQualityFallback(requested: string, actual: string) {
   if (qualitiesEquivalent(requested, actual)) return;
   Logger.info(`[Stream] Quality fallback: ${requested} -> ${actual}`);
-  addToast(`Quality "${requested}" unavailable, using "${actual}"`, 'info');
 }
 
 export interface Toast {
@@ -132,6 +151,11 @@ interface AppState {
   // the playlist). May differ from `settings.quality` if the saved preference
   // wasn't offered for this stream and we fell back to the closest match.
   activeQuality: string | null;
+  /** Quality menu for the current stream (variant names + best/worst), as
+   *  resolved natively. The player's quality selector is built from this. */
+  availableQualities: string[];
+  /** How the current live stream is being served ad-free (entitlement vs proxy). */
+  adSource: AdSource | null;
   currentStream: TwitchStream | null;
   /** Lowercase channel logins currently open in any StreamNook MultiChat
    *  popout window. The main app gates the in-app chat widget on this set —
@@ -147,6 +171,9 @@ interface AppState {
   isLoading: boolean;
   isSettingsOpen: boolean;
   settingsInitialTab: SettingsTab | null;
+  // Twitch user_id of the member whose public StreamNook profile is open in
+  // the draggable viewer overlay, or null when closed.
+  profileViewerUserId: string | null;
   isCommandPaletteOpen: boolean;
   updateInfo: { current_version: string; latest_version: string } | null;
   showLiveStreamsOverlay: boolean;
@@ -167,9 +194,6 @@ interface AppState {
   badgesOverlayInitialTarget: { tab: string; query?: string } | null;
   showWhispersOverlay: boolean;
   showDashboardOverlay: boolean;
-  showStreamlinkMissing: boolean;
-  pendingStreamChannel: string | null;
-  pendingStreamInfo: TwitchStream | null;
   whisperTargetUser: { id: string; login: string; display_name: string; profile_image_url?: string } | null;
   // Whisper import state (persistent across wizard open/close)
   whisperImportState: WhisperImportState;
@@ -233,8 +257,13 @@ interface AppState {
   restartStream: () => Promise<void>;  // Restart current stream (stops and starts again)
   getAvailableQualities: () => Promise<string[]>;
   changeStreamQuality: (quality: string) => Promise<void>;
+  /** Apply a backend ad auto-pivot: the relay already hot-swapped to a clean
+   *  region, so point the player at the fresh URL to resync cleanly. */
+  applyAdPivot: (url: string, region?: string) => void;
   openSettings: (initialTab?: SettingsTab) => void;
   closeSettings: () => void;
+  openProfileViewer: (userId: string) => void;
+  closeProfileViewer: () => void;
   openCommandPalette: () => void;
   closeCommandPalette: () => void;
   toggleCommandPalette: () => void;
@@ -326,6 +355,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   isLoadingMore: false,
   streamUrl: null,
   activeQuality: null,
+  availableQualities: [],
+  adSource: null,
   currentStream: null,
   channelsInPopouts: new Set<string>(),
   currentMediaType: null,
@@ -335,6 +366,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   isLoading: false,
   isSettingsOpen: false,
   settingsInitialTab: null,
+  profileViewerUserId: null,
   isCommandPaletteOpen: false,
   updateInfo: null,
   showLiveStreamsOverlay: false,
@@ -347,9 +379,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   badgesOverlayInitialTarget: null,
   showWhispersOverlay: false,
   showDashboardOverlay: false,
-  showStreamlinkMissing: false,
-  pendingStreamChannel: null,
-  pendingStreamInfo: null,
   whisperTargetUser: null,
   isHomeActive: true,
   isAuthenticated: false,
@@ -649,7 +678,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
 
       // Clear current stream state
-      set({ streamUrl: null, activeQuality: null, currentStream: null, currentMediaType: null });
+      set({ streamUrl: null, activeQuality: null, availableQualities: [], adSource: null, currentStream: null, currentMediaType: null });
 
       // Step 3: Find the next best stream based on mode
       const switchMode = settings.auto_switch?.mode ?? 'same_category';
@@ -987,15 +1016,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (currentStream) {
         await stopStream();
       }
-      const isAvailable = await invoke('is_streamlink_available') as boolean;
-      if (!isAvailable) {
-        Logger.debug('[Media] Streamlink not found, showing missing dialog');
-        set({ isLoading: false, showStreamlinkMissing: true });
-        return;
-      }
-
       const result = await invoke<StreamStartResult>('start_stream', { url: url, quality: settings.quality });
-      maybeToastQualityFallback(settings.quality, result.quality, get().addToast);
+      logQualityFallback(settings.quality, result.quality);
       const parsedInfo: TwitchStream = {
         id: info.id || '',
         user_id: info.broadcaster_id || info.user_id || '',
@@ -1012,6 +1034,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({
         streamUrl: result.url,
         activeQuality: result.quality,
+        adSource: adSourceFrom(result), availableQualities: result.available ?? [],
         currentStream: parsedInfo,
         currentMediaType: type,
         originalMediaUrl: url,
@@ -1073,7 +1096,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
       }
 
-      set({ streamUrl: null, activeQuality: null, currentStream: null, currentMediaType: null, currentHypeTrain: null, streamOriginCategory: null });
+      set({ streamUrl: null, activeQuality: null, availableQualities: [], adSource: null, currentStream: null, currentMediaType: null, currentHypeTrain: null, streamOriginCategory: null });
 
       // Set idle Discord presence when not watching (skip during a MultiNook
       // handoff — MultiNook publishes its own presence for the grid).
@@ -1141,9 +1164,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       
       const result = await invoke<StreamStartResult>('start_stream', { url, quality });
       Logger.debug('[Stream] Restarted successfully:', result.url);
-      maybeToastQualityFallback(quality, result.quality, get().addToast);
+      logQualityFallback(quality, result.quality);
 
-      set({ streamUrl: result.url, activeQuality: result.quality, currentStream: streamInfo });
+      set({ streamUrl: result.url, activeQuality: result.quality, adSource: adSourceFrom(result), availableQualities: result.available ?? [], currentStream: streamInfo });
 
       // Show toast notification
       get().addToast('Stream restarted with new settings', 'success');
@@ -1161,25 +1184,41 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   getAvailableQualities: async () => {
+    // Primary source: the menu the native resolver already returned with the
+    // stream start, so it always matches what's playing and needs no re-resolve.
+    const stored = get().availableQualities;
+    if (stored.length > 0) {
+      return stored;
+    }
+
+    // Fallback (e.g. a resumed session where we don't have a fresh start
+    // result): probe the backend directly.
     const currentStream = get().currentStream;
     if (!currentStream) {
       return [];
     }
-
     try {
       const { currentMediaType, originalMediaUrl } = get();
       const targetUrl = (currentMediaType !== 'live' && originalMediaUrl) ? originalMediaUrl : `https://twitch.tv/${currentStream.user_login}`;
-
-      const qualities = await invoke('get_stream_qualities', {
-        url: targetUrl
-      }) as string[];
-
-      Logger.debug('[Qualities] Available from Streamlink:', qualities);
+      const qualities = await invoke('get_stream_qualities', { url: targetUrl }) as string[];
+      Logger.debug('[Qualities] Available:', qualities);
       return qualities;
     } catch (e) {
       Logger.error('Failed to get stream qualities:', e);
       return [];
     }
+  },
+
+  applyAdPivot: (url, region) => {
+    // Backend already demoted the leaking region and hot-swapped the relay's
+    // upstream; pointing the player at the fresh localhost URL re-inits hls.js
+    // on the clean source (same mechanism as a quality change).
+    const cur = get().adSource;
+    Logger.info(`[AdPivot] reloading player on clean region${region ? ` (${region})` : ''}`);
+    set({
+      streamUrl: url,
+      adSource: cur ? { ...cur, region } : { mode: 'proxy', entitled: false, region },
+    });
   },
 
   changeStreamQuality: async (quality: string) => {
@@ -1209,7 +1248,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       await invoke('save_settings', { settings: newSettings });
       void emitSettingsUpdated();
 
-      set({ streamUrl: result.url, activeQuality: result.quality, settings: newSettings, isLoading: false });
+      set({ streamUrl: result.url, activeQuality: result.quality, adSource: adSourceFrom(result), availableQualities: result.available ?? [], settings: newSettings, isLoading: false });
       if (qualitiesEquivalent(quality, result.quality)) {
         get().addToast(`Quality changed to ${result.quality}`, 'success');
       } else {
@@ -1228,23 +1267,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ isLoading: true });
     trackActivity(`Started watching: ${channel}`);
     try {
-      // Check if streamlink is available before trying to start the stream
-      const isAvailable = await invoke('is_streamlink_available') as boolean;
-      if (!isAvailable) {
-        Logger.debug('[Stream] Streamlink not found, showing missing dialog');
-        // Save the pending stream so we can resume after user selects a path
-        set({
-          isLoading: false,
-          showStreamlinkMissing: true,
-          pendingStreamChannel: channel,
-          pendingStreamInfo: providedStreamInfo || null
-        });
-        return;
-      }
-
       const requestedQuality = get().settings.quality;
       const result = await invoke<StreamStartResult>('start_stream', { url: `https://twitch.tv/${channel}`, quality: requestedQuality });
-      maybeToastQualityFallback(requestedQuality, result.quality, get().addToast);
+      logQualityFallback(requestedQuality, result.quality);
 
       // Use the provided stream info, or find it from followed streams, or fetch it
       let info: TwitchStream;
@@ -1289,7 +1314,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
       }
 
-      set({ streamUrl: result.url, activeQuality: result.quality, currentStream: info, currentMediaType: 'live', originalMediaUrl: null, isHomeActive: false });
+      set({ streamUrl: result.url, activeQuality: result.quality, adSource: adSourceFrom(result), availableQualities: result.available ?? [], currentStream: info, currentMediaType: 'live', originalMediaUrl: null, isHomeActive: false });
 
       // Start chat first - only if authenticated and not skipping refresh
       if (get().isAuthenticated && !skipChatRefresh) {
@@ -1707,7 +1732,7 @@ export const useAppStore = create<AppState>((set, get) => ({
               const result = await invoke<StreamStartResult>('start_stream', { url: latestVideoUrl, quality: requestedQuality });
               resolvedStreamUrl = result.url;
               resolvedQuality = result.quality;
-              maybeToastQualityFallback(requestedQuality, result.quality, get().addToast);
+              logQualityFallback(requestedQuality, result.quality);
               Logger.debug(`[Offline Chat] Resolved VOD playback URL: ${resolvedStreamUrl}`);
             } catch (resolveError) {
               Logger.warn(`[Offline Chat] Could not resolve playback URL for VOD, falling back to banner:`, resolveError);
@@ -1721,6 +1746,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({
         streamUrl: resolvedStreamUrl || 'offline',
         activeQuality: resolvedQuality,
+        adSource: null,
         currentStream: streamContextForUI,
         currentMediaType: 'offline_chat',
         originalMediaUrl: latestVideoUrl,
@@ -1750,6 +1776,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   closeSettings: () => {
     trackActivity('Closed Settings');
     set({ isSettingsOpen: false, settingsInitialTab: null });
+  },
+  openProfileViewer: (userId: string) => {
+    set({ profileViewerUserId: userId });
+  },
+  closeProfileViewer: () => {
+    set({ profileViewerUserId: null });
   },
   openCommandPalette: () => {
     if (!get().isCommandPaletteOpen) trackActivity('Opened Command Palette');
@@ -2072,6 +2104,15 @@ export const useAppStore = create<AppState>((set, get) => ({
             Logger.warn('[Auth] Failed to upsert user to Supabase:', e);
           });
         }
+
+        // Collect today's season/holiday badges + cake day if applicable.
+        // Idempotent server-side; fire and forget.
+        grantActiveSeasonalAccolades(user.user_id).catch((e) => {
+          Logger.warn('[Auth] Failed to grant seasonal badge:', e);
+        });
+        grantCakeDayAccolade(user.user_id, user.login || '').catch((e) => {
+          Logger.warn('[Auth] Failed to grant cake day badge:', e);
+        });
       }
 
       // If we successfully restored session from stored credentials, show success (only once)

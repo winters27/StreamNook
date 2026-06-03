@@ -154,6 +154,18 @@ pub fn get_bundled_proxies() -> ProxyList {
     }
 }
 
+/// Map a configured proxy base URL to its region label from the bundled list
+/// (e.g. `https://lb-eu.cdn-perfprod.com` → `EU`). Best-effort: a custom proxy
+/// not in the bundled list returns None.
+pub fn region_for_base(base: &str) -> Option<String> {
+    let norm = base.trim_end_matches('/');
+    get_bundled_proxies()
+        .proxies
+        .into_iter()
+        .find(|p| p.url.trim_end_matches('/') == norm)
+        .map(|p| p.region)
+}
+
 /// Check health of a single proxy by making an HTTP HEAD request
 async fn check_proxy_health(client: &Client, proxy: &ProxyServer) -> ProxyHealthResult {
     let start = Instant::now();

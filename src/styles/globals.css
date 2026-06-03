@@ -38,6 +38,25 @@
   animation: update-icon-pulse 2.5s ease-in-out infinite;
 }
 
+/* StreamNook Atmosphere: Aurora. Two curtain layers flow horizontally as a
+   seamless continuous loop (translateX by exactly the gradient period, so the
+   100% -> 0% wrap is invisible and never bounces), with a gentle vertical sway.
+   Pure CSS = off-main-thread, cheap even when many chat messages render one.
+   NOTE: the -320px / +240px translate distances MUST match the gradient periods
+   in atmospheres.ts (`layers` last stop 320px, `layers2` 240px). */
+@keyframes sn-aurora-1 {
+  0%   { transform: translate3d(0, 0, 0);        opacity: 0.78; }
+  50%  { transform: translate3d(-160px, -12px, 0); opacity: 1; }
+  100% { transform: translate3d(-320px, 0, 0);     opacity: 0.78; }
+}
+@keyframes sn-aurora-2 {
+  0%   { transform: translate3d(0, 0, 0);        opacity: 0.6; }
+  50%  { transform: translate3d(120px, 12px, 0);  opacity: 0.92; }
+  100% { transform: translate3d(240px, 0, 0);     opacity: 0.6; }
+}
+.sn-aurora-1 { animation: sn-aurora-1 16s linear infinite; will-change: transform, opacity; }
+.sn-aurora-2 { animation: sn-aurora-2 20s linear infinite; will-change: transform, opacity; }
+
 /* Heart drop animation for unfollow */
 @keyframes heart-drop {
   0% {
@@ -102,6 +121,11 @@
   --glass-opacity: 0.15;
   --glass-hover-opacity: 0.25;
   --glass-active-opacity: 0.35;
+
+  /* Global glassiness multiplier (1 = full frosted glass, 0 = fully solid
+     panels). Driven by the Glassiness slider in Theme settings and persisted
+     per user. Theme switches never touch it, so the chosen glassiness sticks. */
+  --glass-strength: 1;
 
   /* Highlight colors */
   --color-highlight-pink: #ff6b9d;
@@ -201,7 +225,15 @@ body {
 
 /* Glass effect utility classes - Theme aware */
 .glass-panel {
-  background-color: var(--color-background-secondary);
+  /* Two layers compose the frosted panel so the global Glassiness slider can
+     fade panels from fully see-through (default) to fully solid without
+     touching any per-theme color. The tint (background-secondary, a low-alpha
+     theme color) always sits on top; underneath it an opaque base (the theme's
+     tertiary surface) fades IN as --glass-strength drops toward 0. At strength
+     1 the base is fully transparent, so the result is identical to the
+     pure-tint panel the signature themes were tuned around. */
+  background-color: color-mix(in srgb, var(--color-background-tertiary) calc((1 - var(--glass-strength)) * 100%), transparent);
+  background-image: linear-gradient(var(--color-background-secondary), var(--color-background-secondary));
   border-radius: 8px;
   backdrop-filter: blur(10px);
   /* A highly subtle version of the liquid glass bevel to frame content cards */
@@ -1223,6 +1255,19 @@ body {
 
 .video-player-container .plyr--video {
   background: #000;
+}
+
+/* A 16:9 picture in a player box that isn't exactly 16:9 lands ~1px short on the
+   left/right — object-fit: contain shape-locks the picture, and the uncovered
+   sliver is painted black by the hardware video overlay (so CSS background color
+   can't hide it). The controls bar is NOT shape-locked, which is why on hover it
+   fills the full width while the picture doesn't. A tiny overscan pushes the
+   picture's edges just past the frame so it fills edge-to-edge; the wrapper's
+   overflow:hidden clips the ~0.2% excess. Bounded on purpose: it closes a thin
+   hairline without cropping genuinely off-aspect media to force a fill. Scale is
+   tunable — raise it slightly if any hairline survives at a given window size. */
+.video-player-container .plyr video {
+  transform: scale(1.002);
 }
 
 /* Control bar styling */

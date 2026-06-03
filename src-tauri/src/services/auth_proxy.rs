@@ -1,15 +1,9 @@
-// Local HTTP splice server.
-//
-// Streamlink can take a `--twitch-proxy-playlist=<URL>` and treat the response
-// as the master playlist. We point it at this server. Per request, we:
-//   1) Call Twitch's GQL playbackAccessToken with the viewer's web cookie → 1440p tier
-//   2) Fetch usher.ttvnw.net with the auth sig/token → auth'd master
-//   3) Fetch the user's TTVLOL proxy in parallel → anonymous, ad-free master
-//   4) Splice: TTVLOL master as base (ad-free for 160p–1080p), append the
-//      1440p+ variants from the auth'd master.
-// Streamlink then plays normally, segments fetched direct from Twitch CDN.
+// Twitch stream resolution primitives (GQL PlaybackAccessToken → usher master,
+// TTV-LOL proxy racing, splice, and out-of-band entitlement detection). These
+// are the building blocks `twitch_resolver` composes; this module no longer runs
+// any local HTTP server (that only existed to feed a Streamlink subprocess).
 
-use crate::services::twitch_auth_service::{AuthError, TwitchAuthService};
+use crate::services::proxy_health;
 use anyhow::{anyhow, Context, Result};
 use futures::stream::{FuturesUnordered, StreamExt};
 use log::{debug, info, warn};
@@ -17,142 +11,149 @@ use once_cell::sync::OnceCell;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
-use warp::{Filter, Reply};
 
-/// Cache spliced master playlists briefly so streamlink's retries don't
-/// trigger fresh upstream fetches every time.
-const MASTER_TTL: Duration = Duration::from_secs(20);
-
-#[derive(Clone)]
-struct CachedMaster {
-    body: String,
-    cached_at: Instant,
-}
-
-static MASTER_CACHE: OnceCell<Mutex<HashMap<String, CachedMaster>>> = OnceCell::new();
-
-fn cache_get(channel: &str) -> Option<String> {
-    let lock = MASTER_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    let map = lock.lock().unwrap();
-    map.get(channel)
-        .filter(|c| c.cached_at.elapsed() < MASTER_TTL)
-        .map(|c| c.body.clone())
-}
-
-fn cache_put(channel: &str, body: String) {
-    let lock = MASTER_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut map = lock.lock().unwrap();
-    map.insert(
-        channel.to_string(),
-        CachedMaster {
-            body,
-            cached_at: Instant::now(),
-        },
-    );
-}
-
-const TWITCH_WEB_CLIENT_ID: &str = "kimne78kx3ncx6brgo4mv6wki5h1ko";
-const PLAYBACK_ACCESS_TOKEN_HASH: &str =
+pub(crate) const TWITCH_WEB_CLIENT_ID: &str = "kimne78kx3ncx6brgo4mv6wki5h1ko";
+pub(crate) const PLAYBACK_ACCESS_TOKEN_HASH: &str =
     "ed230aa1e33e07eebb8928504583da78a5173989fadfb1ac94be06a04f3cdbe9";
-const USER_AGENT: &str =
+pub(crate) const USER_AGENT: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:146.0) Gecko/20100101 Firefox/146.0";
 
-#[derive(Clone)]
-struct ServerConfig {
-    ttvlol_proxy_bases: Vec<String>,
-    twitch_auth: TwitchAuthService,
+// Out-of-band entitlement detection.
+//
+// The PlaybackAccessToken `turbo`/`subscriber` flags are vestigial — verified
+// 2026-06-02 they read false even for a Turbo account fetched from twitch.tv
+// itself, so they CANNOT decide ad-free routing. Instead we ask Twitch
+// directly: `currentUser.hasTurbo` (account-wide) and
+// `user.self.subscriptionBenefit` (per channel). Twitch applies the ad bypass
+// at the usher/SSAI layer keyed on the authenticated session, so the authed
+// manifest is genuinely ad-free for an entitled viewer (proven: anonymous
+// manifests stitch a `twitch-stitched-ad` pod at the same instant the authed
+// one stays clean). When entitled we serve the authed master directly and skip
+// the proxy entirely.
+const TURBO_TTL: Duration = Duration::from_secs(1800); // 30 min; Turbo rarely changes
+const SUB_TTL: Duration = Duration::from_secs(600); // 10 min per channel
+
+static TURBO_CACHE: OnceCell<Mutex<Option<(bool, Instant)>>> = OnceCell::new();
+static SUB_CACHE: OnceCell<Mutex<HashMap<String, (bool, Instant)>>> = OnceCell::new();
+
+/// POST an inline GQL query with the viewer's web cookie; return the JSON body.
+async fn gql_query(oauth_token: &str, body: serde_json::Value) -> Result<serde_json::Value> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .user_agent(USER_AGENT)
+        .build()?;
+    let resp: serde_json::Value = client
+        .post("https://gql.twitch.tv/gql")
+        .header("Authorization", format!("OAuth {}", oauth_token))
+        .header("Client-ID", TWITCH_WEB_CLIENT_ID)
+        .json(&body)
+        .send()
+        .await
+        .context("gql request failed")?
+        .json()
+        .await
+        .context("gql response not JSON")?;
+    Ok(resp)
 }
 
-static SERVER: OnceCell<Mutex<RunningServer>> = OnceCell::new();
-
-struct RunningServer {
-    port: u16,
-    config: std::sync::Arc<std::sync::RwLock<ServerConfig>>,
-}
-
-/// Serializes the splice server's first-time startup. MultiNook starts every
-/// tile concurrently, so without this each `ensure_running` call would bind its
-/// own server and race `SERVER.set` — the losers would error out and the caller
-/// would fall back to the raw, ad-leaking proxy. The fast "already running" path
-/// never touches this lock.
-fn server_init_lock() -> &'static tokio::sync::Mutex<()> {
-    static INIT: OnceCell<tokio::sync::Mutex<()>> = OnceCell::new();
-    INIT.get_or_init(|| tokio::sync::Mutex::new(()))
-}
-
-/// Spin up (or reconfigure) the splice server, return its localhost port.
-/// The `twitch_auth` service is the only path through which the playlist
-/// handler obtains Twitch web cookies — no direct SQLite/cookie access here.
-pub async fn ensure_running(ttvlol_proxy_arg: &str, twitch_auth: TwitchAuthService) -> Result<u16> {
-    let bases = parse_proxy_bases(ttvlol_proxy_arg);
-
-    // Already running: hot-swap config (proxy list and auth service ref) and
-    // reuse the port. The shared `Arc<RwLock>` is what warp's route closure
-    // reads on each request, so writes here are visible immediately.
-    if let Some(lock) = SERVER.get() {
-        let s = lock.lock().unwrap();
-        {
-            let mut cfg = s.config.write().unwrap();
-            cfg.ttvlol_proxy_bases = bases;
-            cfg.twitch_auth = twitch_auth;
+/// Account-wide Turbo status (`currentUser.hasTurbo`). Cached for `TURBO_TTL`.
+/// A Turbo account is ad-free on EVERY channel via the authenticated stream.
+pub(crate) async fn account_has_turbo(oauth_token: &str) -> bool {
+    {
+        let lock = TURBO_CACHE.get_or_init(|| Mutex::new(None));
+        if let Some((val, at)) = *lock.lock().unwrap() {
+            if at.elapsed() < TURBO_TTL {
+                return val;
+            }
         }
-        return Ok(s.port);
     }
-
-    // Not running yet — serialize startup so a burst of concurrent callers (every
-    // MultiNook tile at once) elects a single server instead of racing.
-    let _init = server_init_lock().lock().await;
-
-    // Re-check under the lock: another caller may have started it while we waited.
-    if let Some(lock) = SERVER.get() {
-        let s = lock.lock().unwrap();
-        {
-            let mut cfg = s.config.write().unwrap();
-            cfg.ttvlol_proxy_bases = bases;
-            cfg.twitch_auth = twitch_auth;
+    let body = serde_json::json!({ "query": "query{currentUser{hasTurbo}}" });
+    let turbo = match gql_query(oauth_token, body).await {
+        Ok(v) => v
+            .pointer("/data/currentUser/hasTurbo")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(false),
+        Err(e) => {
+            warn!("[AuthProxy] hasTurbo query failed: {}", e);
+            false
         }
-        return Ok(s.port);
+    };
+    TURBO_CACHE
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap()
+        .replace((turbo, Instant::now()));
+    turbo
+}
+
+/// Whether the viewer has an active sub to `channel`
+/// (`user.self.subscriptionBenefit` non-null). Cached per channel for `SUB_TTL`.
+/// A subbed channel is ad-free via the authenticated stream — same usher
+/// mechanism as Turbo, scoped to that channel.
+pub(crate) async fn is_subscribed(channel: &str, oauth_token: &str) -> bool {
+    {
+        let lock = SUB_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+        if let Some((val, at)) = lock.lock().unwrap().get(channel).copied() {
+            if at.elapsed() < SUB_TTL {
+                return val;
+            }
+        }
     }
-
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").context("bind ephemeral port")?;
-    let port = listener.local_addr()?.port();
-    drop(listener);
-
-    let config = std::sync::Arc::new(std::sync::RwLock::new(ServerConfig {
-        ttvlol_proxy_bases: bases,
-        twitch_auth,
-    }));
-    let cfg_for_route = config.clone();
-
-    let cfg_filter = warp::any().map(move || cfg_for_route.clone());
-    let route = warp::path!("playlist" / String)
-        .and(warp::query::<HashMap<String, String>>())
-        .and(cfg_filter)
-        .and_then(handle_playlist);
-
-    tokio::spawn(async move {
-        warp::serve(route).run(([127, 0, 0, 1], port)).await;
+    let body = serde_json::json!({
+        "query": "query($l:String!){user(login:$l){self{subscriptionBenefit{id}}}}",
+        "variables": { "l": channel }
     });
-
-    SERVER
-        .set(Mutex::new(RunningServer { port, config }))
-        .map_err(|_| anyhow!("splice server already initialized"))?;
-
-    info!("[AuthProxy] splice server listening on 127.0.0.1:{}", port);
-    Ok(port)
+    let subbed = match gql_query(oauth_token, body).await {
+        Ok(v) => v
+            .pointer("/data/user/self/subscriptionBenefit")
+            .map(|x| !x.is_null())
+            .unwrap_or(false),
+        Err(e) => {
+            warn!("[AuthProxy] sub-status query for {} failed: {}", channel, e);
+            false
+        }
+    };
+    SUB_CACHE
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap()
+        .insert(channel.to_string(), (subbed, Instant::now()));
+    subbed
 }
 
-/// Build the streamlink `--twitch-proxy-playlist` value pointing at this server.
-pub fn streamlink_proxy_arg(port: u16) -> String {
-    format!(
-        "--twitch-proxy-playlist=http://127.0.0.1:{}/playlist/[channel]",
-        port
-    )
+/// What the splice server decided for a channel, surfaced to the UI (so it can
+/// say "Subscribed — native ad-free, no proxy" vs "Ad-block proxy: EU") and
+/// read by the pivot logic to know which region is currently in use.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PlaybackStatus {
+    pub channel: String,
+    /// "turbo" | "subscribed" | "hide_ads" | "proxy" | "auth-only"
+    pub mode: String,
+    /// True when relying on Twitch's own ad-free entitlement (no proxy).
+    pub entitled: bool,
+    /// Winning proxy base URL when the proxy path was used.
+    pub proxy_base: Option<String>,
+    /// Region label for that base (NA/EU/RU/...), best-effort.
+    pub proxy_region: Option<String>,
+}
+
+static STATUS: OnceCell<Mutex<HashMap<String, PlaybackStatus>>> = OnceCell::new();
+
+pub(crate) fn set_status(status: PlaybackStatus) {
+    let lock = STATUS.get_or_init(|| Mutex::new(HashMap::new()));
+    lock.lock().unwrap().insert(status.channel.clone(), status);
+}
+
+/// Most recent playback decision for a channel (for the UI and pivot logic).
+pub fn get_status(channel: &str) -> Option<PlaybackStatus> {
+    let lock = STATUS.get_or_init(|| Mutex::new(HashMap::new()));
+    let map = lock.lock().unwrap();
+    map.get(channel).cloned()
 }
 
 /// Parse `--twitch-proxy-playlist=URL1,URL2 --twitch-proxy-playlist-fallback`
 /// down to a list of proxy base URLs.
-fn parse_proxy_bases(arg: &str) -> Vec<String> {
+pub(crate) fn parse_proxy_bases(arg: &str) -> Vec<String> {
     let mut out = Vec::new();
     for tok in arg.split_whitespace() {
         if let Some(val) = tok.strip_prefix("--twitch-proxy-playlist=") {
@@ -167,103 +168,44 @@ fn parse_proxy_bases(arg: &str) -> Vec<String> {
     out
 }
 
-async fn handle_playlist(
-    channel: String,
-    _query: HashMap<String, String>,
-    config: std::sync::Arc<std::sync::RwLock<ServerConfig>>,
-) -> Result<warp::reply::Response, std::convert::Infallible> {
-    let channel = channel.trim_end_matches(".m3u8").to_string();
-    let (bases, twitch_auth) = {
-        let c = config.read().unwrap();
-        (c.ttvlol_proxy_bases.clone(), c.twitch_auth.clone())
-    };
-    debug!("[AuthProxy] /playlist/{} (bases={})", channel, bases.len());
-
-    if let Some(cached) = cache_get(&channel) {
-        debug!("[AuthProxy] {} cache hit ({} bytes)", channel, cached.len());
-        return Ok(warp::reply::with_header(
-            cached,
-            "content-type",
-            "application/vnd.apple.mpegurl",
-        )
-        .into_response());
-    }
-
-    let token = match twitch_auth.get_token().await {
-        Ok(t) => {
-            info!("[AuthProxy] auth token acquired (len={})", t.len());
-            Some(t)
-        }
-        Err(AuthError::NotLoggedIn) => {
-            info!("[AuthProxy] no twitch login in WebView; serving anonymous master");
-            None
-        }
+/// Race the configured proxies first; if they ALL fail, fall back to racing the
+/// rest of the bundled pool. A single optimized proxy going down (or the health
+/// check picking one that pings but can't actually serve a playlist) must not
+/// take ad-blocking down with it — as long as any bundled proxy is alive, we
+/// serve an ad-free master rather than silently dropping to the ad-bearing
+/// authenticated stream. Returns `(winning_base, master_body)`.
+pub(crate) async fn fetch_ttvlol_with_fallback(
+    channel: &str,
+    configured: &[String],
+) -> Result<(String, String)> {
+    match fetch_ttvlol_master_racing(channel, configured).await {
+        Ok(win) => Ok(win),
         Err(e) => {
+            let configured_set: std::collections::HashSet<&str> =
+                configured.iter().map(|s| s.trim_end_matches('/')).collect();
+            let pool: Vec<String> = proxy_health::get_bundled_proxies()
+                .proxies
+                .into_iter()
+                .map(|p| p.url.trim_end_matches('/').to_string())
+                .filter(|u| !configured_set.contains(u.as_str()))
+                .collect();
+            if pool.is_empty() {
+                return Err(e);
+            }
             warn!(
-                "[AuthProxy] auth service error: {}; serving anonymous master",
-                e
-            );
-            None
-        }
-    };
-
-    let ttvlol_fut = fetch_ttvlol_master_racing(&channel, &bases);
-    let auth_fut = async {
-        match &token {
-            Some(t) => fetch_auth_master(&channel, t).await,
-            None => Err(anyhow!("no auth token")),
-        }
-    };
-    let (ttvlol, auth) = tokio::join!(ttvlol_fut, auth_fut);
-
-    let body = match (ttvlol, auth) {
-        (Ok(t), Ok(a)) => {
-            let merged = splice(&t, &a);
-            info!(
-                "[AuthProxy] {} served spliced master ({} bytes)",
+                "[AuthProxy] {} configured proxies failed ({}); falling back to {} bundled proxies",
                 channel,
-                merged.len()
+                e,
+                pool.len()
             );
-            merged
+            fetch_ttvlol_master_racing(channel, &pool).await
         }
-        (Ok(t), Err(e)) => {
-            warn!(
-                "[AuthProxy] {} auth fetch failed ({}); serving TTVLOL master only",
-                channel, e
-            );
-            t
-        }
-        (Err(e), Ok(a)) => {
-            warn!(
-                "[AuthProxy] {} TTVLOL fetch failed ({}); serving auth master only",
-                channel, e
-            );
-            a
-        }
-        (Err(e1), Err(e2)) => {
-            warn!(
-                "[AuthProxy] {} both fetches failed: ttvlol={} auth={}",
-                channel, e1, e2
-            );
-            let err_body = format!("splice failed: ttvlol={} auth={}", e1, e2);
-            return Ok(
-                warp::reply::with_status(err_body, warp::http::StatusCode::BAD_GATEWAY)
-                    .into_response(),
-            );
-        }
-    };
-
-    cache_put(&channel, body.clone());
-
-    Ok(
-        warp::reply::with_header(body, "content-type", "application/vnd.apple.mpegurl")
-            .into_response(),
-    )
+    }
 }
 
 /// GET TTVLOL proxy's master playlist (anonymous, region-shifted, ad-free).
 /// Races all configured proxies in parallel, returns the first 2xx response.
-async fn fetch_ttvlol_master_racing(channel: &str, bases: &[String]) -> Result<String> {
+async fn fetch_ttvlol_master_racing(channel: &str, bases: &[String]) -> Result<(String, String)> {
     if bases.is_empty() {
         return Err(anyhow!("no TTVLOL proxy bases configured"));
     }
@@ -309,7 +251,7 @@ async fn fetch_ttvlol_master_racing(channel: &str, bases: &[String]) -> Result<S
         match res {
             Ok((label, body)) => {
                 debug!("[AuthProxy] TTVLOL winner: {}", label);
-                return Ok(body);
+                return Ok((label, body));
             }
             Err(e) => {
                 debug!("[AuthProxy] TTVLOL miss: {}", e);
@@ -322,7 +264,7 @@ async fn fetch_ttvlol_master_racing(channel: &str, bases: &[String]) -> Result<S
 
 /// Auth'd direct Twitch fetch: GQL playbackAccessToken → usher master.
 /// Returns the master playlist body (which carries the 1440p variant).
-async fn fetch_auth_master(channel: &str, oauth_token: &str) -> Result<String> {
+pub(crate) async fn fetch_auth_master(channel: &str, oauth_token: &str) -> Result<String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(8))
         .user_agent(USER_AGENT)
@@ -399,7 +341,7 @@ async fn fetch_auth_master(channel: &str, oauth_token: &str) -> Result<String> {
 /// master that resolves higher than 1080 (i.e. 1440p, 2160p). Those tiers
 /// don't exist in the TTVLOL anonymous master because Twitch caps anonymous
 /// viewers at FULL_HD.
-fn splice(ttvlol_master: &str, auth_master: &str) -> String {
+pub(crate) fn splice(ttvlol_master: &str, auth_master: &str) -> String {
     let mut out = ttvlol_master.trim_end().to_string();
     let blocks = extract_high_tier_blocks(auth_master);
     if !blocks.is_empty() {
@@ -429,7 +371,7 @@ fn splice(ttvlol_master: &str, auth_master: &str) -> String {
 
 /// Pull an attribute value out of an `EXT-X-STREAM-INF` line. Handles both
 /// quoted (CODECS="...", VIDEO="...") and unquoted (RESOLUTION=1920x1080) forms.
-fn extract_attr(line: &str, key: &str) -> Option<String> {
+pub(crate) fn extract_attr(line: &str, key: &str) -> Option<String> {
     let needle_q = format!("{}=\"", key);
     if let Some(pos) = line.find(&needle_q) {
         let rest = &line[pos + needle_q.len()..];

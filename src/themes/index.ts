@@ -286,7 +286,7 @@ export const dracula: Theme = {
     category: 'universal',
     palette: {
         background: '#282a36',
-        backgroundSecondary: '#21222c',
+        backgroundSecondary: 'rgba(189, 147, 249, 0.05)',
         backgroundTertiary: '#343746',
 
         surface: 'rgba(189, 147, 249, 0.12)',
@@ -337,7 +337,7 @@ export const nord: Theme = {
     category: 'universal',
     palette: {
         background: '#2e3440',
-        backgroundSecondary: '#3b4252',
+        backgroundSecondary: 'rgba(136, 192, 208, 0.05)',
         backgroundTertiary: '#434c5e',
 
         surface: 'rgba(136, 192, 208, 0.1)',
@@ -388,7 +388,7 @@ export const gruvbox: Theme = {
     category: 'universal',
     palette: {
         background: '#282828',
-        backgroundSecondary: '#32302f',
+        backgroundSecondary: 'rgba(251, 189, 46, 0.05)',
         backgroundTertiary: '#3c3836',
 
         surface: 'rgba(251, 189, 46, 0.1)',
@@ -443,7 +443,7 @@ export const rosePine: Theme = {
     category: 'modern',
     palette: {
         background: '#191724',
-        backgroundSecondary: '#1f1d2e',
+        backgroundSecondary: 'rgba(235, 188, 186, 0.05)',
         backgroundTertiary: '#26233a',
 
         surface: 'rgba(235, 188, 186, 0.1)',
@@ -494,7 +494,7 @@ export const tokyoNight: Theme = {
     category: 'modern',
     palette: {
         background: '#1a1b26',
-        backgroundSecondary: '#16161e',
+        backgroundSecondary: 'rgba(122, 162, 247, 0.05)',
         backgroundTertiary: '#24283b',
 
         surface: 'rgba(122, 162, 247, 0.1)',
@@ -545,7 +545,7 @@ export const kanagawa: Theme = {
     category: 'modern',
     palette: {
         background: '#1f1f28',
-        backgroundSecondary: '#16161d',
+        backgroundSecondary: 'rgba(114, 144, 177, 0.05)',
         backgroundTertiary: '#2a2a37',
 
         surface: 'rgba(114, 144, 177, 0.1)',
@@ -600,7 +600,7 @@ export const githubDark: Theme = {
     category: 'classic',
     palette: {
         background: '#0d1117',
-        backgroundSecondary: '#161b22',
+        backgroundSecondary: 'rgba(56, 139, 253, 0.05)',
         backgroundTertiary: '#21262d',
 
         surface: 'rgba(56, 139, 253, 0.1)',
@@ -650,32 +650,36 @@ export const solarizedSand: Theme = {
     description: 'Warm sandy desert aesthetic inspired by Solarized with beige and tan tones.',
     category: 'cozy',
     palette: {
+        // Light-mode depth recipe: warm tan canvas with translucent cream PANELS
+        // that sit lighter than it (cards lift via lightness + the panel
+        // drop-shadow), while interactive surfaces use a low-alpha brown tint so
+        // hovers and the selected state darken visibly instead of washing pale.
         background: '#d4c5a9',
-        backgroundSecondary: '#e3d7c1',
-        backgroundTertiary: '#c9b89b',
+        backgroundSecondary: 'rgba(255, 250, 240, 0.62)',
+        backgroundTertiary: '#e7dcc6',
 
-        surface: 'rgba(139, 116, 87, 0.15)',
-        surfaceHover: 'rgba(139, 116, 87, 0.25)',
-        surfaceActive: 'rgba(139, 116, 87, 0.35)',
+        surface: 'rgba(139, 116, 87, 0.12)',
+        surfaceHover: 'rgba(139, 116, 87, 0.2)',
+        surfaceActive: 'rgba(139, 116, 87, 0.28)',
 
         textPrimary: '#3d3426',
-        textSecondary: '#8b7457',
-        textMuted: 'rgba(61, 52, 38, 0.6)',
+        textSecondary: '#6e5d45',
+        textMuted: 'rgba(61, 52, 38, 0.55)',
 
         accent: '#9c8364',
         accentHover: '#8b7457',
         accentMuted: 'rgba(156, 131, 100, 0.6)',
 
-        border: 'rgba(139, 116, 87, 0.35)',
-        borderLight: 'rgba(139, 116, 87, 0.25)',
-        borderSubtle: 'rgba(139, 116, 87, 0.15)',
+        border: 'rgba(110, 93, 68, 0.26)',
+        borderLight: 'rgba(110, 93, 68, 0.16)',
+        borderSubtle: 'rgba(110, 93, 68, 0.09)',
 
         success: '#7a8a3f',
         warning: '#b88932',
         error: '#c55a4d',
         info: '#5a8a8a',
 
-        scrollbarThumb: 'rgba(139, 116, 87, 0.45)',
+        scrollbarThumb: 'rgba(110, 93, 68, 0.4)',
         scrollbarTrack: 'transparent',
 
         glassOpacity: '0.15',
@@ -702,7 +706,7 @@ export const solarizedDark: Theme = {
     category: 'classic',
     palette: {
         background: '#002b36',
-        backgroundSecondary: '#073642',
+        backgroundSecondary: 'rgba(38, 139, 210, 0.05)',
         backgroundTertiary: '#094959',
 
         surface: 'rgba(38, 139, 210, 0.12)',
@@ -753,7 +757,7 @@ export const monokai: Theme = {
     category: 'classic',
     palette: {
         background: '#272822',
-        backgroundSecondary: '#1e1f1c',
+        backgroundSecondary: 'rgba(249, 38, 114, 0.05)',
         backgroundTertiary: '#3e3d32',
 
         surface: 'rgba(249, 38, 114, 0.1)',
@@ -804,7 +808,7 @@ export const oneDark: Theme = {
     category: 'classic',
     palette: {
         background: '#282c34',
-        backgroundSecondary: '#21252b',
+        backgroundSecondary: 'rgba(97, 175, 239, 0.05)',
         backgroundTertiary: '#2c323c',
 
         surface: 'rgba(97, 175, 239, 0.1)',
@@ -859,7 +863,7 @@ export const catppuccinMocha: Theme = {
     category: 'cozy',
     palette: {
         background: '#1e1e2e',
-        backgroundSecondary: '#181825',
+        backgroundSecondary: 'rgba(203, 166, 247, 0.05)',
         backgroundTertiary: '#313244',
 
         surface: 'rgba(203, 166, 247, 0.1)',
@@ -906,35 +910,41 @@ export const catppuccinMocha: Theme = {
 export const catppuccinLatte: Theme = {
     id: 'catppuccin-latte',
     name: 'Catppuccin Latte',
-    description: 'Light, creamy variant of Catppuccin for those who prefer light themes.',
+    description: 'Soft, creamy light theme with layered surfaces and gentle, low-glare contrast.',
     category: 'cozy',
     palette: {
-        background: '#eff1f5',
-        backgroundSecondary: '#e6e9ef',
-        backgroundTertiary: '#dce0e8',
+        // Light-mode depth recipe: a calm grey canvas with translucent WHITE
+        // PANELS that sit lighter than it (cards lift via lightness + the panel
+        // drop-shadow), while interactive surfaces use a low-alpha ACCENT tint so
+        // hovers and the selected state darken visibly instead of washing white.
+        background: '#d8dce4',
+        backgroundSecondary: 'rgba(255, 255, 255, 0.6)',
+        backgroundTertiary: '#eef0f4',
 
-        surface: 'rgba(136, 57, 239, 0.08)',
-        surfaceHover: 'rgba(136, 57, 239, 0.15)',
-        surfaceActive: 'rgba(136, 57, 239, 0.22)',
+        surface: 'rgba(136, 57, 239, 0.1)',
+        surfaceHover: 'rgba(136, 57, 239, 0.16)',
+        surfaceActive: 'rgba(136, 57, 239, 0.24)',
 
         textPrimary: '#4c4f69',
-        textSecondary: '#8839ef',
-        textMuted: 'rgba(76, 79, 105, 0.6)',
+        // Muted slate, not the vivid mauve accent — keeps secondary text calm.
+        textSecondary: '#6c6f85',
+        textMuted: 'rgba(76, 79, 105, 0.55)',
 
         accent: '#8839ef',
         accentHover: '#9752f2',
         accentMuted: 'rgba(136, 57, 239, 0.5)',
 
-        border: 'rgba(136, 57, 239, 0.2)',
-        borderLight: 'rgba(136, 57, 239, 0.12)',
-        borderSubtle: 'rgba(136, 57, 239, 0.06)',
+        // Neutral slate borders read as clean layer separators on a light canvas.
+        border: 'rgba(76, 79, 105, 0.16)',
+        borderLight: 'rgba(76, 79, 105, 0.1)',
+        borderSubtle: 'rgba(76, 79, 105, 0.06)',
 
         success: '#40a02b',
         warning: '#df8e1d',
         error: '#d20f39',
         info: '#1e66f5',
 
-        scrollbarThumb: 'rgba(136, 57, 239, 0.3)',
+        scrollbarThumb: 'rgba(76, 79, 105, 0.3)',
         scrollbarTrack: 'transparent',
 
         glassOpacity: '0.08',
@@ -961,7 +971,7 @@ export const materialTheme: Theme = {
     category: 'modern',
     palette: {
         background: '#263238',
-        backgroundSecondary: '#1e272c',
+        backgroundSecondary: 'rgba(128, 203, 196, 0.05)',
         backgroundTertiary: '#2c3b41',
 
         surface: 'rgba(128, 203, 196, 0.12)',
@@ -1012,7 +1022,7 @@ export const ayuDark: Theme = {
     category: 'modern',
     palette: {
         background: '#0a0e14',
-        backgroundSecondary: '#01060e',
+        backgroundSecondary: 'rgba(255, 160, 122, 0.05)',
         backgroundTertiary: '#0d1016',
 
         surface: 'rgba(255, 160, 122, 0.1)',
@@ -1063,7 +1073,7 @@ export const nightOwl: Theme = {
     category: 'modern',
     palette: {
         background: '#011627',
-        backgroundSecondary: '#01111d',
+        backgroundSecondary: 'rgba(128, 203, 196, 0.05)',
         backgroundTertiary: '#0b2942',
 
         surface: 'rgba(128, 203, 196, 0.1)',
@@ -1114,7 +1124,7 @@ export const synthwave84: Theme = {
     category: 'modern',
     palette: {
         background: '#241b2f',
-        backgroundSecondary: '#1a1423',
+        backgroundSecondary: 'rgba(255, 71, 176, 0.05)',
         backgroundTertiary: '#2a2139',
 
         surface: 'rgba(255, 71, 176, 0.12)',
@@ -1165,7 +1175,7 @@ export const everforest: Theme = {
     category: 'cozy',
     palette: {
         background: '#2d353b',
-        backgroundSecondary: '#272e33',
+        backgroundSecondary: 'rgba(163, 190, 140, 0.05)',
         backgroundTertiary: '#343f44',
 
         surface: 'rgba(163, 190, 140, 0.1)',
@@ -1498,4 +1508,18 @@ export const applyTheme = (theme: Theme): void => {
 
     // Store theme id on body for potential CSS-based theme detection
     document.body.setAttribute('data-theme', theme.id);
+};
+
+// Default glassiness (percent). 100 = full frosted glass — the look every
+// theme is tuned around.
+export const DEFAULT_GLASS_TRANSPARENCY = 100;
+
+// Apply the global glassiness multiplier to the live document. The value is a
+// percent (0-100): 100 leaves panels fully see-through (the signature look),
+// 0 makes them fully solid. Stored on :root as --glass-strength, which the
+// .glass-panel compositing in globals.css reads. Kept separate from applyTheme
+// so switching themes never resets the user's chosen glassiness.
+export const applyGlassStrength = (transparency: number): void => {
+    const clamped = Math.max(0, Math.min(100, transparency)) / 100;
+    document.documentElement.style.setProperty('--glass-strength', String(clamped));
 };

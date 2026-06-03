@@ -134,15 +134,16 @@ export default function GameCard({
             return null;
         }
 
-        // Find the drop with highest progress percentage
+        // Find the drop finishing first (fewest watch-minutes remaining), matching
+        // the backend's current_drop rule so the card never disagrees with it.
         let bestDrop = activeProgressEntries[0];
-        let bestPercent = (bestDrop.current_minutes_watched / bestDrop.required_minutes_watched) * 100;
+        let bestRemaining = bestDrop.required_minutes_watched - bestDrop.current_minutes_watched;
 
         for (const entry of activeProgressEntries) {
-            const percent = (entry.current_minutes_watched / entry.required_minutes_watched) * 100;
-            if (percent > bestPercent) {
+            const remaining = entry.required_minutes_watched - entry.current_minutes_watched;
+            if (remaining < bestRemaining) {
                 bestDrop = entry;
-                bestPercent = percent;
+                bestRemaining = remaining;
             }
         }
 
@@ -263,22 +264,20 @@ export default function GameCard({
     // Count campaigns
     const campaignCount = game.active_campaigns.length;
 
-    // Dynamic font sizing effect - shrinks font to fit without wrapping
+    // Dynamic font sizing effect - shrinks font to fit without wrapping.
+    // Measures the title's own (flex) box, which already excludes the favorite
+    // heart beside it, so the name only shrinks when it genuinely overflows.
     useEffect(() => {
         const titleEl = titleRef.current;
-        const containerEl = containerRef.current;
-        if (!titleEl || !containerEl) return;
+        if (!titleEl) return;
 
         // Reset to max size to measure
         let currentSize = 14;
         titleEl.style.fontSize = `${currentSize}px`;
 
-        // Get container width (with padding accounted for)
-        const containerWidth = containerEl.clientWidth;
-
-        // Shrink font until text fits or we hit minimum
+        // Shrink font until the text fits its box or we hit the minimum
         const minSize = 9;
-        while (titleEl.scrollWidth > containerWidth && currentSize > minSize) {
+        while (titleEl.scrollWidth > titleEl.clientWidth && currentSize > minSize) {
             currentSize -= 0.5;
             titleEl.style.fontSize = `${currentSize}px`;
         }
@@ -314,49 +313,49 @@ export default function GameCard({
                     )}
                 </div>
 
-                {/* Top-Right: Favorite heart + Inventory badge */}
-                <div className="absolute top-2 right-2 z-10 flex flex-col gap-1.5">
-                    {/* Favorite heart button */}
+                {/* Top-Right: Inventory badge */}
+                {game.inventory_items.length > 0 && (
+                    <div className="absolute top-2 right-2 z-10 w-7 h-7 rounded-full glass-panel flex items-center justify-center border border-purple-500/40 bg-purple-500/30">
+                        <Package size={14} className="text-purple-200" />
+                    </div>
+                )}
+
+            </div>
+
+            {/* Chin Section */}
+            <div className="p-2" ref={containerRef}>
+                {/* Title row: game name (auto-sized to fit) + favorite heart beside it */}
+                <div className="flex items-center gap-1.5">
+                    <Tooltip content={game.name} delay={400} side="bottom">
+                        <h3
+                            ref={titleRef}
+                            className="flex-1 min-w-0 text-textPrimary font-medium whitespace-nowrap overflow-hidden group-hover:text-accent transition-colors"
+                            style={{ fontSize: `${fontSize}px` }}
+                        >
+                            {game.name}
+                        </h3>
+                    </Tooltip>
+
+                    {/* Favorite heart - liquid-glass style (matches Home stream cards).
+                        Hover-reveal when not favorited, persistent pink once favorited. */}
                     <Tooltip content={isFavorite ? 'Remove from favorites' : 'Add to favorites'} delay={200} side="top">
                         <button
                             onClick={(e) => {
                                 e.stopPropagation();
                                 if (onToggleFavorite) onToggleFavorite(game.name);
                             }}
-                            className={`w-7 h-7 rounded-full glass-panel flex items-center justify-center border transition-all ${
-                                isFavorite 
-                                    ? 'border-red-500/70 bg-red-500/30 hover:bg-red-500/50' 
-                                    : 'border-borderLight/40 bg-glass hover:bg-glass-hover hover:border-red-500/40'
-                            }`}
+                            className="shrink-0 p-0.5 flex items-center justify-center bg-transparent transition-transform duration-300 hover:scale-110 active:scale-95"
                         >
-                            <Heart 
-                                size={14} 
-                                className={isFavorite ? 'text-red-400' : 'text-textSecondary'} 
-                                fill={isFavorite ? 'currentColor' : 'none'}
+                            <Heart
+                                size={16}
+                                fill={isFavorite ? 'url(#drops-glass-heart-fill)' : 'none'}
+                                stroke={isFavorite ? 'url(#drops-glass-heart-stroke)' : 'currentColor'}
+                                strokeWidth={isFavorite ? 1.5 : 2}
+                                className={`transition-all duration-300 ${isFavorite ? 'drop-shadow-[0_2px_6px_rgba(236,72,153,0.5)]' : 'text-textSecondary opacity-0 group-hover:opacity-100 hover:text-textPrimary'}`}
                             />
                         </button>
                     </Tooltip>
-                    {/* Inventory badge */}
-                    {game.inventory_items.length > 0 && (
-                        <div className="w-7 h-7 rounded-full glass-panel flex items-center justify-center border border-purple-500/40 bg-purple-500/30">
-                            <Package size={14} className="text-purple-200" />
-                        </div>
-                    )}
                 </div>
-            </div>
-
-            {/* Chin Section */}
-            <div className="p-2" ref={containerRef}>
-                {/* Game Name - dynamic font sizing, no wrapping */}
-                <Tooltip content={game.name} delay={400} side="bottom">
-                    <h3
-                        ref={titleRef}
-                        className="text-textPrimary font-medium whitespace-nowrap overflow-hidden group-hover:text-accent transition-colors block"
-                        style={{ fontSize: `${fontSize}px` }}
-                    >
-                        {game.name}
-                    </h3>
-                </Tooltip>
 
                 {/* Mining State: Show progress info with drop reward */}
                 {isMining ? (

@@ -1049,24 +1049,40 @@ impl TwitchService {
 
                     if let Some(users_data) = users_response.get("data").and_then(|d| d.as_array())
                     {
-                        // Create a map of user_id -> broadcaster_type
+                        // Create maps of user_id -> broadcaster_type and user_id -> profile image.
+                        // The followed-streams endpoint only returns a stream-preview thumbnail
+                        // (with {width}x{height} placeholders), so the real avatar has to come from
+                        // this users batch — which we already fetch for broadcaster_type anyway.
                         let mut broadcaster_types = std::collections::HashMap::new();
+                        let mut profile_images = std::collections::HashMap::new();
                         for user in users_data {
-                            if let (Some(id), Some(broadcaster_type)) = (
-                                user.get("id").and_then(|v| v.as_str()),
-                                user.get("broadcaster_type").and_then(|v| v.as_str()),
-                            ) {
-                                if !broadcaster_type.is_empty() {
-                                    broadcaster_types
-                                        .insert(id.to_string(), broadcaster_type.to_string());
+                            if let Some(id) = user.get("id").and_then(|v| v.as_str()) {
+                                if let Some(broadcaster_type) =
+                                    user.get("broadcaster_type").and_then(|v| v.as_str())
+                                {
+                                    if !broadcaster_type.is_empty() {
+                                        broadcaster_types
+                                            .insert(id.to_string(), broadcaster_type.to_string());
+                                    }
+                                }
+                                if let Some(profile_image_url) =
+                                    user.get("profile_image_url").and_then(|v| v.as_str())
+                                {
+                                    if !profile_image_url.is_empty() {
+                                        profile_images
+                                            .insert(id.to_string(), profile_image_url.to_string());
+                                    }
                                 }
                             }
                         }
 
-                        // Update streams with broadcaster types
+                        // Update streams with broadcaster types and profile images
                         for stream in &mut streams {
                             if let Some(broadcaster_type) = broadcaster_types.get(&stream.user_id) {
                                 stream.broadcaster_type = Some(broadcaster_type.clone());
+                            }
+                            if let Some(profile_image_url) = profile_images.get(&stream.user_id) {
+                                stream.profile_image_url = Some(profile_image_url.clone());
                             }
                         }
                     }

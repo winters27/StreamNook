@@ -15,6 +15,8 @@ import { useChatUserStore } from '../stores/chatUserStore';
 import { queueBadgeForCaching, getCachedBadgeUrl } from '../services/badgeImageCacheService';
 import { isStreamNookUser, getStreamNookUserNumber, subscribeStreamNookRegistryVersion, getStreamNookRegistryVersion } from '../services/supabaseService';
 import { StreamNookBadge } from './StreamNookBadge';
+import { AtmosphereBackground } from './AtmosphereBackground';
+import { getAtmosphere } from '../services/atmospheres';
 import { matchHighlightPhrase, matchHighlightUser, matchHighlightBadge, type HighlightMatch } from '../utils/chatHighlightMatcher';
 import { flashTitle } from '../utils/titleFlasher';
 import { playSoundThrottled } from '../utils/notificationSound';
@@ -488,6 +490,10 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
   const thirdPartyBadges = useChatUserStore((s) =>
     userId ? s.users.get(userId)?.thirdPartyBadges ?? EMPTY_THIRD_PARTY : EMPTY_THIRD_PARTY,
   );
+  // The member's StreamNook Atmosphere (if any) -> the SAME animated wash as
+  // their profile backdrop, rendered behind their message.
+  const atmosphereId = useChatUserStore((s) => (userId ? s.users.get(userId)?.atmosphereId ?? null : null));
+  const atmosphere = atmosphereId ? getAtmosphere(atmosphereId) : null;
   const [broadcasterType] = useState<string | null>(null);
   const [isMentioned, setIsMentioned] = useState(false);
   const [isReplyToMe, setIsReplyToMe] = useState(false);
@@ -2103,7 +2109,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
 
   return (
     <div
-      className={`group relative px-3 hover:bg-glass transition-colors ${borderClass} ${animationClass
+      className={`group relative isolate px-3 hover:bg-glass transition-colors ${borderClass} ${animationClass
         } ${isRedemption ? 'highlight-message-gradient' : ''
         } ${isFromSharedChat ? 'border-l-2 border-l-accent/50 bg-accent/5' : ''
         } ${backgroundClass} ${moderationContext && (chatDesign?.deleted_message_style ?? 'strikethrough') !== 'keep' ? 'opacity-50' : ''}`}
@@ -2130,6 +2136,9 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
           : {}),
       }}
     >
+      {/* Atmosphere wash: the same animated aurora as the member's profile
+          backdrop, masked to fade out before the text so it stays readable. */}
+      {atmosphere && <AtmosphereBackground atm={atmosphere} variant="chat" />}
 
       {/* Built-in event label (first-time chatter, returning, self, raid) */}
       {builtInEventLabel && (

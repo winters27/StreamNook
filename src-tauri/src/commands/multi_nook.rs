@@ -1,22 +1,26 @@
 use crate::models::settings::AppState;
 use crate::services::auth_proxy;
 use crate::services::multi_nook_server::MultiNookServer;
-use crate::services::streamlink_manager::StreamlinkManager;
+use crate::services::twitch_resolver as tr;
 use log::debug;
 use tauri::State;
 
 /// Maximum number of concurrent streams allowed
 const MAX_STREAMS: usize = 25;
 
-/// Whether the bundled TTVLOL plugin is on disk. Delegates to
-/// `StreamlinkManager::bundled_twitch_plugin_exists` so streaming.rs and
-/// multi_nook agree on what "ttvlol installed" means.
-fn is_ttvlol_plugin_installed(_custom_folder: Option<&str>) -> bool {
-    StreamlinkManager::bundled_twitch_plugin_exists()
+/// Extract the channel login from a twitch.tv live URL. MultiNook tiles are
+/// always live channels, so this is enough.
+fn channel_from_url(url: &str) -> Option<String> {
+    let after = url.split("twitch.tv/").nth(1)?;
+    let seg = after.split(['/', '?', '#']).next()?.trim();
+    if seg.is_empty() || seg == "videos" || seg == "directory" {
+        return None;
+    }
+    Some(seg.to_lowercase())
 }
 
-/// Start a stream for multi-stream mode
-/// Each stream gets its own Streamlink process and proxy server
+/// Start a stream for multi-stream mode. Each tile resolves natively (same
+/// pipeline as the solo player) and gets its own proxy server.
 #[tauri::command]
 pub async fn start_multi_nook(
     stream_id: String,
@@ -29,7 +33,6 @@ pub async fn start_multi_nook(
         stream_id, url, quality
     );
 
-    // Check stream count limit
     let current_count = MultiNookServer::active_count().await;
     if current_count >= MAX_STREAMS {
         return Err(format!(
@@ -38,84 +41,34 @@ pub async fn start_multi_nook(
         ));
     }
 
-    // Check if streamlink is available
-    let is_available = {
+    let (use_proxy, proxy_playlist, retry_streams, stream_timeout) = {
         let settings = state.settings.lock().unwrap();
-        let custom_path = settings.streamlink.custom_streamlink_path.clone();
-        let effective_path = StreamlinkManager::get_effective_path(custom_path.as_deref());
-        std::path::Path::new(&effective_path).exists()
+        (
+            settings.streamlink.use_proxy,
+            settings.streamlink.proxy_playlist.clone(),
+            settings.streamlink.retry_streams,
+            settings.streamlink.stream_timeout,
+        )
     };
 
-    if !is_available {
-        return Err("Streamlink not found. Please install Streamlink first.".to_string());
-    }
+    let channel =
+        channel_from_url(&url).ok_or_else(|| format!("Unrecognized Twitch URL: {}", url))?;
+    let oauth = state.twitch_auth.get_token().await.ok();
+    let bases = auth_proxy::parse_proxy_bases(&proxy_playlist);
 
-    // Get settings values for Streamlink args
-    let (streamlink_args, streamlink_settings, custom_path) = {
-        let settings = state.settings.lock().unwrap();
-        let custom = settings.streamlink.custom_streamlink_path.clone();
-        let ttvlol_installed = is_ttvlol_plugin_installed(custom.as_deref());
-
-        let proxy_args =
-            if settings.streamlink.use_proxy && !settings.streamlink.proxy_playlist.is_empty() {
-                settings.streamlink.proxy_playlist.clone()
-            } else if !settings.streamlink_args.is_empty() {
-                settings.streamlink_args.clone()
-            } else {
-                String::new()
-            };
-
-        let args = if settings.ttvlol_plugin.enabled && ttvlol_installed {
-            proxy_args
-        } else {
-            String::new()
-        };
-
-        (args, settings.streamlink.clone(), custom)
-    };
-
-    // Splice mode: when the ad-block proxy is enabled, route Streamlink through
-    // our local splice server (auth_proxy) instead of handing it the raw TTVLOL
-    // proxy. The splice server fetches the ad-free TTVLOL master plus the authed
-    // direct master and merges them — that splicing is what actually strips ads.
-    // The single-stream view already does this; MultiNook didn't, which is why
-    // its tiles showed ads the solo player doesn't. The server keys cached
-    // masters per channel, so every tile safely shares one instance.
-    let splice_active = streamlink_settings.use_proxy;
-    let streamlink_args = if splice_active && !streamlink_args.is_empty() {
-        let twitch_auth = state.twitch_auth.clone();
-        match auth_proxy::ensure_running(&streamlink_args, twitch_auth).await {
-            Ok(port) => auth_proxy::streamlink_proxy_arg(port),
-            Err(e) => {
-                log::warn!(
-                    "[MultiNook] splice server failed to start ({}); falling back to raw proxy",
-                    e
-                );
-                streamlink_args
-            }
-        }
-    } else {
-        streamlink_args
-    };
-
-    // Get the effective Streamlink path
-    let streamlink_path = StreamlinkManager::get_effective_path(custom_path.as_deref());
-
-    // Start Streamlink to get the HLS stream URL (anonymous — see
-    // start_stream comment for why we don't auto-pass the OAuth token).
-    let stream_url = StreamlinkManager::get_stream_url_with_settings(
-        &url,
+    let r = tr::resolve_live_resilient(
+        &channel,
+        oauth.as_deref(),
+        &bases,
+        use_proxy,
         &quality,
-        &streamlink_path,
-        &streamlink_args,
-        &streamlink_settings,
-        None,
+        retry_streams,
+        stream_timeout,
     )
     .await
     .map_err(|e| e.to_string())?;
 
-    // Start a dedicated proxy server for this stream
-    let port = MultiNookServer::start_proxy(&stream_id, stream_url)
+    let port = MultiNookServer::start_proxy(&stream_id, r.url)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -126,8 +79,8 @@ pub async fn start_multi_nook(
     );
 
     debug!(
-        "[MultiNook] Stream '{}' proxied at: {}",
-        stream_id, proxy_url
+        "[MultiNook] '{}' ({}) → {} (mode={})",
+        stream_id, channel, proxy_url, r.status.mode
     );
 
     Ok(proxy_url)

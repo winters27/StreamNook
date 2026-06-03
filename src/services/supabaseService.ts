@@ -2,6 +2,8 @@ import { createClient, RealtimeChannel, SupabaseClient } from '@supabase/supabas
 import type { TwitchUser } from '../types';
 
 import { Logger } from '../utils/logger';
+import { getActiveSeasonalAccoladeIds, isCakeDay, CAKE_DAY_ID } from '../utils/seasonalAccolades';
+import { fetchIVRUserData } from './ivrService';
 // Supabase client singleton
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -703,6 +705,336 @@ export const getUserStats = async (userId: string): Promise<UserStats | null> =>
     } catch (error) {
         Logger.error('[Supabase] Failed to get user stats:', error);
         return null;
+    }
+};
+
+/**
+ * Get the award-badge ids this user has earned (seasonal / limited, etc.).
+ * Returns [] when Supabase is unconfigured or the table is missing, so the UI
+ * shows everything locked rather than breaking.
+ */
+export const getAccolades = async (userId: string): Promise<string[]> => {
+    if (!supabase || !userId) return [];
+    try {
+        const { data, error } = await supabase
+            .from('user_accolades')
+            .select('accolade_id')
+            .eq('twitch_user_id', userId);
+        if (error) {
+            Logger.error('[Supabase] Failed to get award badges:', error.message);
+            return [];
+        }
+        return (data || []).map((r: { accolade_id: string }) => r.accolade_id);
+    } catch (error) {
+        Logger.error('[Supabase] Failed to get award badges:', error);
+        return [];
+    }
+};
+
+/**
+ * Grant an award badge to a user (idempotent). Insert-only; re-granting an
+ * already-earned badge is a no-op via ON CONFLICT.
+ */
+export const grantAccolade = async (userId: string, accoladeId: string): Promise<void> => {
+    if (!supabase || !userId || !accoladeId) return;
+    try {
+        const { error } = await supabase
+            .from('user_accolades')
+            .upsert(
+                { twitch_user_id: userId, accolade_id: accoladeId, earned_at: new Date().toISOString() },
+                { onConflict: 'twitch_user_id,accolade_id', ignoreDuplicates: true },
+            );
+        if (error) Logger.error('[Supabase] Failed to grant award badge:', error.message);
+    } catch (error) {
+        Logger.error('[Supabase] Failed to grant award badge:', error);
+    }
+};
+
+/**
+ * If today falls within a seasonal badge window, grant that badge. Called once
+ * per session on login so holidays are captured without opening the profile.
+ */
+export const grantActiveSeasonalAccolades = async (userId: string): Promise<void> => {
+    const ids = getActiveSeasonalAccoladeIds(new Date());
+    for (const id of ids) {
+        await grantAccolade(userId, id);
+    }
+};
+
+/**
+ * Grant the Cake Day badge if today is the user's Twitch account anniversary.
+ * Reads the creation date from IVR; best-effort.
+ */
+export const grantCakeDayAccolade = async (userId: string, login: string): Promise<void> => {
+    if (!userId || !login) return;
+    try {
+        const u = await fetchIVRUserData(login);
+        if (u?.createdAt && isCakeDay(u.createdAt, new Date())) {
+            await grantAccolade(userId, CAKE_DAY_ID);
+        }
+    } catch {
+        // best effort
+    }
+};
+
+// ---------------------------------------------------------------------------
+// Emote usage (most-used emotes from the member's own sent messages)
+// ---------------------------------------------------------------------------
+
+export interface EmoteUsage {
+    emote_id: string;
+    emote_name: string;
+    provider: string;
+    image_url: string | null;
+    count: number;
+}
+
+/**
+ * Increment usage of an emote for a user. Atomic via the `increment_emote_usage`
+ * RPC, with a manual-upsert fallback. Fire-and-forget; never throws.
+ */
+export const incrementEmoteUsage = async (
+    userId: string,
+    emote: { id: string; name: string; provider: string; url: string },
+    amount: number = 1,
+): Promise<void> => {
+    if (!supabase || !userId || !emote?.id) return;
+    try {
+        const { error } = await supabase.rpc('increment_emote_usage', {
+            p_user_id: userId,
+            p_emote_id: emote.id,
+            p_emote_name: emote.name,
+            p_provider: emote.provider,
+            p_image_url: emote.url,
+            p_amount: amount,
+        });
+        if (!error) return;
+        await manualIncrementEmote(userId, emote, amount);
+    } catch (error) {
+        Logger.warn('[Supabase] incrementEmoteUsage failed:', error);
+    }
+};
+
+const manualIncrementEmote = async (
+    userId: string,
+    emote: { id: string; name: string; provider: string; url: string },
+    amount: number,
+): Promise<void> => {
+    if (!supabase) return;
+    try {
+        const { data: existing } = await supabase
+            .from('user_emote_usage')
+            .select('count')
+            .eq('twitch_user_id', userId)
+            .eq('emote_id', emote.id)
+            .maybeSingle();
+        const newCount = ((existing as { count?: number } | null)?.count || 0) + amount;
+        await supabase.from('user_emote_usage').upsert(
+            {
+                twitch_user_id: userId,
+                emote_id: emote.id,
+                emote_name: emote.name,
+                provider: emote.provider,
+                image_url: emote.url,
+                count: newCount,
+                updated_at: new Date().toISOString(),
+            },
+            { onConflict: 'twitch_user_id,emote_id' },
+        );
+    } catch (error) {
+        Logger.warn('[Supabase] manual emote increment failed:', error);
+    }
+};
+
+/**
+ * Get a user's most-used emotes, highest count first. Returns [] when Supabase
+ * is unconfigured or the table is missing.
+ */
+export interface EmoteUsageSummary {
+    top: EmoteUsage[];
+    uniqueCount: number;
+    totalCount: number;
+}
+
+/**
+ * Get a user's emote usage: the top emotes (highest count first), the count of
+ * distinct emotes used, and total uses. Returns zeros when Supabase is
+ * unconfigured or the table is missing.
+ */
+export const getEmoteUsageSummary = async (
+    userId: string,
+    topLimit: number = 12,
+): Promise<EmoteUsageSummary> => {
+    const empty: EmoteUsageSummary = { top: [], uniqueCount: 0, totalCount: 0 };
+    if (!supabase || !userId) return empty;
+    try {
+        const { data, error } = await supabase
+            .from('user_emote_usage')
+            .select('emote_id, emote_name, provider, image_url, count')
+            .eq('twitch_user_id', userId)
+            .order('count', { ascending: false })
+            .limit(1000);
+        if (error) {
+            Logger.error('[Supabase] Failed to get emote usage:', error.message);
+            return empty;
+        }
+        const rows = (data as EmoteUsage[]) || [];
+        return {
+            top: rows.slice(0, topLimit),
+            uniqueCount: rows.length,
+            totalCount: rows.reduce((s, e) => s + e.count, 0),
+        };
+    } catch (error) {
+        Logger.error('[Supabase] Failed to get emote usage:', error);
+        return empty;
+    }
+};
+
+// ---------------------------------------------------------------------------
+// Per-channel watch time (drives the "favorite channel" stat)
+// ---------------------------------------------------------------------------
+
+export interface ChannelWatch {
+    channel_id: string;
+    channel_login: string;
+    channel_name: string;
+    minutes: number;
+}
+
+/**
+ * Add watch minutes to a channel for a user. Atomic via the
+ * `increment_channel_watch` RPC, with a manual-upsert fallback. Fire-and-forget.
+ */
+export const incrementChannelWatch = async (
+    userId: string,
+    channel: { id: string; login: string; name: string },
+    amount: number = 1,
+): Promise<void> => {
+    if (!supabase || !userId || !channel?.id) return;
+    try {
+        const { error } = await supabase.rpc('increment_channel_watch', {
+            p_user_id: userId,
+            p_channel_id: channel.id,
+            p_channel_login: channel.login,
+            p_channel_name: channel.name,
+            p_amount: amount,
+        });
+        if (!error) return;
+        const { data: existing } = await supabase
+            .from('user_channel_watch')
+            .select('minutes')
+            .eq('twitch_user_id', userId)
+            .eq('channel_id', channel.id)
+            .maybeSingle();
+        const newMinutes = ((existing as { minutes?: number } | null)?.minutes || 0) + amount;
+        await supabase.from('user_channel_watch').upsert(
+            {
+                twitch_user_id: userId,
+                channel_id: channel.id,
+                channel_login: channel.login,
+                channel_name: channel.name,
+                minutes: newMinutes,
+                updated_at: new Date().toISOString(),
+            },
+            { onConflict: 'twitch_user_id,channel_id' },
+        );
+    } catch (error) {
+        Logger.warn('[Supabase] incrementChannelWatch failed:', error);
+    }
+};
+
+/** The channel a user has spent the most time watching, or null. */
+export const getFavoriteChannel = async (userId: string): Promise<ChannelWatch | null> => {
+    if (!supabase || !userId) return null;
+    try {
+        const { data, error } = await supabase
+            .from('user_channel_watch')
+            .select('channel_id, channel_login, channel_name, minutes')
+            .eq('twitch_user_id', userId)
+            .order('minutes', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+        if (error) {
+            Logger.error('[Supabase] Failed to get favorite channel:', error.message);
+            return null;
+        }
+        return (data as ChannelWatch) || null;
+    } catch (error) {
+        Logger.error('[Supabase] Failed to get favorite channel:', error);
+        return null;
+    }
+};
+
+// ---------------------------------------------------------------------------
+// Profile preferences (e.g. use your 7TV paint as your profile theme)
+// ---------------------------------------------------------------------------
+
+export interface ProfilePrefs {
+    // True when the chosen theme is the 7TV paint (derived from profileTheme;
+    // kept for back-compat with existing callers).
+    paintTheme: boolean;
+    // The theme source: 'tier' (free default) | 'paint' (7TV paint) | an
+    // Atmosphere id like 'void'. Source of truth for the profile background.
+    profileTheme: string;
+    // Section keys the member has HIDDEN from their public profile (what other
+    // members see). Empty = all visible. Keys: roast, twitch, lifetime, emotes,
+    // accolades.
+    hiddenSections: string[];
+}
+
+export const getProfilePrefs = async (userId: string): Promise<ProfilePrefs> => {
+    if (!supabase || !userId) return { paintTheme: false, profileTheme: 'tier', hiddenSections: [] };
+    try {
+        const { data, error } = await supabase
+            .from('user_profile_prefs')
+            .select('paint_theme, profile_theme, hidden_sections')
+            .eq('twitch_user_id', userId)
+            .maybeSingle();
+        if (error) {
+            Logger.error('[Supabase] Failed to get profile prefs:', error.message);
+            return { paintTheme: false, profileTheme: 'tier', hiddenSections: [] };
+        }
+        const row = data as { paint_theme?: boolean; profile_theme?: string; hidden_sections?: string[] } | null;
+        const profileTheme = row?.profile_theme || (row?.paint_theme ? 'paint' : 'tier');
+        return {
+            paintTheme: profileTheme === 'paint',
+            profileTheme,
+            hiddenSections: Array.isArray(row?.hidden_sections) ? row!.hidden_sections! : [],
+        };
+    } catch (error) {
+        Logger.error('[Supabase] Failed to get profile prefs:', error);
+        return { paintTheme: false, profileTheme: 'tier', hiddenSections: [] };
+    }
+};
+
+export const setProfileTheme = async (userId: string, theme: string): Promise<void> => {
+    if (!supabase || !userId) return;
+    try {
+        const { error } = await supabase.from('user_profile_prefs').upsert(
+            {
+                twitch_user_id: userId,
+                profile_theme: theme,
+                paint_theme: theme === 'paint', // keep the legacy flag in sync
+                updated_at: new Date().toISOString(),
+            },
+            { onConflict: 'twitch_user_id' },
+        );
+        if (error) Logger.error('[Supabase] Failed to set profile theme:', error.message);
+    } catch (error) {
+        Logger.warn('[Supabase] setProfileTheme failed:', error);
+    }
+};
+
+export const setHiddenSections = async (userId: string, sections: string[]): Promise<void> => {
+    if (!supabase || !userId) return;
+    try {
+        const { error } = await supabase.from('user_profile_prefs').upsert(
+            { twitch_user_id: userId, hidden_sections: sections, updated_at: new Date().toISOString() },
+            { onConflict: 'twitch_user_id' },
+        );
+        if (error) Logger.error('[Supabase] Failed to set hidden sections:', error.message);
+    } catch (error) {
+        Logger.warn('[Supabase] setHiddenSections failed:', error);
     }
 };
 

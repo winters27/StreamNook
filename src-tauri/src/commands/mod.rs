@@ -34,6 +34,7 @@ pub mod seventv;
 pub mod seventv_cosmetics;
 pub mod seventv_cosmetics_fetch;
 pub mod streaming;
+pub mod subscriptions;
 pub mod twitch;
 pub mod universal_cache;
 pub mod user_profile;

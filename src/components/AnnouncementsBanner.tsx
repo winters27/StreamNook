@@ -25,10 +25,6 @@ interface AnnouncementsFile {
   announcements: Announcement[];
 }
 
-interface BinaryInfo {
-  binary_version: string;
-}
-
 const POLL_INTERVAL_MS = 30 * 60 * 1000;
 const DISMISSED_STORAGE_KEY = 'streamnook_dismissed_announcements_v1';
 
@@ -103,10 +99,10 @@ const AnnouncementsBanner = () => {
   useEffect(() => {
     (async () => {
       try {
-        const info = await invoke<BinaryInfo>('check_install_desync');
-        setBinaryVersion(info.binary_version);
+        const v = await invoke<string>('get_app_version');
+        setBinaryVersion(v);
       } catch (e) {
-        Logger.warn('check_install_desync failed (binary version unknown):', e);
+        Logger.warn('get_app_version failed (binary version unknown):', e);
       }
     })();
   }, []);

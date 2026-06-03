@@ -102,6 +102,9 @@ function publishCosmetics(userId: string, cosmetics: CachedCosmetics, hardFail =
  */
 export function invalidateUserCosmetics(userId: string): void {
   inMemoryCosmeticsCache.delete(userId);
+  // The full-profile cache embeds the same paints/badges, so it must be cleared
+  // too or the profile overlay keeps serving the old paint after a change.
+  inMemoryProfileCache.delete(userId);
   hardFailTimestamps.delete(userId);
 }
 
@@ -119,6 +122,7 @@ export function invalidateUserCosmetics(userId: string): void {
  */
 export async function forceRefreshCosmetics(userId: string): Promise<CachedCosmetics> {
   inMemoryCosmeticsCache.delete(userId);
+  inMemoryProfileCache.delete(userId);
   hardFailTimestamps.delete(userId);
   try {
     const { invalidateUserCosmeticsCache } = await import('./seventvService');

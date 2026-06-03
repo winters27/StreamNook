@@ -1,4 +1,5 @@
 import { useAppStore } from '../../stores/AppStore';
+import { Dropdown } from '../ui/Dropdown';
 import { useState, useEffect } from 'react';
 import { FarmChannel } from '../../types';
 import { SettingsSection, SettingsRow } from './_primitives';
@@ -139,17 +140,17 @@ const DropsSettings = () => {
           title="Priority Mode"
           description="How to select which campaigns to mine"
         >
-          <select
+          <Dropdown
             value={settings.drops?.priority_mode ?? 'PriorityOnly'}
-            onChange={(e) => updateDropsSettings({
-              priority_mode: e.target.value as 'PriorityOnly' | 'EndingSoonest' | 'LowAvailFirst'
-            })}
-            className="w-full glass-input text-textPrimary text-sm px-3 py-2"
-          >
-            <option value="PriorityOnly">Priority Games Only</option>
-            <option value="EndingSoonest">Campaigns Ending Soonest</option>
-            <option value="LowAvailFirst">Low Availability First</option>
-          </select>
+            onChange={(v) => updateDropsSettings({ priority_mode: v })}
+            className="w-full"
+            ariaLabel="Priority mode"
+            options={[
+              { value: 'PriorityOnly', label: 'Priority Games Only' },
+              { value: 'EndingSoonest', label: 'Campaigns Ending Soonest' },
+              { value: 'LowAvailFirst', label: 'Low Availability First' },
+            ]}
+          />
         </SettingsRow>
 
         <SettingsRow
@@ -325,20 +326,22 @@ const DropsSettings = () => {
                 <label className="block text-sm font-medium text-textPrimary mb-2">
                   Recovery Mode
                 </label>
-                <select
+                <Dropdown
                   value={settings.drops?.recovery_settings?.recovery_mode ?? 'Automatic'}
-                  onChange={(e) => updateDropsSettings({
+                  onChange={(v) => updateDropsSettings({
                     recovery_settings: {
                       ...(settings.drops?.recovery_settings ?? {}),
-                      recovery_mode: e.target.value as 'Automatic' | 'Relaxed' | 'ManualOnly'
+                      recovery_mode: v
                     }
                   })}
-                  className="w-full glass-input text-textPrimary text-sm px-3 py-2"
-                >
-                  <option value="Automatic">Automatic (7 min threshold)</option>
-                  <option value="Relaxed">Relaxed (15 min threshold)</option>
-                  <option value="ManualOnly">Manual Only (notify but don't switch)</option>
-                </select>
+                  className="w-full"
+                  ariaLabel="Recovery mode"
+                  options={[
+                    { value: 'Automatic', label: 'Automatic (7 min threshold)' },
+                    { value: 'Relaxed', label: 'Relaxed (15 min threshold)' },
+                    { value: 'ManualOnly', label: "Manual Only (notify but don't switch)" },
+                  ]}
+                />
                 <p className="text-xs text-textSecondary mt-1">
                   How aggressively to handle stuck mining sessions
                 </p>

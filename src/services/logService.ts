@@ -153,7 +153,6 @@ export const formatLogsForExport = (logsToExport: LogEntry[]): string => {
 export const generateBugReport = async (): Promise<string> => {
     let appVersion = 'Unknown';
     let osInfo = 'Unknown';
-    let streamlinkVersion = 'Unknown';
 
     try {
         appVersion = await invoke('get_app_version') as string;
@@ -165,18 +164,6 @@ export const generateBugReport = async (): Promise<string> => {
         osInfo = await invoke('get_system_info') as string;
     } catch {
         osInfo = navigator.userAgent;
-    }
-
-    try {
-        // Try to get streamlink version from settings
-        const settings = JSON.parse(localStorage.getItem('settings') || '{}');
-        if (settings.streamlink_path) {
-            streamlinkVersion = await invoke('get_installed_streamlink_version', {
-                path: settings.streamlink_path
-            }) as string || 'Not found';
-        }
-    } catch {
-        streamlinkVersion = 'Unable to detect';
     }
 
     const logs = await getLogs();
@@ -195,7 +182,6 @@ SYSTEM INFORMATION
 --------------------------------------------------------------------------------
 App Version: ${appVersion}
 OS/Platform: ${osInfo}
-Streamlink: ${streamlinkVersion}
 User Agent: ${navigator.userAgent}
 
 --------------------------------------------------------------------------------

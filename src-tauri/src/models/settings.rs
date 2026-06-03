@@ -50,34 +50,14 @@ impl Default for CacheSettings {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
-pub struct TtvlolPluginSettings {
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    pub installed_version: Option<String>,
-}
-
-impl Default for TtvlolPluginSettings {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            installed_version: None,
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize, Clone)]
 pub struct StreamlinkSettings {
-    pub low_latency_enabled: bool,
-    pub hls_live_edge: u32,    // Segments from live edge (1-10)
-    pub stream_timeout: u32,   // Timeout in seconds (30-120)
-    pub retry_streams: u32,    // Auto-retry on errors (0-5)
-    pub disable_hosting: bool, // Avoid hosted streams
-    pub skip_ssl_verify: bool, // Skip SSL verification
+    /// Total budget (seconds) for the native resolver's retry-until-live loop.
+    pub stream_timeout: u32,
+    /// Delay (seconds) between native resolve attempts (0 = single attempt).
+    pub retry_streams: u32,
     #[serde(default = "default_true")]
-    pub use_proxy: bool, // Use proxy servers
-    pub proxy_playlist: String, // Proxy playlist URLs
-    #[serde(default)]
-    pub custom_streamlink_path: Option<String>, // Custom folder path for portable/installed Streamlink
+    pub use_proxy: bool, // Route playlists through the ad-block proxy pool
+    pub proxy_playlist: String, // Proxy base URLs (parsed into the resolver's pool)
     /// ID of the last proxy applied (persists through restarts/updates)
     #[serde(default)]
     pub last_applied_proxy_id: Option<String>,
@@ -89,9 +69,7 @@ pub struct StreamlinkSettings {
     #[serde(default)]
     pub proxy_optimized_once: bool,
     /// Request Twitch's Enhanced Broadcasting variants (h265 + AV1 in addition
-    /// to h264). On channels using Enhanced Broadcasting this unlocks 1440p60
-    /// (AV1) and 720p60 (HEVC) tiers that are otherwise hidden. h264-only
-    /// requests are served just the 480p fallback there. Default on.
+    /// to h264) when resolving.
     #[serde(default = "default_true")]
     pub enhanced_codecs: bool,
 }
@@ -99,15 +77,10 @@ pub struct StreamlinkSettings {
 impl Default for StreamlinkSettings {
     fn default() -> Self {
         Self {
-            low_latency_enabled: true,
-            hls_live_edge: 3,
             stream_timeout: 60,
             retry_streams: 3,
-            disable_hosting: true,
-            skip_ssl_verify: false,
             use_proxy: true,
             proxy_playlist: "--twitch-proxy-playlist=https://lb-na.cdn-perfprod.com,https://eu.luminous.dev --twitch-proxy-playlist-fallback".to_string(),
-            custom_streamlink_path: None,
             last_applied_proxy_id: None,
             proxy_auto_optimized: true,
             proxy_optimized_once: false,
@@ -286,8 +259,6 @@ pub struct MultiNookSlot {
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Settings {
-    pub streamlink_path: String,
-    pub streamlink_args: String,
     pub quality: String,
     pub chat_placement: String,
     pub accounts: Vec<String>,
@@ -296,8 +267,6 @@ pub struct Settings {
     pub discord_rpc_enabled: bool,
     pub video_player: VideoPlayerSettings,
     pub cache: CacheSettings,
-    #[serde(default)]
-    pub ttvlol_plugin: TtvlolPluginSettings,
     #[serde(default)]
     pub streamlink: StreamlinkSettings,
     #[serde(default)]
@@ -340,23 +309,9 @@ fn default_theme() -> String {
     "winters-glass".to_string()
 }
 
-// Portable install ships streamlinkw.exe next to StreamNook.exe under streamlink/bin/.
-// Falls back to the legacy system-install location if current_exe() can't resolve
-// (rare, mostly sandboxed dev runs) so we still produce a valid string.
-fn default_streamlink_path() -> String {
-    std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
-        .map(|d| d.join("streamlink").join("bin").join("streamlinkw.exe"))
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|| "C:\\Program Files\\Streamlink\\bin\\streamlinkw.exe".to_string())
-}
-
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            streamlink_path: default_streamlink_path(),
-            streamlink_args: "--twitch-proxy-playlist=https://lb-na.cdn-perfprod.com,https://eu.luminous.dev --twitch-proxy-playlist-fallback".to_string(),
             quality: "best".to_string(),
             chat_placement: "right".to_string(),
             accounts: vec![],
@@ -365,10 +320,6 @@ impl Default for Settings {
             discord_rpc_enabled: true,
             video_player: VideoPlayerSettings::default(),
             cache: CacheSettings::default(),
-            ttvlol_plugin: TtvlolPluginSettings {
-                enabled: true, // Enable by default since the plugin is already installed
-                installed_version: None,
-            },
             streamlink: StreamlinkSettings::default(),
             drops: DropsSettings::default(),
             favorite_streamers: vec![],

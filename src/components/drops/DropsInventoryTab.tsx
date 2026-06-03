@@ -2,6 +2,7 @@ import { useState, useMemo, useCallback } from 'react';
 import { Package, Gift, Check, Clock, AlertCircle, ChevronDown, ChevronRight, Search, Filter, Sparkles, Ban, Star } from 'lucide-react';
 import type { InventoryItem, DropProgress, CampaignStatus, CompletedDrop, TimeBasedDrop } from '../../types';
 import { Tooltip } from '../ui/Tooltip';
+import { Dropdown } from '../ui/Dropdown';
 
 // Helper to check if a drop is mineable (time-based with watch requirement)
 // Drops with required_minutes_watched = 0 are event-based, gift-based, or sub-based
@@ -311,21 +312,20 @@ export default function DropsInventoryTab({
                         />
                         <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-textSecondary" />
                     </div>
-                    <div className="relative">
-                        <select
-                            value={filterStatus}
-                            onChange={(e) => setFilterStatus(e.target.value as FilterStatus)}
-                            className="appearance-none bg-background border border-borderLight rounded-lg pl-9 pr-8 py-2 text-sm focus:border-accent focus:outline-none cursor-pointer"
-                        >
-                            <option value="all">All Drops</option>
-                            <option value="claimable">Ready to Claim</option>
-                            <option value="in_progress">In Progress</option>
-                            <option value="claimed">Claimed</option>
-                            <option value="expired">Expired Campaigns</option>
-                        </select>
-                        <Filter size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-textSecondary pointer-events-none" />
-                        <ChevronDown size={16} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-textSecondary pointer-events-none" />
-                    </div>
+                    <Dropdown
+                        value={filterStatus}
+                        onChange={setFilterStatus}
+                        ariaLabel="Filter drops"
+                        className="py-2"
+                        leadingIcon={<Filter size={15} />}
+                        options={[
+                            { value: 'all', label: 'All Drops' },
+                            { value: 'claimable', label: 'Ready to Claim' },
+                            { value: 'in_progress', label: 'In Progress' },
+                            { value: 'claimed', label: 'Claimed' },
+                            { value: 'expired', label: 'Expired Campaigns' },
+                        ]}
+                    />
                 </div>
             </div>
 

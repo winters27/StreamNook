@@ -9,6 +9,10 @@ import {
   subscribeCosmeticsVersion,
 } from '../services/supabaseService';
 import { COSMETIC_ASSET_BY_SLUG } from './cosmeticAssets';
+import { useAppStore } from '../stores/AppStore';
+import { useChatUserStore } from '../stores/chatUserStore';
+import { AtmosphereBackground } from './AtmosphereBackground';
+import { getAtmosphere } from '../services/atmospheres';
 
 interface StreamNookBadgeProps {
   userId: string | undefined;
@@ -102,6 +106,25 @@ export const getTier = (n: number): TierInfo => {
 };
 
 export type { TierInfo };
+
+export interface TierAccent {
+  /** "r, g, b" for use inside rgba(...). */
+  rgb: string;
+  /** Alpha for the ambient aura gradient. */
+  auraAlpha: number;
+}
+
+// The single signature color of each tier band, for theming whole surfaces
+// (e.g. the public profile overlay) to the member's tier. Mirrors the bands in
+// getTierBase: Ethereal violet, Mythic amber, Ascendant cyan, then near-white /
+// muted for the bulk tiers (subtle, not colorless).
+export const getTierAccent = (n: number): TierAccent => {
+  if (n === 1) return { rgb: '139, 92, 246', auraAlpha: 0.16 }; // Ethereal violet
+  if (n <= 10) return { rgb: '251, 191, 36', auraAlpha: 0.13 }; // Mythic amber
+  if (n <= 100) return { rgb: '34, 211, 238', auraAlpha: 0.1 }; // Ascendant cyan
+  if (n <= 1000) return { rgb: '226, 232, 240', auraAlpha: 0.05 }; // Founder near-white
+  return { rgb: '148, 163, 184', auraAlpha: 0.04 }; // Member muted
+};
 
 const getTierBase = (n: number): TierInfo => {
   if (n === 1) {
@@ -361,25 +384,26 @@ export const StreamNookBadge = memo(function StreamNookBadge({
   userNumber,
   side = 'top',
 }: StreamNookBadgeProps) {
-  // Default click opens BadgesOverlay on the StreamNook tab. Same destination
-  // from every surface (chat row, UserProfileCard badge list, etc.). Wrapped
-  // with stopPropagation so the surrounding chat row's own click handler
-  // (which opens UserProfileCard) doesn't also fire. Matches the 7TV chat
-  // badge pattern (`openBadgesWithBadge`).
+  const openProfileViewer = useAppStore((s) => s.openProfileViewer);
+  // Click opens this member's public StreamNook profile in the draggable
+  // viewer overlay. stopPropagation so the chat row's own click handler
+  // (which opens the Twitch UserProfileCard) doesn't also fire.
   const handleClick = (e: MouseEvent) => {
     e.stopPropagation();
-    // Routed through openBadgesInMain so popout clicks open the overlay in
-    // the main window. Imported lazily to avoid a static cycle if
-    // StreamNookBadge ever lands in a deeper import chain than the helper.
-    import('../utils/openBadgesInMain').then(({ openBadgesOnStreamNookInMain }) => {
-      openBadgesOnStreamNookInMain();
-    });
+    if (userId) openProfileViewer(userId);
   };
 
   const cosmeticAsset = useActiveCosmeticAsset(userId);
   const cosmeticSlug = getActiveCosmeticSlug(userId);
   const cosmetic = cosmeticSlug ? getCosmeticBySlug(cosmeticSlug) : null;
   const cosmeticName = cosmetic?.name ?? null;
+
+  // The member's StreamNook Atmosphere, if chat has resolved it for this user, so
+  // the cypher card adopts their profile theme. Reads the already-resolved value
+  // (no per-badge fetch); a primitive selector means this only re-renders when
+  // THIS user's atmosphere changes.
+  const atmosphereId = useChatUserStore((s) => (userId ? s.users.get(userId)?.atmosphereId ?? null : null));
+  const atmosphere = atmosphereId ? getAtmosphere(atmosphereId) : null;
 
   // If the registry lookup somehow missed (shouldn't happen given isSN was true),
   // fall back to the plain label so we never render a broken animation.
@@ -389,8 +413,16 @@ export const StreamNookBadge = memo(function StreamNookBadge({
     const tier = getTier(userNumber);
     tooltipContent = (
       <>
+        {atmosphere && (
+          <div className="absolute inset-0 overflow-hidden rounded-2xl">
+            <AtmosphereBackground atm={atmosphere} variant="profile" />
+          </div>
+        )}
         {tier.auraClassName && <div className={tier.auraClassName} />}
         <MatrixDecode numberText={String(userNumber)} tier={tier} cosmeticName={cosmeticName} />
+        <div className="relative mt-3 text-[8px] font-medium uppercase tracking-[0.3em] text-white/35">
+          Click to open profile
+        </div>
       </>
     );
     containerClassName = CARD_CLASS;

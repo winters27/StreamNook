@@ -1,4 +1,5 @@
 import { useAppStore } from '../../stores/AppStore';
+import { Dropdown } from '../ui/Dropdown';
 import ColorWheelPicker from '../ColorWheelPicker';
 import HighlightPhrasesSettings from './HighlightPhrasesSettings';
 import BuiltInHighlightsSettings from './BuiltInHighlightsSettings';
@@ -147,17 +148,19 @@ const ChatSettings = () => {
           title="Font Weight"
           description="Boldness of chat message text"
         >
-          <select
+          <Dropdown
             value={cd.font_weight ?? 400}
-            onChange={(e) => setDesign({ font_weight: parseInt(e.target.value) })}
-            className="w-full glass-input text-textPrimary text-sm px-3 py-2"
-          >
-            <option value="300">Light (300)</option>
-            <option value="400">Normal (400)</option>
-            <option value="500">Medium (500)</option>
-            <option value="600">Semi-Bold (600)</option>
-            <option value="700">Bold (700)</option>
-          </select>
+            onChange={(v) => setDesign({ font_weight: v })}
+            className="w-full"
+            ariaLabel="Font weight"
+            options={[
+              { value: 300, label: 'Light (300)' },
+              { value: 400, label: 'Normal (400)' },
+              { value: 500, label: 'Medium (500)' },
+              { value: 600, label: 'Semi-Bold (600)' },
+              { value: 700, label: 'Bold (700)' },
+            ]}
+          />
         </SettingsRow>
 
         <SettingsRow

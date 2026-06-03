@@ -4,7 +4,8 @@ import {
   getCosmeticsWithFallback,
   subscribeToCosmetics,
 } from '../services/cosmeticsCache';
-import { isStreamNookUser } from '../services/supabaseService';
+import { isStreamNookUser, getProfilePrefs } from '../services/supabaseService';
+import { getAtmosphere } from '../services/atmospheres';
 import {
   getResolvedIdentity,
   getResolvedIdentityFromCache,
@@ -49,6 +50,10 @@ export interface ChatUser {
   /** StreamNook member's curated third-party badges, resolved to images.
    *  Undefined until resolved; empty array = member with nothing opted in. */
   thirdPartyBadges?: ThirdPartyBadge[];
+  /** The id of the StreamNook Atmosphere this member themes with (if any), so
+   *  chat can render the matching animated wash. Undefined until resolved; null =
+   *  resolved, none. */
+  atmosphereId?: string | null;
 }
 
 interface ChatUserStore {
@@ -63,7 +68,7 @@ interface ChatUserStore {
    * resolved by twitch_user_id through the Identity API, not by channel).
    */
   addUser: (
-    user: Omit<ChatUser, 'lastSeen' | 'paint' | 'seventvBadge' | 'thirdPartyBadges'>,
+    user: Omit<ChatUser, 'lastSeen' | 'paint' | 'seventvBadge' | 'thirdPartyBadges' | 'atmosphereId'>,
     channelContext?: { channelId: string; channelName: string },
   ) => void;
   
@@ -230,6 +235,77 @@ function removeBttvPro(userId: string) {
   });
 }
 
+// ── StreamNook Atmosphere chat wash (subscriber profile theme -> chat) ───────
+// A subscriber who themes their profile with an Atmosphere also gets a subtle
+// STATIC wash + edge bar behind their chat messages, so the cosmetic follows
+// them into chat. Resolved once per MEMBER (no-op for non-members), gated on
+// subscriber status. No animation in chat (perf): a static gradient only.
+const pendingAtmosphereUpdates = new Map<string, string | null>();
+let pendingAtmosphereFlushScheduled = false;
+// Resolved atmosphere id per user (null = none). Doubles as the once-per-user
+// cache AND lets an explicit change set a KNOWN value with no Supabase read, so a
+// read can't race the just-fired write.
+const atmosphereCache = new Map<string, string | null>();
+const atmosphereInFlight = new Set<string>();
+
+function scheduleAtmosphereFlush() {
+  if (pendingAtmosphereFlushScheduled) return;
+  pendingAtmosphereFlushScheduled = true;
+  queueMicrotask(() => {
+    pendingAtmosphereFlushScheduled = false;
+    if (pendingAtmosphereUpdates.size === 0) return;
+    const updates = new Map(pendingAtmosphereUpdates);
+    pendingAtmosphereUpdates.clear();
+    useChatUserStore.setState((state) => {
+      const newUsers = new Map(state.users);
+      for (const [uid, id] of updates) {
+        const current = newUsers.get(uid);
+        if (current) newUsers.set(uid, { ...current, atmosphereId: id });
+      }
+      return { users: newUsers };
+    });
+  });
+}
+
+function pushAtmosphere(userId: string, id: string | null) {
+  atmosphereCache.set(userId, id);
+  pendingAtmosphereUpdates.set(userId, id);
+  scheduleAtmosphereFlush();
+}
+
+function ensureAtmosphereResolved(userId: string) {
+  if (!userId || !isStreamNookUser(userId)) return;
+  // Cached/known value (incl. one set by an explicit change before the user was
+  // in the store): push it to the store for this (re)sighting.
+  if (atmosphereCache.has(userId)) {
+    pendingAtmosphereUpdates.set(userId, atmosphereCache.get(userId)!);
+    scheduleAtmosphereFlush();
+    return;
+  }
+  if (atmosphereInFlight.has(userId)) return;
+  atmosphereInFlight.add(userId);
+  void (async () => {
+    try {
+      // Visibility reads the world-readable profile_theme (not gated on subscriber
+      // status), so a member's Atmosphere shows for every viewer like a badge.
+      const prefs = await getProfilePrefs(userId);
+      const atm = getAtmosphere(prefs.profileTheme);
+      pushAtmosphere(userId, atm ? atm.id : null);
+    } catch {
+      /* leave uncached so a later sighting retries */
+    } finally {
+      atmosphereInFlight.delete(userId);
+    }
+  })();
+}
+
+// Set a member's Atmosphere to a KNOWN value now (they just changed their theme),
+// so their messages update in real time with no Supabase read (and switching away
+// from an Atmosphere clears it).
+export function refreshAtmosphere(userId: string, atmosphereId: string | null) {
+  pushAtmosphere(userId, atmosphereId);
+}
+
 export const useChatUserStore = create<ChatUserStore>((set, get) => ({
   users: new Map(),
   usernameToId: new Map(),
@@ -268,6 +344,7 @@ export const useChatUserStore = create<ChatUserStore>((set, get) => ({
         paint: existingUser?.paint,
         seventvBadge: existingUser?.seventvBadge,
         thirdPartyBadges: existingUser?.thirdPartyBadges,
+        atmosphereId: existingUser?.atmosphereId,
       });
       newUsernameToId.set(user.username.toLowerCase(), user.userId);
       return { users: newUsers, usernameToId: newUsernameToId };
@@ -294,6 +371,8 @@ export const useChatUserStore = create<ChatUserStore>((set, get) => ({
 
     // Resolve this member's curated third-party badges once (no-op for non-members).
     ensureThirdPartyResolved(user.userId);
+    // Resolve this member's subscriber Atmosphere chat wash once (no-op for non-members).
+    ensureAtmosphereResolved(user.userId);
   },
   
   getUserByUsername: (username: string) => {

@@ -13,21 +13,11 @@ export interface CacheSettings {
   expiry_days: number;
 }
 
-export interface TtvlolPluginSettings {
-  enabled: boolean;
-  installed_version: string | null;
-}
-
 export interface StreamlinkSettings {
-  low_latency_enabled: boolean;
-  hls_live_edge: number;          // Segments from live edge (1-10)
-  stream_timeout: number;          // Timeout in seconds (30-120)
-  retry_streams: number;           // Auto-retry on errors (0-5)
-  disable_hosting: boolean;        // Avoid hosted streams
-  skip_ssl_verify: boolean;        // Skip SSL verification
-  use_proxy: boolean;              // Use proxy servers
-  proxy_playlist: string;          // Proxy playlist URLs
-  custom_streamlink_path?: string; // Custom folder path for portable/installed Streamlink
+  stream_timeout: number;          // Native retry budget (seconds)
+  retry_streams: number;           // Native retry delay between attempts (seconds)
+  use_proxy: boolean;              // Route playlists through the ad-block proxy pool
+  proxy_playlist: string;          // Proxy base URLs
   /** ID of the last proxy applied (persists through restarts/updates) */
   last_applied_proxy_id?: string;
   /** Whether the current proxy was auto-selected (optimizer can override on next launch) */
@@ -441,8 +431,6 @@ export interface MultiNookSlot {
 export type KeybindingOverrides = Record<string, string[]>;
 
 export interface Settings {
-  streamlink_path: string;
-  streamlink_args: string;
   quality: string;
   chat_placement: string;
   accounts: string[];
@@ -451,7 +439,6 @@ export interface Settings {
   discord_rpc_enabled: boolean;
   video_player: VideoPlayerSettings;
   cache: CacheSettings;
-  ttvlol_plugin: TtvlolPluginSettings;
   streamlink?: StreamlinkSettings;
   drops: DropsSettings;
   favorite_streamers: string[];
@@ -470,6 +457,7 @@ export interface Settings {
   setup_complete?: boolean; // Whether the first-time setup wizard has been completed
   compact_view?: CompactViewSettings; // Compact view preset settings
   custom_themes?: CustomTheme[]; // User-created custom themes
+  glass_transparency?: number; // Global glassiness, 0-100 (100 = full frosted glass, 0 = solid panels). Default 100.
   multi_nook_slots?: MultiNookSlot[]; // Persisted multi-nook grid configurations
   multi_nook_chat_hidden?: boolean; // Whether the chat panel is globally hidden in MultiNook
   show_mod_logs?: boolean; // Whether to display the Mod Logs pane

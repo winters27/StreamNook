@@ -219,113 +219,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Get latest Streamlink portable version
-        if: steps.check_release.outputs.RELEASE_EXISTS == 'false'
-        id: streamlink
-        shell: pwsh
-        run: |
-          # Get latest release from streamlink windows-builds (authenticated to avoid rate limits)
-          $headers = @{
-            "Authorization" = "Bearer $env:GH_TOKEN"
-            "Accept" = "application/vnd.github+json"
-            "X-GitHub-Api-Version" = "2022-11-28"
-          }
-          $release = Invoke-RestMethod -Uri "https://api.github.com/repos/streamlink/windows-builds/releases/latest" -Headers $headers
-          $version = $release.tag_name
-          echo "STREAMLINK_VERSION=$version" >> $env:GITHUB_OUTPUT
-          echo "Latest Streamlink version: $version"
-
-          # Find the zip asset (the portable distribution)
-          # Try to find x86_64 zip first, then fallback to any zip
-          $asset = $release.assets | Where-Object { $_.name -like "*x86_64.zip" } | Select-Object -First 1
-          if (-not $asset) {
-            # Fallback to any zip that's not an installer
-            $asset = $release.assets | Where-Object { $_.name -like "*.zip" -and $_.name -notlike "*installer*" } | Select-Object -First 1
-          }
-
-          if ($asset) {
-            echo "STREAMLINK_URL=$($asset.browser_download_url)" >> $env:GITHUB_OUTPUT
-            echo "STREAMLINK_ASSET=$($asset.name)" >> $env:GITHUB_OUTPUT
-            echo "Found asset: $($asset.name)"
-          } else {
-            echo "No streamlink zip found"
-            echo "Available assets:"
-            $release.assets | ForEach-Object { echo "  - $($_.name)" }
-            exit 1
-          }
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Get latest TTV LOL plugin version
-        if: steps.check_release.outputs.RELEASE_EXISTS == 'false'
-        id: ttvlol
-        shell: pwsh
-        run: |
-          # Get latest release from streamlink-ttvlol (authenticated to avoid rate limits)
-          $headers = @{
-            "Authorization" = "Bearer $env:GH_TOKEN"
-            "Accept" = "application/vnd.github+json"
-            "X-GitHub-Api-Version" = "2022-11-28"
-          }
-          $release = Invoke-RestMethod -Uri "https://api.github.com/repos/2bc4/streamlink-ttvlol/releases/latest" -Headers $headers
-          $version = $release.tag_name
-          echo "TTVLOL_VERSION=$version" >> $env:GITHUB_OUTPUT
-          echo "Latest TTV LOL version: $version"
-
-          # Find twitch.py asset
-          $asset = $release.assets | Where-Object { $_.name -eq "twitch.py" }
-          if ($asset) {
-            echo "TTVLOL_URL=$($asset.browser_download_url)" >> $env:GITHUB_OUTPUT
-            echo "Found twitch.py"
-          } else {
-            echo "twitch.py not found in release"
-            exit 1
-          }
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Download Streamlink portable
-        if: steps.check_release.outputs.RELEASE_EXISTS == 'false'
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path ./bundle/streamlink
-          $url = "${{ steps.streamlink.outputs.STREAMLINK_URL }}"
-          $outFile = "./streamlink-portable.zip"
-          echo "Downloading: $url"
-          Invoke-WebRequest -Uri $url -OutFile $outFile
-
-          # Extract
-          Expand-Archive -Path $outFile -DestinationPath ./bundle/streamlink-temp -Force
-
-          # Move contents (handle nested folder structure)
-          $extracted = Get-ChildItem ./bundle/streamlink-temp -Directory | Select-Object -First 1
-          if ($extracted) {
-            Move-Item "$($extracted.FullName)/*" ./bundle/streamlink/ -Force
-          } else {
-            Move-Item ./bundle/streamlink-temp/* ./bundle/streamlink/ -Force
-          }
-
-          Remove-Item ./bundle/streamlink-temp -Recurse -Force
-          Remove-Item $outFile -Force
-
-          # Create plugins directory
-          New-Item -ItemType Directory -Force -Path ./bundle/streamlink/plugins
-
-          echo "Streamlink extracted to ./bundle/streamlink"
-
-      - name: Download TTV LOL plugin
-        if: steps.check_release.outputs.RELEASE_EXISTS == 'false'
-        shell: pwsh
-        run: |
-          $url = "${{ steps.ttvlol.outputs.TTVLOL_URL }}"
-          echo "Downloading: $url"
-          Invoke-WebRequest -Uri $url -OutFile ./bundle/streamlink/plugins/twitch.py
-          echo "TTV LOL plugin downloaded to ./bundle/streamlink/plugins/twitch.py"
-
       - name: Copy StreamNook.exe to bundle
         if: steps.check_release.outputs.RELEASE_EXISTS == 'false'
         shell: pwsh
         run: |
+          # The bundle dir used to be created by the Streamlink download step.
+          New-Item -ItemType Directory -Force -Path ./bundle | Out-Null
           if ("${{ inputs.skip_build }}" -eq "true") {
             # Use exe from previous release
             $exe = Get-ChildItem ./previous-release -Filter "*.exe" | Select-Object -First 1
@@ -359,8 +258,10 @@ jobs:
         shell: pwsh
         run: |
           $version = "${{ steps.version.outputs.VERSION }}"
-          $streamlinkVersion = "${{ steps.streamlink.outputs.STREAMLINK_VERSION }}"
-          $ttvlolVersion = "${{ steps.ttvlol.outputs.TTVLOL_VERSION }}"
+          # Streamlink/TTV-LOL are no longer bundled. Keep the (now empty) fields
+          # so the components.json schema still parses on any client.
+          $streamlinkVersion = ""
+          $ttvlolVersion = ""
           $buildDate = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 
           $components = @{
@@ -392,9 +293,11 @@ jobs:
         run: |
           $bundleName = "StreamNook.7z"
 
-          # Create 7z archive with maximum compression
+          # Create 7z archive (exe only). components.json is uploaded as a
+          # separate top-level asset for older clients' version check; the new
+          # updater reads the binary's own compiled-in version instead.
           cd bundle
-          7z a -t7z -mx=9 "../$bundleName" *
+          7z a -t7z -mx=9 "../$bundleName" StreamNook.exe
           cd ..
 
           echo "BUNDLE_NAME=$bundleName" >> $env:GITHUB_OUTPUT
@@ -441,27 +344,19 @@ jobs:
         run: |
           $version = "${{ steps.version.outputs.VERSION }}"
           $bundleName = "${{ steps.bundle.outputs.BUNDLE_NAME }}"
-          $streamlinkVersion = "${{ steps.streamlink.outputs.STREAMLINK_VERSION }}"
-          $ttvlolVersion = "${{ steps.ttvlol.outputs.TTVLOL_VERSION }}"
 
           # Read changelog section from temp file
           $changelogSection = Get-Content ./changelog_section.md -Raw
 
-          # Build component info section using simple string array
+          # Build the install instructions section
           $lines = @()
           $lines += ""
           $lines += "---"
-          $lines += ""
-          $lines += "### Bundle Components"
-          $lines += "- **StreamNook**: v$version"
-          $lines += "- **Streamlink**: $streamlinkVersion"
-          $lines += "- **TTV LOL Plugin**: $ttvlolVersion"
           $lines += ""
           $lines += "### Installation"
           $lines += "1. Download ``$bundleName``"
           $lines += "2. Extract the .7z file"
           $lines += "3. Run ``StreamNook.exe``"
-          $lines += "4. The app will automatically set up Streamlink and TTV LOL on first run"
 
           $componentInfo = $lines -join "`n"
           $notes = $changelogSection + $componentInfo

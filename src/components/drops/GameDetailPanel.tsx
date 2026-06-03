@@ -154,9 +154,49 @@ export default function GameDetailPanel({
     onClaimDrop
 }: GameDetailPanelProps) {
     // Merge inventory progress into active campaigns for accurate display
-    const campaignsWithMergedProgress = game.active_campaigns.map(campaign => 
+    const campaignsWithMergedProgress = game.active_campaigns.map(campaign =>
         mergeProgressFromInventory(campaign, game.inventory_items, progress)
     );
+
+    // Rewards/drops the user has genuinely EARNED, used to mark a reward as already
+    // owned when the active campaign instance hasn't synced the claim. Built ONLY from
+    // unambiguous sources: the permanent gameEventDrops list (completedDrops) and any
+    // inventory drop explicitly flagged is_claimed. The SAME reward is reissued under
+    // new campaign instances with new drop/benefit ids, so we also key on the benefit
+    // NAME (stable). We deliberately do NOT use claimed-by-index or "100% watched" here:
+    // those over-matched and falsely marked in-progress drops as earned.
+    const ownedBenefitIds = new Set<string>(completedDrops.map(d => d.id));
+    const ownedBenefitNames = new Set<string>(
+        completedDrops.map(d => (d.name || '').toLowerCase().trim()).filter(Boolean)
+    );
+    const ownedDropIds = new Set<string>();
+    game.inventory_items.forEach(item => {
+        item.campaign.time_based_drops.forEach(drop => {
+            if (drop.progress?.is_claimed === true) {
+                ownedDropIds.add(drop.id);
+                drop.benefit_edges?.forEach(b => {
+                    ownedBenefitIds.add(b.id);
+                    if (b.name) ownedBenefitNames.add(b.name.toLowerCase().trim());
+                });
+            }
+        });
+    });
+    // A reward counts as already-owned ONLY when this drop isn't being actively mined
+    // here. If it has its own claim, that wins. Otherwise cross-instance matching (by
+    // drop id / benefit id / benefit name) applies ONLY when the drop has no current
+    // progress: a drop you have watch-time on is a fresh in-progress drop and must
+    // never be treated as owned just because a same-named reward was earned elsewhere.
+    const isRewardOwned = (drop: TimeBasedDrop, dp?: DropProgress | null): boolean => {
+        if (dp?.is_claimed === true) return true;
+        // is_claimed handled above; only watch-time counts as "in progress" here.
+        const hasCurrentProgress = !!dp && (dp.current_minutes_watched || 0) > 0;
+        if (hasCurrentProgress) return false;
+        if (ownedDropIds.has(drop.id)) return true;
+        return drop.benefit_edges?.some(b =>
+            ownedBenefitIds.has(b.id) ||
+            (!!b.name && ownedBenefitNames.has(b.name.toLowerCase().trim()))
+        ) ?? false;
+    };
     // Check if mining this game
     // Use current_drop.game_name OR current_channel.game_name as fallback (current_drop may not be set immediately)
     const isMiningThisGame = miningStatus?.is_mining && (
@@ -283,7 +323,7 @@ export default function GameDetailPanel({
                         // Mirror Your Collection's ownership signal: a drop is owned if its benefit
                         // id is in the permanent inventory (completedDrops), not only when this
                         // session's progress shows is_claimed.
-                        const completedBenefitIds = new Set(completedDrops.map(d => d.id));
+                        const completedBenefitIds = ownedBenefitIds;
                         const rewards = campaignsWithMergedProgress
                             .flatMap(c => c.time_based_drops)
                             .filter(drop => {
@@ -295,10 +335,9 @@ export default function GameDetailPanel({
                                 const dp = drop.progress || progress.find(p => p.drop_id === drop.id);
                                 const benefit = drop.benefit_edges?.[0];
                                 const required = dp?.required_minutes_watched || drop.required_minutes_watched || 0;
-                                const benefitOwned = drop.benefit_edges?.some(b => completedBenefitIds.has(b.id)) || false;
-                                const badgeOwned = !!benefit?.name && earnedBadgeTitles.has(benefit.name.toLowerCase().trim());
-                                // "Owned" = claimed this session OR already in the permanent inventory.
-                                const isClaimed = dp?.is_claimed === true || benefitOwned || badgeOwned;
+                                // "Owned" = claimed here, OR already earned (matched by benefit id/name)
+                                // but only when this reward isn't itself in progress.
+                                const isClaimed = isRewardOwned(drop, dp);
                                 const current = isClaimed ? required : (dp?.current_minutes_watched || 0);
                                 const percent = required > 0 ? Math.min((current / required) * 100, 100) : 0;
                                 return {
@@ -656,11 +695,11 @@ export default function GameDetailPanel({
                         // Build a comprehensive Set of ALL completed BENEFIT IDs (not drop IDs!)
                         // The completedDrops from backend contains benefit IDs from gameEventDrops
                         // These are the reward IDs, not the TimeBasedDrop IDs
-                        const completedBenefitIds = new Set(completedDrops.map(d => d.id));
+                        const completedBenefitIds = ownedBenefitIds;
                         
                         // Also build a set of drop IDs that are complete based on inventory progress data
                         // This catches drops that are 100% watched or claimed in the current session
-                        const completedDropIds = new Set<string>();
+                        const completedDropIds = new Set<string>(ownedDropIds);
                         
                         // IMPORTANT: Check ALL inventory items across ALL games for claimed drops
                         // This catches drops from expired campaigns that aren't in the backend's completedDrops list
@@ -751,7 +790,15 @@ export default function GameDetailPanel({
                             // A campaign is incomplete if ANY drop is still earnable
                             const hasIncompleteDrops = campaign.time_based_drops.some(drop => {
                                 const dropProgress = drop.progress || progress.find(p => p.drop_id === drop.id);
-                                
+
+                                // ✅ PRIORITY 0: Already earned (matched by benefit id or name across
+                                // campaign instances) AND not currently in progress here. Reissued rewards
+                                // get new ids, so the name-aware check catches what the others miss, while
+                                // the no-progress guard keeps fresh in-progress drops from being hidden.
+                                if (isRewardOwned(drop, dropProgress)) {
+                                    return false;
+                                }
+
                                 // ✅ PRIORITY 1: Check is_claimed flag (works for ALL drop types including badge drops)
                                 // This MUST be checked first because badge drops don't appear in completedBenefitIds
                                 if (dropProgress?.is_claimed === true) {
@@ -876,7 +923,7 @@ export default function GameDetailPanel({
                         const mergedCampaigns = campaignsWithMergedProgress;
                         
                         // Create a Set of completed BENEFIT IDs for fast lookup (not drop IDs!)
-                        const completedBenefitIds = new Set(completedDrops.map(d => d.id));
+                        const completedBenefitIds = ownedBenefitIds;
                         
 
                         
@@ -1067,7 +1114,7 @@ export default function GameDetailPanel({
                         // 4. ALSO check for drops completed via benefit ID matching (from backend completedDrops)
                         // These are drops that are "owned" but have no progress data, so they didn't appear in previous checks
                         // Create a completed benefit IDs set from backend data
-                        const completedBenefitIds = new Set(completedDrops.map(d => d.id));
+                        const completedBenefitIds = ownedBenefitIds;
                         
                         // Scan all campaigns for drops with matching benefit IDs
                         const allCampaigns = [...game.active_campaigns, ...game.inventory_items.map(item => item.campaign)];

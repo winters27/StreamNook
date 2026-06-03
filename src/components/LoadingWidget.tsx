@@ -254,10 +254,10 @@ const LoadingWidget = ({ message, useFunnyMessages = false, showProxyNote = fals
               </svg>
               <div className="space-y-1">
                 <p className="text-textPrimary text-xs font-medium">
-                  Ad-Free Proxy Active
+                  Setting up ad-free playback
                 </p>
                 <p className="text-textSecondary text-xs leading-relaxed">
-                  Loading may take longer as we're rerouting through proxy servers for an ad-free experience.
+                  Loading may take a moment while we prepare your stream.
                 </p>
                 <p className="text-textMuted text-[10px] leading-relaxed">
                   If initial load times bother you, consider disabling the TTV LOL PRO plugin in Settings → Integrations.

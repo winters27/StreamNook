@@ -126,7 +126,11 @@ const TitleBar = () => {
           const currentMinutes = event.payload.current_minutes;
           const requiredMinutes = event.payload.required_minutes;
 
-          // Update current_drop if it matches
+          // Only update the displayed drop in place when this event is for it.
+          // WHICH drop is shown (the one closest to completion) is decided by
+          // the backend and delivered via 'mining-status-update'. Ignoring
+          // other drops' progress events here is what stops the percentage from
+          // flipping between rewards (e.g. the 60-min vs the 180-min reward).
           if (prev.current_drop && prev.current_drop.drop_id === dropId) {
             return {
               ...prev,
@@ -138,19 +142,7 @@ const TitleBar = () => {
             };
           }
 
-          // If current_drop doesn't exist or is different, update with new drop info
-          return {
-            ...prev,
-            current_drop: {
-              campaign_id: event.payload.campaign_id || prev.current_drop?.campaign_id || '',
-              campaign_name: prev.current_drop?.campaign_name || prev.current_campaign || 'Campaign',
-              drop_id: dropId,
-              drop_name: event.payload.drop_name || prev.current_drop?.drop_name || 'Drop',
-              required_minutes: requiredMinutes,
-              current_minutes: currentMinutes,
-              game_name: prev.current_channel?.game_name || prev.current_drop?.game_name || 'Game'
-            }
-          };
+          return prev;
         });
       });
       if (isMounted) unlistenProgress = uProgress;

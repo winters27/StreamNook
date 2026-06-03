@@ -1,7 +1,7 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useAppStore } from '../../stores/AppStore';
-import { themes, themeCategories, getThemeById, applyTheme, customThemeToTheme, getThemeByIdWithCustom, Theme } from '../../themes';
-import { Check, Palette, Sparkles, Moon, Leaf, Code, Star, Plus, Edit2, PaintBucket } from 'lucide-react';
+import { themes, themeCategories, getThemeById, applyTheme, customThemeToTheme, getThemeByIdWithCustom, applyGlassStrength, DEFAULT_GLASS_TRANSPARENCY, Theme } from '../../themes';
+import { Check, Palette, Sparkles, Moon, Leaf, Code, Star, Plus, Edit2, PaintBucket, Droplets } from 'lucide-react';
 import { Tooltip } from '../ui/Tooltip';
 import ThemeCreator from './ThemeCreator';
 import type { CustomTheme } from '../../types';
@@ -146,6 +146,30 @@ const ThemeSettings = () => {
     const [isCreating, setIsCreating] = useState(false);
     const [editingTheme, setEditingTheme] = useState<CustomTheme | undefined>(undefined);
 
+    const glassTransparency = settings.glass_transparency ?? DEFAULT_GLASS_TRANSPARENCY;
+
+    // Track the slider locally so the thumb follows the cursor instantly. The
+    // persisted value only catches up on release, so we mirror it here for the
+    // controlled input and pick up any changes made from another window.
+    const [liveGlass, setLiveGlass] = useState(glassTransparency);
+    useEffect(() => {
+        setLiveGlass(glassTransparency);
+    }, [glassTransparency]);
+
+    // While dragging: only move the thumb and repaint via the CSS variable (cheap).
+    // No disk write — persisting on every tick is what made the slider stutter.
+    const handleGlassInput = (value: number) => {
+        setLiveGlass(value);
+        applyGlassStrength(value);
+    };
+
+    // On release: persist once. updateSettings writes to disk, broadcasts to other
+    // windows, and re-renders the whole app, so it must not run mid-drag.
+    const commitGlass = (value: number) => {
+        if (value === glassTransparency) return;
+        updateSettings({ ...settings, glass_transparency: value });
+    };
+
     // Get current theme (could be custom or built-in)
     const currentTheme = getThemeByIdWithCustom(currentThemeId, customThemes);
 
@@ -250,6 +274,32 @@ const ThemeSettings = () => {
                         Create Theme
                     </button>
                 </div>
+            </div>
+
+            {/* Global Glassiness — scales how see-through panels are across every theme.
+                100% is the signature frosted look; lower makes panels progressively solid. */}
+            <div className="glass-panel rounded-lg p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                        <Droplets size={16} className="text-accent" />
+                        <h4 className="text-sm font-semibold text-textPrimary">Glassiness</h4>
+                    </div>
+                    <span className="text-xs text-textMuted font-mono">{liveGlass}%</span>
+                </div>
+                <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    step="1"
+                    value={liveGlass}
+                    onChange={(e) => handleGlassInput(parseInt(e.target.value, 10))}
+                    onPointerUp={(e) => commitGlass(parseInt(e.currentTarget.value, 10))}
+                    onKeyUp={(e) => commitGlass(parseInt(e.currentTarget.value, 10))}
+                    className="w-full accent-accent cursor-pointer"
+                />
+                <p className="text-xs text-textMuted">
+                    How see-through panels are, for every theme. 100% is the signature frosted look; lower makes panels more solid.
+                </p>
             </div>
 
             {/* Custom Themes Section */}

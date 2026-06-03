@@ -19,6 +19,7 @@ import { useTwitchChat } from '../hooks/useTwitchChat';
 import { useChannelEmotes, ensureChannelEmotes } from '../stores/chatConnectionStore';
 import { useAppStore } from '../stores/AppStore';
 import { incrementStat } from '../services/supabaseService';
+import { trackEmoteUsage } from '../utils/trackEmoteUsage';
 import ChatMessage from './ChatMessage';
 import UserProfileCard from './UserProfileCard';
 import ErrorBoundary from './ErrorBoundary';
@@ -2108,6 +2109,10 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
         incrementStat(currentUser.user_id, 'messages_sent', 1).catch(err => {
           Logger.warn('[ChatWidget] Failed to track message sent stat:', err);
         });
+
+        // Tally emote usage from this message into the member's persisted
+        // most-used-emotes counts (best effort, non-blocking).
+        void trackEmoteUsage(messageToSend, currentStream?.user_id || null, currentUser.user_id);
       } catch (err) {
         Logger.error('Failed to send message:', err);
         setMessageInput(messageToSend);
