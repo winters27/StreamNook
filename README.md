@@ -16,7 +16,7 @@ StreamNook is the answer to this very specific but deeply relatable problem. Bui
 
 ## What you get
 
-**Ad-free playback up to 1440p.** Bundled Streamlink and integrated TTV-LOL PRO proxy strip ads at every quality up to 1440p. First-run auto-optimizer picks the fastest proxy region for you, and the built-in latency dashboard lets you switch any time. Picture-in-picture, theater mode, and jump-to-live-edge on every stream load. When the channel you're watching goes offline, StreamNook auto-switches you to another live one without asking.
+**Ad-free playback up to 1440p.** Built-in ad blocking strips ads at every quality up to 1440p. First-run auto-optimizer picks the fastest proxy region for you, and the built-in latency dashboard lets you switch any time. Picture-in-picture, theater mode, and jump-to-live-edge on every stream load. When the channel you're watching goes offline, StreamNook auto-switches you to another live one without asking.
 
 **Custom theming engine.** 24 built-in themes including Winters' Glass, Dracula, Nord, Gruvbox, Tokyo Night, and Catppuccin, plus a full theme creator with color picker, live preview, and dynamic switching from the title bar. Build your own and tune every color in the UI, save it, swap back any time.
 
@@ -149,11 +149,10 @@ Rust, TypeScript, React, and Tailwind. Packaged as a native desktop app with Tau
 2. Extract and run.
 3. Follow the setup wizard to sign in with Twitch.
 
-Streamlink and TTV-LOL PRO are bundled. Nothing else to install.
+Everything's built in. Nothing else to install.
 
 ## Credits
 
-- [Streamlink](https://github.com/streamlink/streamlink), stream resolution and playback.
 - [Tauri](https://tauri.app/), native desktop framework.
 - [Plyr](https://plyr.io/), video player.
 - [HLS.js](https://github.com/video-dev/hls.js), HLS streaming support.
