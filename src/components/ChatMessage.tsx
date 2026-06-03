@@ -21,6 +21,8 @@ import { matchHighlightPhrase, matchHighlightUser, matchHighlightBadge, type Hig
 import { flashTitle } from '../utils/titleFlasher';
 import { playSoundThrottled } from '../utils/notificationSound';
 import { getDisplayedName, getColorOverride } from '../utils/userChatOverrides';
+import { LinkPreviewCard } from './chat/LinkPreviewCard';
+import { extractPreviewableUrls, prettyUrlLabel } from '../services/linkPreviewService';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 // 7TV cosmetics have complex dynamic structures that vary by API version
@@ -96,6 +98,7 @@ function getTwitchBadgeUrl(badgeKey: string, badgeInfo: { localUrl?: string; url
 import { BackendChatMessage } from '../services/twitchChat';
 
 import { Logger } from '../utils/logger';
+
 interface ChatMessageProps {
   message: string | BackendChatMessage; // Raw IRC message or Backend Message Object
   messageIndex?: number; // For alternating backgrounds
@@ -269,7 +272,6 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
   // own inputs change.
   const settings = useAppStore((s) => s.settings);
   const currentUser = useAppStore((s) => s.currentUser);
-  const currentStream = useAppStore((s) => s.currentStream);
   const chatDesign = settings.chat_design;
   // Re-render this row when the StreamNook registry updates (async load / new signup)
   useSyncExternalStore(subscribeStreamNookRegistryVersion, getStreamNookRegistryVersion, getStreamNookRegistryVersion);
@@ -448,6 +450,26 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
 
   // Extract userId once to prevent re-renders
   const userId = useMemo(() => parsed.tags.get('user-id'), [parsed.tags]);
+
+  // Trusted-domain link preview cards. Only allowlisted hosts (YouTube, Twitch,
+  // imgur, etc.) auto-expand; every other link stays a plain clickable link, so
+  // this never passively fetches an arbitrary pasted URL. Capped per message so
+  // a link wall can't spawn a card wall. Computed unconditionally here (before
+  // the event-type early returns below) to keep hook order stable; only the
+  // regular-message render path actually mounts the cards.
+  const linkPreviewsEnabled = chatDesign?.link_previews ?? true;
+  // "Clean" mode (default) hides the inline link and shows only the card. When
+  // the user opts to keep the link, both the inline link and the card show.
+  const keepInlineLink = chatDesign?.link_preview_keep_link ?? false;
+  // URLs (max 2) that a preview card represents below the message. In clean mode
+  // the inline link for these is suppressed (the card is the link — it opens on
+  // click and shows the full URL on hover). Kept as a small array, not a Set:
+  // `.includes` over ≤2 items is faster than allocating a Set per message on the
+  // chat hot path.
+  const linkPreviewUrls = useMemo(
+    () => (linkPreviewsEnabled ? extractPreviewableUrls(parsed.content, 2) : []),
+    [linkPreviewsEnabled, parsed.content],
+  );
 
   // Per-user nickname/color overrides. The original display name + username
   // stay in the click payload (so the profile card still opens to the real
@@ -643,22 +665,6 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
     return computePaintStyle(seventvPaint, effectiveColor, paintShadowMode);
   }, [seventvPaint, effectiveColor, paintShadowMode]);
 
-  // TEMP DIAGNOSTIC [selfpaint] — logs only for the current user's own messages.
-  useEffect(() => {
-    if (!currentUser?.user_id || userId !== currentUser.user_id) return;
-    const entry = useChatUserStore.getState().users.get(userId);
-    Logger.info('[selfpaint] render own', {
-      userId,
-      username: parsed.username,
-      seventvPaintTruthy: !!seventvPaint,
-      storePaintId: (entry?.paint as any)?.id ?? null,
-      storeBadgeId: (entry?.seventvBadge as any)?.id ?? null,
-      hasStoreEntry: !!entry,
-      styleIsPaint: !!(usernameStyle as any)?.WebkitBackgroundClip,
-    });
-  }, [userId, currentUser?.user_id, seventvPaint, usernameStyle, parsed.username]);
-
-
   const renderSegment = (segment: EmoteSegment, key: string, inGrid: boolean, isOverlay: boolean = false) => {
     const gridStyle = inGrid ? { gridArea: '1/1' } : {};
     const marginClass = inGrid ? '' : 'mx-0.5';
@@ -731,6 +737,10 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
       const previewUrl = is7TVEmote && segment.emoteId
         ? `https://cdn.7tv.app/emote/${segment.emoteId}/4x.avif`
         : emoteUrl;
+      // User-configurable hover-preview height. Defaults to 96px (one step up
+      // from the original fixed 64px preview). maxWidth scales with it so wide
+      // 7TV emotes aren't clipped in the card.
+      const hoverPreviewSize = settings?.chat_design?.emote_hover_size ?? 96;
       const tooltipContent: React.ReactNode | string = isCompactTooltip
         ? segment.content
         : (
@@ -738,7 +748,8 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
             <img
               src={previewUrl}
               alt={segment.content}
-              className="h-16 w-auto max-w-[96px] object-contain mx-auto drop-shadow-md"
+              className="w-auto object-contain mx-auto drop-shadow-md"
+              style={{ height: hoverPreviewSize, maxWidth: hoverPreviewSize * 2 }}
               referrerPolicy="no-referrer"
               onError={(e) => {
                 // 7TV fallback chain: 4x avif → 2x → 1x. Matches the
@@ -914,7 +925,15 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
       if (part.match(/^(https?:\/\/|www\.)/)) {
         const url = part.startsWith('http') ? part : `https://${part}`;
 
-        return (
+        // In clean mode a preview card represents this link below the message —
+        // drop the inline URL so it isn't duplicated above its own card. In
+        // keep-link mode we fall through and render the inline link too.
+        if (!keepInlineLink && linkPreviewUrls.includes(url)) return null;
+
+        const shorten = chatDesign?.shorten_links ?? true;
+        const label = shorten ? prettyUrlLabel(part) : part;
+
+        const anchor = (
           <a
             key={index}
             href={url}
@@ -932,8 +951,18 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
               }
             }}
           >
-            {part}
+            {label}
           </a>
+        );
+
+        // When shortened, surface the full URL on hover so the real destination
+        // is always one hover away before clicking.
+        return shorten && label !== url ? (
+          <Tooltip key={index} content={url} side="top">
+            {anchor}
+          </Tooltip>
+        ) : (
+          anchor
         );
       }
       
@@ -2384,6 +2413,16 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
           </span>
         </div>
       </div>
+      {/* Inline link preview cards (trusted domains only). showChip is on only
+          in clean mode, where the inline link is hidden and the card/chip is the
+          sole representation of the link. */}
+      {linkPreviewUrls.length > 0 && (
+        <div className="flex flex-col items-start gap-1">
+          {linkPreviewUrls.map((u) => (
+            <LinkPreviewCard key={u} url={u} showChip={!keepInlineLink} />
+          ))}
+        </div>
+      )}
       {/* Quick Actions Dock: Copy for everyone, Mod tools for Mods */}
       {(isModerator || !!onMessageCopy) && broadcasterId && (
         <div 

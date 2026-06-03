@@ -579,10 +579,11 @@ body {
     color-mix(in srgb, var(--color-highlight-yellow) 10%, transparent) 80%,
     color-mix(in srgb, var(--color-highlight-pink) 15%, transparent) 100%
   );
-  background-size: 200% 100%;
-  animation: iridescent-sub 4s ease-in-out infinite;
-  animation-fill-mode: both;
-  will-change: background-position;
+  background-size: 100% 100%;
+  /* Static by design: the built-in Twitch event styles keep their color but no
+     motion. Animated/living cosmetics are reserved for StreamNook subscribers
+     (Atmospheres). The @keyframes above is intentionally left defined for that
+     future premium path. */
 }
 
 .subscription-gradient:hover {
@@ -596,7 +597,7 @@ body {
     color-mix(in srgb, var(--color-highlight-yellow) 15%, transparent) 80%,
     color-mix(in srgb, var(--color-highlight-pink) 20%, transparent) 100%
   );
-  background-size: 200% 100%;
+  background-size: 100% 100%;
 }
 
 /* Donation gradient animation */
@@ -622,10 +623,7 @@ body {
     color-mix(in srgb, var(--color-success) 12%, transparent) 75%,
     color-mix(in srgb, var(--color-success) 15%, transparent) 100%
   );
-  background-size: 200% 100%;
-  animation: donation-glow 3s ease-in-out infinite;
-  animation-fill-mode: both;
-  will-change: background-position;
+  background-size: 100% 100%;
 }
 
 .donation-gradient:hover {
@@ -638,7 +636,7 @@ body {
     color-mix(in srgb, var(--color-success) 17%, transparent) 75%,
     color-mix(in srgb, var(--color-success) 20%, transparent) 100%
   );
-  background-size: 200% 100%;
+  background-size: 100% 100%;
 }
 
 /* Bits cheer gradient animation - purple/blue theme matching Twitch bits */
@@ -665,10 +663,7 @@ body {
     color-mix(in srgb, var(--color-highlight-purple) 15%, transparent) 80%,
     color-mix(in srgb, var(--color-highlight-pink) 18%, transparent) 100%
   );
-  background-size: 200% 100%;
-  animation: bits-sparkle 3s ease-in-out infinite;
-  animation-fill-mode: both;
-  will-change: background-position;
+  background-size: 100% 100%;
 }
 
 .bits-gradient:hover {
@@ -682,7 +677,7 @@ body {
     color-mix(in srgb, var(--color-highlight-purple) 22%, transparent) 80%,
     color-mix(in srgb, var(--color-highlight-pink) 25%, transparent) 100%
   );
-  background-size: 200% 100%;
+  background-size: 100% 100%;
 }
 
 /* Watch streak gradient animation - orange/fire theme matching the fire icon */
@@ -709,10 +704,7 @@ body {
     color-mix(in srgb, var(--color-highlight-yellow) 15%, transparent) 80%,
     color-mix(in srgb, var(--color-highlight-orange) 18%, transparent) 100%
   );
-  background-size: 200% 100%;
-  animation: watchstreak-glow 3s ease-in-out infinite;
-  animation-fill-mode: both;
-  will-change: background-position;
+  background-size: 100% 100%;
 }
 
 .watchstreak-gradient:hover {
@@ -726,7 +718,7 @@ body {
     color-mix(in srgb, var(--color-highlight-yellow) 22%, transparent) 80%,
     color-mix(in srgb, var(--color-highlight-orange) 25%, transparent) 100%
   );
-  background-size: 200% 100%;
+  background-size: 100% 100%;
 }
 
 /* Highlighted message gradient - purple/pink theme for channel points redemption */
@@ -752,10 +744,7 @@ body {
     color-mix(in srgb, var(--color-highlight-blue) 12%, transparent) 75%,
     color-mix(in srgb, var(--color-highlight-cyan) 18%, transparent) 100%
   );
-  background-size: 200% 100%;
-  animation: highlight-message-glow 3s ease-in-out infinite;
-  animation-fill-mode: both;
-  will-change: background-position;
+  background-size: 100% 100%;
 }
 
 .highlight-message-gradient:hover {
@@ -768,7 +757,7 @@ body {
     color-mix(in srgb, var(--color-highlight-blue) 18%, transparent) 75%,
     color-mix(in srgb, var(--color-highlight-cyan) 25%, transparent) 100%
   );
-  background-size: 200% 100%;
+  background-size: 100% 100%;
 }
 
 /* Custom ultra-blur for floating header */

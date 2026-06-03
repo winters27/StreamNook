@@ -200,20 +200,26 @@ async function ensureEmoteFileCache() {
 export function preloadChannelEmotes(emotes: Emote[]) {
   if (emotes.length === 0) return;
 
+  // Warming the browser image cache for EVERY channel emote (5 to 10k) decoded
+  // 100+ MB of bitmaps on stream entry, most of which never appear in chat.
+  // Display-time caching (onLoad handlers in ChatMessage) already warms emotes
+  // as they actually show up, so here we only pre-warm a bounded set: cached
+  // (on-disk) emotes first since they cost no network, then a few remote ones,
+  // up to the cap. The rest load lazily when first used.
+  const PRELOAD_CAP = 200;
   const cached = emotes.filter(e => e.localUrl);
   const remote = emotes.filter(e => !e.localUrl);
 
-  Logger.debug(`[EmoteService] Browser preload: ${cached.length} cached, ${remote.length} remote`);
-
-  // Preload all immediately - browser handles connection throttling
-  const allUrls = [
+  const urls = [
     ...cached.map(e => e.localUrl!),
-    ...remote.map(e => e.url)
-  ];
+    ...remote.map(e => e.url),
+  ].slice(0, PRELOAD_CAP);
 
-  // Fire all preloads immediately - no chunking delays
-  // Browser will naturally queue based on connection limits
-  allUrls.forEach(url => {
+  Logger.debug(
+    `[EmoteService] Browser preload: warming ${urls.length} of ${emotes.length} emotes (cap ${PRELOAD_CAP}; ${cached.length} cached, ${remote.length} remote)`,
+  );
+
+  urls.forEach(url => {
     const img = new Image();
     img.src = url;
   });

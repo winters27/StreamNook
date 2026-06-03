@@ -16,7 +16,6 @@ pub mod discord_service;
 pub mod drops_auth_service;
 pub mod drops_service;
 pub mod drops_websocket_service;
-pub mod embedded_dashboard;
 pub mod emoji_service;
 pub mod emote_service;
 pub mod eventsub_moderation;

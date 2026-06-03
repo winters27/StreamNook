@@ -1,4 +1,5 @@
 import { useAppStore } from '../../stores/AppStore';
+import { Tooltip } from '../ui/Tooltip';
 import { Dropdown } from '../ui/Dropdown';
 import ColorWheelPicker from '../ColorWheelPicker';
 import HighlightPhrasesSettings from './HighlightPhrasesSettings';
@@ -23,6 +24,56 @@ const Toggle = ({ enabled, onChange }: { enabled: boolean; onChange: () => void 
   </button>
 );
 
+// Discrete hover-preview sizes (px height of the enlarged card). 'Medium' is
+// the default and sits one step above the original fixed 64px preview.
+const HOVER_SIZE_OPTIONS = [
+  { value: 'sm', label: 'Small', px: 64 },
+  { value: 'md', label: 'Medium', px: 96 },
+  { value: 'lg', label: 'Large', px: 128 },
+  { value: 'xl', label: 'Huge', px: 160 },
+] as const;
+
+type HoverSizeKey = (typeof HOVER_SIZE_OPTIONS)[number]['value'];
+
+// A widely-recognized 7TV emote used purely as the live sample so the preview
+// renders a real emote with proper upscaling at any size.
+const SAMPLE_EMOTE_ID = '01GA29CZ2R000C36HNE7Z0DQXD';
+const SAMPLE_EMOTE_NAME = 'KEKW';
+
+// Live, hoverable demo of the emote hover preview. The inline emote renders at
+// the user's chosen Emote Size (emoteScale); hovering it pops the real hover
+// card sized to hoverSize, so the row reflects both settings as they change.
+const EmoteHoverDemo = ({ hoverSize, emoteScale }: { hoverSize: number; emoteScale: number }) => {
+  const previewCard = (
+    <div className="flex flex-col items-center gap-1.5 py-0.5">
+      <img
+        src={`https://cdn.7tv.app/emote/${SAMPLE_EMOTE_ID}/4x.avif`}
+        alt={SAMPLE_EMOTE_NAME}
+        className="w-auto object-contain mx-auto drop-shadow-md"
+        style={{ height: hoverSize, maxWidth: hoverSize * 2 }}
+        referrerPolicy="no-referrer"
+      />
+      <span className="font-bold text-[13px] leading-tight">{SAMPLE_EMOTE_NAME}</span>
+      <span className="text-[10px] text-white/60 leading-tight">7TV</span>
+    </div>
+  );
+  return (
+    <div className="flex items-center justify-center gap-2 rounded-lg border border-white/5 bg-black/20 px-4 py-3">
+      <span className="select-none text-[12px] text-textSecondary">Hover the emote</span>
+      <span className="select-none text-[12px] text-textMuted">&rarr;</span>
+      <Tooltip content={previewCard} side="top">
+        <img
+          src={`https://cdn.7tv.app/emote/${SAMPLE_EMOTE_ID}/2x.avif`}
+          alt={SAMPLE_EMOTE_NAME}
+          className="inline-block w-auto cursor-pointer align-middle transition-transform hover:scale-110"
+          style={{ height: `calc(1.75rem * ${emoteScale})` }}
+          referrerPolicy="no-referrer"
+        />
+      </Tooltip>
+    </div>
+  );
+};
+
 const ChatSettings = () => {
   const { settings, updateSettings } = useAppStore();
 
@@ -40,11 +91,15 @@ const ChatSettings = () => {
     show_timestamp_seconds: stored?.show_timestamp_seconds ?? false,
     emote_scale: stored?.emote_scale ?? 1,
     emote_margin: stored?.emote_margin ?? 0.125,
+    emote_hover_size: stored?.emote_hover_size ?? 96,
     deleted_message_style: stored?.deleted_message_style ?? 'strikethrough',
     hide_shared_chat: stored?.hide_shared_chat ?? false,
     paint_mentions_in_body: stored?.paint_mentions_in_body ?? true,
     compact_emote_tooltips: stored?.compact_emote_tooltips ?? false,
     seventv_emote_notices: stored?.seventv_emote_notices ?? true,
+    link_previews: stored?.link_previews ?? true,
+    link_preview_keep_link: stored?.link_preview_keep_link ?? false,
+    shorten_links: stored?.shorten_links ?? true,
   };
 
   const setDesign = (patch: Partial<typeof cd>) => {
@@ -221,6 +276,42 @@ const ChatSettings = () => {
         </SettingsRow>
       </SettingsSection>
 
+      <SettingsSection label="Link Previews">
+        <SettingsRow
+          title="Preview Mode"
+          description="Off keeps links as plain text. Card + Link shows the preview and keeps the link in chat. Clean shows only the preview card and hides the link (hover the card to see where it goes)."
+        >
+          <SegmentedSelect<'off' | 'with_link' | 'clean'>
+            value={
+              !cd.link_previews ? 'off' : cd.link_preview_keep_link ? 'with_link' : 'clean'
+            }
+            onChange={(mode) => {
+              if (mode === 'off') {
+                setDesign({ link_previews: false });
+              } else {
+                setDesign({ link_previews: true, link_preview_keep_link: mode === 'with_link' });
+              }
+            }}
+            options={[
+              { value: 'off', label: 'Off' },
+              { value: 'with_link', label: 'Card + Link' },
+              { value: 'clean', label: 'Clean' },
+            ]}
+          />
+        </SettingsRow>
+
+        <SettingsRow
+          title="Shorten Links"
+          description="When a link is shown in chat, display it as a clean, compact label (site plus a short path) instead of the full raw URL. The full link still opens on click and shows on hover."
+          control={
+            <Toggle
+              enabled={cd.shorten_links ?? true}
+              onChange={() => setDesign({ shorten_links: !(cd.shorten_links ?? true) })}
+            />
+          }
+        />
+      </SettingsSection>
+
       <SettingsSection label="Emotes">
         <SettingsRow
           title={`Emote Size: ${(cd.emote_scale ?? 1).toFixed(2)}x`}
@@ -235,6 +326,28 @@ const ChatSettings = () => {
             onChange={(e) => setDesign({ emote_scale: parseFloat(e.target.value) })}
             className="w-full accent-accent cursor-pointer"
           />
+        </SettingsRow>
+
+        <SettingsRow
+          title={`Emote Hover Size: ${(HOVER_SIZE_OPTIONS.find((o) => o.px === cd.emote_hover_size) ?? HOVER_SIZE_OPTIONS[1]).label}`}
+          description={
+            cd.compact_emote_tooltips
+              ? 'Disabled while Compact emote tooltips is on (the hover card is replaced by just the emote name).'
+              : 'How large an emote grows in its hover preview, in chat and the emote menu. Hover the sample to try the chosen size. Inline size still follows Emote Size above.'
+          }
+          disabled={cd.compact_emote_tooltips}
+        >
+          <div className="space-y-3">
+            <SegmentedSelect<HoverSizeKey>
+              value={(HOVER_SIZE_OPTIONS.find((o) => o.px === cd.emote_hover_size) ?? HOVER_SIZE_OPTIONS[1]).value}
+              options={HOVER_SIZE_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+              onChange={(v) => {
+                const opt = HOVER_SIZE_OPTIONS.find((o) => o.value === v) ?? HOVER_SIZE_OPTIONS[1];
+                setDesign({ emote_hover_size: opt.px });
+              }}
+            />
+            <EmoteHoverDemo hoverSize={cd.emote_hover_size} emoteScale={cd.emote_scale} />
+          </div>
         </SettingsRow>
 
         <SettingsRow

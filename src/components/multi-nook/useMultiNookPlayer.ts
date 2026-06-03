@@ -166,11 +166,18 @@ export const useMultiNookPlayer = ({
         debug: false,
         enableWorker: true,
         lowLatencyMode: false, // Force false: LL-HLS chunk parsing causes cyclic starvation with proxies
-        startFragPrefetch: true, 
-        backBufferLength: 30, 
-        maxBufferLength: currentSettings.max_buffer_length || 30, 
-        maxMaxBufferLength: currentSettings.max_buffer_length || 120, 
-        maxBufferSize: 60 * 1000 * 1000, 
+        startFragPrefetch: false, // Off for tiles: prefetch double-buffers TS chunks in the V8 heap, multiplied across every tile.
+        // Per-tile buffers are bounded well below the solo player's. A MultiNook
+        // grid runs many hls.js instances at once, and each full 60 MB / 120s
+        // buffer multiplies across every tile (9 tiles at 60 MB is ~540 MB of
+        // video buffer alone). Grid tiles don't need a DVR scrub window (the solo
+        // player keeps the generous buffer for that), so a small forward/back
+        // buffer is plenty here. A uniform low cap also beats tiering one tile
+        // high: 9 small tiles use less total RAM than 1 large + 8 small.
+        backBufferLength: 10,
+        maxBufferLength: 15,
+        maxMaxBufferLength: 30,
+        maxBufferSize: 16 * 1000 * 1000,
         maxBufferHole: 0.5, 
         highBufferWatchdogPeriod: 2, 
         nudgeOffset: 0.2, 

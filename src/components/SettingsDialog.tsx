@@ -12,7 +12,6 @@ import {
   Keyboard,
   HelpCircle,
   Sparkles,
-  BarChart3,
   Shield,
   User,
   Search,
@@ -30,14 +29,12 @@ import CacheSettings from './settings/CacheSettings';
 import NotificationsSettings from './settings/NotificationsSettings';
 import SupportSettings from './settings/SupportSettings';
 import WhatsNewSettings from './settings/WhatsNewSettings';
-import AnalyticsSettings from './settings/AnalyticsSettings';
 import CommandPaletteSettings from './settings/CommandPaletteSettings';
 import KeybindingsSettings from './settings/KeybindingsSettings';
 import ProfileSettings from './settings/ProfileSettings';
 import SettingsSearchResults from './settings/SettingsSearchResults';
 import type { SettingsIndexEntry } from './settings/searchIndex';
 import { Tooltip } from './ui/Tooltip';
-import { useIsAdmin } from './DashboardWidget';
 
 type TabMeta = {
   id: SettingsTab;
@@ -62,14 +59,6 @@ const TABS: TabMeta[] = [
   { id: "What's New",      label: "What's New",      icon: Sparkles,      tint: 'rgba(225, 195, 130, 0.20)', description: 'Recent releases and changelog' },
 ];
 
-const ADMIN_TAB: TabMeta = {
-  id: 'Analytics',
-  label: 'Analytics',
-  icon: BarChart3,
-  tint: 'rgba(120, 175, 215, 0.24)',
-  description: 'Telemetry dashboard',
-};
-
 // Profile is special — surfaced as the avatar pill at the top of the sidebar,
 // not as a regular tab row. Hero treatment still uses the standard tile recipe
 // so the right pane reads consistently with every other tab.
@@ -92,9 +81,8 @@ const SettingsDialog = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const contentRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
-  const isAdmin = useIsAdmin();
 
-  const tabs = isAdmin ? [...TABS, ADMIN_TAB] : TABS;
+  const tabs = TABS;
   const activeMeta =
     activeTab === 'Profile' ? PROFILE_META : tabs.find((t) => t.id === activeTab) ?? tabs[0];
   const HeroIcon = activeMeta.icon;
@@ -363,7 +351,6 @@ const SettingsDialog = () => {
                     {activeTab === 'Keybindings' && <KeybindingsSettings />}
                     {activeTab === 'Support' && <SupportSettings />}
                     {activeTab === "What's New" && <WhatsNewSettings />}
-                    {activeTab === 'Analytics' && isAdmin && <AnalyticsSettings />}
                   </>
                 )}
               </div>

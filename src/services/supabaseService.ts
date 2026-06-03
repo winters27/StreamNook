@@ -375,71 +375,6 @@ export interface GlobalStats {
 }
 
 /**
- * Get all users from the database
- * @returns Array of all users
- */
-export const getAllUsers = async (): Promise<SupabaseUser[]> => {
-    if (!supabase) {
-        return [];
-    }
-
-    try {
-        const { data, error } = await supabase
-            .from('users')
-            .select('*')
-            .order('last_seen', { ascending: false });
-
-        if (error) {
-            Logger.error('[Supabase] Failed to get all users:', error);
-            return [];
-        }
-
-        return (data as SupabaseUser[]) || [];
-    } catch (error) {
-        Logger.error('[Supabase] Failed to get all users:', error);
-        return [];
-    }
-};
-
-/**
- * Subscribe to real-time changes in users table
- * @param callback - Function to call when users change
- * @returns Unsubscribe function
- */
-export const subscribeToUsersChanges = (
-    callback: (users: SupabaseUser[]) => void
-): (() => void) | null => {
-    if (!supabase) {
-        return null;
-    }
-
-    // Get initial users
-    getAllUsers().then(callback);
-
-    // Subscribe to all changes on the users table
-    const channel = supabase
-        .channel('users-all-changes')
-        .on(
-            'postgres_changes',
-            {
-                event: '*',
-                schema: 'public',
-                table: 'users',
-            },
-            async () => {
-                const users = await getAllUsers();
-                callback(users);
-            }
-        )
-        .subscribe();
-
-    // Return unsubscribe function
-    return () => {
-        channel.unsubscribe();
-    };
-};
-
-/**
  * Get the total count of users from the database
  * @returns Total user count
  */
@@ -463,44 +398,6 @@ export const getTotalUsersCount = async (): Promise<number> => {
         Logger.error('[Supabase] Failed to get total users count:', error);
         return 0;
     }
-};
-
-/**
- * Subscribe to real-time changes in total users count
- * @param callback - Function to call when count changes
- * @returns Unsubscribe function
- */
-export const subscribeToTotalUsers = (
-    callback: (count: number) => void
-): (() => void) | null => {
-    if (!supabase) {
-        return null;
-    }
-
-    // Get initial count
-    getTotalUsersCount().then(callback);
-
-    // Subscribe to inserts on the users table
-    const channel = supabase
-        .channel('users-changes')
-        .on(
-            'postgres_changes',
-            {
-                event: 'INSERT',
-                schema: 'public',
-                table: 'users',
-            },
-            async () => {
-                const count = await getTotalUsersCount();
-                callback(count);
-            }
-        )
-        .subscribe();
-
-    // Return unsubscribe function
-    return () => {
-        channel.unsubscribe();
-    };
 };
 
 // ---------------------------------------------------------------------------
@@ -1070,163 +967,6 @@ export const isStripeSubscriber = async (userId: string): Promise<boolean> => {
     }
 };
 
-/**
- * Get global stats (sum of all users)
- * @returns Global stats
- */
-export const getGlobalStats = async (): Promise<GlobalStats> => {
-    if (!supabase) {
-        return {
-            total_channel_points: 0,
-            total_hours_watched: 0,
-            total_messages_sent: 0,
-            total_streams_watched: 0
-        };
-    }
-
-    try {
-        const { data, error } = await supabase
-            .from('user_stats')
-            .select('channel_points_farmed, hours_watched, messages_sent, streams_watched');
-
-        if (error) {
-            Logger.error('[Supabase] Failed to get global stats:', error);
-            return {
-                total_channel_points: 0,
-                total_hours_watched: 0,
-                total_messages_sent: 0,
-                total_streams_watched: 0
-            };
-        }
-
-        // Sum up all stats
-        const stats = (data || []).reduce((acc, row) => ({
-            total_channel_points: acc.total_channel_points + (row.channel_points_farmed || 0),
-            total_hours_watched: acc.total_hours_watched + (row.hours_watched || 0),
-            total_messages_sent: acc.total_messages_sent + (row.messages_sent || 0),
-            total_streams_watched: acc.total_streams_watched + (row.streams_watched || 0)
-        }), {
-            total_channel_points: 0,
-            total_hours_watched: 0,
-            total_messages_sent: 0,
-            total_streams_watched: 0
-        });
-
-        return stats;
-    } catch (error) {
-        Logger.error('[Supabase] Failed to get global stats:', error);
-        return {
-            total_channel_points: 0,
-            total_hours_watched: 0,
-            total_messages_sent: 0,
-            total_streams_watched: 0
-        };
-    }
-};
-
-/**
- * Get all users with their stats
- * @returns Array of users with stats
- */
-export const getAllUsersWithStats = async (): Promise<UserWithStats[]> => {
-    if (!supabase) {
-        return [];
-    }
-
-    try {
-        // Get all users
-        const { data: users, error: usersError } = await supabase
-            .from('users')
-            .select('*')
-            .order('last_seen', { ascending: false });
-
-        if (usersError) {
-            Logger.error('[Supabase] Failed to get users:', usersError);
-            return [];
-        }
-
-        // Get all stats
-        const { data: stats, error: statsError } = await supabase
-            .from('user_stats')
-            .select('*');
-
-        if (statsError && statsError.code !== 'PGRST116') {
-            Logger.error('[Supabase] Failed to get stats:', statsError);
-        }
-
-        // Create a map of stats by user_id
-        const statsMap = new Map<string, UserStats>();
-        (stats || []).forEach((stat: UserStats) => {
-            statsMap.set(stat.user_id, stat);
-        });
-
-        // Combine users with stats
-        const usersWithStats: UserWithStats[] = (users || []).map((user: SupabaseUser) => ({
-            ...user,
-            stats: statsMap.get(user.id)
-        }));
-
-        return usersWithStats;
-    } catch (error) {
-        Logger.error('[Supabase] Failed to get users with stats:', error);
-        return [];
-    }
-};
-
-/**
- * Subscribe to real-time changes in user stats
- * @param callback - Function to call when stats change
- * @returns Unsubscribe function
- */
-export const subscribeToStatsChanges = (
-    callback: (users: UserWithStats[], globalStats: GlobalStats) => void
-): (() => void) | null => {
-    if (!supabase) {
-        return null;
-    }
-
-    // Get initial data
-    const fetchData = async () => {
-        const users = await getAllUsersWithStats();
-        const globalStats = await getGlobalStats();
-        callback(users, globalStats);
-    };
-
-    fetchData();
-
-    // Subscribe to changes on both tables
-    const channel = supabase
-        .channel('stats-changes')
-        .on(
-            'postgres_changes',
-            {
-                event: '*',
-                schema: 'public',
-                table: 'user_stats',
-            },
-            async () => {
-                await fetchData();
-            }
-        )
-        .on(
-            'postgres_changes',
-            {
-                event: '*',
-                schema: 'public',
-                table: 'users',
-            },
-            async () => {
-                await fetchData();
-            }
-        )
-        .subscribe();
-
-    // Return unsubscribe function
-    return () => {
-        channel.unsubscribe();
-    };
-};
-
 // ============================================================================
 // StreamNook user registry (P2P badge)
 // ============================================================================
@@ -1615,14 +1355,10 @@ export default {
     subscribeToOnlinePresence,
     isPresenceReady,
     getTotalUsersCount,
-    subscribeToTotalUsers,
     incrementStat,
     getLastWriteIssue,
     subscribeToWriteIssues,
     getUserStats,
-    getGlobalStats,
-    getAllUsersWithStats,
-    subscribeToStatsChanges,
     subscribeToStreamNookRegistry,
     isStreamNookUser,
     getStreamNookUserNumber,

@@ -306,6 +306,35 @@ export function refreshAtmosphere(userId: string, atmosphereId: string | null) {
   pushAtmosphere(userId, atmosphereId);
 }
 
+// The tracked-user map is a session-long singleton shared by every chat surface
+// (main app + each MultiChat pane), and clearUsers only fires on channel switch.
+// Without a cap it accumulated every chatter ever seen (tens of MB of paint/badge
+// data over an evening). The cap sits far above any rendered message buffer (the
+// per-channel message cap tops out at ~1150), so the least-recently-seen users
+// evicted here have long since scrolled out of view across every surface; if one
+// speaks again they are simply re-added (a cheap cosmetics re-resolve).
+const MAX_TRACKED_USERS = 8000;
+const USER_EVICT_SLACK = 1000;
+
+function evictStaleUsers(
+  users: Map<string, ChatUser>,
+  usernameToId: Map<string, string>,
+): void {
+  if (users.size <= MAX_TRACKED_USERS + USER_EVICT_SLACK) return;
+  // Sweep in batches (only when over cap + slack) so the O(n log n) sort is
+  // amortized across many inserts rather than run on every new chatter.
+  const sorted = Array.from(users.values()).sort((a, b) => a.lastSeen - b.lastSeen);
+  const removeCount = users.size - MAX_TRACKED_USERS;
+  for (let i = 0; i < removeCount; i++) {
+    const victim = sorted[i];
+    users.delete(victim.userId);
+    const unameKey = victim.username.toLowerCase();
+    if (usernameToId.get(unameKey) === victim.userId) {
+      usernameToId.delete(unameKey);
+    }
+  }
+}
+
 export const useChatUserStore = create<ChatUserStore>((set, get) => ({
   users: new Map(),
   usernameToId: new Map(),
@@ -347,6 +376,8 @@ export const useChatUserStore = create<ChatUserStore>((set, get) => ({
         atmosphereId: existingUser?.atmosphereId,
       });
       newUsernameToId.set(user.username.toLowerCase(), user.userId);
+      // First-sight is the only path that grows the map, so cap it here.
+      evictStaleUsers(newUsers, newUsernameToId);
       return { users: newUsers, usernameToId: newUsernameToId };
     });
 

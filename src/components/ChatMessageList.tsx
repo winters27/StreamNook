@@ -4,6 +4,56 @@ import { EmoteSet } from '../services/emoteService';
 import { BackendChatMessage } from '../services/twitchChat';
 import { ModerationContext } from '../hooks/useTwitchChat';
 import { useAppStore } from '../stores/AppStore';
+import { useChatUserStore } from '../stores/chatUserStore';
+
+/**
+ * Per-row wrapper carrying the native-virtualization styles, with one
+ * exception: a row whose sender has an animated Atmosphere opts OUT of
+ * `content-visibility: auto`.
+ *
+ * Atmosphere members render a perpetually-composited aurora layer behind their
+ * message (`.sn-aurora-*` in globals.css — an infinite `transform` animation
+ * with `will-change`). Under `content-visibility: auto`, WebView2/Chromium
+ * fails to invalidate that composited layer as the row scrolls, stranding a
+ * stale paint ghost of the entire row. A fresh ghost is left behind with every
+ * new message that scrolls the row upward, so a single message ends up looking
+ * like it was sent many times over. Painting these (few) rows normally lets the
+ * compositor track their scroll correctly. Plain rows have no composited layer,
+ * never ghost, and keep full virtualization.
+ */
+const MessageRow = function MessageRow({
+  messageId,
+  userId,
+  isModFocus,
+  intrinsicSizeCSS,
+  children,
+}: {
+  messageId: string | null;
+  userId: string | undefined;
+  isModFocus: boolean;
+  intrinsicSizeCSS: string;
+  children: React.ReactNode;
+}) {
+  const hasAtmosphere = useChatUserStore((s) =>
+    userId ? !!s.users.get(userId)?.atmosphereId : false,
+  );
+  return (
+    <div
+      data-message-id={messageId || undefined}
+      className={`chat-message-row${isModFocus ? ' is-mod-focus' : ''}`}
+      style={{
+        // Native virtualization for normal rows; atmosphere rows paint always
+        // to dodge the content-visibility compositing-ghost bug (see above).
+        contentVisibility: hasAtmosphere ? 'visible' : 'auto',
+        // Off-screen size hint, computed per-user from font size, spacing, and
+        // whether timestamps are on. Ignored when content-visibility is visible.
+        containIntrinsicBlockSize: hasAtmosphere ? undefined : intrinsicSizeCSS,
+      }}
+    >
+      {children}
+    </div>
+  );
+};
 
 interface ChatMessageListProps {
   messages: (string | BackendChatMessage)[];
@@ -396,6 +446,18 @@ const ChatMessageList = memo(function ChatMessageList({
   const deletedStyle = chatDesign?.deleted_message_style ?? 'strikethrough';
   const hideSharedChat = chatDesign?.hide_shared_chat ?? false;
 
+  // Tracks ids already rendered THIS pass so a duplicate id in the message
+  // array can never produce two children with the same React key. Duplicate
+  // keys break reconciliation: React duplicates/omits the colliding rows and
+  // orphans their DOM on every subsequent render (each new message), which is
+  // both the visual "my message stacked many times" symptom and a steadily
+  // growing memory leak. The store tries hard to dedupe (seenMessageIds), but
+  // own-message reconciliation leaves a gap (a sent message's real id is never
+  // added to seenMessageIds, so a backfill/echo can re-add it). This is the
+  // last-line guarantee that the render layer is always key-safe regardless.
+  // Fresh per render.
+  const renderedIds = new Set<string>();
+
   return (
     <div
       ref={containerRef}
@@ -414,13 +476,28 @@ const ChatMessageList = memo(function ChatMessageList({
       <div ref={contentRef} className="flex flex-col min-h-full justify-end pt-10">
         {messages.map((message, index) => {
           const messageId = getMessageId(message);
-          
+
+          // Render each id at most once. If the array somehow holds a duplicate
+          // (e.g. an own message present both as the stamped optimistic copy and
+          // a backfilled/echoed copy), drop the later one so React never sees a
+          // duplicate key. See renderedIds note above.
+          if (messageId) {
+            if (renderedIds.has(messageId)) return null;
+            renderedIds.add(messageId);
+          }
+
           // /clearmessages — skip rendering entirely for messages snapshotted
           // into the locally-hidden set. Distinct from the deleted/moderated
           // path below, which renders strikethrough chrome.
           if (messageId && hiddenMessageIds?.has(messageId)) {
             return null;
           }
+
+          // Sender user-id — used both for cleared-user moderation context and
+          // for the per-row Atmosphere lookup in MessageRow below.
+          const userId = typeof message !== 'string'
+            ? message.user_id
+            : message.match(/user-id=([^;]+)/)?.[1];
 
           // Check if message is deleted/moderated
           let moderationContext: ModerationContext | null = null;
@@ -429,9 +506,6 @@ const ChatMessageList = memo(function ChatMessageList({
             // Single message deleted by mod
             moderationContext = { type: 'deleted' };
           } else if (messageId) {
-            const userId = typeof message !== 'string'
-              ? message.user_id
-              : message.match(/user-id=([^;]+)/)?.[1];
             if (userId && clearedUserContexts.has(userId)) {
               const entry = clearedUserContexts.get(userId)!;
               if (entry.affectedMessageIds.has(messageId)) {
@@ -460,21 +534,12 @@ const ChatMessageList = memo(function ChatMessageList({
           }
 
           return (
-            <div
+            <MessageRow
               key={messageId || `msg-${index}`}
-              data-message-id={messageId || undefined}
-              className={`chat-message-row${modFocusId && messageId === modFocusId ? ' is-mod-focus' : ''}`}
-              style={{
-                // Native virtualization: browser skips rendering off-screen items
-                contentVisibility: 'auto',
-                // Hint for browser about expected size when not rendered.
-                // Computed per-user from font size, spacing, and whether
-                // timestamps are on — the prior fixed 50px caused visible
-                // layout shifts on every new message when timestamps were
-                // enabled (real height was ~45-50px, close enough to the
-                // placeholder that the FIRST-paint mismatch shimmered).
-                containIntrinsicBlockSize: intrinsicSizeCSS,
-              }}
+              messageId={messageId}
+              userId={userId}
+              isModFocus={!!modFocusId && messageId === modFocusId}
+              intrinsicSizeCSS={intrinsicSizeCSS}
             >
               <ChatMessage
                 message={message}
@@ -491,7 +556,7 @@ const ChatMessageList = memo(function ChatMessageList({
                 isModerator={isModerator}
                 broadcasterId={broadcasterId}
               />
-            </div>
+            </MessageRow>
           );
         })}
       </div>

@@ -9,7 +9,6 @@ fn main() {
 
     // Keys we want to extract from .env or environment variables
     let allowed_keys = vec![
-        "VITE_ADMIN_USER_ID",
         "TWITCH_APP_CLIENT_ID",
         "TWITCH_APP_CLIENT_SECRET",
         "TWITCH_ANDROID_CLIENT_ID",

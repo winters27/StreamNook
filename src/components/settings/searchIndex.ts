@@ -269,6 +269,12 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
   {
     tab: 'Chat',
     section: 'Emotes',
+    title: 'Emote Hover Size',
+    description: 'How large an emote grows in its hover preview. Hover the sample to try the chosen size.'
+  },
+  {
+    tab: 'Chat',
+    section: 'Emotes',
     title: 'Emote Spacing',
     description: 'Horizontal space around emotes. Negative values let them overlap for an inline feel.'
   },

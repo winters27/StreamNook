@@ -119,6 +119,9 @@ export interface ChatDesignSettings {
   show_timestamp_seconds?: boolean; // Include seconds in timestamps
   emote_scale?: number; // Emote size multiplier (0.5x to 3x). Default 1.
   emote_margin?: number; // Horizontal margin around emotes in rem. Negative values overlap. Default 0.125.
+  // Height in pixels of the enlarged emote shown in the hover preview card.
+  // Default 96 (one step up from the original fixed 64px preview).
+  emote_hover_size?: number;
   // How deleted/moderated messages render. 'strikethrough' is the prior
   // default behavior. 'hidden' fully suppresses the row. 'dimmed' reduces
   // opacity without strike. 'keep' leaves the message rendered as if nothing
@@ -137,6 +140,16 @@ export interface ChatDesignSettings {
   // Show an in-chat notice when a channel's 7TV emote set changes live (a mod
   // adds, removes, or renames an emote). Default true.
   seventv_emote_notices?: boolean;
+  // Auto-expand inline preview cards for links from trusted domains (YouTube,
+  // Twitch, imgur, etc.). Other links stay plain clickable links. Default true.
+  link_previews?: boolean;
+  // When a link has a preview card, also keep the inline link visible in the
+  // message ("Card + link"). When false, the inline link is hidden and only the
+  // card is shown ("Clean"). Default false (clean). Ignored when previews are off.
+  link_preview_keep_link?: boolean;
+  // Show links as a compact host + truncated path label instead of the full
+  // raw URL (the full URL stays the click target and hover tooltip). Default true.
+  shorten_links?: boolean;
 }
 
 export interface HighlightPhrase {

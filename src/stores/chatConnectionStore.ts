@@ -260,6 +260,86 @@ function bumpRevision() {
   useChatConnectionStore.setState((state) => ({ revision: state.revision + 1 }));
 }
 
+// --- Coalesced render flush --------------------------------------------------
+//
+// Each incoming chat frame used to call bumpRevision() directly, which is one
+// React render per message. Player and chat share a single webview main thread,
+// and hls.js feeds the video buffer from that same thread (MSE appends are
+// main-thread). At hundreds of messages/sec the per-message render rate pins the
+// thread, starves the buffer appends, and playback stalls (bufferStalledError).
+//
+// Instead, brand-new messages are queued and the array append + render happen
+// once per animation frame, so render rate is bounded by the frame rate no
+// matter how fast chat moves. The video buffer gets the idle gaps it needs.
+//
+// Dedup (seenMessageIds) and the in-place reconciliation paths (own-message echo
+// upgrade, Helix id stamp, moderation) still run synchronously at ingestion;
+// only the array append and the render are deferred. In-place paths call
+// scheduleFlush() (mark the frame dirty); new messages call queueMessage().
+const pendingByChannel = new Map<string, any[]>();
+let flushScheduled = false;
+
+function scheduleFlush(): void {
+  if (flushScheduled) return;
+  flushScheduled = true;
+  const run = () => {
+    flushScheduled = false;
+    flushPending();
+  };
+  // rAF yields to the compositor and media pipeline between batches. rAF is
+  // throttled to a crawl while the window is hidden, so fall back to a timer
+  // there (pending stays bounded by the per-flush cap regardless).
+  if (typeof requestAnimationFrame === 'function' && !(typeof document !== 'undefined' && document.hidden)) {
+    requestAnimationFrame(run);
+  } else {
+    setTimeout(run, 150);
+  }
+}
+
+function flushPending(): void {
+  const state = useChatConnectionStore.getState();
+  for (const [key, queued] of pendingByChannel) {
+    if (queued.length === 0) continue;
+    const slice = state.channels.get(key);
+    if (!slice) continue;
+    const historyMax = getActiveHistoryMax();
+    const limit = slice.isPausedForBuffer ? historyMax + CHAT_BUFFER_SIZE : historyMax;
+    // Coalesce under load: only the last `limit` queued messages can survive the
+    // cap this frame anyway, so drop the older ones before paying to reconcile
+    // rows that would be sliced off the same frame. liveMessageCount still counts
+    // every received message (drives the accurate "N new since paused" badge).
+    const tail = queued.length > limit ? queued.slice(queued.length - limit) : queued;
+    for (const m of tail) slice.messages.push(m);
+    slice.liveMessageCount += queued.length;
+    if (slice.messages.length > limit) {
+      slice.messages = slice.messages.slice(slice.messages.length - limit);
+    }
+  }
+  pendingByChannel.clear();
+  // flushPending only runs when something called scheduleFlush(), so a render is
+  // always warranted (covers both new-message appends and in-place upgrades).
+  bumpRevision();
+}
+
+// Drain any queued messages into their slices immediately, outside the scheduled
+// frame. Used by paths that scan slice.messages and must see just-arrived
+// messages (e.g. a CLEARCHAT computing which messages a ban affects).
+function flushPendingNow(): void {
+  flushPending();
+}
+
+// Queue a brand-new message for the next coalesced flush instead of rendering it
+// immediately. Dedup + reconciliation have already run on the caller's side.
+function queueMessage(channelKey: string, msg: any): void {
+  let q = pendingByChannel.get(channelKey);
+  if (!q) {
+    q = [];
+    pendingByChannel.set(channelKey, q);
+  }
+  q.push(msg);
+  scheduleFlush();
+}
+
 function getSlice(channel: string): ChannelSlice | undefined {
   return useChatConnectionStore.getState().channels.get(channel.toLowerCase());
 }
@@ -634,12 +714,24 @@ async function preloadChannel(channel: string, channelId: string | null): Promis
       // key" warning OR a more subtle bug where the live half is omitted
       // and the chat appears to "stop receiving messages" once it catches
       // up to the historical batch.
+      // Also dedupe against ids ALREADY in the array, not just seenMessageIds.
+      // An own message that was sent (not received) lives in slice.messages
+      // stamped with its real Helix id, but that id is intentionally never added
+      // to seenMessageIds (so a later IRC echo can upgrade it in place). Without
+      // this set, a history backfill that includes your own recent message would
+      // not see it as already-present and would prepend a SECOND copy with the
+      // same id — a duplicate React key that breaks reconciliation and leaks DOM.
+      const existingIds = new Set<string>();
+      for (const m of slice.messages) {
+        const eid = typeof m === 'string' ? m.match(/(?:^|;)id=([^;]+)/)?.[1] : (m as any)?.id;
+        if (eid) existingIds.add(eid);
+      }
       const filtered: any[] = [];
       for (const msg of source) {
         const id =
           typeof msg === 'string' ? msg.match(/(?:^|;)id=([^;]+)/)?.[1] : msg?.id;
         if (id) {
-          if (slice.seenMessageIds.has(id)) continue;
+          if (slice.seenMessageIds.has(id) || existingIds.has(id)) continue;
           slice.seenMessageIds.add(id);
         }
         filtered.push(msg);
@@ -777,6 +869,9 @@ function handleWsMessage(raw: string) {
         return;
       }
       if (parsed.type === 'CLEARCHAT') {
+        // Drain queued messages first so the affected-message scan below sees
+        // anything that arrived in the current (not-yet-flushed) frame.
+        flushPendingNow();
         const ch = (parsed.channel as string | undefined)?.toLowerCase();
         const modSettings = useAppStore.getState().settings.moderation;
         const ignoreClear = modSettings?.ignore_clear_chat ?? false;
@@ -927,7 +1022,6 @@ function handleWsMessage(raw: string) {
         const slice = channels.get(targetChannel);
         if (!slice) return;
         appendStructuredMessage(slice, parsed);
-        bumpRevision();
         return;
       }
     } catch (e) {
@@ -1073,6 +1167,7 @@ function appendStructuredMessage(slice: ChannelSlice, parsed: any) {
   if (idMatchIdx !== -1) {
     slice.messages[idMatchIdx] = parsed;
     slice.seenMessageIds.add(messageId);
+    scheduleFlush();
     return;
   }
 
@@ -1097,11 +1192,18 @@ function appendStructuredMessage(slice: ChannelSlice, parsed: any) {
     if (optimisticIdx !== -1) {
       slice.messages[optimisticIdx] = parsed;
       slice.seenMessageIds.add(messageId);
+      scheduleFlush();
       return;
     }
   }
   slice.seenMessageIds.add(messageId);
-  pushMessage(slice, parsed);
+  // Cap the dedup set on the structured (production) path too. The raw-IRC path
+  // already caps; without this, seenMessageIds grew unbounded until channel
+  // release (~1.5 MB/hr in a busy chat).
+  if (slice.seenMessageIds.size > CHAT_MAX_WITH_BUFFER) {
+    slice.seenMessageIds = new Set(Array.from(slice.seenMessageIds).slice(-CHAT_MAX_WITH_BUFFER));
+  }
+  queueMessage(slice.channel, parsed);
 
   // Active /nuke future-window check. No-op if no nukes are armed for this
   // channel. Fire-and-forget; nuke action errors are logged inside the engine.
@@ -1158,7 +1260,7 @@ function handleRawIrcString(raw: string) {
     if (idMatchIdx !== -1) {
       slice.messages[idMatchIdx] = raw;
       slice.seenMessageIds.add(messageId);
-      bumpRevision();
+      scheduleFlush();
       return;
     }
   }
@@ -1182,17 +1284,16 @@ function handleRawIrcString(raw: string) {
       if (optimisticIdx !== -1) {
         slice.messages[optimisticIdx] = raw;
         if (messageId) slice.seenMessageIds.add(messageId);
-        bumpRevision();
+        scheduleFlush();
         return;
       }
     }
-    // Primary with no matching optimistic: push once here (prior behavior, e.g.
+    // Primary with no matching optimistic: queue once here (prior behavior, e.g.
     // a message the user sent from another device). Secondaries fall through to
-    // the generic id-deduped push below so they still appear exactly once.
+    // the generic id-deduped queue below so they still appear exactly once.
     if (userId === currentUserId) {
       if (messageId) slice.seenMessageIds.add(messageId);
-      pushMessage(slice, raw);
-      bumpRevision();
+      queueMessage(slice.channel, raw);
       return;
     }
   }
@@ -1203,11 +1304,9 @@ function handleRawIrcString(raw: string) {
     if (slice.seenMessageIds.size > CHAT_MAX_WITH_BUFFER) {
       slice.seenMessageIds = new Set(Array.from(slice.seenMessageIds).slice(-CHAT_MAX_WITH_BUFFER));
     }
-    pushMessage(slice, raw);
-    bumpRevision();
+    queueMessage(slice.channel, raw);
   } else {
-    pushMessage(slice, raw);
-    bumpRevision();
+    queueMessage(slice.channel, raw);
   }
 }
 
@@ -1280,6 +1379,13 @@ export async function releaseChannel(channel: string): Promise<void> {
   // sibling MultiChat popouts) may still be using it. Tearing down here
   // would kill chat for every other consumer in the process.
   removeSlice(key);
+  // Free per-channel state the slice didn't own: the pending flush queue and the
+  // resolved emote set (1 to 3 MB of metadata that otherwise stayed pinned for
+  // the whole session after the last consumer left). emoteSubscribers is left to
+  // its component-driven unsubscribe lifecycle.
+  pendingByChannel.delete(key);
+  emoteCache.delete(key);
+  inflightEmoteFetches.delete(key);
   try {
     await invoke('leave_chat_channel', { channel: key });
   } catch (err) {

@@ -950,6 +950,11 @@ const VideoPlayer = () => {
 
     const video = videoElement;
 
+    // Deferred-recreate timeout id for the stream-swap path. Held in an
+    // effect-scoped variable (not a partial early-return cleanup) so the SINGLE
+    // cleanup below always tears everything down — including the rAF loop above.
+    let recreateTimeoutId: ReturnType<typeof setTimeout> | null = null;
+
     // If HLS instance already exists, fully destroy it before creating new one
     // HLS.js doesn't handle reusing instances well after detach/attach cycles
     if (hlsRef.current) {
@@ -980,18 +985,18 @@ const VideoPlayer = () => {
 
       // Small delay to ensure video element is fully reset before loading new stream
       // This prevents corrupted TS packets from old stream mixing with new stream
-      const timeoutId = setTimeout(() => {
+      recreateTimeoutId = setTimeout(() => {
         createPlayer();
       }, 100);
-
-      return () => clearTimeout(timeoutId);
+    } else {
+      // Create the HLS player (fresh instance for initial load)
+      createPlayer();
     }
-
-    // Create the HLS player (fresh instance for initial load)
-    createPlayer();
 
     // Cleanup
     return () => {
+      // Clear a pending deferred-recreate so createPlayer can't fire after teardown
+      if (recreateTimeoutId) clearTimeout(recreateTimeoutId);
       // Cancel progress update animation frame
       if (progressUpdateIntervalRef.current) {
         cancelAnimationFrame(progressUpdateIntervalRef.current);

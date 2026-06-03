@@ -1094,6 +1094,17 @@ export const useAppStore = create<AppState>((set, get) => ({
         } catch (e) {
           Logger.warn('Could not disconnect EventSub:', e);
         }
+
+        // Drop the per-chatter store (mention list + each talker's paint/badge
+        // data). It is otherwise only cleared on a channel SWITCH, so a plain
+        // exit left every user from the last channel resident. Releasing it here
+        // means a full exit actually frees that reference.
+        try {
+          const { useChatUserStore } = await import('./chatUserStore');
+          useChatUserStore.getState().clearUsers();
+        } catch (e) {
+          Logger.warn('Could not clear chat user store on stop:', e);
+        }
       }
 
       set({ streamUrl: null, activeQuality: null, availableQualities: [], adSource: null, currentStream: null, currentMediaType: null, currentHypeTrain: null, streamOriginCategory: null });

@@ -201,17 +201,21 @@ const EmoteGridItem = memo(({ emote, isFavorited, onInsert, onToggleFavorite }: 
   onToggleFavorite: () => void;
 }) => {
   const is7tv = emote.provider === '7tv';
+  // Same user-configurable hover-preview height used by inline chat emotes, so
+  // the picker's hover card matches what you see in chat. Defaults to 96px.
+  const hoverPreviewSize = useAppStore((s) => s.settings.chat_design?.emote_hover_size) ?? 96;
 
   return (
-    <Tooltip 
-      side="top" 
+    <Tooltip
+      side="top"
       delay={200}
       content={
         <div className="flex flex-col items-center gap-1.5 py-0.5">
           <img
             src={emote.provider === '7tv' ? `https://cdn.7tv.app/emote/${emote.id}/4x.avif` : (emote.localUrl || emote.url)}
             alt={emote.name}
-            className="h-16 w-auto max-w-[96px] object-contain mx-auto drop-shadow-md"
+            className="w-auto object-contain mx-auto drop-shadow-md"
+            style={{ height: hoverPreviewSize, maxWidth: hoverPreviewSize * 2 }}
             onError={(e) => {
               if (emote.provider === '7tv') {
                 const target = e.currentTarget;

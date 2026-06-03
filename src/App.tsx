@@ -132,6 +132,12 @@ function App() {
   const isMultiNookActiveRef = useRef(false);
   const multiNookSlotsLengthRef = useRef(0);
   const isAdjustingRef = useRef(false);
+  // True only while a chat-placement change is actively resizing the window.
+  // The aspect-ratio settle effect and the resize listener both bail when this
+  // is set, so the placement handler's video-preserving resize is the sole
+  // authority during the transition instead of racing two other resizers that
+  // use a non-preserving formula and collapse the window toward its minimum.
+  const placementResizeInProgressRef = useRef(false);
   // When the current channel's chat is owned by a MultiChat popout, main's
   // chat panel JSX is gone — the video player container expands to fill the
   // freed width, but stays 16:9 so the user sees side black bars. The
@@ -171,6 +177,10 @@ function App() {
       }
 
       if (lockEnabled && (currentStreamUrl || currentIsMultiNookActive)) {
+        // Claim the resize lock for this whole transition so the aspect-ratio
+        // settle effect and the window resize listener stand down instead of
+        // firing their own non-preserving resize and fighting this one.
+        placementResizeInProgressRef.current = true;
         try {
           const window = getCurrentWindow();
 
@@ -240,6 +250,8 @@ function App() {
           }
         } catch (error) {
           Logger.error('[ChatSize] Failed to resize window:', error);
+        } finally {
+          placementResizeInProgressRef.current = false;
         }
       }
 
@@ -940,8 +952,10 @@ function App() {
       // Don't adjust if in theater mode - theater mode handles its own sizing
       if (theaterMode || !lockEnabled || (!currentStreamUrl && !currentIsMultiNookActive)) return;
 
-      // Prevent re-entrant calls
-      if (isAdjustingRef.current) return;
+      // Prevent re-entrant calls, and stand down while a placement change is
+      // mid-resize. That handler preserves the video dimensions; running the
+      // lock formula here against a half-applied window size shrinks it.
+      if (isAdjustingRef.current || placementResizeInProgressRef.current) return;
       isAdjustingRef.current = true;
 
       try {
@@ -1025,7 +1039,12 @@ function App() {
 
     // Initial adjustment when settings change
     adjustWindowForAspectRatio();
-  }, [settings.video_player?.lock_aspect_ratio, chatSize, chatPlacement, streamUrl, isTheaterMode, isMultiNookActive, visibleSlotsLength, activeChatChannelInPopout]);
+    // Placement changes are handled by the dedicated placement effect above
+    // (which preserves video dimensions). This effect only reacts to chat-drag
+    // resizes and lock/stream/layout changes, so chatPlacement is not a dep —
+    // adding it here made this effect fire its shrinking formula on every
+    // placement toggle and fight the placement handler.
+  }, [settings.video_player?.lock_aspect_ratio, chatSize, streamUrl, isTheaterMode, isMultiNookActive, visibleSlotsLength, activeChatChannelInPopout]);
 
   // Separate effect for the resize listener - only set up once and use refs
   useEffect(() => {
@@ -1045,7 +1064,7 @@ function App() {
       const multiNookCount = multiNookSlotsLengthRef.current;
 
       if (theaterMode || !lockEnabled || (!currentStreamUrl && !currentIsMultiNookActive)) return;
-      if (isAdjustingRef.current) return;
+      if (isAdjustingRef.current || placementResizeInProgressRef.current) return;
       isAdjustingRef.current = true;
 
       try {
@@ -1398,11 +1417,18 @@ function App() {
                       chat panel entirely (no duplicate chat across windows). */}
                   {chatPlacement !== 'hidden' && (currentMediaType === 'live' || currentMediaType === 'offline_chat' || isMultiNookActive) && !activeChatChannelInPopout && (
                     <motion.div
-                      initial={{ opacity: 0, width: chatPlacement === 'right' ? 0 : undefined, height: chatPlacement === 'bottom' ? 0 : undefined }}
-                      animate={{ 
-                        opacity: (isMultiNookActive && isChatHidden) ? 0 : 1, 
-                        width: chatPlacement === 'right' ? ((isMultiNookActive && isChatHidden) ? 0 : 'auto') : undefined, 
-                        height: chatPlacement === 'bottom' ? ((isMultiNookActive && isChatHidden) ? 0 : 'auto') : undefined 
+                      // The panel opens along ONE axis (width when docked right,
+                      // height when docked bottom) and must fill the other. Drive
+                      // BOTH axes: if the fill axis is left undefined, Framer keeps
+                      // the inline size it wrote while the panel was on the other
+                      // edge, so after a bottom→right switch the panel stays stuck
+                      // at its old height and never refills the column. Pinning the
+                      // fill axis to '100%' forces it back to the container size.
+                      initial={{ opacity: 0, width: chatPlacement === 'right' ? 0 : '100%', height: chatPlacement === 'bottom' ? 0 : '100%' }}
+                      animate={{
+                        opacity: (isMultiNookActive && isChatHidden) ? 0 : 1,
+                        width: chatPlacement === 'right' ? ((isMultiNookActive && isChatHidden) ? 0 : 'auto') : '100%',
+                        height: chatPlacement === 'bottom' ? ((isMultiNookActive && isChatHidden) ? 0 : 'auto') : '100%'
                       }}
                       transition={{ type: "spring", stiffness: 350, damping: 25 }}
                       className={`flex ${chatPlacement === 'bottom' ? 'flex-col' : 'flex-row'} flex-shrink-0`}

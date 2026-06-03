@@ -22,6 +22,7 @@ pub mod hype_train;
 pub mod identity;
 pub mod justlog;
 pub mod layout;
+pub mod link_preview;
 pub mod logs;
 pub mod mod_log_storage;
 pub mod multi_nook;

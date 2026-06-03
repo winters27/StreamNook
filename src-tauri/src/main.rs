@@ -30,10 +30,11 @@ use commands::{
     accounts::*, announcements::*, app::*, automation::*, badge_metadata::*, badge_service::*,
     badges::*, cache::*, channel_panels::*, chat::*, chat_identity::*, components::*,
     cosmetics_cache::*, diagnostic_logging::*, discord::*, drops::*, emoji::*, emotes::*,
-    eventsub::*, hype_train::*, identity::*, justlog::*, layout::*, logs::*, mod_log_storage::*,
-    multi_nook::*, profile_cache::*, proxy_health::*, resub::*, screen_capture::*, settings::*,
-    seventv::*, seventv_cosmetics::*, seventv_cosmetics_fetch::*, streaming::*, subscriptions::*,
-    twitch::*, universal_cache::*, user_profile::*, watch_streak::*, whisper_storage::*,
+    eventsub::*, hype_train::*, identity::*, justlog::*, layout::*, link_preview::*, logs::*,
+    mod_log_storage::*, multi_nook::*, profile_cache::*, proxy_health::*, resub::*,
+    screen_capture::*, settings::*, seventv::*, seventv_cosmetics::*, seventv_cosmetics_fetch::*,
+    streaming::*, subscriptions::*, twitch::*, universal_cache::*, user_profile::*,
+    watch_streak::*, whisper_storage::*,
 };
 use log::{debug, error};
 use models::settings::{AppState, Settings};
@@ -284,8 +285,7 @@ fn main() {
                 badge_polling_service.start(badge_app_handle, app_state_for_live_notif).await;
             });
 
-            // Verify token health on startup and auto-start dashboard for admins
-            let admin_app_handle = app_handle.clone();
+            // Verify token health on startup
             tauri::async_runtime::spawn(async move {
                 use services::twitch_service::TwitchService;
 
@@ -310,21 +310,6 @@ fn main() {
                             // the user later signs in as a different account. Best-effort.
                             if let Some(uid) = status.user_id.as_deref() {
                                 services::account_store::AccountStore::reconcile_primary(uid).await;
-                            }
-
-                            // Auto-start analytics dashboard for admin users
-                            debug!("[Main] Checking if user is admin for dashboard auto-start...");
-                            match auto_start_dashboard_for_admin(admin_app_handle).await {
-                                Ok(started) => {
-                                    if started {
-                                        debug!("[Main] ✅ Analytics dashboard auto-started for admin user");
-                                    } else {
-                                        debug!("[Main] Dashboard not auto-started (not admin or not available)");
-                                    }
-                                }
-                                Err(e) => {
-                                    debug!("[Main] Failed to auto-start dashboard: {}", e);
-                                }
                             }
                         } else {
                             debug!(
@@ -446,12 +431,6 @@ fn main() {
             calculate_aspect_ratio_size,
             calculate_aspect_ratio_size_preserve_video,
             get_system_info,
-            start_analytics_dashboard,
-            is_dev_environment,
-            is_admin_user,
-            check_dashboard_available,
-            is_dashboard_running,
-            auto_start_dashboard_for_admin,
             get_emoji_image,
             read_clipboard_text_native,
             // Twitch commands
@@ -593,6 +572,8 @@ fn main() {
             get_discovered_bttv_pro_badges,
             // Badge Metadata commands
             fetch_badge_metadata,
+            // Link preview commands
+            fetch_link_preview,
             // Cache commands
             save_emote_by_id,
             load_emote_by_id,
