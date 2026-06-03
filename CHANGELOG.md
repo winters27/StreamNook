@@ -1,3 +1,19 @@
+## [7.7.0] - 2026-06-02
+## 🚀 Native Streaming is Here
+> StreamNook now directly plays Twitch streams without needing Streamlink or the TTVLOL plugin. Enjoy faster startup times, a smaller app footprint, and more reliable ad-free viewing, all handled seamlessly within the app. This is a foundational rewrite of how StreamNook connects to Twitch.
+
+---
+
+### ✨ Features
+- **Native Stream Playback**: Faster startup, reduced memory usage, and a completely self-contained app. No more external installations or troubleshooting for Streamlink.
+- **Proactive Ad-Block Pivoting**: If an ad-block proxy region starts leaking ads, StreamNook will automatically switch to a different, healthy region and reload the stream, ensuring continuous ad-free viewing.
+- **Intelligent Drops Mining**: The automated drops miner now intelligently tracks your closest-to-completion drop in the current game, ensuring you always see the most relevant progress.
+- **Robust Mining Recovery**: The drops miner can now detect if a streamer goes offline, switches games, or if your progress stalls. It will automatically switch to another eligible channel or temporarily blacklist problematic streamers, preventing wasted watch time.
+- **View Your Subscriptions**: New section to see your active and past Twitch channel subscriptions.
+
+### 🔧 Maintenance
+- **Smaller App, Faster Updates**: The app bundle size has been significantly reduced, making downloads faster and updates more reliable. Existing users will also see disk space reclaimed from old bundled components.
+
 ## [7.6.1] - 2026-05-31
 ## ✨ Revamped: Account Switching & Identity Management
 > Now you can effortlessly switch between your Twitch accounts directly within StreamNook! Manage which account you watch and stream as, and easily switch the identity you send chat messages from. Each account now has its own isolated web session, ensuring your Twitch logins and subscriptions always happen from the correct account.
@@ -1381,4 +1397,5 @@ ATTENTION: ALL USERS LOG OUT OF TWITCH THEN LOG BACK IN FOR SOME CHANGES OT TAKE
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 

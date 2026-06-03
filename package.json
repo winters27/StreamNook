@@ -1,6 +1,6 @@
 {
   "name": "streamnook",
-  "version": "7.6.1",
+  "version": "7.7.0",
   "private": true,
   "scripts": {
     "dev": "vite",
