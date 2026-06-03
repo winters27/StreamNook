@@ -14,39 +14,7 @@ import { registerPlayerControls, type PlayerControls } from '../keybindings';
 import { qualitiesEquivalent } from '../utils/quality';
 
 import { Logger } from '../utils/logger';
-
-let restoreMaximizedAfterFullscreen = false;
-const syncTauriWindowFullscreen = async (entering: boolean) => {
-  try {
-    const { getCurrentWindow, currentMonitor, PhysicalPosition } = await import('@tauri-apps/api/window');
-    const win = getCurrentWindow();
-    if (entering) {
-      // Win32 quirk: setting fullscreen while WS_MAXIMIZE is set leaves
-      // the maximized chrome/taskbar visible. Unmaximize first.
-      restoreMaximizedAfterFullscreen = await win.isMaximized();
-      if (restoreMaximizedAfterFullscreen) {
-        await win.unmaximize();
-      }
-      await win.setFullscreen(true);
-    } else {
-      await win.setFullscreen(false);
-      if (restoreMaximizedAfterFullscreen) {
-        // After repeated fullscreen→exit cycles, Win32's saved restore
-        // placement can drift, leaving the next maximize() bound to the
-        // wrong rect (window ends up partially off-screen). Anchor to the
-        // current monitor's origin first so maximize() snaps to its work area.
-        const monitor = await currentMonitor();
-        if (monitor) {
-          await win.setPosition(new PhysicalPosition(monitor.position.x, monitor.position.y));
-        }
-        await win.maximize();
-        restoreMaximizedAfterFullscreen = false;
-      }
-    }
-  } catch (err) {
-    Logger.error('[Fullscreen] Failed to sync Tauri window:', err);
-  }
-};
+import { syncTauriWindowFullscreen } from '../utils/windowFullscreen';
 
 const VideoPlayer = () => {
   const videoRef = useRef<HTMLVideoElement>(null);

@@ -160,6 +160,21 @@ async function recordSubscriberPayment(
   paymentId: string,
   paidAt: string,
 ): Promise<number | null> {
+  // Idempotency guard: invoice.paid AND invoice.payment_succeeded BOTH fire for
+  // the same paid invoice (and both route here), with distinct event ids, so
+  // the outer event-id dedup doesn't catch them. The RPC does an unconditional
+  // +1, so guard here on the payment id (the invoice id) to count each invoice
+  // exactly once even when both events are registered or Stripe retries.
+  const { data: existing } = await supabase
+    .from("user_subscriber_state")
+    .select("last_payment_id")
+    .eq("twitch_user_id", twitchUserId)
+    .maybeSingle();
+  if ((existing?.last_payment_id as string | undefined) === paymentId) {
+    log("subscriber payment already counted, skipping", { twitchUserId, paymentId });
+    return null;
+  }
+
   const { data, error } = await supabase.rpc("record_subscriber_payment", {
     p_user_id: twitchUserId,
     p_payment_id: paymentId,
@@ -387,7 +402,10 @@ async function handleInvoicePaid(event: StripeEvent): Promise<void> {
   const paidAt = typeof paidAtRaw === "number"
     ? new Date(paidAtRaw * 1000).toISOString()
     : new Date().toISOString();
-  await recordSubscriberPayment(twitchUserId, event.id, paidAt);
+  // Key the months bump on the INVOICE id (not the event id) so invoice.paid
+  // and invoice.payment_succeeded for the same invoice count once, not twice.
+  const monthsPaymentId = (invoice.id as string | null) ?? event.id;
+  await recordSubscriberPayment(twitchUserId, monthsPaymentId, paidAt);
 
   if (customerId) await upsertCustomerLookup(twitchUserId, customerId);
 

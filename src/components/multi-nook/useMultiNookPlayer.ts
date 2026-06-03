@@ -5,6 +5,7 @@ import 'plyr/dist/plyr.css';
 import { usemultiNookStore } from '../../stores/multiNookStore';
 import { useAppStore } from '../../stores/AppStore';
 import { Logger } from '../../utils/logger';
+import { syncTauriWindowFullscreen } from '../../utils/windowFullscreen';
 import { multiNookHlsRegistry } from './useMultiNookSync';
 
 interface UseMultiNookPlayerProps {
@@ -215,8 +216,15 @@ export const useMultiNookPlayer = ({
             autoplay: false, // Wait for buffer gate
             muted: muted,
             clickToPlay: false, // Disabled so we can capture clicks for focus
+            // Force Plyr's CSS-only fullscreen and bridge it to the Tauri window's
+            // true OS fullscreen (see syncTauriWindowFullscreen). Without this a
+            // tile's fullscreen only fills the borderless window up to the taskbar.
+            fullscreen: { enabled: true, fallback: 'force', iosNative: false },
             storage: { enabled: false }
           });
+
+          playerRef.current.on('enterfullscreen', () => syncTauriWindowFullscreen(true));
+          playerRef.current.on('exitfullscreen', () => syncTauriWindowFullscreen(false));
 
           // Override duration for live stream progress bar
           Object.defineProperty(video, 'duration', {
@@ -347,9 +355,16 @@ export const useMultiNookPlayer = ({
             autoplay: false,
             muted: muted,
             clickToPlay: false, // Disabled so we can capture clicks for focus
+            // Force Plyr's CSS-only fullscreen and bridge it to the Tauri window's
+            // true OS fullscreen (see syncTauriWindowFullscreen). Without this a
+            // tile's fullscreen only fills the borderless window up to the taskbar.
+            fullscreen: { enabled: true, fallback: 'force', iosNative: false },
             storage: { enabled: false }
           });
-          
+
+          playerRef.current.on('enterfullscreen', () => syncTauriWindowFullscreen(true));
+          playerRef.current.on('exitfullscreen', () => syncTauriWindowFullscreen(false));
+
           Object.defineProperty(video, 'duration', {
             get: function () {
               const buffered = this.buffered;

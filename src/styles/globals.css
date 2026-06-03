@@ -1257,19 +1257,6 @@ body {
   background: #000;
 }
 
-/* A 16:9 picture in a player box that isn't exactly 16:9 lands ~1px short on the
-   left/right — object-fit: contain shape-locks the picture, and the uncovered
-   sliver is painted black by the hardware video overlay (so CSS background color
-   can't hide it). The controls bar is NOT shape-locked, which is why on hover it
-   fills the full width while the picture doesn't. A tiny overscan pushes the
-   picture's edges just past the frame so it fills edge-to-edge; the wrapper's
-   overflow:hidden clips the ~0.2% excess. Bounded on purpose: it closes a thin
-   hairline without cropping genuinely off-aspect media to force a fill. Scale is
-   tunable — raise it slightly if any hairline survives at a given window size. */
-.video-player-container .plyr video {
-  transform: scale(1.002);
-}
-
 /* Control bar styling */
 .video-player-container .plyr__controls {
   background: rgba(0, 0, 0, 0.7);
@@ -1525,6 +1512,27 @@ body {
 /* Fullscreen */
 .video-player-container .plyr--fullscreen-enabled {
   background: #000;
+}
+
+/* MultiNook tiles pin their .plyr to the cell with [&_.plyr]:absolute and live
+   inside a transformed (Framer Motion) cell. Both defeat Plyr's CSS fullscreen:
+   the higher-specificity absolute wins over Plyr's own position:fixed, and the
+   cell's transform becomes the containing block for any fixed child. Re-assert
+   full-viewport positioning, and drop the cell's transform while a tile is
+   fullscreen so the fixed Plyr is measured against the screen again. The Tauri
+   bridge then expands the window itself to cover the whole display. Harmless for
+   the single player, whose container has no transform and already lays out this
+   way. */
+.video-player-container .plyr--fullscreen-fallback {
+  position: fixed !important;
+  inset: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  z-index: 10000000 !important;
+}
+
+.video-player-container:has(.plyr--fullscreen-fallback) {
+  transform: none !important;
 }
 
 /* Custom overlay positioning for Plyr fullscreen mode */

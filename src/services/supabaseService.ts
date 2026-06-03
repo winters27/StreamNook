@@ -1039,6 +1039,38 @@ export const setHiddenSections = async (userId: string, sections: string[]): Pro
 };
 
 /**
+ * Whether a member has an active StreamNook subscription, read from the
+ * `stripe_subscriptions` table (the Stripe-backed support flow writes it). A
+ * subscription counts when its latest row's status is 'active' or 'past_due' (the
+ * payment-retry grace window). Requires the table to be SELECT-readable by the
+ * anon key (the same way the cosmetics registry is).
+ */
+export const isStripeSubscriber = async (userId: string): Promise<boolean> => {
+    if (!supabase || !userId) return false;
+    try {
+        const { data, error } = await supabase
+            .from('stripe_subscriptions')
+            .select('status')
+            .eq('twitch_user_id', userId)
+            .order('updated_at', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+        if (error) {
+            Logger.warn('[Supabase] subscriber status read failed:', error.message);
+            return false;
+        }
+        const status = (data as { status?: string } | null)?.status;
+        // Entitled-while-active set mirrors the webhook's grant gate: active +
+        // past_due (payment retrying, keep access during the grace window) +
+        // trialing (no trial is configured today, but stay forward-safe).
+        return status === 'active' || status === 'past_due' || status === 'trialing';
+    } catch (error) {
+        Logger.warn('[Supabase] isStripeSubscriber failed:', error);
+        return false;
+    }
+};
+
+/**
  * Get global stats (sum of all users)
  * @returns Global stats
  */

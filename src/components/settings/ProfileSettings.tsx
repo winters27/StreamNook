@@ -375,9 +375,9 @@ const ProfileSettings = () => {
       .catch(() => {});
   }, [currentUser?.user_id]);
 
-  const selectProfileTheme = (id: string, subscriberOnly: boolean) => {
+  const selectProfileTheme = (id: string, tier: 'free' | 'supporter' | 'subscriber') => {
     if (!currentUser?.user_id) return;
-    if (subscriberOnly && !subscribed) return; // locked until subscribed
+    if (!tierMet(tier)) return; // locked until the required tier is met
     setProfileThemeState(id);
     void setProfileTheme(currentUser.user_id, id);
     // Push the new theme to chat immediately (no Supabase read race) so our own
@@ -764,14 +764,34 @@ const ProfileSettings = () => {
   // what the profile actually shows instead of a generic gray.
   const tierAccent = streamNookUserNumber !== null ? getTierAccent(streamNookUserNumber) : null;
 
+  // Tiered unlocks: supporters ($3 one-time -> owns a paid badge cosmetic) get the
+  // 7TV paint accent unlocks at the supporter tier; the StreamNook Atmospheres at
+  // the subscriber tier. Policy: these are PERMANENT unlocks, NOT recurring-gated.
+  // Owning the subscriber badge (granted on the first paid invoice and never
+  // revoked) is the lasting proof of "ever subscribed", so it keeps the subscriber
+  // tier unlocked for good. `subscribed` (active stripe status) stays only as a
+  // fast path + the dev self-preview override.
+  const isSupporter =
+    ownedCosmeticSlugs.has('streamnook-supporter') || ownedCosmeticSlugs.has('streamnook-subscriber');
+  const everSubscribed = subscribed || ownedCosmeticSlugs.has('streamnook-subscriber');
+  const canPaint = everSubscribed || isSupporter;
+  const canAtmosphere = everSubscribed;
+  const tierMet = (t: 'free' | 'supporter' | 'subscriber') =>
+    t === 'free' ? true : t === 'supporter' ? canPaint : canAtmosphere;
+
   // Base profile-BACKGROUND options: tier (free) + the member's 7TV paint
-  // (subscriber). StreamNook Atmospheres are their OWN cosmetic section (a paid
-  // StreamNook cosmetic that also decorates chat), not lumped in here.
-  const baseThemeOptions: Array<{ id: string; name: string; subscriberOnly: boolean; swatch: CSSProperties }> = [
+  // (supporter). StreamNook Atmospheres are their OWN cosmetic section (subscriber,
+  // also decorates chat), not lumped in here.
+  const baseThemeOptions: Array<{
+    id: string;
+    name: string;
+    tier: 'free' | 'supporter' | 'subscriber';
+    swatch: CSSProperties;
+  }> = [
     {
       id: 'tier',
       name: 'Tier aura',
-      subscriberOnly: false,
+      tier: 'free',
       swatch: tierAccent
         ? {
             backgroundColor: '#0d0e14',
@@ -784,7 +804,7 @@ const ProfileSettings = () => {
           {
             id: 'paint',
             name: '7TV Paint',
-            subscriberOnly: true,
+            tier: 'supporter' as const,
             swatch: ((): CSSProperties => {
               const p = computePaintStyle(seventvPaint as any, '#9146FF');
               return {
@@ -804,7 +824,7 @@ const ProfileSettings = () => {
   // Live preview: the hovered cosmetic (or the active one when nothing hovered).
   const activePreviewId = previewThemeId ?? profileTheme;
   const previewAtm = getAtmosphere(activePreviewId);
-  const previewLocked = (previewAtm !== null || activePreviewId === 'paint') && !subscribed;
+  const previewLocked = previewAtm ? !canAtmosphere : activePreviewId === 'paint' ? !canPaint : false;
   // A fresh random sample line (+ maybe a 7TV emote) each time the previewed
   // cosmetic changes, so the mock chat reads like real, varied chat.
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1309,17 +1329,17 @@ const ProfileSettings = () => {
         <h4 className="text-sm font-semibold text-textPrimary">Profile background</h4>
         <p className="mt-0.5 text-[12px] leading-relaxed text-textSecondary">
           Just your profile background. The tier aura is free; using your equipped 7TV paint is a
-          subscriber perk. A paint only changes the background, not your chat.
+          supporter perk. A paint only changes the background, not your chat.
         </p>
         <div className="mt-3 space-y-2">
           {baseThemeOptions.map((opt) => {
             const selected = profileTheme === opt.id;
-            const locked = opt.subscriberOnly && !subscribed;
+            const locked = !tierMet(opt.tier);
             return (
               <button
                 key={opt.id}
                 type="button"
-                onClick={() => selectProfileTheme(opt.id, opt.subscriberOnly)}
+                onClick={() => selectProfileTheme(opt.id, opt.tier)}
                 onMouseEnter={() => setPreviewThemeId(opt.id)}
                 onMouseLeave={() => setPreviewThemeId(null)}
                 className={`flex w-full items-center gap-3 rounded-lg border p-2.5 text-left transition-colors ${
@@ -1333,9 +1353,9 @@ const ProfileSettings = () => {
                   style={opt.swatch}
                 />
                 <span className="flex-1 text-sm font-medium text-textPrimary">{opt.name}</span>
-                {opt.subscriberOnly && !subscribed && (
+                {locked && (
                   <span className="rounded-full border border-amber-400/30 bg-amber-400/10 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-amber-300/90">
-                    Subscriber
+                    {opt.tier === 'supporter' ? 'Supporter' : 'Subscriber'}
                   </span>
                 )}
                 {selected && <Check size={16} className="text-accent" />}
@@ -1353,7 +1373,7 @@ const ProfileSettings = () => {
         <div className="mb-1.5 flex items-center gap-1.5">
           <img src={streamNookLogo} alt="" className="h-4 w-4 object-contain" draggable={false} />
           <h4 className="text-sm font-semibold uppercase tracking-wide text-textPrimary">Atmospheres</h4>
-          {!subscribed && (
+          {!canAtmosphere && (
             <span className="rounded-full border border-amber-400/30 bg-amber-400/10 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-amber-300/90">
               Subscriber
             </span>
@@ -1366,12 +1386,12 @@ const ProfileSettings = () => {
         <div className="mt-3 space-y-2">
           {listAtmospheres().map((a) => {
             const selected = profileTheme === a.id;
-            const locked = !subscribed;
+            const locked = !canAtmosphere;
             return (
               <button
                 key={a.id}
                 type="button"
-                onClick={() => (selected ? selectProfileTheme('tier', false) : selectProfileTheme(a.id, true))}
+                onClick={() => (selected ? selectProfileTheme('tier', 'free') : selectProfileTheme(a.id, 'subscriber'))}
                 onMouseEnter={() => setPreviewThemeId(a.id)}
                 onMouseLeave={() => setPreviewThemeId(null)}
                 className={`flex w-full items-center gap-3 rounded-lg border p-2.5 text-left transition-colors ${
