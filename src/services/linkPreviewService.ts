@@ -8,7 +8,15 @@
 
 import { Logger } from '../utils/logger';
 
-export type LinkPreviewKind = 'youtube' | 'image' | 'generic' | 'tweet' | 'media';
+export type LinkPreviewKind =
+  | 'youtube'
+  | 'youtube_channel'
+  | 'image'
+  | 'generic'
+  | 'tweet'
+  | 'media'
+  | 'clip'
+  | 'vod';
 
 // Mirrors the Rust `LinkPreview` struct (serde keeps snake_case field names).
 export interface LinkPreview {
@@ -21,6 +29,9 @@ export interface LinkPreview {
   author: string | null;
   author_avatar: string | null;
   video_id: string | null;
+  // "clip" kind only.
+  view_count: number | null;
+  duration: number | null;
 }
 
 // Registrable domains we auto-expand. A host matches if it equals one of these
@@ -51,20 +62,32 @@ export function isTrustedHost(host: string): boolean {
   return TRUSTED_BASE_DOMAINS.some((base) => h === base || h.endsWith(`.${base}`));
 }
 
-// Extract the trusted, previewable URLs from a message body. Capped (default 2)
-// so a message that's a wall of links can't spawn a wall of cards. Dedupes and
-// strips trailing sentence punctuation that the greedy match would otherwise
-// swallow into the URL.
-export function extractPreviewableUrls(text: string, max = 2): string[] {
+export interface PreviewUrl {
+  url: string;
+  // Trusted (allowlisted) hosts auto-expand; untrusted ones are still surfaced
+  // but the UI offers click-to-load so an arbitrary pasted link is never fetched
+  // passively (which would reveal the user's IP to that host).
+  trusted: boolean;
+}
+
+// Extract previewable URLs from a message body, each tagged trusted/untrusted.
+// Trusted and untrusted are capped independently (default 2 each) so neither a
+// wall of links nor a run of untrusted links can crowd out the other or spawn a
+// wall of cards. Dedupes and strips trailing sentence punctuation that the
+// greedy match would otherwise swallow into the URL. Preserves message order.
+export function extractPreviewUrls(text: string, max = 2): PreviewUrl[] {
   if (!text) return [];
   // Fast path: almost every chat line has no link. Skip the regex + URL parsing
   // (and the array work) entirely unless the text could plausibly contain one.
   if (!text.includes('http') && !text.includes('www.')) return [];
   const re = /(?:https?:\/\/|www\.)[^\s]+/gi;
-  const out: string[] = [];
+  const out: PreviewUrl[] = [];
   const seen = new Set<string>();
+  let trustedCount = 0;
+  let untrustedCount = 0;
   let match: RegExpExecArray | null;
-  while ((match = re.exec(text)) !== null && out.length < max) {
+  while ((match = re.exec(text)) !== null) {
+    if (trustedCount >= max && untrustedCount >= max) break;
     const raw = match[0].replace(/[.,!?:;'")\]}>]+$/, '');
     const url = raw.startsWith('http') ? raw : `https://${raw}`;
     let host: string;
@@ -73,10 +96,13 @@ export function extractPreviewableUrls(text: string, max = 2): string[] {
     } catch {
       continue;
     }
-    if (!isTrustedHost(host)) continue;
     if (seen.has(url)) continue;
+    const trusted = isTrustedHost(host);
+    if (trusted ? trustedCount >= max : untrustedCount >= max) continue;
     seen.add(url);
-    out.push(url);
+    if (trusted) trustedCount++;
+    else untrustedCount++;
+    out.push({ url, trusted });
   }
   return out;
 }

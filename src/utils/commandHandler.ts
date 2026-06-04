@@ -634,9 +634,10 @@ export const handleSlashCommand = async (
         emitSystemMessage(`${channelName} has been live for ${uptime}.`);
         return true;
       }
+      case 'user':
       case 'usercard': {
         if (argsWithoutCommand.length === 0) {
-          addToast('Usage: /usercard <user>', 'info');
+          addToast(`Usage: /${command} <user>`, 'info');
           return true;
         }
         const username = argsWithoutCommand[0].replace('@', '');
@@ -749,22 +750,6 @@ export const handleSlashCommand = async (
             : 'Available commands: /mods, /vips, /color, /block, /unblock, /me, /w, /announce, and more. Use /help <command> for details.'
           }
         }));
-        return true;
-      }
-      case 'user': {
-        if (argsWithoutCommand.length >= 1) {
-          const username = argsWithoutCommand[0].replace('@', '');
-          const user = await lookupUser(username);
-          if (user) {
-            window.dispatchEvent(new CustomEvent('twitch-system-message', {
-              detail: { message: `User: ${user.display_name} (${user.login}) — ID: ${user.id}` }
-            }));
-          } else {
-            addToast(`User ${username} not found`, 'error');
-          }
-          return true;
-        }
-        addToast('Usage: /user <username>', 'info');
         return true;
       }
       case 'vote':

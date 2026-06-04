@@ -441,6 +441,16 @@ function buildQuickActions(): PaletteItem[] {
       },
     },
     {
+      id: 'cs.createClip',
+      section: 'Current Stream',
+      title: 'Create clip',
+      subtitle: 'Clip ~30s of what you are watching (live, or a VOD at the current spot)',
+      keywords: 'clip create capture moment highlight save vod',
+      run: () => {
+        void useAppStore.getState().createClip();
+      },
+    },
+    {
       id: 'cs.watchLatestVod',
       section: 'Current Stream',
       title: "Watch this streamer's latest VOD",
@@ -450,11 +460,11 @@ function buildQuickActions(): PaletteItem[] {
         const stream = requireStream();
         if (!stream?.user_id) return;
         try {
-          const vods = (await invoke('get_user_videos', {
+          const [vods] = (await invoke('get_user_videos', {
             userId: stream.user_id,
             sort: 'time',
             limit: 1,
-          })) as TwitchVideo[];
+          })) as [TwitchVideo[], string | null];
           const latest = vods?.[0];
           if (!latest) {
             useAppStore.getState().addToast(`${stream.user_name} has no archived VODs`, 'info');

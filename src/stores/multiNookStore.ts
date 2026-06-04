@@ -79,7 +79,7 @@ export const broadcastMultiNookPresence = (slots: MultiNookSlot[]) => {
     smallImage: '',
     startTime: Date.now(),
     gameName: maxGame,
-    streamUrl: 'https://github.com/winters27/StreamNook/',
+    streamUrl: 'https://streamnook.app',
   };
 
   // Discord (gated by settings toggle)

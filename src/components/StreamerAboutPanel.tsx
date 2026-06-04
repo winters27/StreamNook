@@ -85,8 +85,8 @@ const PanelCard = memo(({ panel }: { panel: ChannelPanelType }) => {
       return (
         <a
           href={panel.link_url!}
-          target="_blank"
-          rel="noopener noreferrer"
+          // No target="_blank": the webview opens _blank links externally on its
+          // own, which would stack a second tab on top of the invoke() below.
           onClick={(e) => {
             e.preventDefault();
             invoke('open_browser_url', { url: panel.link_url });
@@ -106,8 +106,8 @@ const PanelCard = memo(({ panel }: { panel: ChannelPanelType }) => {
   const Wrapper = hasLink ? 'a' : 'div';
   const wrapperProps = hasLink ? {
     href: panel.link_url!,
-    target: '_blank' as const,
-    rel: 'noopener noreferrer',
+    // No target="_blank": the webview opens _blank links externally on its
+    // own, which would stack a second tab on top of the invoke() below.
     onClick: (e: React.MouseEvent) => {
       e.preventDefault();
       invoke('open_browser_url', { url: panel.link_url });

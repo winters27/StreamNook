@@ -2,6 +2,7 @@ import React, { useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { EmoteTabCandidate } from '../../utils/chatInputWord';
 import { Tooltip } from '../ui/Tooltip';
+import { inlineEmoteTier, sevenTvTierUrl } from '../../services/emoteService';
 
 interface EmoteAutocompleteProps {
   current: EmoteTabCandidate;
@@ -37,8 +38,11 @@ const EmoteThumb: React.FC<{ tok: EmoteTabCandidate; size: number }> = ({ tok, s
       </div>
     );
   }
+  // Disk-first for 7TV (emote.localUrl is the cached file at the per-DPI tier),
+  // CDN at that tier on a miss.
+  const tier = inlineEmoteTier();
   const src = emote.provider === '7tv'
-    ? `https://cdn.7tv.app/emote/${emote.id}/2x.avif`
+    ? (emote.localUrl || sevenTvTierUrl(emote.id, tier))
     : (emote.localUrl || emote.url);
   return (
     <Tooltip content={emote.name}>
@@ -51,8 +55,17 @@ const EmoteThumb: React.FC<{ tok: EmoteTabCandidate; size: number }> = ({ tok, s
       className="object-contain"
       onError={(e) => {
         const t = e.currentTarget;
-        if (emote.provider === '7tv' && t.src.endsWith('/2x.avif')) {
-          t.src = `https://cdn.7tv.app/emote/${emote.id}/1x.avif`;
+        if (emote.provider === '7tv') {
+          // A stale disk file or a missing size/format walks the avif then webp
+          // ladder so the thumb is never blank.
+          const ladder = [`${tier}.avif`, '2x.avif', '1x.avif', '2x.webp', '1x.webp']
+            .map((s) => `https://cdn.7tv.app/emote/${emote.id}/${s}`);
+          let step = Number(t.dataset.fb || '0');
+          while (step < ladder.length && ladder[step] === t.src) step++;
+          if (step < ladder.length) {
+            t.dataset.fb = String(step + 1);
+            t.src = ladder[step];
+          }
           return;
         }
         if (emote.localUrl && t.src !== emote.url) t.src = emote.url;

@@ -3,9 +3,11 @@ use anyhow::Result;
 use discord_rich_presence::{activity::*, DiscordIpc, DiscordIpcClient};
 use lazy_static::lazy_static;
 use rand::prelude::IndexedRandom;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
 
 // --- New Imports for matching logic ---
@@ -17,12 +19,26 @@ use strsim::normalized_levenshtein;
 // Discord asset keys - these must match the asset names uploaded to Discord Developer Portal
 const DISCORD_LARGE_IMAGE: &str = "streamnook_logo";
 const DISCORD_SMALL_IMAGE_TWITCH: &str = "twitch";
+// Discord application (client) ID for StreamNook's rich presence.
+const DISCORD_CLIENT_ID: &str = "1436402207485464596";
+// Where the rich-presence call-to-action button points.
+const DOWNLOAD_URL: &str = "https://streamnook.app";
 
 pub struct DiscordService;
 
 struct DiscordState {
     client: Option<DiscordIpcClient>,
     start_time: i64,
+    // Identity of the currently-displayed activity (the "Watching X" line). When
+    // this changes (a raid or auto-switch to a different streamer), the elapsed
+    // timer is reset. It stays put when only the title/category changes for the
+    // same streamer, so the "watching for" counter doesn't restart on every
+    // channel-update.
+    current_key: Option<String>,
+    // The logged-in Discord user's display name, captured from the IPC handshake
+    // READY frame. Used to personalize a few idle phrases. None until we connect
+    // (or if Discord doesn't return one).
+    discord_username: Option<String>,
 }
 
 lazy_static! {
@@ -32,6 +48,8 @@ lazy_static! {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs() as i64,
+        current_key: None,
+        discord_username: None,
     }));
 }
 
@@ -65,30 +83,95 @@ struct DiscordApp {
     aliases: Vec<String>,
 }
 
-const BROWSING_PHRASES: &[&str] = &[
-    "Channel Surfing for Poggers",
-    "Lost in the Twitch Jungle",
-    "Hunting for the next Hype Train",
-    "Just Chatting... with myself",
-    "AFK, but my eyes are still watching",
+/// Cached copy of Discord's detectable-games list (see fetch_discord_detectables).
+struct DetectablesCache {
+    apps: Vec<DiscordApp>,
+    fetched_at: Instant,
+}
+
+lazy_static! {
+    static ref DETECTABLES_CACHE: Mutex<Option<DetectablesCache>> = Mutex::new(None);
+}
+
+// One pool of self-contained one-liners for the idle/browsing presence. A
+// single phrase is shown (as `details`) with no second `state` line, so two
+// unrelated sayings can't end up stacked on top of each other.
+const IDLE_PHRASES: &[&str] = &[
+    "Channel surfing for poggers",
+    "Lost in the Twitch jungle",
+    "Hunting for the next hype train",
+    "Just chatting... with myself",
     "Searching for the legendary Kappa",
     "Dodging spoilers like a pro gamer",
     "Vibing in the VODs",
     "Exploring the emote-verse",
     "Where's the 'unfollow' button for reality?",
-];
-
-const IDLE_PHRASES: &[&str] = &[
-    "AFK (Away From Keyboard, but not from Twitch)",
-    "Just chilling, waiting for the next stream",
-    "Buffering... please wait",
+    "AFK, but my eyes are still watching",
     "In a staring contest with my screen",
     "My brain is in emote-only mode",
     "Currently respawning...",
     "Thinking about what to raid next",
-    "Lost in thought, probably about subs",
     "Powered by caffeine and good vibes",
     "Waiting for the next 'clip that!' moment",
+    "Procrastinating, but make it 1080p60",
+    "Avoiding responsibilities in 4K",
+    "Touching grass... in a loading screen",
+    "Mentally subscribed, financially undecided",
+    "Emotionally invested in strangers' gameplay",
+    "Living vicariously through better gamers",
+    "Lurking like it's a competitive sport",
+    "Watching someone else be productive",
+    "My personality is just other people's streams",
+    "Here for the chat, staying for the chaos",
+    "One more stream, then bed (a lie)",
+    "Letting the algorithm raise me",
+    "Donating my watch time, not my wallet",
+    "Refreshing the followed page like it's a job",
+    "Professional spectator, unpaid",
+    "Chat is my coworking space now",
+];
+
+// Idle phrases that roast the logged-in Discord user by name. `{}` is replaced
+// with their display name at runtime (only used when we managed to capture it).
+const PERSONALIZED_PHRASES: &[&str] = &[
+    "Hi, I'm {} and I have no off button",
+    "{} said 'one more stream' four streams ago",
+    "{} calls this 'research'",
+    "Somebody please tell {} to go outside",
+    "{} is touching grass tomorrow. Allegedly.",
+    "{} is rotting, but in glorious HD",
+    "{} mistook watching streams for a personality",
+    "{}'s watchlist is a cry for help",
+    "{} is here instead of doing literally anything else",
+    "{} types in chat like it pays the rent",
+    "Loading {}'s entire personality... 99%",
+    "{} is emotionally supported by strangers online",
+    "{} would rather be here than be productive",
+    "{} has strong opinions and zero invitations",
+    "{} clicked 'just one video' and lost the whole day",
+    "{} is why the 'are you still watching?' prompt exists",
+];
+
+// Random labels for the call-to-action button that points at streamnook.app.
+// The destination never changes, only the wording. Keep each under Discord's
+// 32-character button-label limit.
+const DOWNLOAD_BUTTON_LABELS: &[&str] = &[
+    "Download StreamNook",
+    "Join them?",
+    "Get StreamNook",
+    "Become one of us",
+    "Ditch the browser",
+    "Steal my setup",
+    "yes, it's free",
+    "Watch like this too",
+    "Upgrade your lurking",
+    "You know you want it",
+    "Join the nook",
+    "Lurk in style",
+    "Resistance is futile",
+    "One of us. One of us.",
+    "Free, no catch",
+    "Do it. Do it now.",
 ];
 
 impl DiscordService {
@@ -111,12 +194,9 @@ impl DiscordService {
         }
 
         // Create new connection
-        let mut client = DiscordIpcClient::new("1436402207485464596");
-        client
-            .connect()
-            .map_err(|e| anyhow::anyhow!("Failed to connect to Discord: {}", e))?;
-
+        let (client, username) = Self::connect_client()?;
         guard.client = Some(client);
+        guard.discord_username = username;
         guard.start_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -124,6 +204,44 @@ impl DiscordService {
 
         // Set initial idle presence
         Self::set_idle_presence_internal(&mut guard).await
+    }
+
+    /// Open an IPC connection and capture the logged-in user's display name.
+    ///
+    /// The crate's default `connect()` performs the handshake but throws away
+    /// the READY frame, which is exactly where Discord hands back the local
+    /// user. We run the handshake by hand so we can keep the name for the
+    /// personalized idle phrases. No OAuth or extra scopes are involved. The
+    /// basic RPC handshake returns the current user on its own.
+    fn connect_client() -> Result<(DiscordIpcClient, Option<String>)> {
+        let mut client = DiscordIpcClient::new(DISCORD_CLIENT_ID);
+        client.connect_ipc()?;
+        client.send(json!({ "v": 1, "client_id": DISCORD_CLIENT_ID }), 0)?;
+
+        // READY frame: { "evt": "READY", "data": { "user": { "global_name", "username", ... } } }
+        let username = match client.recv() {
+            Ok((_, value)) => {
+                let user = value.get("data").and_then(|d| d.get("user"));
+                user.and_then(|u| u.get("global_name").and_then(|v| v.as_str()))
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| user.and_then(|u| u.get("username").and_then(|v| v.as_str())))
+                    .map(|s| s.to_string())
+            }
+            Err(_) => None,
+        };
+
+        Ok((client, username))
+    }
+
+    /// A call-to-action button with a randomly chosen, often cheeky label. The
+    /// destination is always streamnook.app; only the wording rotates.
+    fn download_button() -> Button<'static> {
+        let mut rng = rand::rng();
+        let label = DOWNLOAD_BUTTON_LABELS
+            .choose(&mut rng)
+            .copied()
+            .unwrap_or("Download StreamNook");
+        Button::new(label, DOWNLOAD_URL)
     }
 
     /// Disconnect from Discord
@@ -154,29 +272,45 @@ impl DiscordService {
     async fn set_idle_presence_internal(
         guard: &mut tokio::sync::MutexGuard<'_, DiscordState>,
     ) -> Result<()> {
-        // Get timestamp before any borrows
+        // Dropping back to idle clears the per-stream identity and restarts the
+        // timer, so the next stream we open begins its "watching for" counter
+        // from zero instead of inheriting a stale elapsed time.
+        guard.current_key = None;
+        guard.start_time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
         let timestamp = guard.start_time;
+        let username = guard.discord_username.clone();
 
         if let Some(client) = &mut guard.client {
             let mut rng = rand::rng();
-            let browsing = BROWSING_PHRASES
-                .choose(&mut rng)
-                .unwrap_or(&"Browsing Twitch");
-            let idle = IDLE_PHRASES.choose(&mut rng).unwrap_or(&"Just chilling");
+
+            // Single line only. Set `details` and leave `state` unset so we never
+            // show two unrelated random sayings stacked together. When we know
+            // the user's Discord name, half the time roast them by name instead.
+            let phrase: String = match &username {
+                Some(name) if rng.random_bool(0.5) => PERSONALIZED_PHRASES
+                    .choose(&mut rng)
+                    .copied()
+                    .unwrap_or("{} is watching ironically")
+                    .replace("{}", name),
+                _ => IDLE_PHRASES
+                    .choose(&mut rng)
+                    .copied()
+                    .unwrap_or("Browsing Twitch")
+                    .to_string(),
+            };
 
             let activity = Activity::new()
-                .details(*browsing)
-                .state(*idle)
+                .details(phrase.as_str())
                 .assets(
                     Assets::new()
                         .large_image(DISCORD_LARGE_IMAGE)
                         .large_text("StreamNook"),
                 )
                 .timestamps(Timestamps::new().start(timestamp))
-                .buttons(vec![Button::new(
-                    "Download StreamNook",
-                    "https://github.com/winters27/StreamNook/",
-                )]);
+                .buttons(vec![Self::download_button()]);
 
             client
                 .set_activity(activity)
@@ -205,21 +339,26 @@ impl DiscordService {
             return Ok(());
         }
 
-        let mut guard = DISCORD_STATE.lock().await;
+        // Resolve the category image BEFORE taking the Discord lock so a slow
+        // network fetch can never delay or block a streamer swap. The detectables
+        // list is cached, so this is normally instant.
+        let game_image_url = if !game_name.is_empty() {
+            Self::resolve_game_image(game_name).await
+        } else {
+            None
+        };
 
-        // Helper function to create and connect a new client
-        fn create_client() -> Result<DiscordIpcClient> {
-            let mut client = DiscordIpcClient::new("1436402207485464596");
-            client
-                .connect()
-                .map_err(|e| anyhow::anyhow!("Failed to connect to Discord: {}", e))?;
-            Ok(client)
-        }
+        let mut guard = DISCORD_STATE.lock().await;
 
         // Ensure we're connected
         if guard.client.is_none() {
-            match create_client() {
-                Ok(client) => guard.client = Some(client),
+            match Self::connect_client() {
+                Ok((client, username)) => {
+                    guard.client = Some(client);
+                    if username.is_some() {
+                        guard.discord_username = username;
+                    }
+                }
                 Err(_) => {
                     // Discord not running - silently fail
                     return Ok(());
@@ -227,20 +366,23 @@ impl DiscordService {
             }
         }
 
-        // Get start time and drop the mutable borrow temporarily
-        let timestamp = guard.start_time;
-        let has_client = guard.client.is_some();
-
-        if !has_client {
-            return Ok(());
-        }
-
-        // Try to get game image from Discord's detectable games (outside the borrow)
-        let game_image_url = if !game_name.is_empty() {
-            Self::resolve_game_image(game_name).await.ok()
+        // Reset the elapsed timer only when the activity identity changes (a
+        // raid or auto-switch to a different streamer). Keep it steady when only
+        // the title or category updates for the same streamer, so the
+        // "watching for HH:MM" counter doesn't restart on every channel-update.
+        let identity = if !details.is_empty() {
+            details.to_string()
         } else {
-            None
+            stream_url.to_string()
         };
+        if guard.current_key.as_deref() != Some(identity.as_str()) {
+            guard.start_time = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64;
+            guard.current_key = Some(identity);
+        }
+        let timestamp = guard.start_time;
 
         // Build the activity
         let mut assets = Assets::new();
@@ -249,7 +391,7 @@ impl DiscordService {
             assets = assets.large_image(url);
             assets = assets.large_text(game_name);
         } else {
-            // Fallback to StreamNook icon if game not found
+            // Fallback to the StreamNook icon only when there's no category at all.
             assets = assets.large_image(DISCORD_LARGE_IMAGE);
             assets = assets.large_text("StreamNook");
         }
@@ -269,10 +411,7 @@ impl DiscordService {
         if !stream_url.is_empty() {
             activity = activity.buttons(vec![
                 Button::new("Watch Stream", stream_url),
-                Button::new(
-                    "Download StreamNook",
-                    "https://github.com/winters27/StreamNook/",
-                ),
+                Self::download_button(),
             ]);
         }
 
@@ -288,12 +427,15 @@ impl DiscordService {
         }
 
         // Attempt reconnection once
-        match create_client() {
-            Ok(mut new_client) => {
+        match Self::connect_client() {
+            Ok((mut new_client, username)) => {
                 // Try to set activity on the new connection
                 match new_client.set_activity(activity) {
                     Ok(_) => {
                         guard.client = Some(new_client);
+                        if username.is_some() {
+                            guard.discord_username = username;
+                        }
                         Ok(())
                     }
                     Err(_) => {
@@ -329,36 +471,62 @@ impl DiscordService {
         Ok(())
     }
 
-    /// Resolve game name to Discord game image URL
-    async fn resolve_game_image(game_name: &str) -> Result<String> {
-        // Fetch Discord's detectable games list
-        let apps = Self::fetch_discord_detectables().await?;
-
-        // Try to match the game, passing a similarity threshold.
-        if let Some(matched_app) = Self::match_game(&apps, game_name, 0.6) {
-            // Prefer cover_image, fallback to icon_hash
-            if let Some(cover) = &matched_app.cover_image {
-                return Ok(format!(
-                    "https://cdn.discordapp.com/app-assets/{}/{}.png?size=512",
-                    matched_app.id, cover
-                ));
-            }
-            if let Some(icon_hash) = &matched_app.icon_hash {
-                return Ok(format!(
-                    "https://cdn.discordapp.com/app-icons/{}/{}.png?size=512",
-                    matched_app.id, icon_hash
-                ));
+    /// Resolve a Twitch category to a large-image URL for Discord.
+    ///
+    /// Prefer Discord's detectable-games art (wide capsule covers) when the
+    /// category is a game Discord knows about. For anything Discord doesn't list
+    /// (Just Chatting, IRL, Music, ASMR, and the like) fall back to Twitch's
+    /// own category box art so the activity shows the real category instead of
+    /// the StreamNook logo. `game_name` is always a real Twitch category here, so
+    /// the box-art URL resolves.
+    async fn resolve_game_image(game_name: &str) -> Option<String> {
+        if let Ok(apps) = Self::fetch_discord_detectables().await {
+            // Try to match the game, passing a similarity threshold.
+            if let Some(matched_app) = Self::match_game(&apps, game_name, 0.6) {
+                // Prefer cover_image, fallback to icon_hash
+                if let Some(cover) = &matched_app.cover_image {
+                    return Some(format!(
+                        "https://cdn.discordapp.com/app-assets/{}/{}.png?size=512",
+                        matched_app.id, cover
+                    ));
+                }
+                if let Some(icon_hash) = &matched_app.icon_hash {
+                    return Some(format!(
+                        "https://cdn.discordapp.com/app-icons/{}/{}.png?size=512",
+                        matched_app.id, icon_hash
+                    ));
+                }
             }
         }
 
-        Err(anyhow::anyhow!("Game image not found"))
+        Some(Self::twitch_boxart_url(game_name))
     }
 
-    /// Fetch Discord's detectable games list
+    /// Build a Twitch box-art URL for a category by name. Twitch serves box art
+    /// keyed by the exact category name, so non-game categories resolve too.
+    fn twitch_boxart_url(game_name: &str) -> String {
+        format!(
+            "https://static-cdn.jtvnw.net/ttv-boxart/{}-288x384.jpg",
+            urlencoding::encode(game_name)
+        )
+    }
+
+    /// Fetch Discord's detectable games list, cached for an hour. The list is
+    /// several MB, so re-downloading it on every presence update would add
+    /// latency to streamer swaps for no benefit.
     async fn fetch_discord_detectables() -> Result<Vec<DiscordApp>> {
+        {
+            let cache = DETECTABLES_CACHE.lock().await;
+            if let Some(cached) = cache.as_ref() {
+                if cached.fetched_at.elapsed() < Duration::from_secs(3600) {
+                    return Ok(cached.apps.clone());
+                }
+            }
+        }
+
         let client = reqwest::Client::builder()
             .user_agent("StreamNook/1.0")
-            .timeout(std::time::Duration::from_secs(6))
+            .timeout(Duration::from_secs(6))
             .build()?;
 
         let response = client
@@ -367,6 +535,15 @@ impl DiscordService {
             .await?;
 
         let apps: Vec<DiscordApp> = response.json().await?;
+
+        {
+            let mut cache = DETECTABLES_CACHE.lock().await;
+            *cache = Some(DetectablesCache {
+                apps: apps.clone(),
+                fetched_at: Instant::now(),
+            });
+        }
+
         Ok(apps)
     }
 

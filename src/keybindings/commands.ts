@@ -209,6 +209,22 @@ function build(): BindableCommand[] {
       run: () => app().toggleTheaterMode(),
     },
     {
+      id: 'cs.createClip',
+      label: 'Create clip',
+      description: 'Clip ~30 seconds of what you are watching (live, or a VOD at the current spot).',
+      category: 'Player',
+      context: 'player',
+      defaultBindings: ['Alt+X'],
+      keywords: 'clip create capture moment highlight save vod',
+      isAvailable: () => {
+        const s = app();
+        if (s.currentMediaType === 'live') return true;
+        // A VOD loaded directly, or auto-loaded into the offline-chat space.
+        return !!s.originalMediaUrl && /\/videos\/\d+/.test(s.originalMediaUrl);
+      },
+      run: () => app().createClip(),
+    },
+    {
       id: 'player.volumeUp',
       label: 'Volume up',
       category: 'Player',

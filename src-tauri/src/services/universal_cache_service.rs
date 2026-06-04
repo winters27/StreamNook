@@ -63,6 +63,17 @@ fn ensure_flush_task() {
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_ok()
     {
+        // The flush loop needs a Tokio runtime. Some callers (e.g. the one-time
+        // emote-cache migration invoked from main() before the async runtime is
+        // built) would panic here with "no reactor running". When there's no
+        // runtime yet, reset the flag and bail: MANIFEST_DIRTY stays set, so the
+        // next save once the runtime is up starts the task and flushes nothing is
+        // lost. Callers that must persist before then write through to disk
+        // directly (see migrate_emote_cache_on_version_change).
+        if tokio::runtime::Handle::try_current().is_err() {
+            FLUSH_TASK_STARTED.store(false, Ordering::SeqCst);
+            return;
+        }
         tokio::spawn(async {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
@@ -803,7 +814,7 @@ pub fn clear_universal_cache() -> Result<()> {
 /// This token triggers cache clearing exactly once when upgrading.
 /// After migration completes, the token is written to disk and never triggers again.
 /// UPDATE: Changed token to force re-migration with manifest clearing
-const EMOTE_CACHE_MIGRATION_TOKEN: &str = "AVIF_MIGRATION_2024_V2";
+const EMOTE_CACHE_MIGRATION_TOKEN: &str = "PERDPI_TIER_2026_V3";
 
 /// Migrate emote cache if migration token not yet applied
 /// This is a ONE-TIME migration - it clears the cache once, then never again.
@@ -869,7 +880,13 @@ pub fn migrate_emote_cache_on_version_change(_current_version: &str) -> Result<b
 
                 let removed_count = initial_count - manifest.entries.len();
                 if removed_count > 0 {
+                    // Update the in-memory mirror...
                     let _ = save_manifest(&manifest);
+                    // ...and write through to disk now. This runs before the
+                    // async runtime, so the debounced flush task can't run yet;
+                    // a direct write guarantees the pruned manifest persists even
+                    // if the app exits before the first post-runtime flush.
+                    let _ = save_manifest_to_disk(&manifest);
                     debug!(
                         "[UniversalCache] Cleared {} emote entries from manifest",
                         removed_count

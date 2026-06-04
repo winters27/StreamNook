@@ -15,6 +15,7 @@
 //! command (a trusted-domain allowlist), so this never auto-fetches the whole
 //! firehose.
 
+use crate::services::twitch_service::TwitchService;
 use log::debug;
 use regex::Regex;
 use scraper::{Html, Selector};
@@ -34,13 +35,20 @@ pub struct LinkPreview {
     pub author: Option<String>,
     /// Author avatar (used by the "tweet" kind).
     pub author_avatar: Option<String>,
-    /// Present only for the "youtube" kind.
+    /// Present for the "youtube" and "clip" kinds.
     pub video_id: Option<String>,
+    /// View count (the "clip" kind).
+    pub view_count: Option<u64>,
+    /// Length in seconds (the "clip" kind).
+    pub duration: Option<f64>,
 }
 
 // Chat links are ephemeral — no preview cache is kept. Each request resolves
-// fresh and is forgotten. (4 MB ceiling on a page we'll actually parse.)
-const MAX_BODY_BYTES: u64 = 4_000_000;
+// fresh and is forgotten. We read only the page <head> (OG / Twitter-card /
+// <title> meta all live there), capped so a huge page never downloads in full —
+// that full-body download + full-DOM parse is what made slow/large pages take
+// many seconds to preview.
+const HEAD_SCAN_CAP: usize = 512 * 1024;
 
 // --- HTTP client -----------------------------------------------------------
 
@@ -80,6 +88,9 @@ async fn build_preview(url: &str) -> Result<LinkPreview, String> {
     if let Some(video_id) = youtube_id(url) {
         return Ok(youtube_preview(url, &video_id).await);
     }
+    if is_youtube_channel(url) {
+        return youtube_channel_preview(url).await;
+    }
     if let Some((handle, id)) = tweet_ref(url) {
         return tweet_preview(url, handle.as_deref(), &id).await;
     }
@@ -88,6 +99,12 @@ async fn build_preview(url: &str) -> Result<LinkPreview, String> {
     }
     if is_giphy(url) {
         return giphy_preview(url).await;
+    }
+    if let Some(clip_id) = twitch_clip_id(url) {
+        return twitch_clip_preview(url, &clip_id).await;
+    }
+    if let Some(vod_id) = twitch_vod_id(url) {
+        return twitch_vod_preview(url, &vod_id).await;
     }
     if is_image_url(url) {
         return Ok(LinkPreview {
@@ -100,6 +117,8 @@ async fn build_preview(url: &str) -> Result<LinkPreview, String> {
             author: None,
             author_avatar: None,
             video_id: None,
+            view_count: None,
+            duration: None,
         });
     }
 
@@ -175,7 +194,38 @@ async fn youtube_preview(url: &str, video_id: &str) -> LinkPreview {
         author,
         author_avatar: None,
         video_id: Some(video_id.to_string()),
+        view_count: None,
+        duration: None,
     }
+}
+
+// --- YouTube channels / profiles -------------------------------------------
+
+static YT_CHANNEL_RE: LazyLock<Regex> = LazyLock::new(|| {
+    // @handle, /channel/<id>, /c/<name>, /user/<name>. A bare /@handle is the
+    // modern form; the others are legacy. Trailing subpaths (/videos, /about)
+    // are fine — we only need to know it's a channel, not a video.
+    Regex::new(r"youtube\.com/(?:@[A-Za-z0-9_.\-]+|channel/[A-Za-z0-9_\-]+|c/[^/?#]+|user/[^/?#]+)")
+        .expect("youtube channel regex")
+});
+
+fn is_youtube_channel(url: &str) -> bool {
+    url.contains("youtube.com") && YT_CHANNEL_RE.is_match(url)
+}
+
+/// A YouTube channel page serves the channel name (og:title), the square avatar
+/// (og:image, e.g. a 900x900 `yt3.googleusercontent.com` image), and the channel
+/// description (og:description) to a normal browser UA, so a plain OG scrape is
+/// enough. We just reshape it into a profile-style card: the avatar moves to
+/// `author_avatar` so the UI renders it as a centered circle (the generic card's
+/// square left-thumbnail crops oddly for an avatar), and the kind is tagged so it
+/// gets the YouTube glyph.
+async fn youtube_channel_preview(url: &str) -> Result<LinkPreview, String> {
+    let mut preview = fetch_generic(url).await?;
+    preview.kind = "youtube_channel".to_string();
+    preview.author_avatar = preview.image.take();
+    preview.site_name = Some("YouTube".to_string());
+    Ok(preview)
 }
 
 // --- Twitter / X -----------------------------------------------------------
@@ -313,6 +363,8 @@ async fn tweet_preview(url: &str, handle: Option<&str>, id: &str) -> Result<Link
         author: screen.map(|s| format!("@{}", s)),
         author_avatar: avatar,
         video_id: None,
+        view_count: None,
+        duration: None,
     })
 }
 
@@ -422,6 +474,8 @@ async fn x_profile_preview(url: &str, handle: &str) -> Result<LinkPreview, Strin
         author: screen.map(|s| format!("@{}", s)),
         author_avatar: avatar,
         video_id: None,
+        view_count: None,
+        duration: None,
     })
 }
 
@@ -454,6 +508,8 @@ async fn giphy_preview(url: &str) -> Result<LinkPreview, String> {
         author: None,
         author_avatar: None,
         video_id: None,
+        view_count: None,
+        duration: None,
     };
 
     // Giphy's keyless oEmbed resolves any giphy page/clip/short-link to the
@@ -485,6 +541,224 @@ async fn giphy_preview(url: &str) -> Result<LinkPreview, String> {
     fetch_generic(url).await
 }
 
+// --- Twitch clips ----------------------------------------------------------
+
+static TWITCH_CLIP_RE: LazyLock<Regex> = LazyLock::new(|| {
+    // clips.twitch.tv/<slug>, clips.twitch.tv/embed?clip=<slug>,
+    // (www.|m.)twitch.tv/<channel>/clip/<slug>, twitch.tv/clip/<slug>.
+    // Clip slugs are [A-Za-z0-9_-]; the optional channel segment has no hyphens.
+    Regex::new(
+        r"(?:clips\.twitch\.tv/(?:embed\?clip=)?|twitch\.tv/(?:[A-Za-z0-9_]{1,25}/)?clip/)([A-Za-z0-9_-]+)",
+    )
+    .expect("twitch clip regex")
+});
+
+fn twitch_clip_id(url: &str) -> Option<String> {
+    if !url.contains("twitch.tv") {
+        return None;
+    }
+    TWITCH_CLIP_RE
+        .captures(url)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str().to_string())
+}
+
+/// Resolve a Twitch clip via Helix `/clips?id=`. A plain OG scrape of a clip page
+/// only yields Twitch's generic "world's leading video platform" boilerplate
+/// (the page is client-rendered), so we ask the API directly. Reuses the logged-
+/// in user's token — they're in chat, so they have one. Any failure (not logged
+/// in, network, deleted clip) falls back to the generic scrape, which is exactly
+/// the prior behavior, so this never regresses an existing card.
+async fn twitch_clip_preview(url: &str, clip_id: &str) -> Result<LinkPreview, String> {
+    let token = match TwitchService::get_token().await {
+        Ok(t) => t,
+        Err(e) => {
+            debug!("[LinkPreview] twitch clip: no token ({})", e);
+            return fetch_generic(url).await;
+        }
+    };
+
+    let resp = match CLIENT
+        .get("https://api.twitch.tv/helix/clips")
+        .query(&[("id", clip_id)])
+        .header(reqwest::header::AUTHORIZATION, format!("Bearer {}", token))
+        .header("Client-Id", env!("TWITCH_APP_CLIENT_ID"))
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => r,
+        Ok(r) => {
+            debug!("[LinkPreview] twitch clips status {}", r.status());
+            return fetch_generic(url).await;
+        }
+        Err(e) => {
+            debug!("[LinkPreview] twitch clips error: {}", e);
+            return fetch_generic(url).await;
+        }
+    };
+
+    let json: serde_json::Value = match resp.json().await {
+        Ok(j) => j,
+        Err(_) => return fetch_generic(url).await,
+    };
+
+    // data[] is empty for a deleted/invalid clip — let the generic path try.
+    let clip = match json
+        .get("data")
+        .and_then(|d| d.as_array())
+        .and_then(|arr| arr.first())
+    {
+        Some(c) => c,
+        None => return fetch_generic(url).await,
+    };
+
+    let str_field = |key: &str| {
+        clip.get(key)
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+    };
+
+    let title = str_field("title").map(|s| truncate(&s, 300));
+    let broadcaster = str_field("broadcaster_name");
+    // "Clipped by X" goes in the description line.
+    let description = str_field("creator_name").map(|c| format!("Clipped by {}", c));
+    let image = str_field("thumbnail_url");
+    let view_count = clip.get("view_count").and_then(|v| v.as_u64());
+    let duration = clip.get("duration").and_then(|v| v.as_f64());
+
+    Ok(LinkPreview {
+        url: url.to_string(),
+        kind: "clip".to_string(),
+        title,
+        description,
+        image,
+        site_name: Some("Twitch".to_string()),
+        author: broadcaster,
+        author_avatar: None,
+        video_id: Some(clip_id.to_string()),
+        view_count,
+        duration,
+    })
+}
+
+// --- Twitch VODs -----------------------------------------------------------
+
+static TWITCH_VOD_RE: LazyLock<Regex> = LazyLock::new(|| {
+    // twitch.tv/videos/<numeric id> (www / m subdomains included by substring).
+    Regex::new(r"twitch\.tv/videos/(\d+)").expect("twitch vod regex")
+});
+
+static TWITCH_DURATION_RE: LazyLock<Regex> = LazyLock::new(|| {
+    // Helix returns VOD length as e.g. "3h8m33s", "27m11s", "58s".
+    Regex::new(r"^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$").expect("twitch duration regex")
+});
+
+fn twitch_vod_id(url: &str) -> Option<String> {
+    if !url.contains("twitch.tv") {
+        return None;
+    }
+    TWITCH_VOD_RE
+        .captures(url)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str().to_string())
+}
+
+fn parse_twitch_duration(s: &str) -> Option<f64> {
+    let caps = TWITCH_DURATION_RE.captures(s.trim())?;
+    let part = |i: usize| {
+        caps.get(i)
+            .and_then(|m| m.as_str().parse::<f64>().ok())
+            .unwrap_or(0.0)
+    };
+    let total = part(1) * 3600.0 + part(2) * 60.0 + part(3);
+    if total > 0.0 {
+        Some(total)
+    } else {
+        None
+    }
+}
+
+/// Resolve a Twitch VOD via Helix `/videos?id=`. Same rationale and auth as the
+/// clip path (a plain scrape only yields Twitch boilerplate). Falls back to the
+/// generic scrape on any failure.
+async fn twitch_vod_preview(url: &str, vod_id: &str) -> Result<LinkPreview, String> {
+    let token = match TwitchService::get_token().await {
+        Ok(t) => t,
+        Err(e) => {
+            debug!("[LinkPreview] twitch vod: no token ({})", e);
+            return fetch_generic(url).await;
+        }
+    };
+
+    let resp = match CLIENT
+        .get("https://api.twitch.tv/helix/videos")
+        .query(&[("id", vod_id)])
+        .header(reqwest::header::AUTHORIZATION, format!("Bearer {}", token))
+        .header("Client-Id", env!("TWITCH_APP_CLIENT_ID"))
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => r,
+        Ok(r) => {
+            debug!("[LinkPreview] twitch videos status {}", r.status());
+            return fetch_generic(url).await;
+        }
+        Err(e) => {
+            debug!("[LinkPreview] twitch videos error: {}", e);
+            return fetch_generic(url).await;
+        }
+    };
+
+    let json: serde_json::Value = match resp.json().await {
+        Ok(j) => j,
+        Err(_) => return fetch_generic(url).await,
+    };
+
+    let vod = match json
+        .get("data")
+        .and_then(|d| d.as_array())
+        .and_then(|arr| arr.first())
+    {
+        Some(v) => v,
+        None => return fetch_generic(url).await,
+    };
+
+    let str_field = |key: &str| {
+        vod.get(key)
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+    };
+
+    let title = str_field("title").map(|s| truncate(&s, 300));
+    let author = str_field("user_name");
+    // VOD thumbnails carry %{width}x%{height} placeholders that must be filled.
+    // A still-processing VOD returns a "404_processing" template instead; that
+    // resolves to a valid Twitch image, so it's fine to render.
+    let image = str_field("thumbnail_url")
+        .map(|s| s.replace("%{width}", "480").replace("%{height}", "272"))
+        .filter(|s| !s.is_empty());
+    let view_count = vod.get("view_count").and_then(|v| v.as_u64());
+    let duration = str_field("duration").and_then(|s| parse_twitch_duration(&s));
+
+    Ok(LinkPreview {
+        url: url.to_string(),
+        kind: "vod".to_string(),
+        title,
+        description: None,
+        image,
+        site_name: Some("Twitch".to_string()),
+        author,
+        author_avatar: None,
+        video_id: Some(vod_id.to_string()),
+        view_count,
+        duration,
+    })
+}
+
 // --- Imgur -----------------------------------------------------------------
 
 fn is_imgur_page(url: &str) -> bool {
@@ -509,8 +783,12 @@ fn is_image_url(url: &str) -> bool {
 // --- Generic OpenGraph scrape ----------------------------------------------
 
 async fn fetch_generic(url: &str) -> Result<LinkPreview, String> {
-    let resp = CLIENT
+    // A tighter per-request timeout than the client default: a generic preview is
+    // a "nice to have", so don't let an unresponsive host hold the UI's loading
+    // state for the full client budget.
+    let mut resp = CLIENT
         .get(url)
+        .timeout(Duration::from_secs(8))
         .send()
         .await
         .map_err(|e| format!("fetch failed: {}", e))?;
@@ -539,6 +817,8 @@ async fn fetch_generic(url: &str) -> Result<LinkPreview, String> {
             author: None,
             author_avatar: None,
             video_id: None,
+            view_count: None,
+            duration: None,
         });
     }
 
@@ -547,17 +827,35 @@ async fn fetch_generic(url: &str) -> Result<LinkPreview, String> {
         return Err("not an HTML page".to_string());
     }
 
-    if let Some(len) = resp.content_length() {
-        if len > MAX_BODY_BYTES {
-            return Err("page too large".to_string());
+    // Stream the body and stop the moment we've seen </head> (or hit the cap),
+    // instead of `resp.text()` pulling the whole page. Meta tags live in <head>,
+    // so this is all we need — and it turns a multi-MB download + full-DOM parse
+    // into reading the first few KB of most pages.
+    let mut buf: Vec<u8> = Vec::with_capacity(64 * 1024);
+    loop {
+        match resp.chunk().await {
+            Ok(Some(chunk)) => {
+                let prev = buf.len();
+                buf.extend_from_slice(&chunk);
+                // Scan the newly appended bytes (with a 5-byte overlap so a tag
+                // split across chunks is still caught) for the closing </head>.
+                let from = prev.saturating_sub(5);
+                if buf[from..]
+                    .windows(6)
+                    .any(|w| w.eq_ignore_ascii_case(b"</head"))
+                {
+                    break;
+                }
+                if buf.len() >= HEAD_SCAN_CAP {
+                    break;
+                }
+            }
+            Ok(None) => break,
+            Err(e) => return Err(format!("read body failed: {}", e)),
         }
     }
 
-    let html = resp
-        .text()
-        .await
-        .map_err(|e| format!("read body failed: {}", e))?;
-
+    let html = String::from_utf8_lossy(&buf).into_owned();
     let preview = parse_meta(url, &html);
 
     // No usable signal -> error so the UI just leaves the plain link alone
@@ -602,6 +900,8 @@ fn parse_meta(url: &str, html: &str) -> LinkPreview {
         author: None,
         author_avatar: None,
         video_id: None,
+        view_count: None,
+        duration: None,
     }
 }
 

@@ -466,6 +466,7 @@ export interface Settings {
   last_seen_version?: string;
   auto_switch?: AutoSwitchSettings;
   theme?: string; // Theme ID (e.g., 'winters-glass', 'dracula', 'nord')
+  font?: string; // Interface font id (see FONT_OPTIONS in themes). Default 'satoshi'.
   error_reporting_enabled?: boolean; // Local diagnostic log verbosity; nothing is sent off-device (default: true)
   setup_complete?: boolean; // Whether the first-time setup wizard has been completed
   compact_view?: CompactViewSettings; // Compact view preset settings
@@ -552,6 +553,7 @@ export interface TwitchClip {
   creator_name: string;
   video_id: string;
   game_id: string;
+  game_name?: string;
   language: string;
   title: string;
   view_count: number;

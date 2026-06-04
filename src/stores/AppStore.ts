@@ -4,6 +4,8 @@ import { listen } from '@tauri-apps/api/event';
 import type { Settings, TwitchUser, TwitchStream, UserInfo, TwitchCategory, HypeTrainData, TwitchVideo, ModLogEvent } from '../types';
 import { trackActivity } from '../services/logService';
 import { Logger, setDiagnosticsEnabled } from '../utils/logger';
+// Direct import (not via the keybindings index) to avoid a store↔commands cycle.
+import { getPlayerControls } from '../keybindings/playerControls';
 import { qualitiesEquivalent } from '../utils/quality';
 import { upsertUser, grantActiveSeasonalAccolades, grantCakeDayAccolade } from '../services/supabaseService';
 import { emitSettingsUpdated } from '../utils/settingsBroadcast';
@@ -166,6 +168,39 @@ interface AppState {
   channelsInPopouts: Set<string>;
   currentMediaType: 'live' | 'clip' | 'video' | 'offline_chat' | null;
   originalMediaUrl: string | null;
+  /** A Twitch clip playing in the centered overlay modal, or null. The modal is
+   *  independent of the main stream pipeline (a clip is a direct MP4), so the
+   *  current stream/chat stays mounted underneath and resumes on close — the
+   *  viewer lands back exactly where they were. `created` (with `editUrl`) marks a
+   *  clip the user just made, so the modal shows the full action bar underneath
+   *  (Copy / Send to chat / Edit / Open) — the all-in-one post-create surface. */
+  clipModal: { url: string; info: MediaInfo; created?: boolean; editUrl?: string; shareOnly?: boolean } | null;
+  openClipModal: (
+    url: string,
+    info: MediaInfo,
+    opts?: { created?: boolean; editUrl?: string; shareOnly?: boolean },
+  ) => void;
+  closeClipModal: () => void;
+  /** True while a Create Clip request is in flight (drives the Clip button spinner). */
+  isCreatingClip: boolean;
+  /** Clip the channel/VOD currently being watched (live → instant Helix; VOD →
+   *  opens the trim editor). */
+  createClip: () => Promise<void>;
+  /** Active trim-editor session (a VOD by `vodId` OR a live broadcast by
+   *  `broadcastId`, plus where in it), or null. */
+  clipEditor: {
+    vodId?: string;
+    broadcastId?: string;
+    offsetSeconds: number;
+    channelName: string;
+  } | null;
+  openClipEditor: (opts: {
+    vodId?: string;
+    broadcastId?: string;
+    offsetSeconds: number;
+    channelName: string;
+  }) => void;
+  closeClipEditor: () => void;
   setCurrentStream: (stream: TwitchStream | null) => void;
   chatPlacement: string;
   isLoading: boolean;
@@ -210,6 +245,11 @@ interface AppState {
   lastRaidRedirectTime: number;
   profileModalUser: TwitchStream | null;
   setProfileModalUser: (user: TwitchStream | null) => void;
+  /** Which tab the streamer profile modal opens on (About by default; the
+   *  player-overlay "Clips & videos" button opens straight to Clips). */
+  profileModalInitialTab: 'about' | 'clips' | 'videos';
+  /** Open the streamer profile modal directly on its Clips/VODs view. */
+  openStreamerMedia: (user: TwitchStream) => void;
   // Navigation state for deep linking
   homeActiveTab: HomeTab;
   homeSelectedCategory: TwitchCategory | null;
@@ -361,6 +401,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   channelsInPopouts: new Set<string>(),
   currentMediaType: null,
   originalMediaUrl: null,
+  clipModal: null,
+  clipEditor: null,
+  isCreatingClip: false,
   setCurrentStream: (stream: TwitchStream | null) => set({ currentStream: stream }),
   chatPlacement: 'right',
   isLoading: false,
@@ -392,7 +435,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   // Track when raid redirect occurred to prevent auto-switch from overriding
   lastRaidRedirectTime: 0,
   profileModalUser: null,
-  setProfileModalUser: (user) => set({ profileModalUser: user }),
+  profileModalInitialTab: 'about',
+  setProfileModalUser: (user) => set({ profileModalUser: user, profileModalInitialTab: 'about' }),
+  openStreamerMedia: (user) => set({ profileModalUser: user, profileModalInitialTab: 'clips' }),
   // Navigation state for deep linking
   homeActiveTab: 'following' as HomeTab,
   homeSelectedCategory: null,
@@ -1005,6 +1050,82 @@ export const useAppStore = create<AppState>((set, get) => ({
       Logger.warn('Could not load more recommended streams:', e);
       set({ isLoadingMore: false, hasMoreRecommended: false });
     }
+  },
+  openClipModal: (url, info, opts) => {
+    trackActivity(`Opened clip modal: ${info?.title || url}`);
+    set({
+      clipModal: {
+        url,
+        info,
+        created: opts?.created,
+        editUrl: opts?.editUrl,
+        shareOnly: opts?.shareOnly,
+      },
+    });
+  },
+  closeClipModal: () => set({ clipModal: null }),
+  openClipEditor: (opts) => set({ clipEditor: opts }),
+  closeClipEditor: () => set({ clipEditor: null }),
+  createClip: async () => {
+    const { currentStream, currentMediaType, addToast, isCreatingClip, originalMediaUrl } = get();
+    if (isCreatingClip) return; // debounce rapid presses (keybind/button/palette)
+    const isLive = currentMediaType === 'live';
+    // A VOD is clippable whether it's playing directly (currentMediaType
+    // 'video') OR auto-loaded into the offline-chat space — both expose it via
+    // originalMediaUrl (https://twitch.tv/videos/<id>).
+    const vodId = isLive ? undefined : originalMediaUrl?.match(/\/videos\/(\d+)/)?.[1];
+    // A truly-offline channel (no VOD loaded) or a clip already playing can't be.
+    if (!currentStream || (!isLive && !vodId)) {
+      addToast('Play a live stream or VOD to clip it', 'warning');
+      return;
+    }
+    const channelName = currentStream.user_name || currentStream.user_login || 'this channel';
+
+    // Live AND VOD both go through the same GQL trim editor → clean share card.
+    // Live: resolve the broadcast id + uptime first (the editor then captures the
+    // recent ~90s of the live broadcast via the identical raw-media flow).
+    if (isLive) {
+      set({ isCreatingClip: true });
+      try {
+        const live = await invoke<{ broadcast_id: string; started_at: string }>(
+          'get_live_broadcast',
+          { broadcasterId: currentStream.user_id },
+        );
+        const offsetSeconds = live.started_at
+          ? Math.max(0, Math.floor((Date.now() - new Date(live.started_at).getTime()) / 1000))
+          : 0;
+        // A clip grabs the ~30s before the live edge; a stream <30s old has
+        // nothing to capture yet (endless "Preparing…"), so nudge instead.
+        if (offsetSeconds < 30) {
+          addToast('This stream just started — give it ~30s before clipping', 'warning');
+          return;
+        }
+        trackActivity(`Created a clip of ${channelName}`);
+        get().openClipEditor({ broadcastId: live.broadcast_id, offsetSeconds, channelName });
+      } catch (e) {
+        const code = String(e);
+        const msg = code.includes('OFFLINE')
+          ? 'You can only clip a live stream'
+          : code.includes('REAUTH')
+            ? 'Log out and back in to enable clip creation'
+            : 'Could not start a clip';
+        addToast(msg, 'error');
+        Logger.error('[createClip] live failed:', e);
+      } finally {
+        set({ isCreatingClip: false });
+      }
+      return;
+    }
+
+    // VOD → the trim editor. A clip captures the ~30s BEFORE the playhead; in the
+    // VOD's first 30s there's nothing to grab, so block it up front (the editor
+    // refines the exact in/out from there).
+    const vodOffset = Math.floor(getPlayerControls()?.getCurrentTime() ?? 0);
+    if (vodOffset < 30) {
+      addToast('Move ~30s into the VOD first — a clip grabs the previous 30s', 'warning');
+      return;
+    }
+    get().openClipEditor({ vodId: vodId as string, offsetSeconds: vodOffset, channelName });
   },
   playMedia: async (type: 'clip' | 'video', url: string, info: MediaInfo) => {
     set({ isLoading: true });
@@ -1719,7 +1840,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
       if (info.user_id) {
         try {
-          const videos = await invoke<TwitchVideo[]>('get_user_videos', {
+          const [videos] = await invoke<[TwitchVideo[], string | null]>('get_user_videos', {
             userId: info.user_id,
             sort: 'time',
             limit: 1

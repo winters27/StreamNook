@@ -2,7 +2,7 @@ import React, { useMemo, useState, useEffect, memo, useSyncExternalStore } from 
 import { Gift } from 'lucide-react';
 import { Tooltip } from './ui/Tooltip';
 import { parseMessage } from '../services/twitchChat';
-import { queueEmoteForCaching, EmoteSet, Emote } from '../services/emoteService';
+import { queueEmoteForDisplayCaching, getCachedEmoteUrl, inlineEmoteTier, EmoteSet, Emote } from '../services/emoteService';
 import { getCachedEmojiUrl, parseEmojisSync } from '../services/emojiService';
 import { calculateHalfPadding } from '../utils/chatLayoutUtils';
 import { computePaintStyle, getBadgeImageUrl, getBadgeFallbackUrls, queueCosmeticForCaching } from '../services/seventvService';
@@ -22,7 +22,7 @@ import { flashTitle } from '../utils/titleFlasher';
 import { playSoundThrottled } from '../utils/notificationSound';
 import { getDisplayedName, getColorOverride } from '../utils/userChatOverrides';
 import { LinkPreviewCard } from './chat/LinkPreviewCard';
-import { extractPreviewableUrls, prettyUrlLabel } from '../services/linkPreviewService';
+import { extractPreviewUrls, prettyUrlLabel } from '../services/linkPreviewService';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 // 7TV cosmetics have complex dynamic structures that vary by API version
@@ -451,24 +451,29 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
   // Extract userId once to prevent re-renders
   const userId = useMemo(() => parsed.tags.get('user-id'), [parsed.tags]);
 
-  // Trusted-domain link preview cards. Only allowlisted hosts (YouTube, Twitch,
-  // imgur, etc.) auto-expand; every other link stays a plain clickable link, so
-  // this never passively fetches an arbitrary pasted URL. Capped per message so
-  // a link wall can't spawn a card wall. Computed unconditionally here (before
-  // the event-type early returns below) to keep hook order stable; only the
-  // regular-message render path actually mounts the cards.
+  // Link preview cards. Allowlisted hosts (YouTube, Twitch, imgur, etc.) auto-
+  // expand; every other link is surfaced too but as a click-to-load chip, so an
+  // arbitrary pasted URL is never fetched passively (that would reveal the
+  // user's IP to the linked host). Capped per message so a link wall can't spawn
+  // a card wall. Computed unconditionally here (before the event-type early
+  // returns below) to keep hook order stable; only the regular-message render
+  // path actually mounts the cards.
   const linkPreviewsEnabled = chatDesign?.link_previews ?? true;
   // "Clean" mode (default) hides the inline link and shows only the card. When
   // the user opts to keep the link, both the inline link and the card show.
   const keepInlineLink = chatDesign?.link_preview_keep_link ?? false;
-  // URLs (max 2) that a preview card represents below the message. In clean mode
-  // the inline link for these is suppressed (the card is the link — it opens on
-  // click and shows the full URL on hover). Kept as a small array, not a Set:
-  // `.includes` over ≤2 items is faster than allocating a Set per message on the
-  // chat hot path.
-  const linkPreviewUrls = useMemo(
-    () => (linkPreviewsEnabled ? extractPreviewableUrls(parsed.content, 2) : []),
+  // Previewable URLs (≤2 trusted + ≤2 untrusted), each flagged with trust. Kept
+  // as small arrays, not Sets: `.includes` over a handful of items is faster
+  // than allocating a Set per message on the chat hot path.
+  const linkPreviewItems = useMemo(
+    () => (linkPreviewsEnabled ? extractPreviewUrls(parsed.content, 2) : []),
     [linkPreviewsEnabled, parsed.content],
+  );
+  // Only trusted links suppress their inline URL in clean mode (their card is
+  // the link). Untrusted links keep the inline link and add a load-on-click chip.
+  const trustedPreviewUrls = useMemo(
+    () => linkPreviewItems.filter((i) => i.trusted).map((i) => i.url),
+    [linkPreviewItems],
   );
 
   // Per-user nickname/color overrides. The original display name + username
@@ -673,24 +678,44 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
       const emoteUrl = segment.emoteUrl ||
         (segment.emoteId ? `https://static-cdn.jtvnw.net/emoticons/v2/${segment.emoteId}/default/dark/3.0` : '');
 
-      if (emoteUrl && !emoteUrl.startsWith('asset://') && !emoteUrl.includes('asset.localhost') && segment.emoteId) {
-        queueEmoteForCaching(segment.emoteId, emoteUrl);
+      // Provider detection up front (reused for tiered caching, disk-first
+      // render, srcSet, and the hover preview below). BTTV IDs are ALSO 24 hex
+      // characters, so the other CDNs are excluded explicitly.
+      const is7TVEmote = !!segment.emoteId && (
+        emoteUrl.includes('7tv') ||
+        ((segment.emoteId.length === 24 || segment.emoteId.length === 26) &&
+          !emoteUrl.includes('jtvnw.net') &&
+          !emoteUrl.includes('frankerfacez') &&
+          !emoteUrl.includes('betterttv'))
+      );
+      const emoteTier = inlineEmoteTier();
+
+      // Disk-first: prefer the on-disk copy at the rendered tier. On a miss,
+      // queue it for caching (per-tier for 7TV) so the NEXT view is local.
+      // This is what makes returning to a stream fast instead of re-pulling
+      // every emote from the CDN.
+      const cachedEmoteUrl = segment.emoteId
+        ? getCachedEmoteUrl(segment.emoteId, is7TVEmote ? '7tv' : undefined, emoteTier)
+        : undefined;
+      if (!cachedEmoteUrl && emoteUrl && !emoteUrl.startsWith('asset://') && !emoteUrl.includes('asset.localhost') && segment.emoteId) {
+        queueEmoteForDisplayCaching(segment.emoteId, is7TVEmote ? '7tv' : undefined, emoteUrl, emoteTier);
       }
 
       // If it's an overlay (zero-width inside grid), it naturally sits on top and doesn't need negative margins
       // The grid "place-items-center" handles exact overlaying algorithmically!
+      // srcSet lets the browser pick density from the CDN, but only when we are
+      // NOT serving a fixed-size disk file (a local file is one resolution, so
+      // srcSet would be meaningless and could re-pull from the network).
       let srcSet: string | undefined = undefined;
-      // Inject srcSet for 7TV emotes to support wide sizes natively at 2x, 3x, and 4x resolutions
-      // Note: BTTV IDs are ALSO 24 hex characters, so we explicitly exclude betterttv
-      if (segment.emoteId && (emoteUrl.includes('7tv') || segment.emoteId.length === 24 || segment.emoteId.length === 26)) {
-        if (!emoteUrl.includes('jtvnw.net') && !emoteUrl.includes('frankerfacez') && !emoteUrl.includes('betterttv')) {
-          srcSet = `https://cdn.7tv.app/emote/${segment.emoteId}/1x.avif 1x, https://cdn.7tv.app/emote/${segment.emoteId}/2x.avif 2x, https://cdn.7tv.app/emote/${segment.emoteId}/3x.avif 3x, https://cdn.7tv.app/emote/${segment.emoteId}/4x.avif 4x`;
-        }
+      if (!cachedEmoteUrl && is7TVEmote && segment.emoteId) {
+        srcSet = `https://cdn.7tv.app/emote/${segment.emoteId}/1x.avif 1x, https://cdn.7tv.app/emote/${segment.emoteId}/2x.avif 2x, https://cdn.7tv.app/emote/${segment.emoteId}/3x.avif 3x, https://cdn.7tv.app/emote/${segment.emoteId}/4x.avif 4x`;
       }
+
+      const displaySrc = cachedEmoteUrl || emoteUrl;
 
       const imgElement = (
         <img
-          src={emoteUrl}
+          src={displaySrc}
           srcSet={srcSet}
           alt={segment.content}
           loading="lazy"
@@ -707,8 +732,21 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
             if (onEmoteRightClick) onEmoteRightClick(segment.content);
           }}
           onError={(e) => {
-            e.currentTarget.style.display = 'none';
-            e.currentTarget.insertAdjacentText('afterend', segment.content);
+            const t = e.currentTarget;
+            // A stale/missing disk file falls back to the CDN once (tier for
+            // 7TV, base otherwise) before we give up and show the text code.
+            if (cachedEmoteUrl && !t.dataset.cdnFallback) {
+              t.dataset.cdnFallback = '1';
+              if (is7TVEmote && segment.emoteId) {
+                t.srcset = `https://cdn.7tv.app/emote/${segment.emoteId}/1x.avif 1x, https://cdn.7tv.app/emote/${segment.emoteId}/2x.avif 2x, https://cdn.7tv.app/emote/${segment.emoteId}/3x.avif 3x, https://cdn.7tv.app/emote/${segment.emoteId}/4x.avif 4x`;
+                t.src = `https://cdn.7tv.app/emote/${segment.emoteId}/${emoteTier}.avif`;
+              } else {
+                t.src = emoteUrl;
+              }
+              return;
+            }
+            t.style.display = 'none';
+            t.insertAdjacentText('afterend', segment.content);
           }}
         />
       );
@@ -720,14 +758,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
       // "Right-click to copy" hint at the bottom so the copy affordance
       // still surfaces.
       const isCompactTooltip = !!settings?.chat_design?.compact_emote_tooltips;
-      // Provider detection mirrors the srcSet logic a few lines up.
-      const is7TVEmote = !!segment.emoteId && (
-        emoteUrl.includes('7tv') ||
-        ((segment.emoteId.length === 24 || segment.emoteId.length === 26) &&
-          !emoteUrl.includes('jtvnw.net') &&
-          !emoteUrl.includes('frankerfacez') &&
-          !emoteUrl.includes('betterttv'))
-      );
+      // is7TVEmote was computed at the top of this branch (reused here).
       const providerLabel =
         is7TVEmote || emoteUrl.includes('7tv') ? '7TV'
         : emoteUrl.includes('betterttv') ? 'BetterTTV'
@@ -752,15 +783,24 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
               style={{ height: hoverPreviewSize, maxWidth: hoverPreviewSize * 2 }}
               referrerPolicy="no-referrer"
               onError={(e) => {
-                // 7TV fallback chain: 4x avif → 2x → 1x. Matches the
-                // picker's EmoteGridItem tooltip behavior.
+                const t = e.currentTarget;
+                // Some emotes have no working 4x (or a flaky avif), which is why
+                // a Large preview sometimes blanked. Walk every size AND both
+                // formats, then fall back to the cached inline-tier copy as a
+                // last resort so the preview is never empty.
                 if (is7TVEmote && segment.emoteId) {
-                  const t = e.currentTarget;
-                  if (t.src.includes('/4x.avif')) {
-                    t.src = `https://cdn.7tv.app/emote/${segment.emoteId}/2x.avif`;
-                  } else if (t.src.includes('/2x.avif')) {
-                    t.src = `https://cdn.7tv.app/emote/${segment.emoteId}/1x.avif`;
+                  const ladder = ['4x', '3x', '2x', '1x'].flatMap((s) => [
+                    `https://cdn.7tv.app/emote/${segment.emoteId}/${s}.avif`,
+                    `https://cdn.7tv.app/emote/${segment.emoteId}/${s}.webp`,
+                  ]);
+                  let step = Number(t.dataset.fb || '0');
+                  while (step < ladder.length && ladder[step] === t.src) step++;
+                  if (step < ladder.length) {
+                    t.dataset.fb = String(step + 1);
+                    t.src = ladder[step];
+                    return;
                   }
+                  if (cachedEmoteUrl && t.src !== cachedEmoteUrl) t.src = cachedEmoteUrl;
                 }
               }}
             />
@@ -926,9 +966,11 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
         const url = part.startsWith('http') ? part : `https://${part}`;
 
         // In clean mode a preview card represents this link below the message —
-        // drop the inline URL so it isn't duplicated above its own card. In
-        // keep-link mode we fall through and render the inline link too.
-        if (!keepInlineLink && linkPreviewUrls.includes(url)) return null;
+        // drop the inline URL so it isn't duplicated above its own card. Only
+        // trusted links auto-card, so only they are suppressed; untrusted links
+        // keep their inline URL (their preview is click-to-load). In keep-link
+        // mode we fall through and render the inline link too.
+        if (!keepInlineLink && trustedPreviewUrls.includes(url)) return null;
 
         const shorten = chatDesign?.shorten_links ?? true;
         const label = shorten ? prettyUrlLabel(part) : part;
@@ -937,8 +979,8 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
           <a
             key={index}
             href={url}
-            target="_blank"
-            rel="noopener noreferrer"
+            // No target="_blank": the webview opens _blank links externally on
+            // its own, which would stack a second tab on top of the open() below.
             className="text-blue-400 hover:text-blue-300 underline cursor-pointer"
             onClick={async (e) => {
               e.preventDefault();
@@ -2388,7 +2430,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
                     )}
                   </span>
                 </Tooltip>
-                <span style={{ fontWeight: 300 }} className="text-textPrimary break-words">
+                <span style={{ fontWeight: 'var(--chat-body-weight, 300)' }} className="text-textPrimary break-words">
                   <span
                     style={
                       moderationContext && (chatDesign?.deleted_message_style ?? 'strikethrough') === 'strikethrough'
@@ -2413,13 +2455,19 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
           </span>
         </div>
       </div>
-      {/* Inline link preview cards (trusted domains only). showChip is on only
-          in clean mode, where the inline link is hidden and the card/chip is the
-          sole representation of the link. */}
-      {linkPreviewUrls.length > 0 && (
+      {/* Inline link preview cards. Trusted links auto-expand; untrusted links
+          render a click-to-load chip (trusted={false}). showChip (the no-preview
+          fallback link chip) applies only to trusted links in clean mode, where
+          the inline link is hidden so the card/chip is the sole representation. */}
+      {linkPreviewItems.length > 0 && (
         <div className="flex flex-col items-start gap-1">
-          {linkPreviewUrls.map((u) => (
-            <LinkPreviewCard key={u} url={u} showChip={!keepInlineLink} />
+          {linkPreviewItems.map((it) => (
+            <LinkPreviewCard
+              key={it.url}
+              url={it.url}
+              trusted={it.trusted}
+              showChip={it.trusted && !keepInlineLink}
+            />
           ))}
         </div>
       )}

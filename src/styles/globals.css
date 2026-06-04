@@ -21,6 +21,69 @@
   font-display: swap;
 }
 
+/*
+ * Inter Variable Font
+ * Twitch's UI + chat body typeface (open-source, SIL OFL). Offered as the
+ * "Twitch" choice in the Theme settings font picker.
+ */
+@font-face {
+  font-family: "Inter";
+  src: url("../assets/fonts/Inter-Variable.woff2") format("woff2-variations"),
+       url("../assets/fonts/Inter-Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Inter";
+  src: url("../assets/fonts/Inter-VariableItalic.woff2") format("woff2-variations"),
+       url("../assets/fonts/Inter-VariableItalic.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: italic;
+  font-display: swap;
+}
+
+/*
+ * Lean / modern sans options for the Theme > Font picker. All open-source
+ * variable fonts (SIL OFL), self-hosted like Satoshi + Inter. Normal axis only.
+ */
+@font-face {
+  font-family: "Geist";
+  src: url("../assets/fonts/Geist-Variable.woff2") format("woff2-variations"),
+       url("../assets/fonts/Geist-Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Manrope";
+  src: url("../assets/fonts/Manrope-Variable.woff2") format("woff2-variations"),
+       url("../assets/fonts/Manrope-Variable.woff2") format("woff2");
+  font-weight: 200 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Outfit";
+  src: url("../assets/fonts/Outfit-Variable.woff2") format("woff2-variations"),
+       url("../assets/fonts/Outfit-Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Space Grotesk";
+  src: url("../assets/fonts/SpaceGrotesk-Variable.woff2") format("woff2-variations"),
+       url("../assets/fonts/SpaceGrotesk-Variable.woff2") format("woff2");
+  font-weight: 300 700;
+  font-style: normal;
+  font-display: swap;
+}
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -197,9 +260,18 @@ body,
   text-rendering: inherit;
 }
 
+/* User-selectable app font. Theme settings sets --app-font via applyFont()
+   (themes/index.ts); kept as its own variable so switching color themes never
+   touches it. Always defined here so the value is valid before JS runs. */
+:root {
+  --app-font: "Satoshi", -apple-system, BlinkMacSystemFont, sans-serif;
+  /* Chat message body weight; applyFont() lowers it for denser faces (Inter). */
+  --chat-body-weight: 300;
+}
+
 body {
   margin: 0;
-  font-family: "Satoshi", -apple-system, BlinkMacSystemFont, sans-serif;
+  font-family: var(--app-font);
   background-color: var(--color-background);
   color: var(--color-text-primary);
   font-size: 13px;

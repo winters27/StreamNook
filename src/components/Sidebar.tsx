@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useCallback } from 'react';
+import { useEffect, useState, useRef, useCallback, memo } from 'react';
 import { useAppStore } from '../stores/AppStore';
 import { ChevronLeft, ChevronRight, Users, Sparkles, Radio, Heart, Gift, Flame } from 'lucide-react';
 import type { TwitchStream } from '../types';
@@ -45,6 +45,202 @@ const persistWidth = (width: number): void => {
     }
 };
 
+// Pure helper: format a viewer count like 12300 -> "12.3K".
+const formatViewerCount = (count: number): string => {
+    if (count >= 1000000) {
+        return (count / 1000000).toFixed(1) + 'M';
+    } else if (count >= 1000) {
+        return (count / 1000).toFixed(1) + 'K';
+    }
+    return count.toString();
+};
+
+type HypeTrainStatus = { level: number; isGolden: boolean };
+
+interface SectionHeaderProps {
+    icon: any;
+    label: string;
+    count: number;
+    showExpanded: boolean;
+}
+
+// Hoisted to module scope (and memoized) so it keeps a stable component
+// identity across Sidebar re-renders. Defining it inside Sidebar made React
+// treat it as a brand-new component type on every render, which unmounted and
+// remounted the whole list on each background refresh — the visible "glitch".
+const SectionHeader = memo(({ icon: Icon, label, count, showExpanded }: SectionHeaderProps) => (
+    <div className={`
+        flex items-center gap-2 px-2 py-2 text-textSecondary
+        ${showExpanded ? 'justify-start' : 'justify-center'}
+    `}>
+        <Icon size={16} className="flex-shrink-0" />
+        {showExpanded && (
+            <>
+                <span className="text-xs font-semibold uppercase tracking-wider">{label}</span>
+                <span className="text-xs text-textMuted">({count})</span>
+            </>
+        )}
+    </div>
+));
+
+interface StreamItemProps {
+    stream: TwitchStream;
+    showFavorite?: boolean;
+    showExpanded: boolean;
+    isCurrentStream: boolean;
+    isFavorite: boolean;
+    hasDrops: boolean;
+    hypeTrainStatus: HypeTrainStatus | undefined;
+    watchStreak: number;
+    isHeartAnimating: boolean;
+    profileImage: string;
+    onStreamClick: (e: React.MouseEvent, stream: TwitchStream) => void;
+    onFavoriteClick: (e: React.MouseEvent, userId: string) => void;
+}
+
+// Hoisted + memoized for the same reason as SectionHeader: a stable identity
+// means a background stream refresh reconciles each row in place (text/badges
+// update) instead of tearing the avatar <img> down and replaying its fade-in.
+// All per-row data is passed in as props so memo can skip rows whose data is
+// unchanged when an unrelated piece of state (e.g. hover) updates the parent.
+const StreamItem = memo(({
+    stream,
+    showFavorite = false,
+    showExpanded,
+    isCurrentStream,
+    isFavorite,
+    hasDrops,
+    hypeTrainStatus,
+    watchStreak,
+    isHeartAnimating,
+    profileImage,
+    onStreamClick,
+    onFavoriteClick,
+}: StreamItemProps) => {
+    return (
+        <Tooltip content={showExpanded ? null : `${stream.user_name} - ${stream.game_name}${hasDrops ? ' (Drops enabled)' : ''}`} delay={300} side="right">
+            <div
+                className={`group
+                    flex items-center px-2 py-1.5 cursor-pointer rounded transition-all duration-200
+                    ${isCurrentStream
+                        ? 'bg-surface-active border-l-2 border-accent'
+                        : 'hover:bg-surface-hover border-l-2 border-transparent'
+                    }
+                    ${showExpanded ? 'gap-2 justify-start' : 'gap-0 justify-center'}
+                `}
+                onClick={(e) => onStreamClick(e, stream)}
+                onContextMenu={(e) => useContextMenuStore.getState().openMenu(e, stream)}
+            >
+            {/* Avatar with live indicator */}
+            <div className="relative flex-shrink-0 transition-all duration-200">
+                <img
+                    src={profileImage}
+                    alt={stream.user_name}
+                    className={`rounded-full object-cover transition-all duration-200 ${showExpanded ? 'w-8 h-8' : 'w-9 h-9'}`}
+                    onError={(e) => {
+                        (e.target as HTMLImageElement).src = 'https://static-cdn.jtvnw.net/user-default-pictures-uv/75305d54-c7cc-40d1-bb9c-91c46bf27829-profile_image-70x70.png';
+                    }}
+                />
+                {/* Live presence dot: static at rest (the sidebar only ever lists
+                    live channels, so a per-row pulse is redundant and, stacked
+                    across an expanded list, needless idle animation). Reuses the
+                    stream-card `pulse-dot` keyframes (transform-scale, GPU-cheap)
+                    and only animates on the hovered row via group-hover. */}
+                <div className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-background group-hover:animate-[pulse-dot_2s_ease-in-out_infinite]" style={{ backgroundColor: '#eb0000' }} />
+                {/* Drops indicator on avatar - only show in compact mode */}
+                {hasDrops && !showExpanded && (
+                    <div className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-accent flex items-center justify-center border border-background">
+                        <Gift size={10} className="text-white" />
+                    </div>
+                )}
+                {/* Hype Train indicator on avatar - only show in compact mode when no drops */}
+                {hypeTrainStatus && !showExpanded && !hasDrops && (
+                    <Tooltip content={`Hype Train LVL ${hypeTrainStatus.level}`} delay={100} side="right">
+                        <div className={`absolute -top-1 -right-1 w-4 h-4 rounded-full flex items-center justify-center border border-background ${hypeTrainStatus.isGolden ? 'bg-yellow-500' : 'bg-purple-600'}`}>
+                            <svg className="w-2.5 h-2.5 text-white" viewBox="0 0 15 13" fill="none">
+                                <path fillRule="evenodd" clipRule="evenodd" d="M4.10001 0.549988H2.40001V4.79999H0.700012V10.75H1.55001C1.55001 11.6889 2.31113 12.45 3.25001 12.45C4.1889 12.45 4.95001 11.6889 4.95001 10.75H5.80001C5.80001 11.6889 6.56113 12.45 7.50001 12.45C8.4389 12.45 9.20001 11.6889 9.20001 10.75H10.05C10.05 11.6889 10.8111 12.45 11.75 12.45C12.6889 12.45 13.45 11.6889 13.45 10.75H14.3V0.549988H6.65001V2.24999H7.50001V4.79999H4.10001V0.549988ZM12.6 9.04999V6.49999H2.40001V9.04999H12.6ZM9.20001 4.79999H12.6V2.24999H9.20001V4.79999Z" fill="currentColor" />
+                            </svg>
+                        </div>
+                    </Tooltip>
+                )}
+            </div>
+
+            {/* Stream info - only show when expanded */}
+            {showExpanded && (
+                <div className="flex-1 min-w-0 overflow-hidden animate-fade-in">
+                    <div className="flex items-center gap-1">
+                        <span className="text-textPrimary text-sm font-medium truncate">
+                            {stream.user_name}
+                        </span>
+                        {stream.broadcaster_type === 'partner' && (
+                            <svg className="w-3 h-3 flex-shrink-0" viewBox="0 0 16 16" fill="#9146FF">
+                                <path fillRule="evenodd" d="M12.5 3.5 8 2 3.5 3.5 2 8l1.5 4.5L8 14l4.5-1.5L14 8l-1.5-4.5ZM7 11l4.5-4.5L10 5 7 8 5.5 6.5 4 8l3 3Z" clipRule="evenodd" />
+                            </svg>
+                        )}
+                        {watchStreak > 0 && (
+                            <Tooltip content={`${watchStreak} Watch Streak`} delay={200} side="top">
+                                <div className="flex items-center gap-[2px] ml-0.5 text-orange-400 opacity-90 transition-opacity hover:opacity-100 cursor-default">
+                                    <span className="text-[10px] font-bold leading-none translate-y-[0.5px]">{watchStreak}</span>
+                                    <Flame size={12} strokeWidth={2.5} className="text-orange-500 fill-orange-500/20" />
+                                </div>
+                            </Tooltip>
+                        )}
+                    </div>
+                    <div className="flex items-center gap-1 text-xs text-textMuted truncate">
+                        <span className="truncate">{stream.game_name || 'Just Chatting'}</span>
+                        {/* Drops indicator - show next to game name */}
+                        {hasDrops && (
+                            <Tooltip content="Drops enabled" delay={100} side="top">
+                                <span>
+                                    <Gift size={10} className="text-accent flex-shrink-0" />
+                                </span>
+                            </Tooltip>
+                        )}
+                        {/* Hype Train indicator - show next to game name */}
+                        {hypeTrainStatus && (
+                            <Tooltip content={`Hype Train LVL ${hypeTrainStatus.level}`} delay={100} side="top">
+                                <span className={`flex items-center gap-0.5 ${hypeTrainStatus.isGolden ? 'text-yellow-400' : 'text-purple-400'} flex-shrink-0`}>
+                                    <svg className="w-2.5 h-2.5" viewBox="0 0 15 13" fill="none">
+                                        <path fillRule="evenodd" clipRule="evenodd" d="M4.10001 0.549988H2.40001V4.79999H0.700012V10.75H1.55001C1.55001 11.6889 2.31113 12.45 3.25001 12.45C4.1889 12.45 4.95001 11.6889 4.95001 10.75H5.80001C5.80001 11.6889 6.56113 12.45 7.50001 12.45C8.4389 12.45 9.20001 11.6889 9.20001 10.75H10.05C10.05 11.6889 10.8111 12.45 11.75 12.45C12.6889 12.45 13.45 11.6889 13.45 10.75H14.3V0.549988H6.65001V2.24999H7.50001V4.79999H4.10001V0.549988ZM12.6 9.04999V6.49999H2.40001V9.04999H12.6ZM9.20001 4.79999H12.6V2.24999H9.20001V4.79999Z" fill="currentColor" />
+                                    </svg>
+                                </span>
+                            </Tooltip>
+                        )}
+                    </div>
+                </div>
+            )}
+
+            {/* Viewer count and favorite button */}
+            {showExpanded && (
+                <div className="flex items-center gap-1 flex-shrink-0 animate-fade-in">
+                    <div className="flex items-center gap-1 text-xs text-textSecondary">
+                        <Radio size={10} style={{ color: '#eb0000' }} />
+                        <span>{formatViewerCount(stream.viewer_count)}</span>
+                    </div>
+                    {showFavorite && (
+                        <Tooltip content={isFavorite ? 'Remove from favorites' : 'Add to favorites'} delay={200} side="top">
+                            <button
+                                onClick={(e) => onFavoriteClick(e, stream.user_id)}
+                                className={`p-1 flex items-center justify-center bg-transparent transition-transform duration-300 hover:scale-110 active:scale-95`}
+                            >
+                                <Heart
+                                    size={14}
+                                    fill={isFavorite ? 'url(#glass-heart-fill)' : 'none'}
+                                    stroke={isFavorite ? 'url(#glass-heart-stroke)' : 'currentColor'}
+                                    strokeWidth={isFavorite ? 1.5 : 2}
+                                    className={`transition-all duration-300 ${isFavorite ? 'drop-shadow-[0_4px_8px_rgba(236,72,153,0.5)]' : 'text-textMuted hover:text-white opacity-0 group-hover:opacity-100'} ${isHeartAnimating ? 'animate-heart-break' : ''}`}
+                                />
+                            </button>
+                        </Tooltip>
+                    )}
+
+                </div>
+            )}
+        </div>
+    </Tooltip>
+    );
+});
+
 const Sidebar = () => {
     const {
         followedStreams,
@@ -54,13 +250,9 @@ const Sidebar = () => {
         loadMoreRecommendedStreams,
         hasMoreRecommended,
         isLoadingMore,
-        startStream,
         currentStream,
         isAuthenticated,
         isFavoriteStreamer,
-        toggleFavoriteStreamer,
-        isHomeActive,
-        toggleHome,
         // Hype Train status for stream badges
         activeHypeTrainChannels,
         refreshHypeTrainStatuses,
@@ -246,6 +438,11 @@ const Sidebar = () => {
         const wasVisible = prevSidebarVisibleRef.current;
         prevSidebarVisibleRef.current = isSidebarVisible;
 
+        // In expanded mode the sidebar is permanently open, so a hover-out is not
+        // a "close" — refreshing here just reshuffles the list under the user's
+        // cursor. The periodic background sync keeps expanded mode fresh instead.
+        if (sidebarMode === 'expanded') return;
+
         // Refresh on falling edge (sidebar just closed)
         if (!isSidebarVisible && wasVisible) {
             Logger.debug('[Sidebar] Refreshing streams on sidebar close (Layout Shift Prevention)');
@@ -254,21 +451,23 @@ const Sidebar = () => {
             }
             loadRecommendedStreams();
         }
-    }, [isHovered, isEdgeHovered, isManuallyExpanded, isAuthenticated, loadFollowedStreams, loadRecommendedStreams]);
+    }, [isHovered, isEdgeHovered, isManuallyExpanded, isAuthenticated, loadFollowedStreams, loadRecommendedStreams, sidebarMode]);
 
     // Constant background freshness (every 3 minutes)
     // Ensures sidebar is fresh even if user hasn't opened/closed it in hours.
     // Visibility-gated: tray-backgrounded sessions stop syncing entirely.
     const backgroundStreamSync = useCallback(() => {
         const isSidebarVisible = isHovered || isEdgeHovered || isManuallyExpanded;
-        // Only sync if sidebar is currently HIDDEN to prevent mid-reading layout shifts
-        if (!isSidebarVisible) {
+        // In collapsible modes, only sync while HIDDEN to avoid mid-reading layout
+        // shifts. Expanded mode is always on-screen, but rows now reconcile in
+        // place (no remount), so a periodic sync there is smooth — keep it fresh.
+        if (sidebarMode === 'expanded' || !isSidebarVisible) {
             Logger.debug('[Sidebar] Background stream sync');
             if (isAuthenticated) {
                 loadFollowedStreams();
             }
         }
-    }, [isHovered, isEdgeHovered, isManuallyExpanded, isAuthenticated, loadFollowedStreams]);
+    }, [isHovered, isEdgeHovered, isManuallyExpanded, isAuthenticated, loadFollowedStreams, sidebarMode]);
     useVisibleInterval(backgroundStreamSync, 3 * 60 * 1000);
 
     // Infinite scroll for recommended streams
@@ -437,23 +636,11 @@ const Sidebar = () => {
         return `https://static-cdn.jtvnw.net/user-default-pictures-uv/75305d54-c7cc-40d1-bb9c-91c46bf27829-profile_image-70x70.png`;
     }, [profileImages]);
 
-    const { visible, width, showExpanded, isOverlay } = calculateSidebarState();
-
-    // If sidebar is completely disabled, render nothing
-    if (sidebarMode === 'disabled') {
-        return null;
-    }
-
-    // Sort followed streams by favorites first
-    const sortedFollowedStreams = [...followedStreams].sort((a, b) => {
-        const aIsFavorite = isFavoriteStreamer(a.user_id);
-        const bIsFavorite = isFavoriteStreamer(b.user_id);
-        if (aIsFavorite && !bIsFavorite) return -1;
-        if (!aIsFavorite && bIsFavorite) return 1;
-        return 0;
-    });
-
-    const handleStreamClick = (e: React.MouseEvent, stream: TwitchStream) => {
+    // Stable across renders (defined before the early return to keep hook order
+    // constant) so memoized StreamItem rows aren't invalidated by a new callback
+    // identity each render. Reactive store values are read via getState() at call
+    // time rather than captured in deps.
+    const handleStreamClick = useCallback((e: React.MouseEvent, stream: TwitchStream) => {
         // Ctrl/Cmd+click adds the stream to multinook instead of switching to it.
         // The flying-card animation originates from the click point so it visually
         // matches the right-click context-menu "Add to MultiNook" action.
@@ -465,15 +652,17 @@ const Sidebar = () => {
         }
         // Exit home/PIP mode when clicking on a new stream from sidebar
         // This ensures the user goes directly to the stream view
+        const { isHomeActive, toggleHome, startStream } = useAppStore.getState();
         if (isHomeActive) {
             toggleHome();
         }
         startStream(stream.user_login, stream);
-    };
+    }, []);
 
-    const handleFavoriteClick = (e: React.MouseEvent, userId: string) => {
+    const handleFavoriteClick = useCallback((e: React.MouseEvent, userId: string) => {
         e.stopPropagation();
 
+        const { isFavoriteStreamer, toggleFavoriteStreamer } = useAppStore.getState();
         const isFavorite = isFavoriteStreamer(userId);
 
         if (isFavorite) {
@@ -489,159 +678,23 @@ const Sidebar = () => {
         } else {
             toggleFavoriteStreamer(userId);
         }
-    };
+    }, []);
 
+    const { visible, width, showExpanded, isOverlay } = calculateSidebarState();
 
+    // If sidebar is completely disabled, render nothing
+    if (sidebarMode === 'disabled') {
+        return null;
+    }
 
-    const formatViewerCount = (count: number): string => {
-        if (count >= 1000000) {
-            return (count / 1000000).toFixed(1) + 'M';
-        } else if (count >= 1000) {
-            return (count / 1000).toFixed(1) + 'K';
-        }
-        return count.toString();
-    };
-
-    const StreamItem = ({ stream, showFavorite = false }: { stream: TwitchStream; showFavorite?: boolean }) => {
-        const isCurrentStream = currentStream?.user_login === stream.user_login;
-        const isFavorite = isFavoriteStreamer(stream.user_id);
-        const hasDrops = stream.game_name ? dropsGameNames.has(stream.game_name.toLowerCase()) : false;
-        const hypeTrainStatus = activeHypeTrainChannels.get(stream.user_id);
-        const watchStreak = watchStreaks[stream.user_id];
-
-        return (
-            <Tooltip content={showExpanded ? null : `${stream.user_name} - ${stream.game_name}${hasDrops ? ' (Drops enabled)' : ''}`} delay={300} side="right">
-                <div
-                    className={`group
-                        flex items-center px-2 py-1.5 cursor-pointer rounded transition-all duration-200
-                        ${isCurrentStream
-                            ? 'bg-surface-active border-l-2 border-accent'
-                            : 'hover:bg-surface-hover border-l-2 border-transparent'
-                        }
-                        ${showExpanded ? 'gap-2 justify-start' : 'gap-0 justify-center'}
-                    `}
-                    onClick={(e) => handleStreamClick(e, stream)}
-                    onContextMenu={(e) => useContextMenuStore.getState().openMenu(e, stream)}
-                >
-                {/* Avatar with live indicator */}
-                <div className="relative flex-shrink-0 transition-all duration-200">
-                    <img
-                        src={getProfileImage(stream)}
-                        alt={stream.user_name}
-                        className={`rounded-full object-cover transition-all duration-200 ${showExpanded ? 'w-8 h-8' : 'w-9 h-9'}`}
-                        onError={(e) => {
-                            (e.target as HTMLImageElement).src = 'https://static-cdn.jtvnw.net/user-default-pictures-uv/75305d54-c7cc-40d1-bb9c-91c46bf27829-profile_image-70x70.png';
-                        }}
-                    />
-                    <div className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-background animate-pulse" style={{ backgroundColor: '#eb0000' }} />
-                    {/* Drops indicator on avatar - only show in compact mode */}
-                    {hasDrops && !showExpanded && (
-                        <div className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-accent flex items-center justify-center border border-background">
-                            <Gift size={10} className="text-white" />
-                        </div>
-                    )}
-                    {/* Hype Train indicator on avatar - only show in compact mode when no drops */}
-                    {hypeTrainStatus && !showExpanded && !hasDrops && (
-                        <Tooltip content={`Hype Train LVL ${hypeTrainStatus.level}`} delay={100} side="right">
-                            <div className={`absolute -top-1 -right-1 w-4 h-4 rounded-full flex items-center justify-center border border-background ${hypeTrainStatus.isGolden ? 'bg-yellow-500' : 'bg-purple-600'}`}>
-                                <svg className="w-2.5 h-2.5 text-white" viewBox="0 0 15 13" fill="none">
-                                    <path fillRule="evenodd" clipRule="evenodd" d="M4.10001 0.549988H2.40001V4.79999H0.700012V10.75H1.55001C1.55001 11.6889 2.31113 12.45 3.25001 12.45C4.1889 12.45 4.95001 11.6889 4.95001 10.75H5.80001C5.80001 11.6889 6.56113 12.45 7.50001 12.45C8.4389 12.45 9.20001 11.6889 9.20001 10.75H10.05C10.05 11.6889 10.8111 12.45 11.75 12.45C12.6889 12.45 13.45 11.6889 13.45 10.75H14.3V0.549988H6.65001V2.24999H7.50001V4.79999H4.10001V0.549988ZM12.6 9.04999V6.49999H2.40001V9.04999H12.6ZM9.20001 4.79999H12.6V2.24999H9.20001V4.79999Z" fill="currentColor" />
-                                </svg>
-                            </div>
-                        </Tooltip>
-                    )}
-                </div>
-
-                {/* Stream info - only show when expanded */}
-                {showExpanded && (
-                    <div className="flex-1 min-w-0 overflow-hidden animate-fade-in">
-                        <div className="flex items-center gap-1">
-                            <span className="text-textPrimary text-sm font-medium truncate">
-                                {stream.user_name}
-                            </span>
-                            {stream.broadcaster_type === 'partner' && (
-                                <svg className="w-3 h-3 flex-shrink-0" viewBox="0 0 16 16" fill="#9146FF">
-                                    <path fillRule="evenodd" d="M12.5 3.5 8 2 3.5 3.5 2 8l1.5 4.5L8 14l4.5-1.5L14 8l-1.5-4.5ZM7 11l4.5-4.5L10 5 7 8 5.5 6.5 4 8l3 3Z" clipRule="evenodd" />
-                                </svg>
-                            )}
-                            {watchStreak > 0 && (
-                                <Tooltip content={`${watchStreak} Watch Streak`} delay={200} side="top">
-                                    <div className="flex items-center gap-[2px] ml-0.5 text-orange-400 opacity-90 transition-opacity hover:opacity-100 cursor-default">
-                                        <span className="text-[10px] font-bold leading-none translate-y-[0.5px]">{watchStreak}</span>
-                                        <Flame size={12} strokeWidth={2.5} className="text-orange-500 fill-orange-500/20" />
-                                    </div>
-                                </Tooltip>
-                            )}
-                        </div>
-                        <div className="flex items-center gap-1 text-xs text-textMuted truncate">
-                            <span className="truncate">{stream.game_name || 'Just Chatting'}</span>
-                            {/* Drops indicator - show next to game name */}
-                            {hasDrops && (
-                                <Tooltip content="Drops enabled" delay={100} side="top">
-                                    <span>
-                                        <Gift size={10} className="text-accent flex-shrink-0" />
-                                    </span>
-                                </Tooltip>
-                            )}
-                            {/* Hype Train indicator - show next to game name */}
-                            {hypeTrainStatus && (
-                                <Tooltip content={`Hype Train LVL ${hypeTrainStatus.level}`} delay={100} side="top">
-                                    <span className={`flex items-center gap-0.5 ${hypeTrainStatus.isGolden ? 'text-yellow-400' : 'text-purple-400'} flex-shrink-0`}>
-                                        <svg className="w-2.5 h-2.5" viewBox="0 0 15 13" fill="none">
-                                            <path fillRule="evenodd" clipRule="evenodd" d="M4.10001 0.549988H2.40001V4.79999H0.700012V10.75H1.55001C1.55001 11.6889 2.31113 12.45 3.25001 12.45C4.1889 12.45 4.95001 11.6889 4.95001 10.75H5.80001C5.80001 11.6889 6.56113 12.45 7.50001 12.45C8.4389 12.45 9.20001 11.6889 9.20001 10.75H10.05C10.05 11.6889 10.8111 12.45 11.75 12.45C12.6889 12.45 13.45 11.6889 13.45 10.75H14.3V0.549988H6.65001V2.24999H7.50001V4.79999H4.10001V0.549988ZM12.6 9.04999V6.49999H2.40001V9.04999H12.6ZM9.20001 4.79999H12.6V2.24999H9.20001V4.79999Z" fill="currentColor" />
-                                        </svg>
-                                    </span>
-                                </Tooltip>
-                            )}
-                        </div>
-                    </div>
-                )}
-
-                {/* Viewer count and favorite button */}
-                {showExpanded && (
-                    <div className="flex items-center gap-1 flex-shrink-0 animate-fade-in">
-                        <div className="flex items-center gap-1 text-xs text-textSecondary">
-                            <Radio size={10} style={{ color: '#eb0000' }} />
-                            <span>{formatViewerCount(stream.viewer_count)}</span>
-                        </div>
-                        {showFavorite && (
-                            <Tooltip content={isFavorite ? 'Remove from favorites' : 'Add to favorites'} delay={200} side="top">
-                                <button
-                                    onClick={(e) => handleFavoriteClick(e, stream.user_id)}
-                                    className={`p-1 flex items-center justify-center bg-transparent transition-transform duration-300 hover:scale-110 active:scale-95`}
-                                >
-                                    <Heart
-                                        size={14}
-                                        fill={isFavorite ? 'url(#glass-heart-fill)' : 'none'}
-                                        stroke={isFavorite ? 'url(#glass-heart-stroke)' : 'currentColor'}
-                                        strokeWidth={isFavorite ? 1.5 : 2}
-                                        className={`transition-all duration-300 ${isFavorite ? 'drop-shadow-[0_4px_8px_rgba(236,72,153,0.5)]' : 'text-textMuted hover:text-white opacity-0 group-hover:opacity-100'} ${animatingHearts.has(stream.user_id) ? 'animate-heart-break' : ''}`}
-                                    />
-                                </button>
-                            </Tooltip>
-                        )}
-
-                    </div>
-                )}
-            </div>
-        </Tooltip>
-        );
-    };
-
-    const SectionHeader = ({ icon: Icon, label, count }: { icon: any; label: string; count: number }) => (
-        <div className={`
-            flex items-center gap-2 px-2 py-2 text-textSecondary
-            ${showExpanded ? 'justify-start' : 'justify-center'}
-        `}>
-            <Icon size={16} className="flex-shrink-0" />
-            {showExpanded && (
-                <>
-                    <span className="text-xs font-semibold uppercase tracking-wider">{label}</span>
-                    <span className="text-xs text-textMuted">({count})</span>
-                </>
-            )}
-        </div>
-    );
+    // Sort followed streams by favorites first
+    const sortedFollowedStreams = [...followedStreams].sort((a, b) => {
+        const aIsFavorite = isFavoriteStreamer(a.user_id);
+        const bIsFavorite = isFavoriteStreamer(b.user_id);
+        if (aIsFavorite && !bIsFavorite) return -1;
+        if (!aIsFavorite && bIsFavorite) return 1;
+        return 0;
+    });
 
     return (
         <>
@@ -768,11 +821,24 @@ const Sidebar = () => {
                     {/* Followed Streams Section */}
                     {isAuthenticated && sortedFollowedStreams.length > 0 && (
                         <div className="mb-2">
-                            <SectionHeader icon={Users} label="Followed" count={sortedFollowedStreams.length} />
+                            <SectionHeader icon={Users} label="Followed" count={sortedFollowedStreams.length} showExpanded={showExpanded} />
                             <div className="space-y-0.5">
                                 {sortedFollowedStreams.map(stream => (
                                     <div key={stream.id} className="group">
-                                        <StreamItem stream={stream} showFavorite={true} />
+                                        <StreamItem
+                                            stream={stream}
+                                            showFavorite={true}
+                                            showExpanded={showExpanded}
+                                            isCurrentStream={currentStream?.user_login === stream.user_login}
+                                            isFavorite={isFavoriteStreamer(stream.user_id)}
+                                            hasDrops={stream.game_name ? dropsGameNames.has(stream.game_name.toLowerCase()) : false}
+                                            hypeTrainStatus={activeHypeTrainChannels.get(stream.user_id)}
+                                            watchStreak={watchStreaks[stream.user_id] ?? 0}
+                                            isHeartAnimating={animatingHearts.has(stream.user_id)}
+                                            profileImage={getProfileImage(stream)}
+                                            onStreamClick={handleStreamClick}
+                                            onFavoriteClick={handleFavoriteClick}
+                                        />
                                     </div>
                                 ))}
                             </div>
@@ -787,10 +853,23 @@ const Sidebar = () => {
                     {/* Recommended Streams Section */}
                     {recommendedStreams.length > 0 && (
                         <div>
-                            <SectionHeader icon={Sparkles} label="Recommended" count={recommendedStreams.length} />
+                            <SectionHeader icon={Sparkles} label="Recommended" count={recommendedStreams.length} showExpanded={showExpanded} />
                             <div className="space-y-0.5">
                                 {recommendedStreams.map(stream => (
-                                    <StreamItem key={stream.id} stream={stream} />
+                                    <StreamItem
+                                        key={stream.id}
+                                        stream={stream}
+                                        showExpanded={showExpanded}
+                                        isCurrentStream={currentStream?.user_login === stream.user_login}
+                                        isFavorite={isFavoriteStreamer(stream.user_id)}
+                                        hasDrops={stream.game_name ? dropsGameNames.has(stream.game_name.toLowerCase()) : false}
+                                        hypeTrainStatus={activeHypeTrainChannels.get(stream.user_id)}
+                                        watchStreak={watchStreaks[stream.user_id] ?? 0}
+                                        isHeartAnimating={animatingHearts.has(stream.user_id)}
+                                        profileImage={getProfileImage(stream)}
+                                        onStreamClick={handleStreamClick}
+                                        onFavoriteClick={handleFavoriteClick}
+                                    />
                                 ))}
                             </div>
 

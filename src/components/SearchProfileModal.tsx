@@ -6,12 +6,19 @@ import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../stores/AppStore';
 import { TwitchStream } from '../types';
 import StreamerAboutPanel from './StreamerAboutPanel';
+import StreamerMedia from './StreamerMedia';
 import { Tooltip } from './ui/Tooltip';
 import { Logger } from '../utils/logger';
+
+type ProfileTab = 'about' | 'clips' | 'videos';
 
 export const SearchProfileModal = ({ user, onClose }: { user: TwitchStream, onClose: () => void }) => {
     const [isFollowing, setIsFollowing] = useState<boolean | null>(null);
     const [followLoading, setFollowLoading] = useState(false);
+    // The header avatar must show the profile picture, not the stream preview.
+    const [profileImg, setProfileImg] = useState<string | null>(user.profile_image_url || null);
+    // Opens on About from a name-click; on Clips from the player-overlay button.
+    const [tab, setTab] = useState<ProfileTab>(() => useAppStore.getState().profileModalInitialTab);
 
     useEffect(() => {
         let mounted = true;
@@ -34,6 +41,18 @@ export const SearchProfileModal = ({ user, onClose }: { user: TwitchStream, onCl
 
         return () => { mounted = false; };
     }, [user.user_id]);
+
+    // Helix stream objects (e.g. the currently-watched stream) carry only
+    // thumbnail_url (the live preview), not a profile image, so fetch the real
+    // one when it's missing. Never falls back to the stream thumbnail.
+    useEffect(() => {
+        if (user.profile_image_url) { setProfileImg(user.profile_image_url); return; }
+        let mounted = true;
+        invoke<{ profile_image_url?: string | null }>('get_channel_about_data', { channelLogin: user.user_login })
+            .then((data) => { if (mounted && data?.profile_image_url) setProfileImg(data.profile_image_url); })
+            .catch((e) => Logger.warn('[SearchProfileModal] profile image fetch failed:', e));
+        return () => { mounted = false; };
+    }, [user.user_login, user.profile_image_url]);
 
     const handleFollowAction = async () => {
         setFollowLoading(true);
@@ -67,15 +86,15 @@ export const SearchProfileModal = ({ user, onClose }: { user: TwitchStream, onCl
                     animate={{ opacity: 1, scale: 1, y: 0 }}
                     exit={{ opacity: 0, scale: 0.95, y: 15 }}
                     transition={{ type: "spring", stiffness: 350, damping: 25 }}
-                    className="w-full max-w-4xl h-[85vh] glass-panel backdrop-blur-xl border border-borderLight rounded-xl shadow-2xl flex flex-col overflow-hidden"
+                    className="w-full max-w-7xl h-[90vh] glass-panel backdrop-blur-xl border border-borderLight rounded-xl shadow-2xl flex flex-col overflow-hidden"
                     onClick={e => e.stopPropagation()}
                 >
                     {/* Header */}
                     <div className="flex items-center justify-between p-4 border-b border-borderSubtle bg-glass/30">
                         <div className="flex items-center gap-3 w-1/2">
                             <div className={`relative w-12 h-12 rounded-full flex items-center justify-center overflow-hidden ring-2 ${isLive ? 'ring-red-500/80' : 'bg-accent/20 ring-accent/20'}`}>
-                                {user.thumbnail_url ? (
-                                    <img src={user.thumbnail_url.replace('{width}', '100').replace('{height}', '100')} alt={user.user_name} className="w-full h-full object-cover" />
+                                {profileImg ? (
+                                    <img src={profileImg} alt={user.user_name} className="w-full h-full object-cover" />
                                 ) : (
                                     <User size={24} className={isLive ? 'text-red-500' : 'text-accent'} />
                                 )}
@@ -134,9 +153,28 @@ export const SearchProfileModal = ({ user, onClose }: { user: TwitchStream, onCl
                         </div>
                     </div>
 
+                    {/* Tabs */}
+                    <div className="flex items-center gap-2 px-4 py-2.5 border-b border-borderSubtle bg-glass/20">
+                        {(['about', 'clips', 'videos'] as const).map((t) => (
+                            <button
+                                key={t}
+                                onClick={() => setTab(t)}
+                                className={`px-4 py-1.5 text-sm font-bold !rounded-lg transition-all ${
+                                    tab === t
+                                        ? 'glass-input text-textPrimary'
+                                        : 'glass-button text-textSecondary/80 hover:text-textPrimary'
+                                }`}
+                            >
+                                {t === 'about' ? 'About' : t === 'clips' ? 'Clips' : 'Videos'}
+                            </button>
+                        ))}
+                    </div>
+
                     {/* Body */}
                     <div className="flex-1 overflow-hidden relative bg-black/20">
-                        <StreamerAboutPanel channelLogin={user.user_login} hideHero={true} />
+                        {tab === 'about' && <StreamerAboutPanel channelLogin={user.user_login} hideHero={true} />}
+                        {tab === 'clips' && <StreamerMedia broadcasterId={user.user_id} kind="clips" />}
+                        {tab === 'videos' && <StreamerMedia broadcasterId={user.user_id} kind="videos" />}
                     </div>
                 </motion.div>
             </motion.div>

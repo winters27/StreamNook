@@ -31,6 +31,8 @@ import ChangelogOverlay from './components/ChangelogOverlay';
 import WhispersWidget from './components/WhispersWidget';
 import SetupWizard from './components/SetupWizard';
 import Sidebar from './components/Sidebar';
+import ClipModal from './components/ClipModal';
+import ClipEditor from './components/ClipEditor';
 import ErrorBoundary from './components/ErrorBoundary';
 import { StreamContextMenu } from './components/StreamContextMenu';
 import { listen } from '@tauri-apps/api/event';
@@ -38,7 +40,7 @@ import { applyModerateEvent } from './utils/applyModerateEvent';
 import { handleSeventvEmoteSetUpdate, handleSeventvCosmeticUpdate, type EmoteSetUpdatePayload, type CosmeticUpdatePayload } from './services/seventvEventApi';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
-import { getThemeById, applyTheme, DEFAULT_THEME_ID, getThemeByIdWithCustom, applyGlassStrength, DEFAULT_GLASS_TRANSPARENCY } from './themes';
+import { getThemeById, applyTheme, DEFAULT_THEME_ID, getThemeByIdWithCustom, applyGlassStrength, DEFAULT_GLASS_TRANSPARENCY, applyFont, DEFAULT_FONT_ID } from './themes';
 import { getSelectedCompactViewPreset } from './constants/compactViewPresets';
 
 import { Logger } from './utils/logger';
@@ -636,7 +638,9 @@ function App() {
     // Global glassiness is independent of the palette, so re-assert it whenever
     // the theme is (re)applied as well as when the slider itself changes.
     applyGlassStrength(settings.glass_transparency ?? DEFAULT_GLASS_TRANSPARENCY);
-  }, [settings.theme, settings.custom_themes, settings.glass_transparency]);
+    // Interface font is also palette-independent; re-assert alongside the theme.
+    applyFont(settings.font ?? DEFAULT_FONT_ID);
+  }, [settings.theme, settings.custom_themes, settings.glass_transparency, settings.font]);
 
   // Check if we need to show the first-time setup wizard. Drive purely off
   // setup_complete: if it's false, show the wizard. (Gate on `quality` only as a
@@ -898,18 +902,31 @@ function App() {
     activeChatChannelInPopoutRef.current = activeChatChannelInPopout;
   }, [activeChatChannelInPopout]);
 
-  // Track watch time and streams watched in Supabase
+  // Track watch time and streams watched in Supabase.
+  //
+  // Keyed on the *stream identity*, NOT streamUrl. The native resolver
+  // reassigns streamUrl mid-stream on every ad pivot and quality change
+  // (applyAdPivot / changeStreamQuality). Keying the tracker on streamUrl made
+  // each of those tear down and restart the minute interval (silently dropping
+  // watch minutes) and re-fire streams_watched (counting one stream many
+  // times). currentStream's channel id stays put across those events, so the
+  // timer runs uninterrupted and a stream is counted exactly once per session.
+  const streamSessionKey = currentStream
+    ? (currentStream.user_id || currentStream.user_login || null)
+    : null;
   useEffect(() => {
-    if (!streamUrl || !isSupabaseConfigured()) return;
+    if (!streamSessionKey || !isSupabaseConfigured()) return;
 
     const { currentUser, isAuthenticated } = useAppStore.getState();
     if (!isAuthenticated || !currentUser?.user_id) return;
 
-    // Increment streams_watched when starting a new stream
-    Logger.debug('[Stats] Stream started, incrementing streams_watched');
+    // Count this stream once when the session begins (ad pivots and quality
+    // changes leave currentStream untouched, so they don't recount).
+    Logger.debug('[Stats] Stream session started, incrementing streams_watched');
     incrementStat(currentUser.user_id, 'streams_watched', 1);
 
-    // Track watch time every minute
+    // Accrue watch time every minute. Reads fresh state each tick so it follows
+    // the live user/channel even as other store fields churn.
     const watchTimeInterval = setInterval(() => {
       const { isAuthenticated: stillAuth, currentUser: user, currentStream: cs } = useAppStore.getState();
       if (stillAuth && user?.user_id) {
@@ -929,7 +946,7 @@ function App() {
     return () => {
       clearInterval(watchTimeInterval);
     };
-  }, [streamUrl]);
+  }, [streamSessionKey]);
 
 
   // Handle aspect ratio locking when setting changes or chat is resized
@@ -1574,6 +1591,8 @@ function App() {
       <TooltipManager />
       <CommandPalette />
       <StreamContextMenu />
+      <ClipModal />
+      <ClipEditor />
     </div>
   );
 }

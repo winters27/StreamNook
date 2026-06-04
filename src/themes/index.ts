@@ -1523,3 +1523,98 @@ export const applyGlassStrength = (transparency: number): void => {
     const clamped = Math.max(0, Math.min(100, transparency)) / 100;
     document.documentElement.style.setProperty('--glass-strength', String(clamped));
 };
+
+// ─── App font ───────────────────────────────────────────────────────────────
+// User-selectable interface font, chosen in Theme > Font. Like glassiness, it's
+// independent of the color palette, so switching themes never resets it. The
+// chosen stack is written to --app-font on :root; body and the Tailwind
+// `font-sans` utility both read that variable (see globals.css / tailwind config).
+
+export type FontId = 'satoshi' | 'twitch' | 'geist' | 'manrope' | 'outfit' | 'space-grotesk' | 'serif' | 'system';
+
+export interface FontOption {
+    id: FontId;
+    label: string;
+    description: string;
+    /** font-family stack written to --app-font (and used for in-card previews). */
+    stack: string;
+    /**
+     * Chat message body weight for this font, written to --chat-body-weight.
+     * Denser faces (Inter) read heavier at a given weight, so they go lighter
+     * here to keep chat looking lean. Defaults to 300 when omitted.
+     */
+    chatWeight?: number;
+}
+
+export const FONT_OPTIONS: FontOption[] = [
+    {
+        id: 'satoshi',
+        label: 'Satoshi',
+        description: 'The StreamNook house font. Clean, geometric sans.',
+        stack: '"Satoshi", -apple-system, BlinkMacSystemFont, sans-serif',
+    },
+    {
+        id: 'twitch',
+        label: 'Twitch',
+        description: 'Inter — the open-source typeface Twitch uses across its UI and chat.',
+        stack: '"Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+        // Inter is denser than Satoshi, so chat at the normal 300 reads heavy.
+        // Drop to 200 (ExtraLight) so chat stays lean under the Twitch font.
+        chatWeight: 200,
+    },
+    {
+        id: 'geist',
+        label: 'Geist',
+        description: 'A clean, modern geometric sans. Sleek and lean at any size.',
+        stack: '"Geist", -apple-system, BlinkMacSystemFont, sans-serif',
+    },
+    {
+        id: 'manrope',
+        label: 'Manrope',
+        description: 'Modern geometric sans, slightly narrow. Light and lean for dense UI.',
+        stack: '"Manrope", -apple-system, BlinkMacSystemFont, sans-serif',
+    },
+    {
+        id: 'outfit',
+        label: 'Outfit',
+        description: 'Uniform, minimal geometric sans. The most stripped-down of the set.',
+        stack: '"Outfit", -apple-system, BlinkMacSystemFont, sans-serif',
+    },
+    {
+        id: 'space-grotesk',
+        label: 'Space Grotesk',
+        description: 'Geometric sans with a little more character, still lean.',
+        stack: '"Space Grotesk", -apple-system, BlinkMacSystemFont, sans-serif',
+    },
+    {
+        id: 'serif',
+        label: 'Serif',
+        description: 'Fraunces — a soft, characterful serif for an editorial feel.',
+        stack: '"Fraunces Variable", Georgia, "Times New Roman", serif',
+    },
+    {
+        id: 'system',
+        label: 'System',
+        description: "Your device's native font. Fast and familiar.",
+        stack: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+    },
+];
+
+export const DEFAULT_FONT_ID: FontId = 'satoshi';
+
+const FONT_BY_ID: Record<string, FontOption> = Object.fromEntries(
+    FONT_OPTIONS.map((o) => [o.id, o]),
+);
+
+// Default chat message body weight (most fonts). Inter overrides lighter.
+export const DEFAULT_CHAT_BODY_WEIGHT = 300;
+
+// Apply the chosen interface font to the live document. Unknown ids fall back
+// to the default so a stale/garbage setting can never blank the font. Also sets
+// --chat-body-weight so chat message text can render lighter under denser faces.
+export const applyFont = (fontId: string | undefined): void => {
+    const opt = FONT_BY_ID[fontId ?? DEFAULT_FONT_ID] ?? FONT_BY_ID[DEFAULT_FONT_ID];
+    const root = document.documentElement;
+    root.style.setProperty('--app-font', opt.stack);
+    root.style.setProperty('--chat-body-weight', String(opt.chatWeight ?? DEFAULT_CHAT_BODY_WEIGHT));
+};

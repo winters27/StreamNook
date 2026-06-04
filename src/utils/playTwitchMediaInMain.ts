@@ -1,0 +1,56 @@
+// Route Twitch clip/VOD playback to the main window's player.
+//
+// Every Tauri WebView has its own JS context and its own AppStore instance, so
+// calling `useAppStore.getState().playMedia(...)` inside a MultiChat popout
+// plays into the popout's own store — but a chat-only popout has no video
+// player, so nothing visible happens. These helpers detect a popout and emit a
+// Tauri event (popout → main); the main-window listener in
+// `utils/multichatTrayBridge.ts` shows/focuses main and plays there. In the main
+// window we just call playMedia directly.
+//
+// Caller contract: callers don't need to know whether they're in a popout. They
+// call the helper and the clip/VOD opens in the app's player wherever it lives.
+
+import { useAppStore, type MediaInfo } from '../stores/AppStore';
+import { Logger } from './logger';
+
+function isPopoutWindow(): boolean {
+  if (typeof window === 'undefined') return false;
+  const hash = window.location.hash;
+  return hash.startsWith('#/multichat') || hash.startsWith('#/profile');
+}
+
+async function openExternal(url: string): Promise<void> {
+  try {
+    const { open } = await import('@tauri-apps/plugin-shell');
+    await open(url);
+  } catch (err) {
+    Logger.error('[playTwitchMediaInMain] external open failed:', err);
+  }
+}
+
+export async function playTwitchMediaInMain(
+  type: 'clip' | 'video',
+  url: string,
+  info: MediaInfo,
+): Promise<void> {
+  if (isPopoutWindow()) {
+    try {
+      const { emit } = await import('@tauri-apps/api/event');
+      await emit('play-twitch-media-in-main', { type, url, info });
+      return;
+    } catch (err) {
+      // Bridge unavailable — fall back to the browser so the link is never dead.
+      Logger.error('[playTwitchMediaInMain] emit failed, opening externally:', err);
+      await openExternal(url);
+      return;
+    }
+  }
+
+  try {
+    await useAppStore.getState().playMedia(type, url, info);
+  } catch (err) {
+    Logger.error('[playTwitchMediaInMain] playMedia failed, opening externally:', err);
+    await openExternal(url);
+  }
+}

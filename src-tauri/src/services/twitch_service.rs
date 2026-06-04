@@ -22,7 +22,7 @@ const TWITCH_GQL_CLIENT_ID: &str = "kimne78kx3ncx6brgo4mv6wki5h1ko";
 const KEYRING_SERVICE: &str = "streamnook_twitch_token";
 const KEYRING_USERNAME: &str = "user"; // Standardized username
 const REDIRECT_URI: &str = "http://localhost:3000/callback";
-const SCOPES: &str = "user:read:follows user:read:email chat:read chat:edit channel:read:redemptions channel:manage:redemptions moderator:read:followers openid user:manage:whispers user:read:whispers user:read:emotes channel:read:hype_train moderator:read:blocked_terms moderator:manage:chat_settings moderator:manage:unban_requests moderator:manage:banned_users moderator:manage:chat_messages moderator:read:warnings moderator:read:moderators moderator:read:vips channel:manage:moderators channel:manage:vips moderator:manage:suspicious_users user:manage:chat_color user:manage:blocked_users user:read:blocked_users moderator:manage:announcements moderator:manage:shoutouts channel:edit:commercial channel:manage:raids channel:manage:broadcast moderation:read user:write:chat";
+const SCOPES: &str = "user:read:follows user:read:email chat:read chat:edit channel:read:redemptions channel:manage:redemptions moderator:read:followers openid user:manage:whispers user:read:whispers user:read:emotes channel:read:hype_train moderator:read:blocked_terms moderator:manage:chat_settings moderator:manage:unban_requests moderator:manage:banned_users moderator:manage:chat_messages moderator:read:warnings moderator:read:moderators moderator:read:vips moderator:read:chatters channel:manage:moderators channel:manage:vips moderator:manage:suspicious_users user:manage:chat_color user:manage:blocked_users user:read:blocked_users moderator:manage:announcements moderator:manage:shoutouts channel:edit:commercial channel:manage:raids channel:manage:broadcast moderation:read user:write:chat clips:edit";
 const TOKEN_FILE_NAME: &str = ".twitch_token";
 
 /// Get the app data directory (works consistently in dev and release)
@@ -892,13 +892,17 @@ impl TwitchService {
                 missing_scopes
             );
 
-            // Delete the invalid token from storage
-            if let Err(e) = Self::logout().await {
-                debug!(
-                    "⚠️ [Auth Debug] Failed to clean up token with missing scopes: {}",
-                    e
-                );
-            }
+            // Clear the token AND the account registry. A scopes upgrade
+            // invalidates every stored token at once, so this is a full re-auth,
+            // not a single-account sign-out (no promotion). Emptying the registry
+            // is load-bearing: it forces the subsequent login to open in the
+            // DEFAULT WebView2 profile, the only profile `TwitchAuthService::
+            // get_token` reads. If the registry survived, the re-login would
+            // reopen in the old account's per-account profile and the new
+            // web-session cookie would be invisible to the stream resolver — the
+            // "non-proxy mode requires a twitch login" dead-end even though the
+            // user just logged in.
+            crate::services::account_store::AccountStore::reset_all().await;
 
             return Ok(TokenHealthStatus {
                 is_valid: false,
@@ -1125,6 +1129,111 @@ impl TwitchService {
 
         let info: ChannelInfo = serde_json::from_value(data.clone())?;
         Ok(info)
+    }
+
+    /// Create a clip of a live broadcast via Helix `POST /clips` (needs the
+    /// `clips:edit` scope). Returns `(clip_id, edit_url)`. The clip captures the
+    /// last ~30s and is processed async, so it may take a few seconds before its
+    /// thumbnail/playback is ready (the public URL `clips.twitch.tv/<id>` works
+    /// once processed). Documented statuses are mapped to short codes the UI
+    /// turns into friendly messages, rather than leaking raw HTTP errors.
+    pub async fn create_clip(broadcaster_id: &str) -> Result<(String, String)> {
+        let token = Self::get_token()
+            .await
+            .map_err(|_| anyhow::anyhow!("REAUTH"))?;
+        let client = crate::services::http::client().clone();
+        let resp = client
+            .post("https://api.twitch.tv/helix/clips")
+            .query(&[("broadcaster_id", broadcaster_id)])
+            .header(AUTHORIZATION, format!("Bearer {}", token))
+            .header("Client-Id", CLIENT_ID)
+            .send()
+            .await
+            .map_err(|_| anyhow::anyhow!("NETWORK"))?;
+
+        let status = resp.status();
+        if status.is_success() {
+            let json: serde_json::Value =
+                resp.json().await.map_err(|_| anyhow::anyhow!("ERROR"))?;
+            let data = json
+                .get("data")
+                .and_then(|d| d.as_array())
+                .and_then(|a| a.first())
+                .ok_or_else(|| anyhow::anyhow!("ERROR"))?;
+            let id = data
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let edit_url = data
+                .get("edit_url")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if id.is_empty() {
+                return Err(anyhow::anyhow!("ERROR"));
+            }
+            return Ok((id, edit_url));
+        }
+
+        // Short codes the frontend maps to messages (see createClip in AppStore).
+        let code = match status.as_u16() {
+            401 => "REAUTH",    // token lacks clips:edit → re-login needed
+            403 => "FORBIDDEN", // channel restricts who can clip
+            400 => "DISABLED",  // clips disabled for this channel
+            404 => "NOTFOUND",
+            422 => "OFFLINE", // can only clip a live broadcast
+            _ => "ERROR",
+        };
+        Err(anyhow::anyhow!("{}", code))
+    }
+
+    /// Fetch the current live broadcast's stream id + start time via Helix Get
+    /// Streams. The stream `id` equals the GQL `broadcastID` that `CreateRawMedia`
+    /// wants for a live clip (confirmed by capture: `clip.broadcaster.stream.id`
+    /// == the `broadcastID`), and `started_at` lets the caller derive the live
+    /// offset (uptime). Errors "OFFLINE" when the channel isn't live.
+    pub async fn get_live_broadcast(broadcaster_id: &str) -> Result<(String, String)> {
+        let token = Self::get_token()
+            .await
+            .map_err(|_| anyhow::anyhow!("REAUTH"))?;
+        let client = crate::services::http::client().clone();
+        let resp = client
+            .get("https://api.twitch.tv/helix/streams")
+            .query(&[("user_id", broadcaster_id)])
+            .header(AUTHORIZATION, format!("Bearer {}", token))
+            .header("Client-Id", CLIENT_ID)
+            .send()
+            .await
+            .map_err(|_| anyhow::anyhow!("NETWORK"))?;
+        if !resp.status().is_success() {
+            let code = if resp.status().as_u16() == 401 {
+                "REAUTH"
+            } else {
+                "ERROR"
+            };
+            return Err(anyhow::anyhow!("{}", code));
+        }
+        let json: serde_json::Value = resp.json().await.map_err(|_| anyhow::anyhow!("ERROR"))?;
+        let data = json
+            .get("data")
+            .and_then(|d| d.as_array())
+            .and_then(|a| a.first())
+            .ok_or_else(|| anyhow::anyhow!("OFFLINE"))?;
+        let id = data
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let started_at = data
+            .get("started_at")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        if id.is_empty() {
+            return Err(anyhow::anyhow!("OFFLINE"));
+        }
+        Ok((id, started_at))
     }
 
     pub async fn get_user_info() -> Result<UserInfo> {
@@ -2407,6 +2516,36 @@ impl TwitchService {
         Ok(game_id)
     }
 
+    /// Resolve category ids → their objects (`{id, name, box_art_url}`) via Helix
+    /// Get Games (up to 100 ids per call). Used to label a streamer's clips with
+    /// the category they were taken in (clips carry `game_id`, not the name).
+    pub async fn get_games_by_ids(ids: &[String]) -> Result<Vec<serde_json::Value>> {
+        let query: Vec<String> = ids
+            .iter()
+            .filter(|id| !id.is_empty())
+            .take(100)
+            .map(|id| format!("id={}", urlencoding::encode(id)))
+            .collect();
+        if query.is_empty() {
+            return Ok(Vec::new());
+        }
+        let token = Self::get_token().await.ok();
+        let client = crate::services::http::client().clone();
+        let url = format!("https://api.twitch.tv/helix/games?{}", query.join("&"));
+
+        let mut request = client.get(&url).header("Client-Id", CLIENT_ID);
+        if let Some(token) = &token {
+            request = request.header(AUTHORIZATION, format!("Bearer {}", token));
+        }
+        let response = request.send().await?.json::<serde_json::Value>().await?;
+
+        Ok(response
+            .get("data")
+            .and_then(|d| d.as_array())
+            .cloned()
+            .unwrap_or_default())
+    }
+
     /// Search for categories by name (uses Twitch search API for fuzzy matching)
     /// Returns a list of matching categories with id, name, and box_art_url
     pub async fn search_categories(query: &str, limit: u32) -> Result<Vec<serde_json::Value>> {
@@ -2634,8 +2773,14 @@ impl TwitchService {
                 };
 
                 if let Some(date) = started_at {
-                    // Twitch API requires RFC3339 format for started_at
-                    url.push_str(&format!("&started_at={}", date.to_rfc3339()));
+                    // Helix Get Clips needs BOTH bounds for the time filter to
+                    // apply — with only started_at it ignores the window (every
+                    // period returns the same set). RFC3339 required.
+                    url.push_str(&format!(
+                        "&started_at={}&ended_at={}",
+                        date.to_rfc3339(),
+                        now.to_rfc3339()
+                    ));
                 }
             }
         }
@@ -2670,6 +2815,324 @@ impl TwitchService {
             }
             None => Ok((Vec::new(), None)),
         }
+    }
+
+    /// A single broadcaster's clips (Helix Get Clips by broadcaster_id) — the
+    /// per-streamer analogue of get_clips_by_game. Same period→started_at mapping
+    /// and cursor pagination.
+    /// POST an inline GQL read query to Twitch's public GraphQL endpoint using
+    /// the web client id (kimne78) with per-call device + session ids and no
+    /// OAuth. These are public channel reads (clips/videos lists), same pattern
+    /// as `channel_panels::get_channel_about_data`. The device/session headers
+    /// keep us out of the harsh anonymous rate-limit bucket.
+    async fn gql_public_read(body: serde_json::Value) -> Result<serde_json::Value> {
+        let client = crate::services::http::client().clone();
+        let device_id = uuid::Uuid::new_v4().to_string().replace('-', "");
+        let session_id = uuid::Uuid::new_v4().to_string().replace('-', "");
+
+        let resp = client
+            .post("https://gql.twitch.tv/gql")
+            .header("Client-ID", TWITCH_GQL_CLIENT_ID)
+            .header(ACCEPT, "*/*")
+            .header("X-Device-Id", device_id)
+            .header("Client-Session-Id", session_id)
+            .json(&body)
+            .send()
+            .await?
+            .json::<serde_json::Value>()
+            .await?;
+
+        // Surface top-level GraphQL errors (bad field, throttling, etc.) instead
+        // of silently returning an empty list.
+        if let Some(errors) = resp.get("errors").and_then(|e| e.as_array()) {
+            if !errors.is_empty() {
+                let msg = errors
+                    .iter()
+                    .filter_map(|e| e.get("message").and_then(|m| m.as_str()))
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                return Err(anyhow::anyhow!("Twitch GQL error: {}", msg));
+            }
+        }
+
+        Ok(resp)
+    }
+
+    /// One streamer's clips, fetched the way the Twitch website's Clips tab does:
+    /// `user.clips(criteria: { filter: <period> })`. Unlike Helix `/clips`, this
+    /// returns the correct time window (Helix caps an open-ended `started_at` at
+    /// one week, breaking the 30-day filter) AND orders by view count (Helix has
+    /// no sort), so "Top clips (last 7 days)" etc. match twitch.tv exactly. Game
+    /// names come back inline, so no follow-up `get_games_by_ids` round-trip.
+    pub async fn get_clips_by_broadcaster(
+        broadcaster_id: &str,
+        limit: u32,
+        cursor: Option<&str>,
+        period: Option<&str>,
+    ) -> Result<(Vec<crate::models::stream::TwitchClip>, Option<String>)> {
+        // Map our period strings → Twitch's ClipsPeriod enum (always has a value;
+        // "all" → ALL_TIME). The value is a fixed keyword, never user input, so
+        // interpolating it into the query is safe.
+        let filter = match period.unwrap_or("all") {
+            "24h" | "day" => "LAST_DAY",
+            "7d" | "week" => "LAST_WEEK",
+            "30d" | "month" => "LAST_MONTH",
+            _ => "ALL_TIME",
+        };
+
+        let query = format!(
+            r#"query StreamNookUserClips($id: ID!, $first: Int!, $after: Cursor) {{
+                user(id: $id) {{
+                    clips(first: $first, after: $after, criteria: {{ filter: {filter} }}) {{
+                        edges {{
+                            cursor
+                            node {{
+                                slug
+                                url
+                                embedURL
+                                title
+                                viewCount
+                                createdAt
+                                durationSeconds
+                                thumbnailURL
+                                videoOffsetSeconds
+                                video {{ id }}
+                                game {{ id name }}
+                                curator {{ id displayName }}
+                                broadcaster {{ id displayName }}
+                            }}
+                        }}
+                        pageInfo {{ hasNextPage }}
+                    }}
+                }}
+            }}"#,
+            filter = filter
+        );
+
+        let body = serde_json::json!({
+            "operationName": "StreamNookUserClips",
+            "query": query,
+            "variables": { "id": broadcaster_id, "first": limit, "after": cursor },
+        });
+
+        let resp = Self::gql_public_read(body).await?;
+        let clips_node = resp
+            .get("data")
+            .and_then(|d| d.get("user"))
+            .and_then(|u| u.get("clips"));
+
+        let edges = clips_node
+            .and_then(|c| c.get("edges"))
+            .and_then(|e| e.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        let str_at = |v: &serde_json::Value, path: &[&str]| -> String {
+            let mut cur = v;
+            for k in path {
+                match cur.get(k) {
+                    Some(next) => cur = next,
+                    None => return String::new(),
+                }
+            }
+            cur.as_str().unwrap_or("").to_string()
+        };
+
+        let mut clips = Vec::with_capacity(edges.len());
+        let mut last_cursor: Option<String> = None;
+        for edge in &edges {
+            last_cursor = edge
+                .get("cursor")
+                .and_then(|c| c.as_str())
+                .map(|s| s.to_string());
+            let node = match edge.get("node") {
+                Some(n) if !n.is_null() => n,
+                _ => continue,
+            };
+            let slug = str_at(node, &["slug"]);
+            let game_name = node
+                .get("game")
+                .and_then(|g| g.get("name"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            clips.push(crate::models::stream::TwitchClip {
+                id: slug.clone(),
+                url: str_at(node, &["url"]),
+                embed_url: str_at(node, &["embedURL"]),
+                broadcaster_id: str_at(node, &["broadcaster", "id"]),
+                broadcaster_name: str_at(node, &["broadcaster", "displayName"]),
+                creator_id: str_at(node, &["curator", "id"]),
+                creator_name: str_at(node, &["curator", "displayName"]),
+                video_id: str_at(node, &["video", "id"]),
+                game_id: str_at(node, &["game", "id"]),
+                game_name,
+                language: String::new(),
+                title: str_at(node, &["title"]),
+                view_count: node.get("viewCount").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+                created_at: str_at(node, &["createdAt"]),
+                thumbnail_url: str_at(node, &["thumbnailURL"]),
+                duration: node
+                    .get("durationSeconds")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0) as f32,
+                vod_offset: node
+                    .get("videoOffsetSeconds")
+                    .and_then(|v| v.as_u64())
+                    .map(|n| n as u32),
+            });
+        }
+
+        let has_next = clips_node
+            .and_then(|c| c.get("pageInfo"))
+            .and_then(|p| p.get("hasNextPage"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let next = if has_next { last_cursor } else { None };
+
+        Ok((clips, next))
+    }
+
+    /// Reaction ("likes") counts for a batch of clips, via the
+    /// `aggregateReactionsBreakdownByContentKeys` query (NOT on the clip list
+    /// type — Twitch loads it per-clip). Mirrors the app's proven authed
+    /// persisted-hash path (Android client id + drops OAuth token, integrity-free;
+    /// the app token + web client id 401s). Twitch fails the WHOLE request if any
+    /// single content key is invalid (e.g. an old clip that predates reactions),
+    /// so we chunk and, on that error, retry the chunk one clip at a time — every
+    /// valid clip still gets its count. Hash captured 2026-06-03.
+    pub async fn get_clip_reactions(
+        slugs: &[String],
+    ) -> Result<Vec<crate::models::stream::ClipReactions>> {
+        if slugs.is_empty() {
+            return Ok(Vec::new());
+        }
+        // Auth once (Android client id + drops token; see fetch_reactions_batch).
+        let token = crate::services::drops_auth_service::DropsAuthService::get_token().await?;
+
+        let mut out: Vec<crate::models::stream::ClipReactions> = Vec::new();
+        for chunk in slugs.chunks(20) {
+            match Self::fetch_reactions_batch(chunk, &token).await {
+                Ok(rows) => out.extend(rows),
+                // One clip in the chunk is un-reactable and Twitch rejected the
+                // entire batch; retry each clip alone, skipping the bad one(s).
+                Err(e) if e.to_string().to_lowercase().contains("content key") => {
+                    for s in chunk {
+                        if let Ok(rows) =
+                            Self::fetch_reactions_batch(std::slice::from_ref(s), &token).await
+                        {
+                            out.extend(rows);
+                        }
+                    }
+                }
+                // Auth/transport failure — fatal for every chunk, so surface it.
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(out)
+    }
+
+    /// One reactions request for a batch of clip slugs (see get_clip_reactions).
+    /// Errs with the GraphQL/auth message; the caller keys off "content key" to
+    /// decide whether to split-and-retry.
+    async fn fetch_reactions_batch(
+        slugs: &[String],
+        token: &str,
+    ) -> Result<Vec<crate::models::stream::ClipReactions>> {
+        let client = crate::services::http::client().clone();
+        let device_id = uuid::Uuid::new_v4().to_string().replace('-', "");
+        let session_id = uuid::Uuid::new_v4().to_string().replace('-', "");
+
+        let content_keys: Vec<serde_json::Value> = slugs
+            .iter()
+            .map(|s| serde_json::json!({ "id": s, "type": "CLIP" }))
+            .collect();
+
+        let body = serde_json::json!({
+            "operationName": "aggregateReactionsBreakdownByContentKeys",
+            "variables": { "contentKeys": content_keys },
+            "extensions": {
+                "persistedQuery": {
+                    "version": 1,
+                    "sha256Hash": "f74807b6d62e390c87a2dc140ee24cc6e6c989c5e5170f9ebe32a39014da86fd"
+                }
+            }
+        });
+
+        let resp = client
+            .post("https://gql.twitch.tv/gql")
+            .header("Client-ID", env!("TWITCH_ANDROID_CLIENT_ID"))
+            .header(ACCEPT, "*/*")
+            .header(AUTHORIZATION, format!("OAuth {}", token))
+            .header("Origin", "https://www.twitch.tv")
+            .header("Referer", "https://www.twitch.tv")
+            .header("X-Device-Id", device_id)
+            .header("Client-Session-Id", session_id)
+            .json(&body)
+            .send()
+            .await?
+            .json::<serde_json::Value>()
+            .await?;
+
+        // Top-level HTTP-style error (e.g. 401 `{"error":"Unauthorized", ...}`) —
+        // this is NOT a GraphQL `errors` array, so check it explicitly or it would
+        // slip through as "empty totals".
+        if let Some(err) = resp.get("error").and_then(|e| e.as_str()) {
+            let msg = resp.get("message").and_then(|m| m.as_str()).unwrap_or(err);
+            return Err(anyhow::anyhow!("Twitch reactions auth error: {}", msg));
+        }
+
+        if let Some(errors) = resp.get("errors").and_then(|e| e.as_array()) {
+            if !errors.is_empty() {
+                let msg = errors
+                    .iter()
+                    .filter_map(|e| e.get("message").and_then(|m| m.as_str()))
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                return Err(anyhow::anyhow!("Twitch reactions error: {}", msg));
+            }
+        }
+
+        let totals = resp
+            .get("data")
+            .and_then(|d| d.get("aggregateReactionsBreakdownByContentKeys"))
+            .and_then(|a| a.get("totals"))
+            .and_then(|t| t.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        let mut out = Vec::with_capacity(totals.len());
+        for t in &totals {
+            let id = t
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if id.is_empty() {
+                continue;
+            }
+            let total = t.get("totalCount").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            let like = t
+                .get("totalBreakdown")
+                .and_then(|b| b.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .find(|e| {
+                            e.get("reaction")
+                                .and_then(|r| r.get("type"))
+                                .and_then(|ty| ty.as_str())
+                                == Some("LIKE")
+                        })
+                        .and_then(|e| e.get("count"))
+                        .and_then(|c| c.as_u64())
+                        .unwrap_or(0) as u32
+                })
+                .unwrap_or(0);
+            out.push(crate::models::stream::ClipReactions { id, total, like });
+        }
+
+        // Empty `out` is valid here — a clip with no reactions just won't appear
+        // in totals (e.g. older clips that predate the reactions feature).
+        Ok(out)
     }
 
     pub async fn get_videos_by_game(
@@ -2725,38 +3188,158 @@ impl TwitchService {
         }
     }
 
+    /// One streamer's videos, fetched the way the Twitch website's Videos tab
+    /// does: `user.videos(sort:, type:)`. Twitch has no time-window filter for a
+    /// user's videos (Helix only accepts `period` with a game_id, never a
+    /// user_id), so the website offers Sort (Recent/Popular) + Type (broadcast
+    /// kind) instead — this mirrors that. `sort` is "time" or "views"; `kind`
+    /// is "archive" | "highlight" | "upload" (None = all types).
     pub async fn get_user_videos(
         user_id: &str,
         sort: &str,
+        kind: Option<&str>,
         limit: u32,
-    ) -> Result<Vec<crate::models::stream::TwitchVideo>> {
-        let token = Self::get_token().await?;
-        let client = crate::services::http::client().clone();
+        cursor: Option<&str>,
+    ) -> Result<(Vec<crate::models::stream::TwitchVideo>, Option<String>)> {
+        let sort_enum = match sort.to_lowercase().as_str() {
+            "views" | "view" | "popular" => "VIEWS",
+            _ => "TIME",
+        };
+        let type_enum: Option<&str> = match kind {
+            Some("archive") => Some("ARCHIVE"),
+            Some("highlight") => Some("HIGHLIGHT"),
+            Some("upload") => Some("UPLOAD"),
+            _ => None, // all types
+        };
 
-        let url = format!(
-            "https://api.twitch.tv/helix/videos?user_id={}&sort={}&first={}",
-            user_id, sort, limit
-        );
-
-        let response = client
-            .get(&url)
-            .header("Client-Id", CLIENT_ID)
-            .header(AUTHORIZATION, format!("Bearer {}", token))
-            .send()
-            .await?
-            .json::<serde_json::Value>()
-            .await?;
-
-        let data = response.get("data").and_then(|d| d.as_array());
-
-        match data {
-            Some(arr) => {
-                let videos: Vec<crate::models::stream::TwitchVideo> =
-                    serde_json::from_value(serde_json::Value::Array(arr.clone()))?;
-
-                Ok(videos)
+        let query = r#"query StreamNookUserVideos($id: ID!, $first: Int!, $after: Cursor, $sort: VideoSort, $type: BroadcastType) {
+            user(id: $id) {
+                videos(first: $first, after: $after, sort: $sort, type: $type) {
+                    edges {
+                        cursor
+                        node {
+                            id
+                            title
+                            publishedAt
+                            createdAt
+                            lengthSeconds
+                            viewCount
+                            previewThumbnailURL(width: 440, height: 248)
+                            broadcastType
+                            owner { id login displayName }
+                        }
+                    }
+                    pageInfo { hasNextPage }
+                }
             }
-            None => Ok(Vec::new()),
+        }"#;
+
+        let body = serde_json::json!({
+            "operationName": "StreamNookUserVideos",
+            "query": query,
+            "variables": {
+                "id": user_id,
+                "first": limit,
+                "after": cursor,
+                "sort": sort_enum,
+                "type": type_enum,
+            },
+        });
+
+        let resp = Self::gql_public_read(body).await?;
+        let videos_node = resp
+            .get("data")
+            .and_then(|d| d.get("user"))
+            .and_then(|u| u.get("videos"));
+
+        let edges = videos_node
+            .and_then(|v| v.get("edges"))
+            .and_then(|e| e.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        let str_at = |v: &serde_json::Value, path: &[&str]| -> String {
+            let mut cur = v;
+            for k in path {
+                match cur.get(k) {
+                    Some(next) => cur = next,
+                    None => return String::new(),
+                }
+            }
+            cur.as_str().unwrap_or("").to_string()
+        };
+
+        let mut videos = Vec::with_capacity(edges.len());
+        let mut last_cursor: Option<String> = None;
+        for edge in &edges {
+            last_cursor = edge
+                .get("cursor")
+                .and_then(|c| c.as_str())
+                .map(|s| s.to_string());
+            let node = match edge.get("node") {
+                Some(n) if !n.is_null() => n,
+                _ => continue,
+            };
+            let id = str_at(node, &["id"]);
+            let published_at = str_at(node, &["publishedAt"]);
+            // GQL gives length in seconds; the UI badge expects a Helix-style
+            // string ("3h21m4s"). Format it to match.
+            let length_secs = node
+                .get("lengthSeconds")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            // GQL broadcastType is uppercase (ARCHIVE/HIGHLIGHT/UPLOAD); the UI's
+            // label map expects Helix-style lowercase.
+            let video_type = node
+                .get("broadcastType")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_lowercase();
+            videos.push(crate::models::stream::TwitchVideo {
+                url: format!("https://www.twitch.tv/videos/{}", id),
+                user_id: str_at(node, &["owner", "id"]),
+                user_login: str_at(node, &["owner", "login"]),
+                user_name: str_at(node, &["owner", "displayName"]),
+                title: str_at(node, &["title"]),
+                description: String::new(),
+                created_at: if published_at.is_empty() {
+                    str_at(node, &["createdAt"])
+                } else {
+                    published_at.clone()
+                },
+                published_at,
+                thumbnail_url: str_at(node, &["previewThumbnailURL"]),
+                viewable: "public".to_string(),
+                view_count: node.get("viewCount").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+                language: String::new(),
+                video_type,
+                duration: Self::fmt_duration_secs(length_secs),
+                stream_id: None,
+                id,
+            });
+        }
+
+        let has_next = videos_node
+            .and_then(|v| v.get("pageInfo"))
+            .and_then(|p| p.get("hasNextPage"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let next = if has_next { last_cursor } else { None };
+
+        Ok((videos, next))
+    }
+
+    /// Format a second count as a Helix-style duration string ("3h21m4s").
+    fn fmt_duration_secs(total: u64) -> String {
+        let h = total / 3600;
+        let m = (total % 3600) / 60;
+        let s = total % 60;
+        if h > 0 {
+            format!("{}h{}m{}s", h, m, s)
+        } else if m > 0 {
+            format!("{}m{}s", m, s)
+        } else {
+            format!("{}s", s)
         }
     }
 
@@ -3341,6 +3924,143 @@ impl TwitchService {
         Ok(serde_json::json!({
             "moderators": moderators,
             "vips": vips
+        }))
+    }
+
+    /// Get the full official chatters roster for a channel, grouped by role.
+    ///
+    /// Uses Helix Get Chatters, which requires the caller to be a moderator or the
+    /// broadcaster of the channel and to hold the `moderator:read:chatters` scope.
+    /// That endpoint returns logins only, so we compose it with the GQL Mods/VIPs
+    /// lookup (`get_chatters_by_role`, which works for any authenticated user) to
+    /// bucket each chatter into broadcaster / moderators / vips / viewers.
+    pub async fn get_channel_chatters(
+        broadcaster_id: &str,
+        channel_login: &str,
+    ) -> Result<serde_json::Value> {
+        use std::collections::HashSet;
+
+        let token = Self::get_token().await?;
+        let client = crate::services::http::client().clone();
+
+        // The roster endpoint requires moderator_id = the authenticated user's id.
+        let moderator_id = Self::get_user_info().await?.id;
+
+        // 1. Page through the official chatters roster (first=1000 is the max page).
+        const MAX_PAGES: usize = 10; // ~10k chatters; surfaced via `truncated` if hit.
+        let mut roster: Vec<serde_json::Value> = Vec::new();
+        let mut cursor: Option<String> = None;
+        let mut truncated = false;
+        for page in 0..MAX_PAGES {
+            let mut url = format!(
+                "https://api.twitch.tv/helix/chat/chatters?broadcaster_id={}&moderator_id={}&first=1000",
+                broadcaster_id, moderator_id
+            );
+            if let Some(ref c) = cursor {
+                url.push_str(&format!("&after={}", c));
+            }
+
+            let response = client
+                .get(&url)
+                .header("Client-Id", CLIENT_ID)
+                .header(AUTHORIZATION, format!("Bearer {}", token))
+                .send()
+                .await?;
+
+            if !response.status().is_success() {
+                let status = response.status();
+                let error_text = response.text().await.unwrap_or_default();
+                error!(
+                    "[TwitchService] Failed to get chatters ({}): {}",
+                    status, error_text
+                );
+                // 401 here means the token predates the moderator:read:chatters scope;
+                // surface a distinct signal so the UI can prompt a one-time re-login.
+                if status.as_u16() == 401 {
+                    return Err(anyhow::anyhow!("REAUTH"));
+                }
+                return Err(anyhow::anyhow!("Failed to get chatters: HTTP {}", status));
+            }
+
+            let json: serde_json::Value = response.json().await?;
+            if let Some(data) = json.get("data").and_then(|d| d.as_array()) {
+                roster.extend(data.iter().cloned());
+            }
+            cursor = json
+                .get("pagination")
+                .and_then(|p| p.get("cursor"))
+                .and_then(|c| c.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string());
+            if cursor.is_none() {
+                break;
+            }
+            if page == MAX_PAGES - 1 {
+                truncated = true;
+            }
+        }
+
+        // 2. Role sets from the GQL Mods/VIPs lookup (best-effort; an empty result
+        //    just means everyone falls into the viewers bucket).
+        let mut mod_logins: HashSet<String> = HashSet::new();
+        let mut vip_logins: HashSet<String> = HashSet::new();
+        if let Ok(roles) = Self::get_chatters_by_role(channel_login).await {
+            if let Some(mods) = roles.get("moderators").and_then(|m| m.as_array()) {
+                for m in mods {
+                    if let Some(login) = m.get("login").and_then(|l| l.as_str()) {
+                        mod_logins.insert(login.to_lowercase());
+                    }
+                }
+            }
+            if let Some(vips) = roles.get("vips").and_then(|v| v.as_array()) {
+                for v in vips {
+                    if let Some(login) = v.get("login").and_then(|l| l.as_str()) {
+                        vip_logins.insert(login.to_lowercase());
+                    }
+                }
+            }
+        }
+
+        // 3. Bucket each chatter by role.
+        fn login_key(v: &serde_json::Value) -> String {
+            v.get("user_login")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_lowercase()
+        }
+
+        let broadcaster_login = channel_login.to_lowercase();
+        let mut broadcaster: Vec<serde_json::Value> = Vec::new();
+        let mut moderators: Vec<serde_json::Value> = Vec::new();
+        let mut vips: Vec<serde_json::Value> = Vec::new();
+        let mut viewers: Vec<serde_json::Value> = Vec::new();
+
+        for chatter in &roster {
+            let login = login_key(chatter);
+            if login == broadcaster_login {
+                broadcaster.push(chatter.clone());
+            } else if mod_logins.contains(&login) {
+                moderators.push(chatter.clone());
+            } else if vip_logins.contains(&login) {
+                vips.push(chatter.clone());
+            } else {
+                viewers.push(chatter.clone());
+            }
+        }
+
+        // Alphabetical within each bucket, matching the native viewer list.
+        moderators.sort_by_cached_key(login_key);
+        vips.sort_by_cached_key(login_key);
+        viewers.sort_by_cached_key(login_key);
+
+        let total = roster.len();
+        Ok(serde_json::json!({
+            "broadcaster": broadcaster,
+            "moderators": moderators,
+            "vips": vips,
+            "viewers": viewers,
+            "total": total,
+            "truncated": truncated,
         }))
     }
 

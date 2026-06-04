@@ -54,6 +54,33 @@ fn local_player_url(port: u16) -> String {
     )
 }
 
+/// Resolve a Twitch clip to its signed MP4 URL WITHOUT touching any global live-
+/// stream state (no `clear_active_stream`, no proxy server, no `currentStream`
+/// swap). The in-chat clip modal plays that MP4 directly in its own `<video>`,
+/// so the main stream/chat keeps running underneath and the user lands back
+/// exactly where they were when the modal closes.
+#[tauri::command]
+pub async fn resolve_clip_media(
+    url: String,
+    quality: String,
+    state: State<'_, AppState>,
+) -> Result<StreamStartResult, String> {
+    let slug = tr::clip_slug_from_url(&url).ok_or_else(|| format!("Not a clip URL: {}", url))?;
+    let oauth = state.twitch_auth.get_token().await.ok();
+    let r = tr::resolve_clip(&slug, oauth.as_deref(), &quality)
+        .await
+        .map_err(|e| e.to_string())?;
+    debug!("[Streaming] clip modal {} → '{}'", slug, r.quality);
+    Ok(StreamStartResult {
+        url: r.url,
+        quality: r.quality,
+        mode: None,
+        entitled: false,
+        proxy_region: None,
+        available: r.available,
+    })
+}
+
 #[tauri::command]
 pub async fn start_stream(
     url: String,

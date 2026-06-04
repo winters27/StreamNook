@@ -458,4 +458,40 @@ impl AccountStore {
         debug!("[accounts] signed out; no other account to promote (full logout)");
         Ok(None)
     }
+
+    /// Full reset for a forced re-auth (e.g. a scopes upgrade invalidates every
+    /// stored token at once). Unlike `sign_out_active`, this promotes nothing:
+    /// every account's token is equally invalid, so they all need a fresh login.
+    /// Clears the primary token stores, drops every secondary token, deletes every
+    /// per-account Twitch web profile, and empties the registry.
+    ///
+    /// Emptying the registry is the load-bearing part: it forces the subsequent
+    /// login to open in the DEFAULT WebView2 profile — the only profile
+    /// `TwitchAuthService::get_token` reads. If the registry survived a forced
+    /// re-auth, the re-login would reopen in the leaving account's per-account
+    /// profile and the freshly-set `auth-token` web cookie would land where the
+    /// stream resolver can't see it (the "non-proxy mode requires a twitch login"
+    /// dead-end even though the user just logged in).
+    pub async fn reset_all() {
+        let accounts = Self::list();
+
+        // Clear the primary token stores (file + cookies + keyring).
+        let _ = TwitchService::logout().await;
+
+        // Drop every account's own token + isolated web profile so nothing
+        // lingers to re-hydrate a stale, scope-deficient session.
+        for a in &accounts {
+            let _ = Self::delete_secondary_token(&a.user_id);
+            crate::services::twitch_service::delete_twitch_web_profile(&a.user_id);
+        }
+
+        // Empty the registry so `primary()` is None and the next login uses the
+        // default profile.
+        let _ = Self::save(&[]);
+
+        debug!(
+            "[accounts] reset_all: cleared {} account(s) for forced re-auth",
+            accounts.len()
+        );
+    }
 }

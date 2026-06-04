@@ -50,7 +50,10 @@ module.exports = {
         },
       },
       fontFamily: {
-        sans: ['Satoshi', '-apple-system', 'BlinkMacSystemFont', 'sans-serif'],
+        // Driven by --app-font (set by applyFont in themes/index.ts) so the
+        // `font-sans` utility follows the user's Theme > Font choice. The
+        // static entries are fallbacks if the variable is ever unset.
+        sans: ['var(--app-font)', 'Satoshi', '-apple-system', 'BlinkMacSystemFont', 'sans-serif'],
       },
       backdropBlur: {
         xs: '2px',

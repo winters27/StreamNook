@@ -1607,6 +1607,30 @@ const Home = () => {
                                 <Search size={16} />
                             </button>
                             </Tooltip>
+                            {/* Logged-out users get an always-visible central login button
+                                here, so signing in never depends on the transient toast.
+                                Same in-app device-code flow as everywhere else (loginToTwitch),
+                                which is what sets the web-session cookie the stream resolver
+                                reads. The Following tab is hidden while logged out and Discover
+                                renders anonymously, so without this there is no obvious login
+                                entry outside Settings. */}
+                            {!isAuthenticated && (
+                                <>
+                                    <div className="border-l border-borderSubtle h-6 mx-0.5" />
+                                    <button
+                                        onClick={loginToTwitch}
+                                        disabled={isLoading}
+                                        className="flex items-center gap-1.5 px-3 py-1.5 bg-[#9146FF] hover:bg-[#7c3aed] text-white text-sm font-medium rounded-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                                    >
+                                        <svg fill="currentColor" viewBox="0 0 512 512" className="w-3.5 h-3.5">
+                                            <path d="M80,32,48,112V416h96v64h64l64-64h80L464,304V32ZM416,288l-64,64H256l-64,64V352H112V80H416Z" />
+                                            <rect x="320" y="143" width="48" height="129" />
+                                            <rect x="208" y="143" width="48" height="129" />
+                                        </svg>
+                                        <span>{isLoading ? 'Logging in...' : 'Login with Twitch'}</span>
+                                    </button>
+                                </>
+                            )}
                         </div>
                         </LayoutGroup>
 

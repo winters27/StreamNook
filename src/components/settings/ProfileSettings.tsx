@@ -7,7 +7,7 @@ import { AtmosphereBackground } from '../AtmosphereBackground';
 import { getPreviewEmotes, previewEmoteUrl, rollPreviewChat, type PreviewEmote } from '../../utils/previewChat';
 import { openBadgesWithPaintInMain, openBadgesOnStreamNookInMain } from '../../utils/openBadgesInMain';
 import streamNookLogo from '../../assets/streamnook-logo.png';
-import { User, Link, Unlink, Image as ImageIcon, Film, Heart, Check } from 'lucide-react';
+import { User, Link, Unlink, Image as ImageIcon, Film, Heart, Check, ExternalLink } from 'lucide-react';
 import {
   computePaintStyle,
   getBadgeImageUrls,
@@ -383,6 +383,22 @@ const ProfileSettings = () => {
     // Push the new theme to chat immediately (no Supabase read race) so our own
     // messages update in real time; switching away from an Atmosphere clears it.
     refreshAtmosphere(currentUser.user_id, getAtmosphere(id) ? id : null);
+  };
+
+  // A locked cosmetic doubles as a shortcut: clicking it opens the support page
+  // in the browser with the right tier (and the member's Twitch handle) already
+  // filled in, so they can grab it in a couple taps instead of hunting the site.
+  const openSupportFor = (tier: 'supporter' | 'subscriber') => {
+    void (async () => {
+      try {
+        const { open } = await import('@tauri-apps/plugin-shell');
+        const userLogin = currentUser?.login || currentUser?.username;
+        const handle = userLogin ? `&handle=${encodeURIComponent(userLogin)}` : '';
+        await open(`https://streamnook.app/support?tier=${tier}${handle}`);
+      } catch {
+        /* opening the browser is best-effort */
+      }
+    })();
   };
 
   const toggleSectionVisibility = (key: string) => {
@@ -825,6 +841,10 @@ const ProfileSettings = () => {
   const activePreviewId = previewThemeId ?? profileTheme;
   const previewAtm = getAtmosphere(activePreviewId);
   const previewLocked = previewAtm ? !canAtmosphere : activePreviewId === 'paint' ? !canPaint : false;
+  // Name the RIGHT tier on the lock pill: an Atmosphere needs Subscriber, but a
+  // 7TV paint only needs Supporter. Telling a paint previewer to "subscribe"
+  // overcharges them (Supporter is the cheaper one-time tier that unlocks it).
+  const previewLockTier: 'supporter' | 'subscriber' = previewAtm ? 'subscriber' : 'supporter';
   // A fresh random sample line (+ maybe a 7TV emote) each time the previewed
   // cosmetic changes, so the mock chat reads like real, varied chat.
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1197,9 +1217,14 @@ const ProfileSettings = () => {
         <div className="flex items-center gap-2 px-1">
           <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-textMuted">Preview</span>
           {previewLocked && (
-            <span className="rounded-full border border-amber-400/30 bg-amber-400/15 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-amber-200/90">
-              Subscribe to unlock
-            </span>
+            <button
+              type="button"
+              onClick={() => openSupportFor(previewLockTier)}
+              className="inline-flex items-center gap-1 rounded-full border border-amber-400/30 bg-amber-400/15 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-amber-200/90 transition-colors hover:bg-amber-400/25"
+            >
+              Get {previewLockTier === 'supporter' ? 'Supporter' : 'Subscriber'}
+              <ExternalLink size={9} className="opacity-70" />
+            </button>
           )}
         </div>
 
@@ -1339,14 +1364,14 @@ const ProfileSettings = () => {
               <button
                 key={opt.id}
                 type="button"
-                onClick={() => selectProfileTheme(opt.id, opt.tier)}
+                onClick={() => (locked ? openSupportFor(opt.tier === 'subscriber' ? 'subscriber' : 'supporter') : selectProfileTheme(opt.id, opt.tier))}
                 onMouseEnter={() => setPreviewThemeId(opt.id)}
                 onMouseLeave={() => setPreviewThemeId(null)}
                 className={`flex w-full items-center gap-3 rounded-lg border p-2.5 text-left transition-colors ${
                   selected
                     ? 'border-accent/50 bg-accent/[0.06]'
                     : 'border-white/[0.06] hover:border-white/[0.12] hover:bg-white/[0.03]'
-                } ${locked ? 'cursor-not-allowed opacity-50' : ''}`}
+                } ${locked ? 'cursor-pointer opacity-60 hover:opacity-100' : ''}`}
               >
                 <span
                   className="h-9 w-9 flex-shrink-0 rounded-md ring-1 ring-inset ring-white/10"
@@ -1354,8 +1379,9 @@ const ProfileSettings = () => {
                 />
                 <span className="flex-1 text-sm font-medium text-textPrimary">{opt.name}</span>
                 {locked && (
-                  <span className="rounded-full border border-amber-400/30 bg-amber-400/10 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-amber-300/90">
-                    {opt.tier === 'supporter' ? 'Supporter' : 'Subscriber'}
+                  <span className="inline-flex items-center gap-1 rounded-full border border-amber-400/30 bg-amber-400/10 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-amber-300/90">
+                    Get {opt.tier === 'subscriber' ? 'Subscriber' : 'Supporter'}
+                    <ExternalLink size={9} className="opacity-70" />
                   </span>
                 )}
                 {selected && <Check size={16} className="text-accent" />}
@@ -1374,13 +1400,18 @@ const ProfileSettings = () => {
           <img src={streamNookLogo} alt="" className="h-4 w-4 object-contain" draggable={false} />
           <h4 className="text-sm font-semibold uppercase tracking-wide text-textPrimary">Atmospheres</h4>
           {!canAtmosphere && (
-            <span className="rounded-full border border-amber-400/30 bg-amber-400/10 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-amber-300/90">
-              Subscriber
-            </span>
+            <button
+              type="button"
+              onClick={() => openSupportFor('subscriber')}
+              className="inline-flex items-center gap-1 rounded-full border border-amber-400/30 bg-amber-400/10 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-amber-300/90 transition-colors hover:bg-amber-400/20"
+            >
+              Get Subscriber
+              <ExternalLink size={9} className="opacity-70" />
+            </button>
           )}
         </div>
         <p className="text-[12px] leading-relaxed text-textSecondary">
-          The whole package, not just a background: an Atmosphere themes your profile AND decorates
+          A subscriber perk, and the whole package: an Atmosphere themes your profile AND decorates
           your chat messages with the same animated look. Tap the active one to remove it.
         </p>
         <div className="mt-3 space-y-2">
@@ -1391,14 +1422,14 @@ const ProfileSettings = () => {
               <button
                 key={a.id}
                 type="button"
-                onClick={() => (selected ? selectProfileTheme('tier', 'free') : selectProfileTheme(a.id, 'subscriber'))}
+                onClick={() => (locked ? openSupportFor('subscriber') : selected ? selectProfileTheme('tier', 'free') : selectProfileTheme(a.id, 'subscriber'))}
                 onMouseEnter={() => setPreviewThemeId(a.id)}
                 onMouseLeave={() => setPreviewThemeId(null)}
                 className={`flex w-full items-center gap-3 rounded-lg border p-2.5 text-left transition-colors ${
                   selected
                     ? 'border-accent/50 bg-accent/[0.06]'
                     : 'border-white/[0.06] hover:border-white/[0.12] hover:bg-white/[0.03]'
-                } ${locked ? 'cursor-not-allowed opacity-50' : ''}`}
+                } ${locked ? 'cursor-pointer opacity-60 hover:opacity-100' : ''}`}
               >
                 <span
                   className="h-9 w-14 flex-shrink-0 rounded-md ring-1 ring-inset ring-white/10"

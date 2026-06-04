@@ -283,6 +283,14 @@ pub struct Settings {
     pub auto_switch: AutoSwitchSettings,
     #[serde(default = "default_theme")]
     pub theme: String,
+    /// Interface font id (see FONT_OPTIONS on the frontend). Persisted so the
+    /// chosen font survives restarts; None falls back to the default font.
+    #[serde(default)]
+    pub font: Option<String>,
+    /// Global glassiness, 0-100. Persisted so the slider survives restarts;
+    /// None falls back to the default (100) on the frontend.
+    #[serde(default)]
+    pub glass_transparency: Option<u32>,
     #[serde(default)]
     pub setup_complete: bool,
     #[serde(default)]
@@ -328,6 +336,8 @@ impl Default for Settings {
             last_seen_version: None,
             auto_switch: AutoSwitchSettings::default(),
             theme: default_theme(),
+            font: None,
+            glass_transparency: None,
             setup_complete: false, // New users need to complete setup
             compact_view: None,
             error_reporting_enabled: true, // Diagnostics enabled by default

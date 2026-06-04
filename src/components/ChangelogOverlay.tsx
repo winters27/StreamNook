@@ -11,10 +11,10 @@ interface ChangelogOverlayProps {
   onClose: () => void;
 }
 
-// Developer Discord ID — same value used by SupportSettings.tsx / AboutWidget.tsx.
-const DEVELOPER_DISCORD_ID = '681989594341834765';
+// Community Discord invite — same value used by SupportSettings.tsx.
+const COMMUNITY_DISCORD_INVITE_CODE = '2xvuF9TES7';
 const GITHUB_ISSUE_URL = 'https://github.com/winters27/StreamNook/issues/new';
-const DISCORD_DM_URL = `https://discord.com/users/${DEVELOPER_DISCORD_ID}`;
+const COMMUNITY_DISCORD_INVITE = `https://discord.gg/${COMMUNITY_DISCORD_INVITE_CODE}`;
 
 // Opens an external URL via Tauri's shell plugin (so it goes to the OS default
 // browser, not inside the WebView). Falls back to window.open in case the
@@ -67,13 +67,13 @@ const FriendlyFooter = () => (
       </button>
       <button
         type="button"
-        onClick={() => openExternal(DISCORD_DM_URL)}
+        onClick={() => openExternal(COMMUNITY_DISCORD_INVITE)}
         className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 hover:border-white/20 text-xs text-textPrimary transition-colors"
       >
         <span className="text-[#5865F2]">
           <DiscordIcon size={14} />
         </span>
-        DM me on Discord
+        Join the Discord
       </button>
     </div>
     <p className="text-center text-xs text-textPrimary leading-relaxed italic pt-2">

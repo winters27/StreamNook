@@ -9,6 +9,9 @@
 export interface PlayerControls {
   /** True when a controllable (Plyr) player is mounted. */
   isActive(): boolean;
+  /** Current playback position in seconds, or null if unavailable. Used to
+   *  anchor a VOD clip at the moment the viewer is watching. */
+  getCurrentTime(): number | null;
   togglePlay(): void;
   toggleMute(): void;
   toggleFullscreen(): void;

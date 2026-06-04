@@ -23,6 +23,7 @@ import MultiChatPane from './MultiChatPane';
 import { ModLogsWidget } from '../chat/ModLogsWidget';
 import ChatOnlySettingsModal from './ChatOnlySettingsModal';
 import CommandPalette from '../CommandPalette';
+import ClipModal from '../ClipModal';
 import { useCommandPaletteHotkey } from '../../hooks/useCommandPaletteHotkey';
 import { startSnippetSync } from '../../stores/snippetStore';
 import { TooltipManager } from '../ui/TooltipManager';
@@ -1043,6 +1044,7 @@ export default function MultiChatWindow() {
           popout produces no UI. */}
       <TooltipManager />
       <CommandPalette />
+      <ClipModal />
     </div>
   );
 }

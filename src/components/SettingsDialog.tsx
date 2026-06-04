@@ -15,6 +15,7 @@ import {
   Shield,
   User,
   Search,
+  LogOut,
   type LucideIcon,
 } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
@@ -76,9 +77,10 @@ const HERO_BEVEL =
   'inset 1px 1px 0 0 rgba(255,255,255,0.14), inset -1px -1px 0 0 rgba(0,0,0,0.22), 0 4px 10px rgba(0,0,0,0.18)';
 
 const SettingsDialog = () => {
-  const { isSettingsOpen, settingsInitialTab, closeSettings, isAuthenticated, currentUser } = useAppStore();
+  const { isSettingsOpen, settingsInitialTab, closeSettings, isAuthenticated, currentUser, signOutActiveAccount } = useAppStore();
   const [activeTab, setActiveTab] = useState<SettingsTab>('Player');
   const [searchQuery, setSearchQuery] = useState('');
+  const [signOutConfirm, setSignOutConfirm] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
@@ -100,6 +102,7 @@ const SettingsDialog = () => {
       queueMicrotask(() => {
         setActiveTab('Player');
         setSearchQuery('');
+        setSignOutConfirm(false);
       });
     }
   }, [isSettingsOpen]);
@@ -155,65 +158,107 @@ const SettingsDialog = () => {
           >
             <aside className="flex w-[240px] flex-shrink-0 flex-col border-r border-white/[0.06] py-3">
               <div className="px-2">
-                <button
-                  type="button"
-                  onClick={() => selectTab('Profile')}
-                  className={`flex w-full items-center gap-3 rounded-md px-2 py-2 text-left transition-colors ${
-                    profileActive && !searching
-                      ? 'bg-white/[0.06] text-textPrimary'
-                      : 'text-textSecondary hover:bg-white/[0.03] hover:text-textPrimary'
-                  }`}
-                >
-                  {isAuthenticated && currentUser?.profile_image_url ? (
-                    <img
-                      // Twitch returns the upload at variants like
-                      // {id}-profile_image-{size}x{size}.png. Force the
-                      // 300x300 variant so a 32-px render has plenty of
-                      // source pixels to downscale cleanly. The regex is a
-                      // no-op if the URL doesn't match that shape.
-                      src={currentUser.profile_image_url.replace(
-                        /-(28x28|50x50|70x70|150x150)\./,
-                        '-300x300.',
-                      )}
-                      alt=""
-                      width={32}
-                      height={32}
-                      className="h-8 w-8 flex-shrink-0 rounded-full object-cover ring-1 ring-white/10"
-                      // translateZ lifts the avatar to its own compositor
-                      // layer so the parent liquid-glass-panel's heavy
-                      // backdrop-filter doesn't soften the render.
-                      // image-rendering hint nudges Chromium toward a
-                      // crisper downscale algorithm at this aggressive ratio.
-                      style={{
-                        transform: 'translateZ(0)',
-                        imageRendering: '-webkit-optimize-contrast' as unknown as 'auto',
-                      }}
-                    />
-                  ) : (
-                    <span
-                      className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full"
-                      style={{
-                        background: PROFILE_META.tint,
-                        boxShadow: TILE_BEVEL,
-                        border: '1px solid transparent',
-                      }}
-                    >
-                      <User size={14} strokeWidth={2.25} className="text-textPrimary" />
-                    </span>
-                  )}
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-[13px] font-medium text-textPrimary">
-                      {isAuthenticated && currentUser
-                        ? currentUser.display_name || currentUser.login
-                        : 'Not signed in'}
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => selectTab('Profile')}
+                    className={`flex min-w-0 flex-1 items-center gap-3 rounded-md px-2 py-2 text-left transition-colors ${
+                      profileActive && !searching
+                        ? 'bg-white/[0.06] text-textPrimary'
+                        : 'text-textSecondary hover:bg-white/[0.03] hover:text-textPrimary'
+                    }`}
+                  >
+                    {isAuthenticated && currentUser?.profile_image_url ? (
+                      <img
+                        // Twitch returns the upload at variants like
+                        // {id}-profile_image-{size}x{size}.png. Force the
+                        // 300x300 variant so a 32-px render has plenty of
+                        // source pixels to downscale cleanly. The regex is a
+                        // no-op if the URL doesn't match that shape.
+                        src={currentUser.profile_image_url.replace(
+                          /-(28x28|50x50|70x70|150x150)\./,
+                          '-300x300.',
+                        )}
+                        alt=""
+                        width={32}
+                        height={32}
+                        className="h-8 w-8 flex-shrink-0 rounded-full object-cover ring-1 ring-white/10"
+                        // translateZ lifts the avatar to its own compositor
+                        // layer so the parent liquid-glass-panel's heavy
+                        // backdrop-filter doesn't soften the render.
+                        // image-rendering hint nudges Chromium toward a
+                        // crisper downscale algorithm at this aggressive ratio.
+                        style={{
+                          transform: 'translateZ(0)',
+                          imageRendering: '-webkit-optimize-contrast' as unknown as 'auto',
+                        }}
+                      />
+                    ) : (
+                      <span
+                        className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full"
+                        style={{
+                          background: PROFILE_META.tint,
+                          boxShadow: TILE_BEVEL,
+                          border: '1px solid transparent',
+                        }}
+                      >
+                        <User size={14} strokeWidth={2.25} className="text-textPrimary" />
+                      </span>
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-[13px] font-medium text-textPrimary">
+                        {isAuthenticated && currentUser
+                          ? currentUser.display_name || currentUser.login
+                          : 'Not signed in'}
+                      </div>
+                      <div className="truncate text-[11px] text-textMuted">
+                        {isAuthenticated && currentUser
+                          ? `@${currentUser.login}`
+                          : 'Sign in with Twitch'}
+                      </div>
                     </div>
-                    <div className="truncate text-[11px] text-textMuted">
-                      {isAuthenticated && currentUser
-                        ? `@${currentUser.login}`
-                        : 'Sign in with Twitch'}
-                    </div>
-                  </div>
-                </button>
+                  </button>
+
+                  {/* Quick sign-out for the active account, sitting next to the
+                      identity pill. Two-step confirm (matching the Accounts
+                      panel) so a misclick beside the Profile nav can't sign you
+                      out. signOutActiveAccount promotes a linked account if one
+                      exists, else fully signs out. */}
+                  {isAuthenticated && currentUser &&
+                    (signOutConfirm ? (
+                      <div className="flex flex-shrink-0 items-center gap-0.5">
+                        <button
+                          type="button"
+                          onClick={() => setSignOutConfirm(false)}
+                          className="rounded-md px-2 py-1 text-[11px] text-textMuted transition-colors hover:bg-white/[0.05] hover:text-textPrimary"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSignOutConfirm(false);
+                            void signOutActiveAccount();
+                            closeSettings();
+                          }}
+                          className="rounded-md px-2 py-1 text-[11px] font-medium text-red-400 transition-colors hover:bg-red-500/10"
+                        >
+                          Sign out
+                        </button>
+                      </div>
+                    ) : (
+                      <Tooltip content="Sign out" side="bottom">
+                        <button
+                          type="button"
+                          onClick={() => setSignOutConfirm(true)}
+                          aria-label="Sign out"
+                          className="flex-shrink-0 rounded-md p-1.5 text-textMuted transition-colors hover:bg-red-500/10 hover:text-red-400"
+                        >
+                          <LogOut size={15} />
+                        </button>
+                      </Tooltip>
+                    ))}
+                </div>
               </div>
               <div className="my-3 mx-4 border-b border-white/[0.06]" />
               <div className="px-3 pb-3">

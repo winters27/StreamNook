@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useAppStore } from '../../stores/AppStore';
-import { themes, themeCategories, getThemeById, applyTheme, customThemeToTheme, getThemeByIdWithCustom, applyGlassStrength, DEFAULT_GLASS_TRANSPARENCY, Theme } from '../../themes';
-import { Check, Palette, Sparkles, Moon, Leaf, Code, Star, Plus, Edit2, PaintBucket, Droplets } from 'lucide-react';
+import { themes, themeCategories, getThemeById, applyTheme, customThemeToTheme, getThemeByIdWithCustom, applyGlassStrength, DEFAULT_GLASS_TRANSPARENCY, applyFont, FONT_OPTIONS, DEFAULT_FONT_ID, Theme } from '../../themes';
+import { Check, Palette, Sparkles, Moon, Leaf, Code, Star, Plus, Edit2, PaintBucket, Droplets, Type } from 'lucide-react';
 import { Tooltip } from '../ui/Tooltip';
 import ThemeCreator from './ThemeCreator';
 import type { CustomTheme } from '../../types';
@@ -173,6 +173,8 @@ const ThemeSettings = () => {
     // Get current theme (could be custom or built-in)
     const currentTheme = getThemeByIdWithCustom(currentThemeId, customThemes);
 
+    const currentFontId = settings.font || DEFAULT_FONT_ID;
+
     const handleThemeChange = (themeId: string) => {
         const theme = getThemeByIdWithCustom(themeId, customThemes);
         if (theme) {
@@ -181,6 +183,13 @@ const ThemeSettings = () => {
             // Save to settings
             updateSettings({ ...settings, theme: themeId });
         }
+    };
+
+    const handleFontChange = (fontId: string) => {
+        if (fontId === currentFontId) return;
+        // Apply live, then persist (mirrors theme + glassiness flow).
+        applyFont(fontId);
+        updateSettings({ ...settings, font: fontId });
     };
 
     const handleSaveCustomTheme = (theme: CustomTheme) => {
@@ -300,6 +309,56 @@ const ThemeSettings = () => {
                 <p className="text-xs text-textMuted">
                     How see-through panels are, for every theme. 100% is the signature frosted look; lower makes panels more solid.
                 </p>
+            </div>
+
+            {/* Interface Font — palette-independent, like glassiness. Each card
+                previews in its own typeface; selecting applies instantly. */}
+            <div className="glass-panel rounded-lg p-4 space-y-3">
+                <div className="flex items-center gap-2">
+                    <Type size={16} className="text-accent" />
+                    <h4 className="text-sm font-semibold text-textPrimary">Font</h4>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                    {FONT_OPTIONS.map((font) => {
+                        const isSelected = currentFontId === font.id;
+                        return (
+                            <button
+                                key={font.id}
+                                onClick={() => handleFontChange(font.id)}
+                                // translateZ(0) lifts the card onto its own compositor
+                                // layer so the dialog's heavy liquid-glass backdrop-filter
+                                // (blur 96px) + scale-in don't rasterize/soften the preview
+                                // text. Same crispness workaround the profile avatar uses.
+                                style={{ transform: 'translateZ(0)' }}
+                                className={`relative w-full p-3 rounded-lg transition-all duration-200 border-2 text-left ${
+                                    isSelected
+                                        ? 'border-accent ring-2 ring-accent/30'
+                                        : 'border-borderSubtle hover:border-borderLight'
+                                }`}
+                            >
+                                <div className="flex items-center justify-between mb-1.5">
+                                    <span className="text-sm font-semibold text-textPrimary">{font.label}</span>
+                                    {isSelected && (
+                                        <div className="w-5 h-5 rounded-full bg-accent flex items-center justify-center flex-shrink-0">
+                                            <Check size={12} className="text-background" strokeWidth={3} />
+                                        </div>
+                                    )}
+                                </div>
+                                <div
+                                    className="text-lg leading-tight text-textPrimary mb-1.5"
+                                    // Weight 400 = each font's true regular, so the preview
+                                    // reads lean (matches how Twitch renders Inter at 400).
+                                    style={{ fontFamily: font.stack, fontWeight: 400 }}
+                                >
+                                    Stream chat &amp; emotes
+                                </div>
+                                <p className="text-xs text-textMuted leading-relaxed line-clamp-2">
+                                    {font.description}
+                                </p>
+                            </button>
+                        );
+                    })}
+                </div>
             </div>
 
             {/* Custom Themes Section */}

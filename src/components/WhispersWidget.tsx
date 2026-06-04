@@ -945,8 +945,8 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
                     <a
                         key={index}
                         href={url}
-                        target="_blank"
-                        rel="noopener noreferrer"
+                        // No target="_blank": the webview opens _blank links externally on
+                        // its own, which would stack a second tab on top of the open() below.
                         className="text-accent hover:text-accentHover underline cursor-pointer"
                         onClick={async (e) => {
                             e.preventDefault();

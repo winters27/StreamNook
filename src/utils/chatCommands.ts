@@ -27,8 +27,6 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
   { name: 'unmonitor', usage: '/unmonitor <username>', description: 'Stop monitoring a user\'s messages', category: 'Moderator' },
   { name: 'restrict', usage: '/restrict <username>', description: 'Start restricting a user\'s messages', category: 'Moderator' },
   { name: 'unrestrict', usage: '/unrestrict <username>', description: 'Stop restricting a user\'s messages', category: 'Moderator' },
-  { name: 'user', usage: '/user <username>', description: 'Open a user\'s profile card', category: 'Moderator' },
-  
   // Chat Flow
   { name: 'clear', usage: '/clear', description: 'Wipe the chat history', category: 'Chat Flow' },
   { name: 'slow', usage: '/slow <seconds>', description: 'Set limit on how often users can send messages', category: 'Chat Flow' },
@@ -64,6 +62,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
   { name: 'popup', usage: '/popup [channel]', description: 'Open this (or another) channel in a new StreamNook MultiChat window', category: 'Everyone' },
   { name: 'uptime', usage: '/uptime', description: "Show this channel's current stream uptime", category: 'Everyone' },
   { name: 'usercard', usage: '/usercard <user>', description: "Open a user's StreamNook profile card", category: 'Everyone' },
+  { name: 'user', usage: '/user <user>', description: "Open a user's StreamNook profile card", category: 'Everyone' },
   { name: 'banid', usage: '/banid <userID> [reason]', description: 'Ban by Twitch user ID (works on suspended accounts that /ban no longer reaches)', category: 'Moderator' },
   { name: 'nuke', usage: '/nuke <pattern> <action> <past[:future]>', description: 'Mass-action by phrase or /regex/. action = delete | ban | duration. Example: /nuke spam ban 5m:1m', category: 'Moderator' },
   { name: 'undo', usage: '/undo', description: 'Reverse the most recent /nuke on this channel (bans/timeouts only — deletes are permanent)', category: 'Moderator' },

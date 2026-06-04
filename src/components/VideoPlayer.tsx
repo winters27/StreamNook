@@ -3,7 +3,7 @@ import Hls from 'hls.js';
 import Plyr from 'plyr';
 import 'plyr/dist/plyr.css';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Loader2, RefreshCcw, Home, LayoutGrid, Shield, ShieldCheck, ShieldAlert } from 'lucide-react';
+import { Loader2, RefreshCcw, Home, LayoutGrid, Shield, ShieldCheck, ShieldAlert, Clapperboard } from 'lucide-react';
 import { Heart, HeartBreak, ArrowLeft, X as XIcon } from 'phosphor-react';
 import { useAppStore } from '../stores/AppStore';
 import { usemultiNookStore } from '../stores/multiNookStore';
@@ -22,7 +22,16 @@ const VideoPlayer = () => {
   const hlsRef = useRef<Hls | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const progressUpdateIntervalRef = useRef<number | null>(null);
-  const { streamUrl, settings, activeQuality, adSource, getAvailableQualities, changeStreamQuality, handleStreamOffline, isAutoSwitching, currentStream, restartStream, exitStream, toggleHome, isHomeActive, streamOriginCategory, setHomeActiveTab, setHomeSelectedCategory, triggerChatRefresh, isAuthenticated, currentMediaType } = useAppStore();
+  const { streamUrl, settings, activeQuality, adSource, getAvailableQualities, changeStreamQuality, handleStreamOffline, isAutoSwitching, currentStream, restartStream, exitStream, toggleHome, isHomeActive, streamOriginCategory, setHomeActiveTab, setHomeSelectedCategory, triggerChatRefresh, isAuthenticated, currentMediaType, createClip, isCreatingClip, originalMediaUrl, openStreamerMedia } = useAppStore();
+  // Clippable: a live broadcast, or any VOD that's loaded — including the latest
+  // VOD auto-loaded into the offline-chat space (still currentMediaType
+  // 'offline_chat', but a real VOD is playing, exposed via originalMediaUrl).
+  const canClip =
+    currentMediaType === 'live' || (!!originalMediaUrl && /\/videos\/\d+/.test(originalMediaUrl));
+  // A clip is playing in the centered overlay modal. The live stream keeps
+  // playing underneath, so mute it while the modal is open to avoid two audio
+  // tracks at once; restore the prior mute state on close.
+  const clipModalOpen = useAppStore((s) => s.clipModal !== null);
   // Stabilize handleStreamOffline in a ref so createPlayer's identity stays stable.
   // Without this, every Zustand set() call recreates handleStreamOffline, which changes
   // createPlayer's reference, which re-fires the player creation effect — causing double
@@ -50,6 +59,21 @@ const VideoPlayer = () => {
   const [showOverlay, setShowOverlay] = useState(false);
   const overlayTimerRef = useRef<NodeJS.Timeout | null>(null);
   const OVERLAY_HIDE_DELAY = 2600; // Match Plyr's native control hide timing (2.6s)
+
+  // Mute the background stream while a clip modal is open (the clip carries its
+  // own audio); restore the prior mute state when it closes.
+  const preClipMuteRef = useRef<boolean | null>(null);
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    if (clipModalOpen) {
+      if (preClipMuteRef.current === null) preClipMuteRef.current = video.muted;
+      video.muted = true;
+    } else if (preClipMuteRef.current !== null) {
+      video.muted = preClipMuteRef.current;
+      preClipMuteRef.current = null;
+    }
+  }, [clipModalOpen]);
 
   // Transient top-left "stream note" (ad source + any quality fallback). Shows
   // briefly when a new live stream resolves, then fades. Replaces the per-stream
@@ -1074,6 +1098,10 @@ const VideoPlayer = () => {
     const SPEEDS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
     const controls: PlayerControls = {
       isActive: () => playerRef.current !== null,
+      getCurrentTime: () => {
+        const v = videoRef.current;
+        return v && Number.isFinite(v.currentTime) ? v.currentTime : null;
+      },
       togglePlay: () => playerRef.current?.togglePlay(),
       toggleMute: () => {
         const p = playerRef.current;
@@ -1494,7 +1522,7 @@ const VideoPlayer = () => {
 
       {/* Follow & Subscribe Button Overlay */}
       <AnimatePresence>
-        {currentStream && showOverlay && (currentMediaType === 'live' || currentMediaType === 'offline_chat') && (
+        {currentStream && showOverlay && (currentMediaType === 'live' || currentMediaType === 'offline_chat' || currentMediaType === 'video') && (
           <motion.div
             initial={{ opacity: 0, y: -8 }}
             animate={{ opacity: 1, y: 0 }}
@@ -1568,6 +1596,39 @@ const VideoPlayer = () => {
             )}
           </button>
           </Tooltip>
+
+          {/* Create Clip Button — live: last ~30s; VOD (incl. offline-chat's
+              auto-loaded VOD): ~30s at the current spot */}
+          {canClip && (
+            <Tooltip content="Create clip (Alt+X)" side="bottom">
+            <button
+              onClick={() => createClip()}
+              disabled={isCreatingClip}
+              className={`flex items-center justify-center p-2 glass-button rounded-lg ${
+                isCreatingClip ? 'cursor-wait opacity-70' : ''
+              }`}
+              style={{ backdropFilter: 'blur(16px)' }}
+            >
+              {isCreatingClip ? (
+                <Loader2 className="w-4 h-4 text-accent animate-spin" />
+              ) : (
+                <Clapperboard className="w-4 h-4 text-white hover:text-accent transition-colors duration-200" />
+              )}
+            </button>
+            </Tooltip>
+          )}
+
+          {/* Clips & VODs — opens this streamer's clip/VOD library. Text label,
+              no icon (the label speaks for itself, so no tooltip either). */}
+          {currentStream && currentStream.user_id && (
+            <button
+              onClick={() => openStreamerMedia(currentStream)}
+              className="flex items-center justify-center px-3 py-2 glass-button rounded-lg text-sm font-semibold text-white hover:text-accent transition-colors duration-200"
+              style={{ backdropFilter: 'blur(16px)' }}
+            >
+              Clips &amp; VODs
+            </button>
+          )}
 
           {/* Add to MultiNook Button — pulls this stream into the multi-view grid */}
           {currentMediaType === 'live' && (

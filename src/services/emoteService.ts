@@ -27,8 +27,57 @@ export interface EmoteSet {
   ffz: Emote[];
 }
 
-// Module-level registry of cached emote files (id -> localPath)
+// Module-level registry of cached emote files (cacheKey -> localPath).
+// For 7TV the key is `${id}@${tier}` (see emoteCacheKey); other providers key
+// by bare id since they have a single canonical URL.
 const cachedEmoteFiles: Map<string, string> = new Map();
+
+// --- Per-DPI emote sizing -------------------------------------------------
+// 7TV serves discrete size tiers (1x..4x). We cache AND render the smallest
+// tier that still looks crisp at the display's pixel density, so the on-disk
+// copy matches what is on screen and disk-first render can never soften an
+// emote (the reason 7TV historically bypassed the cache: it stored 1x while
+// every surface drew 2x). devicePixelRatio is effectively fixed per display;
+// the tier is memoized and reset on resize so moving the window to a
+// different-density monitor re-picks the right size and caches it fresh.
+export type EmoteTier = '1x' | '2x' | '4x';
+
+let _inlineTier: EmoteTier | null = null;
+
+export function inlineEmoteTier(): EmoteTier {
+  if (_inlineTier) return _inlineTier;
+  let dpr = 1;
+  try {
+    dpr = Math.max(1, window.devicePixelRatio || 1);
+  } catch {
+    /* non-DOM context */
+  }
+  _inlineTier = dpr <= 1 ? '1x' : dpr <= 2 ? '2x' : '4x';
+  return _inlineTier;
+}
+
+try {
+  window.addEventListener('resize', () => {
+    _inlineTier = null;
+  });
+} catch {
+  /* non-DOM context */
+}
+
+/** CDN URL for a 7TV emote at a given size tier. */
+export function sevenTvTierUrl(id: string, tier: EmoteTier = inlineEmoteTier()): string {
+  return `https://cdn.7tv.app/emote/${id}/${tier}.avif`;
+}
+
+/**
+ * Disk-cache key. 7TV is size-tiered (one file per tier) so it keys by
+ * `${id}@${tier}`; other providers have a single canonical URL and key by bare
+ * id. Caching and lookup MUST use the same key or disk-first silently misses.
+ * `@` survives the Rust filename sanitizer (which only strips path separators).
+ */
+function emoteCacheKey(id: string, provider?: string, tier: EmoteTier = inlineEmoteTier()): string {
+  return provider === '7tv' ? `${id}@${tier}` : id;
+}
 
 // Pending downloads to prevent duplicate requests
 const pendingDownloads: Map<string, Promise<string | null>> = new Map();
@@ -169,9 +218,34 @@ export function queueEmoteForCaching(id: string, url: string, priority: boolean 
   scheduleQueueProcessing();
 }
 
-export function getCachedEmoteUrl(id: string): string | undefined {
-  const path = cachedEmoteFiles.get(id);
+export function getCachedEmoteUrl(
+  id: string,
+  provider?: string,
+  tier: EmoteTier = inlineEmoteTier(),
+): string | undefined {
+  const path = cachedEmoteFiles.get(emoteCacheKey(id, provider, tier));
   return path ? convertFileSrc(path) : undefined;
+}
+
+/**
+ * Queue an emote for disk caching at the size it will actually render. 7TV is
+ * cached per-tier (key `${id}@${tier}`, URL at that tier) so the stored file
+ * matches the on-screen size and disk-first render stays lossless; other
+ * providers use their single canonical URL keyed by bare id. Call this only
+ * once the emote has been shown (the bytes are already in the WebView), so the
+ * cache write piggybacks on a download that already happened.
+ */
+export function queueEmoteForDisplayCaching(
+  id: string,
+  provider: string | undefined,
+  url: string,
+  tier: EmoteTier = inlineEmoteTier(),
+) {
+  if (provider === '7tv') {
+    queueEmoteForCaching(emoteCacheKey(id, '7tv', tier), sevenTvTierUrl(id, tier));
+  } else {
+    queueEmoteForCaching(id, url);
+  }
 }
 
 async function ensureEmoteFileCache() {
@@ -262,8 +336,9 @@ export async function fetchAllEmotes(channelName?: string, channelId?: string): 
     // The browser will load from CDN if localUrl is undefined
     const enhanceWithLocalUrls = (emotes: any[]) => {
       return emotes.map(emote => {
-        // Only use cached path if it's already in memory - no blocking
-        const localPath = cachedEmoteFiles.get(emote.id);
+        // Only use cached path if it's already in memory - no blocking. 7TV is
+        // looked up at the per-DPI tier so the cached size matches what renders.
+        const localPath = cachedEmoteFiles.get(emoteCacheKey(emote.id, emote.provider));
         const zeroWidth = emote.is_zero_width !== undefined ? emote.is_zero_width : emote.isZeroWidth;
         return {
           ...emote,
@@ -322,8 +397,8 @@ export async function getEmoteByName(channelId: string | null, emoteName: string
     });
     
     if (emote) {
-      // Enhance with local URL if available
-      const localPath = cachedEmoteFiles.get(emote.id);
+      // Enhance with local URL if available (tiered lookup for 7TV)
+      const localPath = cachedEmoteFiles.get(emoteCacheKey(emote.id, emote.provider));
       const anyEmote = emote as any;
       const zeroWidth = anyEmote.is_zero_width !== undefined ? anyEmote.is_zero_width : emote.isZeroWidth;
       return {

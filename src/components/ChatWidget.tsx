@@ -26,11 +26,12 @@ import ErrorBoundary from './ErrorBoundary';
 import PredictionOverlay from './PredictionOverlay';
 import ConfettiBurst from './ConfettiBurst';
 import StreamerAboutPanel from './StreamerAboutPanel';
+import ViewersPanel from './ViewersPanel';
 import ChannelPointsMenu from './ChannelPointsMenu';
 import ModeratorMenu from './chat/ModeratorMenu';
 import ResubNotificationBanner, { ResubNotification } from './ResubNotificationBanner';
 import WatchStreakBanner, { WatchStreakMilestone } from './WatchStreakBanner';
-import { Emote, EmoteSet, preloadChannelEmotes, queueEmoteForCaching } from '../services/emoteService';
+import { Emote, EmoteSet, preloadChannelEmotes, queueEmoteForCaching, inlineEmoteTier, sevenTvTierUrl } from '../services/emoteService';
 import { preloadThirdPartyBadgeDatabases } from '../services/thirdPartyBadges';
 import { initializeBadges, getBadgeInfo } from '../services/twitchBadges';
 import { parseBadges } from '../services/twitchBadges';
@@ -201,6 +202,12 @@ const EmoteGridItem = memo(({ emote, isFavorited, onInsert, onToggleFavorite }: 
   onToggleFavorite: () => void;
 }) => {
   const is7tv = emote.provider === '7tv';
+  const emoteTier = inlineEmoteTier();
+  // Disk-first for 7TV: emote.localUrl is the cached file at the per-DPI tier
+  // (populated when the emote was shown in chat). Use it when present so the
+  // picker renders from disk instead of re-pulling the CDN; fall back to the
+  // CDN at the same tier on a miss. Non-7TV already prefer localUrl below.
+  const gridSrc = is7tv ? (emote.localUrl || sevenTvTierUrl(emote.id, emoteTier)) : (emote.localUrl || emote.url);
   // Same user-configurable hover-preview height used by inline chat emotes, so
   // the picker's hover card matches what you see in chat. Defaults to 96px.
   const hoverPreviewSize = useAppStore((s) => s.settings.chat_design?.emote_hover_size) ?? 96;
@@ -217,11 +224,23 @@ const EmoteGridItem = memo(({ emote, isFavorited, onInsert, onToggleFavorite }: 
             className="w-auto object-contain mx-auto drop-shadow-md"
             style={{ height: hoverPreviewSize, maxWidth: hoverPreviewSize * 2 }}
             onError={(e) => {
+              const t = e.currentTarget;
+              // Walk every size AND both formats, then fall back to the cached
+              // inline-tier copy, so a Large preview never blanks on emotes that
+              // lack a working 4x.
               if (emote.provider === '7tv') {
-                const target = e.currentTarget;
-                const src = target.src;
-                if (src.includes('/4x.avif')) target.src = `https://cdn.7tv.app/emote/${emote.id}/2x.avif`;
-                else if (src.includes('/2x.avif')) target.src = `https://cdn.7tv.app/emote/${emote.id}/1x.avif`;
+                const ladder = ['4x', '3x', '2x', '1x'].flatMap((s) => [
+                  `https://cdn.7tv.app/emote/${emote.id}/${s}.avif`,
+                  `https://cdn.7tv.app/emote/${emote.id}/${s}.webp`,
+                ]);
+                let step = Number(t.dataset.fb || '0');
+                while (step < ladder.length && ladder[step] === t.src) step++;
+                if (step < ladder.length) {
+                  t.dataset.fb = String(step + 1);
+                  t.src = ladder[step];
+                  return;
+                }
+                if (emote.localUrl && t.src !== emote.localUrl) t.src = emote.localUrl;
               }
             }}
           />
@@ -245,8 +264,8 @@ const EmoteGridItem = memo(({ emote, isFavorited, onInsert, onToggleFavorite }: 
       >
         <button onClick={onInsert} className={`flex items-center justify-center p-1 w-full h-full min-w-8 min-h-8 hover:bg-glass rounded transition-colors ${emote.isZeroWidth ? 'ring-1 ring-yellow-400/50 bg-yellow-400/10' : ''}`}>
           <img
-            src={is7tv ? `https://cdn.7tv.app/emote/${emote.id}/2x.avif` : (emote.localUrl || emote.url)}
-            srcSet={is7tv ? `https://cdn.7tv.app/emote/${emote.id}/1x.avif 1x, https://cdn.7tv.app/emote/${emote.id}/2x.avif 2x` : undefined}
+            src={gridSrc}
+            srcSet={is7tv && !emote.localUrl ? `https://cdn.7tv.app/emote/${emote.id}/1x.avif 1x, https://cdn.7tv.app/emote/${emote.id}/2x.avif 2x` : undefined}
             alt={emote.name}
             loading="lazy"
             decoding="async"
@@ -458,7 +477,13 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
   
   // UI state
   const [messageInput, setMessageInput] = useState('');
-  const [activeView, setActiveView] = useState<'chat' | 'about'>('chat');
+  const [activeView, setActiveView] = useState<'chat' | 'about' | 'viewers'>('chat');
+
+  // The viewers list is mod-only (Helix Get Chatters needs mod/broadcaster auth).
+  // If mod status drops while it's open, fall back to the chat view.
+  useEffect(() => {
+    if (activeView === 'viewers' && !isModerator) setActiveView('chat');
+  }, [activeView, isModerator]);
   const [showEmotePicker, setShowEmotePicker] = useState(false);
   // Multi-account "send as" picker. Only shown when 2+ accounts are linked, so a
   // single-account user sees no change. Load the registry once on mount.
@@ -502,6 +527,12 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
   const emoteScrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const channelPointsRef = useRef<HTMLDivElement>(null);
+  // Always-latest reference to handleUsernameClick so window-event listeners
+  // (the /usercard and /user slash commands) open the card with current channel
+  // context instead of a stale mount-time closure.
+  const handleUsernameClickRef = useRef<
+    ((userId: string, username: string, displayName: string, color: string, badges: Array<{ key: string; info: any }>, event: React.MouseEvent) => void) | null
+  >(null);
   const [isPaused, setIsPaused] = useState(false);
   // "N new since paused" badge. Anchored to the channel's MONOTONIC live-message
   // counter (liveMessageCount) at the instant we enter pause, then shown as a
@@ -660,6 +691,15 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
     currentLen: number;
   }
   const [emoteTabState, setEmoteTabState] = useState<EmoteTabState | null>(null);
+
+  // Sent-message history for arrow-key recall (Chatterino-style). Newest is at
+  // the end. `historyIndex` is -1 when not navigating, otherwise the offset back
+  // from the newest entry. `historyDraftRef` preserves whatever was being typed
+  // before the user started scrolling back, so ArrowDown can restore it.
+  const sentHistoryRef = useRef<string[]>([]);
+  const historyDraftRef = useRef<string>('');
+  const [historyIndex, setHistoryIndex] = useState(-1);
+  const MAX_SENT_HISTORY = 100;
 
   // Dynamically compute if the current input is a valid, fully-formed command
   const commandState = useMemo(() => {
@@ -911,7 +951,7 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
   useEffect(() => {
     getViewerCount();
   }, [getViewerCount]);
-  useVisibleInterval(getViewerCount, 180000);
+  useVisibleInterval(getViewerCount, 60000);
 
   useEffect(() => {
     let headerElement: HTMLElement | null = null;
@@ -1528,14 +1568,12 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
         clientX: window.innerWidth / 2,
         clientY: window.innerHeight / 2,
       } as unknown as React.MouseEvent;
-      handleUsernameClick(e.detail.userId, e.detail.username, e.detail.displayName, '#9147FF', [], fakeEvent);
+      // Call through the ref so we always use the latest closure (current
+      // channel context), not the one captured when this listener mounted.
+      handleUsernameClickRef.current?.(e.detail.userId, e.detail.username, e.detail.displayName, '#9147FF', [], fakeEvent);
     };
     window.addEventListener('streamnook-open-user-card', handler);
     return () => window.removeEventListener('streamnook-open-user-card', handler);
-    // handleUsernameClick is defined later in the component — it's referenced
-    // by name (closure) so we don't need it in deps; React's exhaustive-deps
-    // rule fires but the inner function is stable from the parent definition.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Maintain the "N new since paused" badge off the monotonic live-message
@@ -1956,6 +1994,19 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
       // of the same text also triggers the bypass.
       lastSentRef.current.set(channelKey, messageInput);
 
+      // Push the sent text onto the arrow-key recall history. De-dupe against
+      // the immediately-previous entry and cap the buffer. Reset the navigation
+      // cursor so the next ArrowUp starts from this newest message.
+      const trimmedForHistory = messageInput.trim();
+      if (trimmedForHistory) {
+        const hist = sentHistoryRef.current;
+        if (hist[hist.length - 1] !== messageInput) {
+          hist.push(messageInput);
+          if (hist.length > MAX_SENT_HISTORY) hist.shift();
+        }
+      }
+      setHistoryIndex(-1);
+
       const replyParentMsgId = replyingTo?.messageId;
       if (!keepInput) {
         setMessageInput('');
@@ -2214,6 +2265,54 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
       }
     }
     
+    // Arrow-key recall of previously-sent messages (Chatterino-style). Active
+    // only when neither autocomplete dropdown is open (those return above for
+    // arrows). ArrowUp walks back through history when the caret is on the first
+    // line; ArrowDown walks forward and finally restores the in-progress draft.
+    if (!showMentionAutocomplete && !showCommandAutocomplete && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+      const ta = inputRef.current;
+      const history = sentHistoryRef.current;
+      if (ta && history.length > 0) {
+        const noSelection = ta.selectionStart === ta.selectionEnd;
+        const onFirstLine = ta.value.slice(0, ta.selectionStart).indexOf('\n') === -1;
+        const onLastLine = ta.value.slice(ta.selectionStart).indexOf('\n') === -1;
+
+        const applyRecalled = (text: string) => {
+          setMessageInput(text);
+          // Caret to the end after React commits the new value.
+          requestAnimationFrame(() => {
+            const el = inputRef.current;
+            if (el) {
+              const end = el.value.length;
+              el.setSelectionRange(end, end);
+            }
+          });
+        };
+
+        if (e.key === 'ArrowUp' && noSelection && onFirstLine) {
+          e.preventDefault();
+          if (historyIndex === -1) historyDraftRef.current = messageInput;
+          const nextIndex = Math.min(historyIndex + 1, history.length - 1);
+          setHistoryIndex(nextIndex);
+          applyRecalled(history[history.length - 1 - nextIndex]);
+          return;
+        }
+
+        if (e.key === 'ArrowDown' && noSelection && onLastLine && historyIndex !== -1) {
+          e.preventDefault();
+          const nextIndex = historyIndex - 1;
+          if (nextIndex < 0) {
+            setHistoryIndex(-1);
+            applyRecalled(historyDraftRef.current);
+          } else {
+            setHistoryIndex(nextIndex);
+            applyRecalled(history[history.length - 1 - nextIndex]);
+          }
+          return;
+        }
+      }
+    }
+
     // Emote tab completion (only when no other autocomplete is active).
     if (e.key === 'Tab') {
       const used = handleEmoteTabPress(e.shiftKey);
@@ -2271,6 +2370,9 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
     // User typed/edited the input (controlled setMessageInput from Tab doesn't
     // fire this event), so any Tab-cycle in progress no longer matches.
     if (emoteTabState) setEmoteTabState(null);
+    // A manual edit ends arrow-key history navigation; next ArrowUp restarts
+    // from the newest entry (React no-ops when already -1).
+    setHistoryIndex(-1);
 
     setMessageInput(value);
     
@@ -2859,6 +2961,9 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
       setSelectedUser({ userId, username, displayName, color, badges, position: { x: event.clientX, y: event.clientY } });
     }
   };
+  // Refresh the latest-handler ref each render so window-event callers (e.g. the
+  // /usercard and /user commands) invoke the current closure.
+  handleUsernameClickRef.current = handleUsernameClick;
 
   return (
     <>
@@ -3027,6 +3132,29 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
                 </button>
                 </Tooltip>
                 <div className="flex items-center gap-3 ml-auto">
+                  {/* Viewers list — the official chatters roster grouped by role.
+                      Mod/broadcaster only (Helix Get Chatters requires it), so the
+                      toggle is hidden on channels the user doesn't moderate. */}
+                  {isModerator && currentStream && (
+                    <Tooltip content={activeView === 'viewers' ? 'Back to chat' : 'Viewers'} side="top">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setActiveView(activeView === 'viewers' ? 'chat' : 'viewers');
+                        }}
+                        className={`pointer-events-auto grid h-5 w-5 place-items-center rounded transition-colors hover:bg-surface-hover hover:text-textPrimary ${activeView === 'viewers' ? 'text-accent' : 'text-textSecondary'}`}
+                        aria-label="Viewers list"
+                      >
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+                          <circle cx="9" cy="7" r="4" />
+                          <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+                          <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+                        </svg>
+                      </button>
+                    </Tooltip>
+                  )}
                   {/* Pop out chat — opens a separate StreamNook MultiChat window
                       pre-loaded with the currently watched channel. The window
                       survives the main app's lifecycle inside one Tauri process.
@@ -3242,6 +3370,18 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
           <div className={`flex-1 overflow-hidden animate-panel-slide-up ${currentHypeTrain ? 'pt-24' : 'pt-10'}`}>
             <StreamerAboutPanel
               channelLogin={currentStream.user_login}
+            />
+          </div>
+        )}
+
+        {/* Viewers list - replaces chat when active */}
+        {activeView === 'viewers' && currentStream && (
+          <div className={`flex-1 overflow-hidden animate-panel-slide-up ${currentHypeTrain ? 'pt-24' : 'pt-10'}`}>
+            <ViewersPanel
+              key={currentStream.user_id}
+              broadcasterId={currentStream.user_id}
+              channelLogin={currentStream.user_login}
+              onUsernameClick={handleUsernameClick}
             />
           </div>
         )}
@@ -3723,12 +3863,13 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
                       forwards={emoteTabState.matches.slice(emoteTabState.index + 1, emoteTabState.index + 4)}
                     />
                   )}
-                  <textarea 
-                    ref={inputRef} 
-                    value={messageInput} 
-                    onChange={handleInputChange} 
+                  <textarea
+                    id="chat-compose-input"
+                    ref={inputRef}
+                    value={messageInput}
+                    onChange={handleInputChange}
                     onKeyDown={handleKeyPress}
-                    placeholder={chatPlaceholder} 
+                    placeholder={chatPlaceholder}
                     className={`w-full glass-input text-sm placeholder-textSecondary resize-none overflow-hidden scrollbar-thin leading-[1.4] self-center transition-all duration-300 ${
                       isWatchStreakMode 
                         ? 'ring-2 ring-amber-500/50 bg-amber-500/5 shadow-[0_0_15px_rgba(245,158,11,0.15)] placeholder-amber-500/60 text-textPrimary' 

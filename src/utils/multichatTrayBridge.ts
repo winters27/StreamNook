@@ -11,6 +11,7 @@
 // (the popout window's own JS context shouldn't react to tray events).
 
 import { invoke } from '@tauri-apps/api/core';
+import type { MediaInfo } from '../stores/AppStore';
 import { Logger } from './logger';
 
 const hash = window.location.hash;
@@ -195,6 +196,20 @@ if (!isPopout && typeof window !== 'undefined') {
           } catch (err) {
             Logger.error('[TrayBridge] startStream failed:', err);
           }
+        },
+      );
+
+      // Twitch clip/VOD playback routed from a popout chat. The popout has no
+      // video player, so a clip/VOD link-preview card there emits this (via
+      // `utils/playTwitchMediaInMain.ts`); main un-hides, focuses, and plays.
+      await listen<{ type: 'clip' | 'video'; url: string; info: MediaInfo }>(
+        'play-twitch-media-in-main',
+        async (event) => {
+          const { type, url, info } = event.payload;
+          Logger.debug(`[TrayBridge] play-twitch-media-in-main: ${type} ${url}`);
+          await showAndFocusMain();
+          const { useAppStore } = await import('../stores/AppStore');
+          await useAppStore.getState().playMedia(type, url, info);
         },
       );
 

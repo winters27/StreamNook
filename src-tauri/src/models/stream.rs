@@ -64,6 +64,11 @@ pub struct TwitchClip {
     pub creator_name: String,
     pub video_id: String,
     pub game_id: String,
+    /// Category name, resolved inline by the GQL clip path (Helix only carries
+    /// game_id, so this stays None there and the frontend resolves it lazily).
+    /// Omitted from JSON when absent so it reads as `undefined`, not `null`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub game_name: Option<String>,
     pub language: String,
     pub title: String,
     pub view_count: u32,
@@ -92,4 +97,14 @@ pub struct TwitchVideo {
     #[serde(rename = "type")]
     pub video_type: String,
     pub duration: String,
+}
+
+/// Aggregated reaction ("likes") counts for one clip, from Twitch's clip
+/// reactions feature. `total` is every reaction type summed (LIKE/LOVE/HYPE/
+/// LAUGH/SAD); `like` is just the LIKE reaction. Keyed by the clip slug (`id`).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ClipReactions {
+    pub id: String,
+    pub total: u32,
+    pub like: u32,
 }

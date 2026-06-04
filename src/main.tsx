@@ -8,9 +8,9 @@ import './utils/multichatWindow';
 // Side-effect import: listens for the tray's "Open MultiChat" menu event and
 // spawns an empty popout from the main window.
 import './utils/multichatTrayBridge';
-// Fraunces (variable, italic, latin-only weight axis) — used by the StreamNook
-// tier badge for the rank number. Provides the silky display-serif treatment
-// that Satoshi can't deliver. Only the italic weights are loaded.
+// Fraunces (variable serif). Italic powers the StreamNook tier-badge rank
+// number; the upright axis backs the "Serif" choice in Theme > Font.
+import '@fontsource-variable/fraunces';
 import '@fontsource-variable/fraunces/wght-italic.css';
 import './styles/globals.css';
 import { initLogCapture } from './services/logService';
