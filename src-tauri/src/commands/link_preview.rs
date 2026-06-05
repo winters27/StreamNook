@@ -26,12 +26,14 @@ use std::time::Duration;
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct LinkPreview {
     pub url: String,
-    /// "youtube" | "image" | "generic" | "tweet"
+    /// "youtube" | "image" | "generic" | "tweet" | "discord" | "steam" | "spotify"
     pub kind: String,
     pub title: Option<String>,
     pub description: Option<String>,
     pub image: Option<String>,
     pub site_name: Option<String>,
+    /// Generic author/byline. Also carries the price label for the "steam" kind
+    /// and the `discord.gg/<code>` handle for the "discord" kind.
     pub author: Option<String>,
     /// Author avatar (used by the "tweet" kind).
     pub author_avatar: Option<String>,
@@ -41,6 +43,10 @@ pub struct LinkPreview {
     pub view_count: Option<u64>,
     /// Length in seconds (the "clip" kind).
     pub duration: Option<f64>,
+    /// Live "online now" count (the "discord" kind).
+    pub online_count: Option<u64>,
+    /// Total member count (the "discord" kind).
+    pub member_count: Option<u64>,
 }
 
 // Chat links are ephemeral — no preview cache is kept. Each request resolves
@@ -106,6 +112,21 @@ async fn build_preview(url: &str) -> Result<LinkPreview, String> {
     if let Some(vod_id) = twitch_vod_id(url) {
         return twitch_vod_preview(url, &vod_id).await;
     }
+    if let Some(code) = discord_invite_code(url) {
+        return discord_invite_preview(url, &code).await;
+    }
+    if let Some(app_id) = steam_app_id(url) {
+        return steam_preview(url, &app_id).await;
+    }
+    if let Some(kind) = spotify_kind(url) {
+        return spotify_preview(url, kind).await;
+    }
+    if let Some(handle) = instagram_handle(url) {
+        return instagram_preview(url, &handle).await;
+    }
+    if is_tenor_page(url) {
+        return tenor_preview(url).await;
+    }
     if is_image_url(url) {
         return Ok(LinkPreview {
             url: url.to_string(),
@@ -119,6 +140,8 @@ async fn build_preview(url: &str) -> Result<LinkPreview, String> {
             video_id: None,
             view_count: None,
             duration: None,
+            online_count: None,
+            member_count: None,
         });
     }
 
@@ -196,6 +219,8 @@ async fn youtube_preview(url: &str, video_id: &str) -> LinkPreview {
         video_id: Some(video_id.to_string()),
         view_count: None,
         duration: None,
+        online_count: None,
+        member_count: None,
     }
 }
 
@@ -221,7 +246,15 @@ fn is_youtube_channel(url: &str) -> bool {
 /// square left-thumbnail crops oddly for an avatar), and the kind is tagged so it
 /// gets the YouTube glyph.
 async fn youtube_channel_preview(url: &str) -> Result<LinkPreview, String> {
-    let mut preview = fetch_generic(url).await?;
+    // Google serves a cookie-consent interstitial (no channel OG tags) to clients
+    // without a consent cookie, so a plain scrape returns "no preview metadata".
+    // Sending an accepted-consent cookie (both the modern SOCS and legacy CONSENT
+    // forms) skips it and yields the real channel page.
+    let mut preview = fetch_generic_with_cookie(
+        url,
+        Some("SOCS=CAISNQgDEgk0ODE3Nzk3MjQaAmVuIAEaBgiA_LyaBg; CONSENT=YES+"),
+    )
+    .await?;
     preview.kind = "youtube_channel".to_string();
     preview.author_avatar = preview.image.take();
     preview.site_name = Some("YouTube".to_string());
@@ -365,6 +398,8 @@ async fn tweet_preview(url: &str, handle: Option<&str>, id: &str) -> Result<Link
         video_id: None,
         view_count: None,
         duration: None,
+        online_count: None,
+        member_count: None,
     })
 }
 
@@ -476,6 +511,8 @@ async fn x_profile_preview(url: &str, handle: &str) -> Result<LinkPreview, Strin
         video_id: None,
         view_count: None,
         duration: None,
+        online_count: None,
+        member_count: None,
     })
 }
 
@@ -510,6 +547,8 @@ async fn giphy_preview(url: &str) -> Result<LinkPreview, String> {
         video_id: None,
         view_count: None,
         duration: None,
+        online_count: None,
+        member_count: None,
     };
 
     // Giphy's keyless oEmbed resolves any giphy page/clip/short-link to the
@@ -640,6 +679,8 @@ async fn twitch_clip_preview(url: &str, clip_id: &str) -> Result<LinkPreview, St
         video_id: Some(clip_id.to_string()),
         view_count,
         duration,
+        online_count: None,
+        member_count: None,
     })
 }
 
@@ -756,7 +797,493 @@ async fn twitch_vod_preview(url: &str, vod_id: &str) -> Result<LinkPreview, Stri
         video_id: Some(vod_id.to_string()),
         view_count,
         duration,
+        online_count: None,
+        member_count: None,
     })
+}
+
+// --- Discord invites -------------------------------------------------------
+
+static DISCORD_INVITE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    // discord.gg/<code>, discord.com/invite/<code>, discordapp.com/invite/<code>
+    // (ptb./canary. subdomains caught by the substring guard). Standard codes are
+    // alphanumeric; vanity invites can contain hyphens.
+    Regex::new(r"(?i)discord(?:app)?\.(?:gg|com)/(?:invite/)?([A-Za-z0-9-]+)")
+        .expect("discord invite regex")
+});
+
+fn discord_invite_code(url: &str) -> Option<String> {
+    let lower = url.to_lowercase();
+    // Only treat discord.gg, or an explicit /invite/ path, as an invite. A plain
+    // discord.com link (e.g. /channels/...) is left to the generic path.
+    if !(lower.contains("discord.gg/")
+        || lower.contains("discord.com/invite/")
+        || lower.contains("discordapp.com/invite/"))
+    {
+        return None;
+    }
+    let code = DISCORD_INVITE_RE.captures(url)?.get(1)?.as_str();
+    if code.is_empty() {
+        return None;
+    }
+    Some(code.to_string())
+}
+
+/// Resolve a Discord invite via the public invite API. Keyless, no bot, no
+/// widget-enable required (the same endpoint the in-app "Join the community"
+/// card uses). Returns a compact server card: icon, name, live online/member
+/// counts. Any failure falls back to the generic scrape.
+async fn discord_invite_preview(url: &str, code: &str) -> Result<LinkPreview, String> {
+    let api = format!(
+        "https://discord.com/api/v10/invites/{}?with_counts=true",
+        code
+    );
+    let resp = match CLIENT.get(&api).send().await {
+        Ok(r) if r.status().is_success() => r,
+        Ok(r) => {
+            debug!("[LinkPreview] discord invite status {}", r.status());
+            return fetch_generic(url).await;
+        }
+        Err(e) => {
+            debug!("[LinkPreview] discord invite error: {}", e);
+            return fetch_generic(url).await;
+        }
+    };
+
+    let json: serde_json::Value = match resp.json().await {
+        Ok(j) => j,
+        Err(_) => return fetch_generic(url).await,
+    };
+
+    let guild = match json.get("guild") {
+        Some(g) => g,
+        None => return fetch_generic(url).await,
+    };
+
+    let guild_id = guild.get("id").and_then(|v| v.as_str()).unwrap_or("");
+    let name = guild
+        .get("name")
+        .and_then(|v| v.as_str())
+        .map(|s| truncate(s, 120));
+    let description = guild
+        .get("description")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| truncate(s, 300));
+    // Animated icons carry an `a_` prefix and resolve as gif; everything else png.
+    let image = guild
+        .get("icon")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|hash| {
+            let ext = if hash.starts_with("a_") { "gif" } else { "png" };
+            format!(
+                "https://cdn.discordapp.com/icons/{}/{}.{}?size=128",
+                guild_id, hash, ext
+            )
+        });
+    let online_count = json
+        .get("approximate_presence_count")
+        .and_then(|v| v.as_u64());
+    let member_count = json
+        .get("approximate_member_count")
+        .and_then(|v| v.as_u64());
+
+    if name.is_none() {
+        return fetch_generic(url).await;
+    }
+
+    Ok(LinkPreview {
+        url: url.to_string(),
+        kind: "discord".to_string(),
+        title: name,
+        description,
+        image,
+        site_name: Some("Discord".to_string()),
+        author: Some(format!("discord.gg/{}", code)),
+        author_avatar: None,
+        video_id: None,
+        view_count: None,
+        duration: None,
+        online_count,
+        member_count,
+    })
+}
+
+// --- Steam store -----------------------------------------------------------
+
+static STEAM_APP_RE: LazyLock<Regex> = LazyLock::new(|| {
+    // store.steampowered.com/app/<id> and the /agecheck/app/<id> gate variant.
+    Regex::new(r"store\.steampowered\.com/(?:agecheck/)?app/(\d+)").expect("steam app regex")
+});
+
+fn steam_app_id(url: &str) -> Option<String> {
+    if !url.contains("steampowered.com") {
+        return None;
+    }
+    STEAM_APP_RE
+        .captures(url)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str().to_string())
+}
+
+/// Resolve a Steam app via the keyless storefront `appdetails` API: capsule art,
+/// title, price, and the short description. Falls back to the generic scrape on
+/// any failure (the bare store page is age-gated and yields only boilerplate).
+async fn steam_preview(url: &str, app_id: &str) -> Result<LinkPreview, String> {
+    let api = format!(
+        "https://store.steampowered.com/api/appdetails?appids={}&cc=us&l=en",
+        app_id
+    );
+    let resp = match CLIENT.get(&api).send().await {
+        Ok(r) if r.status().is_success() => r,
+        Ok(r) => {
+            debug!("[LinkPreview] steam status {}", r.status());
+            return fetch_generic(url).await;
+        }
+        Err(e) => {
+            debug!("[LinkPreview] steam error: {}", e);
+            return fetch_generic(url).await;
+        }
+    };
+
+    let json: serde_json::Value = match resp.json().await {
+        Ok(j) => j,
+        Err(_) => return fetch_generic(url).await,
+    };
+
+    // Response is keyed by the app id: { "<id>": { success, data: {...} } }.
+    let entry = json
+        .get(app_id)
+        .or_else(|| json.as_object().and_then(|o| o.values().next()));
+    let data = match entry.and_then(|e| {
+        if e.get("success").and_then(|v| v.as_bool()).unwrap_or(false) {
+            e.get("data")
+        } else {
+            None
+        }
+    }) {
+        Some(d) => d,
+        None => return fetch_generic(url).await,
+    };
+
+    let title = data
+        .get("name")
+        .and_then(|v| v.as_str())
+        .map(|s| truncate(s, 200));
+    let image = data
+        .get("header_image")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let description = data
+        .get("short_description")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| truncate(&strip_html(s), 300));
+    // Price label: "Free" when free-to-play, else the storefront-formatted final
+    // price (already localized, e.g. "$19.99"). None when unreleased/unpriced.
+    let is_free = data
+        .get("is_free")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let price = if is_free {
+        Some("Free".to_string())
+    } else {
+        data.get("price_overview")
+            .and_then(|p| p.get("final_formatted"))
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+    };
+
+    if title.is_none() {
+        return fetch_generic(url).await;
+    }
+
+    Ok(LinkPreview {
+        url: url.to_string(),
+        kind: "steam".to_string(),
+        title,
+        description,
+        image,
+        site_name: Some("Steam".to_string()),
+        author: price,
+        author_avatar: None,
+        video_id: None,
+        view_count: None,
+        duration: None,
+        online_count: None,
+        member_count: None,
+    })
+}
+
+// --- Spotify ---------------------------------------------------------------
+
+static SPOTIFY_RE: LazyLock<Regex> = LazyLock::new(|| {
+    // open.spotify.com/[intl-xx/](track|album|playlist|artist|episode|show)/<id>
+    Regex::new(
+        r"open\.spotify\.com/(?:intl-[a-z]{2}/)?(track|album|playlist|artist|episode|show)/[A-Za-z0-9]+",
+    )
+    .expect("spotify regex")
+});
+
+fn spotify_kind(url: &str) -> Option<String> {
+    if !url.contains("open.spotify.com") {
+        return None;
+    }
+    SPOTIFY_RE
+        .captures(url)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str().to_string())
+}
+
+/// Resolve a Spotify link via the keyless oEmbed endpoint: title + square cover
+/// art. The content type (track/album/…) comes from the URL itself so the card
+/// can label it without a second request. Falls back to the generic scrape.
+async fn spotify_preview(url: &str, content_kind: String) -> Result<LinkPreview, String> {
+    let resp = match CLIENT
+        .get("https://open.spotify.com/oembed")
+        .query(&[("url", url)])
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => r,
+        Ok(r) => {
+            debug!("[LinkPreview] spotify oembed status {}", r.status());
+            return fetch_generic(url).await;
+        }
+        Err(e) => {
+            debug!("[LinkPreview] spotify oembed error: {}", e);
+            return fetch_generic(url).await;
+        }
+    };
+
+    let json: serde_json::Value = match resp.json().await {
+        Ok(j) => j,
+        Err(_) => return fetch_generic(url).await,
+    };
+
+    let title = json
+        .get("title")
+        .and_then(|v| v.as_str())
+        .map(|s| truncate(s, 200));
+    let image = json
+        .get("thumbnail_url")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    if title.is_none() && image.is_none() {
+        return fetch_generic(url).await;
+    }
+
+    // "track" -> "Track" for the card's type label.
+    let label = {
+        let mut chars = content_kind.chars();
+        match chars.next() {
+            Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+            None => content_kind.clone(),
+        }
+    };
+
+    Ok(LinkPreview {
+        url: url.to_string(),
+        kind: "spotify".to_string(),
+        title,
+        description: Some(label),
+        image,
+        site_name: Some("Spotify".to_string()),
+        author: None,
+        author_avatar: None,
+        video_id: None,
+        view_count: None,
+        duration: None,
+        online_count: None,
+        member_count: None,
+    })
+}
+
+// --- Instagram profiles (via SearchAPI) ------------------------------------
+
+static INSTAGRAM_RE: LazyLock<Regex> = LazyLock::new(|| {
+    // instagram.com/<username> (www / m subdomains caught by the substring guard).
+    // Username chars are letters, digits, dot, underscore.
+    Regex::new(r"(?i)instagram\.com/([A-Za-z0-9._]+)/?(?:\?|#|$)").expect("instagram regex")
+});
+
+// First-path segments on instagram.com that are routes, not usernames.
+const INSTAGRAM_RESERVED: &[&str] = &[
+    "p",
+    "reel",
+    "reels",
+    "explore",
+    "stories",
+    "tv",
+    "accounts",
+    "about",
+    "directory",
+    "developer",
+    "legal",
+    "privacy",
+    "session",
+];
+
+fn instagram_handle(url: &str) -> Option<String> {
+    if !url.to_lowercase().contains("instagram.com") {
+        return None;
+    }
+    let handle = INSTAGRAM_RE.captures(url)?.get(1)?.as_str();
+    if handle.is_empty() || INSTAGRAM_RESERVED.contains(&handle.to_lowercase().as_str()) {
+        return None;
+    }
+    Some(handle.to_string())
+}
+
+/// Resolve an Instagram profile WITHOUT an API key, login, or signup — via
+/// Instagram's own public web-profile JSON endpoint, called with the desktop-web
+/// app-id header (`X-IG-App-ID`, the same value the instagram.com site sends;
+/// learned from the keyless `granary` library). Returns the public profile
+/// (name, avatar, bio, follower count) for public accounts. Instagram can
+/// rate-limit/block this from some IPs, so ANY failure (status, parse, private or
+/// empty profile) falls back to the generic scrape — the prior minimal chip — so
+/// it never regresses.
+async fn instagram_preview(url: &str, handle: &str) -> Result<LinkPreview, String> {
+    let api = format!(
+        "https://www.instagram.com/api/v1/users/web_profile_info/?username={}",
+        handle
+    );
+    let resp = match CLIENT
+        .get(&api)
+        .header("X-IG-App-ID", "936619743392459")
+        .header(reqwest::header::ACCEPT, "application/json")
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => r,
+        Ok(r) => {
+            debug!("[LinkPreview] instagram web_profile status {}", r.status());
+            return fetch_generic(url).await;
+        }
+        Err(e) => {
+            debug!("[LinkPreview] instagram web_profile error: {}", e);
+            return fetch_generic(url).await;
+        }
+    };
+
+    let json: serde_json::Value = match resp.json().await {
+        Ok(j) => j,
+        Err(_) => return fetch_generic(url).await,
+    };
+
+    let user = match json.pointer("/data/user") {
+        Some(u) if u.is_object() => u,
+        _ => return fetch_generic(url).await,
+    };
+
+    let str_field = |key: &str| {
+        user.get(key)
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+    };
+
+    let name = str_field("full_name").map(|s| truncate(&s, 120));
+    let username = str_field("username").unwrap_or_else(|| handle.to_string());
+    let bio = str_field("biography").map(|s| truncate(&s, 400));
+    let avatar = str_field("profile_pic_url_hd").or_else(|| str_field("profile_pic_url"));
+    let followers = user
+        .pointer("/edge_followed_by/count")
+        .and_then(|v| v.as_u64());
+
+    if name.is_none() && avatar.is_none() {
+        return fetch_generic(url).await;
+    }
+
+    Ok(LinkPreview {
+        url: url.to_string(),
+        kind: "instagram".to_string(),
+        title: Some(name.unwrap_or_else(|| username.clone())),
+        description: bio,
+        image: None,
+        site_name: Some("Instagram".to_string()),
+        author: Some(format!("@{}", username)),
+        author_avatar: avatar,
+        video_id: None,
+        view_count: None,
+        duration: None,
+        online_count: None,
+        // member_count carries the follower count (both generic u64s).
+        member_count: followers,
+    })
+}
+
+// --- Tenor (animated GIFs) -------------------------------------------------
+
+fn is_tenor_page(url: &str) -> bool {
+    // The shareable view page. Direct media*.tenor.com/*.gif links are caught by
+    // the image path before we ever reach here.
+    url.to_lowercase().contains("tenor.com/view/")
+}
+
+/// A Tenor view page exposes the direct animated GIF via
+/// `<meta itemprop="contentUrl" content="https://media*.tenor.com/.../x.gif">`.
+/// We pull that and render it as an animated image card (the same shape Giphy
+/// uses), falling back to og:image / the generic scrape if it's missing.
+async fn tenor_preview(url: &str) -> Result<LinkPreview, String> {
+    let resp = match CLIENT.get(url).timeout(Duration::from_secs(8)).send().await {
+        Ok(r) if r.status().is_success() => r,
+        _ => return fetch_generic(url).await,
+    };
+
+    let body = read_capped_body(resp).await?;
+    let html = String::from_utf8_lossy(&body).into_owned();
+
+    // Scope the parsed document so it's dropped before the fallback await below:
+    // `scraper::Html` is not `Send`, and a tauri::command future must be `Send`.
+    // `meta()` returns owned Strings, so nothing borrowed escapes this block.
+    let gif = {
+        let document = Html::parse_document(&html);
+        meta(&document, "itemprop", "contentUrl")
+            .filter(|s| s.to_lowercase().contains(".gif"))
+            .or_else(|| meta(&document, "property", "og:image"))
+            .or_else(|| meta(&document, "name", "twitter:image"))
+    };
+
+    match gif {
+        Some(image) => Ok(LinkPreview {
+            url: url.to_string(),
+            kind: "image".to_string(),
+            title: None,
+            description: None,
+            image: Some(image),
+            site_name: Some("Tenor".to_string()),
+            author: None,
+            author_avatar: None,
+            video_id: None,
+            view_count: None,
+            duration: None,
+            online_count: None,
+            member_count: None,
+        }),
+        None => fetch_generic(url).await,
+    }
+}
+
+/// Minimal HTML-tag stripper for the rare API text field that ships markup
+/// (e.g. a Steam short_description with an inline <br>). Entity-decoding is not
+/// needed here; these fields are plain or lightly tagged.
+fn strip_html(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut in_tag = false;
+    for c in s.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(c),
+            _ => {}
+        }
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 // --- Imgur -----------------------------------------------------------------
@@ -782,13 +1309,54 @@ fn is_image_url(url: &str) -> bool {
 
 // --- Generic OpenGraph scrape ----------------------------------------------
 
+/// Stream a response body and stop the moment we've seen `</head>` (or hit the
+/// cap), instead of `resp.text()` pulling the whole page. Meta tags live in
+/// `<head>`, so this is all we need — it turns a multi-MB download + full-DOM
+/// parse into reading the first few KB of most pages. Shared by the generic
+/// scraper and the Tenor extractor.
+async fn read_capped_body(mut resp: reqwest::Response) -> Result<Vec<u8>, String> {
+    let mut buf: Vec<u8> = Vec::with_capacity(64 * 1024);
+    loop {
+        match resp.chunk().await {
+            Ok(Some(chunk)) => {
+                let prev = buf.len();
+                buf.extend_from_slice(&chunk);
+                // Scan the newly appended bytes (with a 5-byte overlap so a tag
+                // split across chunks is still caught) for the closing </head>.
+                let from = prev.saturating_sub(5);
+                if buf[from..]
+                    .windows(6)
+                    .any(|w| w.eq_ignore_ascii_case(b"</head"))
+                {
+                    break;
+                }
+                if buf.len() >= HEAD_SCAN_CAP {
+                    break;
+                }
+            }
+            Ok(None) => break,
+            Err(e) => return Err(format!("read body failed: {}", e)),
+        }
+    }
+    Ok(buf)
+}
+
 async fn fetch_generic(url: &str) -> Result<LinkPreview, String> {
+    fetch_generic_with_cookie(url, None).await
+}
+
+/// `fetch_generic`, optionally sending a `Cookie` header. The cookie skips
+/// Google's consent interstitial on YouTube channel pages (which otherwise
+/// carries no OG tags); it's None for every other host.
+async fn fetch_generic_with_cookie(url: &str, cookie: Option<&str>) -> Result<LinkPreview, String> {
     // A tighter per-request timeout than the client default: a generic preview is
     // a "nice to have", so don't let an unresponsive host hold the UI's loading
     // state for the full client budget.
-    let mut resp = CLIENT
-        .get(url)
-        .timeout(Duration::from_secs(8))
+    let mut builder = CLIENT.get(url).timeout(Duration::from_secs(8));
+    if let Some(c) = cookie {
+        builder = builder.header(reqwest::header::COOKIE, c);
+    }
+    let resp = builder
         .send()
         .await
         .map_err(|e| format!("fetch failed: {}", e))?;
@@ -819,6 +1387,8 @@ async fn fetch_generic(url: &str) -> Result<LinkPreview, String> {
             video_id: None,
             view_count: None,
             duration: None,
+            online_count: None,
+            member_count: None,
         });
     }
 
@@ -827,34 +1397,8 @@ async fn fetch_generic(url: &str) -> Result<LinkPreview, String> {
         return Err("not an HTML page".to_string());
     }
 
-    // Stream the body and stop the moment we've seen </head> (or hit the cap),
-    // instead of `resp.text()` pulling the whole page. Meta tags live in <head>,
-    // so this is all we need — and it turns a multi-MB download + full-DOM parse
-    // into reading the first few KB of most pages.
-    let mut buf: Vec<u8> = Vec::with_capacity(64 * 1024);
-    loop {
-        match resp.chunk().await {
-            Ok(Some(chunk)) => {
-                let prev = buf.len();
-                buf.extend_from_slice(&chunk);
-                // Scan the newly appended bytes (with a 5-byte overlap so a tag
-                // split across chunks is still caught) for the closing </head>.
-                let from = prev.saturating_sub(5);
-                if buf[from..]
-                    .windows(6)
-                    .any(|w| w.eq_ignore_ascii_case(b"</head"))
-                {
-                    break;
-                }
-                if buf.len() >= HEAD_SCAN_CAP {
-                    break;
-                }
-            }
-            Ok(None) => break,
-            Err(e) => return Err(format!("read body failed: {}", e)),
-        }
-    }
-
+    // Read only the page <head> (capped), then parse meta tags from it.
+    let buf = read_capped_body(resp).await?;
     let html = String::from_utf8_lossy(&buf).into_owned();
     let preview = parse_meta(url, &html);
 
@@ -902,6 +1446,8 @@ fn parse_meta(url: &str, html: &str) -> LinkPreview {
         video_id: None,
         view_count: None,
         duration: None,
+        online_count: None,
+        member_count: None,
     }
 }
 

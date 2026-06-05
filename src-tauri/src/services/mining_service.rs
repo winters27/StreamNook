@@ -99,7 +99,7 @@ impl MiningService {
     async fn bump_session_id(&self) -> u64 {
         let mut sid = self.mining_session_id.write().await;
         *sid += 1;
-        debug!("🆔 New mining session ID: {}", *sid);
+        debug!("New mining session ID: {}", *sid);
         *sid
     }
 
@@ -111,7 +111,7 @@ impl MiningService {
         };
 
         if has_listener {
-            debug!("📡 WebSocket listener already set up, skipping duplicate registration");
+            debug!("WebSocket listener already set up, skipping duplicate registration");
             return;
         }
 
@@ -131,7 +131,7 @@ impl MiningService {
                     let required_minutes = payload["required_minutes"].as_i64().unwrap_or(0) as i32;
 
                     debug!(
-                        "✅ Updated drop progress from WebSocket: {}/{} minutes for drop {}",
+                        "Updated drop progress from WebSocket: {}/{} minutes for drop {}",
                         current_minutes, required_minutes, drop_id
                     );
 
@@ -192,7 +192,7 @@ impl MiningService {
         let mut listener_id = self.event_listener_id.write().await;
         *listener_id = Some(event_id);
 
-        debug!("✅ WebSocket event listener registered");
+        debug!("WebSocket event listener registered");
     }
 
     /// Pick the drop to DISPLAY while mining: among the current game's mineable
@@ -285,6 +285,53 @@ impl MiningService {
         best.map(|(_, info)| info)
     }
 
+    /// Picks the drop the user is actually working toward on a campaign: the
+    /// unclaimed drop closest to completion (fewest watch-minutes remaining),
+    /// paired with its real current progress. Returns None when every drop is
+    /// already claimed.
+    ///
+    /// This is what keeps the top-of-window mining status honest. Blindly taking
+    /// `time_based_drops.first()` breaks after stopping and restarting a campaign
+    /// whose first drop was already finished: the status gets pinned to that
+    /// completed drop (often showing 0/N because the live drop being watched is a
+    /// different one), and since the finished drop never earns more minutes it
+    /// never moves. Selecting the next incomplete drop instead keeps it accurate.
+    fn select_active_drop<'a>(
+        campaign: &'a DropCampaign,
+        drop_progress: &[DropProgress],
+    ) -> Option<(&'a TimeBasedDrop, i32, f32)> {
+        let mut drops_with_progress: Vec<(&TimeBasedDrop, i32, f32)> = campaign
+            .time_based_drops
+            .iter()
+            .filter(|d| d.progress.as_ref().map(|p| !p.is_claimed).unwrap_or(true))
+            .map(|drop| {
+                let current_minutes = drop_progress
+                    .iter()
+                    .find(|p| p.drop_id == drop.id)
+                    .map(|p| p.current_minutes_watched)
+                    .unwrap_or(0);
+                let progress_percentage = if drop.required_minutes_watched > 0 {
+                    (current_minutes as f32 / drop.required_minutes_watched as f32) * 100.0
+                } else {
+                    0.0
+                };
+                (drop, current_minutes, progress_percentage)
+            })
+            .collect();
+
+        // Finishing first = fewest watch-minutes remaining (required - current),
+        // tiebreak on higher progress %.
+        drops_with_progress.sort_by(|a, b| {
+            let rem_a = a.0.required_minutes_watched - a.1;
+            let rem_b = b.0.required_minutes_watched - b.1;
+            rem_a
+                .cmp(&rem_b)
+                .then(b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal))
+        });
+
+        drops_with_progress.into_iter().next()
+    }
+
     pub async fn get_mining_status(&self) -> MiningStatus {
         self.mining_status.read().await.clone()
     }
@@ -315,18 +362,14 @@ impl MiningService {
                     service.update_campaigns_and_progress(&all_campaigns).await;
                     let settings = service.get_settings().await;
 
-                    // Apply filters and find the target campaign
-                    let filtered_campaigns = all_campaigns
-                        .into_iter()
-                        .filter(|c| {
-                            !settings.excluded_games.contains(&c.game_name)
-                                && (settings.priority_mode != PriorityMode::PriorityOnly
-                                    || settings.priority_games.is_empty()
-                                    || settings.priority_games.contains(&c.game_name))
-                        })
-                        .collect::<Vec<_>>();
-
-                    let target = filtered_campaigns
+                    // Find the target campaign directly by ID, with no priority/exclusion
+                    // filtering. This is an explicit, user-initiated channel preview, so it
+                    // must match the actual mining commands (start_campaign_mining /
+                    // start_campaign_mining_with_channel), which also bypass those filters.
+                    // If we filtered here, a user with priority games configured would be
+                    // unable to preview channels for any non-priority campaign even though
+                    // mining it directly would succeed.
+                    let target = all_campaigns
                         .into_iter()
                         .filter(|c| c.id == campaign_id)
                         .collect::<Vec<_>>();
@@ -387,7 +430,7 @@ impl MiningService {
 
         tokio::spawn(async move {
             debug!(
-                "🎮 Starting manual campaign mining for campaign: {} with channel: {}",
+                "Starting manual campaign mining for campaign: {} with channel: {}",
                 campaign_id, channel_id
             );
 
@@ -415,7 +458,7 @@ impl MiningService {
                     };
 
                     if target_campaign.is_empty() {
-                        debug!("⚠️ Campaign {} not found or no longer active", campaign_id);
+                        debug!("Campaign {} not found or no longer active", campaign_id);
                         return;
                     }
 
@@ -438,7 +481,7 @@ impl MiningService {
 
                             if let Some(best_channel) = selected_channel.cloned() {
                                 debug!(
-                                    "✅ Using user-selected channel: {} ({})",
+                                    "Using user-selected channel: {} ({})",
                                     best_channel.name, best_channel.id
                                 );
 
@@ -456,19 +499,11 @@ impl MiningService {
                                 ) {
                                     status.current_campaign = Some(campaign.name.clone());
 
-                                    if let Some(drop) = campaign.time_based_drops.first() {
-                                        let drop_progress =
-                                            drops_service.lock().await.get_drop_progress().await;
-                                        let current_minutes = drop_progress
-                                            .iter()
-                                            .find(|p| p.drop_id == drop.id)
-                                            .map(|p| p.current_minutes_watched)
-                                            .unwrap_or(0);
-
-                                        let progress_percentage = (current_minutes as f32
-                                            / drop.required_minutes_watched as f32)
-                                            * 100.0;
-
+                                    let drop_progress =
+                                        drops_service.lock().await.get_drop_progress().await;
+                                    if let Some((drop, current_minutes, progress_percentage)) =
+                                        Self::select_active_drop(&campaign, &drop_progress)
+                                    {
                                         let estimated_completion = if current_minutes > 0 {
                                             let remaining_minutes =
                                                 drop.required_minutes_watched - current_minutes;
@@ -511,7 +546,7 @@ impl MiningService {
                                 let _ = app_handle.emit("mining-status-update", &current_status);
 
                                 debug!(
-                                    "⛏️ Mining drops on user-selected channel: {} ({})",
+                                    "Mining drops on user-selected channel: {} ({})",
                                     best_channel.name, best_channel.game_name
                                 );
 
@@ -519,7 +554,7 @@ impl MiningService {
                                 let token = match DropsAuthService::get_token().await {
                                     Ok(t) => t,
                                     Err(e) => {
-                                        error!("❌ Failed to get token: {}", e);
+                                        error!("Failed to get token: {}", e);
                                         return;
                                     }
                                 };
@@ -527,7 +562,7 @@ impl MiningService {
                                 let user_id = match Self::get_user_id(&client, &token).await {
                                     Ok(id) => id,
                                     Err(e) => {
-                                        error!("❌ Failed to get user ID: {}", e);
+                                        error!("Failed to get user ID: {}", e);
                                         return;
                                     }
                                 };
@@ -578,14 +613,14 @@ impl MiningService {
 
                                     loop {
                                         if !*is_running_clone.read().await {
-                                            debug!("🛑 Stopping watch payload loop (with channel)");
+                                            debug!("Stopping watch payload loop (with channel)");
                                             break;
                                         }
 
                                         // Session-id guard: a newer start_*_mining call invalidates
                                         // prior session's loops here. See bump_session_id.
                                         if *mining_session_id_clone.read().await != my_session {
-                                            debug!("🛑 Watch payload loop (with channel) exiting (session_id changed)");
+                                            debug!("Watch payload loop (with channel) exiting (session_id changed)");
                                             break;
                                         }
 
@@ -626,7 +661,7 @@ impl MiningService {
                                         }
 
                                         debug!(
-                                            "📡 Sending watch payload to {}...",
+                                            "Sending watch payload to {}...",
                                             current_channel.name
                                         );
                                         match Self::send_watch_payload(
@@ -640,7 +675,7 @@ impl MiningService {
                                         {
                                             Ok(true) => {
                                                 debug!(
-                                                    "✅ Watch payload sent successfully to {}",
+                                                    "Watch payload sent successfully to {}",
                                                     current_channel.name
                                                 );
                                                 consecutive_failures = 0;
@@ -653,13 +688,13 @@ impl MiningService {
                                             Ok(false) | Err(_) => {
                                                 consecutive_failures += 1;
                                                 debug!(
-                                                    "⚠️ Watch payload failed for {} (failure {}/3)",
+                                                    "Watch payload failed for {} (failure {}/3)",
                                                     current_channel.name, consecutive_failures
                                                 );
 
                                                 if consecutive_failures >= 3 {
                                                     debug!(
-                                                        "❌ Channel {} failed 3 times, attempting to switch with API refresh...",
+                                                        "Channel {} failed 3 times, attempting to switch with API refresh...",
                                                         current_channel.name
                                                     );
 
@@ -732,13 +767,13 @@ impl MiningService {
                                                             }
 
                                                             debug!(
-                                                                "✅ Successfully switched to {}",
+                                                                "Successfully switched to {}",
                                                                 new_channel.name
                                                             );
                                                         }
                                                         None => {
                                                             debug!(
-                                                                "❌ No channels available after API refresh, stopping mining"
+                                                                "No channels available after API refresh, stopping mining"
                                                             );
 
                                                             // Stop mining and notify user
@@ -790,12 +825,12 @@ impl MiningService {
 
                                     loop {
                                         if !*is_running_poll.read().await {
-                                            debug!("🛑 Stopping inventory polling loop for {} (mining stopped)", game_name_session);
+                                            debug!("Stopping inventory polling loop for {} (mining stopped)", game_name_session);
                                             break;
                                         }
 
                                         if *mining_session_id_poll.read().await != my_session {
-                                            debug!("🛑 Inventory poll loop (with channel) for {} exiting (session_id changed)", game_name_session);
+                                            debug!("Inventory poll loop (with channel) for {} exiting (session_id changed)", game_name_session);
                                             break;
                                         }
 
@@ -804,7 +839,7 @@ impl MiningService {
                                             let status = mining_status_poll.read().await;
                                             if let Some(ref channel) = status.current_channel {
                                                 if channel.game_name != game_name_session {
-                                                    debug!("🛑 Stopping inventory polling loop for {} (switched to {})",
+                                                    debug!("Stopping inventory polling loop for {} (switched to {})",
                                                         game_name_session, channel.game_name);
                                                     break;
                                                 }
@@ -812,7 +847,7 @@ impl MiningService {
                                         }
 
                                         debug!(
-                                            "📊 Polling inventory for drops progress (campaign: {}, game: {})...",
+                                            "Polling inventory for drops progress (campaign: {}, game: {})...",
                                             campaign_name_poll, game_name_poll
                                         );
                                         match drops_service_poll
@@ -840,14 +875,14 @@ impl MiningService {
 
                                                     if item.campaign.name != campaign_name_poll {
                                                         debug!(
-                                                            "📊 Skipping campaign {} (mining specific campaign: {})",
+                                                            "Skipping campaign {} (mining specific campaign: {})",
                                                             item.campaign.name, campaign_name_poll
                                                         );
                                                         continue;
                                                     }
 
                                                     debug!(
-                                                        "📊 Found target campaign for {}: {}",
+                                                        "Found target campaign for {}: {}",
                                                         item.campaign.game_name, item.campaign.name
                                                     );
 
@@ -865,14 +900,14 @@ impl MiningService {
 
                                                         // Skip subscription drops (0 required minutes) - they can't be mined
                                                         if required_minutes == 0 {
-                                                            debug!("📊 Skipping subscription drop: {} (0 required minutes)",
+                                                            debug!("Skipping subscription drop: {} (0 required minutes)",
                                                                 time_drop.name);
                                                             continue;
                                                         }
 
                                                         // Skip drops that are already complete (100%+)
                                                         if current_minutes >= required_minutes {
-                                                            debug!("📊 Skipping completed drop: {} ({}/{} minutes)",
+                                                            debug!("Skipping completed drop: {} ({}/{} minutes)",
                                                                 time_drop.name, current_minutes, required_minutes);
                                                             continue;
                                                         }
@@ -901,7 +936,7 @@ impl MiningService {
                                                                 0.0
                                                             };
 
-                                                        debug!("📊 Inventory poll: {}/{} minutes for {} ({}) [{:.1}%]",
+                                                        debug!("Inventory poll: {}/{} minutes for {} ({}) [{:.1}%]",
                                                             current_minutes, required_minutes, drop_name, time_drop.id, progress_percentage);
 
                                                         all_drops_with_progress.push((
@@ -922,7 +957,7 @@ impl MiningService {
                                                 if all_drops_with_progress.is_empty()
                                                     && !target_campaign_drops.is_empty()
                                                 {
-                                                    debug!("📊 Campaign not in inventory yet (0 progress), using cached campaign drops as fallback");
+                                                    debug!("Campaign not in inventory yet (0 progress), using cached campaign drops as fallback");
                                                     for time_drop in &target_campaign_drops {
                                                         let required_minutes =
                                                             time_drop.required_minutes_watched;
@@ -943,7 +978,7 @@ impl MiningService {
                                                                 )
                                                             };
 
-                                                        debug!("📊 [Fallback] Including drop with 0 progress: {} (0/{} minutes)",
+                                                        debug!("[Fallback] Including drop with 0 progress: {} (0/{} minutes)",
                                                             drop_name, required_minutes);
 
                                                         all_drops_with_progress.push((
@@ -1037,7 +1072,7 @@ impl MiningService {
                                                             });
                                                         status.last_update = chrono::Utc::now();
 
-                                                        debug!("✅ [Inventory] Set current_drop to HIGHEST progress: {} ({}/{} = {:.1}%)",
+                                                        debug!("[Inventory] Set current_drop to HIGHEST progress: {} ({}/{} = {:.1}%)",
                                                             drop_name, current_minutes, required_minutes, progress_percentage);
 
                                                         let current_status = status.clone();
@@ -1077,7 +1112,7 @@ impl MiningService {
 
                                                 // Drop completion detection
                                                 if all_drops_with_progress.is_empty() {
-                                                    debug!("🎉 All drops for campaign '{}' ({}) are complete (100%)!", campaign_name_session, game_name_session);
+                                                    debug!("All drops for campaign '{}' ({}) are complete (100%)!", campaign_name_session, game_name_session);
 
                                                     {
                                                         let mut running =
@@ -1114,7 +1149,7 @@ impl MiningService {
                                                 }
                                             }
                                             Err(e) => {
-                                                error!("⚠️ Failed to poll inventory: {}", e);
+                                                error!("Failed to poll inventory: {}", e);
                                             }
                                         }
 
@@ -1131,12 +1166,12 @@ impl MiningService {
                                         .connect(&user_id, &token, app_handle.clone())
                                         .await
                                     {
-                                        error!("❌ Failed to connect WebSocket: {}", e);
+                                        error!("Failed to connect WebSocket: {}", e);
                                     }
                                 }
                             } else {
                                 debug!(
-                                    "⚠️ Selected channel {} not found in eligible channels",
+                                    "Selected channel {} not found in eligible channels",
                                     channel_id
                                 );
                                 let mut status = mining_status.write().await;
@@ -1144,12 +1179,12 @@ impl MiningService {
                             }
                         }
                         Err(e) => {
-                            error!("❌ Failed to discover eligible channels: {}", e);
+                            error!("Failed to discover eligible channels: {}", e);
                         }
                     }
                 }
                 Err(e) => {
-                    error!("❌ Failed to fetch campaigns: {}", e);
+                    error!("Failed to fetch campaigns: {}", e);
                 }
             }
 
@@ -1200,7 +1235,7 @@ impl MiningService {
 
         tokio::spawn(async move {
             debug!(
-                "🎮 Starting manual campaign mining for campaign: {}",
+                "Starting manual campaign mining for campaign: {}",
                 campaign_id
             );
 
@@ -1228,7 +1263,7 @@ impl MiningService {
                     };
 
                     if target_campaign.is_empty() {
-                        debug!("⚠️ Campaign {} not found or no longer active", campaign_id);
+                        debug!("Campaign {} not found or no longer active", campaign_id);
                         return; // Exit the task
                     }
 
@@ -1251,7 +1286,7 @@ impl MiningService {
                                 Self::select_best_channel(&channels, &target_campaign, &settings)
                             {
                                 debug!(
-                                    "✅ Selected channel: {} ({})",
+                                    "Selected channel: {} ({})",
                                     best_channel.name, best_channel.id
                                 );
 
@@ -1265,14 +1300,14 @@ impl MiningService {
                                 status.last_update = Utc::now();
                                 drop(eligible);
 
-                                debug!("📊 Mining status updated");
+                                debug!("Mining status updated");
 
                                 // Find the active campaign for this channel
                                 if let Some(campaign) = Self::get_active_campaign_for_channel(
                                     &best_channel,
                                     &target_campaign,
                                 ) {
-                                    debug!("📦 Found active campaign: {}", campaign.name);
+                                    debug!("Found active campaign: {}", campaign.name);
                                     status.current_campaign = Some(campaign.name.clone());
 
                                     // Get all unclaimed drops with their progress percentages
@@ -1319,7 +1354,7 @@ impl MiningService {
                                         )
                                     });
 
-                                    debug!("📊 Sorted drops by progress (highest first):");
+                                    debug!("Sorted drops by progress (highest first):");
                                     for (drop, mins, pct) in &drops_with_progress {
                                         let name = drop
                                             .benefit_edges
@@ -1360,7 +1395,7 @@ impl MiningService {
                                             drop.benefit_edges.first().map(|b| b.image_url.clone());
 
                                         debug!(
-                                            "🎯 Selected HIGHEST progress drop: {} ({:.1}%)",
+                                            "Selected HIGHEST progress drop: {} ({:.1}%)",
                                             drop_name, progress_percentage
                                         );
 
@@ -1377,74 +1412,71 @@ impl MiningService {
                                         });
                                     }
                                 } else {
-                                    debug!("⚠️ No active campaign found for channel");
+                                    debug!("No active campaign found for channel");
                                 }
 
                                 drop(status);
 
-                                debug!("📡 Emitting mining status update");
+                                debug!("Emitting mining status update");
 
                                 // Emit mining status update
                                 let current_status = mining_status.read().await.clone();
                                 let _ = app_handle.emit("mining-status-update", &current_status);
 
                                 debug!(
-                                    "⛏️ Mining drops on: {} ({})",
+                                    "Mining drops on: {} ({})",
                                     best_channel.name, best_channel.game_name
                                 );
 
                                 // Get token and user ID for watch payloads
-                                debug!("🔑 Getting token for watch payloads...");
+                                debug!("Getting token for watch payloads...");
                                 let token = match DropsAuthService::get_token().await {
                                     Ok(t) => {
                                         debug!(
-                                            "✅ Got token (first 10 chars): {}",
+                                            "Got token (first 10 chars): {}",
                                             &t[..10.min(t.len())]
                                         );
                                         t
                                     }
                                     Err(e) => {
-                                        error!("❌ Failed to get token: {}", e);
+                                        error!("Failed to get token: {}", e);
                                         return; // Exit the task
                                     }
                                 };
 
-                                debug!("🔑 Getting user ID...");
+                                debug!("Getting user ID...");
                                 let user_id = match Self::get_user_id(&client, &token).await {
                                     Ok(id) => {
-                                        debug!("✅ Got user ID: {}", id);
+                                        debug!("Got user ID: {}", id);
                                         id
                                     }
                                     Err(e) => {
-                                        error!("❌ Failed to get user ID: {}", e);
+                                        error!("Failed to get user ID: {}", e);
                                         return; // Exit the task
                                     }
                                 };
 
                                 // Get the actual stream/broadcast ID for this channel
-                                let broadcast_id = match Self::get_broadcast_id(
-                                    &client,
-                                    &best_channel.id,
-                                    &token,
-                                )
-                                .await
-                                {
-                                    Ok(Some(id)) => {
-                                        debug!("📺 Got broadcast ID: {}", id);
-                                        id
-                                    }
-                                    Ok(None) => {
-                                        debug!(
-                                            "⚠️ Channel {} is not live, using channel ID as fallback",
+                                let broadcast_id =
+                                    match Self::get_broadcast_id(&client, &best_channel.id, &token)
+                                        .await
+                                    {
+                                        Ok(Some(id)) => {
+                                            debug!("Got broadcast ID: {}", id);
+                                            id
+                                        }
+                                        Ok(None) => {
+                                            debug!(
+                                            "Channel {} is not live, using channel ID as fallback",
                                             best_channel.name
                                         );
-                                        best_channel.id.clone()
-                                    }
-                                    Err(e) => {
-                                        error!("❌ Failed to get broadcast ID: {}", e);
-                                        best_channel.id.clone()
-                                    }
-                                };
+                                            best_channel.id.clone()
+                                        }
+                                        Err(e) => {
+                                            error!("Failed to get broadcast ID: {}", e);
+                                            best_channel.id.clone()
+                                        }
+                                    };
 
                                 // Start watch payload loop for campaign mining
                                 let client_clone = client.clone();
@@ -1485,7 +1517,7 @@ impl MiningService {
                                     loop {
                                         // Check if still running
                                         if !*is_running_clone.read().await {
-                                            debug!("🛑 Stopping watch payload loop for {} (mining stopped)", watch_session_channel);
+                                            debug!("Stopping watch payload loop for {} (mining stopped)", watch_session_channel);
                                             break;
                                         }
 
@@ -1493,7 +1525,7 @@ impl MiningService {
                                         // A newer start_*_mining call bumps the session_id, which
                                         // signals all prior session's loops to exit cleanly here.
                                         if *mining_session_id_clone.read().await != my_session {
-                                            debug!("🛑 Watch payload loop for {} exiting (session_id changed)", watch_session_channel);
+                                            debug!("Watch payload loop for {} exiting (session_id changed)", watch_session_channel);
                                             break;
                                         }
 
@@ -1505,7 +1537,7 @@ impl MiningService {
                                                 if mining_channel.game_name
                                                     != current_channel.game_name
                                                 {
-                                                    debug!("🛑 Stopping watch payload loop for {} (switched to {})",
+                                                    debug!("Stopping watch payload loop for {} (switched to {})",
                                                         watch_session_channel, mining_channel.game_name);
                                                     break;
                                                 }
@@ -1549,7 +1581,7 @@ impl MiningService {
                                         }
 
                                         // Send watch payload
-                                        debug!("📡 Sending watch payload...");
+                                        debug!("Sending watch payload...");
                                         match Self::send_watch_payload(
                                             &client_clone,
                                             &current_channel,
@@ -1561,7 +1593,7 @@ impl MiningService {
                                         {
                                             Ok(true) => {
                                                 debug!(
-                                                    "✅ Watch payload sent successfully to {}",
+                                                    "Watch payload sent successfully to {}",
                                                     current_channel.name
                                                 );
                                                 consecutive_failures = 0;
@@ -1576,13 +1608,13 @@ impl MiningService {
                                             Ok(false) | Err(_) => {
                                                 consecutive_failures += 1;
                                                 debug!(
-                                                    "⚠️ Watch payload failed for {} (failure {}/3)",
+                                                    "Watch payload failed for {} (failure {}/3)",
                                                     current_channel.name, consecutive_failures
                                                 );
 
                                                 if consecutive_failures >= 3 {
                                                     debug!(
-                                                        "❌ Channel {} failed 3 times, attempting to switch with API refresh...",
+                                                        "Channel {} failed 3 times, attempting to switch with API refresh...",
                                                         current_channel.name
                                                     );
 
@@ -1656,13 +1688,13 @@ impl MiningService {
                                                             }
 
                                                             debug!(
-                                                                "✅ Successfully switched to {}",
+                                                                "Successfully switched to {}",
                                                                 new_channel.name
                                                             );
                                                         }
                                                         None => {
                                                             debug!(
-                                                                "❌ No channels available after API refresh, stopping mining"
+                                                                "No channels available after API refresh, stopping mining"
                                                             );
 
                                                             // Stop mining and notify user
@@ -1719,12 +1751,12 @@ impl MiningService {
 
                                     loop {
                                         if !*is_running_poll.read().await {
-                                            debug!("🛑 Stopping inventory polling loop for {} (mining stopped)", game_name_session);
+                                            debug!("Stopping inventory polling loop for {} (mining stopped)", game_name_session);
                                             break;
                                         }
 
                                         if *mining_session_id_poll.read().await != my_session {
-                                            debug!("🛑 Inventory poll loop for {} exiting (session_id changed)", game_name_session);
+                                            debug!("Inventory poll loop for {} exiting (session_id changed)", game_name_session);
                                             break;
                                         }
 
@@ -1734,7 +1766,7 @@ impl MiningService {
                                             let status = mining_status_poll.read().await;
                                             if let Some(ref channel) = status.current_channel {
                                                 if channel.game_name != game_name_session {
-                                                    debug!("🛑 Stopping inventory polling loop for {} (switched to {})",
+                                                    debug!("Stopping inventory polling loop for {} (switched to {})",
                                                         game_name_session, channel.game_name);
                                                     break;
                                                 }
@@ -1742,7 +1774,7 @@ impl MiningService {
                                         }
 
                                         debug!(
-                                            "📊 Polling inventory for drops progress (campaign: {}, game: {})...",
+                                            "Polling inventory for drops progress (campaign: {}, game: {})...",
                                             campaign_name_poll, game_name_poll
                                         );
                                         match drops_service_poll
@@ -1775,14 +1807,14 @@ impl MiningService {
                                                     // IMPORTANT: Filter by specific campaign name, not just game!
                                                     if item.campaign.name != campaign_name_poll {
                                                         debug!(
-                                                            "📊 Skipping campaign {} (mining specific campaign: {})",
+                                                            "Skipping campaign {} (mining specific campaign: {})",
                                                             item.campaign.name, campaign_name_poll
                                                         );
                                                         continue;
                                                     }
 
                                                     debug!(
-                                                        "📊 Found target campaign for {}: {}",
+                                                        "Found target campaign for {}: {}",
                                                         item.campaign.game_name, item.campaign.name
                                                     );
 
@@ -1803,7 +1835,7 @@ impl MiningService {
                                                         if required_minutes > 0
                                                             && current_minutes >= required_minutes
                                                         {
-                                                            debug!("📊 Skipping completed drop: {} ({}/{} minutes)",
+                                                            debug!("Skipping completed drop: {} ({}/{} minutes)",
                                                                 time_drop.name, current_minutes, required_minutes);
                                                             continue;
                                                         }
@@ -1814,13 +1846,13 @@ impl MiningService {
                                                         ) =
                                                             time_drop.benefit_edges.first()
                                                         {
-                                                            debug!("  🖼️ Found benefit: {} with image: {}", benefit.name, if benefit.image_url.is_empty() { "(empty)" } else { &benefit.image_url });
+                                                            debug!("  Found benefit: {} with image: {}", benefit.name, if benefit.image_url.is_empty() { "(empty)" } else { &benefit.image_url });
                                                             (
                                                                 benefit.name.clone(),
                                                                 benefit.image_url.clone(),
                                                             )
                                                         } else {
-                                                            debug!("  ⚠️ No benefit_edges for drop {}, using drop.name: {}", time_drop.id, time_drop.name);
+                                                            debug!("  No benefit_edges for drop {}, using drop.name: {}", time_drop.id, time_drop.name);
                                                             (time_drop.name.clone(), String::new())
                                                         };
 
@@ -1833,7 +1865,7 @@ impl MiningService {
                                                                 0.0
                                                             };
 
-                                                        debug!("📊 Inventory poll: {}/{} minutes for {} ({}) [{:.1}%]",
+                                                        debug!("Inventory poll: {}/{} minutes for {} ({}) [{:.1}%]",
                                                             current_minutes, required_minutes, drop_name, time_drop.id, progress_percentage);
 
                                                         all_drops_with_progress.push((
@@ -1854,7 +1886,7 @@ impl MiningService {
                                                 if all_drops_with_progress.is_empty()
                                                     && !target_campaign_drops.is_empty()
                                                 {
-                                                    debug!("📊 Campaign not in inventory yet (0 progress), using cached campaign drops as fallback");
+                                                    debug!("Campaign not in inventory yet (0 progress), using cached campaign drops as fallback");
                                                     for time_drop in &target_campaign_drops {
                                                         let required_minutes =
                                                             time_drop.required_minutes_watched;
@@ -1875,7 +1907,7 @@ impl MiningService {
                                                                 )
                                                             };
 
-                                                        debug!("📊 [Fallback] Including drop with 0 progress: {} (0/{} minutes)",
+                                                        debug!("[Fallback] Including drop with 0 progress: {} (0/{} minutes)",
                                                             drop_name, required_minutes);
 
                                                         all_drops_with_progress.push((
@@ -1974,7 +2006,7 @@ impl MiningService {
                                                             });
                                                         status.last_update = chrono::Utc::now();
 
-                                                        debug!("✅ [Inventory] Set current_drop to HIGHEST progress: {} ({}/{} = {:.1}%)",
+                                                        debug!("[Inventory] Set current_drop to HIGHEST progress: {} ({}/{} = {:.1}%)",
                                                             drop_name, current_minutes, required_minutes, progress_percentage);
 
                                                         // Emit mining status update to frontend
@@ -2025,8 +2057,8 @@ impl MiningService {
                                                 //
                                                 // For start_mining (auto-mining mode), it has its own loop that continues globally.
                                                 if all_drops_with_progress.is_empty() {
-                                                    debug!("🎉 All drops for campaign '{}' ({}) are complete (100%)!", campaign_name_session, game_name_session);
-                                                    debug!("🛑 Campaign mining complete - stopping and notifying frontend");
+                                                    debug!("All drops for campaign '{}' ({}) are complete (100%)!", campaign_name_session, game_name_session);
+                                                    debug!("Campaign mining complete - stopping and notifying frontend");
 
                                                     // Set running to false to stop all loops for this campaign
                                                     {
@@ -2064,12 +2096,12 @@ impl MiningService {
                                                         "timestamp": chrono::Utc::now().to_rfc3339()
                                                     }));
 
-                                                    debug!("✅ Campaign '{}' mining complete - frontend will handle next steps", campaign_name_session);
+                                                    debug!("Campaign '{}' mining complete - frontend will handle next steps", campaign_name_session);
                                                     break; // Exit the polling loop
                                                 }
                                             }
                                             Err(e) => {
-                                                error!("⚠️ Failed to poll inventory: {}", e);
+                                                error!("Failed to poll inventory: {}", e);
                                             }
                                         }
 
@@ -2081,7 +2113,7 @@ impl MiningService {
                                 // Idempotent — subsequent calls within the
                                 // same mining session no-op.
                                 debug!(
-                                    "🔌 Connecting WebSocket for drops updates (AFTER status populated)..."
+                                    "Connecting WebSocket for drops updates (AFTER status populated)..."
                                 );
                                 {
                                     let mut ws_service = websocket_service.lock().await;
@@ -2089,11 +2121,11 @@ impl MiningService {
                                         .connect(&user_id, &token, app_handle.clone())
                                         .await
                                     {
-                                        error!("❌ Failed to connect WebSocket: {}", e);
+                                        error!("Failed to connect WebSocket: {}", e);
                                     }
                                 }
                             } else {
-                                debug!("⚠️ No eligible channels found for this campaign");
+                                debug!("No eligible channels found for this campaign");
                                 let mut status = mining_status.write().await;
                                 status.is_mining = false;
                                 status.current_channel = None;
@@ -2102,12 +2134,12 @@ impl MiningService {
                             }
                         }
                         Err(e) => {
-                            error!("❌ Failed to discover eligible channels: {}", e);
+                            error!("Failed to discover eligible channels: {}", e);
                         }
                     }
                 }
                 Err(e) => {
-                    error!("❌ Failed to fetch campaigns: {}", e);
+                    error!("Failed to fetch campaigns: {}", e);
                 }
             }
 
@@ -2115,7 +2147,7 @@ impl MiningService {
             loop {
                 let should_continue = *is_running.read().await;
                 if !should_continue {
-                    debug!("🛑 Stopping campaign mining");
+                    debug!("Stopping campaign mining");
                     break;
                 }
                 // Just sleep and let the periodic task handle refreshes
@@ -2160,9 +2192,7 @@ impl MiningService {
         let recovery_state = self.recovery_state.clone();
 
         tokio::spawn(async move {
-            debug!(
-                "🎮 Starting automated drops mining (optimized - finds first available channel)"
-            );
+            debug!("Starting automated drops mining (optimized - finds first available channel)");
 
             // Handles for the per-iteration watch-payload + inventory-poll tasks.
             // Each 5-min outer-loop cycle spawns a fresh pair (different channel
@@ -2175,14 +2205,14 @@ impl MiningService {
                 // Check if mining should continue
                 let should_continue = *is_running.read().await;
                 if !should_continue {
-                    debug!("🛑 Stopping automated mining");
+                    debug!("Stopping automated mining");
                     break;
                 }
 
                 // Session-id guard: a newer start_*_mining call (different mode,
                 // re-launch, etc.) invalidates this outer loop's iteration here.
                 if *mining_session_id.read().await != my_session {
-                    debug!("🛑 Auto-mining outer loop exiting (session_id changed)");
+                    debug!("Auto-mining outer loop exiting (session_id changed)");
                     break;
                 }
 
@@ -2190,7 +2220,7 @@ impl MiningService {
                 let settings = drops_service.lock().await.get_settings().await;
 
                 if !settings.auto_mining_enabled {
-                    debug!("⏸️ Auto-mining is disabled in settings");
+                    debug!("Auto-mining is disabled in settings");
                     tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
                     continue;
                 }
@@ -2241,20 +2271,14 @@ impl MiningService {
                                 status.last_update = Utc::now();
                                 status.current_campaign = Some(campaign.name.clone());
 
-                                // Find the current drop being progressed
-                                if let Some(drop) = campaign.time_based_drops.first() {
-                                    let drop_progress =
-                                        drops_service.lock().await.get_drop_progress().await;
-                                    let current_minutes = drop_progress
-                                        .iter()
-                                        .find(|p| p.drop_id == drop.id)
-                                        .map(|p| p.current_minutes_watched)
-                                        .unwrap_or(0);
-
-                                    let progress_percentage = (current_minutes as f32
-                                        / drop.required_minutes_watched as f32)
-                                        * 100.0;
-
+                                // Find the current drop being progressed: the next
+                                // incomplete drop, not blindly the first (which may
+                                // already be finished after a stop/restart).
+                                let drop_progress =
+                                    drops_service.lock().await.get_drop_progress().await;
+                                if let Some((drop, current_minutes, progress_percentage)) =
+                                    Self::select_active_drop(&campaign, &drop_progress)
+                                {
                                     let estimated_completion = if current_minutes > 0 {
                                         let remaining_minutes =
                                             drop.required_minutes_watched - current_minutes;
@@ -2266,13 +2290,20 @@ impl MiningService {
                                         None
                                     };
 
+                                    let drop_name =
+                                        if let Some(benefit) = drop.benefit_edges.first() {
+                                            benefit.name.clone()
+                                        } else {
+                                            drop.name.clone()
+                                        };
+
                                     // Get drop image from benefit_edges
                                     let drop_image =
                                         drop.benefit_edges.first().map(|b| b.image_url.clone());
 
                                     status.current_drop = Some(CurrentDropInfo {
                                         drop_id: drop.id.clone(),
-                                        drop_name: drop.name.clone(),
+                                        drop_name,
                                         drop_image,
                                         campaign_name: campaign.name.clone(),
                                         game_name: campaign.game_name.clone(),
@@ -2300,7 +2331,7 @@ impl MiningService {
                                     .await;
 
                                 debug!(
-                                    "⛏️ Mining drops on: {} ({}) - Campaign: {}",
+                                    "Mining drops on: {} ({}) - Campaign: {}",
                                     best_channel.name, best_channel.game_name, campaign.name
                                 );
 
@@ -2308,7 +2339,7 @@ impl MiningService {
                                 let token = match DropsAuthService::get_token().await {
                                     Ok(t) => t,
                                     Err(e) => {
-                                        error!("❌ Failed to get token: {}", e);
+                                        error!("Failed to get token: {}", e);
                                         continue;
                                     }
                                 };
@@ -2316,7 +2347,7 @@ impl MiningService {
                                 let user_id = match Self::get_user_id(&client, &token).await {
                                     Ok(id) => id,
                                     Err(e) => {
-                                        error!("❌ Failed to get user ID: {}", e);
+                                        error!("Failed to get user ID: {}", e);
                                         continue;
                                     }
                                 };
@@ -2326,41 +2357,38 @@ impl MiningService {
                                 // selection, but the WS subscription is to
                                 // user-scoped topics that don't change, so
                                 // the second-iteration call is idempotent.
-                                debug!("🔌 Connecting WebSocket for drops updates...");
+                                debug!("Connecting WebSocket for drops updates...");
                                 {
                                     let mut ws_service = websocket_service.lock().await;
                                     if let Err(e) = ws_service
                                         .connect(&user_id, &token, app_handle.clone())
                                         .await
                                     {
-                                        error!("❌ Failed to connect WebSocket: {}", e);
+                                        error!("Failed to connect WebSocket: {}", e);
                                     }
                                 }
 
                                 // Get the actual stream/broadcast ID for this channel
-                                let broadcast_id = match Self::get_broadcast_id(
-                                    &client,
-                                    &best_channel.id,
-                                    &token,
-                                )
-                                .await
-                                {
-                                    Ok(Some(id)) => {
-                                        debug!("📺 Got broadcast ID: {}", id);
-                                        id
-                                    }
-                                    Ok(None) => {
-                                        debug!(
-                                            "⚠️ Channel {} is not live, using channel ID as fallback",
+                                let broadcast_id =
+                                    match Self::get_broadcast_id(&client, &best_channel.id, &token)
+                                        .await
+                                    {
+                                        Ok(Some(id)) => {
+                                            debug!("Got broadcast ID: {}", id);
+                                            id
+                                        }
+                                        Ok(None) => {
+                                            debug!(
+                                            "Channel {} is not live, using channel ID as fallback",
                                             best_channel.name
                                         );
-                                        best_channel.id.clone()
-                                    }
-                                    Err(e) => {
-                                        error!("❌ Failed to get broadcast ID: {}", e);
-                                        best_channel.id.clone()
-                                    }
-                                };
+                                            best_channel.id.clone()
+                                        }
+                                        Err(e) => {
+                                            error!("Failed to get broadcast ID: {}", e);
+                                            best_channel.id.clone()
+                                        }
+                                    };
 
                                 // Start watch payload loop
                                 let client_clone = client.clone();
@@ -2399,12 +2427,12 @@ impl MiningService {
                                     loop {
                                         // Check if still running
                                         if !*is_running_clone.read().await {
-                                            debug!("🛑 Stopping watch payload loop");
+                                            debug!("Stopping watch payload loop");
                                             break;
                                         }
 
                                         if *mining_session_id_clone.read().await != my_session {
-                                            debug!("🛑 Auto-mining watch payload loop exiting (session_id changed)");
+                                            debug!("Auto-mining watch payload loop exiting (session_id changed)");
                                             break;
                                         }
 
@@ -2444,7 +2472,7 @@ impl MiningService {
                                         }
 
                                         // Send watch payload
-                                        debug!("📡 Sending watch payload...");
+                                        debug!("Sending watch payload...");
                                         match Self::send_watch_payload(
                                             &client_clone,
                                             &current_channel,
@@ -2455,11 +2483,11 @@ impl MiningService {
                                         .await
                                         {
                                             Ok(true) => {
-                                                debug!("✅ Watch payload sent successfully")
+                                                debug!("Watch payload sent successfully")
                                             }
-                                            Ok(false) => debug!("⚠️ Watch payload failed"),
+                                            Ok(false) => debug!("Watch payload failed"),
                                             Err(e) => {
-                                                error!("❌ Failed to send watch payload: {}", e)
+                                                error!("Failed to send watch payload: {}", e)
                                             }
                                         }
 
@@ -2488,12 +2516,12 @@ impl MiningService {
 
                                     loop {
                                         if !*is_running_poll.read().await {
-                                            debug!("🛑 Stopping inventory polling loop for auto-mining {} (mining stopped)", game_name_session);
+                                            debug!("Stopping inventory polling loop for auto-mining {} (mining stopped)", game_name_session);
                                             break;
                                         }
 
                                         if *mining_session_id_poll.read().await != my_session {
-                                            debug!("🛑 Auto-mining inventory poll for {} exiting (session_id changed)", game_name_session);
+                                            debug!("Auto-mining inventory poll for {} exiting (session_id changed)", game_name_session);
                                             break;
                                         }
 
@@ -2502,7 +2530,7 @@ impl MiningService {
                                             let status = mining_status_poll.read().await;
                                             if let Some(ref channel) = status.current_channel {
                                                 if channel.game_name != game_name_session {
-                                                    debug!("🛑 Stopping inventory polling loop for {} (auto-mining switched to {})",
+                                                    debug!("Stopping inventory polling loop for {} (auto-mining switched to {})",
                                                         game_name_session, channel.game_name);
                                                     break;
                                                 }
@@ -2510,7 +2538,7 @@ impl MiningService {
                                         }
 
                                         debug!(
-                                            "📊 [Auto-Mining] Polling inventory for drops progress (campaign: {}, game: {})...",
+                                            "[Auto-Mining] Polling inventory for drops progress (campaign: {}, game: {})...",
                                             campaign_name_poll, game_name_poll
                                         );
                                         match drops_service_poll
@@ -2538,7 +2566,7 @@ impl MiningService {
                                                     }
 
                                                     debug!(
-                                                        "📊 [Auto-Mining] Found campaign for {}: {}",
+                                                        "[Auto-Mining] Found campaign for {}: {}",
                                                         item.campaign.game_name, item.campaign.name
                                                     );
 
@@ -2579,7 +2607,7 @@ impl MiningService {
                                                                     0.0
                                                                 };
 
-                                                            debug!("📊 [Auto-Mining] Inventory poll: {}/{} minutes for {} ({}) [{:.1}%]",
+                                                            debug!("[Auto-Mining] Inventory poll: {}/{} minutes for {} ({}) [{:.1}%]",
                                                                 current_minutes, required_minutes, drop_name, time_drop.id, progress_percentage);
 
                                                             all_drops_with_progress.push((
@@ -2674,7 +2702,7 @@ impl MiningService {
                                                             });
                                                         status.last_update = chrono::Utc::now();
 
-                                                        debug!("✅ [Auto-Mining] Set current_drop to HIGHEST progress: {} ({}/{} = {:.1}%)",
+                                                        debug!("[Auto-Mining] Set current_drop to HIGHEST progress: {} ({}/{} = {:.1}%)",
                                                             drop_name, current_minutes, required_minutes, progress_percentage);
 
                                                         let current_status = status.clone();
@@ -2714,7 +2742,7 @@ impl MiningService {
                                             }
                                             Err(e) => {
                                                 error!(
-                                                    "⚠️ [Auto-Mining] Failed to poll inventory: {}",
+                                                    "[Auto-Mining] Failed to poll inventory: {}",
                                                     e
                                                 );
                                             }
@@ -2726,7 +2754,7 @@ impl MiningService {
                                 prior_handles.push(inventory_poll_handle);
                             }
                             Ok(None) => {
-                                debug!("⚠️ No eligible channels found for mining");
+                                debug!("No eligible channels found for mining");
                                 let mut status = mining_status.write().await;
                                 status.is_mining = false;
                                 status.current_channel = None;
@@ -2734,12 +2762,12 @@ impl MiningService {
                                 status.current_drop = None;
                             }
                             Err(e) => {
-                                error!("❌ Failed to find eligible channel: {}", e);
+                                error!("Failed to find eligible channel: {}", e);
                             }
                         }
                     }
                     Err(e) => {
-                        error!("❌ Failed to fetch campaigns: {}", e);
+                        error!("Failed to fetch campaigns: {}", e);
                     }
                 }
 
@@ -2773,7 +2801,7 @@ impl MiningService {
             let mut listener_id = self.event_listener_id.write().await;
             if let Some(id) = listener_id.take() {
                 app_handle.unlisten(id);
-                debug!("🗑️ Cleaned up WebSocket event listener");
+                debug!("Cleaned up WebSocket event listener");
             }
         }
 
@@ -2781,7 +2809,7 @@ impl MiningService {
         {
             let mut cached_id = self.cached_user_id.write().await;
             *cached_id = None;
-            debug!("🗑️ Cleared cached user ID on mining stop");
+            debug!("Cleared cached user ID on mining stop");
         }
 
         let mut status = self.mining_status.write().await;
@@ -2810,7 +2838,7 @@ impl MiningService {
         let now = Utc::now();
 
         debug!(
-            "🚀 Fast channel discovery: finding FIRST live channel from {} campaigns",
+            "Fast channel discovery: finding FIRST live channel from {} campaigns",
             campaigns.len()
         );
 
@@ -2855,14 +2883,14 @@ impl MiningService {
             }
 
             debug!(
-                "  🔍 Checking campaign: {} ({})",
+                "  Checking campaign: {} ({})",
                 campaign.name, campaign.game_name
             );
 
             // If campaign has ACL channels, check those first (they're required for drops)
             if campaign.is_acl_based && !campaign.allowed_channels.is_empty() {
                 debug!(
-                    "    🔒 ACL campaign - checking {} allowed channels",
+                    "    ACL campaign - checking {} allowed channels",
                     campaign.allowed_channels.len()
                 );
 
@@ -2870,7 +2898,7 @@ impl MiningService {
                     match Self::check_channel_status(client, &allowed_channel.id, &token).await {
                         Ok(Some(channel_info)) => {
                             debug!(
-                                "    ✅ Found live ACL channel: {} ({} viewers)",
+                                "    Found live ACL channel: {} ({} viewers)",
                                 allowed_channel.name, channel_info.viewers
                             );
                             return Ok(Some((
@@ -2897,7 +2925,7 @@ impl MiningService {
                 }
             } else {
                 // Non-ACL campaign - fetch ONE stream from the game with drops enabled
-                debug!("    🌐 Non-ACL campaign - fetching live stream");
+                debug!("    Non-ACL campaign - fetching live stream");
                 match Self::fetch_first_live_stream_for_game(
                     client,
                     &campaign.game_id,
@@ -2908,22 +2936,22 @@ impl MiningService {
                 {
                     Ok(Some(channel)) => {
                         debug!(
-                            "    ✅ Found live channel: {} ({} viewers)",
+                            "    Found live channel: {} ({} viewers)",
                             channel.name, channel.viewers
                         );
                         return Ok(Some((channel, campaign.clone())));
                     }
                     Ok(None) => {
-                        debug!("    ⚫ No live drops-enabled streams for this game");
+                        debug!("    No live drops-enabled streams for this game");
                     }
                     Err(e) => {
-                        error!("    ❌ Error fetching streams: {}", e);
+                        error!("    Error fetching streams: {}", e);
                     }
                 }
             }
         }
 
-        debug!("  ❌ No live channels found in any campaign");
+        debug!("  No live channels found in any campaign");
         Ok(None)
     }
 
@@ -3006,52 +3034,46 @@ impl MiningService {
         const MAX_LIVE_CHANNELS_PER_CAMPAIGN: usize = 10;
 
         debug!(
-            "🔍 Discovering eligible channels from {} campaigns",
+            "Discovering eligible channels from {} campaigns",
             campaigns.len()
         );
-        debug!("📋 Priority mode: {:?}", settings.priority_mode);
-        debug!("🎯 Priority games: {:?}", settings.priority_games);
-        debug!("🚫 Excluded games: {:?}", settings.excluded_games);
+        debug!("Priority mode: {:?}", settings.priority_mode);
+        debug!("Priority games: {:?}", settings.priority_games);
+        debug!("Excluded games: {:?}", settings.excluded_games);
 
         for campaign in campaigns {
             debug!(
-                "\n📦 Checking campaign: {} ({})",
+                "\nChecking campaign: {} ({})",
                 campaign.name, campaign.game_name
             );
 
-            // Skip excluded games
-            if settings.excluded_games.contains(&campaign.game_name) {
-                debug!("  ⛔ Skipped: Game is in excluded list");
-                continue;
-            }
-
-            // Skip if priority mode is PriorityOnly and game is not in priority list
-            // BUT: If priority list is empty, allow all games
-            if settings.priority_mode == PriorityMode::PriorityOnly
-                && !settings.priority_games.is_empty()
-                && !settings.priority_games.contains(&campaign.game_name)
-            {
-                debug!("  ⛔ Skipped: Game not in priority list (PriorityOnly mode)");
-                continue;
-            }
+            // NOTE: priority/exclusion filtering is intentionally NOT applied here.
+            // This function only discovers live channels for the campaigns it is GIVEN;
+            // it never adds campaigns. Every caller has already decided the campaign
+            // set: the manual picker and manual start pass the single campaign the user
+            // explicitly chose (which must be minable regardless of auto-mining priority
+            // settings), and auto-mining selects + filters its campaign in
+            // `find_first_eligible_channel` before this is ever reached. Re-filtering
+            // here only broke the manual path, where a user with priority games set
+            // could not preview or mine any non-priority campaign they explicitly picked.
 
             // Check if campaign is active (not upcoming or expired)
             let now = Utc::now();
             if campaign.start_at > now {
-                debug!("  ⏰ Skipped: Campaign hasn't started yet");
+                debug!("  Skipped: Campaign hasn't started yet");
                 continue;
             }
             if campaign.end_at < now {
-                debug!("  ⏰ Skipped: Campaign has ended");
+                debug!("  Skipped: Campaign has ended");
                 continue;
             }
 
-            debug!("  ✅ Campaign is active and eligible");
+            debug!("  Campaign is active and eligible");
 
             // If campaign has ACL channels, use those
             if campaign.is_acl_based && !campaign.allowed_channels.is_empty() {
                 debug!(
-                    "  🔒 Campaign has {} ACL-restricted channels (checking until we find {} live)",
+                    "  Campaign has {} ACL-restricted channels (checking until we find {} live)",
                     campaign.allowed_channels.len(),
                     MAX_LIVE_CHANNELS_PER_CAMPAIGN
                 );
@@ -3063,7 +3085,7 @@ impl MiningService {
                     // Stop once we have enough live channels for this campaign
                     if live_channels_found >= MAX_LIVE_CHANNELS_PER_CAMPAIGN {
                         debug!(
-                            "    ✅ Found {} live channels, stopping ACL check for this campaign",
+                            "    Found {} live channels, stopping ACL check for this campaign",
                             live_channels_found
                         );
                         break;
@@ -3072,7 +3094,7 @@ impl MiningService {
                     match Self::check_channel_status(client, &allowed_channel.id, &token).await {
                         Ok(Some(channel_info)) => {
                             debug!(
-                                "    ✅ {} is online with {} viewers",
+                                "    {} is online with {} viewers",
                                 allowed_channel.name, channel_info.viewers
                             );
                             eligible_channels.push(MiningChannel {
@@ -3092,7 +3114,7 @@ impl MiningService {
                         }
                         Err(e) => {
                             error!(
-                                "      ❌ Failed to check channel status for {}: {}",
+                                "      Failed to check channel status for {}: {}",
                                 allowed_channel.name, e
                             );
                         }
@@ -3100,13 +3122,13 @@ impl MiningService {
                 }
 
                 if live_channels_found == 0 {
-                    debug!("    ⚫ No live channels found among ACL channels");
+                    debug!("    No live channels found among ACL channels");
                 } else {
-                    debug!("    ✅ Found {} live ACL channels", live_channels_found);
+                    debug!("    Found {} live ACL channels", live_channels_found);
                 }
             } else {
                 // Fetch live streams for this game with drops enabled
-                debug!("  🌐 Fetching live streams for game (no ACL restrictions)");
+                debug!("  Fetching live streams for game (no ACL restrictions)");
                 match Self::fetch_live_streams_for_game(
                     client,
                     &campaign.game_id,
@@ -3116,7 +3138,7 @@ impl MiningService {
                 .await
                 {
                     Ok(channels) => {
-                        debug!("    ✅ Found {} eligible channels", channels.len());
+                        debug!("    Found {} eligible channels", channels.len());
                         for ch in &channels {
                             debug!("      - {} ({} viewers)", ch.name, ch.viewers);
                         }
@@ -3124,7 +3146,7 @@ impl MiningService {
                     }
                     Err(e) => {
                         error!(
-                            "    ❌ Failed to fetch live streams for {}: {}",
+                            "    Failed to fetch live streams for {}: {}",
                             campaign.game_name, e
                         );
                     }
@@ -3265,12 +3287,12 @@ impl MiningService {
         settings: &DropsSettings,
     ) -> Option<MiningChannel> {
         if channels.is_empty() {
-            debug!("⚠️ No channels available to select from");
+            debug!("No channels available to select from");
             return None;
         }
 
         debug!(
-            "🔍 Selecting best channel from {} eligible channels",
+            "Selecting best channel from {} eligible channels",
             channels.len()
         );
 
@@ -3312,7 +3334,7 @@ impl MiningService {
             .collect();
 
         if scored_channels.is_empty() {
-            debug!("⚠️ No online channels with drops enabled");
+            debug!("No online channels with drops enabled");
             return None;
         }
 
@@ -3321,7 +3343,7 @@ impl MiningService {
 
         let selected = scored_channels.first().map(|(ch, score)| {
             debug!(
-                "🎯 Selected channel: {} with {} viewers (score: {})",
+                "Selected channel: {} with {} viewers (score: {})",
                 ch.name, ch.viewers, score
             );
             ch.clone()
@@ -3395,7 +3417,7 @@ impl MiningService {
                 let id = match Self::get_user_id_with_retry(client, token, 3).await {
                     Ok(id) => id,
                     Err(e) => {
-                        error!("❌ Failed to get user ID after retries: {}", e);
+                        error!("Failed to get user ID after retries: {}", e);
                         return Ok(false);
                     }
                 };
@@ -3443,7 +3465,7 @@ impl MiningService {
         });
 
         debug!(
-            "🎯 [watch_payload/gql] channel={} channel_id={} broadcast_id={} game={} user_id={}",
+            "[watch_payload/gql] channel={} channel_id={} broadcast_id={} game={} user_id={}",
             channel.name, channel.id, broadcast_id, channel.game_name, user_id,
         );
 
@@ -3464,7 +3486,7 @@ impl MiningService {
                 let http_status = response.status();
                 if !http_status.is_success() {
                     debug!(
-                        "⚠️ Watch GQL HTTP {} for {}",
+                        "Watch GQL HTTP {} for {}",
                         http_status.as_u16(),
                         channel.name
                     );
@@ -3482,7 +3504,7 @@ impl MiningService {
                     Some(204) => Ok(true),
                     Some(other) => {
                         debug!(
-                            "⚠️ sendSpadeEvents inner statusCode={} for {} — body: {}",
+                            "sendSpadeEvents inner statusCode={} for {} — body: {}",
                             other,
                             channel.name,
                             serde_json::to_string(&body).unwrap_or_default()
@@ -3492,7 +3514,7 @@ impl MiningService {
                     None => {
                         // No data.sendSpadeEvents — likely a GQL error block
                         debug!(
-                            "⚠️ sendSpadeEvents missing statusCode for {} — body: {}",
+                            "sendSpadeEvents missing statusCode for {} — body: {}",
                             channel.name,
                             serde_json::to_string(&body).unwrap_or_default()
                         );
@@ -3502,11 +3524,11 @@ impl MiningService {
             }
             Err(e) => {
                 if e.is_timeout() {
-                    debug!("⏱️ Watch GQL TIMEOUT for {}", channel.name);
+                    debug!("Watch GQL TIMEOUT for {}", channel.name);
                 } else if e.is_connect() {
-                    debug!("🔌 Watch GQL CONNECT ERROR for {} - {}", channel.name, e);
+                    debug!("Watch GQL CONNECT ERROR for {} - {}", channel.name, e);
                 } else {
-                    debug!("❌ Watch GQL ERROR for {} - {}", channel.name, e);
+                    debug!("Watch GQL ERROR for {} - {}", channel.name, e);
                 }
                 Err(anyhow::anyhow!("Watch GQL failed: {}", e))
             }
@@ -3535,7 +3557,7 @@ impl MiningService {
                 }
                 Err(e) => {
                     error!(
-                        "⚠️ Failed to get user ID (attempt {}/{}): {}",
+                        "Failed to get user ID (attempt {}/{}): {}",
                         attempt, max_retries, e
                     );
                     // Exponential backoff: 1s, 2s, 4s...
@@ -3589,7 +3611,7 @@ impl MiningService {
         recovery_state: &Arc<RwLock<RecoveryWatchdogState>>,
     ) -> Option<(MiningChannel, String, usize)> {
         debug!(
-            "🔄 Attempting to switch from channel index {} (have {} cached channels)...",
+            "Attempting to switch from channel index {} (have {} cached channels)...",
             current_index,
             channels.len()
         );
@@ -3611,12 +3633,12 @@ impl MiningService {
                 .await
                 .is_streamer_blacklisted(&next_channel.id)
             {
-                debug!("⛔ Skipping blacklisted channel {}", next_channel.name);
+                debug!("Skipping blacklisted channel {}", next_channel.name);
                 continue;
             }
 
             debug!(
-                "🔄 Trying cached channel: {} ({})",
+                "Trying cached channel: {} ({})",
                 next_channel.name, next_channel.game_name
             );
 
@@ -3627,17 +3649,17 @@ impl MiningService {
                     match Self::get_broadcast_id(client, &next_channel.id, token).await {
                         Ok(Some(new_broadcast_id)) => {
                             debug!(
-                                "✅ Successfully switched to {} (broadcast: {})",
+                                "Successfully switched to {} (broadcast: {})",
                                 next_channel.name, new_broadcast_id
                             );
                             return Some((next_channel.clone(), new_broadcast_id, next_index));
                         }
                         Ok(None) => {
-                            debug!("⚠️ Channel {} is not live", next_channel.name);
+                            debug!("Channel {} is not live", next_channel.name);
                         }
                         Err(e) => {
                             debug!(
-                                "❌ Failed to get broadcast ID for {}: {}",
+                                "Failed to get broadcast ID for {}: {}",
                                 next_channel.name, e
                             );
                         }
@@ -3645,20 +3667,20 @@ impl MiningService {
                 }
                 Ok(Some(_)) => {
                     debug!(
-                        "⚠️ Channel {} status check returned not online",
+                        "Channel {} status check returned not online",
                         next_channel.name
                     );
                 }
                 Ok(None) => {
-                    debug!("⚠️ Channel {} is offline", next_channel.name);
+                    debug!("Channel {} is offline", next_channel.name);
                 }
                 Err(e) => {
-                    debug!("❌ Failed to check status for {}: {}", next_channel.name, e);
+                    debug!("Failed to check status for {}: {}", next_channel.name, e);
                 }
             }
         }
 
-        debug!("❌ No alternative channels available in cached list");
+        debug!("No alternative channels available in cached list");
         None
     }
 
@@ -3674,7 +3696,7 @@ impl MiningService {
         settings: &DropsSettings,
         recovery_state: &Arc<RwLock<RecoveryWatchdogState>>,
     ) -> Option<(MiningChannel, String, Vec<MiningChannel>, usize)> {
-        debug!("🔄 Attempting channel switch with potential refresh...");
+        debug!("Attempting channel switch with potential refresh...");
 
         // First, try the cached channels
         if let Some((channel, broadcast_id, new_index)) = Self::try_switch_channel(
@@ -3691,19 +3713,17 @@ impl MiningService {
         }
 
         // If no cached channels work, refresh the eligible channels from API
-        debug!("🔄 All cached channels failed, refreshing eligible channels from API...");
+        debug!("All cached channels failed, refreshing eligible channels from API...");
 
         match Self::discover_eligible_channels_internal(client, campaigns, settings).await {
             Ok(fresh_channels) => {
                 if fresh_channels.is_empty() {
-                    debug!(
-                        "❌ API returned no eligible channels - all streams appear to be offline"
-                    );
+                    debug!("API returned no eligible channels - all streams appear to be offline");
                     return None;
                 }
 
                 debug!(
-                    "✅ Refreshed channel list: found {} eligible channels",
+                    "Refreshed channel list: found {} eligible channels",
                     fresh_channels.len()
                 );
 
@@ -3720,12 +3740,12 @@ impl MiningService {
                         .await
                         .is_streamer_blacklisted(&channel.id)
                     {
-                        debug!("⛔ Skipping blacklisted fresh channel {}", channel.name);
+                        debug!("Skipping blacklisted fresh channel {}", channel.name);
                         continue;
                     }
 
                     debug!(
-                        "🔄 Trying fresh channel: {} ({})",
+                        "Trying fresh channel: {} ({})",
                         channel.name, channel.game_name
                     );
 
@@ -3734,7 +3754,7 @@ impl MiningService {
                             match Self::get_broadcast_id(client, &channel.id, token).await {
                                 Ok(Some(broadcast_id)) => {
                                     debug!(
-                                        "✅ Successfully switched to fresh channel {} (broadcast: {})",
+                                        "Successfully switched to fresh channel {} (broadcast: {})",
                                         channel.name, broadcast_id
                                     );
                                     return Some((
@@ -3745,36 +3765,36 @@ impl MiningService {
                                     ));
                                 }
                                 Ok(None) => {
-                                    debug!("⚠️ Fresh channel {} is not live", channel.name);
+                                    debug!("Fresh channel {} is not live", channel.name);
                                 }
                                 Err(e) => {
                                     debug!(
-                                        "❌ Failed to get broadcast ID for fresh channel {}: {}",
+                                        "Failed to get broadcast ID for fresh channel {}: {}",
                                         channel.name, e
                                     );
                                 }
                             }
                         }
                         Ok(Some(_)) => {
-                            debug!("⚠️ Fresh channel {} is not online", channel.name);
+                            debug!("Fresh channel {} is not online", channel.name);
                         }
                         Ok(None) => {
-                            debug!("⚠️ Fresh channel {} is offline", channel.name);
+                            debug!("Fresh channel {} is offline", channel.name);
                         }
                         Err(e) => {
                             debug!(
-                                "❌ Failed to check status for fresh channel {}: {}",
+                                "Failed to check status for fresh channel {}: {}",
                                 channel.name, e
                             );
                         }
                     }
                 }
 
-                debug!("❌ No online channels found even after API refresh");
+                debug!("No online channels found even after API refresh");
                 None
             }
             Err(e) => {
-                debug!("❌ Failed to refresh eligible channels from API: {}", e);
+                debug!("Failed to refresh eligible channels from API: {}", e);
                 None
             }
         }
@@ -3848,14 +3868,14 @@ impl MiningService {
                     );
                 }
 
-                debug!("✅ Successfully switched to {}", new_channel.name);
+                debug!("Successfully switched to {}", new_channel.name);
                 ChannelSwitchOutcome::Switched
             }
             None => {
                 // No live, non-blacklisted channel was found. The caller decides
                 // whether to stop entirely (manual single-campaign mining) or just
                 // break and let an outer loop re-evaluate (auto-mining).
-                debug!("❌ No live channels available after API refresh");
+                debug!("No live channels available after API refresh");
                 ChannelSwitchOutcome::Exhausted
             }
         }
@@ -3868,7 +3888,7 @@ impl MiningService {
         app_handle: &AppHandle,
         reason: &str,
     ) {
-        debug!("🛑 Stopping mining: {}", reason);
+        debug!("Stopping mining: {}", reason);
 
         // Set running to false
         {
@@ -4123,7 +4143,7 @@ impl MiningService {
         }
 
         debug!(
-            "⚠️ Stale progress detected for {} (no progress in {} seconds)",
+            "Stale progress detected for {} (no progress in {} seconds)",
             current_channel.name, threshold
         );
 
@@ -4143,7 +4163,7 @@ impl MiningService {
 
         // If manual mode, don't auto-blacklist, just notify
         if settings.recovery_settings.recovery_mode == RecoveryMode::ManualOnly {
-            debug!("📢 Manual mode - notifying user but not auto-switching");
+            debug!("Manual mode - notifying user but not auto-switching");
             return None;
         }
 
@@ -4171,7 +4191,7 @@ impl MiningService {
                             .current_game_name
                             .unwrap_or_else(|| "Unknown".to_string());
                         debug!(
-                            "🎮 Game category changed! {} switched from {} to {}",
+                            "Game category changed! {} switched from {} to {}",
                             current_channel.name, current_channel.game_name, current_game_name
                         );
 
@@ -4200,7 +4220,7 @@ impl MiningService {
             Ok(None) => {
                 // Stream went offline
                 debug!(
-                    "📴 {} went offline during game category check",
+                    "{} went offline during game category check",
                     current_channel.name
                 );
 
@@ -4222,7 +4242,7 @@ impl MiningService {
                 }
             }
             Err(e) => {
-                error!("❌ Failed to check game category: {}", e);
+                error!("Failed to check game category: {}", e);
             }
         }
 
@@ -4235,7 +4255,7 @@ impl MiningService {
         let increased = state.update_progress(current_minutes);
         if increased {
             debug!(
-                "📈 Progress increased to {} minutes, resetting stale timer",
+                "Progress increased to {} minutes, resetting stale timer",
                 current_minutes
             );
         }
@@ -4255,7 +4275,7 @@ impl MiningService {
         state.last_stream_status_check = Some(Utc::now());
         // Clean up expired entries
         state.cleanup_expired();
-        debug!("🔄 Recovery state reset for new mining session");
+        debug!("Recovery state reset for new mining session");
     }
 
     /// Select best channel while respecting blacklist
@@ -4266,12 +4286,12 @@ impl MiningService {
         recovery_state: &RecoveryWatchdogState,
     ) -> Option<MiningChannel> {
         if channels.is_empty() {
-            debug!("⚠️ No channels available to select from");
+            debug!("No channels available to select from");
             return None;
         }
 
         debug!(
-            "🔍 Selecting best channel from {} eligible channels (with blacklist check)",
+            "Selecting best channel from {} eligible channels (with blacklist check)",
             channels.len()
         );
 
@@ -4280,7 +4300,7 @@ impl MiningService {
             .filter(|ch| {
                 // Filter out blacklisted channels
                 if recovery_state.is_streamer_blacklisted(&ch.id) {
-                    debug!("  ⛔ {} is blacklisted, skipping", ch.name);
+                    debug!("  {} is blacklisted, skipping", ch.name);
                     return false;
                 }
                 ch.is_online && ch.drops_enabled
@@ -4312,7 +4332,7 @@ impl MiningService {
             .collect();
 
         if scored_channels.is_empty() {
-            debug!("⚠️ No online, non-blacklisted channels with drops enabled");
+            debug!("No online, non-blacklisted channels with drops enabled");
             return None;
         }
 
@@ -4320,7 +4340,7 @@ impl MiningService {
 
         scored_channels.first().map(|(ch, score)| {
             debug!(
-                "🎯 Selected channel: {} with {} viewers (score: {})",
+                "Selected channel: {} with {} viewers (score: {})",
                 ch.name, ch.viewers, score
             );
             ch.clone()
@@ -4380,7 +4400,7 @@ impl MiningService {
             match Self::check_channel_status_extended(client, &current_channel.id, token).await {
                 // Stream is offline.
                 Ok(None) => {
-                    debug!("📴 Recovery: {} is offline", current_channel.name);
+                    debug!("Recovery: {} is offline", current_channel.name);
                     Self::emit_recovery_event(
                         app_handle,
                         RecoveryEventType::StreamerWentOffline,
@@ -4407,7 +4427,7 @@ impl MiningService {
                                     .clone()
                                     .unwrap_or_else(|| "Unknown".to_string());
                                 debug!(
-                                    "🎮 Recovery: {} switched game from {} to {}",
+                                    "Recovery: {} switched game from {} to {}",
                                     current_channel.name, current_channel.game_name, new_game
                                 );
                                 Self::emit_recovery_event(
@@ -4446,7 +4466,7 @@ impl MiningService {
                 }
                 // Transient network error — don't act on it, retry next pass.
                 Err(e) => {
-                    debug!("⚠️ Recovery liveness check failed (network): {}", e);
+                    debug!("Recovery liveness check failed (network): {}", e);
                     None
                 }
             };
@@ -4458,7 +4478,7 @@ impl MiningService {
 
         // Manual-only mode: we already notified above; never auto-switch.
         if manual_only {
-            debug!("📢 Recovery: manual-only mode — notified user, not switching");
+            debug!("Recovery: manual-only mode — notified user, not switching");
             return RecoveryOutcome::Continue;
         }
 

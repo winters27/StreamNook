@@ -1,13 +1,12 @@
 import { Window } from '@tauri-apps/api/window';
 import { Gift, User, Settings, Proportions, MessageCircle, Pickaxe, Clock, Tv, RotateCw } from 'lucide-react';
 import { Minus, X, CornersOut, CornersIn, Medal } from 'phosphor-react';
-import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAppStore } from '../stores/AppStore';
 import PenroseLogo from './PenroseLogo';
 import AboutWidget from './AboutWidget';
-import DynamicIsland from './DynamicIsland';
-import ErrorBoundary from './ErrorBoundary';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getSelectedCompactViewPreset } from '../constants/compactViewPresets';
@@ -46,6 +45,7 @@ const TitleBar = () => {
   // Mining status state for progress badge and hover preview
   const [miningStatus, setMiningStatus] = useState<MiningStatus | null>(null);
   const [showDropsPreview, setShowDropsPreview] = useState(false);
+  const [previewPos, setPreviewPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
   const dropsButtonRef = useRef<HTMLDivElement>(null);
   const previewTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -249,6 +249,29 @@ const TitleBar = () => {
     }, 150); // Small delay before hiding
   };
 
+  // The hover preview is portalled to <body> so it escapes the title bar's
+  // own stacking context (the bar is position:relative z-50). Rendered inline,
+  // the card's z-index:9999 only competes inside that context, so the compact
+  // expand-on-hover sidebar overlay (also z-50, but later in the DOM) painted
+  // over it. As a body-level portal it sits above the sidebar. Position it just
+  // under the drops button with fixed viewport coordinates from the button rect.
+  useLayoutEffect(() => {
+    if (!showDropsPreview) return;
+    const reposition = () => {
+      const el = dropsButtonRef.current;
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      setPreviewPos({ top: Math.round(r.bottom + 8), left: Math.round(r.left) });
+    };
+    reposition();
+    window.addEventListener('resize', reposition);
+    window.addEventListener('scroll', reposition, true);
+    return () => {
+      window.removeEventListener('resize', reposition);
+      window.removeEventListener('scroll', reposition, true);
+    };
+  }, [showDropsPreview]);
+
   useEffect(() => {
     // Detect when mining stops
     if (prevMiningActive.current && !isMiningActive) {
@@ -307,13 +330,9 @@ const TitleBar = () => {
         data-tauri-drag-region
         className="relative flex items-center justify-between h-[33px] px-3 select-none bg-secondary backdrop-blur-md border-b border-borderSubtle z-50"
       >
-        {/* Dynamic Island - Centered in title bar */}
-        <ErrorBoundary
-          componentName="DynamicIsland"
-          fallback={<div className="w-20 h-6" />}
-        >
-          <DynamicIsland />
-        </ErrorBoundary>
+        {/* Dynamic Island is rendered at the app root (App.tsx), not here, so it
+            can lift above the Settings blur overlay. It still pins to the top
+            center via fixed positioning, so it visually sits in this title bar. */}
 
         <div className="flex items-center gap-2" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
           {/* Penrose Logo */}
@@ -371,10 +390,11 @@ const TitleBar = () => {
               );
             })()}
 
-            {/* Hover Preview Card - positioned to the right with top-left arrow */}
-            {showDropsPreview && isMiningActive && miningStatus?.current_drop && (
-              <div 
+            {/* Hover Preview Card - portalled to body, positioned under the drops button */}
+            {showDropsPreview && isMiningActive && miningStatus?.current_drop && createPortal(
+              <div
                 className="drops-preview-card-right"
+                style={{ position: 'fixed', top: previewPos.top, left: previewPos.left, zIndex: 9999 }}
                 onMouseEnter={() => {
                   if (previewTimeoutRef.current) clearTimeout(previewTimeoutRef.current);
                 }}
@@ -437,7 +457,8 @@ const TitleBar = () => {
                 <div className="mt-2 pt-2 border-t border-borderSubtle">
                   <span className="text-[10px] text-textMuted">Click to view all drops</span>
                 </div>
-              </div>
+              </div>,
+              document.body
             )}
           </div>
 

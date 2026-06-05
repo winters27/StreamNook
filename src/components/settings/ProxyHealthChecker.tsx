@@ -6,9 +6,9 @@
  */
 import { useEffect, useState, useMemo } from 'react';
 import { RefreshCw, Zap, Globe, Check, X, Clock, Server, Sparkles, CheckCircle } from 'lucide-react';
-import { 
-  useProxyHealthStore, 
-  getRegionFlag, 
+import {
+  useProxyHealthStore,
+  getRegionLabel,
 } from '../../stores/proxyHealthStore';
 import type { ProxyHealthResult } from '../../types';
 import { useAppStore } from '../../stores/AppStore';
@@ -252,7 +252,7 @@ const ProxyHealthChecker = ({ compact = false, onApplyOptimal }: ProxyHealthChec
               <span className="text-xs text-textSecondary">Currently using:</span>
             </div>
             <div className="flex items-center gap-2">
-              <span className="text-lg">{getRegionFlag(currentProxy.region)}</span>
+              <span className="text-[10px] font-semibold tracking-wide px-1.5 py-0.5 rounded bg-white/5 text-textSecondary">{getRegionLabel(currentProxy.region)}</span>
               <span className="text-sm font-medium text-textPrimary">{currentProxy.name}</span>
               {settings.streamlink?.proxy_auto_optimized === false ? (
                 <span className="text-xs px-1.5 py-0.5 rounded bg-yellow-500/15 text-yellow-400/80">Manual</span>
@@ -294,10 +294,10 @@ const ProxyHealthChecker = ({ compact = false, onApplyOptimal }: ProxyHealthChec
                   <span className="text-sm font-medium text-textPrimary">
                     {applySuccess ? 'Applied!' : 'Best Proxy'}
                   </span>
-                  <span className="text-lg">{getRegionFlag(bestProxy.region)}</span>
+                  <span className="text-[10px] font-semibold tracking-wide px-1.5 py-0.5 rounded bg-white/5 text-textSecondary">{getRegionLabel(bestProxy.region)}</span>
                 </div>
                 <div className="text-xs text-textSecondary">
-                  {bestProxy.name} — {bestProxy.latency_ms}ms latency
+                  {bestProxy.name}, {bestProxy.latency_ms}ms latency
                 </div>
               </div>
             </div>
@@ -425,8 +425,8 @@ const ProxyRow = ({
         {/* Status indicator */}
         <div className={`w-2 h-2 rounded-full ${result.is_healthy ? 'bg-green-400' : 'bg-red-400'}`} />
         
-        {/* Region flag */}
-        <span className="text-lg">{getRegionFlag(result.region)}</span>
+        {/* Region label */}
+        <span className="text-[10px] font-semibold tracking-wide px-1.5 py-0.5 rounded bg-white/5 text-textSecondary">{getRegionLabel(result.region)}</span>
         
         {/* Name */}
         <div>

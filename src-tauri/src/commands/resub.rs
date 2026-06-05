@@ -200,7 +200,7 @@ pub async fn get_resub_notification(
     match resub {
         Some(r) => {
             debug!(
-                "[Resub] ✅ Found resub token! {} months cumulative, {} months streak",
+                "[Resub] Found resub token! {} months cumulative, {} months streak",
                 r.cumulative_tenure_months, r.streak_tenure_months
             );
             Ok(Some(ResubNotification {
@@ -304,9 +304,9 @@ pub async fn use_resub_token(
         .unwrap_or(false);
 
     if is_success {
-        debug!("[Resub] ✅ Resub notification sent successfully!");
+        debug!("[Resub] Resub notification sent successfully!");
     } else {
-        debug!("[Resub] ❌ Failed to send resub notification");
+        debug!("[Resub] Failed to send resub notification");
     }
 
     Ok(is_success)

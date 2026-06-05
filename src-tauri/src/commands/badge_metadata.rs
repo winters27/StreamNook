@@ -49,6 +49,11 @@ pub async fn fetch_badge_metadata(
                         "[BadgeMetadata] Cached more_info looks stale, refetching: {}",
                         cache_key
                     );
+                } else if is_usage_stats_missing(cached_info.usage_stats.as_deref()) {
+                    debug!(
+                        "[BadgeMetadata] Cached usage_stats missing, refetching: {}",
+                        cache_key
+                    );
                 } else {
                     return Ok(BadgeMetadata {
                         date_added: cached_info.date_added,
@@ -144,6 +149,18 @@ pub fn is_more_info_stale(more_info: Option<&str>) -> bool {
     }
     let lower = text.to_lowercase();
     lower.contains("event duration") || lower.contains(" utc")
+}
+
+/// Returns true when a cached badge has no usage statistics recorded. Older
+/// entries were scraped before the source page served the "Usage Statistics"
+/// figure, leaving the field null; those need a re-scrape so the most/least-used
+/// sort has a value to order by. A genuinely zero-usage badge still scrapes to a
+/// non-null string ("None users seen with this badge"), so this never loops.
+pub fn is_usage_stats_missing(usage_stats: Option<&str>) -> bool {
+    match usage_stats {
+        Some(s) => s.trim().is_empty(),
+        None => true,
+    }
 }
 
 fn extract_date_added(document: &Html) -> Option<String> {

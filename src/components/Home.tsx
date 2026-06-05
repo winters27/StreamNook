@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useCallback } from 'react';
+import { useEffect, useLayoutEffect, useState, useRef, useCallback } from 'react';
 import { useAppStore, HomeTab } from '../stores/AppStore';
 import { createPortal } from 'react-dom';
 import { Search, ArrowLeft, Heart, Maximize2, X, Gift, Pickaxe, LayoutGrid, Flame, ArrowUpRight, Undo2, Users, User, Loader2, MessageSquare } from 'lucide-react';
@@ -336,6 +336,8 @@ const Home = () => {
         homeSelectedCategory,
         setHomeActiveTab,
         setHomeSelectedCategory,
+        searchReturnTab,
+        setSearchReturnTab,
         // Category cache
         cachedTopGames,
         cachedGamesCursor,
@@ -428,6 +430,32 @@ const Home = () => {
     const [categorySearchResults, setCategorySearchResults] = useState<TwitchCategory[]>([]);
     const [searchMode, setSearchMode] = useState<'streamers' | 'categories'>('streamers');
     const [isSearching, setIsSearching] = useState(false);
+
+    // Guard against landing on an orphaned "search" tab. Search query/results are
+    // local state, so they reset whenever Home remounts (e.g. after exiting a
+    // stream that was opened from a search result) while the store keeps the tab
+    // pinned to 'search'. That combination renders the empty "No channels found
+    // for ''" page, which should never be reachable. Detect it and bounce back to
+    // wherever the search was launched from. Runs before paint so there's no flash.
+    // It can only fire in this orphaned case: clearing the search box (X/Escape)
+    // already resets the tab, and a real zero-result search leaves searchQuery set.
+    useLayoutEffect(() => {
+        if (
+            activeTab === 'search' &&
+            !isSearching &&
+            !searchQuery.trim() &&
+            searchResults.length === 0 &&
+            categorySearchResults.length === 0
+        ) {
+            const fallbackTab: HomeTab = isAuthenticated ? 'following' : 'recommended';
+            const target =
+                searchReturnTab === 'search' || (searchReturnTab === 'category' && !selectedCategory)
+                    ? fallbackTab
+                    : searchReturnTab;
+            setActiveTab(target);
+        }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [activeTab, isSearching, searchQuery, searchResults.length, categorySearchResults.length]);
     const topGames = cachedTopGames;
     const [isLoadingGames, setIsLoadingGames] = useState(false);
     const gamesCursor = cachedGamesCursor;
@@ -1128,6 +1156,14 @@ const Home = () => {
     const handleSearch = async () => {
         if (!searchQuery.trim()) return;
 
+        // Remember where this search was launched from. Search query/results live
+        // in local state, so they're wiped when Home unmounts during playback;
+        // without this, exiting a stream opened from a result drops the user on an
+        // empty "search" tab (the "No channels found for ''" blank page).
+        if (activeTab !== 'search') {
+            setSearchReturnTab(activeTab);
+        }
+
         setIsSearching(true);
         try {
             if (activeTab === 'browse' || (activeTab === 'search' && searchMode === 'categories')) {
@@ -1347,7 +1383,7 @@ const Home = () => {
         return (
             <div
                 key={game.id}
-                className={`glass-panel cursor-pointer hover:bg-glass-hover transition-all duration-200 group overflow-hidden relative ${isOverlayMode ? '!bg-black/40 !border-white/5' : ''} ${hasDrops ? 'ring-2 ring-accent shadow-accent/40' : ''}`}
+                className={`glass-panel media-card cursor-pointer hover:bg-glass-hover transition-all duration-200 group overflow-hidden relative ${isOverlayMode ? '!bg-black/40 !border-white/5' : ''} ${hasDrops ? 'ring-2 ring-accent shadow-accent/40' : ''}`}
                 style={hasDrops ? { boxShadow: '0 0 15px var(--color-accent-muted)' } : undefined}
                 onClick={() => handleCategoryClick(game)}
             >
@@ -1416,7 +1452,7 @@ const Home = () => {
         return (
             <div
                 key={clip.id}
-                className={`glass-panel cursor-pointer hover:bg-glass-hover transition-all duration-200 group overflow-hidden relative ${isOverlayMode ? '!bg-black/40 !border-white/5' : ''}`}
+                className={`glass-panel media-card cursor-pointer hover:bg-glass-hover transition-all duration-200 group overflow-hidden relative ${isOverlayMode ? '!bg-black/40 !border-white/5' : ''}`}
                 onClick={() => {
                     setHomeCategoryTab('clips');
                     playMedia('clip', clip.url, clip);
@@ -1456,7 +1492,7 @@ const Home = () => {
         return (
             <div
                 key={video.id}
-                className={`glass-panel cursor-pointer hover:bg-glass-hover transition-all duration-200 group overflow-hidden relative ${isOverlayMode ? '!bg-black/40 !border-white/5' : ''}`}
+                className={`glass-panel media-card cursor-pointer hover:bg-glass-hover transition-all duration-200 group overflow-hidden relative ${isOverlayMode ? '!bg-black/40 !border-white/5' : ''}`}
                 onClick={() => {
                     setHomeCategoryTab('videos');
                     playMedia('video', video.url, video);
@@ -2060,8 +2096,8 @@ const Home = () => {
                                                             isQueued && !isSuckingUp
                                                                 ? 'ghost-card rounded-lg cursor-default'
                                                                 : isQueued && isSuckingUp
-                                                                    ? `glass-panel cursor-default ${isOverlayMode ? '!bg-black/40 !border-white/5' : ''}`
-                                                                    : `glass-panel cursor-pointer hover:bg-glass-hover ${isOverlayMode ? '!bg-black/40 !border-white/5' : ''} ${hasDrops ? 'ring-2 ring-accent/60' : ''}`
+                                                                    ? `glass-panel media-card cursor-default ${isOverlayMode ? '!bg-black/40 !border-white/5' : ''}`
+                                                                    : `glass-panel media-card cursor-pointer hover:bg-glass-hover ${isOverlayMode ? '!bg-black/40 !border-white/5' : ''} ${hasDrops ? 'ring-2 ring-accent/60' : ''}`
                                                         }`}
                                                         style={!isQueued && hasDrops ? { boxShadow: '0 0 12px var(--color-accent-muted)' } : undefined}
                                                         onClick={(e) => !isQueued && handleStreamClick(e, stream)}
@@ -2394,8 +2430,8 @@ const Home = () => {
                                                         isQueued && !isSuckingUp
                                                             ? 'ghost-card rounded-lg cursor-default'
                                                             : isQueued && isSuckingUp
-                                                                ? `glass-panel cursor-default ${isOverlayMode ? '!bg-black/40 !border-white/5' : ''}`
-                                                                : `glass-panel cursor-pointer hover:bg-glass-hover ${isOverlayMode ? '!bg-black/40 !border-white/5' : ''} ${stream.has_shared_chat === true ? 'iridescent-border' : ''}`
+                                                                ? `glass-panel media-card cursor-default ${isOverlayMode ? '!bg-black/40 !border-white/5' : ''}`
+                                                                : `glass-panel media-card cursor-pointer hover:bg-glass-hover ${isOverlayMode ? '!bg-black/40 !border-white/5' : ''} ${stream.has_shared_chat === true ? 'iridescent-border' : ''}`
                                                     }`}
                                                     onClick={(e) => !isQueued && handleStreamClick(e, stream)}
                                                     onContextMenu={(e) => !isQueued && useContextMenuStore.getState().openMenu(e, stream)}

@@ -18,7 +18,7 @@ StreamNook is the answer to this very specific but deeply relatable problem. Bui
 
 **Ad-free playback up to 1440p.** Built-in ad blocking strips ads at every quality up to 1440p. First-run auto-optimizer picks the fastest proxy region for you, and the built-in latency dashboard lets you switch any time. Picture-in-picture, theater mode, and jump-to-live-edge on every stream load. When the channel you're watching goes offline, StreamNook auto-switches you to another live one without asking.
 
-**Custom theming engine.** 24 built-in themes including Winters' Glass, Dracula, Nord, Gruvbox, Tokyo Night, and Catppuccin, plus a full theme creator with color picker, live preview, and dynamic switching from the title bar. Build your own and tune every color in the UI, save it, swap back any time.
+**Custom theming engine.** Built-in themes including Frosted Glass, Standard Issue, a color-pickable OLED, Dracula, Nord, Gruvbox, Tokyo Night, and Catppuccin, plus a full theme creator with color picker, live preview, and dynamic switching from the title bar. Build your own and tune every color in the UI, save it, swap back any time.
 
 **VODs and offline-channel chat.** Watch past broadcasts the same way you watch live streams. Open chat for any offline channel and participate without waiting for them to go live, no need to load Twitch in a browser just to drop a message in someone's offline chat.
 

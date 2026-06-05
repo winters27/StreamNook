@@ -179,7 +179,7 @@ export function useChannelSocial({ userId, userLogin, userName, enabled = true }
       // Only react to the current user's own subscription on this channel's window
       if (currentUserLogin && login === currentUserLogin && subscribeWindowLabelRef.current) {
         useAppStore.getState().addToast(
-          `🎉 Subscription successful! ${msgId === 'subgift' ? 'Gift sent!' : 'Thank you for subscribing!'}`,
+          `Subscription successful! ${msgId === 'subgift' ? 'Gift sent!' : 'Thank you for subscribing!'}`,
           'success'
         );
 

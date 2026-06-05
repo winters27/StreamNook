@@ -203,8 +203,20 @@ pub(crate) async fn fetch_ttvlol_with_fallback(
     }
 }
 
+/// True if `body` is actually an HLS master playlist (carries at least one
+/// `#EXT-X-STREAM-INF`). The TTVLOL proxies are flaky and routinely answer with
+/// HTTP 200 + an HTML "Server error!" page or a JSON `{"error":...}` body; without
+/// this check those sail past the status test into the parser, which then finds no
+/// variants and fails the whole stream. Treating a non-master 2xx as a miss lets
+/// the race try another proxy and ultimately fall back to the authenticated master
+/// (the chain Streamlink relied on).
+pub(crate) fn looks_like_master(body: &str) -> bool {
+    body.contains("#EXT-X-STREAM-INF")
+}
+
 /// GET TTVLOL proxy's master playlist (anonymous, region-shifted, ad-free).
-/// Races all configured proxies in parallel, returns the first 2xx response.
+/// Races all configured proxies in parallel, returns the first 2xx response whose
+/// body is a real master playlist.
 async fn fetch_ttvlol_master_racing(channel: &str, bases: &[String]) -> Result<(String, String)> {
     if bases.is_empty() {
         return Err(anyhow!("no TTVLOL proxy bases configured"));
@@ -242,6 +254,15 @@ async fn fetch_ttvlol_master_racing(channel: &str, bases: &[String]) -> Result<(
                 .text()
                 .await
                 .map_err(|e| anyhow!("{} → body: {}", label, e))?;
+            if !looks_like_master(&body) {
+                let first = body.lines().next().unwrap_or("").trim().to_string();
+                return Err(anyhow!(
+                    "{} → 2xx but not a master playlist ({} bytes, first line: {:?})",
+                    label,
+                    body.len(),
+                    first
+                ));
+            }
             Ok::<(String, String), anyhow::Error>((label, body))
         });
     }
@@ -385,35 +406,57 @@ pub(crate) fn extract_attr(line: &str, key: &str) -> Option<String> {
     Some(rest[..end].to_string())
 }
 
-/// Pull `(EXT-X-MEDIA, EXT-X-STREAM-INF, url)` triples for tiers above 1080p.
+/// Pull the playlist blocks for tiers above 1080p (1440p / 2160p) so they can be
+/// spliced into the anonymous proxy master, which Twitch caps at FULL_HD.
+///
+/// Anchored on `#EXT-X-STREAM-INF` (same as the resolver's parser) so it works on
+/// both master layouts: it reads the height from `RESOLUTION` (falling back to the
+/// `NAME`/`IVS-NAME` label) and emits the STREAM-INF + URL, preceded by the legacy
+/// `#EXT-X-MEDIA` tag when one is present so the label survives on older masters.
 fn extract_high_tier_blocks(master: &str) -> Vec<String> {
     let lines: Vec<&str> = master.lines().collect();
     let mut out = Vec::new();
     let mut i = 0;
     while i < lines.len() {
-        let line = lines[i];
-        if line.starts_with("#EXT-X-MEDIA:") && line.contains("TYPE=VIDEO") {
-            let height = parse_name_height(line).unwrap_or(0);
-            if height > 1080 {
-                let media_line = line;
-                let mut block = String::new();
-                if i + 1 < lines.len() && lines[i + 1].starts_with("#EXT-X-STREAM-INF:") {
-                    let inf_line = lines[i + 1];
-                    if i + 2 < lines.len() && !lines[i + 2].starts_with('#') {
-                        let url_line = lines[i + 2];
-                        block.push_str(media_line);
-                        block.push('\n');
-                        block.push_str(inf_line);
-                        block.push('\n');
-                        block.push_str(url_line);
-                        out.push(block);
-                        i += 3;
-                        continue;
-                    }
+        let inf = lines[i];
+        if !inf.trim_start().starts_with("#EXT-X-STREAM-INF:") {
+            i += 1;
+            continue;
+        }
+        // URL = next non-comment, non-empty line.
+        let mut j = i + 1;
+        while j < lines.len()
+            && (lines[j].trim().is_empty() || lines[j].trim_start().starts_with('#'))
+        {
+            j += 1;
+        }
+        if j >= lines.len() {
+            break;
+        }
+        let res_h = extract_attr(inf, "RESOLUTION")
+            .and_then(|r| {
+                r.split(['x', 'X'])
+                    .nth(1)
+                    .and_then(|h| h.trim().parse::<u32>().ok())
+            })
+            .unwrap_or(0);
+        let height = res_h.max(parse_name_height(inf).unwrap_or(0));
+        if height > 1080 {
+            let mut block = String::new();
+            // Carry the preceding legacy MEDIA tag along if there is one.
+            if i > 0 {
+                let prev = lines[i - 1].trim_start();
+                if prev.starts_with("#EXT-X-MEDIA:") && prev.contains("TYPE=VIDEO") {
+                    block.push_str(lines[i - 1]);
+                    block.push('\n');
                 }
             }
+            block.push_str(inf);
+            block.push('\n');
+            block.push_str(lines[j].trim());
+            out.push(block);
         }
-        i += 1;
+        i = j + 1;
     }
     out
 }
@@ -516,5 +559,27 @@ mod tests {
             !merged.contains("auth-1080.m3u8"),
             "auth 1080p not duplicated"
         );
+    }
+
+    #[test]
+    fn splice_handles_modern_media_less_auth_master() {
+        // Modern IVS auth master (no MEDIA tags): the 1440p tier must still be
+        // pulled in by RESOLUTION, and 1080p must not be duplicated.
+        let ttvlol = "#EXTM3U\n\
+            #EXT-X-STREAM-INF:BANDWIDTH=8000000,RESOLUTION=1920x1080,CODECS=\"avc1.4D401F\",FRAME-RATE=60.000,IVS-NAME=\"1080p60\",IVS-VARIANT-SOURCE=\"source\"\n\
+            https://example.com/ttvlol-1080.m3u8\n";
+        let auth = "#EXTM3U\n\
+            #EXT-X-STREAM-INF:BANDWIDTH=14000000,RESOLUTION=2560x1440,CODECS=\"av01.0.13M.08\",FRAME-RATE=60.000,IVS-NAME=\"1440p60\",IVS-VARIANT-SOURCE=\"source\"\n\
+            https://example.com/auth-1440.m3u8\n\
+            #EXT-X-STREAM-INF:BANDWIDTH=8000000,RESOLUTION=1920x1080,CODECS=\"avc1.4D401F\",FRAME-RATE=60.000,IVS-NAME=\"1080p60\",IVS-VARIANT-SOURCE=\"transcode\"\n\
+            https://example.com/auth-1080.m3u8\n";
+        let blocks = extract_high_tier_blocks(auth);
+        assert_eq!(blocks.len(), 1, "only the 1440p tier is above 1080p");
+        assert!(blocks[0].contains("auth-1440.m3u8"));
+
+        let merged = splice(ttvlol, auth);
+        assert!(merged.contains("ttvlol-1080.m3u8"), "ttvlol base preserved");
+        assert!(merged.contains("auth-1440.m3u8"), "1440p spliced in");
+        assert!(!merged.contains("auth-1080.m3u8"), "1080p not duplicated");
     }
 }

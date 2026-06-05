@@ -347,11 +347,11 @@ pub async fn share_watch_streak(
 
     match has_error {
         Some(code) => {
-            debug!("[WatchStreak] ❌ Share failed with error code: {}", code);
+            debug!("[WatchStreak] Share failed with error code: {}", code);
             Ok(false)
         }
         None => {
-            debug!("[WatchStreak] ✅ Watch streak shared successfully!");
+            debug!("[WatchStreak] Watch streak shared successfully!");
             Ok(true)
         }
     }

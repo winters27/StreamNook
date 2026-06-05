@@ -68,7 +68,7 @@ impl BackgroundService {
                     let reason = payload["reason"].as_str().unwrap_or("watch");
 
                     if points > 0 {
-                        debug!("💰 Channel points earned: +{} ({})", points, reason);
+                        debug!("Channel points earned: +{} ({})", points, reason);
 
                         // Create a channel points claim record
                         let claim = ChannelPointsClaim {
@@ -125,7 +125,7 @@ impl BackgroundService {
 
                     if !channel_ids.is_empty() {
                         debug!(
-                            "🔌 Connecting WebSockets to {} channels for real-time monitoring",
+                            "Connecting WebSockets to {} channels for real-time monitoring",
                             channel_ids.len()
                         );
                         let mut ws = ws_service.lock().await;
@@ -265,7 +265,7 @@ impl BackgroundService {
                     .collect()
             };
 
-            debug!("🔄 [CP-WATCH] Channel points watch loop started");
+            debug!("[CP-WATCH] Channel points watch loop started");
 
             while *is_running_watch.read().await {
                 watch_interval.tick().await;
@@ -281,12 +281,12 @@ impl BackgroundService {
                 };
 
                 debug!(
-                    "🔍 [CP-WATCH] Tick - auto_claim_channel_points={}",
+                    "[CP-WATCH] Tick - auto_claim_channel_points={}",
                     auto_claim_enabled
                 );
 
                 if !auto_claim_enabled {
-                    debug!("⏸️ [CP-WATCH] Channel points farming disabled in settings");
+                    debug!("[CP-WATCH] Channel points farming disabled in settings");
                     // If disabled, stop watching all streams
                     let cps = cps_watch.lock().await;
                     let watching = cps.get_watching_streams().await;
@@ -302,7 +302,7 @@ impl BackgroundService {
                     .map(|c| c.channel_id.clone())
                     .collect();
                 if current_priority_ids != last_priority_list {
-                    debug!("⚙️ [CP-WATCH] Priority farm channels configuration changed — forcing immediate rotation");
+                    debug!("[CP-WATCH] Priority farm channels configuration changed — forcing immediate rotation");
                     minutes_since_rotation = ROTATION_INTERVAL_MINUTES; // Force rotation
                     last_priority_list = current_priority_ids;
                 }
@@ -332,9 +332,9 @@ impl BackgroundService {
 
                 // Diagnostic: log reservation state every tick
                 if let (Some(ref rid), Some(ref rlogin)) = (&reserved_id, &reserved_login) {
-                    debug!("🔒 [CP-WATCH] Reservation active: {} (ID: {})", rlogin, rid);
+                    debug!("[CP-WATCH] Reservation active: {} (ID: {})", rlogin, rid);
                 } else if reserve_token_enabled {
-                    debug!("🔓 [CP-WATCH] No reservation set (reserve_token_enabled=true)");
+                    debug!("[CP-WATCH] No reservation set (reserve_token_enabled=true)");
                 }
 
                 // Get current live streams
@@ -368,15 +368,13 @@ impl BackgroundService {
                     if currently_watching.is_empty()
                         && minutes_since_rotation < ROTATION_INTERVAL_MINUTES
                     {
-                        debug!(
-                            "⚡ [CP-WATCH] Cold-start: no streams watching, starting immediately"
-                        );
+                        debug!("[CP-WATCH] Cold-start: no streams watching, starting immediately");
                     }
                     minutes_since_rotation = 0; // Reset counter
 
                     let total_streams = live_streams.len();
                     debug!(
-                        "🔄 Rotating streams for channel points farming ({} live streams)...",
+                        "Rotating streams for channel points farming ({} live streams)...",
                         total_streams
                     );
 
@@ -405,21 +403,21 @@ impl BackgroundService {
                             streams_to_watch.push(reserved_stream.clone());
                             reserved_stream_id = Some(res_id.clone());
                             debug!(
-                                "  🔒 Reserved slot: {} (for gifted sub eligibility)",
+                                "  Reserved slot: {} (for gifted sub eligibility)",
                                 reserved_stream.user_name
                             );
                         } else if let Some(ref res_login) = reserved_login {
                             // Stream not in followed list — try to start watching directly
                             // (handles non-followed channels the user navigated to)
                             debug!(
-                                "  🔒 Reserved stream {} not in followed list — starting directly",
+                                "  Reserved stream {} not in followed list — starting directly",
                                 res_login
                             );
                             if let Err(e) =
                                 cps.start_watching_stream(res_id, res_login, &token).await
                             {
                                 debug!(
-                                    "  ⚠️ Could not start reserved stream {}: {} (may be offline)",
+                                    "  Could not start reserved stream {}: {} (may be offline)",
                                     res_login, e
                                 );
                             } else {
@@ -462,7 +460,7 @@ impl BackgroundService {
                         if filtered.is_empty() {
                             // None of the priority channels are live — fall back to all
                             debug!(
-                                "  ⚠️ No priority farm channels live, falling back to all followed"
+                                "  No priority farm channels live, falling back to all followed"
                             );
                             live_streams
                                 .iter()
@@ -475,7 +473,7 @@ impl BackgroundService {
                                 .collect()
                         } else {
                             debug!(
-                                "  🎯 Priority farm list active: {} of {} channels live",
+                                "  Priority farm list active: {} of {} channels live",
                                 filtered.len(),
                                 priority_ids.len()
                             );
@@ -519,7 +517,7 @@ impl BackgroundService {
                             format!("{} min ago", duration.num_minutes())
                         };
                         debug!(
-                            "  📌 Rotation slot: {} (last watched: {})",
+                            "  Rotation slot: {} (last watched: {})",
                             stream.user_name, time_since
                         );
                     }
@@ -534,7 +532,7 @@ impl BackgroundService {
                         let channel_login = &stream.user_login;
 
                         debug!(
-                            "🎬 Starting to watch {} for channel points (rotation {}/{})",
+                            "Starting to watch {} for channel points (rotation {}/{})",
                             stream.user_name,
                             streams_to_watch
                                 .iter()
@@ -556,7 +554,7 @@ impl BackgroundService {
                         let rotation_cycle =
                             (total_streams + MAX_CONCURRENT_STREAMS - 1) / MAX_CONCURRENT_STREAMS;
                         debug!(
-                            "🔄 Full rotation cycle: {} streams / {} per rotation = ~{} rotations needed",
+                            "Full rotation cycle: {} streams / {} per rotation = ~{} rotations needed",
                             total_streams, MAX_CONCURRENT_STREAMS, rotation_cycle
                         );
                     }
@@ -565,11 +563,11 @@ impl BackgroundService {
                     if let (Some(ref res_id), Some(ref res_login)) = (&reserved_id, &reserved_login)
                     {
                         if !cps.is_watching(res_id).await {
-                            debug!("🔒 [CP-WATCH] Reserved stream {} not in watching set, adding immediately", res_login);
+                            debug!("[CP-WATCH] Reserved stream {} not in watching set, adding immediately", res_login);
                             if let Err(e) =
                                 cps.start_watching_stream(res_id, res_login, &token).await
                             {
-                                debug!("  ⚠️ Could not add reserved stream {}: {}", res_login, e);
+                                debug!("  Could not add reserved stream {}: {}", res_login, e);
                             }
                         }
                     }
@@ -579,7 +577,7 @@ impl BackgroundService {
                 let watching = cps.get_watching_streams().await;
                 if !watching.is_empty() {
                     debug!(
-                        "📡 Sending minute-watched payloads for {} streams (farming {} total live)",
+                        "Sending minute-watched payloads for {} streams (farming {} total live)",
                         watching.len(),
                         live_streams.len()
                     );
@@ -625,14 +623,14 @@ impl BackgroundService {
         reserved.channel_id = Some(channel_id);
         reserved.channel_login = Some(channel_login.clone());
         reserved.reserved_at = Some(Utc::now());
-        debug!("🔒 Reserved watch slot for: {}", channel_login);
+        debug!("Reserved watch slot for: {}", channel_login);
     }
 
     /// Clear the reserved slot, returning it to the rotation pool
     pub async fn clear_reservation(&self) {
         let mut reserved = self.reserved_slot.write().await;
         if let Some(login) = &reserved.channel_login {
-            debug!("🔓 Cleared reservation for: {}", login);
+            debug!("Cleared reservation for: {}", login);
         }
         *reserved = ReservedStreamSlot::default();
     }

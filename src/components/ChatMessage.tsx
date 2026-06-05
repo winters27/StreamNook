@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useEffect, memo, useSyncExternalStore } from 'react';
+import React, { useMemo, useState, useEffect, useRef, memo, useSyncExternalStore } from 'react';
 import { Gift } from 'lucide-react';
 import { Tooltip } from './ui/Tooltip';
 import { parseMessage } from '../services/twitchChat';
@@ -6,6 +6,9 @@ import { queueEmoteForDisplayCaching, getCachedEmoteUrl, inlineEmoteTier, EmoteS
 import { getCachedEmojiUrl, parseEmojisSync } from '../services/emojiService';
 import { calculateHalfPadding } from '../utils/chatLayoutUtils';
 import { computePaintStyle, getBadgeImageUrl, getBadgeFallbackUrls, queueCosmeticForCaching } from '../services/seventvService';
+import { StyledChatName } from './chat/StyledChatName';
+import { useDragModerationStore } from '../stores/dragModerationStore';
+import { usePinStore } from '../stores/pinStore';
 import { FallbackImage } from './FallbackImage';
 import { getCosmeticsWithFallback } from '../services/cosmeticsCache';
 import type { ThirdPartyBadge as ThirdPartyBadgeType } from '../services/thirdPartyBadges';
@@ -273,6 +276,12 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
   const settings = useAppStore((s) => s.settings);
   const currentUser = useAppStore((s) => s.currentUser);
   const chatDesign = settings.chat_design;
+  // Whole-message pickup attaches transient window listeners; this ref holds the
+  // current teardown so an unmount can run it if the row is removed mid-press
+  // (a virtualized chat can unmount a held row before any terminal pointer event
+  // fires, which would otherwise leak the listeners and this row's closure).
+  const pickupTeardownRef = useRef<(() => void) | null>(null);
+  useEffect(() => () => pickupTeardownRef.current?.(), []);
   // Re-render this row when the StreamNook registry updates (async load / new signup)
   useSyncExternalStore(subscribeStreamNookRegistryVersion, getStreamNookRegistryVersion, getStreamNookRegistryVersion);
   const parsed = useMemo(() => {
@@ -465,9 +474,12 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
   // Previewable URLs (≤2 trusted + ≤2 untrusted), each flagged with trust. Kept
   // as small arrays, not Sets: `.includes` over a handful of items is faster
   // than allocating a Set per message on the chat hot path.
+  // Hosts the user has explicitly opted to trust, on top of the built-in
+  // allowlist. Passed into extraction so those links auto-expand too.
+  const userTrustedDomains = chatDesign?.link_preview_trusted_domains;
   const linkPreviewItems = useMemo(
-    () => (linkPreviewsEnabled ? extractPreviewUrls(parsed.content, 2) : []),
-    [linkPreviewsEnabled, parsed.content],
+    () => (linkPreviewsEnabled ? extractPreviewUrls(parsed.content, 2, userTrustedDomains) : []),
+    [linkPreviewsEnabled, parsed.content, userTrustedDomains],
   );
   // Only trusted links suppress their inline URL in clean mode (their card is
   // the link). Untrusted links keep the inline link and add a load-on-click chip.
@@ -670,6 +682,90 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
     return computePaintStyle(seventvPaint, effectiveColor, paintShadowMode);
   }, [seventvPaint, effectiveColor, paintShadowMode]);
 
+  // Username prefix styling (normal messages only; action/"/me" stay plain).
+  // The separator glyph sits between the name and the message; the name style
+  // emphasizes the name itself. Color pulls from the chatter's own color or the
+  // theme accent. username_colon is the deprecated boolean, migrated to 'colon'.
+  const nameSeparator = chatDesign?.username_separator ?? (chatDesign?.username_colon ? 'colon' : 'none');
+  const nameStyle = chatDesign?.username_style ?? 'plain';
+  const prefixAccentColor = (chatDesign?.username_accent_source ?? 'user') === 'theme'
+    ? 'var(--color-accent)'
+    : (effectiveColor || 'var(--color-accent)');
+
+  // How per-message mod actions are offered: classic click buttons, the
+  // drag-to-moderate grab handle, or both. Migrates the old boolean.
+  const modActionStyle = chatDesign?.mod_action_style
+    ?? (chatDesign?.drag_moderation_enabled === false ? 'buttons' : 'both');
+  // Drag-to-moderate is mod-only — every action bucket is a mod action, so a
+  // non-mod dragging a message just lifts it into an empty void. Gate the whole
+  // pickup gesture (and the text-selection sacrifice it requires) on the current
+  // user's mod status, so non-mods always keep normal chat: select text, copy,
+  // click links. The classic mod buttons are likewise already mod-gated below.
+  const bodyDragEnabled = isModerator && (modActionStyle === 'drag' || modActionStyle === 'both');
+  const showModButtons = modActionStyle === 'buttons' || modActionStyle === 'both';
+  // The inline Pin button is ALWAYS available to moderators so a pin can never go
+  // missing. The Pin Action setting only controls whether a Pin tile ALSO shows
+  // in the drag-to-moderate gesture (handled in ModerationDragLayer).
+  const showInlinePin = isModerator;
+  // Is THIS message the one currently pinned? If so the inline control flips from
+  // Pin to Unpin (and the same message can't show a redundant "pin" affordance).
+  const thisMessageId = parsed.tags.get('id');
+  const isThisPinned = usePinStore((s) => (!!thisMessageId && s.pinnedIds.includes(thisMessageId)));
+  // While a mod drag is holding THIS message, sweep + tint it so it's clear
+  // which message is about to be acted on.
+  const draggedMessageId = useDragModerationStore((s) => s.dragged?.messageId);
+  const isBeingDragged = !!draggedMessageId && draggedMessageId === parsed.tags.get('id');
+
+  // Whole-message pickup: pressing on a non-interactive part of the row and
+  // dragging past a small threshold lifts the chatter into the drag-to-moderate
+  // buckets. Clicks and the things you'd normally click (name/badges/emotes/
+  // links) are left alone; text selection is off in drag mode (use Copy).
+  const handleBodyPickup = (e: React.PointerEvent) => {
+    if (!bodyDragEnabled || e.button !== 0) return;
+    const target = e.target as HTMLElement;
+    if (target.closest('a, button, img, [data-no-drag]')) return;
+    const dragUserId = parsed.tags.get('user-id');
+    if (!dragUserId || !broadcasterId) return;
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const onMove = (me: PointerEvent) => {
+      if (Math.hypot(me.clientX - startX, me.clientY - startY) < 6) return;
+      teardown();
+      useDragModerationStore.getState().startDrag(
+        {
+          userId: dragUserId,
+          login: parsed.username,
+          displayName: parsed.tags.get('display-name') || parsed.username,
+          color: effectiveColor,
+          messageId: parsed.tags.get('id') || undefined,
+          broadcasterId,
+          isModerator,
+          moderationState:
+            moderationContext?.type === 'ban'
+              ? 'ban'
+              : moderationContext?.type === 'timeout'
+                ? 'timeout'
+                : null,
+        },
+        me.clientX,
+        me.clientY,
+      );
+    };
+    const onUp = () => teardown();
+    function teardown() {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+      pickupTeardownRef.current = null;
+    }
+    // pointercancel covers gestures the browser takes over (touch scroll, pen),
+    // which fire INSTEAD of pointerup; the ref lets an unmount tear down too.
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+    pickupTeardownRef.current = teardown;
+  };
+
   const renderSegment = (segment: EmoteSegment, key: string, inGrid: boolean, isOverlay: boolean = false) => {
     const gridStyle = inGrid ? { gridArea: '1/1' } : {};
     const marginClass = inGrid ? '' : 'mx-0.5';
@@ -727,6 +823,14 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
             ...(inGrid ? {} : { marginLeft: 'var(--sn-emote-margin, 0.125rem)', marginRight: 'var(--sn-emote-margin, 0.125rem)' }),
           }}
           referrerPolicy="no-referrer"
+          onClick={() => {
+            // Left-click a 7TV emote to open the quick spotlight modal, where it
+            // can be added to any channel you edit (or escalated into the full
+            // manager). Non-7TV emotes have no 7TV id, so they do nothing here.
+            if (is7TVEmote && segment.emoteId) {
+              useAppStore.getState().openEmoteSpotlight(segment.emoteId, segment.content);
+            }
+          }}
           onContextMenu={(e) => {
             e.preventDefault();
             if (onEmoteRightClick) onEmoteRightClick(segment.content);
@@ -2183,7 +2287,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
       className={`group relative isolate px-3 hover:bg-glass transition-colors ${borderClass} ${animationClass
         } ${isRedemption ? 'highlight-message-gradient' : ''
         } ${isFromSharedChat ? 'border-l-2 border-l-accent/50 bg-accent/5' : ''
-        } ${backgroundClass} ${moderationContext && (chatDesign?.deleted_message_style ?? 'strikethrough') !== 'keep' ? 'opacity-50' : ''}`}
+        } ${backgroundClass} ${moderationContext && (chatDesign?.deleted_message_style ?? 'strikethrough') !== 'keep' ? 'opacity-50' : ''} ${bodyDragEnabled ? 'select-none cursor-grab' : ''} ${isBeingDragged ? 'overflow-hidden' : ''}`}
       style={{
         ...messageStyle,
         ...(builtInEventBg ? { backgroundImage: builtInEventBg } : {}),
@@ -2206,10 +2310,38 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
           ? ({ '--phrase-flash-color': phraseMatch.color } as React.CSSProperties)
           : {}),
       }}
+      onPointerDown={handleBodyPickup}
     >
       {/* Atmosphere wash: the same animated aurora as the member's profile
           backdrop, masked to fade out before the text so it stays readable. */}
       {atmosphere && <AtmosphereBackground atm={atmosphere} variant="chat" />}
+
+      {/* Held-in-drag marker: a faint accent wash + a repeating light sweep so
+          you're sure which message is in your cursor. */}
+      {isBeingDragged && (
+        <>
+          <div aria-hidden="true" className="pointer-events-none absolute inset-0 z-20 bg-accent/10" />
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-0 z-20"
+            style={{
+              background: 'linear-gradient(105deg, transparent 42%, rgba(255,255,255,0.18) 50%, transparent 58%)',
+              animation: 'sn-held-sweep 2s ease-in-out infinite',
+            }}
+          />
+        </>
+      )}
+
+      {/* "Grab to drag" hint: an accent bar down the left edge that fades in on
+          hover whenever whole-message drag is enabled (pairs with the grab
+          cursor). Full-height accent + soft shadow so it pops over the Atmosphere
+          and on any theme. */}
+      {bodyDragEnabled && (
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-y-1 left-0 z-20 w-1.5 rounded-r-md bg-accent shadow-[1px_0_4px_rgba(0,0,0,0.45)] opacity-0 group-hover:opacity-100 transition-opacity duration-150"
+        />
+      )}
 
       {/* Built-in event label (first-time chatter, returning, self, raid) */}
       {builtInEventLabel && (
@@ -2253,10 +2385,21 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
       <div>
         {/* Timestamp - own line above the badges/name/message when enabled */}
         {formattedTimestamp && (
-          <div className="text-textSecondary text-[10px] opacity-50 leading-tight mb-0.5">{formattedTimestamp}</div>
+          <div
+            className={`text-[10px] leading-tight mb-0.5 text-textSecondary ${
+              atmosphere
+                ? 'block w-fit rounded-sm bg-[rgba(5,6,13,0.2)] px-1 opacity-70 backdrop-blur-[4px]'
+                : 'opacity-50'
+            }`}
+          >
+            {formattedTimestamp}
+          </div>
         )}
-        {/* Badges and Message content - inline flow so wrapped text starts at left edge */}
-        <div className="min-w-0">
+        {/* Badges and Message content - inline flow so wrapped text starts at left edge.
+            For an atmosphere message this is one frosted block hugging the
+            badges + name + message (the timestamp gets its own separate frost
+            above), so the text/badges stay readable over the animated wash. */}
+        <div className={atmosphere ? 'inline-block max-w-full rounded-md bg-[rgba(5,6,13,0.22)] px-1.5 py-0.5 backdrop-blur-[4px]' : 'min-w-0'}>
           {/* Badges */}
           {isSN || (isFromSharedChat && channelProfileImage) || parsed.badges.length > 0 || seventvBadge || thirdPartyBadges.length > 0 ? (
             <span className="inline-flex items-center gap-1 mr-1.5 align-middle">
@@ -2391,45 +2534,45 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
             ) : (
               // Regular messages: username in color, content in default color
               <>
-                <Tooltip content="Right-click to reply" side="top">
-                  <span
-                    style={{ ...usernameStyle, fontWeight: 700 }}
-                    className="cursor-pointer hover:underline inline-flex items-center gap-1"
-                    onClick={(e) => {
-                      const userId = parsed.tags.get('user-id');
-                      const displayName = parsed.tags.get('display-name') || parsed.username;
-                      if (userId && onUsernameClick) {
-                        onUsernameClick(
-                          userId,
-                          parsed.username,
-                          displayName,
-                          parsed.color,
-                          parsed.badges,
-                          e
-                        );
-                      }
-                    }}
-                    onContextMenu={(e) => {
-                      e.preventDefault();
-                      const messageId = parsed.tags.get('id');
-                      if (messageId && onUsernameRightClick) {
-                        onUsernameRightClick(messageId, parsed.username);
-                      }
-                    }}
-                  >
-                    {parsed.username}
-                    {broadcasterType === 'partner' && (
-                      <svg
-                        className="w-3.5 h-3.5 inline-block flex-shrink-0"
-                        viewBox="0 0 16 16"
-                        fill="#9146FF"
-                        style={{ verticalAlign: 'middle' }}
-                      >
-                        <path fillRule="evenodd" d="M12.5 3.5 8 2 3.5 3.5 2 8l1.5 4.5L8 14l4.5-1.5L14 8l-1.5-4.5ZM7 11l4.5-4.5L10 5 7 8 5.5 6.5 4 8l3 3Z" clipRule="evenodd"></path>
-                      </svg>
-                    )}
-                  </span>
-                </Tooltip>
+                <StyledChatName
+                  name={parsed.username}
+                  nameTextStyle={usernameStyle}
+                  nameStyle={nameStyle}
+                  separator={nameSeparator}
+                  accentColor={prefixAccentColor}
+                  interactive
+                  onClick={(e) => {
+                    const userId = parsed.tags.get('user-id');
+                    const displayName = parsed.tags.get('display-name') || parsed.username;
+                    if (userId && onUsernameClick) {
+                      onUsernameClick(
+                        userId,
+                        parsed.username,
+                        displayName,
+                        parsed.color,
+                        parsed.badges,
+                        e
+                      );
+                    }
+                  }}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    const messageId = parsed.tags.get('id');
+                    if (messageId && onUsernameRightClick) {
+                      onUsernameRightClick(messageId, parsed.username);
+                    }
+                  }}
+                  badge={broadcasterType === 'partner' ? (
+                    <svg
+                      className="w-3.5 h-3.5 inline-block flex-shrink-0 ml-1"
+                      viewBox="0 0 16 16"
+                      fill="#9146FF"
+                      style={{ verticalAlign: 'middle' }}
+                    >
+                      <path fillRule="evenodd" d="M12.5 3.5 8 2 3.5 3.5 2 8l1.5 4.5L8 14l4.5-1.5L14 8l-1.5-4.5ZM7 11l4.5-4.5L10 5 7 8 5.5 6.5 4 8l3 3Z" clipRule="evenodd"></path>
+                    </svg>
+                  ) : undefined}
+                />
                 <span style={{ fontWeight: 'var(--chat-body-weight, 300)' }} className="text-textPrimary break-words">
                   <span
                     style={
@@ -2471,31 +2614,66 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
           ))}
         </div>
       )}
-      {/* Quick Actions Dock: Copy for everyone, Mod tools for Mods */}
-      {(isModerator || !!onMessageCopy) && broadcasterId && (
-        <div 
-          className="absolute top-1 right-2 opacity-0 group-hover:opacity-100 transition-all duration-200 flex items-center bg-zinc-900/90 backdrop-blur-md border border-white/10 shadow-lg rounded-lg overflow-visible z-[50] translate-y-1 group-hover:translate-y-0"
+      {/* Inline quick-actions ON the message itself (top-right) — NOT the mod
+          menu: Copy for everyone + Pin for mods (when the pin style includes
+          inline). Hover-revealed; data-no-drag so they never start a mod drag. */}
+      {(onMessageCopy || showInlinePin) && broadcasterId && (
+        <div
+          data-no-drag="true"
+          className="absolute top-1 right-2 z-[50] opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-0.5 p-0.5 rounded-lg bg-zinc-900/90 backdrop-blur-sm border border-white/10 shadow-[0_4px_12px_rgba(0,0,0,0.4)]"
         >
-          {/* Copy Message (Available to all) */}
+          {showInlinePin && thisMessageId && (
+            <Tooltip content={isThisPinned ? 'Unpin message' : 'Pin message'} side="left">
+              <button
+                onClick={async (e) => {
+                  e.preventDefault();
+                  if (!thisMessageId) return;
+                  try {
+                    const { invoke } = await import('@tauri-apps/api/core');
+                    if (isThisPinned) {
+                      await invoke('unpin_chat_message', { broadcasterId, messageId: thisMessageId });
+                      useAppStore.getState().addToast('Unpinned message', 'success');
+                    } else {
+                      await invoke('pin_chat_message', { broadcasterId, messageId: thisMessageId, durationSeconds: null });
+                      useAppStore.getState().addToast('Pinned message', 'success');
+                    }
+                    usePinStore.getState().requestRefresh();
+                  } catch (err) {
+                    Logger.error('[ChatMessage] Pin/unpin failed:', err);
+                    useAppStore.getState().addToast(isThisPinned ? "Couldn't unpin that message" : "Couldn't pin that message", 'error');
+                  }
+                }}
+                className={`p-1.5 rounded-md transition-colors ${isThisPinned ? 'text-accent hover:text-red-400 hover:bg-red-500/15' : 'text-white/50 hover:text-accent hover:bg-accent/15'}`}
+              >
+                {isThisPinned ? (
+                  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="2" x2="22" y1="2" y2="22"/><line x1="12" x2="12" y1="17" y2="22"/><path d="M9 9v1.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V17h12"/><path d="M15 9.34V6h1a2 2 0 0 0 0-4H7.89"/></svg>
+                ) : (
+                  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" x2="12" y1="17" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z"/></svg>
+                )}
+              </button>
+            </Tooltip>
+          )}
           {onMessageCopy && (
-            <Tooltip content="Copy message" side="top">
+            <Tooltip content="Copy message" side="left">
               <button
                 onClick={(e) => { e.preventDefault(); onMessageCopy(parsed.content); }}
-                className="p-1.5 m-0.5 rounded-md hover:bg-stone-500/20 text-white/50 hover:text-white transition-colors"
+                className="p-1.5 rounded-md text-white/50 hover:text-white hover:bg-stone-500/20 transition-colors"
               >
                 <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
               </button>
             </Tooltip>
           )}
+        </div>
+      )}
 
-          {/* Moderator Tools Divider */}
-          {onMessageCopy && isModerator && (
-            <div className="w-px h-4 bg-white/10 mx-0.5" />
-          )}
-
-          {/* Moderator-Only Tools */}
-          {isModerator && (
-            <>
+      {/* Moderation menu: floats ABOVE the message (7TV-style), mod-only. The
+          punitive actions live here, away from the message text; Copy + Pin are
+          inline above. */}
+      {isModerator && showModButtons && broadcasterId && (
+        <div
+          data-no-drag="true"
+          className="absolute bottom-full right-2 mb-0.5 opacity-0 group-hover:opacity-100 transition-all duration-200 flex items-center gap-0.5 p-0.5 bg-zinc-900/95 backdrop-blur-md border border-white/10 shadow-[0_8px_24px_rgba(0,0,0,0.55)] rounded-xl overflow-visible z-[50] translate-y-1 group-hover:translate-y-0"
+        >
               {/* Delete Message */}
               <Tooltip content="Delete Message" side="top">
                 <button
@@ -2511,13 +2689,13 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
                       }
                     }
                   }}
-                  className="p-1.5 m-0.5 rounded-md hover:bg-red-500/20 text-white/50 hover:text-red-400 transition-colors"
+                  className="p-2 rounded-lg hover:bg-red-500/20 text-white/50 hover:text-red-400 transition-colors"
                 >
-                  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+                  <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
                 </button>
               </Tooltip>
 
-              <div className="w-px h-4 bg-white/10" />
+              <div className="w-px h-5 bg-white/10" />
 
               {/* Quick Timeout (10m) */}
               <div className="relative flex group/timeout">
@@ -2535,14 +2713,14 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
                     }
                   }
                 }}
-                className="p-1.5 m-0.5 rounded-md hover:bg-yellow-500/20 text-white/50 hover:text-yellow-400 transition-colors"
+                className="p-2 rounded-lg hover:bg-yellow-500/20 text-white/50 hover:text-yellow-400 transition-colors"
               >
-                <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+                <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
               </button>
             </Tooltip>
             
             {/* Timeout Dropdown */}
-            <div className="absolute top-1/2 -translate-y-1/2 right-full opacity-0 pointer-events-none group-hover/timeout:opacity-100 group-hover/timeout:pointer-events-auto transition-opacity pr-1 py-4">
+            <div className="absolute bottom-full left-1/2 -translate-x-1/2 opacity-0 pointer-events-none group-hover/timeout:opacity-100 group-hover/timeout:pointer-events-auto transition-opacity px-2 pb-1.5">
               <div className="flex bg-zinc-900 border border-white/10 rounded-md shadow-xl overflow-hidden">
                 {[
                   { label: '1s', val: 1 }, 
@@ -2574,7 +2752,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
             </div>
           </div>
 
-          <div className="w-px h-4 bg-white/10" />
+          <div className="w-px h-5 bg-white/10" />
 
           {/* Quick Ban */}
           <Tooltip content="Ban User" side="top">
@@ -2591,13 +2769,11 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
                   }
                 }
               }}
-              className="p-1.5 m-0.5 rounded-md hover:bg-red-500/20 text-white/50 hover:text-red-500 transition-colors"
+              className="p-2 rounded-lg hover:bg-red-500/20 text-white/50 hover:text-red-500 transition-colors"
             >
-              <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+              <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
             </button>
           </Tooltip>
-          </>
-          )}
         </div>
       )}
     </div>

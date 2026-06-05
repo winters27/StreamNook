@@ -116,6 +116,8 @@ interface ThirdPartyBadge {
 interface SevenTVCosmetics {
   paints: SevenTVPaint[];
   badges: SevenTVBadge[];
+  /** 7TV animated avatar URL, if the user has set one. 7TV has no banner. */
+  avatar_url: string | null;
 }
 
 // v4 API Paint structure with layers
@@ -872,6 +874,17 @@ const UserProfileCard = ({
   const twitchProfile = profileData?.twitch_profile;
   const ivrData = profileData?.ivr_data;
 
+  // The @handle must be the real LOGIN, not the display name. The login/display
+  // name passed in from chat can be identical (the parser sources both from the
+  // display-name tag), so once Helix resolves the authoritative login by user-id
+  // we prefer it for the handle and every Twitch-facing action (links, mod
+  // commands, whisper). Falls back to the passed value while the profile loads.
+  const login = twitchProfile?.login || username;
+
+  // Prefer the user's 7TV animated avatar when they have one; otherwise the
+  // Twitch profile image. 7TV exposes no banner, only this avatar.
+  const avatarUrl = profileData?.seventv_cosmetics?.avatar_url || twitchProfile?.profile_image_url;
+
   const bannerStyle = useMemo(() => {
     const bannerUrl = twitchProfile?.banner_image_url || twitchProfile?.offline_image_url;
     if (bannerUrl) {
@@ -890,9 +903,9 @@ const UserProfileCard = ({
   const handleWhisper = useCallback(async () => {
     const user = {
       id: userId,
-      login: username,
+      login,
       display_name: displayName,
-      profile_image_url: twitchProfile?.profile_image_url,
+      profile_image_url: avatarUrl,
     };
     if (onStartWhisper) {
       onStartWhisper(user);
@@ -909,7 +922,7 @@ const UserProfileCard = ({
       useAppStore.getState().openWhisperWithUser(user);
     }
     onClose();
-  }, [userId, username, displayName, twitchProfile?.profile_image_url, onStartWhisper, isStandaloneWindow, onClose]);
+  }, [userId, login, displayName, avatarUrl, onStartWhisper, isStandaloneWindow, onClose]);
 
   const renderBadgeGroup = (
     label: string,
@@ -1007,8 +1020,8 @@ const UserProfileCard = ({
             className="absolute -bottom-10 left-4 w-20 h-20 rounded-full border-4 border-secondary bg-secondary overflow-hidden shadow-lg"
             style={prefersReducedMotion ? undefined : { scale: avatarScale, y: avatarLift, transformOrigin: 'left bottom' }}
           >
-            {twitchProfile?.profile_image_url ? (
-              <img src={twitchProfile.profile_image_url} alt={displayName} className="w-full h-full object-cover" />
+            {avatarUrl ? (
+              <img src={avatarUrl} alt={displayName} className="w-full h-full object-cover" />
             ) : (
               <div className="w-full h-full flex items-center justify-center bg-accent/20">
                 <span className="text-2xl font-bold text-textPrimary">{displayName[0].toUpperCase()}</span>
@@ -1240,7 +1253,7 @@ const UserProfileCard = ({
                 <h3 className="text-xl font-bold leading-tight" style={usernameStyle}>{displayName}</h3>
                 {identityChips}
               </div>
-              <p className="text-sm text-textSecondary mt-0.5">@{username}</p>
+              <p className="text-sm text-textSecondary mt-0.5">@{login}</p>
               {twitchProfile?.description && (
                 <p className="text-sm text-textPrimary/85 mt-2.5 leading-relaxed">{twitchProfile.description}</p>
               )}
@@ -1258,8 +1271,8 @@ const UserProfileCard = ({
                   ? { channelName: propChannelName }
                   : { channelName: useAppStore.getState().currentStream?.user_login };
                 const canGiftSub = !!viewedChannel
-                  && !!username
-                  && viewedChannel.toLowerCase() !== username.toLowerCase()
+                  && !!login
+                  && viewedChannel.toLowerCase() !== login.toLowerCase()
                   && !ivrData?.is_subscribed;
                 const handleGiftSub = async () => {
                   try {
@@ -1267,7 +1280,7 @@ const UserProfileCard = ({
                     // ?giftrecipient= is a best-guess query param. If Twitch ignores
                     // it the user lands on the subs page and types the name manually,
                     // which is still a one-click improvement over leaving the app.
-                    await open(`https://www.twitch.tv/subs/${viewedChannel}?giftrecipient=${username}`);
+                    await open(`https://www.twitch.tv/subs/${viewedChannel}?giftrecipient=${login}`);
                   } catch (err) {
                     Logger.error('Failed to open gift sub URL:', err);
                   }
@@ -1528,7 +1541,7 @@ const UserProfileCard = ({
               </button>
               <button
                 onClick={() => {
-                  useAppStore.getState().startOfflineChat(username);
+                  useAppStore.getState().startOfflineChat(login);
                   onClose();
                 }}
                 className="glass-button text-white text-xs py-2.5 px-3 rounded-md text-center hover:bg-accent/20 transition-colors w-full"
@@ -1536,7 +1549,7 @@ const UserProfileCard = ({
                 Join Chat
               </button>
               <a
-                href={`https://www.twitch.tv/${username}`}
+                href={`https://www.twitch.tv/${login}`}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="glass-button text-white text-xs py-2.5 px-3 rounded-md text-center hover:bg-accent/20 transition-colors flex items-center justify-center w-full"
@@ -1571,11 +1584,11 @@ const UserProfileCard = ({
                   <Tooltip content="Purge recent messages" side="top">
                     <button
                       onClick={async () => {
-                        if (onPreFillCommand) { onPreFillCommand(`/timeout ${username} 1 Purge`); onClose(); return; }
+                        if (onPreFillCommand) { onPreFillCommand(`/timeout ${login} 1 Purge`); onClose(); return; }
                         try {
                           const { invoke } = await import('@tauri-apps/api/core');
                           await invoke('ban_user', { broadcasterId, targetUserId: userId, duration: 1, reason: 'Purge' });
-                          useAppStore.getState().addToast(`Purged messages for ${username}`, 'success');
+                          useAppStore.getState().addToast(`Purged messages for ${login}`, 'success');
                         } catch (err) {
                           Logger.error('[UserProfileCard] Failed to purge:', err);
                           useAppStore.getState().addToast('Failed to purge user', 'error');
@@ -1589,11 +1602,11 @@ const UserProfileCard = ({
                   <Tooltip content="Timeout for 10 minutes" side="top">
                     <button
                       onClick={async () => {
-                        if (onPreFillCommand) { onPreFillCommand(`/timeout ${username} 600 `); onClose(); return; }
+                        if (onPreFillCommand) { onPreFillCommand(`/timeout ${login} 600 `); onClose(); return; }
                         try {
                           const { invoke } = await import('@tauri-apps/api/core');
                           await invoke('ban_user', { broadcasterId, targetUserId: userId, duration: 600, reason: null });
-                          useAppStore.getState().addToast(`Timed out ${username} for 10m`, 'success');
+                          useAppStore.getState().addToast(`Timed out ${login} for 10m`, 'success');
                         } catch (err) {
                           Logger.error('[UserProfileCard] Failed to timeout:', err);
                           useAppStore.getState().addToast('Failed to timeout user', 'error');
@@ -1607,11 +1620,11 @@ const UserProfileCard = ({
                   <Tooltip content="Timeout for 24 hours" side="top">
                     <button
                       onClick={async () => {
-                        if (onPreFillCommand) { onPreFillCommand(`/timeout ${username} 86400 `); onClose(); return; }
+                        if (onPreFillCommand) { onPreFillCommand(`/timeout ${login} 86400 `); onClose(); return; }
                         try {
                           const { invoke } = await import('@tauri-apps/api/core');
                           await invoke('ban_user', { broadcasterId, targetUserId: userId, duration: 86400, reason: null });
-                          useAppStore.getState().addToast(`Timed out ${username} for 24h`, 'success');
+                          useAppStore.getState().addToast(`Timed out ${login} for 24h`, 'success');
                         } catch (err) {
                           Logger.error('[UserProfileCard] Failed to timeout:', err);
                           useAppStore.getState().addToast('Failed to timeout user', 'error');
@@ -1625,12 +1638,12 @@ const UserProfileCard = ({
                   <Tooltip content="Permanently Ban User" side="top">
                     <button
                       onClick={async () => {
-                        if (onPreFillCommand) { onPreFillCommand(`/ban ${username} `); onClose(); return; }
-                        if (window.confirm(`Are you sure you want to permanently ban ${username}?`)) {
+                        if (onPreFillCommand) { onPreFillCommand(`/ban ${login} `); onClose(); return; }
+                        if (window.confirm(`Are you sure you want to permanently ban ${login}?`)) {
                           try {
                             const { invoke } = await import('@tauri-apps/api/core');
                             await invoke('ban_user', { broadcasterId, targetUserId: userId, duration: null, reason: null });
-                            useAppStore.getState().addToast(`Banned ${username}`, 'success');
+                            useAppStore.getState().addToast(`Banned ${login}`, 'success');
                             onClose();
                           } catch (err) {
                             Logger.error('[UserProfileCard] Failed to ban:', err);
@@ -1647,11 +1660,11 @@ const UserProfileCard = ({
                 <div className="mt-2 text-right">
                   <button
                     onClick={async () => {
-                      if (window.confirm(`Unban ${username}?`)) {
+                      if (window.confirm(`Unban ${login}?`)) {
                         try {
                           const { invoke } = await import('@tauri-apps/api/core');
                           await invoke('unban_user', { broadcasterId, targetUserId: userId });
-                          useAppStore.getState().addToast(`Unbanned ${username}`, 'success');
+                          useAppStore.getState().addToast(`Unbanned ${login}`, 'success');
                         } catch (err) {
                           Logger.error('[UserProfileCard] Failed to unban:', err);
                           useAppStore.getState().addToast('Failed to unban user', 'error');

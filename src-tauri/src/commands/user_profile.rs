@@ -91,6 +91,12 @@ pub struct ThirdPartyBadge {
 pub struct SevenTVCosmetics {
     pub paints: Vec<SevenTVPaint>,
     pub badges: Vec<SevenTVBadge>,
+    /// 7TV animated profile picture URL (`style.activeProfilePicture`), if the
+    /// user has set a custom one. `None` when they have no 7TV avatar — callers
+    /// then fall back to the Twitch profile image. 7TV has no profile *banner*,
+    /// only this avatar, so this is the only 7TV image surface for the card.
+    #[serde(default)]
+    pub avatar_url: Option<String>,
 }
 
 // v4 API Paint structure with layers
@@ -241,13 +247,28 @@ pub async fn get_user_profile_complete(
         username, channel_name
     );
 
-    // Fetch all data sources in parallel
-    let (twitch_result, banner_result, badges_result, seventv_result, ivr_result) = tokio::join!(
+    // Phase 1: the lookups that key off the Twitch user-id (always authoritative).
+    let (twitch_result, badges_result, seventv_result) = tokio::join!(
         fetch_twitch_profile(&user_id),
-        fetch_twitch_banner(&username),
         fetch_badge_data(&user_id, &username, &channel_id, &channel_name),
-        fetch_seventv_cosmetics(&user_id),
-        fetch_ivr_data(&username, &channel_name)
+        fetch_seventv_cosmetics(&user_id)
+    );
+
+    // The banner + IVR endpoints are keyed by LOGIN, but the `username` passed in
+    // from chat can be a display name (localized names aren't valid logins), which
+    // is exactly what made those queries come back empty. Use the canonical login
+    // from Helix; fall back to the passed username only if the Helix fetch failed.
+    let lookup_login = twitch_result
+        .as_ref()
+        .ok()
+        .map(|p| p.login.clone())
+        .filter(|l| !l.is_empty())
+        .unwrap_or_else(|| username.clone());
+
+    // Phase 2: login-keyed lookups, now driven by the canonical login.
+    let (banner_result, ivr_result) = tokio::join!(
+        fetch_twitch_banner(&lookup_login),
+        fetch_ivr_data(&lookup_login, &channel_name)
     );
 
     let twitch_profile = twitch_result.ok().map(|mut p| {
@@ -503,6 +524,14 @@ async fn fetch_seventv_cosmetics(user_id: &str) -> Result<SevenTVCosmetics, Stri
                     style {{
                         activePaint {{ id }}
                         activeBadge {{ id }}
+                        activeProfilePicture {{
+                            images {{
+                                url
+                                mime
+                                scale
+                                frameCount
+                            }}
+                        }}
                     }}
                     inventory {{
                         paints {{
@@ -746,7 +775,45 @@ async fn fetch_seventv_cosmetics(user_id: &str) -> Result<SevenTVCosmetics, Stri
         })
         .unwrap_or_default();
 
-    Ok(SevenTVCosmetics { paints, badges })
+    // 7TV animated avatar (only present if the user set one). Pick the
+    // best-quality image; falls back to None so the card uses the Twitch pfp.
+    let avatar_url = user_data
+        .get("style")
+        .and_then(|s| s.get("activeProfilePicture"))
+        .and_then(|pp| pp.get("images"))
+        .and_then(|imgs| imgs.as_array())
+        .and_then(|arr| pick_best_seventv_image(arr));
+
+    Ok(SevenTVCosmetics {
+        paints,
+        badges,
+        avatar_url,
+    })
+}
+
+/// Pick the highest-quality usable image URL from a 7TV `images[]` array.
+/// Prefers webp (broadly supported in WebView2) at the largest scale, falling
+/// back to the largest image of any format. Normalizes protocol-relative URLs.
+fn pick_best_seventv_image(images: &[serde_json::Value]) -> Option<String> {
+    let score = |img: &serde_json::Value| -> i64 {
+        let scale = img.get("scale").and_then(|s| s.as_i64()).unwrap_or(0);
+        let is_webp = img
+            .get("mime")
+            .and_then(|m| m.as_str())
+            .map(|m| m.contains("webp"))
+            .unwrap_or(false);
+        scale * 10 + if is_webp { 5 } else { 0 }
+    };
+    images
+        .iter()
+        .max_by_key(|img| score(img))
+        .and_then(|img| img.get("url"))
+        .and_then(|u| u.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| match s.strip_prefix("//") {
+            Some(rest) => format!("https://{}", rest),
+            None => s.to_string(),
+        })
 }
 
 // Helper function to parse a color object

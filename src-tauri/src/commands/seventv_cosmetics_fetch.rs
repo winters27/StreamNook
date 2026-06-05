@@ -240,3 +240,72 @@ pub async fn get_all_seventv_paints() -> Result<Vec<SevenTVGlobalPaint>, String>
     debug!("[7TV] Fetched {} paints", paints.len());
     Ok(paints)
 }
+
+// ============================================================================
+// DATA MODELS - Paint usage (PotatBotat)
+// ============================================================================
+
+/// Global usage figures for a single paint, sourced from the PotatBotat API.
+/// `id` matches the 7TV paint id so the frontend can join it against the paint
+/// catalog. 7TV itself publishes no per-paint usage data.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SevenTVPaintUsage {
+    pub id: String,
+    /// Users currently wearing the paint.
+    pub user_count: u64,
+    /// Users who own (have been granted) the paint.
+    pub owners: u64,
+}
+
+const PAINT_USAGE_URL: &str = "https://api.potat.app/paints";
+
+/// Fetch global paint usage counts.
+///
+/// Only paints the source has observed are returned (a subset of all 7TV
+/// paints); paints with no entry have no known usage and are sorted last by the
+/// UI. A failure here is non-fatal — the paints tab still works without it.
+#[tauri::command]
+pub async fn get_seventv_paint_usage() -> Result<Vec<SevenTVPaintUsage>, String> {
+    debug!("[7TV] Fetching paint usage counts...");
+
+    let client = crate::services::http::client().clone();
+    let response = client
+        .get(PAINT_USAGE_URL)
+        .send()
+        .await
+        .map_err(|e| format!("Paint usage request failed: {}", e))?;
+
+    if !response.status().is_success() {
+        return Err(format!("Paint usage API error: {}", response.status()));
+    }
+
+    let json: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse paint usage response: {}", e))?;
+
+    let usage: Vec<SevenTVPaintUsage> = json
+        .get("data")
+        .and_then(|arr| arr.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|entry| {
+                    let id = entry.get("id")?.as_str()?.to_string();
+                    let user_count = entry
+                        .get("user_count")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    let owners = entry.get("owners").and_then(|v| v.as_u64()).unwrap_or(0);
+                    Some(SevenTVPaintUsage {
+                        id,
+                        user_count,
+                        owners,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    debug!("[7TV] Fetched usage for {} paints", usage.len());
+    Ok(usage)
+}

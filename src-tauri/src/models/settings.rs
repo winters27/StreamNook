@@ -103,6 +103,85 @@ pub struct ChatDesignSettings {
     pub show_timestamps: bool, // Show timestamp next to each message
     #[serde(default)]
     pub show_timestamp_seconds: bool, // Include seconds in timestamps
+    // The fields below were added to the TS type over time but were missing here,
+    // so they silently failed to persist (serde drops unknown fields on save).
+    // Each carries a serde default matching the frontend default so old
+    // settings.json files (which lack the field) still load.
+    #[serde(default = "default_emote_scale")]
+    pub emote_scale: f64, // Inline emote size multiplier (0.5-3)
+    #[serde(default = "default_emote_margin")]
+    pub emote_margin: f64, // Horizontal margin around emotes, rem
+    #[serde(default = "default_emote_hover_size")]
+    pub emote_hover_size: u32, // Enlarged emote height in hover preview, px
+    #[serde(default = "default_deleted_message_style")]
+    pub deleted_message_style: String, // strikethrough | hidden | dimmed | keep
+    #[serde(default)]
+    pub hide_shared_chat: bool,
+    #[serde(default = "default_true")]
+    pub paint_mentions_in_body: bool,
+    #[serde(default)]
+    pub compact_emote_tooltips: bool,
+    #[serde(default = "default_true")]
+    pub seventv_emote_notices: bool,
+    #[serde(default = "default_true")]
+    pub link_previews: bool,
+    #[serde(default)]
+    pub link_preview_keep_link: bool,
+    #[serde(default = "default_true")]
+    pub shorten_links: bool,
+    #[serde(default)]
+    pub link_preview_trusted_domains: Vec<String>,
+    // Username prefix styling: separator glyph + name emphasis + color source.
+    #[serde(default = "default_username_separator")]
+    pub username_separator: String, // none | colon | dot | arrow | pipe | dash
+    #[serde(default = "default_username_style")]
+    pub username_style: String, // plain | bar | chip | brackets | dot
+    #[serde(default = "default_username_accent_source")]
+    pub username_accent_source: String, // user | theme
+    #[serde(default = "default_true")]
+    pub drag_moderation_enabled: bool, // deprecated: superseded by mod_action_style
+    #[serde(default = "default_mod_action_style")]
+    pub mod_action_style: String, // buttons | drag | both
+    #[serde(default = "default_mod_drag_layout")]
+    pub mod_drag_layout: String, // column | bar
+    #[serde(default = "default_pinned_collapsed_style")]
+    pub pinned_collapsed_style: String, // bar | hidden
+    #[serde(default = "default_mod_pin_style")]
+    pub mod_pin_style: String, // inline | drag | both
+}
+
+fn default_emote_scale() -> f64 {
+    1.0
+}
+fn default_emote_margin() -> f64 {
+    0.125
+}
+fn default_emote_hover_size() -> u32 {
+    96
+}
+fn default_deleted_message_style() -> String {
+    "strikethrough".to_string()
+}
+fn default_username_separator() -> String {
+    "none".to_string()
+}
+fn default_username_style() -> String {
+    "plain".to_string()
+}
+fn default_username_accent_source() -> String {
+    "user".to_string()
+}
+fn default_mod_action_style() -> String {
+    "both".to_string()
+}
+fn default_mod_drag_layout() -> String {
+    "column".to_string()
+}
+fn default_pinned_collapsed_style() -> String {
+    "bar".to_string()
+}
+fn default_mod_pin_style() -> String {
+    "both".to_string()
 }
 
 impl Default for ChatDesignSettings {
@@ -118,6 +197,26 @@ impl Default for ChatDesignSettings {
             mention_animation: true,
             show_timestamps: false,
             show_timestamp_seconds: false,
+            emote_scale: 1.0,
+            emote_margin: 0.125,
+            emote_hover_size: 96,
+            deleted_message_style: "strikethrough".to_string(),
+            hide_shared_chat: false,
+            paint_mentions_in_body: true,
+            compact_emote_tooltips: false,
+            seventv_emote_notices: true,
+            link_previews: true,
+            link_preview_keep_link: false,
+            shorten_links: true,
+            link_preview_trusted_domains: Vec::new(),
+            username_separator: "none".to_string(),
+            username_style: "plain".to_string(),
+            username_accent_source: "user".to_string(),
+            drag_moderation_enabled: true,
+            mod_action_style: "both".to_string(),
+            mod_drag_layout: "column".to_string(),
+            pinned_collapsed_style: "bar".to_string(),
+            mod_pin_style: "both".to_string(),
         }
     }
 }
@@ -311,6 +410,15 @@ pub struct Settings {
     /// its user-assigned chord strings. Absent ids fall back to code defaults.
     #[serde(default)]
     pub keybindings: HashMap<String, Vec<String>>,
+    /// Catch-all for preference groups the frontend manages but this struct does
+    /// not model field-by-field: highlight phrases, custom chat commands,
+    /// moderation prefs, custom themes, the OLED accent, and any future ones.
+    /// Without this, serde silently drops every key it doesn't recognize on save,
+    /// so those settings never reached settings.json and reset on each restart.
+    /// Flattening round-trips them verbatim, so the full frontend Settings shape
+    /// persists across restarts and travels intact in exported backups.
+    #[serde(flatten, default)]
+    pub extra: HashMap<String, serde_json::Value>,
 }
 
 fn default_theme() -> String {
@@ -345,6 +453,7 @@ impl Default for Settings {
             multi_nook_chat_hidden: false,
             show_mod_logs: false,
             keybindings: HashMap::new(),
+            extra: HashMap::new(),
         }
     }
 }
@@ -361,4 +470,50 @@ pub struct AppState {
     /// scraped the cookie via `webview_cookie::read_twitch_web_auth_token`
     /// goes through this service instead.
     pub twitch_auth: TwitchAuthService,
+}
+
+#[cfg(test)]
+mod backup_persistence_tests {
+    use super::*;
+
+    /// Frontend-managed preference groups the struct doesn't model (highlight
+    /// phrases, custom themes, the OLED accent, ...) must survive a save/load
+    /// round-trip through the flattened `extra` map instead of being dropped,
+    /// and must serialize back at the top level (not nested under "extra").
+    #[test]
+    fn unknown_keys_round_trip_through_extra() {
+        let mut value = serde_json::to_value(Settings::default()).expect("serialize defaults");
+        let obj = value.as_object_mut().expect("settings is an object");
+        obj.insert(
+            "chat_highlights".into(),
+            serde_json::json!({ "phrases": ["raid", "gifted"] }),
+        );
+        obj.insert("oled_accent".into(), serde_json::json!("#ff9933"));
+
+        let parsed: Settings = serde_json::from_value(value).expect("deserialize with extras");
+        assert!(parsed.extra.contains_key("chat_highlights"));
+        assert_eq!(
+            parsed.extra.get("oled_accent").and_then(|v| v.as_str()),
+            Some("#ff9933")
+        );
+
+        let reserialized = serde_json::to_value(&parsed).expect("serialize back");
+        let out = reserialized.as_object().expect("object");
+        assert!(out.contains_key("chat_highlights"));
+        assert!(out.contains_key("oled_accent"));
+        assert!(!out.contains_key("extra"));
+    }
+
+    /// A full settings dump with no unrecognized keys round-trips with an empty
+    /// catch-all and emits no stray "extra" wrapper key (backward compatible).
+    #[test]
+    fn default_settings_round_trip_with_empty_extra() {
+        let original = Settings::default();
+        let json = serde_json::to_string(&original).expect("serialize");
+        assert!(!json.contains("\"extra\""));
+
+        let parsed: Settings = serde_json::from_str(&json).expect("deserialize");
+        assert!(parsed.extra.is_empty());
+        assert_eq!(parsed.theme, original.theme);
+    }
 }

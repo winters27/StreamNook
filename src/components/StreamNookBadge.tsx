@@ -7,6 +7,8 @@ import {
   getCosmeticBySlug,
   getCosmeticsVersion,
   subscribeCosmeticsVersion,
+  getAtmospheresVersion,
+  subscribeAtmospheresVersion,
 } from '../services/supabaseService';
 import { COSMETIC_ASSET_BY_SLUG } from './cosmeticAssets';
 import { useAppStore } from '../stores/AppStore';
@@ -402,6 +404,9 @@ export const StreamNookBadge = memo(function StreamNookBadge({
   // the cypher card adopts their profile theme. Reads the already-resolved value
   // (no per-badge fetch); a primitive selector means this only re-renders when
   // THIS user's atmosphere changes.
+  // Re-render once the atmosphere catalog has loaded (or changes) so the
+  // getAtmosphere lookup below resolves to the real definition.
+  useSyncExternalStore(subscribeAtmospheresVersion, getAtmospheresVersion, getAtmospheresVersion);
   const atmosphereId = useChatUserStore((s) => (userId ? s.users.get(userId)?.atmosphereId ?? null : null));
   const atmosphere = atmosphereId ? getAtmosphere(atmosphereId) : null;
 
@@ -415,7 +420,9 @@ export const StreamNookBadge = memo(function StreamNookBadge({
       <>
         {atmosphere && (
           <div className="absolute inset-0 overflow-hidden rounded-2xl">
-            <AtmosphereBackground atm={atmosphere} variant="profile" />
+            {/* Frosted so the badge card's number + label stay readable over a
+                busy image atmosphere (the big profile stays sharp). */}
+            <AtmosphereBackground atm={atmosphere} variant="profile" blur />
           </div>
         )}
         {tier.auraClassName && <div className={tier.auraClassName} />}

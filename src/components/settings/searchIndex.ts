@@ -50,6 +50,12 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
   // === Player ===
   {
     tab: 'Player',
+    section: 'Player Overlay Buttons',
+    title: 'Player Overlay Buttons',
+    description: 'Choose which action buttons (follow, subscribe, clip, clips & vods, multinook, refresh, close) appear in the top-right of the video player.'
+  },
+  {
+    tab: 'Player',
     section: 'Auto-Switch',
     sectionId: 'settings-section-auto-switch',
     title: 'Auto-Switch',
@@ -175,6 +181,26 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
     description: 'Initial volume level when starting playback'
   },
 
+  // === Theme ===
+  {
+    tab: 'Theme',
+    section: 'Theme',
+    title: 'Theme',
+    description: 'Pick a color theme or build your own. Themes set the palette only; font and glassiness are chosen separately, so you can use any font with any theme.'
+  },
+  {
+    tab: 'Theme',
+    section: 'Glassiness',
+    title: 'Glassiness',
+    description: 'How see-through panels are, for every theme. 100% is the signature frosted look; lower makes panels more solid.'
+  },
+  {
+    tab: 'Theme',
+    section: 'Font',
+    title: 'Font',
+    description: 'Interface font, independent of the theme. Choose any font with any theme. Satoshi, Twitch (Inter), Geist, Manrope, Outfit, Space Grotesk, Serif, and System.'
+  },
+
   // === Chat ===
   {
     tab: 'Chat',
@@ -241,6 +267,48 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
     section: 'Chat Design',
     title: 'Include Seconds',
     description: 'Show seconds in timestamps (e.g., 7:42:30 PM instead of 7:42 PM)'
+  },
+  {
+    tab: 'Chat',
+    section: 'Chat Design',
+    title: 'Collapsed Pinned Message',
+    description: 'When a pinned message is collapsed, shrink it to a thin one-line bar (sender + truncated text) instead of hiding it entirely.'
+  },
+  {
+    tab: 'Chat',
+    section: 'Chat Design',
+    title: 'Name Separator',
+    description: 'Glyph between the username and the message: colon, dot, arrow, pipe, or dash. Makes the name read as a prefix (name: message).'
+  },
+  {
+    tab: 'Chat',
+    section: 'Chat Design',
+    title: 'Name Style',
+    description: 'Make the username stand out as a prefix: accent bar, frosted chip or tag, brackets [name], or a small color dot.'
+  },
+  {
+    tab: 'Chat',
+    section: 'Chat Design',
+    title: 'Prefix Color',
+    description: "Color for the username separator and name style: the chatter's own color, or your theme accent."
+  },
+  {
+    tab: 'Moderation',
+    section: 'Moderation Actions',
+    title: 'Moderation Actions',
+    description: 'Choose how to moderate: classic click buttons, drag a chat message into an action bucket (ban/timeout/delete/whisper/profile), or both. Also called Action Style.'
+  },
+  {
+    tab: 'Moderation',
+    section: 'Moderation Actions',
+    title: 'Drag Style',
+    description: 'Where the action buckets appear: a vertical bucket column beside chat (bigger tiles, kept above the player controls) or a compact bucket cluster above the message.'
+  },
+  {
+    tab: 'Moderation',
+    section: 'Moderation Actions',
+    title: 'Pin Action',
+    description: 'The inline Pin button next to Copy is always available to mods; this toggles whether a Pin tile also appears in the drag-to-moderate gesture.'
   },
   {
     tab: 'Chat',
@@ -323,6 +391,38 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
     section: 'User Overrides',
     title: 'User Overrides',
     description: 'Nicknames you\'ve set for individual chatters. Only visible to you. Set or clear a nickname from the user\'s profile card in chat.'
+  },
+
+  // === Link Previews (Chat) ===
+  {
+    tab: 'Chat',
+    section: 'Link Previews',
+    title: 'Link Previews',
+    description: 'Show rich preview cards when links are posted in chat.'
+  },
+  {
+    tab: 'Chat',
+    section: 'Link Previews',
+    title: 'Preview Mode',
+    description: 'Off keeps links as plain text. Card + Link shows the preview and keeps the link in chat. Clean shows only the preview card and hides the link.'
+  },
+  {
+    tab: 'Chat',
+    section: 'Link Previews',
+    title: 'Load Preview Button',
+    description: 'Untrusted links show a Load preview button before the preview card is fetched. Trusted sites expand automatically.'
+  },
+  {
+    tab: 'Chat',
+    section: 'Link Previews',
+    title: 'Shorten Links',
+    description: 'Display links as a clean compact label (site plus a short path) instead of the full raw URL.'
+  },
+  {
+    tab: 'Chat',
+    section: 'Link Previews',
+    title: 'Trusted Sources',
+    description: 'Sites that expand into a preview automatically. Add or remove your own trusted sites.'
   },
 
   // === Moderation ===
@@ -581,5 +681,31 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
     section: 'Community Discord',
     title: 'Join the Discord',
     description: 'Open the StreamNook community Discord invite'
+  },
+
+  // === Backup ===
+  {
+    tab: 'Backup',
+    section: 'Backup and Restore',
+    title: 'Backup and Restore',
+    description: 'Export your settings to a file, or import a saved backup to restore them.'
+  },
+  {
+    tab: 'Backup',
+    section: 'Backup and Restore',
+    title: 'Export Settings',
+    description: 'Save a backup of all your preferences to a file you choose.'
+  },
+  {
+    tab: 'Backup',
+    section: 'Backup and Restore',
+    title: 'Import Settings',
+    description: 'Restore your preferences from a previously exported backup file.'
+  },
+  {
+    tab: 'Backup',
+    section: 'Settings File',
+    title: 'Open Settings Folder',
+    description: 'Open the folder on this PC where StreamNook stores settings.json.'
   },
 ];

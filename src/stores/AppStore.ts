@@ -1,10 +1,10 @@
 import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
+import { listen, emit } from '@tauri-apps/api/event';
 import type { Settings, TwitchUser, TwitchStream, UserInfo, TwitchCategory, HypeTrainData, TwitchVideo, ModLogEvent } from '../types';
 import { trackActivity } from '../services/logService';
 import { Logger, setDiagnosticsEnabled } from '../utils/logger';
-// Direct import (not via the keybindings index) to avoid a store↔commands cycle.
+// Direct import (not via the keybindings index) to avoid a storecommands cycle.
 import { getPlayerControls } from '../keybindings/playerControls';
 import { qualitiesEquivalent } from '../utils/quality';
 import { upsertUser, grantActiveSeasonalAccolades, grantCakeDayAccolade } from '../services/supabaseService';
@@ -61,7 +61,7 @@ export interface Toast {
   createdAt: number;
 }
 
-export type SettingsTab = 'Profile' | 'Interface' | 'Player' | 'Chat' | 'Moderation' | 'Theme' | 'Integrations' | 'Notifications' | 'Cache' | 'Command Palette' | 'Keybindings' | 'Support' | "What's New" | 'Analytics';
+export type SettingsTab = 'Profile' | 'Interface' | 'Player' | 'Chat' | 'Moderation' | 'Theme' | 'Integrations' | 'Notifications' | 'Cache' | 'Command Palette' | 'Keybindings' | 'Backup' | 'Support' | "What's New" | 'Analytics';
 
 export type HomeTab = 'following' | 'recommended' | 'browse' | 'search' | 'category';
 
@@ -227,6 +227,15 @@ interface AppState {
   // BetterTTV, Chat Clients): open the overlay on `tab` and filter to `query`
   // (a badge title) so the clicked badge surfaces. Set by openBadgesWithTarget.
   badgesOverlayInitialTarget: { tab: string; query?: string } | null;
+  // 7TV "Emote Sets" editor dashboard. Optional initial channel (by Twitch id)
+  // and tab so a contextual launch (e.g. from the moderator menu) can open it
+  // pre-selected.
+  showEmoteSetsOverlay: boolean;
+  emoteSetsOverlayInitialTwitchId: string | null;
+  emoteSetsOverlayInitialTab: 'emotes' | 'sets' | 'editors' | null;
+  // When set, the 7TV Emotes overlay shows a focused detail for this emote with
+  // a cross-channel "add to a set" picker. Set by clicking an emote in chat.
+  emoteSpotlight: { id: string; name: string } | null;
   showWhispersOverlay: boolean;
   showDashboardOverlay: boolean;
   whisperTargetUser: { id: string; login: string; display_name: string; profile_image_url?: string } | null;
@@ -254,6 +263,12 @@ interface AppState {
   homeActiveTab: HomeTab;
   homeSelectedCategory: TwitchCategory | null;
   streamOriginCategory: TwitchCategory | null;
+  /**
+   * Tab the most recent search was launched from. Used to send the user back to
+   * a real page (instead of an empty "search" view) after they exit a stream
+   * that was opened directly from search results.
+   */
+  searchReturnTab: HomeTab;
   homeCategoryTab: 'live' | 'clips' | 'videos';
   
   // Media sorting and filtering state
@@ -282,7 +297,7 @@ interface AppState {
   activeHypeTrainChannels: Map<string, { level: number; isGolden: boolean }>;
   refreshHypeTrainStatuses: (channelIds: string[]) => Promise<void>;
   handleStreamOffline: () => Promise<void>;
-  addToast: (message: string | React.ReactNode, type: 'info' | 'success' | 'warning' | 'error' | 'live' | 'channel_points', action?: { label: string; onClick: () => void }) => void;
+  addToast: (message: string | React.ReactNode, type: 'info' | 'success' | 'warning' | 'error' | 'live' | 'channel_points', action?: { label: string; onClick: () => void }, options?: { skipIsland?: boolean; alwaysShow?: boolean }) => void;
   removeToast: (id: number) => void;
   loadSettings: () => Promise<void>;
   updateSettings: (newSettings: Settings) => Promise<void>;
@@ -315,6 +330,10 @@ interface AppState {
   openBadgesWithBadge: (badgeId: string) => void;
   openBadgesOnStreamNook: () => void;
   openBadgesWithTarget: (target: { tab: string; query?: string }) => void;
+  setShowEmoteSetsOverlay: (show: boolean) => void;
+  openEmoteSets: (opts?: { twitchId?: string; tab?: 'emotes' | 'sets' | 'editors' }) => void;
+  openEmoteSpotlight: (emoteId: string, name: string) => void;
+  setEmoteSpotlight: (e: { id: string; name: string } | null) => void;
   setShowWhispersOverlay: (show: boolean) => void;
   setShowDashboardOverlay: (show: boolean) => void;
   openWhisperWithUser: (user: { id: string; login: string; display_name: string; profile_image_url?: string }) => void;
@@ -337,6 +356,7 @@ interface AppState {
   setHomeActiveTab: (tab: HomeTab) => void;
   setHomeSelectedCategory: (category: TwitchCategory | null) => void;
   setStreamOriginCategory: (category: TwitchCategory | null) => void;
+  setSearchReturnTab: (tab: HomeTab) => void;
   setHomeCategoryTab: (tab: 'live' | 'clips' | 'videos') => void;
   
   // Category cache actions
@@ -420,6 +440,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   badgesOverlayInitialBadgeId: null,
   badgesOverlayInitialStreamNook: false,
   badgesOverlayInitialTarget: null,
+  showEmoteSetsOverlay: false,
+  emoteSetsOverlayInitialTwitchId: null,
+  emoteSetsOverlayInitialTab: null,
+  emoteSpotlight: null,
   showWhispersOverlay: false,
   showDashboardOverlay: false,
   whisperTargetUser: null,
@@ -442,6 +466,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   homeActiveTab: 'following' as HomeTab,
   homeSelectedCategory: null,
   streamOriginCategory: null,
+  searchReturnTab: 'following' as HomeTab,
   homeCategoryTab: 'live' as 'live' | 'clips' | 'videos',
 
   // Media sorting and filtering state
@@ -820,7 +845,45 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  addToast: (message, type, action) => {
+  addToast: (message, type, action, options) => {
+    const ln = get().settings?.live_notifications;
+    // error / warning always surface; so do callers that explicitly opt in via
+    // { alwaysShow: true } — used for accolade / achievement unlocks (incl. the
+    // hidden grind ones), which are celebratory milestones that should land
+    // even when the user has muted routine notifications.
+    const alwaysShow = type === 'error' || type === 'warning' || options?.alwaysShow === true;
+
+    // Mirror action feedback into the Dynamic Island: these are notifications
+    // too, so they should leave a record in the notification center even when
+    // the toast surface is muted. Gated by the same island toggles the passive
+    // notifications use. The passive callers (live/whisper/drop/badge...) pass
+    // { skipIsland: true } because they already register their own island entry,
+    // and the rich JSX toasts can't ride the (string-only) event bus anyway, so
+    // this only fires for the ~80 string action toasts.
+    if (!options?.skipIsland && typeof message === 'string') {
+      const islandOn = !ln || (ln.enabled !== false && ln.use_dynamic_island !== false);
+      if (islandOn) {
+        emit('action-notification', { text: message, level: type }).catch(() => {});
+      }
+    }
+
+    // Gate the minor "action feedback" toasts (copy, follow, mod result,
+    // quality change, login, etc.) behind the user's notification settings.
+    // A muted user should not get popped at for routine confirmations.
+    //   - error / warning: ALWAYS surface. A failed or blocked action must
+    //     never be silently swallowed, regardless of the toggles.
+    //   - everything else (success / info / live / channel_points): only when
+    //     notifications are enabled AND the Toast surface is on.
+    // The passive notifications (went-live, whisper, drop, badge...) already
+    // pass this gate, because DynamicIsland only routes them here when those
+    // same toggles are on, so this is a no-op for them and a real gate for the
+    // ~80 direct action callers that previously ignored the settings entirely.
+    if (!alwaysShow) {
+      if (ln && (ln.enabled === false || ln.use_toast === false)) {
+        return;
+      }
+    }
+
     const id = Date.now() + Math.random();
     const createdAt = Date.now();
     // Live toasts get longer duration (8 seconds), others get 5 seconds
@@ -854,6 +917,13 @@ export const useAppStore = create<AppState>((set, get) => ({
     // Ensure favorite_streamers has a default if not present
     if (!settings.favorite_streamers) {
       settings.favorite_streamers = [];
+    }
+    // Migrate the retired second OLED theme: it was a fixed-orange variant of the
+    // now-unified OLED theme. Move those users onto OLED with the orange accent
+    // preserved, so their look is unchanged.
+    if (settings.theme === 'prince0fdubai-oled-v2') {
+      settings.theme = 'prince0fdubai-oled';
+      if (!settings.oled_accent) settings.oled_accent = '#ff9933';
     }
     const state = get();
     if (state.isTheaterMode) {
@@ -1191,7 +1261,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         // Stop drops monitoring
         try {
           await invoke('stop_drops_monitoring');
-          Logger.debug('🛑 Stopped drops monitoring');
+          Logger.debug('Stopped drops monitoring');
         } catch (e) {
           Logger.warn('Could not stop drops monitoring:', e);
         }
@@ -1211,7 +1281,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         // Disconnect EventSub
         try {
           await invoke('disconnect_eventsub');
-          Logger.debug('🛑 Disconnected EventSub');
+          Logger.debug('Disconnected EventSub');
         } catch (e) {
           Logger.warn('Could not disconnect EventSub:', e);
         }
@@ -1470,7 +1540,7 @@ export const useAppStore = create<AppState>((set, get) => ({
             channelId,
             channelName
           });
-          Logger.debug('🎮 Started drops monitoring for', channelName);
+          Logger.debug('Started drops monitoring for', channelName);
           
           invoke('register_active_channel', { channelId }).catch(() => {});
 
@@ -1483,7 +1553,7 @@ export const useAppStore = create<AppState>((set, get) => ({
                 channelId,
                 channelLogin: channelName
               });
-              Logger.debug('🔒 Auto-reserved watch token for', channelName);
+              Logger.debug('Auto-reserved watch token for', channelName);
             }
           } catch (reserveError) {
             Logger.warn('Could not auto-reserve watch token:', reserveError);
@@ -1562,7 +1632,7 @@ export const useAppStore = create<AppState>((set, get) => ({
             set({ lastRaidRedirectTime: Date.now() });
 
             // Show notification toast
-            get().addToast(`🎉 Raid starting! Joining ${raidData.to_broadcaster_user_login}...`, 'info');
+            get().addToast(`Raid starting! Joining ${raidData.to_broadcaster_user_login}...`, 'info');
 
             // Small delay to let user see the notification
             await new Promise(resolve => setTimeout(resolve, 1500));
@@ -1723,7 +1793,7 @@ export const useAppStore = create<AppState>((set, get) => ({
               if (status.is_active) {
                 // Check for level up
                 if (status.level > hypeTrainPreviousLevel && hypeTrainPreviousLevel > 0) {
-                  Logger.debug(`[HypeTrain GQL] 🚂 Level UP! ${hypeTrainPreviousLevel} → ${status.level}`);
+                  Logger.debug(`[HypeTrain GQL] Level UP! ${hypeTrainPreviousLevel} → ${status.level}`);
                 }
                 hypeTrainPreviousLevel = status.level;
                 
@@ -1746,7 +1816,7 @@ export const useAppStore = create<AppState>((set, get) => ({
               } else {
                 // Only clear if we previously had a hype train
                 if (get().currentHypeTrain !== null) {
-                  Logger.debug('[HypeTrain GQL] 🚂 Hype Train ended');
+                  Logger.debug('[HypeTrain GQL] Hype Train ended');
                   hypeTrainPreviousLevel = 0;
                   set({ currentHypeTrain: null });
                 }
@@ -1773,7 +1843,7 @@ export const useAppStore = create<AppState>((set, get) => ({
             }
           });
 
-          Logger.debug(`🔔 Connected to EventSub (channel: ${info.user_name})`);
+          Logger.debug(`Connected to EventSub (channel: ${info.user_name})`);
         } catch (e) {
           Logger.warn('[EventSub] Could not connect:', e);
           // Non-critical, stream can still work
@@ -1967,6 +2037,30 @@ export const useAppStore = create<AppState>((set, get) => ({
     trackActivity('Opened Badges with Target');
     set({ showBadgesOverlay: true, badgesOverlayInitialTarget: target, badgesOverlayInitialPaintId: null, badgesOverlayInitialBadgeId: null, badgesOverlayInitialStreamNook: false });
   },
+  setShowEmoteSetsOverlay: (show: boolean) => {
+    if (show) trackActivity('Opened Emote Sets');
+    set({
+      showEmoteSetsOverlay: show,
+      emoteSetsOverlayInitialTwitchId: show ? get().emoteSetsOverlayInitialTwitchId : null,
+      emoteSetsOverlayInitialTab: show ? get().emoteSetsOverlayInitialTab : null,
+      emoteSpotlight: show ? get().emoteSpotlight : null,
+    });
+  },
+  openEmoteSets: (opts?: { twitchId?: string; tab?: 'emotes' | 'sets' | 'editors' }) => {
+    trackActivity('Opened Emote Sets');
+    set({
+      showEmoteSetsOverlay: true,
+      emoteSetsOverlayInitialTwitchId: opts?.twitchId ?? null,
+      emoteSetsOverlayInitialTab: opts?.tab ?? null,
+    });
+  },
+  openEmoteSpotlight: (emoteId: string, name: string) => {
+    trackActivity('Opened 7TV emote spotlight');
+    // Opens ONLY the lightweight quick-add modal, not the full overlay. The
+    // modal has its own "Open in 7TV Emote Manager" button to escalate.
+    set({ emoteSpotlight: { id: emoteId, name } });
+  },
+  setEmoteSpotlight: (e: { id: string; name: string } | null) => set({ emoteSpotlight: e }),
   setShowWhispersOverlay: (show: boolean) => {
     if (show) trackActivity('Opened Whispers');
     set({ showWhispersOverlay: show });
@@ -2379,6 +2473,10 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setStreamOriginCategory: (category: TwitchCategory | null) => {
     set({ streamOriginCategory: category });
+  },
+
+  setSearchReturnTab: (tab: HomeTab) => {
+    set({ searchReturnTab: tab });
   },
 
   setHomeCategoryTab: (tab: 'live' | 'clips' | 'videos') => {

@@ -331,7 +331,12 @@ pub async fn get_badges_missing_metadata() -> Result<Vec<(String, String)>, Stri
                     // Stale entries scraped before the timezone-converter fix have a date
                     // range in human form but no ISO timestamp, which the UI can't classify.
                     let more_info = e.data.get("more_info").and_then(|v| v.as_str());
+                    // Entries scraped before the source served usage figures have a null
+                    // usage_stats, which leaves the most/least-used sort with nothing to
+                    // order by. Re-scrape those to populate the count.
+                    let usage_stats = e.data.get("usage_stats").and_then(|v| v.as_str());
                     crate::commands::badge_metadata::is_more_info_stale(more_info)
+                        || crate::commands::badge_metadata::is_usage_stats_missing(usage_stats)
                 }
             };
             if needs_refetch {

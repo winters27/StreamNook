@@ -224,7 +224,7 @@ export default function StreamerMedia({
     return (
       <div
         key={clip.id}
-        className="glass-panel group relative cursor-pointer overflow-hidden transition-all duration-200 hover:bg-glass-hover"
+        className="glass-panel media-card group relative cursor-pointer overflow-hidden transition-all duration-200 hover:bg-glass-hover"
         onClick={() => openClipModal(clip.url, clip)}
       >
         <div className="relative overflow-hidden rounded">
@@ -268,7 +268,7 @@ export default function StreamerMedia({
   const renderVideo = (video: TwitchVideo) => (
     <div
       key={video.id}
-      className="glass-panel group relative cursor-pointer overflow-hidden transition-all duration-200 hover:bg-glass-hover"
+      className="glass-panel media-card group relative cursor-pointer overflow-hidden transition-all duration-200 hover:bg-glass-hover"
       onClick={() => {
         setProfileModalUser(null);
         playMedia('video', video.url, video);

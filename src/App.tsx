@@ -3,9 +3,11 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { useAppStore, type WhisperImportProgress } from './stores/AppStore';
 import { useContextMenuStore } from './stores/contextMenuStore';
 import { listenForSettingsUpdates } from './utils/settingsBroadcast';
-import { trackPresence, isSupabaseConfigured, incrementStat, incrementChannelWatch, subscribeToStreamNookRegistry, subscribeToCosmeticsRegistry } from './services/supabaseService';
+import { trackPresence, isSupabaseConfigured, incrementStat, incrementChannelWatch, subscribeToStreamNookRegistry, subscribeToCosmeticsRegistry, subscribeToAtmospheresRegistry } from './services/supabaseService';
 import TitleBar from './components/TitleBar';
+import DynamicIsland from './components/DynamicIsland';
 import VideoPlayer from './components/VideoPlayer';
+import ChannelAboutReveal from './components/ChannelAboutReveal';
 import ChatWidget from './components/ChatWidget';
 import { ModLogsWidget } from './components/chat/ModLogsWidget';
 import Home from './components/Home';
@@ -26,6 +28,8 @@ import { Tooltip } from './components/ui/Tooltip';
 import { SearchProfileModal } from './components/SearchProfileModal';
 import DropsOverlay from './components/DropsOverlay';
 import BadgesOverlay from './components/BadgesOverlay';
+import EmoteSetsOverlay from './components/EmoteSetsOverlay';
+import EmoteSpotlight from './components/EmoteSpotlight';
 import BadgeDetailOverlay from './components/BadgeDetailOverlay';
 import ChangelogOverlay from './components/ChangelogOverlay';
 import WhispersWidget from './components/WhispersWidget';
@@ -35,12 +39,13 @@ import ClipModal from './components/ClipModal';
 import ClipEditor from './components/ClipEditor';
 import ErrorBoundary from './components/ErrorBoundary';
 import { StreamContextMenu } from './components/StreamContextMenu';
+import ModerationDragLayer from './components/chat/ModerationDragLayer';
 import { listen } from '@tauri-apps/api/event';
 import { applyModerateEvent } from './utils/applyModerateEvent';
 import { handleSeventvEmoteSetUpdate, handleSeventvCosmeticUpdate, type EmoteSetUpdatePayload, type CosmeticUpdatePayload } from './services/seventvEventApi';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
-import { getThemeById, applyTheme, DEFAULT_THEME_ID, getThemeByIdWithCustom, applyGlassStrength, DEFAULT_GLASS_TRANSPARENCY, applyFont, DEFAULT_FONT_ID } from './themes';
+import { getThemeById, applyTheme, DEFAULT_THEME_ID, getThemeByIdWithCustom, applyGlassStrength, DEFAULT_GLASS_TRANSPARENCY, applyFont, DEFAULT_FONT_ID, OLED_THEME_ID, getOledTheme } from './themes';
 import { getSelectedCompactViewPreset } from './constants/compactViewPresets';
 
 import { Logger } from './utils/logger';
@@ -372,7 +377,8 @@ function App() {
     if (!isSupabaseConfigured()) return;
     const cleanupRegistry = subscribeToStreamNookRegistry();
     const cleanupCosmetics = subscribeToCosmeticsRegistry();
-    return () => { cleanupRegistry?.(); cleanupCosmetics?.(); };
+    const cleanupAtmospheres = subscribeToAtmospheresRegistry();
+    return () => { cleanupRegistry?.(); cleanupCosmetics?.(); cleanupAtmospheres?.(); };
   }, []);
 
   useEffect(() => {
@@ -630,7 +636,12 @@ function App() {
   useEffect(() => {
     const themeId = settings.theme || DEFAULT_THEME_ID;
     const customThemes = settings.custom_themes || [];
-    const theme = getThemeByIdWithCustom(themeId, customThemes) || getThemeById(DEFAULT_THEME_ID);
+    // OLED is the one configurable signature theme: its accent comes from the
+    // saved oled_accent, so resolve it through getOledTheme rather than the
+    // static registry entry.
+    const theme = themeId === OLED_THEME_ID
+      ? getOledTheme(settings.oled_accent)
+      : (getThemeByIdWithCustom(themeId, customThemes) || getThemeById(DEFAULT_THEME_ID));
     if (theme) {
       Logger.debug('[App] Applying theme:', theme.name);
       applyTheme(theme);
@@ -640,7 +651,7 @@ function App() {
     applyGlassStrength(settings.glass_transparency ?? DEFAULT_GLASS_TRANSPARENCY);
     // Interface font is also palette-independent; re-assert alongside the theme.
     applyFont(settings.font ?? DEFAULT_FONT_ID);
-  }, [settings.theme, settings.custom_themes, settings.glass_transparency, settings.font]);
+  }, [settings.theme, settings.custom_themes, settings.glass_transparency, settings.font, settings.oled_accent]);
 
   // Check if we need to show the first-time setup wizard. Drive purely off
   // setup_complete: if it's false, show the wizard. (Gate on `quality` only as a
@@ -1296,6 +1307,11 @@ function App() {
       >
         <TitleBar />
       </ErrorBoundary>
+      {/* Dynamic Island lives at the app root (not inside the title bar) so it can
+          lift above the Settings blur overlay; it pins itself to the top center. */}
+      <ErrorBoundary componentName="DynamicIsland" fallback={null}>
+        <DynamicIsland />
+      </ErrorBoundary>
       <ErrorBoundary
         componentName="App"
         reportToLogService
@@ -1384,7 +1400,10 @@ function App() {
                   ref={containerRef}
                   className={`flex flex-1 h-full overflow-hidden relative ${chatPlacement === 'bottom' ? 'flex-col' : 'flex-row'}`}
                 >
-                  <div className="flex-1 relative overflow-hidden bg-background">
+                  <ChannelAboutReveal
+                    enabled={!isMultiNookActive && (currentMediaType === 'live' || currentMediaType === 'video' || currentMediaType === 'offline_chat') && !!currentStream?.user_login}
+                    channelLogin={currentStream?.user_login}
+                  >
                     <AnimatePresence mode="wait">
                       {isMultiNookActive ? (
                         <motion.div 
@@ -1427,7 +1446,7 @@ function App() {
                         </motion.div>
                       )}
                     </AnimatePresence>
-                  </div>
+                  </ChannelAboutReveal>
                   {/* Chat — gated on whether this channel is currently owned
                       by a StreamNook MultiChat popout. When it is, the popout
                       becomes the sole chat surface and we collapse the in-app
@@ -1471,6 +1490,7 @@ function App() {
                         </div>
                       </Tooltip>
                       <div
+                        data-chat-panel="true"
                         className="flex-shrink-0 flex flex-col h-full overflow-hidden bg-background"
                         style={{
                           [chatPlacement === 'right' ? 'width' : 'height']: `${chatSize}px`
@@ -1540,6 +1560,8 @@ function App() {
       <SettingsDialog />
       <PublicProfileOverlay />
       <DropsOverlay />
+      <EmoteSetsOverlay />
+      <EmoteSpotlight />
 
       {profileModalUser && (
         <SearchProfileModal
@@ -1591,6 +1613,7 @@ function App() {
       <TooltipManager />
       <CommandPalette />
       <StreamContextMenu />
+      <ModerationDragLayer />
       <ClipModal />
       <ClipEditor />
     </div>

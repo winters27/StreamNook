@@ -173,10 +173,16 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
   
   // 7TV sort state
   const [seventvBadgeSortBy, setSeventvBadgeSortBy] = useState<'newest' | 'oldest' | 'name'>('newest');
-  const [seventvPaintSortBy, setSeventvPaintSortBy] = useState<'newest' | 'oldest' | 'name'>('newest');
-  
+  const [seventvPaintSortBy, setSeventvPaintSortBy] = useState<'newest' | 'oldest' | 'name' | 'most-used' | 'least-used'>('newest');
+
   // 7TV paint filter state
   const [seventvPaintFilter, setSeventvPaintFilter] = useState<'all' | 'animated' | 'static'>('all');
+
+  // Global paint usage counts (paint id -> users currently wearing it). 7TV
+  // exposes no usage data, so this comes from a separate stats source and only
+  // covers paints it has observed; paints absent from the map have unknown usage
+  // and are ordered last by the most/least-used sorts.
+  const [paintUsage, setPaintUsage] = useState<Map<string, number>>(new Map());
   
   // Selected 7TV item for detail view
   const [selectedSeventvBadge, setSelectedSeventvBadge] = useState<SevenTVGlobalBadge | null>(null);
@@ -459,6 +465,22 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
     }
   };
 
+  // Load global paint usage counts so the paints tab can sort by most/least
+  // used. Best-effort: if it fails the tab still works, the usage sorts just
+  // fall back to ordering everything as unknown.
+  const loadSeventvPaintUsage = async () => {
+    if (paintUsage.size > 0) return; // Already loaded
+    try {
+      const usage = await invoke<{ id: string; user_count: number }[]>('get_seventv_paint_usage');
+      const map = new Map<string, number>();
+      usage.forEach(u => map.set(u.id, u.user_count));
+      setPaintUsage(map);
+      Logger.debug(`[Attainables] Loaded usage counts for ${map.size} paints`);
+    } catch (err) {
+      Logger.error('[Attainables] Failed to load paint usage counts:', err);
+    }
+  };
+
   // Load chat-client (third-party) badges when tab is activated
   const loadChatClientBadges = async () => {
     if (chatClientBadges.length > 0 || loadingChatClientBadges) return;
@@ -486,6 +508,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
       loadSeventvBadges();
     } else if (activeTab === '7tv-paints') {
       loadSeventvPaints();
+      loadSeventvPaintUsage();
     } else if (activeTab === 'chat-clients') {
       loadChatClientBadges();
     }
@@ -670,11 +693,27 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
           return getUlidTimestamp(a.id) - getUlidTimestamp(b.id);
         case 'name':
           return a.name.localeCompare(b.name);
+        case 'most-used':
+        case 'least-used': {
+          // Usage data only covers a subset of paints; the rest have unknown
+          // usage and always trail the ranked ones (so "least used" surfaces the
+          // genuinely least-worn tracked paints, not a wall of unknowns).
+          const aHas = paintUsage.has(a.id);
+          const bHas = paintUsage.has(b.id);
+          if (aHas !== bHas) return aHas ? -1 : 1;
+          if (!aHas) return getUlidTimestamp(b.id) - getUlidTimestamp(a.id);
+          const aUsage = paintUsage.get(a.id)!;
+          const bUsage = paintUsage.get(b.id)!;
+          if (aUsage !== bUsage) {
+            return seventvPaintSortBy === 'most-used' ? bUsage - aUsage : aUsage - bUsage;
+          }
+          return a.name.localeCompare(b.name);
+        }
         default:
           return 0;
       }
     });
-  }, [seventvPaints, seventvPaintSortBy, seventvPaintFilter, searchQuery]);
+  }, [seventvPaints, seventvPaintSortBy, seventvPaintFilter, searchQuery, paintUsage]);
 
   // Badge set IDs that are NOT true global collectibles and shouldn't count towards collection
   // These badges are either: channel-specific, role-based, paid-only, or not earnable by regular users
@@ -1830,10 +1869,28 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
   // here). Also lets a profile badge click deep-link to a specific Twitch badge
   // by setting the query to its title.
   const displayedTwitchBadges = useMemo(() => {
+    let list = sortedBadges;
+    // "Available Now" / "Coming Soon" are filters, not just orderings: narrow the
+    // list to matching badges rather than floating them above everything else.
+    if (sortBy === 'available') {
+      list = list.filter(isBadgeAvailable);
+    } else if (sortBy === 'coming-soon') {
+      list = list.filter(isBadgeComingSoon);
+    }
     const q = searchQuery.trim().toLowerCase();
-    if (!q) return sortedBadges;
-    return sortedBadges.filter(b => (b.title || '').toLowerCase().includes(q));
-  }, [sortedBadges, searchQuery]);
+    if (q) {
+      list = list.filter(b => (b.title || '').toLowerCase().includes(q));
+    }
+    return list;
+  }, [sortedBadges, sortBy, searchQuery]);
+
+  // Message for the Twitch tab when the active view has no badges. The
+  // status filters can legitimately match nothing (e.g. no badge is currently
+  // mid-event), so explain that rather than implying the catalog is empty.
+  const twitchEmptyMessage =
+    sortBy === 'available' ? 'No badges are available to collect right now.' :
+    sortBy === 'coming-soon' ? 'No upcoming badges have been announced yet.' :
+    'No badges found';
 
   return (
     <motion.div 
@@ -2063,13 +2120,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
                 </div>
               )}
 
-              {!loading && !error && displayedTwitchBadges.length === 0 && (
-                <div className="flex items-center justify-center h-full">
-                  <p className="text-textSecondary">No badges found</p>
-                </div>
-              )}
-
-          {!loading && !error && displayedTwitchBadges.length > 0 && (
+          {!loading && !error && (
             <>
               {/* Sort Controls */}
               <div className="flex items-center gap-3 mb-6">
@@ -2167,6 +2218,12 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
                   </div>
                 )}
               </div>
+
+              {displayedTwitchBadges.length === 0 && (
+                <div className="flex items-center justify-center py-20">
+                  <p className="text-textSecondary">{twitchEmptyMessage}</p>
+                </div>
+              )}
 
               {/* Badge Grid */}
               <div className="grid grid-cols-8 gap-6">
@@ -2403,14 +2460,34 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
                       <button
                         onClick={() => setSeventvPaintSortBy('name')}
                         className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
-                          seventvPaintSortBy === 'name' 
-                            ? 'glass-button text-[#29b6f6] shadow-[0_0_10px_rgba(41,182,246,0.3)]' 
+                          seventvPaintSortBy === 'name'
+                            ? 'glass-button text-[#29b6f6] shadow-[0_0_10px_rgba(41,182,246,0.3)]'
                             : 'hover:bg-white/5 text-textSecondary hover:text-white'
                         }`}
                       >
                         A-Z
                       </button>
-                      
+                      <button
+                        onClick={() => setSeventvPaintSortBy('most-used')}
+                        className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
+                          seventvPaintSortBy === 'most-used'
+                            ? 'glass-button text-[#29b6f6] shadow-[0_0_10px_rgba(41,182,246,0.3)]'
+                            : 'hover:bg-white/5 text-textSecondary hover:text-white'
+                        }`}
+                      >
+                        Most Used
+                      </button>
+                      <button
+                        onClick={() => setSeventvPaintSortBy('least-used')}
+                        className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
+                          seventvPaintSortBy === 'least-used'
+                            ? 'glass-button text-[#29b6f6] shadow-[0_0_10px_rgba(41,182,246,0.3)]'
+                            : 'hover:bg-white/5 text-textSecondary hover:text-white'
+                        }`}
+                      >
+                        Least Used
+                      </button>
+
                       {/* Separator */}
                       <div className="w-px h-4 bg-borderSubtle mx-1" />
                       
@@ -2929,7 +3006,17 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
                 <span className="text-xs text-textSecondary uppercase tracking-wider">Added</span>
                 <p className="text-textPrimary mt-1">{getFormattedCreationDate(selectedSeventvPaint.id)}</p>
               </div>
-              
+
+              {/* Usage */}
+              {paintUsage.has(selectedSeventvPaint.id) && (
+                <div>
+                  <span className="text-xs text-textSecondary uppercase tracking-wider">Usage</span>
+                  <p className="text-textPrimary mt-1">
+                    Worn by {paintUsage.get(selectedSeventvPaint.id)!.toLocaleString()} users
+                  </p>
+                </div>
+              )}
+
               {selectedSeventvPaint.tags.length > 0 && (
                 <div>
                   <span className="text-xs text-textSecondary uppercase tracking-wider">Tags</span>

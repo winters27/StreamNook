@@ -4,11 +4,19 @@ import { useAppStore } from '../../stores/AppStore';
 import { invoke } from '@tauri-apps/api/core';
 import { Bell } from 'lucide-react';
 import { SettingsSection, SettingsRow } from './_primitives';
+import { grantAccolade } from '../../services/supabaseService';
+import {
+  RESTLESS_ACCOLADE_ID,
+  NOTIF_CLICK_THRESHOLD,
+  bumpTestNotificationClicks,
+} from '../../utils/notifAchievement';
 
 import { Logger } from '../../utils/logger';
 const NotificationsSettings = () => {
-  const { settings, updateSettings } = useAppStore();
-  const [isSending, setIsSending] = useState(false);
+  const { settings, updateSettings, currentUser, addToast } = useAppStore();
+  // Brief green flash on press, used as the Test button's feedback instead of a
+  // text/width swap. See handleTestNotification + the button's className.
+  const [testFlash, setTestFlash] = useState(false);
 
   const liveNotifications = settings.live_notifications || {
     enabled: true,
@@ -35,13 +43,23 @@ const NotificationsSettings = () => {
   };
 
   const handleTestNotification = async () => {
-    setIsSending(true);
+    // Snap to green, then let it fade back to the glass surface (the fade-back
+    // lives on the glass-button class transition). Brief hold so it reads as a flash.
+    setTestFlash(true);
+    setTimeout(() => setTestFlash(false), 150);
     try {
       await invoke('send_test_notification');
+      // "Insomniac" easter egg: reward the stubborn Test-clicker. The running
+      // count is local; on the 50th click persist the accolade (which also
+      // unlocks the Midnight Atmosphere for any member, no sub required) and
+      // celebrate exactly once.
+      const clicks = bumpTestNotificationClicks();
+      if (clicks === NOTIF_CLICK_THRESHOLD && currentUser?.user_id) {
+        void grantAccolade(currentUser.user_id, RESTLESS_ACCOLADE_ID);
+        addToast('Achievement unlocked: Restless. The Midnight Atmosphere is yours.', 'success', undefined, { alwaysShow: true });
+      }
     } catch (error) {
       Logger.error('Failed to send test notification:', error);
-    } finally {
-      setIsSending(false);
     }
   };
 
@@ -253,11 +271,16 @@ const NotificationsSettings = () => {
               control={
                 <button
                   onClick={handleTestNotification}
-                  disabled={isSending}
-                  className="flex items-center gap-2 px-4 py-2 bg-accent hover:bg-accent/80 disabled:bg-accent/50 text-white text-sm font-medium rounded transition-colors"
+                  // Frosted glass-button (bevel + accent-tinted surface) to match
+                  // the rest of the app, not the old flat accent fill. Press
+                  // feedback is a subtle green flash: an inline green snaps on
+                  // (transition: none), then the glass-button's own transition
+                  // fades it back to the surface color.
+                  className="glass-button flex items-center gap-2 px-4 py-2 rounded-lg text-textPrimary text-sm font-medium"
+                  style={testFlash ? { backgroundColor: 'color-mix(in srgb, var(--color-success) 50%, transparent)', transition: 'none' } : undefined}
                 >
                   <Bell size={16} />
-                  {isSending ? 'Sending...' : 'Test'}
+                  Test
                 </button>
               }
             />

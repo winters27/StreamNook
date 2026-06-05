@@ -4,6 +4,9 @@ import { ExternalLink, Users, Globe } from 'lucide-react';
 import { ChannelAboutData, ChannelPanel as ChannelPanelType } from '../types/panels';
 import { Logger } from '../utils/logger';
 import { Tooltip } from './ui/Tooltip';
+import { useAppStore } from '../stores/AppStore';
+import { LinkPreviewCard } from './chat/LinkPreviewCard';
+import { isTrustedHost } from '../services/linkPreviewService';
 
 // ============================================================================
 // Social Media SVG Icons (matching Twitch's native icon set)
@@ -213,6 +216,9 @@ const StreamerAboutPanel = memo(({ channelLogin, hideHero }: StreamerAboutPanelP
   const [aboutData, setAboutData] = useState<ChannelAboutData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Social links reuse the chat link-preview system when previews are enabled.
+  const linkPreviews = useAppStore((s) => s.settings.chat_design?.link_previews ?? true);
+  const trustedDomains = useAppStore((s) => s.settings.chat_design?.link_preview_trusted_domains);
 
   useEffect(() => {
     let cancelled = false;
@@ -308,30 +314,50 @@ const StreamerAboutPanel = memo(({ channelLogin, hideHero }: StreamerAboutPanelP
               </p>
             )}
 
-            {/* Social Links */}
+            {/* Social Links — through the chat link-preview system when previews
+                are on (rich cards for trusted hosts, click-to-load chips for the
+                rest so the link is never lost); compact platform pills otherwise. */}
             {aboutData.social_links.length > 0 && (
-              <div className="flex flex-wrap gap-2">
-                {aboutData.social_links.map((link, i) => (
-                  <Tooltip key={i} content={link.url} side="top">
-                    <a
-                      href={link.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        invoke('open_browser_url', { url: link.url });
-                      }}
-                      className="inline-flex items-center gap-2.5 px-3 py-2 rounded-lg glass-panel border border-borderSubtle/20 text-textSecondary hover:text-textPrimary hover:border-accent/30 hover:bg-white/[0.03] transition-all duration-200 group flex-auto min-w-[140px] max-w-full sm:max-w-[240px]"
-                    >
-                      <span className="text-textSecondary/70 group-hover:text-accent transition-colors flex-shrink-0">
-                        {getSocialSvg(link.name)}
-                      </span>
-                      <span className="text-xs font-medium flex-1 truncate">{link.title}</span>
-                      <ExternalLink size={10} className="text-textSecondary/30 group-hover:text-textSecondary/60 transition-colors flex-shrink-0" />
-                    </a>
-                  </Tooltip>
-                ))}
-              </div>
+              linkPreviews ? (
+                <div className="columns-1 sm:columns-[300px] gap-3">
+                  {aboutData.social_links.map((link, i) => {
+                    let trusted = false;
+                    try {
+                      trusted = isTrustedHost(new URL(link.url).hostname, trustedDomains ?? []);
+                    } catch {
+                      trusted = false;
+                    }
+                    return (
+                      <div key={i} className="mb-3 break-inside-avoid">
+                        <LinkPreviewCard url={link.url} trusted={trusted} showChip />
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="flex flex-wrap gap-2">
+                  {aboutData.social_links.map((link, i) => (
+                    <Tooltip key={i} content={link.url} side="top">
+                      <a
+                        href={link.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          invoke('open_browser_url', { url: link.url });
+                        }}
+                        className="inline-flex items-center gap-2.5 px-3 py-2 rounded-lg glass-panel border border-borderSubtle/20 text-textSecondary hover:text-textPrimary hover:border-accent/30 hover:bg-white/[0.03] transition-all duration-200 group flex-auto min-w-[140px] max-w-full sm:max-w-[240px]"
+                      >
+                        <span className="text-textSecondary/70 group-hover:text-accent transition-colors flex-shrink-0">
+                          {getSocialSvg(link.name)}
+                        </span>
+                        <span className="text-xs font-medium flex-1 truncate">{link.title}</span>
+                        <ExternalLink size={10} className="text-textSecondary/30 group-hover:text-textSecondary/60 transition-colors flex-shrink-0" />
+                      </a>
+                    </Tooltip>
+                  ))}
+                </div>
+              )
             )}
 
             {/* Divider before panels */}

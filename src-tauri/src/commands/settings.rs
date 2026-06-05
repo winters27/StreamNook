@@ -36,6 +36,107 @@ pub async fn save_settings(settings: Settings, state: State<'_, AppState>) -> Re
     Ok(())
 }
 
+/// Top-level keys tied to *this machine's* session, never written into a backup
+/// and never pulled out of one on import: which Twitch accounts are signed in,
+/// the active account, the onboarding flag, and the last-seen version. Everything
+/// else (theme, chat design, keybindings, highlights, custom commands, custom
+/// themes, ...) is a portable preference and is included.
+const NON_PORTABLE_KEYS: &[&str] = &[
+    "accounts",
+    "current_account",
+    "setup_complete",
+    "last_seen_version",
+];
+
+/// Absolute path of the folder that holds settings.json (alongside caches/logs).
+/// Surfaced in the Backup tab so power users can find their settings on disk.
+#[tauri::command]
+pub async fn get_settings_dir() -> Result<String, String> {
+    let dir = cache_service::get_app_data_dir()
+        .map_err(|e| format!("Failed to get app data directory: {}", e))?;
+    Ok(dir.to_string_lossy().to_string())
+}
+
+/// Open the settings folder in the OS file browser. Routed through the opener
+/// plugin from Rust (so it needs no extra JS-side capability).
+#[tauri::command]
+pub async fn open_settings_folder(app: AppHandle) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let dir = cache_service::get_app_data_dir()
+        .map_err(|e| format!("Failed to get app data directory: {}", e))?;
+    app.opener()
+        .open_path(dir.to_string_lossy().to_string(), None::<String>)
+        .map_err(|e| format!("Failed to open settings folder: {}", e))
+}
+
+/// Write the user's portable preferences to `path` (chosen via a save dialog on
+/// the frontend). Session/login keys are stripped so a backup carries pure
+/// app/UI customization and no account info.
+#[tauri::command]
+pub async fn export_settings(path: String, state: State<'_, AppState>) -> Result<(), String> {
+    let settings = { state.settings.lock().unwrap().clone() };
+    let mut value = serde_json::to_value(&settings)
+        .map_err(|e| format!("Failed to serialize settings: {}", e))?;
+    if let Some(obj) = value.as_object_mut() {
+        for key in NON_PORTABLE_KEYS {
+            obj.remove(*key);
+        }
+    }
+    let json = serde_json::to_string_pretty(&value)
+        .map_err(|e| format!("Failed to serialize settings: {}", e))?;
+    fs::write(&path, json).map_err(|e| format!("Failed to write backup file: {}", e))?;
+    Ok(())
+}
+
+/// Apply a previously exported backup at `path`. Portable preferences from the
+/// file overwrite the current ones; this machine's session/login keys are kept
+/// as-is (a backup carries none anyway). The merged result is validated by
+/// round-tripping through the typed Settings struct *before* anything is written,
+/// so an unrelated or malformed file fails cleanly without disturbing live
+/// settings. On success the in-memory state and settings.json are both updated;
+/// the frontend reloads to re-apply everything.
+#[tauri::command]
+pub async fn import_settings(path: String, state: State<'_, AppState>) -> Result<(), String> {
+    let contents =
+        fs::read_to_string(&path).map_err(|e| format!("Couldn't read that file: {}", e))?;
+    let incoming: serde_json::Value = serde_json::from_str(&contents)
+        .map_err(|_| "That file isn't a valid StreamNook settings backup.".to_string())?;
+    let incoming_obj = incoming
+        .as_object()
+        .ok_or_else(|| "That file isn't a valid StreamNook settings backup.".to_string())?;
+
+    // Start from the live settings so session/login keys survive, then overlay
+    // every portable key the backup provides.
+    let current = { state.settings.lock().unwrap().clone() };
+    let mut merged = serde_json::to_value(&current)
+        .map_err(|e| format!("Failed to read current settings: {}", e))?;
+    {
+        let merged_obj = merged
+            .as_object_mut()
+            .ok_or_else(|| "Failed to read current settings.".to_string())?;
+        for (key, val) in incoming_obj {
+            if NON_PORTABLE_KEYS.contains(&key.as_str()) {
+                continue;
+            }
+            merged_obj.insert(key.clone(), val.clone());
+        }
+    }
+
+    let imported: Settings = serde_json::from_value(merged)
+        .map_err(|e| format!("That backup isn't compatible with this version: {}", e))?;
+
+    {
+        let mut state_settings = state.settings.lock().unwrap();
+        *state_settings = imported.clone();
+    }
+    let settings_path = get_settings_path()?;
+    let json = serde_json::to_string_pretty(&imported)
+        .map_err(|e| format!("Failed to serialize settings: {}", e))?;
+    fs::write(&settings_path, json).map_err(|e| format!("Failed to write settings file: {}", e))?;
+
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn send_test_notification(
     app_handle: AppHandle,

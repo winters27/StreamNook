@@ -16,7 +16,11 @@ export type LinkPreviewKind =
   | 'tweet'
   | 'media'
   | 'clip'
-  | 'vod';
+  | 'vod'
+  | 'discord'
+  | 'steam'
+  | 'spotify'
+  | 'instagram';
 
 // Mirrors the Rust `LinkPreview` struct (serde keeps snake_case field names).
 export interface LinkPreview {
@@ -26,12 +30,17 @@ export interface LinkPreview {
   description: string | null;
   image: string | null;
   site_name: string | null;
+  // Generic byline. Also the price label ("steam") and the discord.gg/<code>
+  // handle ("discord").
   author: string | null;
   author_avatar: string | null;
   video_id: string | null;
   // "clip" kind only.
   view_count: number | null;
   duration: number | null;
+  // "discord" kind only: live online + total member counts.
+  online_count: number | null;
+  member_count: number | null;
 }
 
 // Registrable domains we auto-expand. A host matches if it equals one of these
@@ -47,6 +56,7 @@ const TRUSTED_BASE_DOMAINS: readonly string[] = [
   'imgur.com',
   'giphy.com',
   'gph.is',
+  'tenor.com',
   'reddit.com',
   'redd.it',
   'github.com',
@@ -55,11 +65,52 @@ const TRUSTED_BASE_DOMAINS: readonly string[] = [
   'spotify.com',
   'soundcloud.com',
   'tiktok.com',
+  // Hand-styled cards (Discord join, Steam store, etc.).
+  'discord.gg',
+  'discord.com',
+  'discordapp.com',
+  'steampowered.com',
+  'steamcommunity.com',
+  'instagram.com',
+  // Widened to auto-expand as a generic card (OG-friendly, well-known).
+  'bsky.app',
+  'vimeo.com',
+  'bandcamp.com',
 ];
 
-export function isTrustedHost(host: string): boolean {
+// A host matches a base if it equals it or is a subdomain of it (so
+// www.youtube.com, m.twitch.tv, open.spotify.com all resolve). The optional
+// `userTrusted` list (registrable hosts the user opted into) is matched the
+// same way, so trusting `example.com` also covers `www.example.com`.
+function hostMatches(host: string, bases: readonly string[]): boolean {
   const h = host.toLowerCase();
-  return TRUSTED_BASE_DOMAINS.some((base) => h === base || h.endsWith(`.${base}`));
+  return bases.some((base) => {
+    const b = base.toLowerCase();
+    return h === b || h.endsWith(`.${b}`);
+  });
+}
+
+export function isTrustedHost(host: string, userTrusted: readonly string[] = []): boolean {
+  return hostMatches(host, TRUSTED_BASE_DOMAINS) || hostMatches(host, userTrusted);
+}
+
+// The host we persist when the user opts to trust a source: lowercased and
+// stripped of a leading `www.` so the stored entry matches every subdomain
+// (and so the settings list reads cleanly). Returns null for an unparseable URL.
+export function trustableHost(rawUrl: string): string | null {
+  try {
+    const u = new URL(rawUrl.startsWith('http') ? rawUrl : `https://${rawUrl}`);
+    return u.hostname.replace(/^www\./, '').toLowerCase() || null;
+  } catch {
+    return null;
+  }
+}
+
+// True when a host is covered by the built-in allowlist (so the settings UI can
+// label a user entry as redundant, and "trust" affordances can hide for hosts
+// that are already trusted out of the box).
+export function isBuiltInTrusted(host: string): boolean {
+  return hostMatches(host, TRUSTED_BASE_DOMAINS);
 }
 
 export interface PreviewUrl {
@@ -75,7 +126,11 @@ export interface PreviewUrl {
 // wall of links nor a run of untrusted links can crowd out the other or spawn a
 // wall of cards. Dedupes and strips trailing sentence punctuation that the
 // greedy match would otherwise swallow into the URL. Preserves message order.
-export function extractPreviewUrls(text: string, max = 2): PreviewUrl[] {
+export function extractPreviewUrls(
+  text: string,
+  max = 2,
+  userTrusted: readonly string[] = [],
+): PreviewUrl[] {
   if (!text) return [];
   // Fast path: almost every chat line has no link. Skip the regex + URL parsing
   // (and the array work) entirely unless the text could plausibly contain one.
@@ -97,7 +152,7 @@ export function extractPreviewUrls(text: string, max = 2): PreviewUrl[] {
       continue;
     }
     if (seen.has(url)) continue;
-    const trusted = isTrustedHost(host);
+    const trusted = isTrustedHost(host, userTrusted);
     if (trusted ? trustedCount >= max : untrustedCount >= max) continue;
     seen.add(url);
     if (trusted) trustedCount++;

@@ -207,29 +207,20 @@ export const useProxyHealthStore = create<ProxyHealthState>((set, get) => ({
  * Helper to format latency for display
  */
 export function formatLatency(ms: number | null): string {
-  if (ms === null) return '—';
-  if (ms < 100) return `${ms}ms 🟢`;
-  if (ms < 300) return `${ms}ms 🟡`;
-  return `${ms}ms 🔴`;
+  if (ms === null) return 'N/A';
+  return `${ms}ms`;
 }
 
 /**
- * Helper to get region flag emoji
+ * Helper to get a short region label (e.g. NA, EU, AS).
  */
-export function getRegionFlag(region: string): string {
-  const flags: Record<string, string> = {
-    'NA': '🇺🇸',
-    'EU': '🇪🇺',
-    'AS': '🇯🇵',
-    'SA': '🇧🇷',
-    'RU': '🇷🇺',
-  };
-  return flags[region] ?? '🌍';
+export function getRegionLabel(region: string): string {
+  return (region || 'INT').toUpperCase();
 }
 
 /**
- * Helper to get status icon
+ * Helper to get a textual health status.
  */
-export function getStatusIcon(isHealthy: boolean): string {
-  return isHealthy ? '✅' : '❌';
+export function getStatusLabel(isHealthy: boolean): string {
+  return isHealthy ? 'Healthy' : 'Unhealthy';
 }

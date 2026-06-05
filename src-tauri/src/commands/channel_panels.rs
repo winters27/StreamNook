@@ -272,7 +272,7 @@ pub async fn get_channel_about_data(channel_login: String) -> Result<ChannelAbou
     };
 
     debug!(
-        "[ChannelPanels] ✅ Fetched {} panels, {} social links for {}",
+        "[ChannelPanels] Fetched {} panels, {} social links for {}",
         panels.len(),
         social_links.len(),
         channel_login

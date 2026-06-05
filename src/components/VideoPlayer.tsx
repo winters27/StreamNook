@@ -118,6 +118,11 @@ const VideoPlayer = () => {
   // Restart stream state
   const [isRestarting, setIsRestarting] = useState(false);
 
+  // Which overlay action buttons the user keeps (undefined = all). Each button
+  // still respects its own context gate below (clippable, live-only, etc.).
+  const overlayButtonOn = (id: string) =>
+    !settings.player_overlay_buttons || settings.player_overlay_buttons.includes(id);
+
   // Track consecutive fatal errors to determine when stream is truly offline
   const fatalErrorCountRef = useRef<number>(0);
   const manifestErrorCountRef = useRef<number>(0);
@@ -1531,6 +1536,7 @@ const VideoPlayer = () => {
             className="subscribe-overlay absolute top-3 right-3 z-50 flex items-center gap-2"
           >
           {/* Follow Button - Icon Only with Glow */}
+          {overlayButtonOn('follow') && (
           <Tooltip content={checkingFollowStatus
                 ? 'Checking follow status...'
                 : followLoading
@@ -1567,9 +1573,11 @@ const VideoPlayer = () => {
             )}
           </button>
           </Tooltip>
+          )}
 
           {/* Subscribe Button */}
-          <Tooltip content={isSubscribed 
+          {overlayButtonOn('subscribe') && (
+          <Tooltip content={isSubscribed
                 ? `Gift a sub to ${currentStream.user_name}'s community`
                 : hasSubHistory
                   ? `Resubscribe to ${currentStream.user_name} (${cumulativeMonths + 1} months)`
@@ -1596,10 +1604,11 @@ const VideoPlayer = () => {
             )}
           </button>
           </Tooltip>
+          )}
 
           {/* Create Clip Button — live: last ~30s; VOD (incl. offline-chat's
               auto-loaded VOD): ~30s at the current spot */}
-          {canClip && (
+          {overlayButtonOn('clip') && canClip && (
             <Tooltip content="Create clip (Alt+X)" side="bottom">
             <button
               onClick={() => createClip()}
@@ -1620,7 +1629,7 @@ const VideoPlayer = () => {
 
           {/* Clips & VODs — opens this streamer's clip/VOD library. Text label,
               no icon (the label speaks for itself, so no tooltip either). */}
-          {currentStream && currentStream.user_id && (
+          {overlayButtonOn('clipsvods') && currentStream && currentStream.user_id && (
             <button
               onClick={() => openStreamerMedia(currentStream)}
               className="flex items-center justify-center px-3 py-2 glass-button rounded-lg text-sm font-semibold text-white hover:text-accent transition-colors duration-200"
@@ -1631,7 +1640,7 @@ const VideoPlayer = () => {
           )}
 
           {/* Add to MultiNook Button — pulls this stream into the multi-view grid */}
-          {currentMediaType === 'live' && (
+          {overlayButtonOn('multinook') && currentMediaType === 'live' && (
             <Tooltip content="Add to MultiNook" side="bottom">
             <button
               onClick={handleAddToMultiNook}
@@ -1644,7 +1653,7 @@ const VideoPlayer = () => {
           )}
 
           {/* Restart Stream Button */}
-          {currentMediaType === 'live' && (
+          {overlayButtonOn('refresh') && currentMediaType === 'live' && (
             <Tooltip content="Refresh" side="bottom">
             <button
               onClick={async () => {
@@ -1672,6 +1681,7 @@ const VideoPlayer = () => {
           )}
 
           {/* Close Stream Button */}
+          {overlayButtonOn('close') && (
           <Tooltip content="Close Stream" side="bottom">
           <button
             onClick={() => exitStream()}
@@ -1681,6 +1691,7 @@ const VideoPlayer = () => {
             <XIcon weight="bold" className="w-4 h-4 text-red-400" />
           </button>
           </Tooltip>
+          )}
           </motion.div>
         )}
       </AnimatePresence>

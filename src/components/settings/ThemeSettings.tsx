@@ -1,9 +1,10 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useAppStore } from '../../stores/AppStore';
-import { themes, themeCategories, getThemeById, applyTheme, customThemeToTheme, getThemeByIdWithCustom, applyGlassStrength, DEFAULT_GLASS_TRANSPARENCY, applyFont, FONT_OPTIONS, DEFAULT_FONT_ID, Theme } from '../../themes';
+import { themes, themeCategories, getThemeById, applyTheme, customThemeToTheme, getThemeByIdWithCustom, applyGlassStrength, DEFAULT_GLASS_TRANSPARENCY, applyFont, FONT_OPTIONS, DEFAULT_FONT_ID, Theme, OLED_THEME_ID, DEFAULT_OLED_ACCENT, OLED_ACCENT_PRESETS, getOledTheme } from '../../themes';
 import { Check, Palette, Sparkles, Moon, Leaf, Code, Star, Plus, Edit2, PaintBucket, Droplets, Type } from 'lucide-react';
 import { Tooltip } from '../ui/Tooltip';
 import ThemeCreator from './ThemeCreator';
+import ThemeColorPicker from '../ThemeColorPicker';
 import type { CustomTheme } from '../../types';
 
 const getCategoryIcon = (categoryId: string) => {
@@ -170,19 +171,53 @@ const ThemeSettings = () => {
         updateSettings({ ...settings, glass_transparency: value });
     };
 
-    // Get current theme (could be custom or built-in)
-    const currentTheme = getThemeByIdWithCustom(currentThemeId, customThemes);
+    // OLED is the one signature theme with a user-chosen accent. Mirror the saved
+    // value locally so the swatches, picker, and preview track the cursor live
+    // while the persist is deferred (same approach as the Glassiness slider).
+    const oledAccent = settings.oled_accent ?? DEFAULT_OLED_ACCENT;
+    const [liveOledAccent, setLiveOledAccent] = useState(oledAccent);
+    useEffect(() => {
+        setLiveOledAccent(oledAccent);
+    }, [oledAccent]);
+    const oledPersistTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    // Get current theme (could be custom or built-in). For OLED, fold in the
+    // chosen accent so the header chip and preview reflect it.
+    const currentTheme = currentThemeId === OLED_THEME_ID
+        ? getOledTheme(liveOledAccent)
+        : getThemeByIdWithCustom(currentThemeId, customThemes);
 
     const currentFontId = settings.font || DEFAULT_FONT_ID;
 
     const handleThemeChange = (themeId: string) => {
-        const theme = getThemeByIdWithCustom(themeId, customThemes);
+        // OLED resolves through its chosen accent rather than the static entry.
+        const theme = themeId === OLED_THEME_ID
+            ? getOledTheme(settings.oled_accent)
+            : getThemeByIdWithCustom(themeId, customThemes);
         if (theme) {
             // Apply theme immediately
             applyTheme(theme);
             // Save to settings
             updateSettings({ ...settings, theme: themeId });
         }
+    };
+
+    // Apply a new OLED accent live (cheap CSS-var repaint), then persist once the
+    // user settles so dragging the picker doesn't write to disk + re-render the
+    // whole app on every tick.
+    const handleOledAccentChange = (accentHex: string) => {
+        setLiveOledAccent(accentHex);
+        if (currentThemeId === OLED_THEME_ID) {
+            applyTheme(getOledTheme(accentHex));
+        }
+        if (oledPersistTimer.current) clearTimeout(oledPersistTimer.current);
+        oledPersistTimer.current = setTimeout(() => {
+            // Read the freshest settings at fire time (not the closed-over copy):
+            // the user may have changed another setting — e.g. switched themes —
+            // during the debounce window, and spreading a stale copy would undo it.
+            const latest = useAppStore.getState().settings;
+            updateSettings({ ...latest, oled_accent: accentHex });
+        }, 250);
     };
 
     const handleFontChange = (fontId: string) => {
@@ -311,51 +346,45 @@ const ThemeSettings = () => {
                 </p>
             </div>
 
-            {/* Interface Font — palette-independent, like glassiness. Each card
-                previews in its own typeface; selecting applies instantly. */}
+            {/* Interface Font — palette-independent, like glassiness. Compact
+                tiles: each font's NAME is drawn in that font, so the label is its
+                own preview. Description is on hover (Tooltip) to keep this small. */}
             <div className="glass-panel rounded-lg p-4 space-y-3">
                 <div className="flex items-center gap-2">
                     <Type size={16} className="text-accent" />
                     <h4 className="text-sm font-semibold text-textPrimary">Font</h4>
                 </div>
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-2 gap-2">
                     {FONT_OPTIONS.map((font) => {
                         const isSelected = currentFontId === font.id;
                         return (
-                            <button
-                                key={font.id}
-                                onClick={() => handleFontChange(font.id)}
-                                // translateZ(0) lifts the card onto its own compositor
-                                // layer so the dialog's heavy liquid-glass backdrop-filter
-                                // (blur 96px) + scale-in don't rasterize/soften the preview
-                                // text. Same crispness workaround the profile avatar uses.
-                                style={{ transform: 'translateZ(0)' }}
-                                className={`relative w-full p-3 rounded-lg transition-all duration-200 border-2 text-left ${
-                                    isSelected
-                                        ? 'border-accent ring-2 ring-accent/30'
-                                        : 'border-borderSubtle hover:border-borderLight'
-                                }`}
-                            >
-                                <div className="flex items-center justify-between mb-1.5">
-                                    <span className="text-sm font-semibold text-textPrimary">{font.label}</span>
-                                    {isSelected && (
-                                        <div className="w-5 h-5 rounded-full bg-accent flex items-center justify-center flex-shrink-0">
-                                            <Check size={12} className="text-background" strokeWidth={3} />
-                                        </div>
-                                    )}
-                                </div>
-                                <div
-                                    className="text-lg leading-tight text-textPrimary mb-1.5"
-                                    // Weight 400 = each font's true regular, so the preview
-                                    // reads lean (matches how Twitch renders Inter at 400).
-                                    style={{ fontFamily: font.stack, fontWeight: 400 }}
+                            <Tooltip key={font.id} content={font.description} side="top">
+                                <button
+                                    onClick={() => handleFontChange(font.id)}
+                                    // translateZ(0) lifts the tile onto its own compositor
+                                    // layer so the dialog's heavy liquid-glass backdrop-filter
+                                    // (blur 96px) + scale-in don't rasterize/soften the in-font
+                                    // name. Same crispness workaround the profile avatar uses.
+                                    style={{ transform: 'translateZ(0)' }}
+                                    className={`flex items-center justify-between gap-2 w-full px-3 py-2 rounded-lg border transition-colors duration-200 text-left ${
+                                        isSelected
+                                            ? 'border-accent bg-accent/10'
+                                            : 'border-borderSubtle hover:border-borderLight'
+                                    }`}
                                 >
-                                    Stream chat &amp; emotes
-                                </div>
-                                <p className="text-xs text-textMuted leading-relaxed line-clamp-2">
-                                    {font.description}
-                                </p>
-                            </button>
+                                    {/* Name rendered in its own face at weight 400 (each
+                                        font's true regular) — the label is the preview. */}
+                                    <span
+                                        className="text-[15px] leading-tight text-textPrimary truncate"
+                                        style={{ fontFamily: font.stack, fontWeight: 400 }}
+                                    >
+                                        {font.label}
+                                    </span>
+                                    {isSelected && (
+                                        <Check size={14} className="text-accent flex-shrink-0" strokeWidth={3} />
+                                    )}
+                                </button>
+                            </Tooltip>
                         );
                     })}
                 </div>
@@ -402,15 +431,54 @@ const ThemeSettings = () => {
                         </div>
 
                         <div className="grid grid-cols-3 gap-3">
-                            {categoryThemes.map((theme) => (
-                                <ThemeCard
-                                    key={theme.id}
-                                    theme={theme}
-                                    isSelected={currentThemeId === theme.id}
-                                    onSelect={() => handleThemeChange(theme.id)}
-                                />
-                            ))}
+                            {categoryThemes.map((theme) => {
+                                // Preview the OLED card in its chosen accent.
+                                const display = theme.id === OLED_THEME_ID ? getOledTheme(liveOledAccent) : theme;
+                                return (
+                                    <ThemeCard
+                                        key={theme.id}
+                                        theme={display}
+                                        isSelected={currentThemeId === theme.id}
+                                        onSelect={() => handleThemeChange(theme.id)}
+                                    />
+                                );
+                            })}
                         </div>
+
+                        {/* OLED accent chooser — shown only while OLED is the
+                            active theme. Preset swatches for one-click colors,
+                            plus a full spectrum picker for any color. */}
+                        {category.id === 'signature' && currentThemeId === OLED_THEME_ID && (
+                            <div className="glass-panel rounded-lg p-4 space-y-3">
+                                <div className="flex items-center gap-2">
+                                    <Droplets size={16} className="text-accent" />
+                                    <h4 className="text-sm font-semibold text-textPrimary">OLED accent</h4>
+                                    <span className="text-xs text-textMuted">— the glow color on pure black</span>
+                                </div>
+                                <div className="flex flex-wrap gap-2">
+                                    {OLED_ACCENT_PRESETS.map((preset) => {
+                                        const isSel = liveOledAccent.toLowerCase() === preset.value.toLowerCase();
+                                        return (
+                                            <Tooltip key={preset.value} content={preset.name} side="top">
+                                                <button
+                                                    onClick={() => handleOledAccentChange(preset.value)}
+                                                    className={`w-7 h-7 rounded-full border-2 transition-transform hover:scale-110 ${
+                                                        isSel ? 'border-textPrimary' : 'border-borderSubtle'
+                                                    }`}
+                                                    style={{ backgroundColor: preset.value }}
+                                                />
+                                            </Tooltip>
+                                        );
+                                    })}
+                                </div>
+                                <ThemeColorPicker
+                                    label="Custom color"
+                                    color={{ value: liveOledAccent, opacity: 100 }}
+                                    showOpacity={false}
+                                    onChange={(c) => handleOledAccentChange(c.value)}
+                                />
+                            </div>
+                        )}
                     </div>
                 );
             })}

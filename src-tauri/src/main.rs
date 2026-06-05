@@ -157,7 +157,7 @@ fn main() {
     {
         Ok(migrated) => {
             if migrated {
-                debug!("[Main] ✅ Emote cache migrated for new version");
+                debug!("[Main] Emote cache migrated for new version");
             }
         }
         Err(e) => {
@@ -298,11 +298,11 @@ fn main() {
                     Ok(status) => {
                         if status.is_valid {
                             debug!(
-                                "[Main] ✅ Token health check passed: {}h {}m remaining",
+                                "[Main] Token health check passed: {}h {}m remaining",
                                 status.hours_remaining, status.minutes_remaining
                             );
                             if status.needs_refresh {
-                                debug!("[Main] ⚠️ Token expires soon, but will auto-refresh on next API call");
+                                debug!("[Main] Token expires soon, but will auto-refresh on next API call");
                             }
 
                             // Record the current login as the primary account in the
@@ -313,13 +313,13 @@ fn main() {
                             }
                         } else {
                             debug!(
-                                "[Main] ❌ Token health check failed: {:?}",
+                                "[Main] Token health check failed: {:?}",
                                 status.error.unwrap_or_else(|| "Unknown error".to_string())
                             );
                         }
                     }
                     Err(e) => {
-                        debug!("[Main] ❌ Token health verification error: {}", e);
+                        debug!("[Main] Token health verification error: {}", e);
                     }
                 }
             });
@@ -521,6 +521,8 @@ fn main() {
             update_chat_settings,
             clear_chat,
             delete_chat_message,
+            pin_chat_message,
+            unpin_chat_message,
             ban_user,
             unban_user,
             add_channel_moderator,
@@ -552,6 +554,10 @@ fn main() {
             // Settings commands
             load_settings,
             save_settings,
+            get_settings_dir,
+            open_settings_folder,
+            export_settings,
+            import_settings,
             get_current_app_version,
             get_latest_app_version,
             download_and_install_app_update,
@@ -700,6 +706,7 @@ fn main() {
             clear_emote_cache,
             // 7TV commands
             seventv_graphql,
+            seventv_graphql_authed,
             // 7TV Cosmetics commands
             get_seventv_auth_status,
             get_seventv_login_url,
@@ -721,6 +728,7 @@ fn main() {
             // 7TV Global Cosmetics commands
             get_all_seventv_badges,
             get_all_seventv_paints,
+            get_seventv_paint_usage,
             // Automation commands (whisper scraper only — follow/unfollow migrated to GQL)
             scrape_whispers,
             receive_whisper_export,

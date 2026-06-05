@@ -16,6 +16,18 @@ const Toggle = ({ enabled, onChange }: { enabled: boolean; onChange: () => void 
   </button>
 );
 
+// The action buttons that can appear in the player's top-right overlay. Ids
+// match the gating in VideoPlayer. Undefined `player_overlay_buttons` = all on.
+const OVERLAY_BUTTONS: { id: string; label: string }[] = [
+  { id: 'follow', label: 'Follow / Unfollow' },
+  { id: 'subscribe', label: 'Subscribe / Gift' },
+  { id: 'clip', label: 'Create Clip' },
+  { id: 'clipsvods', label: 'Clips & VODs' },
+  { id: 'multinook', label: 'Add to MultiNook' },
+  { id: 'refresh', label: 'Refresh' },
+  { id: 'close', label: 'Close Stream' },
+];
+
 const PlayerSettings = () => {
   const { settings, updateSettings } = useAppStore();
 
@@ -52,12 +64,38 @@ const PlayerSettings = () => {
     });
   };
 
+  // Undefined = all buttons shown (default). Toggling one switches to an explicit
+  // set; rendering order in the overlay is fixed by VideoPlayer, so set membership
+  // is all that's stored.
+  const isOverlayButtonOn = (id: string) =>
+    !settings.player_overlay_buttons || settings.player_overlay_buttons.includes(id);
+  const toggleOverlayButton = (id: string) => {
+    const current = settings.player_overlay_buttons ?? OVERLAY_BUTTONS.map((b) => b.id);
+    const next = current.includes(id) ? current.filter((x) => x !== id) : [...current, id];
+    updateSettings({ ...settings, player_overlay_buttons: next });
+  };
+
   return (
     <div className="space-y-8">
       <p className="text-sm text-textSecondary px-1">
         Most player controls (volume, quality, playback speed) are available directly in the video player.
         These settings control advanced streaming behavior.
       </p>
+
+      <SettingsSection
+        label="Player Overlay Buttons"
+        description="Choose which action buttons appear in the top-right of the video player. Each still only shows when it applies (Clip when clippable, MultiNook and Refresh on live streams, and so on)."
+      >
+        {OVERLAY_BUTTONS.map((b) => (
+          <SettingsRow
+            key={b.id}
+            title={b.label}
+            control={
+              <Toggle enabled={isOverlayButtonOn(b.id)} onChange={() => toggleOverlayButton(b.id)} />
+            }
+          />
+        ))}
+      </SettingsSection>
 
       <SettingsSection
         id="settings-section-auto-switch"

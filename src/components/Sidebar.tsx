@@ -18,6 +18,8 @@ const MIN_EXPANDED_WIDTH = 200;
 const MAX_EXPANDED_WIDTH = 450;
 const HIDDEN_TRIGGER_ZONE = 16; // pixels from left edge to trigger sidebar
 const SIDEBAR_CLOSE_DELAY = 150; // milliseconds delay before closing in hidden mode
+const SIDEBAR_EXPAND_MS = 200; // width-animation duration for compact / expand-on-hover
+const SIDEBAR_BLUR_SETTLE_DELAY = SIDEBAR_EXPAND_MS + 40; // fade the glass in just after the expand settles
 const SIDEBAR_WIDTH_STORAGE_KEY = 'sidebar-expanded-width';
 
 // Get persisted sidebar width from localStorage
@@ -278,6 +280,10 @@ const Sidebar = () => {
     // Resizable width state
     const [expandedWidth, setExpandedWidth] = useState<number>(getPersistedWidth);
     const [isResizing, setIsResizing] = useState(false);
+
+    // Whether the frosted-glass blur has faded in. It is held back until the
+    // panel has finished expanding so the blur is never re-rasterized mid-resize.
+    const [blurReady, setBlurReady] = useState(false);
 
     const sidebarRef = useRef<HTMLDivElement>(null);
     const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -682,6 +688,19 @@ const Sidebar = () => {
 
     const { visible, width, showExpanded, isOverlay } = calculateSidebarState();
 
+    // Expand the panel unblurred (cheap) and only fade the frosted glass in once
+    // it has finished widening. Blurring an element while its width animates forces
+    // a per-frame backdrop re-raster, which is what made the expand choppy. Gating
+    // the blur behind the resize keeps the expand/collapse at full frame rate, then
+    // the glass settles in with a soft fade.
+    useEffect(() => {
+        if (showExpanded) {
+            const t = setTimeout(() => setBlurReady(true), SIDEBAR_BLUR_SETTLE_DELAY);
+            return () => clearTimeout(t);
+        }
+        setBlurReady(false);
+    }, [showExpanded]);
+
     // If sidebar is completely disabled, render nothing
     if (sidebarMode === 'disabled') {
         return null;
@@ -735,9 +754,8 @@ const Sidebar = () => {
                 ref={sidebarRef}
                 className={`
                     h-full border-r border-borderSubtle flex flex-col flex-shrink-0
-                    transition-[width,min-width,opacity,transform,background-color,backdrop-filter] duration-300 ease-[cubic-bezier(0.4,0,0.2,1)]
+                    transition-[width,min-width,opacity,transform] duration-200 ease-[cubic-bezier(0.4,0,0.2,1)]
                     ${isOverlay ? 'fixed left-0 top-0 z-50 mt-8' : 'relative'}
-                    ${showExpanded ? 'backdrop-blur-xl' : 'bg-tertiary'}
                 `}
                 style={{
                     width: width,
@@ -745,7 +763,6 @@ const Sidebar = () => {
                     opacity: visible ? 1 : 0,
                     pointerEvents: visible ? 'auto' : 'none',
                     transform: visible ? 'translateX(0)' : 'translateX(-10px)',
-                    backgroundColor: showExpanded ? 'rgba(26, 26, 27, 0.75)' : undefined,
                 }}
                 onMouseEnter={() => {
                     // Cancel any pending close timeout
@@ -773,6 +790,35 @@ const Sidebar = () => {
                     }
                 }}
             >
+                {/* Background layers, kept separate from the content so the costly
+                    frosted blur can fade in independently of the width change. While
+                    the panel is widening only the cheap solid backing shows; once the
+                    expand has settled (blurReady) the glass blur fades in, so the blur
+                    is never re-rasterized mid-resize. These sit at z-0; the content
+                    below is lifted to z-10 so it always paints above them. */}
+                {/* Glass fades in FIRST, over the still-opaque solid, then the solid
+                    fades out (200ms delay) to reveal the translucency. Sequencing them
+                    this way keeps the panel fully opaque until the glass is fully in, so
+                    it never dips more transparent than its final state mid-transition. */}
+                <div
+                    aria-hidden
+                    className="absolute inset-0 z-0 bg-tertiary pointer-events-none"
+                    style={{
+                        opacity: blurReady ? 0 : 1,
+                        transition: `opacity 260ms ease-out ${blurReady ? '200ms' : '0ms'}`,
+                    }}
+                />
+                <div
+                    aria-hidden
+                    className="absolute inset-0 z-0 transition-opacity duration-200 ease-out pointer-events-none"
+                    style={{
+                        opacity: blurReady ? 1 : 0,
+                        backgroundColor: 'rgba(26, 26, 27, 0.75)',
+                        backdropFilter: blurReady ? 'blur(24px)' : undefined,
+                        WebkitBackdropFilter: blurReady ? 'blur(24px)' : undefined,
+                    }}
+                />
+
                 {/* Resize handle - only show when expanded */}
                 {showExpanded && (
                     <Tooltip content="Drag to resize sidebar" delay={500} side="right">
@@ -789,7 +835,7 @@ const Sidebar = () => {
 
                 {/* Header */}
                 <div className={`
-                    flex items-center p-2 border-b border-borderSubtle
+                    relative z-10 flex items-center p-2 border-b border-borderSubtle
                     ${showExpanded ? 'justify-between' : 'justify-center'}
                 `}>
                     {showExpanded && (
@@ -811,7 +857,7 @@ const Sidebar = () => {
                 {/* Scrollable stream list */}
                 <div
                     ref={scrollContainerRef}
-                    className={`flex-1 overflow-x-hidden py-1 ${
+                    className={`relative z-10 flex-1 overflow-x-hidden py-1 ${
                         // Hide scrollbar in compact mode with expand-on-hover when not expanded
                         sidebarMode === 'compact' && expandOnHover && !showExpanded
                             ? 'overflow-y-hidden'

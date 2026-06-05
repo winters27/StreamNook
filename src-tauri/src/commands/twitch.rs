@@ -1215,6 +1215,24 @@ pub async fn delete_chat_message(broadcaster_id: String, message_id: String) -> 
 }
 
 #[tauri::command]
+pub async fn pin_chat_message(
+    broadcaster_id: String,
+    message_id: String,
+    duration_seconds: Option<u32>,
+) -> Result<(), String> {
+    TwitchService::pin_chat_message(&broadcaster_id, &message_id, duration_seconds)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn unpin_chat_message(broadcaster_id: String, message_id: String) -> Result<(), String> {
+    TwitchService::unpin_chat_message(&broadcaster_id, &message_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn ban_user(
     broadcaster_id: String,
     target_user_id: String,

@@ -1,0 +1,511 @@
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
+import { createPortal } from 'react-dom';
+import { motion, useMotionValue } from 'framer-motion';
+import { invoke } from '@tauri-apps/api/core';
+import { Trash2, Clock, Ban, RotateCcw, Pin, PinOff, type LucideIcon } from 'lucide-react';
+import { useAppStore } from '../../stores/AppStore';
+import { useChatUserStore } from '../../stores/chatUserStore';
+import { computePaintStyle } from '../../services/seventvService';
+import { useDragModerationStore } from '../../stores/dragModerationStore';
+import { usePinStore } from '../../stores/pinStore';
+import { Logger } from '../../utils/logger';
+
+type BucketKind = 'neutral' | 'danger';
+interface Bucket {
+  id: 'profile' | 'whisper' | 'delete' | 'timeout' | 'ban' | 'unban' | 'pin' | 'unpin';
+  label: string;
+  icon: LucideIcon;
+  kind: BucketKind;
+  /** Tailwind classes applied when this bucket is the active drop target. */
+  activeTint: string;
+}
+
+// Twitch timeout range: 1s up to the 14-day (1209600s) max; longer is a ban.
+const MAX_TIMEOUT_SECS = 1209600;
+
+// Continuous timeout: drag-out distance (px) -> seconds, on a steep 10th-power
+// ramp (most of the range is short, the last stretch shoots to the 14-day max),
+// snapped to a clean value. No fixed list to clip off-screen; the duration
+// tracks how far you drag.
+const TIMEOUT_RANGE_PX = 260;
+const timeoutSecsFromDistance = (px: number): number => {
+  const ratio = Math.min(1, Math.max(0, px) / TIMEOUT_RANGE_PX);
+  return snapDuration(Math.pow(ratio, 10) * MAX_TIMEOUT_SECS);
+};
+
+// Round to a tidy value whose granularity grows with magnitude.
+function snapDuration(s: number): number {
+  let v: number;
+  if (s < 60) v = Math.round(s / 5) * 5;
+  else if (s < 3600) v = Math.round(s / 60) * 60;
+  else if (s < 86400) v = Math.round(s / 1800) * 1800;
+  else v = Math.round(s / 86400) * 86400;
+  return Math.min(MAX_TIMEOUT_SECS, Math.max(1, v));
+}
+
+// Human-readable duration (e.g. "45s", "10m", "1h 30m", "2d").
+function formatDuration(s: number): string {
+  if (s < 60) return `${Math.round(s)}s`;
+  if (s < 3600) return `${Math.round(s / 60)}m`;
+  if (s < 86400) {
+    const h = Math.floor(s / 3600);
+    const m = Math.round((s % 3600) / 60);
+    return m ? `${h}h ${m}m` : `${h}h`;
+  }
+  const d = Math.floor(s / 86400);
+  const h = Math.round((s % 86400) / 3600);
+  return h ? `${d}d ${h}h` : `${d}d`;
+}
+
+/**
+ * Global drag-to-moderate overlay. A grab handle in the chat dock "lifts" a
+ * chatter into a chip that follows the cursor; a dock of action buckets animates
+ * in, reacts as you drag over them, and fires the action on drop. Mod buckets
+ * (delete/timeout/ban) only appear for moderators; profile/whisper are universal.
+ * Hit-testing uses elementFromPoint, so the chip + overlay are pointer-events:none
+ * and only the bucket tiles capture the pointer.
+ */
+export default function ModerationDragLayer() {
+  const dragged = useDragModerationStore((s) => s.dragged);
+  const paintShadowMode = useAppStore((s) => s.settings.cosmetics?.paint_shadows) ?? 'all';
+  const paint = useChatUserStore((s) => (dragged ? s.users.get(dragged.userId)?.paint : undefined));
+
+  const x = useMotionValue(0);
+  const y = useMotionValue(0);
+  const [activeBucket, setActiveBucket] = useState<string | null>(null);
+  const [activeDuration, setActiveDuration] = useState<number | null>(null);
+  const activeBucketRef = useRef<string | null>(null);
+  const activeDurationRef = useRef<number | null>(null);
+  const chatPlacement = useAppStore((s) => s.chatPlacement);
+  const dragLayoutRaw = useAppStore((s) => s.settings.chat_design?.mod_drag_layout);
+  // Two layouts: 'column' (beside chat) and 'bar' (above chat). The legacy
+  // 'slider' mode was removed; fall back to the beside-chat column.
+  const dragLayout: 'column' | 'bar' = dragLayoutRaw === 'bar' ? 'bar' : 'column';
+  const modPinStyle = useAppStore((s) => s.settings.chat_design?.mod_pin_style) ?? 'both';
+  // Whether the lifted message is the currently-pinned one (flips the Pin bucket
+  // into Unpin).
+  const draggedPinned = usePinStore((s) => (dragged?.messageId ? s.pinnedIds.includes(dragged.messageId) : false));
+  const [anchorStyle, setAnchorStyle] = useState<CSSProperties | null>(null);
+  const columnRef = useRef<HTMLDivElement>(null);
+
+  // Spawn the column vertically near the message you grabbed (centered on the
+  // pickup point, clamped to the viewport using the column's real height), and
+  // horizontally just left of the chat panel when chat is right-docked (else
+  // screen-centered). Measured in a layout effect so it never flashes elsewhere.
+  useLayoutEffect(() => {
+    if (!dragged) {
+      setAnchorStyle(null);
+      return;
+    }
+    const panel = document.querySelector('[data-chat-panel]') as HTMLElement | null;
+    const rect = panel?.getBoundingClientRect();
+
+    // Bar: a horizontal row centered just above the grabbed MESSAGE (not the
+    // whole chat widget), using the pickup point's Y; centered over chat.
+    if (dragLayout === 'bar') {
+      const { origin } = useDragModerationStore.getState();
+      const cx = rect && rect.width > 0 ? rect.left + rect.width / 2 : origin.x;
+      setAnchorStyle({ top: Math.max(8, origin.y - 8), left: cx, transform: 'translate(-50%, -100%)' });
+      return;
+    }
+
+    // Column: vertical, near the grabbed message, just left of the chat panel.
+    const { origin } = useDragModerationStore.getState();
+    const margin = 12;
+    const h = columnRef.current?.offsetHeight ?? 220;
+    // Never let the stack reach down into the player's control bar. The controls
+    // are pinned to the player's bottom edge, so reserve their height up from
+    // there. Use offsetHeight (layout height), not getBoundingClientRect: Plyr
+    // translates the bar fully off-screen while hidden, which is exactly when a
+    // drag begins, so its on-screen rect can't be trusted.
+    let lowerBound = window.innerHeight;
+    const player = document.querySelector('.video-player-container') as HTMLElement | null;
+    const playerRect = player?.getBoundingClientRect();
+    if (playerRect && playerRect.height > 0) {
+      const controls = document.querySelector('.plyr__controls') as HTMLElement | null;
+      const controlsH = controls && controls.offsetHeight > 0 ? controls.offsetHeight : 88;
+      lowerBound = playerRect.bottom - controlsH;
+    }
+    const bottomLimit = Math.max(margin, lowerBound - h - margin);
+    const top = Math.min(Math.max(origin.y - h / 2, margin), bottomLimit);
+    if (rect && rect.width > 0 && chatPlacement === 'right') {
+      setAnchorStyle({ top, right: Math.max(8, window.innerWidth - rect.left + 12) });
+    } else {
+      setAnchorStyle({ top, left: '50%', transform: 'translateX(-50%)' });
+    }
+  }, [dragged, chatPlacement, dragLayout]);
+
+  useEffect(() => {
+    if (!dragged) return;
+    const { origin } = useDragModerationStore.getState();
+    x.set(origin.x);
+    y.set(origin.y);
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'grabbing';
+
+    const setActive = (bucket: string | null, duration: number | null) => {
+      if (bucket !== activeBucketRef.current) {
+        activeBucketRef.current = bucket;
+        setActiveBucket(bucket);
+      }
+      if (duration !== activeDurationRef.current) {
+        activeDurationRef.current = duration;
+        setActiveDuration(duration);
+      }
+    };
+
+    const onMove = (e: PointerEvent) => {
+      x.set(e.clientX);
+      y.set(e.clientY);
+
+      // Magnetic selection: snap to the NEAREST bucket within an engage radius,
+      // so you never have to be pixel-precise. Distance to each tile center, not
+      // exact elementFromPoint hover. The above-chat layout uses a tighter radius
+      // so it's easy to move off a bucket and release to cancel.
+      const ENGAGE = dragLayout === 'bar' ? 60 : 120;
+      let bucketId: string | null = null;
+      let bestD = Infinity;
+      document.querySelectorAll<HTMLElement>('[data-bucket-id]').forEach((tile) => {
+        const r = tile.getBoundingClientRect();
+        const d = Math.hypot(e.clientX - (r.left + r.width / 2), e.clientY - (r.top + r.height / 2));
+        if (d < bestD) {
+          bestD = d;
+          bucketId = tile.getAttribute('data-bucket-id');
+        }
+      });
+      if (bestD > ENGAGE) bucketId = null;
+
+      // Timeout duration is continuous: once Timeout is engaged, dragging FURTHER
+      // LEFT (Timeout sits on the left of the triangle, into the open player area)
+      // dials a longer timeout — no fixed chip list to clip off-screen. Same in
+      // both layouts. It stays engaged while you drag out past the tile.
+      let duration: number | null = null;
+      const tTile = document.querySelector<HTMLElement>('[data-bucket-id="timeout"]');
+      if (tTile) {
+        const r = tTile.getBoundingClientRect();
+        // Drag further left of the tile = longer timeout.
+        const out = r.left - e.clientX;
+        if (bucketId === 'timeout' || (activeBucketRef.current === 'timeout' && out > 0)) {
+          bucketId = 'timeout';
+          duration = timeoutSecsFromDistance(Math.max(0, out));
+        }
+      }
+      setActive(bucketId, duration);
+    };
+
+    // One place for every action: every bucket drop dispatches here.
+    const runAction = (kind: string, secs?: number) => {
+      const { userId, login, displayName, broadcasterId, messageId } = dragged;
+      const app = useAppStore.getState();
+      const undo = {
+        label: 'Undo',
+        onClick: () => {
+          invoke('unban_user', { broadcasterId, targetUserId: userId }).catch((err) =>
+            Logger.error('[DragMod] Undo failed:', err),
+          );
+        },
+      };
+      switch (kind) {
+        case 'profile':
+          app.openProfileViewer(userId);
+          break;
+        case 'whisper':
+          app.openWhisperWithUser({ id: userId, login, display_name: displayName });
+          break;
+        case 'delete':
+          if (messageId) {
+            invoke('delete_chat_message', { broadcasterId, messageId })
+              .then(() => app.addToast(`Deleted a message from ${displayName}`, 'success'))
+              .catch((err) => {
+                Logger.error('[DragMod] Delete failed:', err);
+                app.addToast(`Couldn't delete that message`, 'error');
+              });
+          }
+          break;
+        case 'timeout': {
+          const s = secs ?? 600;
+          invoke('ban_user', { broadcasterId, targetUserId: userId, duration: s, reason: null })
+            .then(() => app.addToast(`Timed out ${displayName} for ${formatDuration(s)}`, 'success', undo))
+            .catch((err) => {
+              Logger.error('[DragMod] Timeout failed:', err);
+              app.addToast(`Couldn't time out ${displayName}`, 'error');
+            });
+          break;
+        }
+        case 'ban':
+          invoke('ban_user', { broadcasterId, targetUserId: userId, duration: null, reason: null })
+            .then(() => app.addToast(`Banned ${displayName}`, 'success', undo))
+            .catch((err) => {
+              Logger.error('[DragMod] Ban failed:', err);
+              app.addToast(`Couldn't ban ${displayName}`, 'error');
+            });
+          break;
+        case 'pin':
+          if (messageId) {
+            invoke('pin_chat_message', { broadcasterId, messageId, durationSeconds: null })
+              .then(() => {
+                app.addToast(`Pinned a message from ${displayName}`, 'success');
+                usePinStore.getState().requestRefresh();
+              })
+              .catch((err) => {
+                Logger.error('[DragMod] Pin failed:', err);
+                app.addToast(`Couldn't pin that message`, 'error');
+              });
+          }
+          break;
+        case 'unpin':
+          if (messageId) {
+            invoke('unpin_chat_message', { broadcasterId, messageId })
+              .then(() => {
+                app.addToast(`Unpinned the message`, 'success');
+                usePinStore.getState().requestRefresh();
+              })
+              .catch((err) => {
+                Logger.error('[DragMod] Unpin failed:', err);
+                app.addToast(`Couldn't unpin that message`, 'error');
+              });
+          }
+          break;
+        case 'unban':
+          invoke('unban_user', { broadcasterId, targetUserId: userId })
+            .then(() =>
+              app.addToast(
+                dragged.moderationState === 'timeout'
+                  ? `Removed timeout on ${displayName}`
+                  : `Unbanned ${displayName}`,
+                'success',
+              ),
+            )
+            .catch((err) => {
+              Logger.error('[DragMod] Unban failed:', err);
+              app.addToast(
+                `Couldn't lift the ${dragged.moderationState === 'timeout' ? 'timeout' : 'ban'} on ${displayName}`,
+                'error',
+              );
+            });
+          break;
+      }
+    };
+
+    const execute = () => {
+      const bucket = activeBucketRef.current;
+      if (bucket) runAction(bucket, activeDurationRef.current ?? undefined);
+    };
+
+    const cleanup = () => {
+      activeBucketRef.current = null;
+      activeDurationRef.current = null;
+      setActiveBucket(null);
+      setActiveDuration(null);
+      useDragModerationStore.getState().endDrag();
+    };
+    const onUp = () => {
+      execute();
+      cleanup();
+    };
+    // pointercancel (gesture taken over by the browser) fires instead of
+    // pointerup — cancel without executing so the overlay never gets stuck.
+    const onCancel = () => cleanup();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') cleanup();
+    };
+
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onCancel);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onCancel);
+      window.removeEventListener('keydown', onKey);
+      document.body.style.userSelect = '';
+      document.body.style.cursor = '';
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dragged]);
+
+  if (!dragged) return null;
+
+  const nameStyle = paint
+    ? computePaintStyle(paint, dragged.color, paintShadowMode)
+    : { color: dragged.color || 'var(--color-accent)' };
+
+  const moderated = dragged.moderationState;
+  const timeoutBucket = { id: 'timeout', label: 'Timeout', icon: Clock, kind: 'danger', activeTint: 'bg-amber-500/25 border-amber-400/70 text-amber-200' } as Bucket;
+  const banBucket = { id: 'ban', label: 'Ban', icon: Ban, kind: 'danger', activeTint: 'bg-red-500/25 border-red-400/70 text-red-200' } as Bucket;
+  const deleteBucket = { id: 'delete', label: 'Delete', icon: Trash2, kind: 'danger', activeTint: 'bg-orange-500/25 border-orange-400/70 text-orange-200' } as Bucket;
+  const unbanBucket = {
+    id: 'unban',
+    label: moderated === 'timeout' ? 'Untimeout' : 'Unban',
+    icon: RotateCcw,
+    kind: 'danger',
+    activeTint: 'bg-emerald-500/25 border-emerald-400/70 text-emerald-200',
+  } as Bucket;
+  const pinBucket = (draggedPinned
+    ? { id: 'unpin', label: 'Unpin', icon: PinOff, kind: 'neutral', activeTint: 'bg-sky-500/25 border-sky-400/70 text-sky-200' }
+    : { id: 'pin', label: 'Pin', icon: Pin, kind: 'neutral', activeTint: 'bg-sky-500/25 border-sky-400/70 text-sky-200' }) as Bucket;
+  // Mod-only PUNITIVE buckets (profile/whisper removed). The triangle puts the
+  // primary action at the apex and Timeout (left) + Delete (right) at the base:
+  //   normal    -> Timeout (left), Ban (apex), Delete (right)
+  //   timed out -> Timeout (left), Untimeout (apex), Delete (right)
+  //   banned    -> Unban (+ Delete) in a single row
+  // So an accidental ban/timeout is always reversible via the apex Unban/Untimeout.
+  // Order matters: the triangle reads index 0 = base-left, 1 = apex, 2 = base-right.
+  const core: Bucket[] =
+    moderated === 'ban'
+      ? [unbanBucket]
+      : moderated === 'timeout'
+        ? [timeoutBucket, unbanBucket]
+        : [timeoutBucket, banBucket];
+  const punitive: Bucket[] = !dragged.isModerator
+    ? []
+    : [...core, ...(dragged.messageId ? [deleteBucket] : [])];
+  // Pin is NON-punitive, so it sits as its own tile ABOVE the triangle (not in
+  // it) when the pin style includes 'drag' and there's a message to pin.
+  // Inline pin is always available (ChatMessage); the drag tile is the optional
+  // extra — shown unless the setting is 'inline' (button only). Legacy 'drag'
+  // and the default 'both' both enable it.
+  const showDragPin =
+    dragged.isModerator && !!dragged.messageId && modPinStyle !== 'inline';
+  const buckets: Bucket[] = [...(showDragPin ? [pinBucket] : []), ...punitive];
+  // Triangle is the ABOVE-CHAT layout only: 3 = apex (Ban / Untimeout) on top,
+  // Timeout (left) + Delete (right) as the base; fewer just sit in one centered
+  // row. Beside chat stacks every bucket vertically instead (see render).
+  const triTop = punitive.length === 3 ? [punitive[1]] : punitive;
+  const triBottom = punitive.length === 3 ? [punitive[0], punitive[2]] : [];
+  // Wider spacing in the above-chat layout (paired with the tighter engage
+  // radius) so it's easier to land on, and move off, a tile; the beside-chat
+  // column uses a roomier gap to match its bigger tiles.
+  const gapCls = dragLayout === 'bar' ? 'gap-4' : 'gap-2.5';
+
+  // `armed` (a real action is selected) drives the chip's "snapped in" feedback.
+  const armed = !!activeBucket;
+
+  return createPortal(
+    <div className="fixed inset-0 z-[9998] pointer-events-none overflow-hidden">
+      {/* Chip held by the cursor. z-50 keeps it ABOVE the bucket column so the
+          dragged name floats over the drop target instead of clipping under it.
+          The static wrapper carries the up-left offset so it doesn't fight
+          framer-motion's animated transform on the chip. */}
+      <motion.div className="fixed top-0 left-0 z-50 pointer-events-none" style={{ x, y }}>
+        <div style={{ transform: 'translate(-50%, calc(-100% - 16px))' }}>
+          <motion.div
+            initial={{ scale: 0.6, opacity: 0 }}
+            // When an action is armed the chip shrinks + straightens: a little
+            // "snapped in" cue that pairs with the bucket pop.
+            animate={{ scale: armed ? 0.86 : 1, opacity: 1, rotate: armed ? 0 : -4 }}
+            transition={{ type: 'spring', stiffness: 500, damping: 26 }}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-white/15 bg-zinc-900/90 backdrop-blur-md shadow-[0_12px_32px_rgba(0,0,0,0.6)] whitespace-nowrap"
+          >
+            <span className="text-sm font-bold" style={nameStyle}>
+              {dragged.displayName}
+            </span>
+          </motion.div>
+        </div>
+      </motion.div>
+
+      {/* Floating action dock (no panel/blur). Beside chat: one vertical stack of
+          bigger, translucent tiles, clamped to sit above the player controls.
+          Above chat: a compact triangle of opaque tiles where room is tight. */}
+      {buckets.length > 0 && (
+      <div className="fixed pointer-events-none" style={anchorStyle ?? undefined}>
+        <motion.div
+          ref={columnRef}
+          initial={{ scale: 0.92, opacity: 0 }}
+          animate={{ scale: 1, opacity: 1 }}
+          transition={{ type: 'spring', stiffness: 400, damping: 30 }}
+          className={`pointer-events-auto flex flex-col items-center ${gapCls}`}
+        >
+          {dragLayout === 'column' ? (
+            // Beside chat: every action in one vertical column. Bigger + a touch
+            // translucent so they're easy to hit when dragging out to the side.
+            buckets.map((b) => (
+              <BucketTile key={b.id} bucket={b} active={activeBucket === b.id} activeDuration={activeDuration} solid={false} big />
+            ))
+          ) : (
+            <>
+              {showDragPin && (
+                <div className={`flex ${gapCls}`}>
+                  <BucketTile bucket={pinBucket} active={activeBucket === pinBucket.id} activeDuration={null} solid />
+                </div>
+              )}
+              <div className={`flex ${gapCls}`}>
+                {triTop.map((b) => (
+                  <BucketTile key={b.id} bucket={b} active={activeBucket === b.id} activeDuration={activeDuration} solid />
+                ))}
+              </div>
+              {triBottom.length > 0 && (
+                <div className={`flex ${gapCls}`}>
+                  {triBottom.map((b) => (
+                    <BucketTile key={b.id} bucket={b} active={activeBucket === b.id} activeDuration={activeDuration} solid />
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+        </motion.div>
+      </div>
+      )}
+    </div>,
+    document.body,
+  );
+}
+
+// Fully-opaque per-action fills for the above-chat layout, where translucent
+// tiles over busy chat are hard to focus on.
+const SOLID_TINT: Record<string, string> = {
+  delete: 'bg-orange-600 border-orange-400 text-white',
+  timeout: 'bg-amber-600 border-amber-300 text-white',
+  ban: 'bg-red-600 border-red-400 text-white',
+  unban: 'bg-emerald-600 border-emerald-400 text-white',
+  pin: 'bg-sky-600 border-sky-400 text-white',
+  unpin: 'bg-sky-600 border-sky-400 text-white',
+};
+
+function BucketTile({
+  bucket,
+  active,
+  activeDuration,
+  solid,
+  big = false,
+}: {
+  bucket: Bucket;
+  active: boolean;
+  activeDuration: number | null;
+  solid: boolean;
+  /** Beside-chat tiles render larger (easier to hit when dragging to the side). */
+  big?: boolean;
+}) {
+  const Icon = bucket.icon;
+  const isDanger = bucket.kind === 'danger';
+  // Each tile floats on its own (no panel). The above-chat ('solid') layout uses
+  // fully opaque fills so they're easy to focus on over busy chat; beside-chat
+  // keeps a lighter translucent tint that lets the stream show through a little.
+  const tint = solid
+    ? active
+      ? SOLID_TINT[bucket.id] ?? 'bg-zinc-900 border-white/25 text-white'
+      : 'bg-zinc-900 border-white/15 text-white/80'
+    : active
+      ? bucket.activeTint
+      : 'bg-zinc-900/70 border-white/10 text-white/75';
+  return (
+    <motion.div
+      data-bucket-id={bucket.id}
+      // Scale only (no y-shift) so the tile's center stays put: the magnetic
+      // nearest-tile selection keys off these centers and must not drift.
+      animate={{ scale: active ? 1.18 : 1 }}
+      transition={{ type: 'spring', stiffness: 500, damping: 17 }}
+      className={`relative flex ${big ? 'h-20 w-20' : 'h-16 w-16'} flex-col items-center justify-center gap-1 rounded-2xl border shadow-[0_8px_22px_rgba(0,0,0,0.5)] transition-colors ${tint}`}
+    >
+      <motion.div animate={active && isDanger ? { rotate: [-10, 6, 0] } : { rotate: 0 }} transition={{ duration: 0.3 }}>
+        <Icon size={big ? 24 : 20} strokeWidth={2} />
+      </motion.div>
+      <span className={`px-0.5 text-center ${big ? 'text-xs' : 'text-[11px]'} font-semibold leading-tight`}>
+        {bucket.id === 'timeout' && active && activeDuration != null
+          ? formatDuration(activeDuration)
+          : bucket.label}
+      </span>
+    </motion.div>
+  );
+}

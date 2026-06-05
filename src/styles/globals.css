@@ -317,6 +317,21 @@ body {
   transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.25);
 }
 
+/* Content/media tiles (live stream, category, clip, video cards) lift off the
+   page background with a faint accent wash, so a tile reads as its own surface
+   instead of a bordered cut-out of the background. Most noticeable on the near
+   black themes, where the glass tint alone is almost the same color as the page.
+   Layered ON TOP of the glass-panel tint (so the Glassiness fade still works);
+   kept to a low-alpha accent so it stays on-theme — a tint, never a glow. */
+.media-card {
+  background-image:
+    linear-gradient(
+      color-mix(in srgb, var(--color-accent) 5%, transparent),
+      color-mix(in srgb, var(--color-accent) 5%, transparent)
+    ),
+    linear-gradient(var(--color-background-secondary), var(--color-background-secondary));
+}
+
 /* Settings card — AuraKey steps-container background, glass-panel bevel preserved. */
 .settings-card {
   background: linear-gradient(137deg, #111214 4.87%, #0c0d0f 75.88%);
@@ -463,10 +478,33 @@ body {
 .glass-button:active {
   background-color: var(--color-surface-active);
   /* Compression effect when clicked */
-  box-shadow: 
+  box-shadow:
     inset 1px 1px 0 0 rgba(255, 255, 255, 0.05),
     inset -1px -1px 0 0 rgba(0, 0, 0, 0.1),
     0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+/* Discord-branded call to action — blurple fill carrying the same crisp inset
+   bevel as the glass buttons (tactile, no outer glow). */
+.discord-join-button {
+  background: linear-gradient(180deg, #5865f2 0%, #4f5bd6 100%);
+  box-shadow:
+    inset 1px 1px 0 0 rgba(255, 255, 255, 0.18),
+    inset -1px -1px 0 0 rgba(0, 0, 0, 0.2),
+    0 4px 10px rgba(0, 0, 0, 0.25);
+  transition: all 0.25s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.discord-join-button:hover {
+  background: linear-gradient(180deg, #6571f5 0%, #5865f2 100%);
+}
+
+.discord-join-button:active {
+  background: linear-gradient(180deg, #4f5bd6 0%, #4853c4 100%);
+  box-shadow:
+    inset 1px 1px 0 0 rgba(255, 255, 255, 0.08),
+    inset -1px -1px 0 0 rgba(0, 0, 0, 0.18),
+    0 2px 4px rgba(0, 0, 0, 0.22);
 }
 
 .glass-input {
@@ -1697,6 +1735,17 @@ body {
   }
   100% {
     background-position: 200% 0;
+  }
+}
+
+/* Held-in-drag sweep: a light band crosses the message, then sits fully
+   off-screen so the loop reset is never visible. */
+@keyframes sn-held-sweep {
+  0% {
+    transform: translateX(-130%);
+  }
+  100% {
+    transform: translateX(130%);
   }
 }
 

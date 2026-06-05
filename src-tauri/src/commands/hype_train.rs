@@ -346,7 +346,7 @@ pub async fn get_hype_train_status(
                                     let remaining = level_goal - current_progress;
 
                                     debug!(
-                                        "[HypeTrain] 🚂 Level {} - Progress: {}/{} (remaining: {}) on {}",
+                                        "[HypeTrain] Level {} - Progress: {}/{} (remaining: {}) on {}",
                                         train_status.level,
                                         current_progress,
                                         level_goal,
@@ -382,7 +382,7 @@ pub async fn get_hype_train_status(
     // Log if we only got level (no progress details)
     if progress == 0 && goal == 0 {
         debug!(
-            "[HypeTrain] 🚂 Level {} active on {} (no progress details available)",
+            "[HypeTrain] Level {} active on {} (no progress details available)",
             train_status.level, channel_login
         );
     }

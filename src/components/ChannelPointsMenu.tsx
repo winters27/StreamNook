@@ -265,7 +265,7 @@ const ChannelPointsMenu: React.FC<ChannelPointsMenuProps> = ({
             setRevealedEmote(result.unlocked_emote);
             setShowEmoteReveal(true);
           } else {
-            useAppStore.getState().addToast('🎉 Random emote unlocked!', 'success');
+            useAppStore.getState().addToast('Random emote unlocked!', 'success');
           }
           onBalanceUpdate();
           if (onEmotesChange) onEmotesChange();

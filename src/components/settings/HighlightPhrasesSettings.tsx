@@ -77,7 +77,7 @@ const HighlightPhrasesSettings = () => {
             </p>
             <button
               onClick={addPhrase}
-              className="inline-flex items-center gap-2 px-3 py-1.5 bg-accent hover:bg-accent/80 text-white text-sm font-medium rounded transition-colors"
+              className="glass-button inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-textPrimary text-sm font-medium"
             >
               <Plus size={14} />
               Add your first phrase

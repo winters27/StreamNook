@@ -393,7 +393,7 @@ pub async fn place_prediction(
             .and_then(|v| v.as_i64())
             .unwrap_or(0);
         debug!(
-            "🔮 Prediction placed successfully! ID: {}, Points: {}",
+            "Prediction placed successfully! ID: {}, Points: {}",
             pred_id, pred_points
         );
     }
@@ -508,7 +508,7 @@ pub async fn get_active_prediction(
         }
 
         debug!(
-            "🔮 Found active prediction on {}: {} (status: {})",
+            "Found active prediction on {}: {} (status: {})",
             channel_login, title, status
         );
 
@@ -969,7 +969,7 @@ pub async fn redeem_channel_reward(
         .map_err(|e| format!("Failed to read redemption response body: {}", e))?;
 
     log::info!(
-        "🎁 redeem_channel_reward response (status={}, channel={}, reward={}): {}",
+        "redeem_channel_reward response (status={}, channel={}, reward={}): {}",
         status,
         channel_id,
         reward_id,
@@ -980,7 +980,7 @@ pub async fn redeem_channel_reward(
         Ok(v) => v,
         Err(e) => {
             log::error!(
-                "🎁 redeem_channel_reward: failed to parse body as JSON: {} | body: {}",
+                "redeem_channel_reward: failed to parse body as JSON: {} | body: {}",
                 e,
                 &response_text[..response_text.len().min(2000)]
             );
@@ -996,7 +996,7 @@ pub async fn redeem_channel_reward(
                 .unwrap_or("unknown GraphQL error");
             let code = errors[0]["extensions"]["code"].as_str().unwrap_or("");
             log::error!(
-                "🎁 redeem_channel_reward GraphQL errors: {}",
+                "redeem_channel_reward GraphQL errors: {}",
                 serde_json::to_string(&errors).unwrap_or_default()
             );
             return Ok(crate::models::drops::RedemptionResult {
@@ -1045,7 +1045,7 @@ pub async fn redeem_channel_reward(
 
         // error is explicitly null (or missing) on the payload → success
         debug!(
-            "🎁 Successfully redeemed reward {} for {} points on channel {}",
+            "Successfully redeemed reward {} for {} points on channel {}",
             reward_id, cost, channel_id
         );
         return Ok(crate::models::drops::RedemptionResult {
@@ -1059,7 +1059,7 @@ pub async fn redeem_channel_reward(
 
     // Unexpected response
     log::error!(
-        "🎁 redeem_channel_reward unexpected shape (status={}, channel={}, reward={}): {}",
+        "redeem_channel_reward unexpected shape (status={}, channel={}, reward={}): {}",
         status,
         channel_id,
         reward_id,
@@ -1178,7 +1178,7 @@ pub async fn send_highlighted_message(
     // Check for successful send
     if result["data"]["sendHighlightedChatMessage"].is_object() {
         debug!(
-            "✨ Successfully sent highlighted message to channel {} for {} points",
+            "Successfully sent highlighted message to channel {} for {} points",
             channel_id, cost
         );
 
@@ -1330,7 +1330,7 @@ pub async fn unlock_random_emote(
             });
 
         debug!(
-            "🎉 Successfully unlocked random emote on channel {} for {} points: {:?}",
+            "Successfully unlocked random emote on channel {} for {} points: {:?}",
             channel_id, cost, unlocked_emote
         );
 
@@ -1635,7 +1635,7 @@ pub async fn unlock_modified_emote(
         });
 
         debug!(
-            "🖌️ Successfully modified emote {} on channel {} - New balance: {:?}",
+            "Successfully modified emote {} on channel {} - New balance: {:?}",
             emote_id, channel_id, new_balance
         );
 
@@ -1793,7 +1793,7 @@ pub async fn unlock_chosen_emote(
         });
 
         debug!(
-            "🎉 Successfully unlocked emote {} on channel {} - New balance: {:?}",
+            "Successfully unlocked emote {} on channel {} - New balance: {:?}",
             emote_id, channel_id, new_balance
         );
 

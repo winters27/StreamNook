@@ -67,14 +67,11 @@ impl CookieJarService {
             debug!("[COOKIE_JAR] Loading cookies from: {:?}", file_path);
             match Self::load_from_file(&file_path) {
                 Ok(store) => {
-                    debug!(
-                        "[COOKIE_JAR] ✅ Loaded {} cookies",
-                        store.iter_any().count()
-                    );
+                    debug!("[COOKIE_JAR] Loaded {} cookies", store.iter_any().count());
                     store
                 }
                 Err(e) => {
-                    error!("[COOKIE_JAR] ⚠️ Failed to load cookies: {:?}", e);
+                    error!("[COOKIE_JAR] Failed to load cookies: {:?}", e);
                     error!("[COOKIE_JAR] Creating new cookie store");
                     CookieStore::default()
                 }
@@ -130,7 +127,7 @@ impl CookieJarService {
             .map_err(|e| anyhow::anyhow!("Failed to save cookies: {:?}", e))?;
 
         debug!(
-            "[COOKIE_JAR] ✅ Saved {} cookies to {:?}",
+            "[COOKIE_JAR] Saved {} cookies to {:?}",
             store.iter_any().count(),
             self.file_path
         );
@@ -147,7 +144,7 @@ impl CookieJarService {
         if self.file_path.exists() {
             fs::remove_file(&self.file_path)?;
             debug!(
-                "[COOKIE_JAR] ✅ Cleared cookies and deleted file: {:?}",
+                "[COOKIE_JAR] Cleared cookies and deleted file: {:?}",
                 self.file_path
             );
         }

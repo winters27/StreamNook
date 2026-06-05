@@ -50,7 +50,7 @@ async fn try_gql_badge_update(badge_id: &str, badge_version: &str) -> Result<boo
     };
 
     debug!(
-        "[ChatIdentity] 🚀 Attempting fast GQL badge update for '{}'",
+        "[ChatIdentity] Attempting fast GQL badge update for '{}'",
         badge_id
     );
 
@@ -117,7 +117,7 @@ async fn try_gql_badge_update(badge_id: &str, badge_version: &str) -> Result<boo
         }
 
         if json.get("data").is_some() {
-            debug!("[ChatIdentity] ✅ GQL badge update successful!");
+            debug!("[ChatIdentity] GQL badge update successful!");
             return Ok(true);
         }
     }
@@ -200,7 +200,7 @@ struct GQLBadge {
 /// Returns Ok(Some(badges)) if successful, Ok(None) if should fallback
 async fn try_gql_badge_fetch(username: &str) -> Result<Option<Vec<ChatIdentityBadge>>, String> {
     debug!(
-        "[ChatIdentity] 🚀 Attempting fast GQL badge fetch for '{}'",
+        "[ChatIdentity] Attempting fast GQL badge fetch for '{}'",
         username
     );
 
@@ -266,7 +266,7 @@ async fn try_gql_badge_fetch(username: &str) -> Result<Option<Vec<ChatIdentityBa
     });
 
     debug!(
-        "[ChatIdentity] ✅ GQL fetch successful! Found {} badges",
+        "[ChatIdentity] GQL fetch successful! Found {} badges",
         sorted_badges.len()
     );
     Ok(Some(sorted_badges))
@@ -705,7 +705,7 @@ pub async fn fetch_chat_identity_badges(
     match try_gql_badge_fetch(&channel_name).await {
         Ok(Some(badges)) => {
             debug!(
-                "[ChatIdentity] ✅ Fast GQL path succeeded with {} badges!",
+                "[ChatIdentity] Fast GQL path succeeded with {} badges!",
                 badges.len()
             );
             let result = BadgeScrapeResult {
@@ -813,7 +813,7 @@ pub async fn update_chat_identity(
     match try_gql_badge_update(&badge_id, &badge_version).await {
         Ok(true) => {
             // GQL succeeded! Emit success immediately and return
-            debug!("[ChatIdentity] ✅ Fast GQL update succeeded!");
+            debug!("[ChatIdentity] Fast GQL update succeeded!");
             let result = BadgeUpdateResult {
                 success: true,
                 message: "Badge updated via GQL (instant)".to_string(),
@@ -883,7 +883,7 @@ pub async fn receive_update_result(
 ) -> Result<(), String> {
     debug!(
         "[ChatIdentity] Update result: {} - {} (badge: {})",
-        if result.success { "✅" } else { "❌" },
+        if result.success { "OK" } else { "FAILED" },
         result.message,
         result.badge_id
     );

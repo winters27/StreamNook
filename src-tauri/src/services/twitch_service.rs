@@ -232,7 +232,7 @@ impl TwitchService {
         cookie_jar
             .set_full_token_data(&token.access_token, &token.refresh_token, token.expires_at)
             .await?;
-        debug!("[STORAGE] ✅ Full token data saved to cookies (access, refresh, expires_at)");
+        debug!("[STORAGE] Full token data saved to cookies (access, refresh, expires_at)");
         Ok(())
     }
 
@@ -352,7 +352,7 @@ impl TwitchService {
 
                     match (file_result, cookie_result) {
                         (Ok(_), Ok(_)) => {
-                            debug!("[LOGIN] ✅ Token stored successfully to file and cookies!");
+                            debug!("[LOGIN] Token stored successfully to file and cookies!");
 
                             // Try to also store in keyring as backup (but don't fail if it doesn't work)
                             if let Ok(entry) = Entry::new(KEYRING_SERVICE, KEYRING_USERNAME) {
@@ -365,24 +365,24 @@ impl TwitchService {
                             // Emit success event
                             debug!("[LOGIN] Emitting twitch-login-complete event...");
                             if let Err(e) = app_handle.emit("twitch-login-complete", ()) {
-                                error!("[LOGIN] ❌ Failed to emit login-complete event: {}", e);
+                                error!("[LOGIN] Failed to emit login-complete event: {}", e);
                             } else {
-                                debug!("[LOGIN] ✅ Event emitted successfully");
+                                debug!("[LOGIN] Event emitted successfully");
                             }
                         }
                         (Ok(_), Err(e)) => {
-                            error!("[LOGIN] ⚠️ Token saved to file but cookies failed: {:?}", e);
+                            error!("[LOGIN] Token saved to file but cookies failed: {:?}", e);
                             // Still emit success since file storage worked
                             let _ = app_handle.emit("twitch-login-complete", ());
                         }
                         (Err(e), Ok(_)) => {
-                            error!("[LOGIN] ⚠️ Token saved to cookies but file failed: {:?}", e);
+                            error!("[LOGIN] Token saved to cookies but file failed: {:?}", e);
                             // Still emit success since cookies worked
                             let _ = app_handle.emit("twitch-login-complete", ());
                         }
                         (Err(file_err), Err(cookie_err)) => {
                             error!(
-                                "[LOGIN] ❌ Failed to store token anywhere! File: {:?}, Cookie: {:?}",
+                                "[LOGIN] Failed to store token anywhere! File: {:?}, Cookie: {:?}",
                                 file_err, cookie_err
                             );
                             let _ = app_handle.emit(
@@ -393,7 +393,7 @@ impl TwitchService {
                     }
                 }
                 Err(e) => {
-                    error!("[LOGIN] ❌ Token polling failed: {}", e);
+                    error!("[LOGIN] Token polling failed: {}", e);
                     let _ = app_handle.emit("twitch-login-error", e.to_string());
                 }
             }
@@ -661,7 +661,7 @@ impl TwitchService {
         // Try to load from file first (primary storage)
         match Self::load_token_from_file() {
             Ok(mut token) => {
-                // debug!("[GET_TOKEN] ✅ Token retrieved from file storage");
+                // debug!("[GET_TOKEN] Token retrieved from file storage");
 
                 // Check if token is expired or about to expire (within 5 minutes)
                 let buffer_time = 300; // 5 minutes buffer
@@ -699,7 +699,7 @@ impl TwitchService {
                 debug!("[GET_TOKEN] Trying cookies as fallback...");
                 match Self::load_token_from_cookies().await {
                     Ok(mut cookie_token) => {
-                        debug!("[GET_TOKEN] ✅ Token retrieved from cookies");
+                        debug!("[GET_TOKEN] Token retrieved from cookies");
 
                         // Check if token is expired or about to expire
                         let buffer_time = 300; // 5 minutes buffer
@@ -761,7 +761,7 @@ impl TwitchService {
 
                         if let Ok(entry) = Entry::new(KEYRING_SERVICE, KEYRING_USERNAME) {
                             if let Ok(pwd) = entry.get_password() {
-                                debug!("[GET_TOKEN] ✅ Token retrieved from keyring fallback");
+                                debug!("[GET_TOKEN] Token retrieved from keyring fallback");
 
                                 let mut token: StorableToken = match serde_json::from_str(&pwd) {
                                     Ok(t) => t,
@@ -807,9 +807,7 @@ impl TwitchService {
                             }
                         }
 
-                        error!(
-                            "[GET_TOKEN] ❌ No token found in file, cookies, or keyring storage"
-                        );
+                        error!("[GET_TOKEN] No token found in file, cookies, or keyring storage");
                         Err(anyhow::anyhow!(
                             "Not authenticated. Please log in to Twitch first."
                         ))
@@ -828,7 +826,7 @@ impl TwitchService {
         let access_token = match Self::get_token().await {
             Ok(t) => t,
             Err(e) => {
-                debug!("❌ [Auth Debug] No valid token available: {:?}", e);
+                debug!("[Auth Debug] No valid token available: {:?}", e);
                 return Ok(TokenHealthStatus {
                     is_valid: false,
                     seconds_remaining: 0,
@@ -851,7 +849,7 @@ impl TwitchService {
             .await?;
 
         if !response.status().is_success() {
-            debug!("❌ [Auth Debug] Token is INVALID or EXPIRED. User needs to login or refresh.");
+            debug!("[Auth Debug] Token is INVALID or EXPIRED. User needs to login or refresh.");
             return Ok(TokenHealthStatus {
                 is_valid: false,
                 seconds_remaining: 0,
@@ -888,7 +886,7 @@ impl TwitchService {
 
         if !missing_scopes.is_empty() {
             debug!(
-                "❌ [Auth Debug] Token is missing required scopes: {:?}",
+                "[Auth Debug] Token is missing required scopes: {:?}",
                 missing_scopes
             );
 
@@ -923,16 +921,16 @@ impl TwitchService {
         let user_id = data["user_id"].as_str().map(|s| s.to_string());
         let login = data["login"].as_str().map(|s| s.to_string());
 
-        debug!("✅ [Auth Debug] Token is VALID and has all required scopes.");
-        debug!("ℹ️ [Auth Debug] Scopes: {}", scopes.join(", "));
+        debug!("[Auth Debug] Token is VALID and has all required scopes.");
+        debug!("[Auth Debug] Scopes: {}", scopes.join(", "));
         debug!(
-            "⏳ [Auth Debug] Time remaining: {}h {}m ({}s)",
+            "[Auth Debug] Time remaining: {}h {}m ({}s)",
             hours, minutes, seconds_remaining
         );
 
         let needs_refresh = seconds_remaining < 3600;
         if needs_refresh {
-            debug!("⚠️ [Auth Debug] Token expires in less than 1 hour! Consider refreshing soon.");
+            debug!("[Auth Debug] Token expires in less than 1 hour! Consider refreshing soon.");
         }
 
         Ok(TokenHealthStatus {
@@ -974,14 +972,14 @@ impl TwitchService {
             ));
         }
 
-        debug!("🔄 [Auth Debug] Force refreshing token...");
+        debug!("[Auth Debug] Force refreshing token...");
         let new_token = Self::refresh_token(&token.refresh_token).await?;
 
         // This is an explicit PRIMARY refresh, so persist to all primary-slot
         // storage (file + cookies + keyring).
         let _ = Self::persist_primary_token(&new_token).await;
 
-        debug!("🔄 [Auth Debug] Token refreshed successfully!");
+        debug!("[Auth Debug] Token refreshed successfully!");
         Ok(new_token.access_token)
     }
 
@@ -2173,6 +2171,9 @@ impl TwitchService {
         let pinned_messages: Vec<serde_json::Value> = raw_pins.iter().map(|(node, sender_id, pinned_by_id, badges)| {
             serde_json::json!({
                 "id": node.get("id").and_then(|v| v.as_str()).unwrap_or(""),
+                // The underlying chat message id (NOT the pin-record id above), so the
+                // client can tell which live chat message is currently pinned.
+                "message_id": node.pointer("/pinnedMessage/id").and_then(|v| v.as_str()).unwrap_or(""),
                 "type": node.get("type").and_then(|v| v.as_str()).unwrap_or("MOD"),
                 "message_text": node.pointer("/pinnedMessage/content/text").and_then(|v| v.as_str()).unwrap_or(""),
                 "sender_id": sender_id,
@@ -3438,6 +3439,97 @@ impl TwitchService {
             // scope/auth failure instead of an opaque "Failed to delete message".
             return Err(anyhow::anyhow!(
                 "Twitch rejected delete (HTTP {}): {}",
+                status,
+                error_text
+            ));
+        }
+
+        Ok(())
+    }
+
+    /// Pin a chat message to the top of the broadcaster's chat room (mod action).
+    ///
+    /// Helix `PUT /helix/chat/pins` — every parameter rides in the query string
+    /// and the body is empty. Uses the `moderator:manage:chat_messages` scope,
+    /// the SAME scope `delete_chat_message` already holds, so no re-auth is
+    /// needed. Only one mod-pinned message is active at a time; pinning a new one
+    /// replaces the prior pin. `duration_seconds` is optional (Twitch applies its
+    /// own default when omitted).
+    pub async fn pin_chat_message(
+        broadcaster_id: &str,
+        message_id: &str,
+        duration_seconds: Option<u32>,
+    ) -> Result<()> {
+        let token = Self::get_token().await?;
+        let client = crate::services::http::client().clone();
+        let user_info = Self::get_user_info().await?;
+        let moderator_id = &user_info.id;
+
+        let mut url = format!(
+            "https://api.twitch.tv/helix/chat/pins?broadcaster_id={}&moderator_id={}&message_id={}",
+            broadcaster_id, moderator_id, message_id
+        );
+        if let Some(d) = duration_seconds {
+            url.push_str(&format!("&duration_seconds={}", d));
+        }
+
+        let response = client
+            .put(&url)
+            .header("Client-Id", CLIENT_ID)
+            .header(AUTHORIZATION, format!("Bearer {}", token))
+            .send()
+            .await?;
+
+        if !response.status().is_success() && response.status() != 204 {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            error!(
+                "[TwitchService] Failed to pin message (HTTP {}): {}",
+                status, error_text
+            );
+            return Err(anyhow::anyhow!(
+                "Twitch rejected pin (HTTP {}): {}",
+                status,
+                error_text
+            ));
+        }
+
+        Ok(())
+    }
+
+    /// Unpin a mod-pinned chat message (mod action).
+    ///
+    /// Helix `DELETE /helix/chat/pins?broadcaster_id=..&moderator_id=..&message_id=..`
+    /// — `message_id` IS required (Twitch returns 400 "Missing required parameter
+    /// message_id" without it). Same `moderator:manage:chat_messages` scope as
+    /// pin/delete.
+    pub async fn unpin_chat_message(broadcaster_id: &str, message_id: &str) -> Result<()> {
+        let token = Self::get_token().await?;
+        let client = crate::services::http::client().clone();
+        let user_info = Self::get_user_info().await?;
+        let moderator_id = &user_info.id;
+
+        let url = format!(
+            "https://api.twitch.tv/helix/chat/pins?broadcaster_id={}&moderator_id={}&message_id={}",
+            broadcaster_id, moderator_id, message_id
+        );
+
+        let response = client
+            .delete(&url)
+            .header("Client-Id", CLIENT_ID)
+            .header(AUTHORIZATION, format!("Bearer {}", token))
+            .send()
+            .await?;
+
+        if !response.status().is_success() && response.status() != 204 {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            error!(
+                "[TwitchService] Failed to unpin message (HTTP {}): {}",
+                status, error_text
+            );
+            return Err(anyhow::anyhow!(
+                "Twitch rejected unpin (HTTP {}): {}",
                 status,
                 error_text
             ));

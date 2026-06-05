@@ -180,7 +180,7 @@ impl ChannelPointsService {
             // Check if user has a channel (not all users are streamers)
             if user["channel"].is_null() {
                 // User exists but has no channel - this is normal for non-streamers
-                debug!("ℹ️ User {} has no channel (not a streamer)", channel_login);
+                debug!("User {} has no channel (not a streamer)", channel_login);
                 return Ok(ChannelPointsContext {
                     channel_id: user_id.clone(),
                     channel_login: channel_login.to_string(),
@@ -198,7 +198,7 @@ impl ChannelPointsService {
                 if channel["self"].is_null() {
                     // Channel exists but no self data (not logged in for this channel?)
                     debug!(
-                        "⚠️ No self data for channel {} - may not be logged in",
+                        "No self data for channel {} - may not be logged in",
                         channel_login
                     );
                     // Extract custom points settings even without self data
@@ -218,7 +218,7 @@ impl ChannelPointsService {
                     if self_data["communityPoints"].is_null() {
                         // Channel doesn't have community points enabled
                         debug!(
-                            "ℹ️ Channel {} doesn't have community points enabled",
+                            "Channel {} doesn't have community points enabled",
                             channel_login
                         );
                         let (points_name, points_icon_url) = Self::extract_points_settings(channel);
@@ -277,14 +277,14 @@ impl ChannelPointsService {
         } else if result["data"]["user"].is_null() {
             // User doesn't exist
             debug!(
-                "⚠️ User {} not found (tried: {})",
+                "User {} not found (tried: {})",
                 channel_login, channel_login_lower
             );
             return Err(anyhow::anyhow!("User {} not found", channel_login));
         }
 
         // If we get here, something unexpected happened - log the response for debugging
-        error!("❌ Unexpected response structure for {}", channel_login);
+        error!("Unexpected response structure for {}", channel_login);
         error!(
             "Response: {}",
             serde_json::to_string_pretty(&result).unwrap_or_default()
@@ -303,7 +303,7 @@ impl ChannelPointsService {
         token: &str,
     ) -> Result<i32> {
         debug!(
-            "🎁 Claiming channel points for channel: {} (claim_id: {})",
+            "Claiming channel points for channel: {} (claim_id: {})",
             channel_login, claim_id
         );
 
@@ -398,7 +398,7 @@ impl ChannelPointsService {
                 .unwrap_or(50) as i32;
 
             debug!(
-                "✅ Successfully claimed channel points for {} (earned: ~50 points)",
+                "Successfully claimed channel points for {} (earned: ~50 points)",
                 channel_login
             );
 
@@ -439,7 +439,7 @@ impl ChannelPointsService {
             .await?;
 
         debug!(
-            "💰 Channel points for {}: {} (claim available: {})",
+            "Channel points for {}: {} (claim available: {})",
             channel_login,
             context.balance,
             context.available_claim.is_some()
@@ -448,7 +448,7 @@ impl ChannelPointsService {
         if let Some(claim_info) = context.available_claim {
             if auto_claim {
                 debug!(
-                    "🎯 Auto-claiming {} points for {}",
+                    "Auto-claiming {} points for {}",
                     claim_info.points, channel_login
                 );
                 match self
@@ -462,12 +462,12 @@ impl ChannelPointsService {
                 {
                     Ok(points) => return Ok(Some(points)),
                     Err(e) => {
-                        error!("❌ Failed to auto-claim points: {}", e);
+                        error!("Failed to auto-claim points: {}", e);
                         return Err(e);
                     }
                 }
             } else {
-                debug!("ℹ️ Points available but auto-claim is disabled");
+                debug!("Points available but auto-claim is disabled");
                 return Ok(Some(claim_info.points));
             }
         }
@@ -491,7 +491,7 @@ impl ChannelPointsService {
         // Guard: don't reset counters if already watching this stream
         if self.is_watching(channel_id).await {
             debug!(
-                "ℹ️ Already watching {} — skipping re-add to preserve counters",
+                "Already watching {} — skipping re-add to preserve counters",
                 channel_login
             );
             return Ok(());
@@ -517,7 +517,7 @@ impl ChannelPointsService {
         watching.insert(channel_id.to_string(), watching_stream);
 
         debug!(
-            "👀 Started watching {} for channel points (using spade.twitch.tv/track)",
+            "Started watching {} for channel points (using spade.twitch.tv/track)",
             channel_login
         );
         Ok(())
@@ -528,7 +528,7 @@ impl ChannelPointsService {
         let mut watching = self.watching_streams.write().await;
         if let Some(stream) = watching.remove(channel_id) {
             debug!(
-                "👋 Stopped watching {} after {} minutes",
+                "Stopped watching {} after {} minutes",
                 stream.channel_login, stream.minutes_watched
             );
         }
@@ -571,12 +571,12 @@ impl ChannelPointsService {
             if let Some(pos) = all_streams.iter().position(|s| s.channel_id == reserved_id) {
                 streams_to_send.push(all_streams.remove(pos));
                 debug!(
-                    "🔒 [SEND] Reserved stream {} prioritized in send queue",
+                    "[SEND] Reserved stream {} prioritized in send queue",
                     reserved_id
                 );
             } else {
                 debug!(
-                    "⚠️ [SEND] Reserved stream {} NOT in watching set!",
+                    "[SEND] Reserved stream {} NOT in watching set!",
                     reserved_id
                 );
             }
@@ -595,7 +595,7 @@ impl ChannelPointsService {
             .iter()
             .map(|s| format!("{}({})", s.channel_login, s.channel_id))
             .collect();
-        debug!("📤 [SEND] Sending payloads to: {:?}", send_names);
+        debug!("[SEND] Sending payloads to: {:?}", send_names);
 
         for stream in &mut streams_to_send {
             match self
@@ -615,19 +615,16 @@ impl ChannelPointsService {
                         stream.points_earned += 10;
                     }
                     debug!(
-                        "✅ Sent minute-watched for {} ({} minutes, {} total watching)",
+                        "Sent minute-watched for {} ({} minutes, {} total watching)",
                         stream.channel_login, stream.minutes_watched, total_streams
                     );
                 }
                 Ok(false) => {
-                    debug!(
-                        "⚠️ Failed to send minute-watched for {}",
-                        stream.channel_login
-                    );
+                    debug!("Failed to send minute-watched for {}", stream.channel_login);
                 }
                 Err(e) => {
                     error!(
-                        "❌ Error sending minute-watched for {}: {}",
+                        "Error sending minute-watched for {}: {}",
                         stream.channel_login, e
                     );
                 }
@@ -637,7 +634,7 @@ impl ChannelPointsService {
         // Log rotation status
         if total_streams > MAX_CONCURRENT_STREAMS {
             debug!(
-                "🔄 Rotating through {} channels ({} earning concurrently)",
+                "Rotating through {} channels ({} earning concurrently)",
                 total_streams, MAX_CONCURRENT_STREAMS
             );
         }
@@ -730,7 +727,7 @@ impl ChannelPointsService {
                     Ok(true)
                 } else {
                     debug!(
-                        "⚠️ Watch payload returned HTTP {} for {}",
+                        "Watch payload returned HTTP {} for {}",
                         status.as_u16(),
                         channel_login
                     );
@@ -739,9 +736,9 @@ impl ChannelPointsService {
             }
             Err(e) => {
                 if e.is_timeout() {
-                    debug!("⏱️ Watch payload TIMEOUT for {}", channel_login);
+                    debug!("Watch payload TIMEOUT for {}", channel_login);
                 } else {
-                    debug!("❌ Watch payload error for {}: {}", channel_login, e);
+                    debug!("Watch payload error for {}: {}", channel_login, e);
                 }
                 Ok(false)
             }

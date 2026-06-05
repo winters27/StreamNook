@@ -122,7 +122,7 @@ impl SevenTVAuthService {
         let mut cached = SEVENTV_TOKEN.write().await;
         *cached = Some(storable_token);
 
-        debug!("[7TV_AUTH] ✅ 7TV token stored successfully");
+        debug!("[7TV_AUTH] 7TV token stored successfully");
         Ok(())
     }
 
@@ -347,7 +347,7 @@ impl SevenTVAuthService {
         let json = serde_json::to_string(&token)?;
         let path = Self::account_token_file_path(twitch_id)?;
         fs::write(&path, Self::xor_obfuscate(json.as_bytes()))?;
-        debug!("[7TV_AUTH] ✅ stored 7TV token for account {}", twitch_id);
+        debug!("[7TV_AUTH] stored 7TV token for account {}", twitch_id);
         Ok(())
     }
 
@@ -430,27 +430,24 @@ impl SevenTVAuthService {
 pub struct SevenTVCosmeticsService;
 
 impl SevenTVCosmeticsService {
-    /// Run a cosmetics mutation with an explicit token. On an auth failure it
-    /// clears the relevant stored token — `cleanup = Some(twitch_id)` for a
-    /// linked account, `None` for the primary — and returns SESSION_EXPIRED.
-    async fn run_mutation(
+    /// Authenticated POST to the 7TV GQL API returning the full parsed JSON body
+    /// (data plus any non-auth errors). On an AUTH failure (HTTP 401 or a
+    /// `LOGIN_REQUIRED` GraphQL error) it clears the relevant stored token
+    /// (`cleanup = Some(twitch_id)` for a linked account, `None` for the primary)
+    /// and returns SESSION_EXPIRED. Non-auth GraphQL errors are left in the
+    /// returned JSON for the caller to surface (e.g. set full, name conflict).
+    pub async fn post_authed(
         token: &str,
         cleanup: Option<&str>,
-        query: &str,
-        variables: serde_json::Value,
-        op_name: &str,
-    ) -> Result<bool> {
+        body: serde_json::Value,
+    ) -> Result<serde_json::Value> {
         let client = crate::services::http::client().clone();
 
         let response = client
             .post(SEVENTV_GQL_URL)
             .header("Content-Type", "application/json")
             .header("Authorization", format!("Bearer {}", token))
-            .json(&serde_json::json!({
-                "query": query,
-                "variables": variables,
-                "operationName": op_name,
-            }))
+            .json(&body)
             .send()
             .await?;
 
@@ -458,34 +455,61 @@ impl SevenTVCosmeticsService {
             let status = response.status();
             let error_text = response.text().await?;
             if status == reqwest::StatusCode::UNAUTHORIZED {
-                debug!("[7TV] mutation returned 401 - clearing token");
+                debug!("[7TV] authed request returned 401 - clearing token");
                 Self::clear_token(cleanup).await;
                 return Err(anyhow::anyhow!(
                     "SESSION_EXPIRED: 7TV session has expired. Please reconnect your 7TV account."
                 ));
             }
-            return Err(anyhow::anyhow!("Failed 7TV mutation: {}", error_text));
+            return Err(anyhow::anyhow!("Failed 7TV request: {}", error_text));
         }
 
         let result: serde_json::Value = response.json().await?;
 
-        if let Some(errors) = result.get("errors") {
-            if let Some(arr) = errors.as_array() {
-                for err in arr {
-                    let is_auth_err = err
-                        .get("extensions")
-                        .and_then(|e| e.get("code"))
-                        .and_then(|c| c.as_str())
-                        .map(|c| c == "LOGIN_REQUIRED")
-                        .unwrap_or(false);
-                    if is_auth_err {
-                        debug!("[7TV] GQL returned LOGIN_REQUIRED - clearing token");
-                        Self::clear_token(cleanup).await;
-                        return Err(anyhow::anyhow!("SESSION_EXPIRED: 7TV session has expired. Please reconnect your 7TV account."));
-                    }
-                }
+        // Auth-class GraphQL errors clear the token and surface SESSION_EXPIRED;
+        // every other error stays in the payload for the caller to handle.
+        if let Some(arr) = result.get("errors").and_then(|e| e.as_array()) {
+            let auth_err = arr.iter().any(|err| {
+                err.get("extensions")
+                    .and_then(|e| e.get("code"))
+                    .and_then(|c| c.as_str())
+                    .map(|c| c == "LOGIN_REQUIRED")
+                    .unwrap_or(false)
+            });
+            if auth_err {
+                debug!("[7TV] GQL returned LOGIN_REQUIRED - clearing token");
+                Self::clear_token(cleanup).await;
+                return Err(anyhow::anyhow!(
+                    "SESSION_EXPIRED: 7TV session has expired. Please reconnect your 7TV account."
+                ));
             }
-            return Err(anyhow::anyhow!("GraphQL errors: {:?}", errors));
+        }
+
+        Ok(result)
+    }
+
+    /// Run a cosmetics mutation with an explicit token. Builds the request body,
+    /// delegates the authed POST + token-cleanup to `post_authed`, and collapses
+    /// any GraphQL error into an `Err` (the paint/badge callers only need
+    /// success/failure).
+    async fn run_mutation(
+        token: &str,
+        cleanup: Option<&str>,
+        query: &str,
+        variables: serde_json::Value,
+        op_name: &str,
+    ) -> Result<bool> {
+        let body = serde_json::json!({
+            "query": query,
+            "variables": variables,
+            "operationName": op_name,
+        });
+        let result = Self::post_authed(token, cleanup, body).await?;
+
+        if let Some(arr) = result.get("errors").and_then(|e| e.as_array()) {
+            if !arr.is_empty() {
+                return Err(anyhow::anyhow!("GraphQL errors: {:?}", arr));
+            }
         }
 
         Ok(true)

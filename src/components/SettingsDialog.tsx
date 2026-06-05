@@ -10,6 +10,7 @@ import {
   Database,
   Command,
   Keyboard,
+  HardDrive,
   HelpCircle,
   Sparkles,
   Shield,
@@ -32,6 +33,7 @@ import SupportSettings from './settings/SupportSettings';
 import WhatsNewSettings from './settings/WhatsNewSettings';
 import CommandPaletteSettings from './settings/CommandPaletteSettings';
 import KeybindingsSettings from './settings/KeybindingsSettings';
+import BackupSettings from './settings/BackupSettings';
 import ProfileSettings from './settings/ProfileSettings';
 import SettingsSearchResults from './settings/SettingsSearchResults';
 import type { SettingsIndexEntry } from './settings/searchIndex';
@@ -56,6 +58,7 @@ const TABS: TabMeta[] = [
   { id: 'Cache',           label: 'Cache',           icon: Database,      tint: 'rgba(150, 170, 185, 0.22)', description: 'Emote, badge, and metadata caches' },
   { id: 'Command Palette', label: 'Command Palette', icon: Command,       tint: 'rgba(140, 200, 180, 0.22)', description: 'The Ctrl+K palette and snippets' },
   { id: 'Keybindings',     label: 'Keybindings',     icon: Keyboard,      tint: 'rgba(190, 160, 205, 0.22)', description: 'Customizable keyboard shortcuts' },
+  { id: 'Backup',          label: 'Backup',          icon: HardDrive,     tint: 'rgba(150, 175, 185, 0.22)', description: 'Back up, restore, and open your settings file' },
   { id: 'Support',         label: 'Support',         icon: HelpCircle,    tint: 'rgba(215, 165, 140, 0.22)', description: 'Logs, diagnostics, and feedback' },
   { id: "What's New",      label: "What's New",      icon: Sparkles,      tint: 'rgba(225, 195, 130, 0.20)', description: 'Recent releases and changelog' },
 ];
@@ -394,6 +397,7 @@ const SettingsDialog = () => {
                     {activeTab === 'Cache' && <CacheSettings />}
                     {activeTab === 'Command Palette' && <CommandPaletteSettings />}
                     {activeTab === 'Keybindings' && <KeybindingsSettings />}
+                    {activeTab === 'Backup' && <BackupSettings />}
                     {activeTab === 'Support' && <SupportSettings />}
                     {activeTab === "What's New" && <WhatsNewSettings />}
                   </>

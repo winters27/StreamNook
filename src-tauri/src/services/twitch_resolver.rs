@@ -21,11 +21,26 @@ use log::debug;
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
 
-/// Clip access-token GQL op hash (`VideoAccessToken_Clip`). Clip-specific, so it
-/// lives here rather than in auth_proxy (which only owns the live/VOD
-/// `PlaybackAccessToken` hash).
-const CLIP_ACCESS_TOKEN_HASH: &str =
-    "36b89d2507fce29e5ca551df756d27c1cfe079e2609642b4390aa4c35796eb11";
+/// Clip access-token GQL op (`VideoAccessToken_Clip`). Sent as the full inline
+/// query rather than a persisted-query hash: Twitch rotates the stored hashes and
+/// returns `PersistedQueryNotFound` when ours goes stale, which would null out
+/// `data.clip` and surface as a bogus "clip not found". The inline query has no
+/// hash to look up, so it survives those rotations.
+const CLIP_ACCESS_TOKEN_QUERY: &str = "\
+query VideoAccessToken_Clip($slug: ID!) {\n\
+  clip(slug: $slug) {\n\
+    id\n\
+    playbackAccessToken(params: {platform: \"web\", playerBackend: \"mediaplayer\", playerType: \"site\"}) {\n\
+      signature\n\
+      value\n\
+    }\n\
+    videoQualities {\n\
+      frameRate\n\
+      quality\n\
+      sourceURL\n\
+    }\n\
+  }\n\
+}";
 
 /// One rendition from a Twitch master playlist (an `EXT-X-MEDIA` /
 /// `EXT-X-STREAM-INF` / url triple).
@@ -66,54 +81,131 @@ pub struct ResolvedLive {
 
 /// Parse a Twitch master playlist into its video renditions.
 ///
-/// Twitch interleaves each rendition as `EXT-X-MEDIA` (TYPE=VIDEO) → then
-/// `EXT-X-STREAM-INF` → then the URL line, repeated. This is the same layout
-/// `auth_proxy::extract_high_tier_blocks` already relies on for splicing, so the
-/// assumption is production-proven.
+/// Anchored on `#EXT-X-STREAM-INF` (one per rendition), each paired with the next
+/// non-comment URI line. This mirrors what Streamlink's HLS parser did and is the
+/// reason it tolerated both master layouts Twitch ships:
+///   - Legacy: a `#EXT-X-MEDIA:TYPE=VIDEO,NAME="1080p60",GROUP-ID="chunked"` tag
+///     precedes each `#EXT-X-STREAM-INF` (the label lives in the MEDIA tag, linked
+///     by the STREAM-INF's `VIDEO="..."` group).
+///   - Modern (the "Transcode-ELT" / IVS stack served over the web/proxy path):
+///     no `#EXT-X-MEDIA` tags at all; the label rides on the STREAM-INF itself as
+///     `IVS-NAME="1080p60"` / `STABLE-VARIANT-ID` and the source rendition is
+///     flagged `IVS-VARIANT-SOURCE="source"` instead of `GROUP-ID="chunked"`.
+///
+/// The previous version keyed off `#EXT-X-MEDIA:TYPE=VIDEO` and so silently parsed
+/// to zero variants on the modern, MEDIA-less masters — the "master playlist had
+/// no variants" failure.
 pub fn parse_master(master: &str) -> Vec<Variant> {
     let lines: Vec<&str> = master.lines().collect();
+
+    // Pass 1: legacy `#EXT-X-MEDIA:TYPE=VIDEO` renditions, keyed GROUP-ID → NAME.
+    // Empty on modern masters; that's fine, the STREAM-INF carries the label there.
+    let mut media_names: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    for line in &lines {
+        let l = line.trim();
+        if l.starts_with("#EXT-X-MEDIA:") && l.contains("TYPE=VIDEO") {
+            if let Some(gid) = auth_proxy::extract_attr(l, "GROUP-ID") {
+                let name = auth_proxy::extract_attr(l, "NAME").unwrap_or_default();
+                media_names.insert(gid, name);
+            }
+        }
+    }
+
+    // Pass 2: every `#EXT-X-STREAM-INF` + its following URI line is one variant.
     let mut out = Vec::new();
     let mut i = 0;
     while i < lines.len() {
-        let line = lines[i].trim();
-        if line.starts_with("#EXT-X-MEDIA:") && line.contains("TYPE=VIDEO") {
-            let name = auth_proxy::extract_attr(line, "NAME").unwrap_or_default();
-            let group_id = auth_proxy::extract_attr(line, "GROUP-ID").unwrap_or_default();
-
-            let inf_idx = i + 1;
-            let url_idx = i + 2;
-            let inf_ok = inf_idx < lines.len()
-                && lines[inf_idx]
-                    .trim_start()
-                    .starts_with("#EXT-X-STREAM-INF:");
-            let url_ok = url_idx < lines.len()
-                && !lines[url_idx].trim_start().starts_with('#')
-                && !lines[url_idx].trim().is_empty();
-
-            if inf_ok && url_ok {
-                let inf = lines[inf_idx].trim();
-                let (width, height) = parse_resolution(inf);
-                let fps = auth_proxy::extract_attr(inf, "FRAME-RATE").and_then(|s| s.parse().ok());
-                let codecs = auth_proxy::extract_attr(inf, "CODECS");
-                let bandwidth =
-                    auth_proxy::extract_attr(inf, "BANDWIDTH").and_then(|s| s.parse().ok());
-                out.push(Variant {
-                    name,
-                    group_id,
-                    width,
-                    height,
-                    fps,
-                    codecs,
-                    bandwidth,
-                    url: lines[url_idx].trim().to_string(),
-                });
-                i += 3;
+        let inf = lines[i].trim();
+        if !inf.starts_with("#EXT-X-STREAM-INF:") {
+            i += 1;
+            continue;
+        }
+        // The URL is the next non-comment, non-empty line.
+        let mut j = i + 1;
+        while j < lines.len() {
+            let u = lines[j].trim();
+            if u.is_empty() || u.starts_with('#') {
+                j += 1;
                 continue;
             }
+            break;
         }
-        i += 1;
+        if j >= lines.len() {
+            break; // dangling STREAM-INF with no URL; nothing more to parse
+        }
+
+        let (width, height) = parse_resolution(inf);
+        let fps = auth_proxy::extract_attr(inf, "FRAME-RATE").and_then(|s| s.parse().ok());
+        let codecs = auth_proxy::extract_attr(inf, "CODECS");
+        let bandwidth = auth_proxy::extract_attr(inf, "BANDWIDTH").and_then(|s| s.parse().ok());
+        let video_group = auth_proxy::extract_attr(inf, "VIDEO");
+
+        // The source ("best") rendition: legacy `GROUP-ID="chunked"` (via the
+        // STREAM-INF's VIDEO link) or the modern `IVS-VARIANT-SOURCE="source"`.
+        let is_source = video_group.as_deref() == Some("chunked")
+            || auth_proxy::extract_attr(inf, "IVS-VARIANT-SOURCE")
+                .is_some_and(|s| s.eq_ignore_ascii_case("source"));
+
+        // Quality label, in priority: legacy MEDIA NAME (by group) → modern
+        // IVS-NAME → STABLE-VARIANT-ID → derived from resolution → group id.
+        let name = video_group
+            .as_ref()
+            .and_then(|g| media_names.get(g).cloned())
+            .filter(|n| !n.is_empty())
+            .or_else(|| auth_proxy::extract_attr(inf, "IVS-NAME"))
+            .or_else(|| auth_proxy::extract_attr(inf, "STABLE-VARIANT-ID"))
+            .or_else(|| derive_name(height, fps, codecs.as_deref()))
+            .or_else(|| video_group.clone())
+            .unwrap_or_default();
+
+        let group_id = if is_source {
+            "chunked".to_string()
+        } else {
+            video_group.clone().unwrap_or_default()
+        };
+
+        out.push(Variant {
+            name,
+            group_id,
+            width,
+            height,
+            fps,
+            codecs,
+            bandwidth,
+            url: lines[j].trim().to_string(),
+        });
+        i = j + 1;
     }
     out
+}
+
+/// Synthesize a quality label when the master carries no explicit name (neither a
+/// legacy MEDIA NAME nor a modern IVS label). Resolution-bearing renditions become
+/// `"1080p60"` / `"480p"`; a resolution-less audio rendition becomes `"audio_only"`.
+fn derive_name(height: Option<u32>, fps: Option<f64>, codecs: Option<&str>) -> Option<String> {
+    match height {
+        Some(h) => {
+            let f = fps.unwrap_or(30.0).round() as u32;
+            // Twitch suffixes the framerate only for high-fps tiers ("1080p60"),
+            // leaving 30fps tiers bare ("480p"), matching its own NAME shapes.
+            if f >= 50 {
+                Some(format!("{}p{}", h, f))
+            } else {
+                Some(format!("{}p", h))
+            }
+        }
+        None => {
+            let audio = codecs.is_some_and(|c| {
+                c.contains("mp4a")
+                    && !c.contains("avc")
+                    && !c.contains("av01")
+                    && !c.contains("hvc")
+                    && !c.contains("hev")
+            });
+            audio.then(|| "audio_only".to_string())
+        }
+    }
 }
 
 /// Parse `RESOLUTION=1920x1080` into `(Some(1920), Some(1080))`.
@@ -293,8 +385,9 @@ pub async fn resolve_live(
         };
         let (ttvlol, auth) = tokio::join!(ttvlol_fut, auth_fut);
         let auth_master = auth.unwrap_or(None);
+        let auth_fallback = auth_master.clone();
 
-        let (master, status) = match (ttvlol, auth_master) {
+        let (mut master, mut status) = match (ttvlol, auth_master) {
             (Ok((base, t)), Some(a)) => {
                 let region = proxy_health::region_for_base(&base);
                 (
@@ -339,6 +432,28 @@ pub async fn resolve_live(
             }
             (Err(e1), None) => return Err(anyhow!("both fetches failed: ttvlol={}", e1)),
         };
+
+        // Defense in depth: if the chosen master still parses to nothing (a proxy
+        // served a shape we can't read, or an empty body), fall back to the
+        // authenticated master when we have a usable one. This is Streamlink's
+        // proxy→upstream fallback: an ad-bearing stream beats no stream.
+        if parse_master(&master).is_empty() {
+            if let Some(a) = auth_fallback.filter(|a| !parse_master(a).is_empty()) {
+                debug!(
+                    "[Resolver] {} proxy master had no usable variants; falling back to authed master",
+                    channel
+                );
+                master = a;
+                status = PlaybackStatus {
+                    channel: channel.clone(),
+                    mode: "auth-only".to_string(),
+                    entitled: false,
+                    proxy_base: None,
+                    proxy_region: None,
+                };
+            }
+        }
+
         build(channel, master, status, quality)
     } else {
         // Direct auth, no proxy. Requires a login.
@@ -410,6 +525,16 @@ fn build(
 ) -> Result<ResolvedLive> {
     let variants = parse_master(&master);
     if variants.is_empty() {
+        // Log enough to tell apart the failure modes (empty body, error page,
+        // unrecognized master shape) without dumping the whole playlist.
+        let first = master.lines().next().unwrap_or("").trim();
+        debug!(
+            "[Resolver] {} no variants: {} bytes, stream-inf={}, first line: {:?}",
+            channel,
+            master.len(),
+            master.matches("#EXT-X-STREAM-INF").count(),
+            first
+        );
         return Err(anyhow!("{}: master playlist had no variants", channel));
     }
     let (idx, label) = select_variant(&variants, quality)
@@ -603,12 +728,7 @@ pub async fn resolve_clip(
 
     let body = json!({
         "operationName": "VideoAccessToken_Clip",
-        "extensions": {
-            "persistedQuery": {
-                "version": 1,
-                "sha256Hash": CLIP_ACCESS_TOKEN_HASH,
-            }
-        },
+        "query": CLIP_ACCESS_TOKEN_QUERY,
         "variables": { "slug": slug }
     });
 
@@ -626,6 +746,21 @@ pub async fn resolve_clip(
         .json()
         .await
         .context("clip GQL response not JSON")?;
+
+    // A GQL-level error (e.g. `PersistedQueryNotFound`, a rejected op, an auth
+    // problem) nulls out `data`, which is a different failure from a clip that
+    // genuinely doesn't exist. Surface it as-is so it isn't misread as "clip not
+    // found".
+    if let Some(errors) = resp.get("errors").and_then(|v| v.as_array()) {
+        if !errors.is_empty() {
+            let msg = errors
+                .iter()
+                .filter_map(|e| e.get("message").and_then(|m| m.as_str()))
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(anyhow!("clip GQL error for {}: {}", slug, msg));
+        }
+    }
 
     let clip = resp
         .pointer("/data/clip")
@@ -699,6 +834,27 @@ https://video-weaver.example/160p30.m3u8\n\
 #EXT-X-MEDIA:TYPE=VIDEO,GROUP-ID=\"audio_only\",NAME=\"audio_only\",AUTOSELECT=NO,DEFAULT=NO\n\
 #EXT-X-STREAM-INF:BANDWIDTH=160000,CODECS=\"mp4a.40.2\",VIDEO=\"audio_only\"\n\
 https://video-weaver.example/audio_only.m3u8\n";
+
+    // The modern "Transcode-ELT" / IVS master Twitch serves over the web/proxy
+    // path: NO `#EXT-X-MEDIA` tags at all; the label rides on the STREAM-INF as
+    // `IVS-NAME` and the source rendition is flagged `IVS-VARIANT-SOURCE="source"`.
+    // Trimmed from a real `forsen` proxy response. The old parser parsed this to
+    // zero variants ("master playlist had no variants").
+    const MASTER_MODERN_IVS: &str = "#EXTM3U\n\
+#EXT-X-SESSION-DATA:DATA-ID=\"NODE\",VALUE=\"x.cloudfront.hls.ttvnw.net\"\n\
+#EXT-X-SESSION-DATA:DATA-ID=\"TRANSCODESTACK\",VALUE=\"2025-Transcode-ELT-V1\"\n\
+#EXT-X-STREAM-INF:BANDWIDTH=160000,CODECS=\"mp4a.40.2\",STABLE-VARIANT-ID=\"audio_only\",IVS-NAME=\"audio_only\",IVS-VARIANT-SOURCE=\"transcode\"\n\
+https://euc11.playlist.ttvnw.net/audio.m3u8\n\
+#EXT-X-STREAM-INF:BANDWIDTH=6895917,RESOLUTION=1920x1080,CODECS=\"avc1.64002A,mp4a.40.2\",FRAME-RATE=60.000,STABLE-VARIANT-ID=\"1080p60\",IVS-NAME=\"1080p60\",IVS-VARIANT-SOURCE=\"source\"\n\
+https://euc11.playlist.ttvnw.net/1080.m3u8\n\
+#EXT-X-STREAM-INF:BANDWIDTH=3422999,RESOLUTION=1280x720,CODECS=\"avc1.4D401F,mp4a.40.2\",FRAME-RATE=60.000,STABLE-VARIANT-ID=\"720p60\",IVS-NAME=\"720p60\",IVS-VARIANT-SOURCE=\"transcode\"\n\
+https://euc11.playlist.ttvnw.net/720.m3u8\n\
+#EXT-X-STREAM-INF:BANDWIDTH=1427999,RESOLUTION=852x480,CODECS=\"avc1.4D401F,mp4a.40.2\",FRAME-RATE=30.000,STABLE-VARIANT-ID=\"480p30\",IVS-NAME=\"480p\",IVS-VARIANT-SOURCE=\"transcode\"\n\
+https://euc11.playlist.ttvnw.net/480.m3u8\n\
+#EXT-X-STREAM-INF:BANDWIDTH=630000,RESOLUTION=640x360,CODECS=\"avc1.4D401F,mp4a.40.2\",FRAME-RATE=30.000,STABLE-VARIANT-ID=\"360p30\",IVS-NAME=\"360p\",IVS-VARIANT-SOURCE=\"transcode\"\n\
+https://euc11.playlist.ttvnw.net/360.m3u8\n\
+#EXT-X-STREAM-INF:BANDWIDTH=230000,RESOLUTION=284x160,CODECS=\"avc1.4D401F,mp4a.40.2\",FRAME-RATE=30.000,STABLE-VARIANT-ID=\"160p30\",IVS-NAME=\"160p\",IVS-VARIANT-SOURCE=\"transcode\"\n\
+https://euc11.playlist.ttvnw.net/160.m3u8\n";
 
     fn parse() -> Vec<Variant> {
         parse_master(MASTER_NICKMERCS)
@@ -785,6 +941,131 @@ https://video-weaver.example/audio_only.m3u8\n";
     fn empty_master_yields_no_variants() {
         assert!(parse_master("#EXTM3U\n").is_empty());
         assert!(select_variant(&[], "best").is_none());
+    }
+
+    #[test]
+    fn parses_modern_media_less_master() {
+        // The regression case: a master with zero `#EXT-X-MEDIA` tags.
+        let v = parse_master(MASTER_MODERN_IVS);
+        assert_eq!(v.len(), 6, "audio_only + 5 video tiers");
+        // audio_only first, no resolution.
+        assert_eq!(v[0].name, "audio_only");
+        assert_eq!(v[0].height, None);
+        // Source rendition flagged by IVS-VARIANT-SOURCE="source", not GROUP-ID.
+        assert_eq!(v[1].name, "1080p60");
+        assert_eq!(v[1].group_id, "chunked");
+        assert_eq!(v[1].height, Some(1080));
+        assert_eq!(v[1].fps, Some(60.0));
+        assert_eq!(v[1].url, "https://euc11.playlist.ttvnw.net/1080.m3u8");
+        // Label comes from IVS-NAME ("480p"), not STABLE-VARIANT-ID ("480p30").
+        assert_eq!(v[3].name, "480p");
+    }
+
+    #[test]
+    fn modern_best_worst_audio_select() {
+        let v = parse_master(MASTER_MODERN_IVS);
+        let (bi, _) = select_variant(&v, "best").unwrap();
+        assert_eq!(v[bi].name, "1080p60", "best → IVS source rendition");
+        let (wi, _) = select_variant(&v, "worst").unwrap();
+        assert_eq!(v[wi].name, "160p", "worst → lowest video, not audio");
+        let (ai, _) = select_variant(&v, "audio_only").unwrap();
+        assert_eq!(v[ai].name, "audio_only");
+    }
+
+    #[test]
+    fn anonymous_master_no_source_flag_still_picks_best() {
+        // The anonymous proxy master (e.g. symfuhny via TTVLOL): every tier is a
+        // "transcode" — none is flagged IVS-VARIANT-SOURCE="source" and there's no
+        // GROUP-ID="chunked". "best" must still resolve to the highest video tier,
+        // not audio_only or nothing.
+        let m = "#EXTM3U\n\
+#EXT-X-STREAM-INF:BANDWIDTH=8042999,RESOLUTION=1920x1080,FRAME-RATE=60.000,IVS-NAME=\"1080p60\",IVS-VARIANT-SOURCE=\"transcode\"\n\
+https://x/1080.m3u8\n\
+#EXT-X-STREAM-INF:BANDWIDTH=3322199,RESOLUTION=1280x720,FRAME-RATE=60.000,IVS-NAME=\"720p60\",IVS-VARIANT-SOURCE=\"transcode\"\n\
+https://x/720.m3u8\n\
+#EXT-X-STREAM-INF:BANDWIDTH=160000,CODECS=\"mp4a.40.2\",IVS-NAME=\"audio_only\",IVS-VARIANT-SOURCE=\"transcode\"\n\
+https://x/audio.m3u8\n";
+        let v = parse_master(m);
+        assert_eq!(v.len(), 3);
+        assert!(
+            v.iter().all(|x| x.group_id != "chunked"),
+            "none source-flagged"
+        );
+        let (bi, _) = select_variant(&v, "best").unwrap();
+        assert_eq!(
+            v[bi].name, "1080p60",
+            "best falls back to highest video tier"
+        );
+        let (wi, _) = select_variant(&v, "worst").unwrap();
+        assert_eq!(v[wi].name, "720p60", "worst is lowest video, not audio");
+    }
+
+    #[test]
+    fn accepts_arbitrary_custom_resolution() {
+        // Enhanced broadcasting lets streamers output non-standard resolutions in
+        // OBS; the parser must accept any STREAM-INF, not an allow-list of tiers.
+        let m = "#EXTM3U\n\
+#EXT-X-STREAM-INF:BANDWIDTH=20000000,RESOLUTION=2560x1440,CODECS=\"av01.0.13M.08,mp4a.40.2\",FRAME-RATE=60.000,IVS-NAME=\"1440p60\",IVS-VARIANT-SOURCE=\"source\"\n\
+https://x/1440.m3u8\n\
+#EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1664x936,FRAME-RATE=60.000,CODECS=\"avc1.4D401F,mp4a.40.2\"\n\
+https://x/936.m3u8\n";
+        let v = parse_master(m);
+        assert_eq!(v.len(), 2);
+        // 1440p source: labeled from IVS-NAME, flagged as the source rendition.
+        assert_eq!(v[0].name, "1440p60");
+        assert_eq!(v[0].group_id, "chunked");
+        assert_eq!(v[0].height, Some(1440));
+        // Custom 936p tier carries no label → derived from RESOLUTION + FRAME-RATE.
+        assert_eq!(v[1].name, "936p60");
+        assert_eq!(v[1].height, Some(936));
+        // best → the 1440 source; the custom tier is still selectable by name.
+        let (bi, _) = select_variant(&v, "best").unwrap();
+        assert_eq!(v[bi].name, "1440p60");
+        let (ci, _) = select_variant(&v, "936p60").unwrap();
+        assert_eq!(v[ci].name, "936p60");
+    }
+
+    #[test]
+    fn derives_label_from_resolution_when_unlabeled() {
+        // No MEDIA tag and no IVS-NAME — fall back to RESOLUTION + FRAME-RATE.
+        let m = "#EXTM3U\n\
+#EXT-X-STREAM-INF:BANDWIDTH=8000000,RESOLUTION=1920x1080,FRAME-RATE=60.000,CODECS=\"avc1.4D402A\"\n\
+https://x/1080.m3u8\n\
+#EXT-X-STREAM-INF:BANDWIDTH=1500000,RESOLUTION=852x480,FRAME-RATE=30.000,CODECS=\"avc1.4D401F\"\n\
+https://x/480.m3u8\n";
+        let v = parse_master(m);
+        assert_eq!(v.len(), 2);
+        assert_eq!(v[0].name, "1080p60");
+        assert_eq!(v[1].name, "480p");
+    }
+
+    #[test]
+    fn tolerates_lines_between_streaminf_and_url() {
+        // A vendor comment / blank line between the STREAM-INF and its URL must
+        // not drop the rendition (the old i+1/i+2 adjacency would have).
+        let m = "#EXTM3U\n\
+#EXT-X-STREAM-INF:BANDWIDTH=8000000,RESOLUTION=1920x1080,FRAME-RATE=60.000,IVS-NAME=\"1080p60\",IVS-VARIANT-SOURCE=\"source\"\n\
+\n\
+#VENDOR-TAG:foo\n\
+https://x/1080.m3u8\n";
+        let v = parse_master(m);
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].name, "1080p60");
+        assert_eq!(v[0].group_id, "chunked");
+        assert_eq!(v[0].url, "https://x/1080.m3u8");
+    }
+
+    #[test]
+    fn error_page_body_is_not_a_master() {
+        // The HTML/JSON error bodies the flaky proxies return with HTTP 200.
+        assert!(!auth_proxy::looks_like_master(
+            "<!DOCTYPE html><html><head><title>Server error!</title></head></html>"
+        ));
+        assert!(!auth_proxy::looks_like_master(
+            "{\"code\":404,\"error\":\"HTTP status client error\"}"
+        ));
+        assert!(auth_proxy::looks_like_master(MASTER_MODERN_IVS));
+        assert!(auth_proxy::looks_like_master(MASTER_NICKMERCS));
     }
 
     #[test]

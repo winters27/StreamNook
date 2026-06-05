@@ -25,6 +25,11 @@ import {
   getStreamNookRegistryVersion,
   subscribeCosmeticsVersion,
   getCosmeticsVersion,
+  whenAtmospheresReady,
+  getProfileSnapshot,
+  upsertProfileSnapshot,
+  getUserIdentity,
+  type ProfileSnapshot,
 } from '../services/supabaseService';
 
 // "#rrggbb" -> "r, g, b" for use inside rgba(...).
@@ -65,6 +70,42 @@ interface TargetInfo {
   displayName: string;
   avatar: string;
 }
+
+type ResolvedTheme = { accentRgb: string | null; paintAura?: CSSProperties; atmosphere?: Atmosphere };
+
+// Build the resolved background theme from a member's profile_theme id + their
+// resolved 7TV paint style (ps). Shared by the live resolve AND the snapshot
+// hydrate so both paint identically (no flicker when the revalidate lands).
+// Assumes the atmosphere catalog is loaded (getAtmosphere is a sync registry read).
+const resolveProfileTheme = (
+  profileTheme: string,
+  ps: CSSProperties | null,
+): ResolvedTheme | null => {
+  if (profileTheme === 'paint' && ps) {
+    // Blur the paint into a soft colored ambiance (not a pixelated stretch);
+    // animated paints still shimmer through.
+    const hexes =
+      typeof ps.backgroundImage === 'string' ? ps.backgroundImage.match(/#[0-9a-fA-F]{6}/g) : null;
+    const repHex = hexes && hexes.length ? hexes[Math.floor(hexes.length / 2)] : null;
+    return {
+      accentRgb: repHex ? hexToRgb(repHex) : null,
+      paintAura: {
+        backgroundImage: ps.backgroundImage,
+        backgroundColor:
+          typeof ps.backgroundColor === 'string' && !ps.backgroundColor.startsWith('var')
+            ? ps.backgroundColor
+            : undefined,
+        backgroundSize: 'cover',
+        backgroundPosition: 'center',
+        backgroundRepeat: 'no-repeat',
+        filter: 'blur(40px) saturate(1.3)',
+      },
+    };
+  }
+  const atm = getAtmosphere(profileTheme);
+  if (atm) return { accentRgb: atm.accent, atmosphere: atm };
+  return null;
+};
 
 const PublicProfileOverlay = () => {
   const userId = useAppStore((s) => s.profileViewerUserId);
@@ -114,6 +155,61 @@ const PublicProfileOverlay = () => {
 
     (async () => {
       try {
+        // Instant paint from the cached snapshot (if any): hydrate everything the
+        // overlay renders from ONE read, before the live sources resolve. The live
+        // chain below revalidates and rewrites the cache (stale-while-revalidate).
+        const snapPromise = getProfileSnapshot(userId);
+        void (async () => {
+          const s = await snapPromise;
+          if (!s || !alive) return;
+          const snap = s.snapshot;
+          setInfo(snap.identity);
+          setCounts(snap.counts);
+          setNamePaint((snap.namePaint as CSSProperties) ?? null);
+          setHiddenSections(snap.hiddenSections);
+          setWornBadges({
+            seventv: snap.seventvBadge,
+            twitch: snap.wornBadges.twitch,
+            thirdParty: snap.wornBadges.thirdParty,
+            bttvPro: snap.wornBadges.bttvPro,
+          });
+          await whenAtmospheresReady();
+          if (alive) {
+            setTheme(resolveProfileTheme(snap.profileTheme, (snap.namePaint as CSSProperties) ?? null));
+            setLoading(false);
+          }
+        })();
+        // No snapshot yet → read our own `users` table for instant identity
+        // (faster than the Twitch Helix call below, which then revalidates it).
+        void (async () => {
+          const s = await snapPromise;
+          if (s || !alive) return;
+          const id = await getUserIdentity(userId);
+          if (id && alive) {
+            setInfo(id);
+            setLoading(false);
+          }
+        })();
+
+        // Kick off the profile-theme prefs IMMEDIATELY (only needs userId) so the
+        // backdrop resolves in parallel with the cosmetic + badge fetches below.
+        // An Atmosphere needs only these prefs + the startup-loaded catalog, so it
+        // paints right away instead of waiting on the whole cosmetic chain (which
+        // was making the backdrop appear seconds late). Paint themes still finish
+        // in the main chain since they need the 7TV paint data.
+        const prefsPromise = getProfilePrefs(userId).catch(
+          () => ({ profileTheme: 'tier', hiddenSections: [] as string[] }),
+        );
+        void (async () => {
+          const prefs = await prefsPromise;
+          if (!alive) return;
+          setHiddenSections(prefs.hiddenSections ?? []);
+          if (prefs.profileTheme !== 'paint') {
+            await whenAtmospheresReady();
+            if (alive) setTheme(resolveProfileTheme(prefs.profileTheme, null));
+          }
+        })();
+
         // Resolve the viewed user's login + avatar + name from their id (the
         // badge only carries the id). One Helix lookup with the viewer's creds.
         const [clientId, token] = await invoke<[string, string]>('get_twitch_credentials');
@@ -190,41 +286,51 @@ const PublicProfileOverlay = () => {
           const ps = activePaint ? computePaintStyle(activePaint as never, '#9146FF') : null;
           if (alive) setNamePaint(ps);
 
-          // Visibility reads the world-readable profile_theme (NOT gated on
-          // subscriber status), so other StreamNook users see it like a badge.
-          // The subscriber gate is enforced at SELECTION time in Customize.
-          const prefs = await getProfilePrefs(userId).catch(
-            () => ({ profileTheme: 'tier', hiddenSections: [] as string[] }),
-          );
-          if (alive) setHiddenSections(prefs.hiddenSections ?? []);
-          let resolvedTheme:
-            | { accentRgb: string | null; paintAura?: CSSProperties; atmosphere?: Atmosphere }
-            | null = null;
-          if (prefs.profileTheme === 'paint' && ps) {
-            // Blur the paint into a soft colored ambiance (not a pixelated
-            // stretch); animated paints still shimmer through.
-            const hexes =
-              typeof ps.backgroundImage === 'string' ? ps.backgroundImage.match(/#[0-9a-fA-F]{6}/g) : null;
-            const repHex = hexes && hexes.length ? hexes[Math.floor(hexes.length / 2)] : null;
-            resolvedTheme = {
-              accentRgb: repHex ? hexToRgb(repHex) : null,
-              paintAura: {
-                backgroundImage: ps.backgroundImage,
-                backgroundColor:
-                  typeof ps.backgroundColor === 'string' && !ps.backgroundColor.startsWith('var')
-                    ? ps.backgroundColor
-                    : undefined,
-                backgroundSize: 'cover',
-                backgroundPosition: 'center',
-                backgroundRepeat: 'no-repeat',
-                filter: 'blur(40px) saturate(1.3)',
-              },
-            };
-          } else {
-            const atm = getAtmosphere(prefs.profileTheme);
-            if (atm) resolvedTheme = { accentRgb: atm.accent, atmosphere: atm };
+          // The profile-theme prefs were kicked off at the TOP of this block (in
+          // parallel with the cosmetic/badge fetches), and hiddenSections + any
+          // Atmosphere/tier backdrop are already applied. Here we only finish the
+          // PAINT theme — the one case that needs the 7TV paint data (`ps`).
+          const prefs = await prefsPromise;
+          if (prefs.profileTheme === 'paint' && ps && alive) {
+            setTheme(resolveProfileTheme('paint', ps));
           }
-          if (alive) setTheme(resolvedTheme);
+
+          // Refresh the cache (cache-aside) from the freshly-resolved values, so the
+          // next open of this member (by anyone) paints instantly. Throttled: only
+          // write when the snapshot is missing, older than 60s, or a key field
+          // changed — so popular profiles aren't rewritten on every view.
+          const existing = await snapPromise;
+          const freshSnap: ProfileSnapshot = {
+            v: 1,
+            identity: {
+              login: u.login,
+              displayName: u.display_name || u.login,
+              avatar: u.profile_image_url || '',
+            },
+            profileTheme: prefs.profileTheme,
+            hiddenSections: prefs.hiddenSections ?? [],
+            memberNumber: getStreamNookUserNumber(userId) ?? null,
+            cosmeticSlug: getActiveCosmeticSlug(userId) ?? null,
+            namePaint: ps ? (ps as Record<string, unknown>) : null,
+            seventvBadge: (sevenTvBadge as Record<string, unknown> | null) ?? null,
+            wornBadges: { twitch, thirdParty, bttvPro },
+            counts: {
+              paints: profile.seventvCosmetics?.paints?.length ?? 0,
+              badges: profile.seventvCosmetics?.badges?.length ?? 0,
+              sn: getOwnedCosmeticSlugs(userId).size,
+            },
+            stats: null,
+            accolades: [],
+            favoriteChannel: null,
+            ivr: null,
+          };
+          const stale =
+            !existing ||
+            Date.now() - new Date(existing.updatedAt).getTime() > 60_000 ||
+            existing.snapshot.profileTheme !== freshSnap.profileTheme ||
+            existing.snapshot.cosmeticSlug !== freshSnap.cosmeticSlug ||
+            existing.snapshot.identity.avatar !== freshSnap.identity.avatar;
+          if (stale) void upsertProfileSnapshot(userId, freshSnap);
         } catch { /* counts + theme stay at defaults */ }
       } catch (e) {
         Logger.error('[ProfileViewer] failed to load:', e);

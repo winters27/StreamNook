@@ -1,5 +1,5 @@
 import { AnimatePresence, motion } from 'framer-motion';
-import { XCircle, AlertCircle, Info, X } from 'lucide-react';
+import { XCircle, AlertCircle, CheckCircle, Info, X } from 'lucide-react';
 import { useAppStore, Toast } from '../stores/AppStore';
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { listen } from '@tauri-apps/api/event';
@@ -238,7 +238,7 @@ const ToastManager = () => {
 
   const getToastIcon = (type: string) => {
     switch (type) {
-      case 'success': return null;
+      case 'success': return <CheckCircle size={20} />;
       case 'error': return <XCircle size={20} />;
       case 'warning': return <AlertCircle size={20} />;
       case 'live': return null;

@@ -1,5 +1,5 @@
 import { useAppStore } from '../../stores/AppStore';
-import { SettingsSection, SettingsRow } from './_primitives';
+import { SettingsSection, SettingsRow, SegmentedSelect } from './_primitives';
 import { MOD_LOG_CATEGORIES, MOD_LOG_STYLES, highlightContainerStyle } from '../../utils/modLogCategories';
 import { Tooltip } from '../ui/Tooltip';
 
@@ -25,8 +25,74 @@ const ModerationSettings = () => {
   const setMod = (patch: Partial<typeof mod>) =>
     updateSettings({ ...settings, moderation: { ...mod, ...patch } });
 
+  // Stored in chat_design (read in the chat hot path), surfaced here because it's
+  // a moderation choice. Migrates the deprecated drag_moderation_enabled boolean.
+  const cd = settings.chat_design;
+  const modActionStyle = cd?.mod_action_style ?? (cd?.drag_moderation_enabled === false ? 'buttons' : 'both');
+  const setModActionStyle = (v: 'buttons' | 'drag' | 'both') =>
+    updateSettings({ ...settings, chat_design: { ...settings.chat_design!, mod_action_style: v } });
+  // Legacy 'slider' value (mode removed) resolves to the beside-chat column.
+  const modDragLayout: 'column' | 'bar' = cd?.mod_drag_layout === 'bar' ? 'bar' : 'column';
+  const setModDragLayout = (v: 'column' | 'bar') =>
+    updateSettings({ ...settings, chat_design: { ...settings.chat_design!, mod_drag_layout: v } });
+  // The inline Pin button is always on for mods; this only toggles the extra
+  // drag-gesture Pin tile. Legacy 'drag' maps to 'both' (button + drag tile).
+  const modPinStyle: 'inline' | 'both' = cd?.mod_pin_style === 'inline' ? 'inline' : 'both';
+  const setModPinStyle = (v: 'inline' | 'both') =>
+    updateSettings({ ...settings, chat_design: { ...settings.chat_design!, mod_pin_style: v } });
+
   return (
     <div className="space-y-8">
+      <SettingsSection
+        label="Moderation Actions"
+        description="How you act on a chatter from chat. Buttons: the classic click delete/timeout/ban on the message hover dock (text stays selectable). Drag: grab a message anywhere and drop it on a color-coded action bucket — profile and whisper for everyone, plus delete, timeout, and ban for mods (text selection is off in this mode; use Copy). Both enables both. Mod actions require mod or broadcaster status in the channel."
+      >
+        <SettingsRow
+          title="Action Style"
+          description="Choose how moderation actions are triggered in chat."
+        >
+          <SegmentedSelect<'buttons' | 'drag' | 'both'>
+            value={modActionStyle}
+            onChange={setModActionStyle}
+            options={[
+              { value: 'buttons', label: 'Buttons' },
+              { value: 'drag', label: 'Drag' },
+              { value: 'both', label: 'Both' },
+            ]}
+          />
+        </SettingsRow>
+
+        {modActionStyle !== 'buttons' && (
+          <SettingsRow
+            title="Drag Style"
+            description="Where the action buckets appear. Beside chat: a vertical bucket column to the left of chat, with bigger tiles kept clear of the player's controls. Above chat: a compact bucket cluster just above the message, for when there's less room."
+          >
+            <SegmentedSelect<'column' | 'bar'>
+              value={modDragLayout}
+              onChange={setModDragLayout}
+              options={[
+                { value: 'column', label: 'Beside chat' },
+                { value: 'bar', label: 'Above chat' },
+              ]}
+            />
+          </SettingsRow>
+        )}
+
+        <SettingsRow
+          title="Pin Action"
+          description="The inline Pin button (next to Copy on a message) is always available to moderators. This only controls whether a Pin tile ALSO appears in the drag-to-moderate gesture."
+        >
+          <SegmentedSelect<'inline' | 'both'>
+            value={modPinStyle}
+            onChange={setModPinStyle}
+            options={[
+              { value: 'inline', label: 'Button only' },
+              { value: 'both', label: 'Button + drag tile' },
+            ]}
+          />
+        </SettingsRow>
+      </SettingsSection>
+
       <SettingsSection
         label="Mod Logs"
         description="Recent moderation activity surface."

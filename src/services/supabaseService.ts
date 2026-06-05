@@ -4,6 +4,7 @@ import type { TwitchUser } from '../types';
 import { Logger } from '../utils/logger';
 import { getActiveSeasonalAccoladeIds, isCakeDay, CAKE_DAY_ID } from '../utils/seasonalAccolades';
 import { fetchIVRUserData } from './ivrService';
+import type { Atmosphere } from './atmospheres';
 // Supabase client singleton
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -1271,6 +1272,263 @@ export const subscribeCosmeticsVersion = (cb: () => void): (() => void) => {
 
 /** For React useSyncExternalStore: read the current version. */
 export const getCosmeticsVersion = (): number => cosmeticsVersion;
+
+// ─── Atmosphere catalog registry ───────────────────────────────────────────
+// Server-driven Atmosphere definitions (the `atmospheres` table), mirroring the
+// cosmetics registry above: an in-memory map filled at startup + realtime, sync
+// reads, a version counter for useSyncExternalStore, and a ready-promise the
+// async resolvers await so they never resolve against an empty catalog. Ownership
+// is NOT here (an Atmosphere is unlocked by subscription or an accolade), so this
+// is a pure global catalog.
+
+let atmospheresCatalog: Map<string, Atmosphere> = new Map();
+let atmospheresChannel: RealtimeChannel | null = null;
+let atmospheresLoaded = false;
+let atmospheresLoading: Promise<void> | null = null;
+let atmospheresVersion = 0;
+const atmospheresVersionSubscribers = new Set<() => void>();
+
+const bumpAtmospheresVersion = () => {
+    atmospheresVersion++;
+    for (const cb of atmospheresVersionSubscribers) {
+        try { cb(); } catch (e) { Logger.error('[Supabase] Atmospheres subscriber error:', e); }
+    }
+};
+
+interface AtmosphereRow {
+    id: string;
+    name: string;
+    accent: string;
+    swatch: string;
+    base_color: string;
+    base_layers: string | null;
+    image: string | null;
+    image_profile_portrait: boolean;
+    layers: string | null;
+    layers2: string | null;
+    motion: string;
+    chat_edge: string;
+    unlock_kind: string;
+    unlock_accolade_id: string | null;
+    sort_order: number;
+}
+
+const rowToAtmosphere = (row: AtmosphereRow): Atmosphere => ({
+    id: row.id,
+    name: row.name,
+    accent: row.accent,
+    swatch: row.swatch,
+    baseColor: row.base_color,
+    baseLayers: row.base_layers ?? undefined,
+    image: row.image ?? undefined,
+    imageProfilePortrait: row.image_profile_portrait,
+    layers: row.layers ?? undefined,
+    layers2: row.layers2 ?? undefined,
+    motion: row.motion === 'drift' ? 'drift' : 'aurora',
+    chatEdge: row.chat_edge,
+    unlock: row.unlock_kind === 'accolade' && row.unlock_accolade_id
+        ? { kind: 'accolade', accoladeId: row.unlock_accolade_id }
+        : { kind: 'subscriber' },
+});
+
+const loadAtmospheres = async (): Promise<void> => {
+    if (!supabase) return;
+    if (atmospheresLoading) return atmospheresLoading;
+    atmospheresLoading = (async () => {
+        try {
+            const res = await supabase!
+                .from('atmospheres')
+                .select('*')
+                .eq('is_active', true)
+                .order('sort_order');
+            if (res.error) Logger.error('[Supabase] atmospheres catalog load failed:', res.error);
+            const next = new Map<string, Atmosphere>();
+            for (const row of (res.data || []) as AtmosphereRow[]) {
+                next.set(row.id, rowToAtmosphere(row));
+            }
+            atmospheresCatalog = next;
+            atmospheresLoaded = true;
+            // Warm the browser cache for image-backed atmospheres so a profile or
+            // chat row that shows one paints instantly instead of fetching the
+            // webp on first sighting. Cheap (a handful of small files); the
+            // browser dedupes repeats across reloads.
+            if (typeof Image !== 'undefined') {
+                for (const atm of next.values()) {
+                    if (atm.image) { const img = new Image(); img.src = atm.image; }
+                }
+            }
+            Logger.debug('[Supabase] Atmospheres loaded:', { catalog: next.size });
+            bumpAtmospheresVersion();
+        } catch (e) {
+            Logger.error('[Supabase] loadAtmospheres exception:', e);
+        } finally {
+            atmospheresLoading = null;
+        }
+    })();
+    return atmospheresLoading;
+};
+
+/**
+ * Subscribe to the atmospheres registry. Idempotent. The first call triggers the
+ * initial fetch and opens a realtime channel on the `atmospheres` table itself
+ * (so a new/edited row reaches running clients with no relaunch).
+ */
+export const subscribeToAtmospheresRegistry = (
+    callback?: () => void,
+): (() => void) | null => {
+    if (!supabase) return null;
+
+    const cb = () => callback?.();
+    atmospheresVersionSubscribers.add(cb);
+
+    if (!atmospheresLoaded && !atmospheresLoading) {
+        loadAtmospheres();
+    } else if (atmospheresLoaded) {
+        callback?.();
+    }
+
+    if (!atmospheresChannel) {
+        atmospheresChannel = supabase
+            .channel('atmospheres-registry')
+            .on('postgres_changes', {
+                event: '*',
+                schema: 'public',
+                table: 'atmospheres',
+            }, () => { loadAtmospheres(); })
+            .subscribe();
+    }
+
+    return () => {
+        atmospheresVersionSubscribers.delete(cb);
+        if (atmospheresVersionSubscribers.size === 0 && atmospheresChannel) {
+            atmospheresChannel.unsubscribe();
+            atmospheresChannel = null;
+        }
+    };
+};
+
+/** Sync read: an atmosphere definition by id (null if unknown / not loaded). */
+export const getAtmosphereEntry = (id: string | undefined | null): Atmosphere | null => {
+    if (!id) return null;
+    return atmospheresCatalog.get(id) ?? null;
+};
+
+/** Sync read: the full catalog (already in sort_order from the load query). */
+export const listAtmosphereEntries = (): Atmosphere[] =>
+    Array.from(atmospheresCatalog.values());
+
+/** For React useSyncExternalStore: subscribe to / read the catalog version. */
+export const subscribeAtmospheresVersion = (cb: () => void): (() => void) => {
+    atmospheresVersionSubscribers.add(cb);
+    if (!atmospheresLoaded && !atmospheresLoading && supabase) {
+        loadAtmospheres();
+    }
+    return () => { atmospheresVersionSubscribers.delete(cb); };
+};
+export const getAtmospheresVersion = (): number => atmospheresVersion;
+
+/** Resolves once the catalog has loaded (or immediately if Supabase is off), so
+ *  async resolvers never read an empty catalog. */
+export const whenAtmospheresReady = (): Promise<void> => {
+    if (atmospheresLoaded || !supabase) return Promise.resolve();
+    return loadAtmospheres();
+};
+
+// ─── Profile snapshot cache (stale-while-revalidate) ───────────────────────
+// A per-user CACHE of a member's fully-resolved profile so the public profile
+// overlay can paint instantly from ONE read, then revalidate the live sources
+// in the background. NOT a source of truth (7TV/Twitch stay authoritative); a
+// stale row self-corrects on the next open. See migration 20260605000001.
+
+// Single JSONB blob; `v` lets the shape evolve without a migration. Cosmetic
+// sub-objects are kept loose (resolved upstream) to avoid coupling to deep 7TV
+// types — consumers treat them as opaque render data.
+export interface ProfileSnapshot {
+    v: 1;
+    identity: { login: string; displayName: string; avatar: string };
+    profileTheme: string; // 'tier' | 'paint' | <atmosphere id>
+    hiddenSections: string[];
+    memberNumber: number | null;
+    cosmeticSlug: string | null; // active StreamNook cosmetic
+    namePaint: Record<string, unknown> | null; // resolved 7TV paint style (CSSProperties)
+    seventvBadge: Record<string, unknown> | null; // active 7TV badge
+    wornBadges: {
+        twitch: { src: string; title: string } | null;
+        thirdParty: Array<{ key?: string; provider?: string; title?: string; src: string }>;
+        bttvPro: { src: string; title: string } | null;
+    };
+    counts: { paints: number; badges: number; sn: number };
+    stats: { messages: number; streams: number; hours: number } | null;
+    accolades: string[]; // earned accolade ids
+    favoriteChannel: unknown | null;
+    ivr: { followers: number | null; createdAt: string | null; roles: unknown } | null;
+}
+
+/** Read a member's cached profile snapshot (null if none / unknown version). */
+export const getProfileSnapshot = async (
+    userId: string,
+): Promise<{ snapshot: ProfileSnapshot; updatedAt: string } | null> => {
+    if (!supabase || !userId) return null;
+    try {
+        const { data, error } = await supabase
+            .from('user_profile_snapshot')
+            .select('snapshot, updated_at')
+            .eq('twitch_user_id', userId)
+            .maybeSingle();
+        if (error || !data) return null;
+        const row = data as { snapshot: ProfileSnapshot | null; updated_at: string };
+        if (!row.snapshot || row.snapshot.v !== 1) return null;
+        return { snapshot: row.snapshot, updatedAt: row.updated_at };
+    } catch (e) {
+        Logger.warn('[Supabase] getProfileSnapshot failed:', e);
+        return null;
+    }
+};
+
+/** Write/refresh a member's cached profile snapshot (cache-aside fill). */
+export const upsertProfileSnapshot = async (
+    userId: string,
+    snapshot: ProfileSnapshot,
+): Promise<void> => {
+    if (!supabase || !userId) return;
+    try {
+        const { error } = await supabase.from('user_profile_snapshot').upsert(
+            { twitch_user_id: userId, snapshot, updated_at: new Date().toISOString() },
+            { onConflict: 'twitch_user_id' },
+        );
+        if (error) Logger.warn('[Supabase] upsertProfileSnapshot failed:', error.message);
+    } catch (e) {
+        Logger.warn('[Supabase] upsertProfileSnapshot exception:', e);
+    }
+};
+
+/** Read a member's Twitch identity (login/display/avatar) from OUR `users` table,
+ *  so the profile overlay can paint instantly without a Twitch Helix round-trip.
+ *  Helix becomes a background revalidation. Null for users we've never recorded
+ *  (e.g. non-members), which fall back to Helix. */
+export const getUserIdentity = async (
+    userId: string,
+): Promise<{ login: string; displayName: string; avatar: string } | null> => {
+    if (!supabase || !userId) return null;
+    try {
+        const { data, error } = await supabase
+            .from('users')
+            .select('username, display_name, avatar_url')
+            .eq('id', userId)
+            .maybeSingle();
+        if (error || !data) return null;
+        const row = data as { username?: string; display_name?: string; avatar_url?: string };
+        if (!row.username) return null;
+        return {
+            login: row.username,
+            displayName: row.display_name || row.username,
+            avatar: row.avatar_url || '',
+        };
+    } catch (e) {
+        Logger.warn('[Supabase] getUserIdentity failed:', e);
+        return null;
+    }
+};
 
 /**
  * Set the active cosmetic for a user. Pass null to revert to the default

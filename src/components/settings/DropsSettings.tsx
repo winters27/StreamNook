@@ -174,7 +174,7 @@ const DropsSettings = () => {
         >
           <button
             onClick={() => setShowPrioritySettings(!showPrioritySettings)}
-            className="w-full px-4 py-2 bg-accent hover:bg-accent/80 text-white rounded-md text-sm font-medium transition-colors"
+            className="glass-button w-full px-4 py-2 rounded-lg text-textPrimary text-sm font-medium"
           >
             {showPrioritySettings ? 'Hide' : 'Configure'} Priority Games
           </button>
@@ -238,7 +238,7 @@ const DropsSettings = () => {
                       input.value = '';
                     }
                   }}
-                  className="px-4 py-2 bg-accent hover:bg-accent/80 text-white rounded-md text-sm"
+                  className="glass-button px-4 py-2 rounded-lg text-textPrimary text-sm"
                 >
                   Add
                 </button>
@@ -300,7 +300,7 @@ const DropsSettings = () => {
                       input.value = '';
                     }
                   }}
-                  className="px-4 py-2 bg-accent hover:bg-accent/80 text-white rounded-md text-sm"
+                  className="glass-button px-4 py-2 rounded-lg text-textPrimary text-sm"
                 >
                   Add
                 </button>
@@ -549,7 +549,7 @@ const DropsSettings = () => {
         >
           <button
             onClick={() => setShowFarmChannels(!showFarmChannels)}
-            className="w-full px-4 py-2 bg-accent hover:bg-accent/80 text-white rounded-md text-sm font-medium transition-colors"
+            className="glass-button w-full px-4 py-2 rounded-lg text-textPrimary text-sm font-medium"
           >
             {showFarmChannels ? 'Hide' : 'Configure'} Farm Channels
           </button>
@@ -640,7 +640,7 @@ const DropsSettings = () => {
                       Logger.error('Could not find channel:', err);
                     }
                   }}
-                  className="px-4 py-2 bg-accent hover:bg-accent/80 text-white rounded-md text-sm"
+                  className="glass-button px-4 py-2 rounded-lg text-textPrimary text-sm"
                 >
                   Add
                 </button>

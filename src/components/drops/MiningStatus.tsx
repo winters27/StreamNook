@@ -27,7 +27,7 @@ const MiningStatus = () => {
 
         // Listen for status updates
         const unlistenFn = await listen<MiningStatusType>('mining-status-update', (event) => {
-          Logger.debug('🔄 Mining status update received:', event.payload);
+          Logger.debug('Mining status update received:', event.payload);
           setStatus(event.payload);
           setLastProgressUpdate(Date.now());
         });
@@ -44,7 +44,7 @@ const MiningStatus = () => {
           required_minutes: number;
           timestamp: string;
         }>('drops-progress-update', (event) => {
-          Logger.debug('📊 Direct WebSocket progress update received:', event.payload);
+          Logger.debug('Direct WebSocket progress update received:', event.payload);
           
           // Update status if the drop ID matches
           setStatus((prevStatus) => {

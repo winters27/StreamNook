@@ -150,6 +150,43 @@ export interface ChatDesignSettings {
   // Show links as a compact host + truncated path label instead of the full
   // raw URL (the full URL stays the click target and hover tooltip). Default true.
   shorten_links?: boolean;
+  // Registrable hosts the user has chosen to trust (auto-expand their previews),
+  // in addition to the built-in allowlist. Stored stripped of a leading `www.`
+  // so an entry matches every subdomain. Managed from Chat settings.
+  link_preview_trusted_domains?: string[];
+  // When the pinned message is collapsed, 'bar' shows a thin one-line bar (sender
+  // + truncated text) you can click to expand; 'hidden' keeps the prior behavior
+  // where only the header pin icon remains. Default 'bar'.
+  pinned_collapsed_style?: 'bar' | 'hidden';
+  // --- Username prefix styling (normal messages only; action/"/me" stay plain) ---
+  // Glyph rendered between the username and the message body.
+  username_separator?: 'none' | 'colon' | 'dot' | 'arrow' | 'pipe' | 'dash';
+  // How the username itself is emphasized as a prefix: plain, a thin accent bar
+  // before it, a frosted chip/tag, bracketed [name], or a small color dot.
+  username_style?: 'plain' | 'bar' | 'chip' | 'brackets' | 'dot';
+  // Color source for the separator glyph, accent bar, dot, brackets, and chip
+  // tint: the chatter's own color, or the active theme accent.
+  username_accent_source?: 'user' | 'theme';
+  // Deprecated: superseded by username_separator. Kept so an existing "colon on"
+  // setting migrates to username_separator: 'colon'.
+  username_colon?: boolean;
+  // How per-message mod actions are offered in the chat hover dock:
+  // 'buttons' = the classic click buttons (delete/timeout/ban), 'drag' = the
+  // grab handle that lifts a chatter into action buckets, 'both' = offer both.
+  // Default 'both'. Profile/whisper buckets are available to everyone whenever
+  // the grip is shown; delete/timeout/ban are mod-only either way.
+  mod_action_style?: 'buttons' | 'drag' | 'both';
+  // Style of the drag-to-moderate controls: 'column' = vertical bucket column
+  // docked beside chat; 'bar' = horizontal bucket row above the chat. Default
+  // 'column'. (A legacy 'slider' value may persist from older builds; it is
+  // treated as 'column'.)
+  mod_drag_layout?: 'column' | 'bar';
+  // Where the moderator Pin action appears: 'inline' = a quick button next to
+  // Copy on the message, 'drag' = a drop target in the drag-to-moderate gesture,
+  // 'both' = both places. Mod-only either way. Default 'both'.
+  mod_pin_style?: 'inline' | 'drag' | 'both';
+  // Deprecated: superseded by mod_action_style ('buttons' when this was false).
+  drag_moderation_enabled?: boolean;
 }
 
 export interface HighlightPhrase {
@@ -472,11 +509,17 @@ export interface Settings {
   compact_view?: CompactViewSettings; // Compact view preset settings
   custom_themes?: CustomTheme[]; // User-created custom themes
   glass_transparency?: number; // Global glassiness, 0-100 (100 = full frosted glass, 0 = solid panels). Default 100.
+  oled_accent?: string; // Accent hex (#rrggbb) for the OLED theme, which lets you pick any accent. Default DEFAULT_OLED_ACCENT.
   multi_nook_slots?: MultiNookSlot[]; // Persisted multi-nook grid configurations
   multi_nook_chat_hidden?: boolean; // Whether the chat panel is globally hidden in MultiNook
   show_mod_logs?: boolean; // Whether to display the Mod Logs pane
   moderation?: ModerationSettings;
   keybindings?: KeybindingOverrides; // Customizable keyboard shortcut overrides (id -> chords)
+  // Which action buttons show in the video player's top-right overlay, by id:
+  // 'follow' | 'subscribe' | 'clip' | 'clipsvods' | 'multinook' | 'refresh' | 'close'.
+  // Undefined = show all (the default). Each button still respects its own
+  // context gate (clip only when clippable, multinook/refresh only when live, …).
+  player_overlay_buttons?: string[];
 }
 
 export interface ModerationSettings {
@@ -861,6 +904,7 @@ export interface LiveNotificationData {
   game_image?: string;
   stream_title?: string;
   is_live: boolean; // Current status - may change
+  is_test?: boolean; // Dummy preview entry from the "Test" button; clicking it must not open a real stream
 }
 
 export interface WhisperNotificationData {
@@ -876,6 +920,8 @@ export interface SystemNotificationData {
   title: string;
   message: string;
   icon?: string;
+  // Toast level this entry was mirrored from, so the island can pick an icon/color.
+  level?: 'info' | 'success' | 'warning' | 'error';
 }
 
 export interface UpdateNotificationData {

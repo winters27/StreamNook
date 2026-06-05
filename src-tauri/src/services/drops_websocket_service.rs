@@ -41,7 +41,7 @@ impl DropsWebSocketService {
             let handle_guard = self.task_handle.lock().await;
             if let Some(h) = handle_guard.as_ref() {
                 if !h.is_finished() {
-                    debug!("🔌 WebSocket already connected; skipping duplicate connect");
+                    debug!("WebSocket already connected; skipping duplicate connect");
                     return Ok(());
                 }
             }
@@ -59,10 +59,10 @@ impl DropsWebSocketService {
                     .await
                 {
                     Ok(_) => {
-                        debug!("🔌 WebSocket disconnected normally");
+                        debug!("WebSocket disconnected normally");
                     }
                     Err(e) => {
-                        error!("❌ WebSocket error: {}", e);
+                        error!("WebSocket error: {}", e);
                         // Emit error to frontend for Discord reporting
                         let _ = app_handle.emit(
                             "drops-error",
@@ -78,7 +78,7 @@ impl DropsWebSocketService {
                 // Wait before reconnecting. If disconnect() is called during
                 // this sleep, the task is aborted and the sleep future is
                 // dropped cleanly at its await point.
-                debug!("🔄 Reconnecting WebSocket in 5 seconds...");
+                debug!("Reconnecting WebSocket in 5 seconds...");
                 tokio::time::sleep(Duration::from_secs(5)).await;
             }
         });
@@ -94,7 +94,7 @@ impl DropsWebSocketService {
         app_handle: &AppHandle,
         is_connected: &Arc<RwLock<bool>>,
     ) -> Result<()> {
-        debug!("🔌 Connecting to Twitch PubSub WebSocket...");
+        debug!("Connecting to Twitch PubSub WebSocket...");
 
         let url = "wss://pubsub-edge.twitch.tv";
         let (ws_stream, _) = connect_async(url).await?;
@@ -105,7 +105,7 @@ impl DropsWebSocketService {
             *connected = true;
         }
 
-        debug!("✅ WebSocket connected to Twitch PubSub");
+        debug!("WebSocket connected to Twitch PubSub");
 
         // Generate a nonce for the LISTEN message
         let nonce = uuid::Uuid::new_v4().to_string();
@@ -125,7 +125,7 @@ impl DropsWebSocketService {
             }
         });
 
-        debug!("📡 Subscribing to topics: {:?}", topics);
+        debug!("Subscribing to topics: {:?}", topics);
         write
             .send(Message::Text(listen_message.to_string().into()))
             .await?;
@@ -142,29 +142,29 @@ impl DropsWebSocketService {
                         "type": "PING"
                     });
                     write.send(Message::Text(ping_message.to_string().into())).await?;
-                    debug!("🏓 Sent PING to WebSocket");
+                    debug!("Sent PING to WebSocket");
                 }
 
                 msg = read.next() => {
                     match msg {
                         Some(Ok(Message::Text(text))) => {
-                            debug!("📨 [DropsWS] Received raw message: {}", &text[..text.len().min(200)]);
+                            debug!("[DropsWS] Received raw message: {}", &text[..text.len().min(200)]);
                             if let Ok(data) = serde_json::from_str::<serde_json::Value>(&text) {
                                 Self::handle_message(data, app_handle).await;
                             } else {
-                                debug!("❌ [DropsWS] Failed to parse JSON message");
+                                debug!("[DropsWS] Failed to parse JSON message");
                             }
                         }
                         Some(Ok(Message::Close(_))) => {
-                            debug!("🔌 WebSocket closed by server");
+                            debug!("WebSocket closed by server");
                             break;
                         }
                         Some(Err(e)) => {
-                            error!("❌ WebSocket error: {}", e);
+                            error!("WebSocket error: {}", e);
                             break;
                         }
                         None => {
-                            debug!("🔌 WebSocket stream ended");
+                            debug!("WebSocket stream ended");
                             break;
                         }
                         _ => {}
@@ -183,38 +183,35 @@ impl DropsWebSocketService {
 
     async fn handle_message(message: serde_json::Value, app_handle: &AppHandle) {
         let msg_type = message["type"].as_str().unwrap_or("");
-        debug!("📬 [DropsWS] Message type: {}", msg_type);
+        debug!("[DropsWS] Message type: {}", msg_type);
 
         match msg_type {
             "MESSAGE" => {
                 // Parse the actual message data
                 if let Some(topic) = message["data"]["topic"].as_str() {
-                    debug!("📬 [DropsWS] MESSAGE on topic: {}", topic);
+                    debug!("[DropsWS] MESSAGE on topic: {}", topic);
                     if let Some(message_str) = message["data"]["message"].as_str() {
                         debug!(
-                            "📬 [DropsWS] Inner message: {}",
+                            "[DropsWS] Inner message: {}",
                             &message_str[..message_str.len().min(300)]
                         );
                         if let Ok(msg_data) = serde_json::from_str::<serde_json::Value>(message_str)
                         {
                             Self::handle_topic_message(topic, msg_data, app_handle).await;
                         } else {
-                            debug!("❌ [DropsWS] Failed to parse inner message JSON");
+                            debug!("[DropsWS] Failed to parse inner message JSON");
                         }
                     } else {
-                        debug!("⚠️ [DropsWS] No message field in data");
+                        debug!("[DropsWS] No message field in data");
                     }
                 } else {
-                    debug!(
-                        "⚠️ [DropsWS] No topic field in MESSAGE: {:?}",
-                        message["data"]
-                    );
+                    debug!("[DropsWS] No topic field in MESSAGE: {:?}", message["data"]);
                 }
             }
             "RESPONSE" => {
                 if let Some(error) = message["error"].as_str() {
                     if !error.is_empty() {
-                        error!("❌ WebSocket RESPONSE error: {}", error);
+                        error!("WebSocket RESPONSE error: {}", error);
                         // Emit error to frontend for Discord reporting
                         let _ = app_handle.emit(
                             "drops-error",
@@ -225,19 +222,19 @@ impl DropsWebSocketService {
                             }),
                         );
                     } else {
-                        debug!("✅ WebSocket subscription successful");
+                        debug!("WebSocket subscription successful");
                     }
                 }
             }
             "PONG" => {
-                debug!("🏓 Received PONG from WebSocket");
+                debug!("Received PONG from WebSocket");
             }
             "RECONNECT" => {
-                debug!("🔄 Server requested reconnect");
+                debug!("Server requested reconnect");
                 // The loop will handle reconnection
             }
             _ => {
-                debug!("🔍 Unknown WebSocket message type: {}", msg_type);
+                debug!("Unknown WebSocket message type: {}", msg_type);
             }
         }
     }
@@ -257,7 +254,7 @@ impl DropsWebSocketService {
                         let drop_id = message["data"]["drop_id"].as_str().unwrap_or("");
 
                         debug!(
-                            "📊 Drop progress update: {}/{} minutes for drop {}",
+                            "Drop progress update: {}/{} minutes for drop {}",
                             current_progress, required_progress, drop_id
                         );
 
@@ -278,7 +275,7 @@ impl DropsWebSocketService {
                             message["data"]["drop_instance_id"].as_str().unwrap_or("");
 
                         debug!(
-                            "🎁 Drop ready to claim: {} (instance: {})",
+                            "Drop ready to claim: {} (instance: {})",
                             drop_id, drop_instance_id
                         );
 
@@ -293,7 +290,7 @@ impl DropsWebSocketService {
                         );
                     }
                     _ => {
-                        debug!("🔍 Unknown drop event type: {}", msg_type);
+                        debug!("Unknown drop event type: {}", msg_type);
                     }
                 }
             }
@@ -301,7 +298,7 @@ impl DropsWebSocketService {
             // Handle notifications (like drop ready reminders)
             if let Some(notification_type) = message["type"].as_str() {
                 if notification_type == "user_drop_reward_reminder_notification" {
-                    debug!("🔔 Drop reward reminder notification received");
+                    debug!("Drop reward reminder notification received");
 
                     // Emit notification to frontend
                     let _ = app_handle.emit(
@@ -326,7 +323,7 @@ impl DropsWebSocketService {
     pub async fn disconnect(&self) {
         if let Some(h) = self.task_handle.lock().await.take() {
             h.abort();
-            debug!("🛑 Aborted DropsWebSocket reconnect loop");
+            debug!("Aborted DropsWebSocket reconnect loop");
         }
         let mut connected = self.is_connected.write().await;
         *connected = false;

@@ -132,7 +132,7 @@ impl DropsAuthService {
         cookie_jar
             .set_full_token_data(&token.access_token, &token.refresh_token, token.expires_at)
             .await?;
-        debug!("[DROPS_AUTH] ✅ Full token data saved to cookies");
+        debug!("[DROPS_AUTH] Full token data saved to cookies");
         Ok(())
     }
 
@@ -262,23 +262,23 @@ impl DropsAuthService {
 
                 match (file_result, cookie_result) {
                     (Ok(_), Ok(_)) => {
-                        debug!("[DROPS_AUTH] ✅ Token stored successfully to file and cookies!");
+                        debug!("[DROPS_AUTH] Token stored successfully to file and cookies!");
                     }
                     (Ok(_), Err(e)) => {
                         error!(
-                            "[DROPS_AUTH] ⚠️ Token saved to file but cookies failed: {:?}",
+                            "[DROPS_AUTH] Token saved to file but cookies failed: {:?}",
                             e
                         );
                     }
                     (Err(e), Ok(_)) => {
                         error!(
-                            "[DROPS_AUTH] ⚠️ Token saved to cookies but file failed: {:?}",
+                            "[DROPS_AUTH] Token saved to cookies but file failed: {:?}",
                             e
                         );
                     }
                     (Err(file_err), Err(cookie_err)) => {
                         error!(
-                            "[DROPS_AUTH] ⚠️ Failed to store token! File: {:?}, Cookie: {:?}",
+                            "[DROPS_AUTH] Failed to store token! File: {:?}, Cookie: {:?}",
                             file_err, cookie_err
                         );
                         // Still continue since we have the token in memory
@@ -349,7 +349,7 @@ impl DropsAuthService {
             // If refresh fails due to missing client secret or other OAuth issues,
             // delete the stored token so the user can re-authenticate
             if error_text.contains("client secret") || error_text.contains("invalid") {
-                error!("[DROPS_AUTH] ⚠️ Token refresh failed - clearing stored tokens");
+                error!("[DROPS_AUTH] Token refresh failed - clearing stored tokens");
                 error!("[DROPS_AUTH] Error: {}", error_text);
                 let _ = Self::delete_token_file();
                 let _ = Self::delete_cookies().await;
@@ -377,7 +377,7 @@ impl DropsAuthService {
         // Store the refreshed token
         Self::store_token_to_file(&new_storable_token)?;
 
-        debug!("[DROPS_AUTH] ✅ Token refreshed successfully");
+        debug!("[DROPS_AUTH] Token refreshed successfully");
 
         Ok(new_storable_token)
     }
@@ -404,7 +404,7 @@ impl DropsAuthService {
                 // Try cookies as fallback
                 match Self::load_token_from_cookies().await {
                     Ok(cookie_token) => {
-                        debug!("[DROPS_AUTH] ✅ Token retrieved from cookies");
+                        debug!("[DROPS_AUTH] Token retrieved from cookies");
 
                         // Save to file for next time
                         let _ = Self::store_token_to_file(&cookie_token);

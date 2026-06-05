@@ -105,7 +105,7 @@ impl ChannelPointsWebSocketService {
             },
         );
         debug!(
-            "📝 Registered channel mapping: {} -> {} ({})",
+            "Registered channel mapping: {} -> {} ({})",
             channel_id, channel_login, channel_display_name
         );
     }
@@ -115,7 +115,7 @@ impl ChannelPointsWebSocketService {
         let mut active = self.active_viewing_channels.write().await;
         active.insert(channel_id.to_string());
         debug!(
-            "👀 Registered active watching channel for predictions: {}",
+            "Registered active watching channel for predictions: {}",
             channel_id
         );
     }
@@ -125,7 +125,7 @@ impl ChannelPointsWebSocketService {
         let mut active = self.active_viewing_channels.write().await;
         active.remove(channel_id);
         debug!(
-            "👀 Unregistered active watching channel for predictions: {}",
+            "Unregistered active watching channel for predictions: {}",
             channel_id
         );
     }
@@ -178,7 +178,7 @@ impl ChannelPointsWebSocketService {
             (channel_ids.len() + MAX_CHANNELS_PER_CONNECTION - 1) / MAX_CHANNELS_PER_CONNECTION;
 
         debug!(
-            "🔌 Creating {} WebSocket connection(s) for {} channels",
+            "Creating {} WebSocket connection(s) for {} channels",
             num_connections.min(10),
             channel_ids.len()
         );
@@ -234,7 +234,7 @@ impl ChannelPointsWebSocketService {
                 )
                 .await
                 {
-                    error!("❌ WebSocket connection {} failed: {}", index, e);
+                    error!("WebSocket connection {} failed: {}", index, e);
                 }
             });
             self.reader_task_handles.lock().await.push(handle);
@@ -283,7 +283,7 @@ impl ChannelPointsWebSocketService {
         active_viewing_channels: Arc<RwLock<HashSet<String>>>,
     ) -> Result<()> {
         debug!(
-            "🔗 Connecting WebSocket #{} with {} topics",
+            "Connecting WebSocket #{} with {} topics",
             index,
             topics.len()
         );
@@ -313,7 +313,7 @@ impl ChannelPointsWebSocketService {
             .send(Message::text(listen_message.to_string()))
             .await?;
         debug!(
-            "📡 WebSocket #{} sent LISTEN for {} topics",
+            "WebSocket #{} sent LISTEN for {} topics",
             index,
             topics.len()
         );
@@ -334,7 +334,7 @@ impl ChannelPointsWebSocketService {
                 });
 
                 if let Err(e) = write.send(Message::text(ping_message.to_string())).await {
-                    error!("❌ WebSocket #{} failed to send PING: {}", index, e);
+                    error!("WebSocket #{} failed to send PING: {}", index, e);
                     break;
                 }
 
@@ -346,7 +346,7 @@ impl ChannelPointsWebSocketService {
                     }
                 }
 
-                debug!("💓 WebSocket #{} sent PING", index);
+                debug!("WebSocket #{} sent PING", index);
             }
         });
 
@@ -369,12 +369,12 @@ impl ChannelPointsWebSocketService {
                     }
                 }
                 Ok(Message::Close(_)) => {
-                    debug!("🔌 WebSocket #{} closed by server", index);
+                    debug!("WebSocket #{} closed by server", index);
                     should_reconnect = true;
                     break;
                 }
                 Err(e) => {
-                    error!("❌ WebSocket #{} error: {}", index, e);
+                    error!("WebSocket #{} error: {}", index, e);
                     should_reconnect = true;
                     break;
                 }
@@ -396,7 +396,7 @@ impl ChannelPointsWebSocketService {
         // Attempt reconnection after delay if needed
         if should_reconnect {
             tokio::time::sleep(Duration::from_secs(60)).await;
-            debug!("🔄 Attempting to reconnect WebSocket #{}...", index);
+            debug!("Attempting to reconnect WebSocket #{}...", index);
 
             // Recursively reconnect
             Box::pin(Self::handle_connection(
@@ -467,7 +467,7 @@ impl ChannelPointsWebSocketService {
                 }
             }
             "PONG" => {
-                debug!("🏓 WebSocket #{} received PONG", index);
+                debug!("WebSocket #{} received PONG", index);
 
                 // Update last pong time
                 let mut conns = connections.write().await;
@@ -476,19 +476,19 @@ impl ChannelPointsWebSocketService {
                 }
             }
             "RECONNECT" => {
-                debug!("⚠️ WebSocket #{} received RECONNECT request", index);
+                debug!("WebSocket #{} received RECONNECT request", index);
                 // Connection will automatically reconnect when closed
             }
             "RESPONSE" => {
                 if let Some(error) = msg.error {
                     // Only treat non-empty errors as actual errors
                     if !error.is_empty() {
-                        error!("❌ WebSocket #{} error response: {}", index, error);
+                        error!("WebSocket #{} error response: {}", index, error);
                     } else {
-                        debug!("✅ WebSocket #{} LISTEN acknowledged", index);
+                        debug!("WebSocket #{} LISTEN acknowledged", index);
                     }
                 } else {
-                    debug!("✅ WebSocket #{} LISTEN acknowledged", index);
+                    debug!("WebSocket #{} LISTEN acknowledged", index);
                 }
             }
             _ => {}
@@ -551,17 +551,11 @@ impl ChannelPointsWebSocketService {
                             drop(mapping);
 
                             // Channel not in mapping - try to look it up via API (for drops mining channels)
-                            debug!(
-                                "🔍 Channel {} not in mapping, attempting API lookup...",
-                                cid
-                            );
+                            debug!("Channel {} not in mapping, attempting API lookup...", cid);
                             if let Ok(Some((login, display_name))) =
                                 Self::lookup_channel_by_id(cid).await
                             {
-                                debug!(
-                                    "✅ Resolved channel {} -> {} ({})",
-                                    cid, login, display_name
-                                );
+                                debug!("Resolved channel {} -> {} ({})", cid, login, display_name);
 
                                 // Cache it for future use
                                 let mut mapping_write = channel_mappings.write().await;
@@ -590,7 +584,7 @@ impl ChannelPointsWebSocketService {
                     let channel_display_str = channel_display_name.as_deref().unwrap_or("unknown");
 
                     debug!(
-                        "💰 Points earned: +{} (reason: {}) - New balance: {} - Channel: {} (ID: {}, Login: {})",
+                        "Points earned: +{} (reason: {}) - New balance: {} - Channel: {} (ID: {}, Login: {})",
                         points,
                         reason,
                         balance,
@@ -617,7 +611,7 @@ impl ChannelPointsWebSocketService {
                         .as_str()
                         .map(|s| s.to_string());
 
-                    debug!("🎁 Bonus claim available! ID: {}", claim_id);
+                    debug!("Bonus claim available! ID: {}", claim_id);
 
                     let _ = app_handle.emit(
                         "channel-points-claim-available",
@@ -638,7 +632,7 @@ impl ChannelPointsWebSocketService {
                         .as_str()
                         .map(|s| s.to_string());
 
-                    debug!("💸 Points spent: -{} - New balance: {}", points, balance);
+                    debug!("Points spent: -{} - New balance: {}", points, balance);
 
                     let _ = app_handle.emit(
                         "channel-points-spent",
@@ -762,7 +756,7 @@ impl ChannelPointsWebSocketService {
                         }
 
                         debug!(
-                            "🔮 Prediction created on {}: {} (ID: {}, {} outcomes)",
+                            "Prediction created on {}: {} (ID: {}, {} outcomes)",
                             channel_display,
                             title,
                             prediction_id,
@@ -783,7 +777,7 @@ impl ChannelPointsWebSocketService {
                             }),
                         );
                         debug!(
-                            "📤 Emitted prediction-created event to frontend: {:?}",
+                            "Emitted prediction-created event to frontend: {:?}",
                             emit_result.is_ok()
                         );
                     }
@@ -838,7 +832,7 @@ impl ChannelPointsWebSocketService {
                         }
 
                         debug!(
-                            "🔮 Prediction updated on {}: {} - Status: {} - Winner: {:?}",
+                            "Prediction updated on {}: {} - Status: {} - Winner: {:?}",
                             channel_display, title, status, winning_outcome_id
                         );
 
@@ -862,7 +856,7 @@ impl ChannelPointsWebSocketService {
                         let prediction_id = event.get("id").and_then(|v| v.as_str()).unwrap_or("");
                         let title = event.get("title").and_then(|v| v.as_str()).unwrap_or("");
 
-                        debug!("🔒 Prediction locked on {}: {}", channel_display, title);
+                        debug!("Prediction locked on {}: {}", channel_display, title);
 
                         let _ = app_handle.emit(
                             "prediction-locked",
@@ -884,7 +878,7 @@ impl ChannelPointsWebSocketService {
 
                         let winner_display = winning_outcome_id.unwrap_or("cancelled");
                         debug!(
-                            "🏆 Prediction ended on {}: {} - Winner: {}",
+                            "Prediction ended on {}: {} - Winner: {}",
                             channel_display, title, winner_display
                         );
 
@@ -930,7 +924,7 @@ impl ChannelPointsWebSocketService {
                         let elapsed = Utc::now().signed_duration_since(conn.last_pong);
                         if elapsed.num_minutes() > 5 {
                             debug!(
-                                "⚠️ WebSocket #{} hasn't received PONG in {} minutes",
+                                "WebSocket #{} hasn't received PONG in {} minutes",
                                 index,
                                 elapsed.num_minutes()
                             );
@@ -964,7 +958,7 @@ impl ChannelPointsWebSocketService {
 
         let mut connections = self.connections.write().await;
         connections.clear();
-        debug!("🔌 All WebSocket connections closed (reader + ping tasks aborted)");
+        debug!("All WebSocket connections closed (reader + ping tasks aborted)");
     }
 
     /// Look up channel info by ID via Twitch API (fallback for unknown channels)
@@ -975,7 +969,7 @@ impl ChannelPointsWebSocketService {
         let token = match DropsAuthService::get_token().await {
             Ok(t) => t,
             Err(e) => {
-                error!("❌ Failed to get token for channel lookup: {}", e);
+                error!("Failed to get token for channel lookup: {}", e);
                 return Ok(None);
             }
         };
@@ -1021,7 +1015,7 @@ impl ChannelPointsWebSocketService {
                 Ok(None)
             }
             Err(e) => {
-                error!("❌ API lookup failed for channel {}: {}", channel_id, e);
+                error!("API lookup failed for channel {}: {}", channel_id, e);
                 Ok(None)
             }
         }

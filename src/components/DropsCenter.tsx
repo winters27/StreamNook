@@ -302,27 +302,93 @@ export default function DropsCenter() {
             await invoke('claim_drop', { dropId, dropInstanceId });
             addToast('Drop claimed successfully!', 'success');
 
-            // Also update the local progress state immediately to mark as claimed
-            setProgress(prev => prev.map(p =>
+            // Mark the drop claimed locally for instant feedback.
+            const nextProgress = progress.map(p =>
                 p.drop_id === dropId ? { ...p, is_claimed: true } : p
-            ));
+            );
+            setProgress(nextProgress);
 
-            // Refresh the data to get updated inventory
-            await loadDropsData();
+            // A claim only moves a reward into your inventory. It does NOT change the
+            // active campaigns or the live mining-progress cache, so we deliberately
+            // skip the full loadDropsData() reload here. That reload would blank the
+            // panel behind a spinner AND re-fetch campaigns, which clears the backend's
+            // live progress map and makes the title-bar mining progress snap backwards
+            // until it slowly re-accumulates. Instead: refresh only the inventory
+            // (silently) and patch the claimed game's flags in place.
+            const inventoryData = await invoke<InventoryResponse>('get_drops_inventory').catch(() => null);
+            if (inventoryData?.items) setInventoryItems(inventoryData.items);
+            if (inventoryData?.completed_drops) setCompletedDrops(inventoryData.completed_drops);
 
-            // If a game is selected, refresh its reference from the updated data
-            if (selectedGame) {
-                // Use a slight delay to ensure state is updated
-                setTimeout(() => {
-                    setUnifiedGames(prevGames => {
-                        const updatedGame = prevGames.find(g => g.id === selectedGame.id);
-                        if (updatedGame) {
-                            setSelectedGame(updatedGame);
+            // Owned-reward sets from the freshly fetched inventory, matching how the
+            // full rebuild decides ownership: a reward counts as earned by its claim
+            // flag, by drop id, or by benefit id/name.
+            const ownedBenefitIds = new Set<string>((inventoryData?.completed_drops || []).map(d => d.id));
+            const ownedBenefitNames = new Set<string>(
+                (inventoryData?.completed_drops || []).map(d => (d.name || '').toLowerCase().trim()).filter(Boolean)
+            );
+            const ownedDropIds = new Set<string>();
+            inventoryData?.items?.forEach(item => {
+                item.campaign.time_based_drops.forEach(drop => {
+                    if (drop.progress?.is_claimed === true) ownedDropIds.add(drop.id);
+                });
+            });
+
+            const gameOwnsDrop = (game: UnifiedGame) =>
+                game.active_campaigns.some(c => c.time_based_drops.some(d => d.id === dropId));
+
+            const recomputeGame = (game: UnifiedGame): UnifiedGame => {
+                let hasClaimable = false;
+                let totalDrops = 0;
+                let claimedCount = 0;
+                game.active_campaigns.forEach(campaign => {
+                    campaign.time_based_drops.forEach(drop => {
+                        totalDrops++;
+                        const dp = nextProgress.find(p => p.drop_id === drop.id) || drop.progress;
+                        const hasCurrentProgress = !!dp && ((dp.current_minutes_watched || 0) > 0 || dp.is_claimed === true);
+                        const owned = dp?.is_claimed === true
+                            || (!hasCurrentProgress && (
+                                ownedDropIds.has(drop.id)
+                                || (drop.benefit_edges?.some(b =>
+                                    ownedBenefitIds.has(b.id) ||
+                                    (!!b.name && ownedBenefitNames.has(b.name.toLowerCase().trim()))
+                                ) ?? false)
+                            ));
+                        if (owned) {
+                            claimedCount++;
+                        } else if (dp && dp.required_minutes_watched > 0 && dp.current_minutes_watched >= dp.required_minutes_watched) {
+                            hasClaimable = true;
                         }
-                        return prevGames;
                     });
-                }, 100);
-            }
+                });
+                const freshClaimed = inventoryData?.items
+                    ? inventoryData.items
+                        .filter(it => it.campaign.game_id === game.id)
+                        .reduce((sum, it) => sum + it.claimed_drops, 0)
+                    : game.total_claimed;
+                return {
+                    ...game,
+                    has_claimable: hasClaimable,
+                    all_drops_claimed: totalDrops > 0 && claimedCount === totalDrops,
+                    total_claimed: freshClaimed,
+                };
+            };
+
+            // Re-sort with the same ordering loadDropsData uses, so a now fully-claimed
+            // game sinks to the bottom without a reload.
+            const sortGames = (a: UnifiedGame, b: UnifiedGame) => {
+                if (a.is_mining !== b.is_mining) return a.is_mining ? -1 : 1;
+                if (a.all_drops_claimed !== b.all_drops_claimed) return a.all_drops_claimed ? 1 : -1;
+                if (a.has_claimable !== b.has_claimable) return a.has_claimable ? -1 : 1;
+                if (a.active_campaigns.length !== b.active_campaigns.length) {
+                    return b.active_campaigns.length - a.active_campaigns.length;
+                }
+                return a.name.localeCompare(b.name);
+            };
+
+            setUnifiedGames(prev =>
+                prev.map(g => (gameOwnsDrop(g) ? recomputeGame(g) : g)).sort(sortGames)
+            );
+            setSelectedGame(prev => (prev && gameOwnsDrop(prev) ? recomputeGame(prev) : prev));
         } catch (err) {
             Logger.error('Failed to claim drop:', err);
             addToast('Failed to claim drop', 'error');
@@ -457,7 +523,7 @@ export default function DropsCenter() {
         } else {
             // Add to favorites
             newFavoriteGames = [...currentFavorites, gameName];
-            addToast(`Added ${gameName} to favorites ❤️`, 'success');
+            addToast(`Added ${gameName} to favorites`, 'success');
         }
         
         await updateDropsSettings({ favorite_games: newFavoriteGames });
@@ -1242,7 +1308,7 @@ export default function DropsCenter() {
                         
                         try {
                             await invoke('start_campaign_mining', { campaignId: currentQueue.campaignIds[nextIndex] });
-                            addToast(`✅ Campaign complete! Mining ${nextIndex + 1} of ${currentQueue.campaignIds.length}...`, 'info');
+                            addToast(`Campaign complete! Mining ${nextIndex + 1} of ${currentQueue.campaignIds.length}...`, 'info');
                         } catch (err) {
                             Logger.error('[DropsCenter] Failed to start next campaign:', err);
                             addToast('Failed to start next campaign', 'error');
@@ -1252,14 +1318,14 @@ export default function DropsCenter() {
                     } else {
                         // All campaigns in queue complete - Mine All Game is done
                         Logger.debug(`[DropsCenter] Mine All complete for ${currentQueue.gameName}`);
-                        addToast(`🎉 All campaigns for ${event.payload.game_name} complete!`, 'success');
+                        addToast(`All campaigns for ${event.payload.game_name} complete!`, 'success');
                         setMineAllQueue(null);
                         useAppStore.getState().setMiningActive(false);
                     }
                 } else {
                     // Single Campaign Mining mode - stop completely
                     Logger.debug('[DropsCenter] Single campaign complete - stopping');
-                    addToast(`✅ Drops complete for ${event.payload.game_name}!`, 'success');
+                    addToast(`Drops complete for ${event.payload.game_name}!`, 'success');
                     useAppStore.getState().setMiningActive(false);
                 }
                 
@@ -1281,7 +1347,7 @@ export default function DropsCenter() {
                     
                     if (nextIndex < currentQueue.campaignIds.length) {
                         Logger.debug(`[DropsCenter] Channels offline - trying next campaign ${nextIndex + 1}/${currentQueue.campaignIds.length}`);
-                        addToast(`⚠️ All streams offline - trying next campaign...`, 'warning');
+                        addToast(`All streams offline - trying next campaign...`, 'warning');
                         
                         setMineAllQueue(prev => prev ? { ...prev, currentIndex: nextIndex } : null);
                         
@@ -1298,13 +1364,13 @@ export default function DropsCenter() {
                         }, 2000);
                     } else {
                         // All campaigns tried - queue exhausted
-                        addToast('⚠️ All campaigns have no available streams', 'warning');
+                        addToast('All campaigns have no available streams', 'warning');
                         setMineAllQueue(null);
                         useAppStore.getState().setMiningActive(false);
                     }
                 } else {
                     // Single campaign mode - just notify and stop
-                    addToast(`⚠️ ${event.payload.reason || 'All streams offline - mining stopped'}`, 'warning');
+                    addToast(`${event.payload.reason || 'All streams offline - mining stopped'}`, 'warning');
                     useAppStore.getState().setMiningActive(false);
                 }
                 
@@ -1526,7 +1592,7 @@ export default function DropsCenter() {
         // Send notifications for new favorite campaigns
         if (newFavoriteCampaigns.length > 0 && dropsSettings.notify_on_drop_available) {
             newFavoriteCampaigns.forEach(({ gameName, campaignName }) => {
-                addToast(`🎁 New drop for ${gameName}: ${campaignName}`, 'success');
+                addToast(`New drop for ${gameName}: ${campaignName}`, 'success');
                 Logger.debug(`[DropsCenter] New favorite campaign notification: ${gameName} - ${campaignName}`);
             });
         }

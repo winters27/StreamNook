@@ -206,6 +206,6 @@ async function runHealthCheckAndApply(isFirstTime: boolean): Promise<boolean> {
     },
   });
 
-  Logger.info('[ProxyOptimizer] ✅ Settings saved with optimized proxy');
+  Logger.info('[ProxyOptimizer] Settings saved with optimized proxy');
   return true;
 }

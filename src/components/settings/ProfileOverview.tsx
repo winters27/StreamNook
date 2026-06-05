@@ -41,6 +41,7 @@ import {
   Star,
   Layers,
   Repeat,
+  BellRing,
   Smile,
   Flower2,
   Leaf,
@@ -66,6 +67,7 @@ import { getTier } from '../StreamNookBadge';
 import type { InventoryResponse, ChannelPointsBalance } from '../../types';
 import { pickHoursRoast, type PickedRoast } from '../../utils/hoursWatchedRoasts';
 import { SEASONAL_ACCOLADES, getActiveSeasonalAccoladeIds, isCakeDay, CAKE_DAY_ID } from '../../utils/seasonalAccolades';
+import { RESTLESS_ACCOLADE_ID } from '../../utils/notifAchievement';
 import SubscriptionsSection from './SubscriptionsSection';
 import TopEmotesSection from './TopEmotesSection';
 import { ProfileAccentContext, ProfileCompactContext } from './profileAccentContext';
@@ -224,12 +226,16 @@ const SEASONAL_PRES: Record<string, { icon: LucideIcon; grad: string }> = {
   [CAKE_DAY_ID]: { icon: Cake, grad: 'linear-gradient(140deg, #f9a8d4, #db2777)' },
 };
 
-const AccoladeMedallion = ({ a }: { a: Accolade }) => {
+const AccoladeMedallion = ({ a, isOwnProfile }: { a: Accolade; isOwnProfile: boolean }) => {
   const Icon = a.icon;
   const compact = useContext(ProfileCompactContext);
   const mystery = !!a.secret && !a.earned;
   const label = mystery ? '???' : a.label;
-  const tip = mystery ? 'Secret accolade. Keep going to reveal it.' : a.hint;
+  // On YOUR OWN profile a secret accolade shows its cryptic, guiding hint so you
+  // can discover and chase it. On someone else's profile it never reveals the
+  // how-to (so it can't be cheated by reading it off their earned one) — just a
+  // neutral descriptor. Non-secret accolades show their hint either way.
+  const tip = a.secret && !isOwnProfile ? 'A hidden accolade.' : a.hint;
   return (
     <Tooltip content={tip} side="top">
       <motion.div
@@ -477,10 +483,11 @@ const ProfileOverview = ({
   ];
   const allBaseEarned = baseAccolades.every((a) => a.earned);
   const secretAccolades: Accolade[] = [
-    { id: 'completionist', label: 'Completionist', icon: Star, grad: 'linear-gradient(140deg, #f472b6, #db2777)', secret: true, earned: allBaseEarned, hint: 'Unlock every other accolade' },
-    { id: 'triple', label: 'Triple Threat', icon: Layers, grad: 'linear-gradient(140deg, #34d399, #0f766e)', secret: true, earned: messages >= 1000 && hours >= 100 && drops >= 25, hint: '1,000 messages, 100 hours, and 25 drops' },
-    { id: 'palindrome', label: 'Palindrome', icon: Repeat, grad: 'linear-gradient(140deg, #c084fc, #7e22ce)', secret: true, earned: isPalindrome(memberNo), hint: 'Your member number reads the same backwards' },
-    { id: 'nice', label: 'Nice', icon: Smile, grad: 'linear-gradient(140deg, #facc15, #ca8a04)', secret: true, earned: memberNo !== null && [69, 420, 666, 777, 1337].includes(memberNo), hint: 'Land a meme-worthy member number' },
+    { id: 'completionist', label: 'Completionist', icon: Star, grad: 'linear-gradient(140deg, #f472b6, #db2777)', secret: true, earned: allBaseEarned, hint: "When there's nothing else left to earn, this one shows up." },
+    { id: 'triple', label: 'Triple Threat', icon: Layers, grad: 'linear-gradient(140deg, #34d399, #0f766e)', secret: true, earned: messages >= 1000 && hours >= 100 && drops >= 25, hint: 'Talk, watch, and collect until all three run deep.' },
+    { id: 'palindrome', label: 'Palindrome', icon: Repeat, grad: 'linear-gradient(140deg, #c084fc, #7e22ce)', secret: true, earned: isPalindrome(memberNo), hint: 'A number that reads the same coming and going.' },
+    { id: 'nice', label: 'Nice', icon: Smile, grad: 'linear-gradient(140deg, #facc15, #ca8a04)', secret: true, earned: memberNo !== null && [69, 420, 666, 777, 1337].includes(memberNo), hint: 'Land on a number the internet never lets you forget.' },
+    { id: RESTLESS_ACCOLADE_ID, label: 'Restless', icon: BellRing, grad: 'linear-gradient(140deg, #818cf8, #4338ca)', secret: true, earned: earnedAccolades.has(RESTLESS_ACCOLADE_ID), hint: "The test notification really wishes you'd stop." },
   ];
   const seasonalAccolades: Accolade[] = [
     ...SEASONAL_ACCOLADES.map((b): Accolade => ({
@@ -500,7 +507,14 @@ const ProfileOverview = ({
       hint: earnedAccolades.has(CAKE_DAY_ID) ? 'Collected' : 'Open StreamNook on your Twitch cake day',
     },
   ];
-  const accolades: Accolade[] = [...baseAccolades, ...secretAccolades, ...seasonalAccolades];
+  const allAccolades: Accolade[] = [...baseAccolades, ...secretAccolades, ...seasonalAccolades];
+  // On someone else's PUBLIC profile, hide locked SECRET accolades entirely: a
+  // viewer shouldn't see placeholders for hidden achievements the member hasn't
+  // earned, and must never be able to read a how-to off them. Your own profile
+  // shows all of them so you can chase them.
+  const accolades: Accolade[] = isOwnProfile
+    ? allAccolades
+    : allAccolades.filter((a) => !(a.secret && !a.earned));
   const earnedCount = accolades.filter((a) => a.earned).length;
   const sortedAccolades = [...accolades].sort((a, b) => Number(b.earned) - Number(a.earned));
   const earnedMedallions = sortedAccolades.filter((a) => a.earned);
@@ -702,7 +716,7 @@ const ProfileOverview = ({
           className={`grid grid-cols-4 sm:grid-cols-6 ${compact ? 'gap-2.5' : 'gap-4'}`}
         >
           {accoladesShown.map((a) => (
-            <AccoladeMedallion key={a.id} a={a} />
+            <AccoladeMedallion key={a.id} a={a} isOwnProfile={isOwnProfile} />
           ))}
         </motion.div>
         {compact && lockedCount > 0 && (

@@ -21,11 +21,12 @@ import { useAppStore } from '../stores/AppStore';
 import { incrementStat } from '../services/supabaseService';
 import { trackEmoteUsage } from '../utils/trackEmoteUsage';
 import ChatMessage from './ChatMessage';
+import { LinkPreviewCard } from './chat/LinkPreviewCard';
+import { extractPreviewUrls } from '../services/linkPreviewService';
 import UserProfileCard from './UserProfileCard';
 import ErrorBoundary from './ErrorBoundary';
 import PredictionOverlay from './PredictionOverlay';
 import ConfettiBurst from './ConfettiBurst';
-import StreamerAboutPanel from './StreamerAboutPanel';
 import ViewersPanel from './ViewersPanel';
 import ChannelPointsMenu from './ChannelPointsMenu';
 import ModeratorMenu from './chat/ModeratorMenu';
@@ -80,6 +81,7 @@ interface ParsedMessage {
 
 import { EMOJI_CATEGORIES, EMOJI_KEYWORDS } from '../services/emojiCategories';
 import { usemultiNookStore } from '../stores/multiNookStore';
+import { usePinStore } from '../stores/pinStore';
 import type { TwitchStream } from '../types';
 
 import { Logger } from '../utils/logger';
@@ -477,7 +479,7 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
   
   // UI state
   const [messageInput, setMessageInput] = useState('');
-  const [activeView, setActiveView] = useState<'chat' | 'about' | 'viewers'>('chat');
+  const [activeView, setActiveView] = useState<'chat' | 'viewers'>('chat');
 
   // The viewers list is mod-only (Helix Get Chatters needs mod/broadcaster auth).
   // If mod status drops while it's open, fall back to the chat view.
@@ -755,6 +757,7 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
   // Pinned chat state
   interface PinnedMessage {
     id: string;
+    message_id: string;
     type: string;
     message_text: string;
     sender_id: string;
@@ -1047,7 +1050,7 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
 
     if (pendingLevelUpRef.current) {
       const { from, to } = pendingLevelUpRef.current;
-      Logger.debug(`[HypeTrain] 🎉 LEVEL UP! ${from} → ${to}`);
+      Logger.debug(`[HypeTrain] LEVEL UP! ${from} → ${to}`);
       
       const randomMessage = HYPE_MESSAGES[Math.floor(Math.random() * HYPE_MESSAGES.length)];
       setCelebrationMessage(randomMessage);
@@ -1263,7 +1266,7 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
         }
         
         if (typeof balance === 'number') {
-          Logger.debug('[ChatWidget] ✅ Got channel points balance:', balance);
+          Logger.debug('[ChatWidget] Got channel points balance:', balance);
           setChannelPoints(balance);
           return;
         }
@@ -1354,6 +1357,7 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
   const fetchPinnedMessages = useCallback(async () => {
     if (!currentStream?.user_id) {
       setPinnedMessages([]);
+      usePinStore.getState().setPinnedIds([]);
       return;
     }
     try {
@@ -1361,37 +1365,52 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
         channelId: currentStream.user_id,
       });
       setPinnedMessages(messages || []);
+      // Publish the underlying message ids so a chat row / drag bucket can flip
+      // its Pin control into Unpin when it's the currently-pinned message.
+      usePinStore.getState().setPinnedIds((messages || []).map((m) => m.message_id).filter(Boolean));
       if (messages && messages.length > 0) {
         Logger.debug('[ChatWidget] Pinned messages:', messages.length);
       }
     } catch (err) {
       Logger.warn('[ChatWidget] Failed to fetch pinned messages:', err);
       setPinnedMessages([]);
+      usePinStore.getState().setPinnedIds([]);
     }
   }, [currentStream?.user_id]);
   useEffect(() => {
     fetchPinnedMessages();
   }, [fetchPinnedMessages]);
   useVisibleInterval(fetchPinnedMessages, 30000);
+  // Real-time refresh: any pin/unpin action bumps refreshNonce, so the pin shows
+  // up immediately instead of after the 30s poll. A short second pass covers
+  // Twitch's brief propagation lag (the Helix 204 can land just before GQL
+  // GetPinnedChat reflects it). Skips the initial mount (nonce 0).
+  const pinRefreshNonce = usePinStore((s) => s.refreshNonce);
+  useEffect(() => {
+    if (pinRefreshNonce === 0) return;
+    fetchPinnedMessages();
+    const t = setTimeout(() => fetchPinnedMessages(), 1200);
+    return () => clearTimeout(t);
+  }, [pinRefreshNonce, fetchPinnedMessages]);
 
   // Listen for channel points updates from backend events
   useEffect(() => {
     if (!currentStream?.user_id) return;
     
     const unlistenSpent = listen<{ channel_id?: string | null; points: number; balance: number }>('channel-points-spent', (event) => {
-      Logger.debug('[ChatWidget] 💸 Points spent event:', event.payload, 'currentChannel:', currentStream.user_id);
+      Logger.debug('[ChatWidget] Points spent event:', event.payload, 'currentChannel:', currentStream.user_id);
       // Update if channel matches OR if no channel_id in event (prediction bets sometimes don't include it)
       if (!event.payload.channel_id || event.payload.channel_id === currentStream.user_id) {
-        Logger.debug('[ChatWidget] ✅ Updating channel points to:', event.payload.balance);
+        Logger.debug('[ChatWidget] Updating channel points to:', event.payload.balance);
         setChannelPoints(event.payload.balance);
       }
     });
 
     const unlistenEarned = listen<{ channel_id?: string | null; points: number; balance: number }>('channel-points-earned', (event) => {
-      Logger.debug('[ChatWidget] 💰 Points earned event:', event.payload, 'currentChannel:', currentStream.user_id);
+      Logger.debug('[ChatWidget] Points earned event:', event.payload, 'currentChannel:', currentStream.user_id);
       // Update if channel matches OR if no channel_id in event
       if (!event.payload.channel_id || event.payload.channel_id === currentStream.user_id) {
-        Logger.debug('[ChatWidget] ✅ Updating channel points to:', event.payload.balance);
+        Logger.debug('[ChatWidget] Updating channel points to:', event.payload.balance);
         setChannelPoints(event.payload.balance);
       }
     });
@@ -3093,44 +3112,12 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
                 } : undefined}
               >
                 <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-red-400'}`}></div>
-                {/* Carousel toggle — cycles between STREAM CHAT and ABOUT */}
-                <Tooltip content={activeView === 'about' ? 'Back to chat' : 'About this streamer'} side="top">
-                <button
-                  className="pointer-events-auto flex items-center gap-1.5 group/toggle"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setActiveView(activeView === 'about' ? 'chat' : 'about');
-                  }}
-                >
-                  <div className="relative h-4 overflow-hidden transition-all duration-300 ease-in-out" style={{ width: activeView === 'about' ? '44px' : (isSharedChat ? '135px' : currentMediaType === 'offline_chat' ? '92px' : '88px') }}>
-                    <div
-                      className="absolute w-full transition-transform duration-300 ease-in-out"
-                      style={{ transform: activeView === 'about' ? 'translateY(-100%)' : 'translateY(0)' }}
-                    >
-                      <p className={`text-xs font-semibold leading-4 whitespace-nowrap ${isSharedChat ? 'iridescent-title' : 'text-textPrimary'}`}>
-                        {isConnected ? (isSharedChat ? 'SHARED STREAM CHAT' : currentMediaType === 'offline_chat' ? 'OFFLINE CHAT' : 'STREAM CHAT') : 'DISCONNECTED'}
-                      </p>
-                    </div>
-                    <div
-                      className="absolute w-full transition-transform duration-300 ease-in-out"
-                      style={{ transform: activeView === 'about' ? 'translateY(0)' : 'translateY(100%)' }}
-                    >
-                      <p className="text-xs font-semibold leading-4 whitespace-nowrap text-accent">
-                        ABOUT
-                      </p>
-                    </div>
-                  </div>
-                  {/* Up/Down chevron arrows */}
-                  <div className="flex flex-col -space-y-1 text-textSecondary/50 group-hover/toggle:text-textSecondary transition-colors">
-                    <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={3}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 15l7-7 7 7" />
-                    </svg>
-                    <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={3}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-                    </svg>
-                  </div>
-                </button>
-                </Tooltip>
+                {/* Chat status label. The STREAM CHAT <-> ABOUT carousel toggle was
+                    retired: the channel About is now reached by scrolling down on
+                    the player (ChannelAboutReveal). */}
+                <p className={`text-xs font-semibold leading-4 whitespace-nowrap ${isSharedChat ? 'iridescent-title' : 'text-textPrimary'}`}>
+                  {isConnected ? (isSharedChat ? 'SHARED STREAM CHAT' : currentMediaType === 'offline_chat' ? 'OFFLINE CHAT' : 'STREAM CHAT') : 'DISCONNECTED'}
+                </p>
                 <div className="flex items-center gap-3 ml-auto">
                   {/* Viewers list — the official chatters roster grouped by role.
                       Mod/broadcaster only (Helix Get Chatters requires it), so the
@@ -3268,11 +3255,57 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
                   className="w-full max-w-sm glass-panel bg-background/[0.45] shadow-2xl mt-2 pointer-events-auto overflow-hidden origin-top"
                   style={{ backdropFilter: 'blur(64px) saturate(300%)', WebkitBackdropFilter: 'blur(64px) saturate(300%)' }}
                 >
-                {pinnedMessages.map((pin, i) => (
+                {pinnedMessages.map((pin, i) => {
+                  // Same link-preview pipeline the main chat uses, applied to the
+                  // pinned message.
+                  const previewsOn = settings.chat_design?.link_previews ?? true;
+                  const keepLink = settings.chat_design?.link_preview_keep_link ?? false;
+                  const previewItems = previewsOn
+                    ? extractPreviewUrls(
+                        pin.message_text,
+                        2,
+                        settings.chat_design?.link_preview_trusted_domains,
+                      )
+                    : [];
+                  // In "clean" mode the inline link is suppressed for any trusted
+                  // (auto-carded) URL so the card is the sole representation,
+                  // matching chat. Untrusted links keep their inline link.
+                  const stripTrail = (s: string) => s.replace(/[.,!?:;'")\]}>]+$/, '');
+                  const suppressed = !keepLink
+                    ? new Set(previewItems.filter((it) => it.trusted).map((it) => it.url))
+                    : null;
+                  const textParts = pin.message_text.split(/(https?:\/\/\S+)/g);
+                  const hasVisibleBody = textParts.some((part) =>
+                    /^https?:\/\//.test(part)
+                      ? !suppressed?.has(stripTrail(part))
+                      : part.trim().length > 0,
+                  );
+                  return (
                   <div
                     key={pin.id}
-                    className={`p-3.5 ${i > 0 ? 'border-t border-white/[0.05]' : ''}`}
+                    className={`relative p-3.5 ${i > 0 ? 'border-t border-white/[0.05]' : ''}`}
                   >
+                    {/* Unpin (mod-only): clears the current mod pin from the
+                        pinned message itself. */}
+                    {isModerator && currentStream?.user_id && (
+                      <Tooltip content="Unpin message" side="left">
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            try {
+                              await invoke('unpin_chat_message', { broadcasterId: currentStream.user_id, messageId: pin.message_id });
+                              usePinStore.getState().requestRefresh();
+                            } catch (err) {
+                              Logger.error('[ChatWidget] Failed to unpin message:', err);
+                            }
+                          }}
+                          className="absolute top-2 right-2 z-10 p-1.5 rounded-lg text-textSecondary/70 hover:text-red-400 hover:bg-red-500/15 transition-colors pointer-events-auto"
+                          aria-label="Unpin message"
+                        >
+                          <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="2" x2="22" y1="2" y2="22"/><line x1="12" x2="12" y1="17" y2="22"/><path d="M9 9v1.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V17h12"/><path d="M15 9.34V6h1a2 2 0 0 0 0-4H7.89"/></svg>
+                        </button>
+                      </Tooltip>
+                    )}
                     {/* Sender row: avatar + badges + name + message */}
                     <div className="flex items-start gap-3">
                       {/* Sender avatar */}
@@ -3317,24 +3350,48 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
                             {pin.sender_name}
                           </span>
                         </div>
-                        {/* Message text with clickable links */}
-                        <p className="text-[13.5px] text-textPrimary/95 mt-1.5 break-words font-medium" style={{ lineHeight: '1.5' }}>
-                          {pin.message_text.split(/(https?:\/\/\S+)/g).map((part, index) =>
-                            /^https?:\/\//.test(part) ? (
-                              <a
-                                key={index}
-                                className="text-accent/90 hover:text-accent hover:underline pointer-events-auto cursor-pointer transition-colors"
-                                onClick={() => {
-                                  import('@tauri-apps/plugin-shell').then(({ open }) => open(part));
-                                }}
-                              >
-                                {part.length > 50 ? part.slice(0, 50) + '…' : part}
-                              </a>
-                            ) : (
-                              <span key={index}>{part}</span>
-                            )
-                          )}
-                        </p>
+                        {/* Message text with clickable links. Trusted carded
+                            links are suppressed in clean mode (the card is the
+                            link); the whole paragraph is skipped if nothing
+                            visible remains (e.g. a pin that's only a link). */}
+                        {hasVisibleBody && (
+                          <p className="text-[13.5px] text-textPrimary/95 mt-1.5 break-words font-medium" style={{ lineHeight: '1.5' }}>
+                            {textParts.map((part, index) =>
+                              /^https?:\/\//.test(part) ? (
+                                suppressed?.has(stripTrail(part)) ? null : (
+                                  <a
+                                    key={index}
+                                    className="text-accent/90 hover:text-accent hover:underline pointer-events-auto cursor-pointer transition-colors"
+                                    onClick={() => {
+                                      import('@tauri-apps/plugin-shell').then(({ open }) => open(part));
+                                    }}
+                                  >
+                                    {part.length > 50 ? part.slice(0, 50) + '…' : part}
+                                  </a>
+                                )
+                              ) : (
+                                <span key={index}>{part}</span>
+                              )
+                            )}
+                          </p>
+                        )}
+                        {/* Inline link preview cards. In clean mode the inline
+                            link above is suppressed and showChip lets a failed
+                            trusted preview fall back to a link chip so the link is
+                            never lost. Untrusted links render a click-to-load
+                            chip (with the always-trust shield). */}
+                        {previewItems.length > 0 && (
+                          <div className="mt-2 flex flex-col items-start gap-1">
+                            {previewItems.map((it) => (
+                              <LinkPreviewCard
+                                key={it.url}
+                                url={it.url}
+                                trusted={it.trusted}
+                                showChip={it.trusted && !keepLink}
+                              />
+                            ))}
+                          </div>
+                        )}
                       </div>
                     </div>
                     {/* Pinned by footer — visually separated */}
@@ -3356,23 +3413,60 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
                       </div>
                     )}
                   </div>
-                ))}
+                  );
+                })}
                 </motion.div>
               )}
+            </AnimatePresence>
+            {/* Collapsed state: a thin one-line bar (pin + sender + truncated
+                text) instead of hiding the pin entirely. Click to expand.
+                Opt-out via chat_design.pinned_collapsed_style === 'hidden'. */}
+            <AnimatePresence>
+              {!isPinnedExpanded && (settings.chat_design?.pinned_collapsed_style ?? 'bar') !== 'hidden' && (() => {
+                const pin = pinnedMessages[0];
+                return (
+                  <motion.button
+                    type="button"
+                    initial={{ opacity: 0, y: -8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -8 }}
+                    transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+                    onClick={() => {
+                      setIsPinnedExpanded(true);
+                      seenPinIdRef.current = pin.id;
+                    }}
+                    className="group w-full max-w-sm glass-panel bg-background/[0.45] hover:bg-background/[0.6] shadow-lg mt-2 pointer-events-auto overflow-hidden flex items-center gap-2 px-3 py-2 text-left transition-colors"
+                    style={{ backdropFilter: 'blur(64px) saturate(300%)', WebkitBackdropFilter: 'blur(64px) saturate(300%)' }}
+                  >
+                    <svg className="w-3 h-3 text-accent flex-shrink-0" fill="currentColor" viewBox="0 0 16 16">
+                      <path d="M4.146.146A.5.5 0 0 1 4.5 0h7a.5.5 0 0 1 .5.5c0 .68-.342 1.174-.646 1.479-.126.125-.25.224-.354.298v4.431l.078.048c.203.127.476.314.751.555C12.36 7.775 13 8.527 13 9.5a.5.5 0 0 1-.5.5h-4v4.5a.5.5 0 0 1-1 0V10h-4A.5.5 0 0 1 3 9.5c0-.973.64-1.725 1.17-2.189A5.921 5.921 0 0 1 5 6.708V2.277a2.77 2.77 0 0 1-.354-.298C4.342 1.674 4 1.179 4 .5a.5.5 0 0 1 .146-.354z"/>
+                    </svg>
+                    <span
+                      className="text-xs font-bold flex-shrink-0 max-w-[35%] truncate"
+                      style={{ color: pin.sender_color, textShadow: '0 1px 2px rgba(0,0,0,0.8)' }}
+                    >
+                      {pin.sender_name}
+                    </span>
+                    <span className="text-xs text-textPrimary/85 truncate min-w-0 flex-1">
+                      {pin.message_text}
+                    </span>
+                    {pinnedMessages.length > 1 && (
+                      <span className="text-[10px] font-semibold text-textSecondary flex-shrink-0 tabular-nums">
+                        +{pinnedMessages.length - 1}
+                      </span>
+                    )}
+                    {/* Expand chevron */}
+                    <svg className="w-2.5 h-2.5 text-textSecondary/60 group-hover:text-textSecondary flex-shrink-0 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" />
+                    </svg>
+                  </motion.button>
+                );
+              })()}
             </AnimatePresence>
           </div>
         )}
 
         {/* Staging area removed - using direct rendering with ResizeObserver */}
-
-        {/* About panel - replaces chat when active */}
-        {activeView === 'about' && currentStream && (
-          <div className={`flex-1 overflow-hidden animate-panel-slide-up ${currentHypeTrain ? 'pt-24' : 'pt-10'}`}>
-            <StreamerAboutPanel
-              channelLogin={currentStream.user_login}
-            />
-          </div>
-        )}
 
         {/* Viewers list - replaces chat when active */}
         {activeView === 'viewers' && currentStream && (

@@ -75,8 +75,8 @@ const PredictionOverlay = ({ channelId, channelLogin, isHypeTrainActive = false 
 
   // Debug log on mount and when channel changes
   useEffect(() => {
-    Logger.debug('[Prediction] 🎯 PredictionOverlay mounted/updated');
-    Logger.debug('[Prediction] 📺 Watching for channel:', {
+    Logger.debug('[Prediction] PredictionOverlay mounted/updated');
+    Logger.debug('[Prediction] Watching for channel:', {
       channelId: currentChannelId || 'NOT SET',
       channelLogin: currentChannelLogin || 'NOT SET',
       fromProps: { channelId, channelLogin },
@@ -89,7 +89,7 @@ const PredictionOverlay = ({ channelId, channelLogin, isHypeTrainActive = false 
     const fetchActivePrediction = async () => {
       if (!currentChannelLogin) return;
       
-      Logger.debug('[Prediction] 🔍 Checking for active prediction on channel:', currentChannelLogin);
+      Logger.debug('[Prediction] Checking for active prediction on channel:', currentChannelLogin);
       
       try {
         const result = await invoke<PredictionData | null>('get_active_prediction', {
@@ -97,7 +97,7 @@ const PredictionOverlay = ({ channelId, channelLogin, isHypeTrainActive = false 
         });
         
         if (result) {
-          Logger.debug('[Prediction] ✅ Found active prediction on mount:', result);
+          Logger.debug('[Prediction] Found active prediction on mount:', result);
           
           // Only set if we don't already have this prediction active
           if (!activePrediction || activePrediction.prediction_id !== result.prediction_id) {
@@ -186,14 +186,14 @@ const PredictionOverlay = ({ channelId, channelLogin, isHypeTrainActive = false 
         // Extract custom points icon URL
         const customIconUrl = result?.data?.user?.channel?.communityPointsSettings?.image?.url;
         if (customIconUrl) {
-          Logger.debug('[Prediction] ✅ Got custom points icon:', customIconUrl);
+          Logger.debug('[Prediction] Got custom points icon:', customIconUrl);
           setCustomPointsIconUrl(customIconUrl);
         } else {
           setCustomPointsIconUrl(null);
         }
         
         if (typeof balance === 'number') {
-          Logger.debug('[Prediction] ✅ Setting channel points to:', balance);
+          Logger.debug('[Prediction] Setting channel points to:', balance);
           setChannelPoints(balance);
           return; // Success!
         }
@@ -215,7 +215,7 @@ const PredictionOverlay = ({ channelId, channelLogin, isHypeTrainActive = false 
         
         const balance = result?.balance || result?.points;
         if (typeof balance === 'number') {
-          Logger.debug('[Prediction] ✅ Setting channel points from fallback:', balance);
+          Logger.debug('[Prediction] Setting channel points from fallback:', balance);
           setChannelPoints(balance);
           return;
         }
@@ -253,11 +253,11 @@ const PredictionOverlay = ({ channelId, channelLogin, isHypeTrainActive = false 
 
   // Listen for prediction events
   useEffect(() => {
-    Logger.debug('[Prediction] 📡 Setting up event listeners...');
+    Logger.debug('[Prediction] Setting up event listeners...');
     
     const unlistenCreated = listen<PredictionData>('prediction-created', (event) => {
       const prediction = event.payload;
-      Logger.debug('[Prediction] 🎰 Received prediction-created event:', {
+      Logger.debug('[Prediction] Received prediction-created event:', {
         eventChannelId: prediction.channel_id,
         currentChannelId: currentChannelId,
         match: prediction.channel_id === currentChannelId,
@@ -266,7 +266,7 @@ const PredictionOverlay = ({ channelId, channelLogin, isHypeTrainActive = false 
       
       // Only show if this prediction is for the current channel we're watching
       if (currentChannelId && prediction.channel_id === currentChannelId) {
-        Logger.debug('[Prediction] ✅ Prediction MATCHES current channel! Showing overlay.');
+        Logger.debug('[Prediction] Prediction MATCHES current channel! Showing overlay.');
         setActivePrediction(prediction);
         setTimeRemaining(prediction.prediction_window_seconds);
         setIsLocked(false);
@@ -280,7 +280,7 @@ const PredictionOverlay = ({ channelId, channelLogin, isHypeTrainActive = false 
 
     const unlistenUpdated = listen<PredictionData & { winning_outcome_id?: string }>('prediction-updated', (event) => {
       const prediction = event.payload;
-      Logger.debug('[Prediction] 🎰 Received prediction-updated event:', {
+      Logger.debug('[Prediction] Received prediction-updated event:', {
         eventChannelId: prediction.channel_id,
         currentChannelId: currentChannelId,
         match: prediction.channel_id === currentChannelId,
@@ -292,7 +292,7 @@ const PredictionOverlay = ({ channelId, channelLogin, isHypeTrainActive = false 
       // This handles the case where user starts watching after prediction was created
       if (currentChannelId && prediction.channel_id === currentChannelId) {
         if (!activePrediction && (prediction.status === 'ACTIVE' || prediction.status === 'LOCKED')) {
-          Logger.debug('[Prediction] ✅ Late-joining prediction! Initializing overlay from update event.');
+          Logger.debug('[Prediction] Late-joining prediction! Initializing overlay from update event.');
           setActivePrediction(prediction);
           setTimeRemaining(prediction.prediction_window_seconds || 60);
           setIsLocked(prediction.status === 'LOCKED');
@@ -312,10 +312,10 @@ const PredictionOverlay = ({ channelId, channelLogin, isHypeTrainActive = false 
           
           // Handle resolution states
           if (prediction.status === 'RESOLVE_PENDING') {
-            Logger.debug('[Prediction] 🔄 Prediction is being resolved...');
+            Logger.debug('[Prediction] Prediction is being resolved...');
             setResolutionState('pending');
           } else if (prediction.status === 'RESOLVED') {
-            Logger.debug('[Prediction] ✅ Prediction RESOLVED! winning_outcome_id:', prediction.winning_outcome_id);
+            Logger.debug('[Prediction] Prediction RESOLVED! winning_outcome_id:', prediction.winning_outcome_id);
             
             // Use the winning_outcome_id from the event payload
             const winningId = prediction.winning_outcome_id;
@@ -328,7 +328,7 @@ const PredictionOverlay = ({ channelId, channelLogin, isHypeTrainActive = false 
               const userBet = hasPlacedBetRef.current;
               const userSelectedOutcome = selectedOutcomeRef.current;
               
-              Logger.debug('[Prediction] 🎯 Resolution check:', {
+              Logger.debug('[Prediction] Resolution check:', {
                 winningId,
                 userBet,
                 userSelectedOutcome,
@@ -339,21 +339,21 @@ const PredictionOverlay = ({ channelId, channelLogin, isHypeTrainActive = false 
               if (userBet && userSelectedOutcome) {
                 if (userSelectedOutcome === winningId) {
                   setResolutionState('win');
-                  addToast(`🎉 You WON! "${winningOutcome?.title || 'Unknown'}" was correct!`, 'success');
+                  addToast(`You WON! "${winningOutcome?.title || 'Unknown'}" was correct!`, 'success');
                 } else {
                   setResolutionState('loss');
-                  addToast(`😢 You lost. "${winningOutcome?.title || 'Unknown'}" was the winner.`, 'error');
+                  addToast(`You lost. "${winningOutcome?.title || 'Unknown'}" was the winner.`, 'error');
                 }
               } else {
                 // User didn't bet, just show neutral result announcement
                 setResolutionState('announced');
-                addToast(`🏆 Prediction ended! Winner: ${winningOutcome?.title || 'Unknown'}`, 'success');
+                addToast(`Prediction ended! Winner: ${winningOutcome?.title || 'Unknown'}`, 'success');
               }
             } else {
               // No winner ID - prediction was cancelled/refunded
               Logger.debug('[Prediction] No winning_outcome_id - prediction was refunded');
               setResolutionState('refund');
-              addToast(`🔄 Prediction refunded`, 'info');
+              addToast(`Prediction refunded`, 'info');
             }
             
             // Clear overlay after showing result
@@ -365,9 +365,9 @@ const PredictionOverlay = ({ channelId, channelLogin, isHypeTrainActive = false 
               setWinningOutcomeId(null);
             }, 4000);
           } else if (prediction.status === 'CANCELED') {
-            Logger.debug('[Prediction] ❌ Prediction CANCELED');
+            Logger.debug('[Prediction] Prediction CANCELED');
             setResolutionState('refund');
-            addToast(`🔄 Prediction cancelled - points refunded`, 'info');
+            addToast(`Prediction cancelled - points refunded`, 'info');
             
             setTimeout(() => {
               setActivePrediction(null);
@@ -395,7 +395,7 @@ const PredictionOverlay = ({ channelId, channelLogin, isHypeTrainActive = false 
         if (event.payload.winning_outcome_id) {
           const winner = activePrediction?.outcomes.find(o => o.id === event.payload.winning_outcome_id);
           if (winner) {
-            addToast(`🏆 Prediction ended! Winner: ${winner.title}`, 'success');
+            addToast(`Prediction ended! Winner: ${winner.title}`, 'success');
           }
         }
         
@@ -448,7 +448,7 @@ const PredictionOverlay = ({ channelId, channelLogin, isHypeTrainActive = false 
       });
 
       const selectedOutcomeTitle = activePrediction.outcomes.find(o => o.id === selectedOutcome)?.title;
-      addToast(`🔮 Prediction placed! ${betAmount} points on "${selectedOutcomeTitle}"`, 'success');
+      addToast(`Prediction placed! ${betAmount} points on "${selectedOutcomeTitle}"`, 'success');
       setHasPlacedBet(true);
       
       // Refresh channel points

@@ -191,6 +191,14 @@ function buildQuickActions(): PaletteItem[] {
       run: () => useAppStore.getState().setShowBadgesOverlay(true),
     },
     {
+      id: 'qa.openEmoteSets',
+      section: 'Quick Actions',
+      title: 'Open 7TV Emotes',
+      subtitle: 'Manage 7TV emotes, sets, and editors for channels you edit',
+      keywords: 'emotes 7tv emote sets manage add remove rename editor channel',
+      run: () => useAppStore.getState().openEmoteSets(),
+    },
+    {
       id: 'qa.openStreamNookTab',
       section: 'Quick Actions',
       title: 'Open StreamNook badge tab',
@@ -720,6 +728,7 @@ const SETTINGS_CATALOG: SettingsEntry[] = [
 
   // Player
   { tab: 'Player' },
+  { tab: 'Player', section: 'Player Overlay Buttons', keywords: 'player overlay buttons follow subscribe clip clips vods multinook refresh close hide show customize which buttons top right' },
   { tab: 'Player', section: 'Auto-Switch', keywords: 'auto switch fallback offline next stream raid' },
   { tab: 'Player', section: 'Streamlink Location', keywords: 'streamlink path location binary install' },
   { tab: 'Player', section: 'Streamlink Optimization', keywords: 'streamlink optimization buffer latency tuning' },
@@ -727,14 +736,28 @@ const SETTINGS_CATALOG: SettingsEntry[] = [
 
   // Chat
   { tab: 'Chat', keywords: 'chat placement design fonts dividers timestamps mentions emotes' },
-  { tab: 'Chat', section: 'Chat Design', keywords: 'chat design font size weight spacing dividers timestamps mention colors' },
+  { tab: 'Chat', section: 'Chat Design', keywords: 'chat design font size weight spacing dividers timestamps mention colors name separator style prefix colon chip bracket dot pinned message collapse bar' },
+  { tab: 'Chat', section: 'Collapsed Pinned Message', keywords: 'pinned message pin collapse collapsed bar hidden shrink truncated minimize' },
+  { tab: 'Chat', section: 'Link Previews', keywords: 'link preview previews load card url unfurl embed trusted sources shorten links domains' },
+  { tab: 'Chat', section: 'Name Separator', keywords: 'name separator colon dot arrow pipe dash prefix username after name' },
+  { tab: 'Chat', section: 'Name Style', keywords: 'name style prefix username chip tag bracket brackets accent bar color dot stand out' },
+  { tab: 'Chat', section: 'Prefix Color', keywords: 'prefix color name separator accent user color theme paint' },
   { tab: 'Chat', section: 'Highlight Phrases', keywords: 'highlights phrases keywords alerts' },
   { tab: 'Chat', section: 'User Overrides', keywords: 'user overrides nicknames colors per-user' },
   { tab: 'Chat', section: 'Custom Commands', keywords: 'custom commands slash macros' },
   { tab: 'Chat', section: 'Emote Tab Completion', keywords: 'emote tab completion autocomplete carousel kappa cycle shift starts contains match' },
 
+  // Moderation
+  { tab: 'Moderation', keywords: 'moderation mod ban timeout delete chat actions logs nuke purge mass' },
+  { tab: 'Moderation', section: 'Moderation Actions', keywords: 'moderation actions action style mod drag moderate grab buttons both ban timeout delete whisper profile buckets pick up gesture menu layout style column bar above beside chat position egg timer pin pinned message inline' },
+  { tab: 'Moderation', section: 'Pin Action', keywords: 'pin pinned message moderator inline drag both placement where pin lives stick top' },
+  { tab: 'Moderation', section: 'Mod Logs', keywords: 'mod logs panel recent moderation actions timeouts bans deletions sidebar' },
+  { tab: 'Moderation', section: 'Mass Actions', keywords: 'mass actions nuke undo regex phrase bulk' },
+
   // Theme
   { tab: 'Theme', keywords: 'theme color accent skin dark light' },
+  { tab: 'Theme', section: 'Font', keywords: 'font typeface interface satoshi inter geist manrope outfit space grotesk serif system family text' },
+  { tab: 'Theme', section: 'Glassiness', keywords: 'glassiness glass transparency frosted opacity panels see-through blur' },
 
   // Integrations
   { tab: 'Integrations', keywords: 'integrations discord rpc ttv lol ad block' },

@@ -1,4 +1,7 @@
+import { useState, useEffect } from 'react';
+import { X } from 'lucide-react';
 import { useAppStore } from '../../stores/AppStore';
+import { trustableHost } from '../../services/linkPreviewService';
 import { Tooltip } from '../ui/Tooltip';
 import { Dropdown } from '../ui/Dropdown';
 import ColorWheelPicker from '../ColorWheelPicker';
@@ -10,6 +13,9 @@ import HighlightAppearanceSettings from './HighlightAppearanceSettings';
 import UserOverridesSettings from './UserOverridesSettings';
 import UserCommandsSettings from './UserCommandsSettings';
 import { SettingsSection, SettingsRow, SegmentedSelect } from './_primitives';
+import { useChatUserStore } from '../../stores/chatUserStore';
+import { getUserCosmetics, computePaintStyle } from '../../services/seventvService';
+import { StyledChatName, type NameSeparator, type NameStyle } from '../chat/StyledChatName';
 
 const Toggle = ({ enabled, onChange }: { enabled: boolean; onChange: () => void }) => (
   <button
@@ -23,6 +29,66 @@ const Toggle = ({ enabled, onChange }: { enabled: boolean; onChange: () => void 
     />
   </button>
 );
+
+// Live preview of how the current user's own name will look in chat with the
+// chosen separator + name style, including their selected 7TV paint. Shares
+// StyledChatName with the real chat row so the preview can never drift from it.
+type PreviewPaint = Awaited<ReturnType<typeof getUserCosmetics>>['data']['paints'][number];
+
+const NamePrefixPreview = ({
+  separator,
+  nameStyle,
+  accentSource,
+}: {
+  separator: NameSeparator;
+  nameStyle: NameStyle;
+  accentSource: 'user' | 'theme';
+}) => {
+  const currentUser = useAppStore((s) => s.currentUser);
+  const paintShadowMode = useAppStore((s) => s.settings.cosmetics?.paint_shadows) ?? 'all';
+  const fontSize = useAppStore((s) => s.settings.chat_design?.font_size) ?? 14;
+  const userId = currentUser?.user_id;
+  const storeEntry = useChatUserStore((s) => (userId ? s.users.get(userId) : undefined));
+  const [fetchedPaint, setFetchedPaint] = useState<PreviewPaint | null>(null);
+
+  // If chat hasn't already resolved this user's cosmetics (their paint stays
+  // undefined in the store until addUser runs), fetch them once so the preview
+  // still shows the real paint while sitting in settings.
+  useEffect(() => {
+    if (!userId || storeEntry?.paint !== undefined) return;
+    let cancelled = false;
+    getUserCosmetics(userId)
+      .then(({ data }) => {
+        if (cancelled) return;
+        setFetchedPaint(data?.paints?.find((p: { selected?: boolean }) => p.selected) ?? null);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [userId, storeEntry?.paint]);
+
+  const name = currentUser?.display_name || currentUser?.username || 'YourName';
+  const baseColor = storeEntry?.color || '#9147ff';
+  const paint = storeEntry?.paint ?? fetchedPaint;
+  const nameTextStyle = paint ? computePaintStyle(paint, baseColor, paintShadowMode) : { color: baseColor };
+  const accentColor = accentSource === 'theme' ? 'var(--color-accent)' : baseColor;
+
+  return (
+    <div className="glass-panel rounded-lg px-3 py-2.5" style={{ fontSize: `${fontSize}px`, lineHeight: 1.5 }}>
+      <StyledChatName
+        name={name}
+        nameTextStyle={nameTextStyle}
+        nameStyle={nameStyle}
+        separator={separator}
+        accentColor={accentColor}
+      />
+      <span className="text-textPrimary/90" style={{ fontWeight: 'var(--chat-body-weight, 300)' }}>
+        {' '}gg that was clean
+      </span>
+    </div>
+  );
+};
 
 // Discrete hover-preview sizes (px height of the enlarged card). 'Medium' is
 // the default and sits one step above the original fixed 64px preview.
@@ -74,6 +140,79 @@ const EmoteHoverDemo = ({ hoverSize, emoteScale }: { hoverSize: number; emoteSca
   );
 };
 
+// Manage the user's own trusted-source list: an add input plus removable chips.
+// The built-in allowlist isn't listed (it'd be noise); a short note names the
+// kinds of sites that are trusted out of the box. Hosts are normalized through
+// `trustableHost` so a pasted URL becomes a clean registrable host.
+const TrustedSourcesEditor = ({
+  domains,
+  onChange,
+}: {
+  domains: string[];
+  onChange: (next: string[]) => void;
+}) => {
+  const [input, setInput] = useState('');
+  const pending = trustableHost(input.trim());
+
+  const add = () => {
+    if (!pending) return;
+    if (!domains.includes(pending)) onChange([...domains, pending]);
+    setInput('');
+  };
+  const remove = (host: string) => onChange(domains.filter((d) => d !== host));
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-2">
+        <input
+          type="text"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              add();
+            }
+          }}
+          placeholder="example.com"
+          className="glass-input min-w-0 flex-1 rounded-lg px-3 py-2 text-sm text-textPrimary placeholder:text-textMuted"
+        />
+        <button
+          onClick={add}
+          disabled={!pending}
+          className="flex-shrink-0 rounded-lg bg-accent/15 px-3.5 py-2 text-sm font-medium text-accent transition-colors hover:bg-accent/25 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          Add
+        </button>
+      </div>
+      {domains.length > 0 ? (
+        <div className="flex flex-wrap gap-1.5">
+          {domains.map((host) => (
+            <span
+              key={host}
+              className="glass-panel inline-flex items-center gap-1.5 rounded-full py-1 pl-3 pr-1.5 text-xs text-textPrimary"
+            >
+              {host}
+              <button
+                onClick={() => remove(host)}
+                aria-label={`Stop trusting ${host}`}
+                className="flex h-4 w-4 items-center justify-center rounded-full text-textSecondary transition-colors hover:bg-white/10 hover:text-textPrimary"
+              >
+                <X size={12} />
+              </button>
+            </span>
+          ))}
+        </div>
+      ) : (
+        <p className="text-[12px] leading-relaxed text-textMuted">
+          No custom sites trusted yet. Popular sites (YouTube, Twitch, Discord, Steam,
+          Spotify, imgur, Tenor, and more) already expand by default.
+        </p>
+      )}
+    </div>
+  );
+};
+
 const ChatSettings = () => {
   const { settings, updateSettings } = useAppStore();
 
@@ -89,6 +228,12 @@ const ChatSettings = () => {
     mention_animation: stored?.mention_animation ?? true,
     show_timestamps: stored?.show_timestamps ?? false,
     show_timestamp_seconds: stored?.show_timestamp_seconds ?? false,
+    username_separator: stored?.username_separator ?? (stored?.username_colon ? 'colon' : 'none'),
+    username_style: stored?.username_style ?? 'plain',
+    username_accent_source: stored?.username_accent_source ?? 'user',
+    mod_action_style: stored?.mod_action_style ?? (stored?.drag_moderation_enabled === false ? 'buttons' : 'both'),
+    mod_drag_layout: stored?.mod_drag_layout ?? 'column',
+    mod_pin_style: stored?.mod_pin_style ?? 'both',
     emote_scale: stored?.emote_scale ?? 1,
     emote_margin: stored?.emote_margin ?? 0.125,
     emote_hover_size: stored?.emote_hover_size ?? 96,
@@ -100,6 +245,8 @@ const ChatSettings = () => {
     link_previews: stored?.link_previews ?? true,
     link_preview_keep_link: stored?.link_preview_keep_link ?? false,
     shorten_links: stored?.shorten_links ?? true,
+    link_preview_trusted_domains: stored?.link_preview_trusted_domains ?? [],
+    pinned_collapsed_style: stored?.pinned_collapsed_style ?? 'bar',
   };
 
   const setDesign = (patch: Partial<typeof cd>) => {
@@ -254,6 +401,87 @@ const ChatSettings = () => {
         </SettingsRow>
 
         <SettingsRow
+          title="Collapsed Pinned Message"
+          description="When you collapse a pinned message, shrink it to a thin one-line bar (sender + truncated text) you can click to expand, or hide it entirely."
+        >
+          <SegmentedSelect<'bar' | 'hidden'>
+            value={cd.pinned_collapsed_style ?? 'bar'}
+            onChange={(v) => setDesign({ pinned_collapsed_style: v })}
+            options={[
+              { value: 'bar', label: 'Bar' },
+              { value: 'hidden', label: 'Hidden' },
+            ]}
+          />
+        </SettingsRow>
+
+        <div className="space-y-2">
+          <div className="flex items-baseline gap-2">
+            <span className="text-xs font-medium text-textSecondary uppercase tracking-wider">Preview</span>
+            <span className="text-[11px] text-textMuted">how your name looks in chat</span>
+          </div>
+          <NamePrefixPreview
+            separator={cd.username_separator ?? 'none'}
+            nameStyle={cd.username_style ?? 'plain'}
+            accentSource={cd.username_accent_source ?? 'user'}
+          />
+        </div>
+
+        <SettingsRow
+          title="Name Separator"
+          description="Glyph shown between the username and the message on normal messages. Action messages are unaffected."
+        >
+          <Dropdown<'none' | 'colon' | 'dot' | 'arrow' | 'pipe' | 'dash'>
+            value={cd.username_separator ?? 'none'}
+            onChange={(v) => setDesign({ username_separator: v })}
+            className="w-full"
+            ariaLabel="Name separator"
+            options={[
+              { value: 'none', label: 'None' },
+              { value: 'colon', label: 'Colon   name:' },
+              { value: 'dot', label: 'Dot   name ·' },
+              { value: 'arrow', label: 'Arrow   name ›' },
+              { value: 'pipe', label: 'Pipe   name |' },
+              { value: 'dash', label: 'Dash   name –' },
+            ]}
+          />
+        </SettingsRow>
+
+        <SettingsRow
+          title="Name Style"
+          description="How the username itself stands out as a prefix."
+        >
+          <Dropdown<'plain' | 'bar' | 'chip' | 'brackets' | 'dot'>
+            value={cd.username_style ?? 'plain'}
+            onChange={(v) => setDesign({ username_style: v })}
+            className="w-full"
+            ariaLabel="Name style"
+            options={[
+              { value: 'plain', label: 'Plain' },
+              { value: 'bar', label: 'Accent bar' },
+              { value: 'chip', label: 'Chip / tag' },
+              { value: 'brackets', label: 'Brackets   [name]' },
+              { value: 'dot', label: 'Color dot' },
+            ]}
+          />
+        </SettingsRow>
+
+        {(cd.username_separator !== 'none' || cd.username_style !== 'plain') && (
+          <SettingsRow
+            title="Prefix Color"
+            description="Color used for the separator, bar, dot, brackets, and chip tint."
+          >
+            <SegmentedSelect<'user' | 'theme'>
+              value={cd.username_accent_source ?? 'user'}
+              onChange={(v) => setDesign({ username_accent_source: v })}
+              options={[
+                { value: 'user', label: 'User color' },
+                { value: 'theme', label: 'Theme accent' },
+              ]}
+            />
+          </SettingsRow>
+        )}
+
+        <SettingsRow
           title="@ Mention Color"
           description="Color used for messages that mention you"
         >
@@ -310,6 +538,17 @@ const ChatSettings = () => {
             />
           }
         />
+
+        <SettingsRow
+          title="Trusted Sources"
+          description="Trusted sites expand into a preview automatically. Other links show a Load preview button (and a shield to always trust that site). Add or remove your own trusted sites here."
+          disabled={!cd.link_previews}
+        >
+          <TrustedSourcesEditor
+            domains={cd.link_preview_trusted_domains}
+            onChange={(next) => setDesign({ link_preview_trusted_domains: next })}
+          />
+        </SettingsRow>
       </SettingsSection>
 
       <SettingsSection label="Emotes">

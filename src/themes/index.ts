@@ -67,11 +67,13 @@ export interface Theme {
 // SIGNATURE THEMES
 // ============================================
 
-// Antidepressant's Tactical - Military inspired, olive greens, tan, light browns
-export const antidepressantsTactical: Theme = {
+// Standard Issue - Military inspired, olive greens, tan, light browns. Built
+// from an early supporter's palette; credited in the description. (id unchanged:
+// persisted in existing user settings.)
+export const standardIssue: Theme = {
     id: 'antidepressants-tactical',
-    name: "Antidepressant's Tactical",
-    description: 'Military aesthetic with olive greens, tan, and warm browns. Stark and grounding.',
+    name: 'Standard Issue',
+    description: 'Military aesthetic with olive greens, tan, and warm browns. Stark and grounding. A nod to Antidepressant.',
     category: 'signature',
     palette: {
         background: '#1c1c18',
@@ -119,11 +121,15 @@ export const antidepressantsTactical: Theme = {
     },
 };
 
-// prince0fdubai's OLED - True black for OLED screens with subtle purple accents
-export const prince0fdubaiOLED: Theme = {
+// OLED - True black for OLED screens, with a user-chosen accent color. The
+// palette below holds the DEFAULT accent so the theme renders correctly before
+// any choice is made; when OLED is the active theme its accent-derived slots are
+// recomputed from the saved accent via getOledTheme(). Credited in the
+// description. (id unchanged: persisted in existing user settings.)
+export const oledTheme: Theme = {
     id: 'prince0fdubai-oled',
-    name: "prince0fdubai's OLED",
-    description: 'Pitch black OLED-friendly theme with subtle purple accents. Pure darkness.',
+    name: 'OLED',
+    description: 'Pure black for OLED screens, with an accent color you choose. A nod to prince0fdubai.',
     category: 'signature',
     palette: {
         background: '#000000',
@@ -171,63 +177,33 @@ export const prince0fdubaiOLED: Theme = {
     },
 };
 
-// prince0fdubai's OLED v2 - True black with vibrant orange accents
-export const prince0fdubaiOLEDv2: Theme = {
-    id: 'prince0fdubai-oled-v2',
-    name: "prince0fdubai's OLED v2",
-    description: 'Pitch black OLED-friendly theme with vibrant orange accents.',
-    category: 'signature',
-    palette: {
-        background: '#000000',
-        backgroundSecondary: 'rgba(255, 255, 255, 0.02)',
-        backgroundTertiary: '#080808',
+// The OLED theme is the one configurable signature theme: pick any accent and
+// the rest of its accent-derived colors follow. These exports drive that picker.
+export const OLED_THEME_ID = 'prince0fdubai-oled';
 
-        surface: 'rgba(255, 255, 255, 0.08)',
-        surfaceHover: 'rgba(255, 255, 255, 0.14)',
-        surfaceActive: 'rgba(255, 255, 255, 0.20)',
+// Default accent = the original OLED purple, so existing users see no change.
+export const DEFAULT_OLED_ACCENT = '#a064ff';
 
-        textPrimary: '#ffffff',
-        textSecondary: '#ffb366',
-        textMuted: 'rgba(255, 255, 255, 0.45)',
+// One-click accents shown when OLED is selected. Purple is the original; orange
+// preserves the look of the retired second OLED variant; the rest cover common
+// tastes. Users can also dial in any color with the full picker.
+export const OLED_ACCENT_PRESETS: { name: string; value: string }[] = [
+    { name: 'Purple', value: '#a064ff' },
+    { name: 'Orange', value: '#ff9933' },
+    { name: 'Blue', value: '#66b3ff' },
+    { name: 'Cyan', value: '#22d3ee' },
+    { name: 'Green', value: '#22c55e' },
+    { name: 'Pink', value: '#ff66b2' },
+    { name: 'Red', value: '#ff4466' },
+    { name: 'Gold', value: '#ffcc00' },
+];
 
-        accent: '#ff9933',
-        accentHover: '#ffb366',
-        accentMuted: 'rgba(255, 153, 51, 0.5)',
-
-        border: 'rgba(255, 255, 255, 0.15)',
-        borderLight: 'rgba(255, 255, 255, 0.10)',
-        borderSubtle: 'rgba(255, 255, 255, 0.05)',
-
-        success: '#00ff88',
-        warning: '#ffcc00',
-        error: '#ff4466',
-        info: '#66b3ff',
-
-        scrollbarThumb: 'rgba(255, 153, 51, 0.25)',
-        scrollbarTrack: 'transparent',
-
-        glassOpacity: '0.08',
-        glassHoverOpacity: '0.14',
-        glassActiveOpacity: '0.20',
-
-        highlight: {
-            pink: '#ff66b2',
-            purple: '#a064ff',
-            blue: '#66b3ff',
-            cyan: '#66ffcc',
-            green: '#00ff88',
-            yellow: '#ffcc00',
-            orange: '#ff9933',
-            red: '#ff4466',
-        },
-    },
-};
-
-// Winters' Glass - The signature StreamNook theme
-export const wintersGlass: Theme = {
+// Frosted Glass - The signature StreamNook theme. (id unchanged: it's the
+// default theme and is persisted in existing user settings.)
+export const frostedGlass: Theme = {
     id: 'winters-glass',
-    name: "Winters' Glass",
-    description: 'Cool, frosted aesthetic with icy blue accents. The signature StreamNook theme.',
+    name: 'Frosted Glass',
+    description: 'Cool, frosted glass with icy blue accents. The original StreamNook look, shaped by Winters.',
     category: 'signature',
     palette: {
         background: '#0c0c0d',
@@ -1225,10 +1201,9 @@ export const everforest: Theme = {
 
 export const themes: Theme[] = [
     // Signature
-    wintersGlass,
-    prince0fdubaiOLED,
-    prince0fdubaiOLEDv2,
-    antidepressantsTactical,
+    frostedGlass,
+    standardIssue,
+    oledTheme,
     // Universal
     dracula,
     nord,
@@ -1447,6 +1422,40 @@ const lightenColor = (hex: string, percent: number): string => {
 
     // Convert back to hex
     return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+};
+
+// Split a #rrggbb string into its channels (for building rgba() strings).
+const hexToRgb = (hex: string): { r: number; g: number; b: number } => {
+    const h = hex.replace('#', '');
+    return {
+        r: parseInt(h.slice(0, 2), 16),
+        g: parseInt(h.slice(2, 4), 16),
+        b: parseInt(h.slice(4, 6), 16),
+    };
+};
+
+// Resolve the OLED theme for a chosen accent. OLED is the one signature theme
+// whose accent the user picks; this fills the accent-derived slots (hover/muted,
+// secondary text, scrollbar) from a single hex so the look stays cohesive on
+// pure black. Used both to paint the live theme (via applyTheme) and to preview
+// the OLED card with the chosen color. An invalid/empty hex falls back to the
+// default accent, so a bad saved value can never break the paint.
+export const getOledTheme = (accentHex?: string): Theme => {
+    const accent = accentHex && /^#[0-9a-fA-F]{6}$/.test(accentHex) ? accentHex : DEFAULT_OLED_ACCENT;
+    const { r, g, b } = hexToRgb(accent);
+    return {
+        ...oledTheme,
+        palette: {
+            ...oledTheme.palette,
+            accent,
+            accentHover: lightenColor(accent, 20),
+            accentMuted: `rgba(${r}, ${g}, ${b}, 0.5)`,
+            // Soft tint of the accent (lavender for purple, peach for orange…),
+            // mixed toward white so secondary text stays readable on black.
+            textSecondary: lightenColor(accent, 45),
+            scrollbarThumb: `rgba(${r}, ${g}, ${b}, 0.25)`,
+        },
+    };
 };
 
 // Apply theme to CSS variables

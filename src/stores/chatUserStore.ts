@@ -4,7 +4,7 @@ import {
   getCosmeticsWithFallback,
   subscribeToCosmetics,
 } from '../services/cosmeticsCache';
-import { isStreamNookUser, getProfilePrefs } from '../services/supabaseService';
+import { isStreamNookUser, getProfilePrefs, whenAtmospheresReady, subscribeAtmospheresVersion } from '../services/supabaseService';
 import { getAtmosphere } from '../services/atmospheres';
 import {
   getResolvedIdentity,
@@ -289,6 +289,9 @@ function ensureAtmosphereResolved(userId: string) {
       // Visibility reads the world-readable profile_theme (not gated on subscriber
       // status), so a member's Atmosphere shows for every viewer like a badge.
       const prefs = await getProfilePrefs(userId);
+      // Wait for the atmosphere catalog so we never resolve a real theme to null
+      // just because the catalog had not loaded yet.
+      await whenAtmospheresReady();
       const atm = getAtmosphere(prefs.profileTheme);
       pushAtmosphere(userId, atm ? atm.id : null);
     } catch {
@@ -445,6 +448,22 @@ export const useChatUserStore = create<ChatUserStore>((set, get) => ({
     set({ users: new Map(), usernameToId: new Map() });
   },
 }));
+
+// When the atmosphere catalog (re)loads, re-resolve any tracked member we had
+// previously resolved to "no atmosphere": an atmosphere added live that they
+// already equip can now render without waiting for a re-sighting. Only
+// null-cached users are touched, so a value set by an explicit theme change is
+// left alone.
+subscribeAtmospheresVersion(() => {
+  const users = useChatUserStore.getState().users;
+  for (const uid of users.keys()) {
+    if (atmosphereCache.get(uid) === null) {
+      atmosphereCache.delete(uid);
+      atmosphereInFlight.delete(uid);
+      ensureAtmosphereResolved(uid);
+    }
+  }
+});
 
 // Reactive bridge from the shared cosmetics cache into the per-user chat
 // store. Anything that writes to cosmeticsCache (chat's own addUser fetch,

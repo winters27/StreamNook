@@ -296,6 +296,54 @@ pub async fn logout_seventv() -> Result<bool, String> {
     Ok(true)
 }
 
+/// Authenticated 7TV GraphQL passthrough for both reads and mutations. Attaches
+/// the stored Bearer token (the primary's, or a linked account's when
+/// `account_id` names a connected secondary) and returns the full JSON body
+/// (data plus any non-auth errors) so the caller can surface things like a full
+/// set or a name conflict. An expired/rejected token is cleared and surfaced as
+/// SESSION_EXPIRED. The unauthenticated `seventv_graphql` stays for public reads
+/// (e.g. the emote directory search).
+#[tauri::command]
+pub async fn seventv_graphql_authed(
+    query: String,
+    variables: Option<serde_json::Value>,
+    operation_name: Option<String>,
+    account_id: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let (token, cleanup) = match account_id.as_deref() {
+        Some(id) if !is_primary_account(id) => (
+            SevenTVAuthService::get_token_for(id)
+                .await
+                .map_err(|e| e.to_string())?,
+            Some(id.to_string()),
+        ),
+        _ => (
+            SevenTVAuthService::get_token()
+                .await
+                .map_err(|e| e.to_string())?,
+            None,
+        ),
+    };
+
+    let mut body = serde_json::Map::new();
+    body.insert("query".into(), serde_json::Value::String(query));
+    body.insert(
+        "variables".into(),
+        variables.unwrap_or_else(|| serde_json::Value::Object(Default::default())),
+    );
+    if let Some(op) = operation_name {
+        body.insert("operationName".into(), serde_json::Value::String(op));
+    }
+
+    SevenTVCosmeticsService::post_authed(
+        &token,
+        cleanup.as_deref(),
+        serde_json::Value::Object(body),
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
 // ============================================================================
 // 7TV Cosmetics Commands
 // ============================================================================

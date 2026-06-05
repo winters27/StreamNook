@@ -10,6 +10,8 @@ import {
   applyTheme,
   createDefaultCustomPalette,
   customThemeToTheme,
+  OLED_THEME_ID,
+  getOledTheme,
 } from '../../themes';
 import type { CustomTheme, CustomThemePalette, CustomThemeColor } from '../../types';
 
@@ -149,6 +151,10 @@ const ThemeCreator = ({ editingTheme, onClose, onSave, onDelete }: ThemeCreatorP
     
     if (customTheme) {
       applyTheme(customThemeToTheme(customTheme));
+    } else if (originalId === OLED_THEME_ID) {
+      // OLED's accent is user-chosen; restore it with the saved accent, not the
+      // static default, so canceling the creator doesn't drop the chosen color.
+      applyTheme(getOledTheme(settings.oled_accent));
     } else {
       const builtInTheme = getThemeById(originalId) || themes[0];
       applyTheme(builtInTheme);

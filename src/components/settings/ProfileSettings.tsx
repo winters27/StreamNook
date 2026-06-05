@@ -31,6 +31,8 @@ import {
   getStreamNookRegistryVersion,
   subscribeCosmeticsVersion,
   getCosmeticsVersion,
+  subscribeAtmospheresVersion,
+  getAtmospheresVersion,
   getAllCosmetics,
   getOwnedCosmeticSlugs,
   getActiveCosmeticSlug,
@@ -38,11 +40,12 @@ import {
   getProfilePrefs,
   setProfileTheme,
   setHiddenSections,
+  getAccolades,
 } from '../../services/supabaseService';
 import type { CosmeticCatalogEntry } from '../../services/supabaseService';
 import { getIdentityWithCache, setIdentity } from '../../services/identityService';
 import { isSubscriber } from '../../services/subscriberService';
-import { listAtmospheres, getAtmosphere } from '../../services/atmospheres';
+import { listAtmospheres, getAtmosphere, type Atmosphere } from '../../services/atmospheres';
 import { getTier, getTierAccent, StreamNookBadge } from '../StreamNookBadge';
 import { COSMETIC_ASSET_BY_SLUG } from '../cosmeticAssets';
 import {
@@ -154,6 +157,7 @@ const ProfileSettings = () => {
   const streamNookUserNumber = currentUser?.user_id ? getStreamNookUserNumber(currentUser.user_id) : null;
 
   useSyncExternalStore(subscribeCosmeticsVersion, getCosmeticsVersion, getCosmeticsVersion);
+  useSyncExternalStore(subscribeAtmospheresVersion, getAtmospheresVersion, getAtmospheresVersion);
   const cosmeticsCatalog: CosmeticCatalogEntry[] = getAllCosmetics();
   const ownedCosmeticSlugs = currentUser?.user_id
     ? getOwnedCosmeticSlugs(currentUser.user_id)
@@ -182,6 +186,10 @@ const ProfileSettings = () => {
   const [hiddenSecs, setHiddenSecs] = useState<string[]>([]);
   const [loadoutLoaded, setLoadoutLoaded] = useState(false);
   const [subscribed, setSubscribed] = useState(false);
+  // Accolades the member has earned (persisted in user_accolades). Used to
+  // unlock achievement-gated Atmospheres like Midnight, which appear in the
+  // picker only once earned (a free unlock, no subscription required).
+  const [earnedAccolades, setEarnedAccolades] = useState<Set<string>>(new Set());
   const [allSeventvPaints, setAllSeventvPaints] = useState<SevenTVPaint[]>([]);
   const [seventvUserId, setSeventvUserId] = useState<string | null>(null);
   const [, setHas7TVAccountChecked] = useState(false);
@@ -373,11 +381,18 @@ const ProfileSettings = () => {
     isSubscriber(currentUser.user_id)
       .then((s) => { if (mountedRef.current) setSubscribed(s); })
       .catch(() => {});
+    getAccolades(currentUser.user_id)
+      .then((ids) => { if (mountedRef.current) setEarnedAccolades(new Set(ids)); })
+      .catch(() => {});
   }, [currentUser?.user_id]);
 
-  const selectProfileTheme = (id: string, tier: 'free' | 'supporter' | 'subscriber') => {
+  const selectProfileTheme = (
+    id: string,
+    tier: 'free' | 'supporter' | 'subscriber',
+    bypassTier = false,
+  ) => {
     if (!currentUser?.user_id) return;
-    if (!tierMet(tier)) return; // locked until the required tier is met
+    if (!bypassTier && !tierMet(tier)) return; // locked until the required tier is met
     setProfileThemeState(id);
     void setProfileTheme(currentUser.user_id, id);
     // Push the new theme to chat immediately (no Supabase read race) so our own
@@ -837,10 +852,17 @@ const ProfileSettings = () => {
       : []),
   ];
 
+  // Whether an Atmosphere is available to this member. Achievement-gated ones
+  // (e.g. Midnight via the Insomniac accolade) unlock for ANY member who earned
+  // the accolade, regardless of subscription; everything else is the subscriber
+  // perk.
+  const atmUnlocked = (a: Atmosphere): boolean =>
+    a.unlock?.kind === 'accolade' ? earnedAccolades.has(a.unlock.accoladeId) : canAtmosphere;
+
   // Live preview: the hovered cosmetic (or the active one when nothing hovered).
   const activePreviewId = previewThemeId ?? profileTheme;
   const previewAtm = getAtmosphere(activePreviewId);
-  const previewLocked = previewAtm ? !canAtmosphere : activePreviewId === 'paint' ? !canPaint : false;
+  const previewLocked = previewAtm ? !atmUnlocked(previewAtm) : activePreviewId === 'paint' ? !canPaint : false;
   // Name the RIGHT tier on the lock pill: an Atmosphere needs Subscriber, but a
   // 7TV paint only needs Supporter. Telling a paint previewer to "subscribe"
   // overcharges them (Supporter is the cheaper one-time tier that unlocks it).
@@ -1415,14 +1437,20 @@ const ProfileSettings = () => {
           your chat messages with the same animated look. Tap the active one to remove it.
         </p>
         <div className="mt-3 space-y-2">
-          {listAtmospheres().map((a) => {
+          {listAtmospheres()
+            // Achievement-gated Atmospheres stay hidden until earned, so the
+            // unlock is a surprise (like the "???" secret accolade) instead of a
+            // spoiler sitting in the cosmetics panel. Once earned, one shows up
+            // unlocked here for any member, no subscription required.
+            .filter((a) => a.unlock?.kind !== 'accolade' || earnedAccolades.has(a.unlock.accoladeId))
+            .map((a) => {
             const selected = profileTheme === a.id;
-            const locked = !canAtmosphere;
+            const locked = !atmUnlocked(a);
             return (
               <button
                 key={a.id}
                 type="button"
-                onClick={() => (locked ? openSupportFor('subscriber') : selected ? selectProfileTheme('tier', 'free') : selectProfileTheme(a.id, 'subscriber'))}
+                onClick={() => (locked ? openSupportFor('subscriber') : selected ? selectProfileTheme('tier', 'free') : selectProfileTheme(a.id, 'subscriber', a.unlock?.kind === 'accolade'))}
                 onMouseEnter={() => setPreviewThemeId(a.id)}
                 onMouseLeave={() => setPreviewThemeId(null)}
                 className={`flex w-full items-center gap-3 rounded-lg border p-2.5 text-left transition-colors ${

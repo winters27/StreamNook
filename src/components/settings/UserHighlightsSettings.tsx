@@ -47,7 +47,7 @@ const UserHighlightsSettings = () => {
             <p className="text-sm text-textSecondary mb-3">No user highlights yet.</p>
             <button
               onClick={addUser}
-              className="inline-flex items-center gap-2 px-3 py-1.5 bg-accent hover:bg-accent/80 text-white text-sm font-medium rounded transition-colors"
+              className="glass-button inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-textPrimary text-sm font-medium"
             >
               <Plus size={14} />
               Add your first user

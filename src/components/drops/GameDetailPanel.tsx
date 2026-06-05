@@ -76,6 +76,41 @@ function getCampaignDropType(campaign: DropCampaign, inventoryItems?: InventoryI
     }
 }
 
+// "How do I unlock this" text for a reward that can't be earned by watch time.
+// Twitch exposes no structured reason (subscription vs gift vs event), so we infer
+// it from the most reliable signals we DO have. The reward name is often the
+// clearest tell (e.g. "Gifted Sub Drop"), so it's checked first; the campaign
+// description is the next-best source, used verbatim when it carries real text.
+// Falls back to a generic note when nothing is informative.
+function unlockRequirementText(rewardName?: string, description?: string): string {
+    const desc = (description || '').replace(/\s+/g, ' ').trim();
+    const haystack = `${rewardName || ''} ${desc}`.toLowerCase();
+
+    // Match a known unlock condition by keyword. Order matters: "gifted sub" is
+    // more specific than a plain sub, and Prime is a distinct sub flavor.
+    const mentionsSub = /\bsub(s|scribe|scriber|scription)?\b/.test(haystack);
+    if (/\bgift/.test(haystack) && mentionsSub) {
+        return 'Gift a subscription in a participating channel to unlock this reward.';
+    }
+    if (/\bprime\b/.test(haystack)) {
+        return 'Subscribe with Prime in a participating channel to unlock this reward.';
+    }
+    if (mentionsSub) {
+        return 'Subscribe to a participating channel to unlock this reward.';
+    }
+    if (/\b(cheer|bits)\b/.test(haystack)) {
+        return 'Cheer bits in a participating channel to unlock this reward.';
+    }
+    if (/\bfollow/.test(haystack)) {
+        return 'Follow a participating channel to unlock this reward.';
+    }
+
+    // No recognizable condition: show the campaign's own description if it has any
+    // real text, otherwise a generic note.
+    if (desc) return desc;
+    return "Can't be earned by watching. This reward unlocks through a subscription, gift, or special action for its campaign.";
+}
+
 interface GameDetailPanelProps {
     game: UnifiedGame;
     allGames: UnifiedGame[]; // All games for global drop metadata lookup
@@ -325,13 +360,15 @@ export default function GameDetailPanel({
                         // session's progress shows is_claimed.
                         const completedBenefitIds = ownedBenefitIds;
                         const rewards = campaignsWithMergedProgress
-                            .flatMap(c => c.time_based_drops)
-                            .filter(drop => {
+                            // Keep each drop paired with its campaign description so a locked
+                            // reward's tooltip can explain how it's actually earned.
+                            .flatMap(c => c.time_based_drops.map(drop => ({ drop, campaignDescription: c.description })))
+                            .filter(({ drop }) => {
                                 if (seen.has(drop.id)) return false;
                                 seen.add(drop.id);
                                 return true;
                             })
-                            .map(drop => {
+                            .map(({ drop, campaignDescription }) => {
                                 const dp = drop.progress || progress.find(p => p.drop_id === drop.id);
                                 const benefit = drop.benefit_edges?.[0];
                                 const required = dp?.required_minutes_watched || drop.required_minutes_watched || 0;
@@ -340,6 +377,7 @@ export default function GameDetailPanel({
                                 const isClaimed = isRewardOwned(drop, dp);
                                 const current = isClaimed ? required : (dp?.current_minutes_watched || 0);
                                 const percent = required > 0 ? Math.min((current / required) * 100, 100) : 0;
+                                const isMineable = isDropMineable(drop, game.inventory_items);
                                 return {
                                     dropId: drop.id,
                                     image: benefit?.image_url || '',
@@ -349,7 +387,11 @@ export default function GameDetailPanel({
                                     isClaimed,
                                     isReady: !isClaimed && percent >= 100,
                                     isInProgress: !isClaimed && percent > 0 && percent < 100,
-                                    isMineable: isDropMineable(drop, game.inventory_items),
+                                    isMineable,
+                                    // Only locked, unearned rewards need a "how to unlock" hint.
+                                    // The reward name is the strongest signal (e.g. "Gifted Sub Drop"),
+                                    // with the campaign description as the fallback source.
+                                    requirement: !isMineable && !isClaimed ? unlockRequirementText(benefit?.name || drop.name, campaignDescription) : null,
                                 };
                             })
                             .sort((a, b) => {
@@ -374,7 +416,19 @@ export default function GameDetailPanel({
                                     {rewards.map(r => (
                                         <Tooltip
                                             key={r.dropId}
-                                            content={r.requiredMinutes > 0 ? `${r.name} · ${r.requiredMinutes}m` : r.name}
+                                            content={
+                                                r.requirement
+                                                    ? (
+                                                        <div className="text-left max-w-[15rem]">
+                                                            <div className="font-semibold text-textPrimary">{r.name}</div>
+                                                            <div className="mt-1 flex items-center gap-1 text-yellow-400 text-[10px] font-semibold uppercase tracking-wide">
+                                                                <Ban size={9} /> How to unlock
+                                                            </div>
+                                                            <div className="mt-0.5 font-normal text-textSecondary leading-snug">{r.requirement}</div>
+                                                        </div>
+                                                    )
+                                                    : (r.requiredMinutes > 0 ? `${r.name} · ${r.requiredMinutes}m` : r.name)
+                                            }
                                             delay={200}
                                             side="top"
                                         >
@@ -767,9 +821,9 @@ export default function GameDetailPanel({
                                     const isOwned = isDropCompletedByBenefit(drop);
                                     if (isOwned) {
                                         matchingDropsCount++;
-                                        Logger.debug(`[Active Campaigns] ✅ OWNED Drop "${drop.name}" benefit IDs:`, benefitIds);
+                                        Logger.debug(`[Active Campaigns] OWNED Drop "${drop.name}" benefit IDs:`, benefitIds);
                                     } else {
-                                        Logger.debug(`[Active Campaigns] ❌ Not owned: "${drop.name}" benefit IDs:`, benefitIds);
+                                        Logger.debug(`[Active Campaigns] Not owned: "${drop.name}" benefit IDs:`, benefitIds);
                                     }
                                 }
                             });
@@ -791,7 +845,7 @@ export default function GameDetailPanel({
                             const hasIncompleteDrops = campaign.time_based_drops.some(drop => {
                                 const dropProgress = drop.progress || progress.find(p => p.drop_id === drop.id);
 
-                                // ✅ PRIORITY 0: Already earned (matched by benefit id or name across
+                                // PRIORITY 0: Already earned (matched by benefit id or name across
                                 // campaign instances) AND not currently in progress here. Reissued rewards
                                 // get new ids, so the name-aware check catches what the others miss, while
                                 // the no-progress guard keeps fresh in-progress drops from being hidden.
@@ -799,21 +853,21 @@ export default function GameDetailPanel({
                                     return false;
                                 }
 
-                                // ✅ PRIORITY 1: Check is_claimed flag (works for ALL drop types including badge drops)
+                                // PRIORITY 1: Check is_claimed flag (works for ALL drop types including badge drops)
                                 // This MUST be checked first because badge drops don't appear in completedBenefitIds
                                 if (dropProgress?.is_claimed === true) {
                                     Logger.debug(`[Active Campaigns] Drop "${drop.name}" is claimed`);
                                     return false; // This drop is complete
                                 }
                                 
-                                // ✅ PRIORITY 2: Check if drop ID is in completedDropIds (from inventory scan + progress)
+                                // PRIORITY 2: Check if drop ID is in completedDropIds (from inventory scan + progress)
                                 // This catches drops claimed in the current session before backend refresh
                                 if (completedDropIds.has(drop.id)) {
                                     Logger.debug(`[Active Campaigns] Drop "${drop.name}" in completedDropIds`);
                                     return false; // This drop is complete
                                 }
                                 
-                                // ✅ PRIORITY 3: Check benefit ID (works for time-based DIRECT_ENTITLEMENT drops)
+                                // PRIORITY 3: Check benefit ID (works for time-based DIRECT_ENTITLEMENT drops)
                                 // Badge drops don't reliably appear in gameEventDrops, so this is a fallback
                                 if (isDropCompletedByBenefit(drop)) {
                                     Logger.debug(`[Active Campaigns] Drop "${drop.name}" benefit in completedBenefitIds`);
@@ -825,7 +879,7 @@ export default function GameDetailPanel({
                                     Logger.debug(`[Active Campaigns] Badge drop "${drop.name}": is_claimed=${dropProgress?.is_claimed}, has_progress=${!!dropProgress}, progress=`, dropProgress);
                                 }
                                 
-                                // ✅ PRIORITY 4: Badge name matching fallback
+                                // PRIORITY 4: Badge name matching fallback
                                 // Check if this drop has a benefit name that matches an earned badge title
                                 if (drop.benefit_edges && drop.benefit_edges.length > 0) {
                                     const benefitName = drop.benefit_edges[0]?.name.toLowerCase().trim() || '';

@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Shield, Users, MessageSquare, Clock, Slash, Hash, Settings, ChevronRight } from 'lucide-react';
+import { SevenTVLogo } from '../emotesets/SevenTVLogo';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Tooltip } from '../ui/Tooltip';
 import { GlassSelect } from '../ui/GlassSelect';
@@ -19,7 +20,7 @@ interface ModeratorMenuProps {
 }
 
 const ModeratorMenu: React.FC<ModeratorMenuProps> = ({ broadcasterId, roomState }) => {
-  const { settings, updateSettings, openSettings } = useAppStore();
+  const { settings, updateSettings, openSettings, openEmoteSets } = useAppStore();
   const [isOpen, setIsOpen] = useState(false);
   const [isConfirmingClear, setIsConfirmingClear] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -216,6 +217,18 @@ const ModeratorMenu: React.FC<ModeratorMenuProps> = ({ broadcasterId, roomState 
                 }}
                 disabled={false}
               />
+              <button
+                onClick={() => { openEmoteSets({ twitchId: broadcasterId, tab: 'emotes' }); setIsOpen(false); }}
+                className="w-full text-left px-2.5 py-2 rounded-md flex items-center justify-between hover:bg-white/5 transition-colors group"
+              >
+                <div className="flex items-center gap-2.5">
+                  <div className="flex items-center justify-center text-white/40 group-hover:text-[#29b6f6] transition-colors">
+                    <SevenTVLogo className="h-3.5 w-auto" />
+                  </div>
+                  <span className="text-sm text-white/70 group-hover:text-white">Manage 7TV Emotes</span>
+                </div>
+                <ChevronRight size={14} className="text-white/30 group-hover:text-white/60" />
+              </button>
               <button
                 onClick={() => { openSettings('Moderation'); setIsOpen(false); }}
                 className="w-full text-left px-2.5 py-2 rounded-md flex items-center justify-between hover:bg-white/5 transition-colors group"

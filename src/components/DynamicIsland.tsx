@@ -1,11 +1,12 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Bell, Radio, MessageCircle, ChevronRight, User, Download, Gift, Award, Check, CheckCheck } from 'lucide-react';
+import { Bell, Radio, MessageCircle, ChevronRight, User, Download, Gift, Award, Check, CheckCheck, Info, CheckCircle2, AlertTriangle, XCircle } from 'lucide-react';
 import { X, SpeakerHigh, SpeakerSlash } from 'phosphor-react';
 import { listen, emit } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../stores/AppStore';
 import { Logger } from '../utils/logger';
+import { playSound, type SoundId } from '../utils/notificationSound';
 import { Tooltip } from './ui/Tooltip';
 import type {
     DynamicIslandNotification,
@@ -15,11 +16,16 @@ import type {
     DropsNotificationData,
     ChannelPointsNotificationData,
     BadgeNotificationData,
+    SystemNotificationData,
 } from '../types';
 
 const MAX_NOTIFICATIONS = 20;
 const CACHE_KEY = 'streamnook_notifications';
 const CACHE_EXPIRY_DAYS = 7;
+// How long a "Test" button dummy notification lingers in the notification
+// center before it auto-removes, so previews don't pile up with real ones.
+// Kept >= the live preview hold (8s) so the entry outlasts its own preview.
+const TEST_NOTIFICATION_TTL_MS = 8000;
 
 interface LiveNotificationFromBackend {
     streamer_name: string;
@@ -112,6 +118,78 @@ const saveCachedNotifications = (notifications: DynamicIslandNotification[]) => 
     }
 };
 
+// The one-line text shown in the collapsed preview pill. Centralized so the
+// width-measuring code sizes the pill to exactly what gets rendered.
+const getPreviewText = (n: DynamicIslandNotification): string => {
+    switch (n.type) {
+        case 'live': {
+            const d = n.data as LiveNotificationData;
+            return d.game_name ? `${d.streamer_name} is live • ${d.game_name}` : `${d.streamer_name} is live`;
+        }
+        case 'whisper':
+            return `Whisper from ${(n.data as WhisperNotificationData).from_user_name}`;
+        case 'update':
+            return 'Update available';
+        case 'drops':
+            return 'Drop claimed';
+        case 'channel_points': {
+            const d = n.data as ChannelPointsNotificationData;
+            const base = `+${d.points_earned.toLocaleString()} Channel Points`;
+            // channel_name can hold a reason summary like "+20 (watching)" rather
+            // than a real channel; only append it when it's a real channel.
+            const isReasonSummary = !!d.channel_name && d.channel_name.includes('(');
+            return d.channel_name && !isReasonSummary ? `${base} • ${d.channel_name}` : base;
+        }
+        case 'badge':
+            return (n.data as BadgeNotificationData).badge_name;
+        case 'system':
+            return (n.data as SystemNotificationData).message;
+        default:
+            return '';
+    }
+};
+
+// The leading glyph for the collapsed preview: profile picture for live/whisper
+// (with an icon fallback), a themed icon for everything else.
+const renderPreviewIcon = (n: DynamicIslandNotification): React.ReactNode => {
+    switch (n.type) {
+        case 'live': {
+            const d = n.data as LiveNotificationData;
+            return d.streamer_avatar
+                ? <img src={d.streamer_avatar} alt="" className="w-4 h-4 rounded-full object-cover flex-shrink-0" />
+                : <div className="w-1.5 h-1.5 bg-red-500 rounded-full flex-shrink-0" />;
+        }
+        case 'whisper': {
+            const d = n.data as WhisperNotificationData;
+            return d.profile_image_url
+                ? <img src={d.profile_image_url} alt="" className="w-4 h-4 rounded-full object-cover flex-shrink-0" />
+                : <MessageCircle size={11} className="text-purple-400 flex-shrink-0" />;
+        }
+        case 'update':
+            return <Download size={11} className="text-yellow-400 flex-shrink-0" />;
+        case 'drops':
+            return <Gift size={11} className="text-green-400 flex-shrink-0" />;
+        case 'channel_points':
+            return (
+                <svg width="11" height="11" viewBox="0 0 24 24" className="text-orange-400 flex-shrink-0" fill="currentColor">
+                    <path d="M12 5v2a5 5 0 0 1 5 5h2a7 7 0 0 0-7-7Z"></path>
+                    <path fillRule="evenodd" d="M1 12C1 5.925 5.925 1 12 1s11 4.925 11 11-4.925 11-11 11S1 18.075 1 12Zm11 9a9 9 0 1 1 0-18 9 9 0 0 1 0 18Z" clipRule="evenodd"></path>
+                </svg>
+            );
+        case 'badge':
+            return <Award size={11} className="text-cyan-400 flex-shrink-0" />;
+        case 'system': {
+            const lvl = (n.data as SystemNotificationData).level;
+            if (lvl === 'success') return <CheckCircle2 size={11} className="text-green-400 flex-shrink-0" />;
+            if (lvl === 'error') return <XCircle size={11} className="text-red-400 flex-shrink-0" />;
+            if (lvl === 'warning') return <AlertTriangle size={11} className="text-yellow-400 flex-shrink-0" />;
+            return <Info size={11} className="text-accent flex-shrink-0" />;
+        }
+        default:
+            return null;
+    }
+};
+
 const DynamicIsland = () => {
     const [isExpanded, setIsExpanded] = useState(false);
     const [notifications, setNotifications] = useState<DynamicIslandNotification[]>(() => loadCachedNotifications());
@@ -119,6 +197,10 @@ const DynamicIsland = () => {
     const [latestNotification, setLatestNotification] = useState<DynamicIslandNotification | null>(null);
     const [showPreview, setShowPreview] = useState(false);
     const [windowSize, setWindowSize] = useState({ width: window.innerWidth, height: window.innerHeight });
+    // Measured width of the current preview's content, so the pill grows to fit
+    // the whole message instead of truncating (see the useLayoutEffect below).
+    const [previewWidth, setPreviewWidth] = useState(200);
+    const previewTextRef = useRef<HTMLSpanElement>(null);
     const islandRef = useRef<HTMLDivElement>(null);
     const previewTimeoutRef = useRef<NodeJS.Timeout | null>(null);
     const updateCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -131,7 +213,7 @@ const DynamicIsland = () => {
         return () => clearInterval(interval);
     }, []);
 
-    const { startStream, settings, openWhisperWithUser, openSettings, addToast, setShowDropsOverlay, setShowBadgesOverlay, setUpdateInfo } = useAppStore();
+    const { startStream, settings, openWhisperWithUser, openSettings, addToast, setShowDropsOverlay, setShowBadgesOverlay, setUpdateInfo, isSettingsOpen } = useAppStore();
 
     const soundEnabled = settings.live_notifications?.play_sound ?? true;
     const notificationsEnabled = settings.live_notifications?.enabled ?? true;
@@ -150,6 +232,19 @@ const DynamicIsland = () => {
     useEffect(() => {
         saveCachedNotifications(notifications);
     }, [notifications]);
+
+    // Size the preview pill to its content so long streamer/game names are shown
+    // in full instead of being truncated. We measure the (non-wrapping) text's
+    // natural width via scrollWidth and add the icon + padding chrome, clamped so
+    // the pill never grows past the window. Runs before paint so the pill springs
+    // straight to the right width. Anything beyond the max still truncates.
+    useLayoutEffect(() => {
+        if (!showPreview || !latestNotification || !previewTextRef.current) return;
+        const textWidth = previewTextRef.current.scrollWidth;
+        const CHROME = 72; // wrapper/content padding + leading icon + gap + breathing room
+        const maxWidth = Math.min(560, window.innerWidth - 48);
+        setPreviewWidth(Math.round(Math.max(120, Math.min(maxWidth, textWidth + CHROME))));
+    }, [showPreview, latestNotification]);
 
     // Track window size for responsive notification center
     useEffect(() => {
@@ -200,29 +295,12 @@ const DynamicIsland = () => {
         }
     }, []);
 
-    // Play notification sound
+    // Play notification sound. Uses the shared Web-Audio engine (same one the
+    // toast path uses) so the notification-center sound honors the user's chosen
+    // Sound Style instead of a hardcoded tone, and reuses one AudioContext.
     const playNotificationSound = useCallback(() => {
-        try {
-            const audioContext = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
-            const oscillator = audioContext.createOscillator();
-            const gainNode = audioContext.createGain();
-
-            oscillator.connect(gainNode);
-            gainNode.connect(audioContext.destination);
-
-            // Gentle whisper-like notification sound
-            oscillator.type = 'sine';
-            oscillator.frequency.setValueAtTime(520, audioContext.currentTime);
-            oscillator.frequency.exponentialRampToValueAtTime(380, audioContext.currentTime + 0.12);
-            gainNode.gain.setValueAtTime(0, audioContext.currentTime);
-            gainNode.gain.linearRampToValueAtTime(0.07, audioContext.currentTime + 0.02);
-            gainNode.gain.exponentialRampToValueAtTime(0.001, audioContext.currentTime + 0.25);
-            oscillator.start(audioContext.currentTime);
-            oscillator.stop(audioContext.currentTime + 0.25);
-        } catch (error) {
-            Logger.warn('Could not play notification sound:', error);
-        }
-    }, []);
+        playSound((settings.live_notifications?.sound_type as SoundId | undefined) ?? 'boop');
+    }, [settings.live_notifications?.sound_type]);
 
     // Send native Windows desktop notification (disabled - plugin not installed)
     const sendNativeNotification = useCallback(async (_title: string, _body: string) => {
@@ -240,14 +318,40 @@ const DynamicIsland = () => {
         setLatestNotification(notification);
         setShowPreview(true);
 
-        // Auto-hide preview after 3 seconds
+        // Hold the inline preview for the same time the matching toast would
+        // stay up (live = 8s, everything else = 5s; mirrors AppStore.addToast),
+        // then let the pill contract back to its idle size.
         if (previewTimeoutRef.current) {
             clearTimeout(previewTimeoutRef.current);
         }
+        const previewHoldMs = notification.type === 'live' ? 8000 : 5000;
         previewTimeoutRef.current = setTimeout(() => {
             setShowPreview(false);
-        }, 3000);
+        }, previewHoldMs);
     }, []);
+
+    // Mirror action-feedback toasts (fired from anywhere via AppStore.addToast)
+    // into the notification center: these are notifications too, so they leave a
+    // record even when the toast surface is muted. The store already gated the
+    // emit on the island toggles; we re-check here so a mid-flight settings
+    // change is honored. These are non-interactive log entries (clicking just
+    // marks them read) and play no sound, since the action itself was the user's
+    // own context.
+    useEffect(() => {
+        const unlisten = listen<{ text: string; level?: SystemNotificationData['level'] }>('action-notification', (event) => {
+            if (!notificationsEnabled || !useDynamicIsland) return;
+            const { text, level } = event.payload;
+            if (!text) return;
+            addNotification({
+                id: `system-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                type: 'system',
+                timestamp: Date.now(),
+                read: false,
+                data: { title: '', message: text, level } as SystemNotificationData,
+            });
+        });
+        return () => { unlisten.then((fn) => fn()); };
+    }, [addNotification, notificationsEnabled, useDynamicIsland]);
 
     // Check for updates periodically
     const checkForUpdates = useCallback(async () => {
@@ -335,11 +439,42 @@ const DynamicIsland = () => {
 
             const data = event.payload;
 
-            // Test notifications should only show the toast, not add to dynamic island
+            // Test notifications mirror whichever surfaces the user has enabled
+            // so the "Test" button previews their actual setup:
+            //  - Dynamic Island on -> drop a dummy entry in the notification
+            //    center (auto-removed after a few seconds so tests don't pile up).
+            //  - Toast on          -> ToastManager shows the decorated toast.
+            // Sound plays exactly once: the toast path owns it when a toast is
+            // shown, otherwise it plays here so the sound still previews with
+            // toast popups off.
             if (data.is_test) {
-                // Show decorated toast for test notification
+                if (useDynamicIsland) {
+                    const testId = `live-test-${Date.now()}`;
+                    addNotification({
+                        id: testId,
+                        type: 'live',
+                        timestamp: Date.now(),
+                        read: false,
+                        data: {
+                            streamer_name: data.streamer_name,
+                            streamer_login: data.streamer_login,
+                            streamer_avatar: data.streamer_avatar,
+                            game_name: data.game_name,
+                            game_image: data.game_image,
+                            stream_title: data.stream_title,
+                            is_live: true,
+                            is_test: true,
+                        } as LiveNotificationData,
+                    });
+                    setTimeout(() => {
+                        setNotifications(prev => prev.filter(n => n.id !== testId));
+                    }, TEST_NOTIFICATION_TTL_MS);
+                }
+
                 if (useToast) {
                     emit('show-live-toast', data);
+                } else if (soundEnabled) {
+                    playNotificationSound();
                 }
                 return;
             }
@@ -363,15 +498,18 @@ const DynamicIsland = () => {
                 };
 
                 addNotification(notification);
-
-                if (soundEnabled) {
-                    playNotificationSound();
-                }
             }
 
             // Show decorated toast if enabled - emit event for ToastManager to handle
             if (useToast) {
                 emit('show-live-toast', data);
+            }
+
+            // Play the sound exactly once per event. When a toast is shown,
+            // ToastManager plays it; otherwise the notification-center entry
+            // covers it here. This keeps the two paths from doubling up.
+            if (soundEnabled && useDynamicIsland && !useToast) {
+                playNotificationSound();
             }
 
             // Send native notification (note: backend also sends one, but this ensures frontend settings are respected)
@@ -441,7 +579,8 @@ const DynamicIsland = () => {
                             display_name: data.from_user_name,
                             profile_image_url: profileImageUrl,
                         }),
-                    }
+                    },
+                    { skipIsland: true }
                 );
             }
 
@@ -495,7 +634,8 @@ const DynamicIsland = () => {
                     {
                         label: 'View',
                         onClick: () => setShowDropsOverlay(true),
-                    }
+                    },
+                    { skipIsland: true }
                 );
             }
 
@@ -754,18 +894,17 @@ const DynamicIsland = () => {
 
                 // Show toast if enabled
                 if (useToast) {
-                    const statusEmoji = badge.status === 'new' ? '✨' :
-                        badge.status === 'available' ? '🟢' : '🔵';
                     const statusText = badge.status === 'new' ? 'New badge' :
                         badge.status === 'available' ? 'Now available' : 'Coming soon';
 
                     addToast(
-                        `${statusEmoji} ${statusText}: ${badge.badge_name}${badge.date_info ? ` (${badge.date_info})` : ''}`,
+                        `${statusText}: ${badge.badge_name}${badge.date_info ? ` (${badge.date_info})` : ''}`,
                         'info',
                         {
                             label: 'View',
                             onClick: () => setShowBadgesOverlay(true),
-                        }
+                        },
+                        { skipIsland: true }
                     );
                 }
 
@@ -827,12 +966,13 @@ const DynamicIsland = () => {
                     ? '1 new campaign' 
                     : `${data.new_count} new campaigns`;
                 addToast(
-                    `🎁 ${data.game_name}: ${countText} available!`,
+                    `${data.game_name}: ${countText} available!`,
                     'info',
                     {
                         label: 'View',
                         onClick: () => setShowDropsOverlay(true),
-                    }
+                    },
+                    { skipIsland: true }
                 );
             }
 
@@ -880,6 +1020,13 @@ const DynamicIsland = () => {
 
         if (notification.type === 'live') {
             const data = notification.data as LiveNotificationData;
+
+            // Dummy "Test" entry — the mock login is a real channel, so clicking
+            // it must not open a stream. Just dismiss the preview.
+            if (data.is_test) {
+                setNotifications(prev => prev.filter(n => n.id !== notification.id));
+                return;
+            }
 
             // Check if still live
             const isStillLive = await checkIfStillLive(data.streamer_login);
@@ -979,36 +1126,49 @@ const DynamicIsland = () => {
     // Calculate collapsed width based on notifications
     const getCollapsedWidth = () => {
         if (showPreview && latestNotification) {
-            return 180;
+            // Fit the pill to the current preview's content (measured in the
+            // useLayoutEffect above) so the whole message shows instead of
+            // truncating. The pill is center-anchored (left-1/2 +
+            // -translate-x-1/2), so it expands outward from the middle on both
+            // sides, then contracts back once the preview auto-hides.
+            return previewWidth;
         }
-        if (hasUnread && unreadCount > 0) {
-            // Morph longer based on notification count
-            const baseWidth = 72;
-            const extraWidth = Math.min(unreadCount * 8, 48);
-            return baseWidth + extraWidth;
-        }
+        // Idle: a fixed compact pill. The quiet unread dot fits without widening.
         return 72;
     };
 
     return (
-        <>
             <div
                 ref={islandRef}
-                className="absolute left-1/2 -translate-x-1/2 top-1 z-50"
+                // Rendered at the app root (see App.tsx) and pinned to the top
+                // center, so it is NOT trapped inside the title bar's stacking
+                // context. While Settings is open we lift it to z-[55] so the pill
+                // floats just above the settings blur overlay (z-50) and its
+                // notification/preview animation stays visible; otherwise it sits
+                // at the normal title-bar layer (z-50). The element stays mounted
+                // across this toggle (only the class changes), so there is no
+                // re-mount flash of the unread-count badge.
+                className={`fixed left-1/2 -translate-x-1/2 top-1 ${isSettingsOpen ? 'z-[55]' : 'z-50'}`}
                 style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
             >
                 <motion.div
-                    layout
+                    // No `layout` here on purpose: width/height are animated
+                    // explicitly below, and the parent centers with translateX(-50%).
+                    // Framer's layout projection fighting that recentering is what
+                    // caused the left/right jitter as the pill settled back.
                     initial={false}
                     animate={{
                         width: isExpanded ? expandedWidth : getCollapsedWidth(),
                         height: isExpanded ? Math.min(maxHeight, 64 + notifications.length * itemHeight) : 24,
                     }}
                     transition={{
+                        // Softer than a snappy popup so the pill flows open and
+                        // contracts cleanly. This spring drives the dynamic-island
+                        // grow/shrink as notifications come and go.
                         type: 'spring',
-                        stiffness: 500,
-                        damping: 35,
-                        mass: 0.8,
+                        stiffness: 360,
+                        damping: 32,
+                        mass: 0.9,
                     }}
                     onClick={() => {
                         if (!isExpanded) {
@@ -1044,60 +1204,18 @@ const DynamicIsland = () => {
                                 {showPreview && latestNotification ? (
                                     // Preview latest notification
                                     <motion.div
-                                        className="flex items-center gap-2 w-full pl-1"
+                                        className="flex items-center justify-center gap-2 w-full px-3"
                                         initial={{ opacity: 0 }}
                                         animate={{ opacity: 1 }}
                                         transition={{ duration: 0.2 }}
                                     >
-                                        {latestNotification.type === 'live' ? (
-                                            <>
-                                                <div className="w-1.5 h-1.5 bg-red-500 rounded-full" />
-                                                <span className="text-white text-[11px] font-medium truncate flex-1">
-                                                    {(latestNotification.data as LiveNotificationData).streamer_name} is live
-                                                </span>
-                                            </>
-                                        ) : latestNotification.type === 'whisper' ? (
-                                            <>
-                                                <MessageCircle size={11} className="text-purple-400 flex-shrink-0" />
-                                                <span className="text-white text-[11px] font-medium truncate flex-1">
-                                                    {(latestNotification.data as WhisperNotificationData).from_user_name}
-                                                </span>
-                                            </>
-                                        ) : latestNotification.type === 'update' ? (
-                                            <>
-                                                <Download size={11} className="text-yellow-400 flex-shrink-0" />
-                                                <span className="text-white text-[11px] font-medium truncate flex-1">
-                                                    Update available
-                                                </span>
-                                            </>
-                                        ) : latestNotification.type === 'drops' ? (
-                                            <>
-                                                <Gift size={11} className="text-green-400 flex-shrink-0" />
-                                                <span className="text-white text-[11px] font-medium truncate flex-1">
-                                                    Drop claimed
-                                                </span>
-                                            </>
-                                        ) : latestNotification.type === 'channel_points' ? (
-                                            <>
-                                                <svg width="11" height="11" viewBox="0 0 24 24" className="text-orange-400 flex-shrink-0" fill="currentColor">
-                                                    <path d="M12 5v2a5 5 0 0 1 5 5h2a7 7 0 0 0-7-7Z"></path>
-                                                    <path fillRule="evenodd" d="M1 12C1 5.925 5.925 1 12 1s11 4.925 11 11-4.925 11-11 11S1 18.075 1 12Zm11 9a9 9 0 1 1 0-18 9 9 0 0 1 0 18Z" clipRule="evenodd"></path>
-                                                </svg>
-                                                <span className="text-white text-[11px] font-medium truncate flex-1">
-                                                    +{(latestNotification.data as ChannelPointsNotificationData).points_earned.toLocaleString()}
-                                                </span>
-                                            </>
-                                        ) : latestNotification.type === 'badge' ? (
-                                            <>
-                                                <Award size={11} className="text-cyan-400 flex-shrink-0" />
-                                                <span className="text-white text-[11px] font-medium truncate flex-1">
-                                                    {(latestNotification.data as BadgeNotificationData).badge_name}
-                                                </span>
-                                            </>
-                                        ) : null}
+                                        {renderPreviewIcon(latestNotification)}
+                                        <span ref={previewTextRef} className="text-white text-[11px] font-medium truncate min-w-0">
+                                            {getPreviewText(latestNotification)}
+                                        </span>
                                     </motion.div>
                                 ) : (
-                                    // Default state with sound indicator and notification count
+                                    // Default state: sound indicator on the left, a "live now" glance centered.
                                     <div className="flex items-center w-full">
                                         {/* Sound indicator */}
                                         <div className="w-4 flex-shrink-0">
@@ -1108,34 +1226,16 @@ const DynamicIsland = () => {
                                             )}
                                         </div>
 
-                                        {/* Notification count badge with solid accent color - centered */}
-                                        {hasUnread && unreadCount > 0 && (
-                                            <div className="flex-1 flex justify-center">
-                                                <motion.div
-                                                    initial={{ scale: 0 }}
-                                                    animate={{
-                                                        scale: 1,
-                                                    }}
-                                                    transition={{
-                                                        scale: { type: 'spring', stiffness: 500, damping: 25 },
-                                                    }}
-                                                    className="flex items-center justify-center min-w-[16px] h-[16px] px-1 rounded-full"
-                                                    style={{
-                                                        backgroundColor: 'var(--color-accent)',
-                                                        boxShadow: '0 0 8px var(--color-accent-muted)',
-                                                    }}
-                                                >
-                                                    <span className="text-[10px] font-bold leading-none text-black">
-                                                        {unreadCount > 9 ? '9+' : unreadCount}
-                                                    </span>
-                                                </motion.div>
-                                            </div>
-                                        )}
+                                        {/* Center: a quiet dot when there are unread notifications, else nothing.
+                                            The count itself lives in the expanded header. */}
+                                        <div className="flex-1 flex items-center justify-center">
+                                            {hasUnread ? (
+                                                <span className="block w-1.5 h-1.5 rounded-full bg-accent" />
+                                            ) : null}
+                                        </div>
 
-                                        {/* Empty spacer on the right to balance the sound icon */}
-                                        {hasUnread && unreadCount > 0 && (
-                                            <div className="w-4 flex-shrink-0" />
-                                        )}
+                                        {/* Balancing spacer on the right */}
+                                        <div className="w-4 flex-shrink-0" />
                                     </div>
                                 )}
                             </motion.div>
@@ -1413,6 +1513,35 @@ const DynamicIsland = () => {
                                                                 </p>
                                                             </div>
                                                         </>
+                                                    ) : notification.type === 'system' ? (
+                                                        <>
+                                                            {/* Action feedback mirrored from a toast */}
+                                                            {(() => {
+                                                                const d = notification.data as SystemNotificationData;
+                                                                const Icon = d.level === 'success' ? CheckCircle2
+                                                                    : d.level === 'error' ? XCircle
+                                                                    : d.level === 'warning' ? AlertTriangle
+                                                                    : Info;
+                                                                const color = d.level === 'success' ? 'text-green-400'
+                                                                    : d.level === 'error' ? 'text-red-400'
+                                                                    : d.level === 'warning' ? 'text-yellow-400'
+                                                                    : 'text-accent';
+                                                                return (
+                                                                    <>
+                                                                        <div className="relative flex-shrink-0">
+                                                                            <div className="w-12 h-12 rounded-full bg-white/10 flex items-center justify-center">
+                                                                                <Icon size={18} className={color} />
+                                                                            </div>
+                                                                        </div>
+                                                                        <div className="flex-1 min-w-0">
+                                                                            <p className="text-white/90 text-sm line-clamp-2">
+                                                                                {d.message}
+                                                                            </p>
+                                                                        </div>
+                                                                    </>
+                                                                );
+                                                            })()}
+                                                        </>
                                                     ) : null}
 
                                                     <div className="flex items-center gap-1.5 flex-shrink-0">
@@ -1476,7 +1605,6 @@ const DynamicIsland = () => {
                     </AnimatePresence>
                 </motion.div>
             </div>
-        </>
     );
 };
 

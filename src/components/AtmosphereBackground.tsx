@@ -11,12 +11,65 @@ import type { Atmosphere } from '../services/atmospheres';
 export const AtmosphereBackground = ({
   atm,
   variant,
+  blur = false,
 }: {
   atm: Atmosphere;
   variant: 'profile' | 'chat';
+  // Soften the animated image backdrop with a frosted blur so overlaid text
+  // stays readable. Opt-in for profile backdrops: the big profile reads fine
+  // sharp, but the small badge-hover card wants it. (Chat rows always blur,
+  // since text sits directly on the wash.)
+  blur?: boolean;
 }) => {
   if (variant === 'chat') {
     return <ChatAtmosphere atm={atm} />;
+  }
+  // Image-backed atmosphere (e.g. an animated webp): the image IS the whole
+  // profile backdrop and carries its own motion, so there are no CSS curtains.
+  if (atm.image) {
+    // When blurred, scale up a touch so the blur's soft edge fade is pushed
+    // past the clip instead of revealing a fuzzy border.
+    const imgFilter = blur ? 'blur(10px)' : undefined;
+    const blurScale = blur ? ' scale(1.12)' : '';
+    return (
+      <div
+        className="pointer-events-none absolute -inset-10 overflow-hidden"
+        style={{ backgroundColor: atm.baseColor }}
+      >
+        {atm.imageProfilePortrait ? (
+          // Render the landscape image rotated 90deg so it reads portrait in the
+          // tall profile panel. Container-query units size the rotated layer to
+          // the panel's SWAPPED dimensions (width <- panel height, height <-
+          // panel width), so it still covers edge-to-edge after the rotation
+          // with no gaps, on any panel aspect.
+          <div className="absolute inset-0 overflow-hidden" style={{ containerType: 'size' }}>
+            <div
+              className="absolute left-1/2 top-1/2"
+              style={{
+                width: '100cqh',
+                height: '100cqw',
+                transform: `translate(-50%, -50%) rotate(90deg)${blurScale}`,
+                backgroundImage: `url(${atm.image})`,
+                backgroundSize: 'cover',
+                backgroundPosition: 'center',
+                filter: imgFilter,
+              }}
+            />
+          </div>
+        ) : (
+          <div
+            className="absolute inset-0"
+            style={{
+              backgroundImage: `url(${atm.image})`,
+              backgroundSize: 'cover',
+              backgroundPosition: 'center',
+              filter: imgFilter,
+              transform: blur ? 'scale(1.12)' : undefined,
+            }}
+          />
+        )}
+      </div>
+    );
   }
   return (
     <div
@@ -92,22 +145,34 @@ const ChatAtmosphere = ({ atm }: { atm: Atmosphere }) => {
           className="absolute inset-0"
           style={{ backgroundColor: atm.baseColor, backgroundImage: atm.baseLayers, opacity: 0.85 }}
         />
-        {/* Animated curtains — the heavy composited layers. Mounted only while
-            the row is near the viewport (see the observer above). */}
-        {active && (
-          <>
+        {/* Animated backdrop. Mounted only while the row is near the viewport
+            (see the observer above). For an image-backed atmosphere this is the
+            webp itself (with a readability veil so light chat text stays legible
+            over the busy image); otherwise it's the heavy composited gradient
+            curtains. */}
+        {active &&
+          (atm.image ? (
+            // Sharp, full-strength animation across the whole row. Readability
+            // comes from a localized frost behind the text/badges (in
+            // ChatMessage), not from blurring or dimming the whole wash.
             <div
-              className="sn-aurora-1 absolute"
-              style={{ ...layerBox, backgroundImage: atm.layers, backgroundRepeat: 'repeat', animationDuration: '9s' }}
+              className="absolute inset-0"
+              style={{ backgroundImage: `url(${atm.image})`, backgroundSize: 'cover', backgroundPosition: 'center' }}
             />
-            {atm.layers2 && (
+          ) : (
+            <>
               <div
-                className="sn-aurora-2 absolute"
-                style={{ ...layerBox, backgroundImage: atm.layers2, backgroundRepeat: 'repeat', animationDuration: '12s' }}
+                className="sn-aurora-1 absolute"
+                style={{ ...layerBox, backgroundImage: atm.layers, backgroundRepeat: 'repeat', animationDuration: '9s' }}
               />
-            )}
-          </>
-        )}
+              {atm.layers2 && (
+                <div
+                  className="sn-aurora-2 absolute"
+                  style={{ ...layerBox, backgroundImage: atm.layers2, backgroundRepeat: 'repeat', animationDuration: '12s' }}
+                />
+              )}
+            </>
+          ))}
       </div>
       {/* 1px aurora-gradient edge down the left (replaces the flat accent bar). */}
       <div
