@@ -1,5 +1,4 @@
 ## [7.8.1] - 2026-06-04
-## [7.9.0] - 2026-06-04
 ## 🧰 New: Manage Your 7TV Emotes Inside StreamNook
 > Connect your 7TV account and run your emotes entirely from the app. Add, rename, remove, and organize emotes across every channel you can edit, manage your emote sets, and add or remove editors, all without opening a browser. This release also reworks chat moderation with a drag-to-moderate gesture and real channel-wide message pinning, and lets you back up your entire setup to a single file and restore it on any machine.
 
