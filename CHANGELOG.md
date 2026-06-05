@@ -1,3 +1,22 @@
+## [7.8.2] - 2026-06-05
+### ✨ Features
+- **True Low-Latency Streaming**: Experience minimal delay with an actively managed HLS pipeline, featuring dynamic target duration adjustments and Twitch PREFETCH segment promotion, allowing your player to ride closer to the live edge than ever before.
+- **Third-Party Chat Badges for Everyone**: Enjoy a richer chat experience as StreamNook now displays BTTV, FFZ, Chatterino, and other third-party badges for *all* chatters, not just StreamNook members. Badge resolution is now significantly more efficient.
+- **Reimagined Profile & Live Preview**: Your public StreamNook profile has a stunning new design. Track how many times your profile is viewed, customize which sections are visible to others, and use the new 'Live Preview' in settings to see your edits in real-time.
+- **Real-Time Stream Stats**: A new overlay provides vital diagnostics like latency to live, resolution, FPS, bitrate, and buffer status. Easily jump to the absolute live edge with the 'Go Live' button.
+- **Global Motion Control**: Tailor StreamNook's animations to your preference with new settings: 'Full' for all fluid transitions, 'Reduced' for fades only (easier on the eyes and lighter on slower PCs), or 'Off' for an instant, snappy interface.
+- **Full-Page Settings Window**: Configure StreamNook with more room! The settings dialog can now expand to a full-page layout, providing ample space for extensive customization.
+- **Smoother UI Transitions**: Enjoy a more polished experience with new, fluid animations for opening and closing overlays, modals, and dropdown menus.
+
+### 🐛 Bug Fixes
+- **Accurate Drops Mining Completion**: Fixed issues where drops campaigns would sometimes continue mining indefinitely or display incorrect progress after completion. We now precisely identify when all drops are claimed and properly shut down background tasks.
+- **Reliable Stream Information**: Resolved an issue where stream titles and game categories could appear blank after raid redirects, ensuring your UI and Discord Rich Presence always show the correct details.
+- **YouTube Link Previews**: Corrected an issue preventing link previews from loading for some YouTube channel pages.
+- **Chat Moderation Overlay**: The moderation drag layer no longer overlaps messages, ensuring clear visibility.
+
+### 🔧 Maintenance
+- Refined and updated the visual style of various settings and profile display components for a more cohesive 'glass-tile' aesthetic.
+
 ## [7.8.1] - 2026-06-04
 ## 🧰 New: Manage Your 7TV Emotes Inside StreamNook
 > Connect your 7TV account and run your emotes entirely from the app. Add, rename, remove, and organize emotes across every channel you can edit, manage your emote sets, and add or remove editors, all without opening a browser. This release also reworks chat moderation with a drag-to-moderate gesture and real channel-wide message pinning, and lets you back up your entire setup to a single file and restore it on any machine.
@@ -1503,6 +1522,7 @@ ATTENTION: ALL USERS LOG OUT OF TWITCH THEN LOG BACK IN FOR SOME CHANGES OT TAKE
 
 ### Fixed
 - Issue in calculating window aspect ratio when resizing with different chat placements.
+
 
 
 
