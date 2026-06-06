@@ -1,6 +1,12 @@
 import { useState } from 'react';
 import { Dropdown } from '../ui/Dropdown';
+import { Tooltip } from '../ui/Tooltip';
 import { useAppStore } from '../../stores/AppStore';
+import {
+  ToastPosition,
+  DEFAULT_TOAST_POSITION,
+  DEFAULT_TOAST_EDGE_OFFSET,
+} from '../../types';
 import { invoke } from '@tauri-apps/api/core';
 import { Bell } from 'lucide-react';
 import { SettingsSection, SettingsRow } from './_primitives';
@@ -12,6 +18,91 @@ import {
 } from '../../utils/notifAchievement';
 
 import { Logger } from '../../utils/logger';
+
+// The six supported toast anchors, placed on a 3x3 grid that stands in for the
+// screen. The middle row's sides are intentionally inert (vertically-centered
+// toasts would overlap the video), leaving only the screen-center marker there.
+const TOAST_ANCHORS: { value: ToastPosition; col: number; row: number; label: string }[] = [
+  { value: 'top-left', col: 1, row: 1, label: 'Top left' },
+  { value: 'top-center', col: 2, row: 1, label: 'Top center' },
+  { value: 'top-right', col: 3, row: 1, label: 'Top right' },
+  { value: 'bottom-left', col: 1, row: 3, label: 'Bottom left' },
+  { value: 'bottom-center', col: 2, row: 3, label: 'Bottom center' },
+  { value: 'bottom-right', col: 3, row: 3, label: 'Bottom right' },
+];
+
+// Edge-spacing slider bounds, shared with the visualization math below.
+const EDGE_OFFSET_MIN = 8;
+const EDGE_OFFSET_MAX = 200;
+// How far (px) the selected slot lifts toward center across the full spacing
+// range, so dragging the spacing slider visibly moves the toast off its edge.
+const PICKER_MAX_TRAVEL = 22;
+
+const ToastPositionPicker = ({
+  value,
+  offset,
+  onChange,
+}: {
+  value: ToastPosition;
+  offset: number;
+  onChange: (v: ToastPosition) => void;
+}) => {
+  const currentLabel = TOAST_ANCHORS.find((a) => a.value === value)?.label ?? '';
+  const travelFraction = Math.max(
+    0,
+    Math.min(1, (offset - EDGE_OFFSET_MIN) / (EDGE_OFFSET_MAX - EDGE_OFFSET_MIN)),
+  );
+  return (
+    <div className="flex items-center gap-4">
+      <div className="glass-input rounded-lg p-2.5" style={{ width: 200 }}>
+        <div className="relative grid grid-cols-3 grid-rows-3 gap-1" style={{ aspectRatio: '16 / 10' }}>
+          {/* faint screen-center marker so the box reads as a screen */}
+          <div className="col-start-2 row-start-2 flex items-center justify-center">
+            <span className="block w-1 h-1 rounded-full bg-textMuted/30" />
+          </div>
+          {TOAST_ANCHORS.map((anchor) => {
+            const active = value === anchor.value;
+            // Top anchors lift downward (away from the top edge), bottom anchors
+            // lift upward; only the selected slot moves, mirroring edge spacing.
+            const isTop = anchor.row === 1;
+            const lift = travelFraction * PICKER_MAX_TRAVEL * (isTop ? 1 : -1);
+            return (
+              <Tooltip key={anchor.value} content={anchor.label} side="top">
+                <button
+                  type="button"
+                  onClick={() => onChange(anchor.value)}
+                  aria-label={anchor.label}
+                  aria-pressed={active}
+                  style={{ gridColumn: anchor.col, gridRow: anchor.row }}
+                  className={`group flex items-center justify-center rounded-md cursor-pointer transition-colors ${
+                    active ? 'bg-accent/10' : 'hover:bg-glass'
+                  }`}
+                >
+                  {/* Every spot shows a toast-shaped slot so the available choices
+                      are obvious at rest; the selected one fills with accent and
+                      lifts off its edge to preview the current edge spacing. */}
+                  <span
+                    style={active ? { transform: `translateY(${lift}px)` } : undefined}
+                    className={`block rounded-[3px] border transition-all ${
+                      active
+                        ? 'w-6 h-2.5 bg-accent border-accent'
+                        : 'w-5 h-2 bg-textMuted/15 border-textMuted/50 group-hover:w-6 group-hover:h-2.5 group-hover:bg-accent/25 group-hover:border-accent/70'
+                    }`}
+                  />
+                </button>
+              </Tooltip>
+            );
+          })}
+        </div>
+      </div>
+      <div className="text-[12px] text-textSecondary">
+        <span className="font-medium text-textPrimary">{currentLabel}</span>
+        <span className="block text-[11px] text-textMuted mt-0.5">Click a spot to move toasts there</span>
+      </div>
+    </div>
+  );
+};
+
 const NotificationsSettings = () => {
   const { settings, updateSettings, currentUser, addToast } = useAppStore();
   // Brief green flash on press, used as the Test button's feedback instead of a
@@ -30,6 +121,8 @@ const NotificationsSettings = () => {
     show_badge_notifications: true,
     use_dynamic_island: true,
     use_toast: true,
+    toast_position: DEFAULT_TOAST_POSITION,
+    toast_edge_offset: DEFAULT_TOAST_EDGE_OFFSET,
   };
 
   const updateLiveNotifications = (updates: Partial<typeof liveNotifications>) => {
@@ -110,7 +203,7 @@ const NotificationsSettings = () => {
 
             <SettingsRow
               title="Toast Notifications"
-              description="Show popup toasts at the bottom of the screen"
+              description="Show popup toasts on screen"
               control={
                 <Toggle
                   enabled={liveNotifications.use_toast ?? true}
@@ -120,6 +213,38 @@ const NotificationsSettings = () => {
                 />
               }
             />
+
+            {(liveNotifications.use_toast ?? true) && (
+              <>
+                <SettingsRow
+                  title="Toast Position"
+                  description="Which corner or edge toasts appear at"
+                >
+                  <ToastPositionPicker
+                    value={liveNotifications.toast_position ?? DEFAULT_TOAST_POSITION}
+                    offset={liveNotifications.toast_edge_offset ?? DEFAULT_TOAST_EDGE_OFFSET}
+                    onChange={(toast_position) => updateLiveNotifications({ toast_position })}
+                  />
+                </SettingsRow>
+
+                <SettingsRow
+                  title={`Edge Spacing: ${liveNotifications.toast_edge_offset ?? DEFAULT_TOAST_EDGE_OFFSET}px`}
+                  description="How far toasts sit from the top or bottom edge. Raise it to push them further from that edge."
+                >
+                  <input
+                    type="range"
+                    min={EDGE_OFFSET_MIN}
+                    max={EDGE_OFFSET_MAX}
+                    step="4"
+                    value={liveNotifications.toast_edge_offset ?? DEFAULT_TOAST_EDGE_OFFSET}
+                    onChange={(e) =>
+                      updateLiveNotifications({ toast_edge_offset: parseInt(e.target.value) })
+                    }
+                    className="w-full accent-accent cursor-pointer"
+                  />
+                </SettingsRow>
+              </>
+            )}
           </SettingsSection>
 
           <SettingsSection label="Notification Types">
@@ -311,7 +436,7 @@ const NotificationsSettings = () => {
                 About Notifications
               </p>
               <p className="text-xs text-textSecondary">
-                Choose how you receive notifications: the Dynamic Island (notification center at the top), Toast popups (bottom of screen), or both. Click on notifications to take action. Live notifications start the stream, whisper notifications open the conversation, and update notifications take you to the Updates page.
+                Choose how you receive notifications: the Dynamic Island (notification center at the top), Toast popups (positioned at any corner or edge you like), or both. Click on notifications to take action. Live notifications start the stream, whisper notifications open the conversation, and update notifications take you to the Updates page.
               </p>
             </div>
           </div>

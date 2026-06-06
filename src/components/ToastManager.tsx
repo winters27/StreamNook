@@ -4,6 +4,7 @@ import { useAppStore, Toast } from '../stores/AppStore';
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { parseEmojisProxied, EmojiSegment } from '../services/emojiService';
+import { ToastPosition, DEFAULT_TOAST_POSITION, DEFAULT_TOAST_EDGE_OFFSET } from '../types';
 
 import { Logger } from '../utils/logger';
 import { playSound, type SoundId } from '../utils/notificationSound';
@@ -124,8 +125,61 @@ const TEST_NOTIFICATION_JOKES = [
   "You really woke up and chose gullibility today.",
 ];
 
+// Fixed gap from the left/right edge for corner anchors. The configurable
+// offset only nudges the vertical (top/bottom) axis — that's the one that
+// overlaps the chat input — so corners stay hugging their side.
+const HORIZONTAL_MARGIN = 16;
+
+interface ToastLayout {
+  /** Inline position for the fixed container (top/bottom/left/right/transform). */
+  style: React.CSSProperties;
+  /** Cross-axis alignment of the stacked toasts. */
+  align: string;
+  /** Stack so the newest toast sits nearest the anchored edge. */
+  direction: string;
+  /** Off-screen offset the toast animates in from / out to. */
+  enter: { x?: number; y?: number };
+}
+
+// Translate an anchor + vertical offset into the container's position styles and
+// the per-toast slide direction. Side anchors slide in horizontally from their
+// edge; top/bottom-center anchors slide vertically from theirs.
+const getToastLayout = (position: ToastPosition, offset: number): ToastLayout => {
+  const isTop = position.startsWith('top');
+  const isLeft = position.endsWith('left');
+  const isRight = position.endsWith('right');
+
+  const style: React.CSSProperties = {};
+  if (isTop) style.top = offset;
+  else style.bottom = offset;
+
+  if (isLeft) style.left = HORIZONTAL_MARGIN;
+  else if (isRight) style.right = HORIZONTAL_MARGIN;
+  else {
+    style.left = '50%';
+    style.transform = 'translateX(-50%)';
+  }
+
+  const align = isLeft ? 'items-start' : isRight ? 'items-end' : 'items-center';
+  // Bottom anchors grow upward (newest lowest); top anchors grow downward and
+  // reverse so the newest sits at the top, nearest its edge.
+  const direction = isTop ? 'flex-col-reverse' : 'flex-col';
+
+  const enter =
+    isLeft || isRight
+      ? { x: isRight ? 300 : -300 }
+      : { y: isTop ? -32 : 32 };
+
+  return { style, align, direction, enter };
+};
+
 const ToastManager = () => {
   const { toasts, removeToast, addToast, settings } = useAppStore();
+
+  const layout = getToastLayout(
+    settings.live_notifications?.toast_position ?? DEFAULT_TOAST_POSITION,
+    settings.live_notifications?.toast_edge_offset ?? DEFAULT_TOAST_EDGE_OFFSET,
+  );
 
   // Thin wrapper so existing callers keep the (soundType?: string) signature.
   // Actual sound generation lives in utils/notificationSound so chat highlights
@@ -259,7 +313,10 @@ const ToastManager = () => {
   };
 
   return (
-    <div className="fixed bottom-4 right-4 space-y-2 z-50 pointer-events-none">
+    <div
+      className={`fixed z-50 pointer-events-none flex ${layout.direction} ${layout.align} gap-2`}
+      style={layout.style}
+    >
       <AnimatePresence>
         {toasts.map(toast => (
           <ToastItem
@@ -268,6 +325,7 @@ const ToastManager = () => {
             removeToast={removeToast}
             getToastIcon={getToastIcon}
             getToastColor={getToastColor}
+            enter={layout.enter}
           />
         ))}
       </AnimatePresence>
@@ -281,9 +339,10 @@ interface ToastItemProps {
   removeToast: (id: number) => void;
   getToastIcon: (type: string) => React.ReactNode;
   getToastColor: (type: string) => string;
+  enter: { x?: number; y?: number };
 }
 
-const ToastItem = ({ toast, removeToast, getToastIcon, getToastColor }: ToastItemProps) => {
+const ToastItem = ({ toast, removeToast, getToastIcon, getToastColor, enter }: ToastItemProps) => {
   const [isPaused, setIsPaused] = useState(false);
   const remainingTimeRef = useRef(toast.duration);
   const startTimeRef = useRef(Date.now());
@@ -349,9 +408,9 @@ const ToastItem = ({ toast, removeToast, getToastIcon, getToastColor }: ToastIte
 
   return (
     <motion.div
-      initial={{ x: 300, opacity: 0 }}
-      animate={{ x: 0, opacity: 1 }}
-      exit={{ x: 300, opacity: 0 }}
+      initial={{ ...enter, opacity: 0 }}
+      animate={{ x: 0, y: 0, opacity: 1 }}
+      exit={{ ...enter, opacity: 0 }}
       onClick={isClickable ? () => {
         toast.action?.onClick();
         removeToast(toast.id);
