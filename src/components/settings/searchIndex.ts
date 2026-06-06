@@ -180,6 +180,34 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
     title: 'Default Volume',
     description: 'Initial volume level when starting playback'
   },
+  {
+    tab: 'Player',
+    section: 'Audio Boost',
+    sectionId: 'settings-section-audio-boost',
+    title: 'Audio Boost',
+    description: 'Compressor and makeup gain to even out loud and quiet moments and make the stream louder without clipping.'
+  },
+  {
+    tab: 'Player',
+    section: 'Audio Boost',
+    sectionId: 'settings-section-audio-boost',
+    title: 'Enable Audio Boost',
+    description: 'Run the stream audio through a compressor and a makeup-gain stage.'
+  },
+  {
+    tab: 'Player',
+    section: 'Audio Boost',
+    sectionId: 'settings-section-audio-boost',
+    title: 'Boost',
+    description: 'How much louder to make the stream after compression (volume boost / gain).'
+  },
+  {
+    tab: 'Player',
+    section: 'Audio Boost',
+    sectionId: 'settings-section-audio-boost',
+    title: 'Advanced Compressor Controls',
+    description: 'Threshold, ratio, knee, attack and release controls for the audio compressor.'
+  },
 
   // === Theme ===
   {
@@ -192,7 +220,7 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
     tab: 'Theme',
     section: 'Glassiness',
     title: 'Glassiness',
-    description: 'How see-through panels are, for every theme. 100% is the signature frosted look; lower makes panels more solid.'
+    description: 'How see-through and frosted every surface is, for every theme. 100% is the signature glass; 0% removes all transparency and blur for a completely flat, solid, opaque look.'
   },
   {
     tab: 'Theme',

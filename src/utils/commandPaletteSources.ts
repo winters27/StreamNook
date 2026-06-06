@@ -757,7 +757,7 @@ const SETTINGS_CATALOG: SettingsEntry[] = [
   // Theme
   { tab: 'Theme', keywords: 'theme color accent skin dark light' },
   { tab: 'Theme', section: 'Font', keywords: 'font typeface interface satoshi inter geist manrope outfit space grotesk serif system family text' },
-  { tab: 'Theme', section: 'Glassiness', keywords: 'glassiness glass transparency frosted opacity panels see-through blur' },
+  { tab: 'Theme', section: 'Glassiness', keywords: 'glassiness glass transparency frosted opacity panels see-through blur solid flat opaque disable turn off no glass' },
 
   // Integrations
   { tab: 'Integrations', keywords: 'integrations discord rpc ttv lol ad block' },
