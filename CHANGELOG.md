@@ -1,3 +1,26 @@
+## [7.8.3] - 2026-06-05
+### ✨ Features
+- **Audio Boost**: Make stream audio louder and more even. A built-in compressor evens out quiet talking and loud moments and lifts overall loudness past the source without the harsh distortion of cranking volume past max. Turn it on from the player control bar or Player settings, fine-tune it with on-screen sliders right over the video, and reset to defaults anytime. Off until you enable it.
+- **Emote Prefetch**: Bulk-download the emotes from every channel you follow in one background pass, ideally while you are away. Once it finishes, chat and the emote menu fill in instantly with nothing left to fetch, and it takes load off 7TV. Start, watch progress, or stop it from Cache settings.
+- **Place Notifications Anywhere**: Pick which corner or edge your popup notifications appear in with a simple visual picker, and use a spacing slider to lift them off the screen edge so they do not sit on top of chat.
+- **Fully Flat Glass**: The Glassiness slider now goes all the way to a completely solid, blur-free interface for anyone who does not want any frosted-glass effect, not just slightly more opaque panels.
+- **Jump Straight to a Setting**: Settings can now open directly to a specific section and scroll right to it, instead of dropping you on a tab to hunt for the option.
+
+### 🐛 Bug Fixes
+- **Chat no longer goes blank when you join**: A slow or down 7TV could leave chat empty for several seconds on join. Recent messages now backfill immediately while emotes load in the background, and a circuit breaker stops a 7TV outage from stalling the whole connection.
+- **Emotes recover on their own during a 7TV outage**: When 7TV returns an empty set, the app no longer caches that gap for the rest of your session. It quietly re-fetches once 7TV is healthy again, so you do not have to refresh manually.
+- **Animated FrankerFaceZ emotes actually animate**: Animated FFZ emotes were being shown as still images. They now play.
+- **Emotes and badges render reliably**: Cached images are now saved in their true format and keyed per provider, so they no longer collide or show up broken. Existing miscached emotes are repaired automatically on launch.
+- **Consistent drops progress everywhere**: The title-bar drops badge, the game cards, and the detailed drops panel now read from the same live source, so progress updates promptly and matches across all three instead of drifting apart.
+- **Readable announcement banners**: In-app announcement banners are now solid and legible at any Glassiness setting, including fully transparent.
+- **Steadier low-latency playback**: Hardened a low-latency code path that could freeze playback on certain streams.
+
+### ⚡ Performance
+- **Smoother, faster chat**: Busy channels scroll and animate far more smoothly, the emote picker opens faster and uses less memory over long sessions, and joining a channel does less work up front.
+
+### 🔧 Maintenance
+- The Cache settings panel now reports what is actually stored, clears everything in one click, and adds a button to open the cache folder.
+
 ## [7.8.2] - 2026-06-05
 ### ✨ Features
 - **True Low-Latency Streaming**: Experience minimal delay with an actively managed HLS pipeline, featuring dynamic target duration adjustments and Twitch PREFETCH segment promotion, allowing your player to ride closer to the live edge than ever before.
