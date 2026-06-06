@@ -473,7 +473,7 @@ const ChatMessageList = memo(function ChatMessageList({
       }}
     >
       {/* Messages container with native virtualization - pt-10 for header */}
-      <div ref={contentRef} className="flex flex-col min-h-full justify-end pt-10">
+      <div ref={contentRef} className={`flex flex-col min-h-full justify-end pt-10${chatDesign?.alternating_backgrounds ? ' chat-striped' : ''}`}>
         {messages.map((message, index) => {
           const messageId = getMessageId(message);
 
@@ -543,7 +543,6 @@ const ChatMessageList = memo(function ChatMessageList({
             >
               <ChatMessage
                 message={message}
-                messageIndex={index}
                 onUsernameClick={onUsernameClick}
                 onReplyClick={onReplyClick}
                 onMessageCopy={onMessageCopy}

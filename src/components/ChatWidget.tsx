@@ -16,7 +16,7 @@ const ChannelPointsIcon = ({ className = "", size = 14 }: { className?: string; 
 );
 import { MiningStatus } from '../types';
 import { useTwitchChat } from '../hooks/useTwitchChat';
-import { useChannelEmotes, ensureChannelEmotes } from '../stores/chatConnectionStore';
+import { useChannelEmotes, ensureChannelEmotes, getChannelEmotes, refreshChannelEmotes } from '../stores/chatConnectionStore';
 import { useAppStore } from '../stores/AppStore';
 import { incrementStat } from '../services/supabaseService';
 import { trackEmoteUsage } from '../utils/trackEmoteUsage';
@@ -32,7 +32,7 @@ import ChannelPointsMenu from './ChannelPointsMenu';
 import ModeratorMenu from './chat/ModeratorMenu';
 import ResubNotificationBanner, { ResubNotification } from './ResubNotificationBanner';
 import WatchStreakBanner, { WatchStreakMilestone } from './WatchStreakBanner';
-import { Emote, EmoteSet, preloadChannelEmotes, queueEmoteForCaching, inlineEmoteTier, sevenTvTierUrl } from '../services/emoteService';
+import { Emote, EmoteSet, preloadChannelEmotes, queueEmoteForCaching, queueEmoteForDisplayCaching, queueChannelEmotesForCaching, getCachedEmoteUrl, setEmoteCacheBurst, inlineEmoteTier, sevenTvTierUrl } from '../services/emoteService';
 import { preloadThirdPartyBadgeDatabases } from '../services/thirdPartyBadges';
 import { initializeBadges, getBadgeInfo } from '../services/twitchBadges';
 import { parseBadges } from '../services/twitchBadges';
@@ -209,7 +209,16 @@ const EmoteGridItem = memo(({ emote, isFavorited, onInsert, onToggleFavorite }: 
   // (populated when the emote was shown in chat). Use it when present so the
   // picker renders from disk instead of re-pulling the CDN; fall back to the
   // CDN at the same tier on a miss. Non-7TV already prefer localUrl below.
-  const gridSrc = is7tv ? (emote.localUrl || sevenTvTierUrl(emote.id, emoteTier)) : (emote.localUrl || emote.url);
+  // Prefer a LIVE disk lookup so emotes the background trickle cached during
+  // this session render from disk the next time the block mounts (scroll or
+  // reopen), not only ones whose localUrl was baked at fetch time. Falls back to
+  // the baked localUrl (cross-session disk hit) and finally the CDN at the
+  // per-DPI tier. The lookup is a Map read keyed by the same per-DPI tier the
+  // cache writes, so a hit always matches the on-screen size.
+  const liveLocal = getCachedEmoteUrl(emote.id, emote.provider, emoteTier);
+  const gridSrc = is7tv
+    ? (liveLocal || emote.localUrl || sevenTvTierUrl(emote.id, emoteTier))
+    : (liveLocal || emote.localUrl || emote.url);
   // Same user-configurable hover-preview height used by inline chat emotes, so
   // the picker's hover card matches what you see in chat. Defaults to 96px.
   const hoverPreviewSize = useAppStore((s) => s.settings.chat_design?.emote_hover_size) ?? 96;
@@ -313,6 +322,97 @@ const EmoteGridItem = memo(({ emote, isFavorited, onInsert, onToggleFavorite }: 
     </Tooltip>
   );
 });
+
+/** Split an array into fixed-size chunks (row-aligned blocks for the picker). */
+function chunkArray<T>(arr: T[], size: number): T[][] {
+  if (size <= 0) return [arr];
+  const out: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+}
+
+// Per-row pixel budget used only to reserve scroll height for not-yet-mounted
+// picker blocks so the scrollbar stays stable. Approximate is fine: a block snaps
+// to its real height the moment it mounts. Width-grid cells are image-only
+// (~44px + gap); the Twitch grid adds a name label, so its rows are taller.
+const WIDTH_BLOCK_ROWS = 8;
+const WIDTH_ROW_PX = 52;
+const TWITCH_BLOCK_ROWS = 6;
+const TWITCH_ROW_PX = 60;
+const TWITCH_COLS = 7;
+
+// One vertical block of emote cells inside the picker grid. The picker can hold
+// thousands of emotes; mounting every cell (DOM node + tooltip + favorite button
+// + image) on open was the bulk of the open cost and what kept decoded bitmaps
+// resident. Instead each provider section is split into fixed-row blocks, and a
+// block mounts its cells ONLY while it is near the scroll viewport — gated by a
+// single IntersectionObserver rooted on the scroll container (one observer per
+// block, a few dozen total, NOT the per-CELL observers previously removed for
+// being too many). An off-screen block is a cheap spacer that reserves its
+// height so scrolling stays stable. A short enter-debounce means flinging past a
+// block never decodes it, and blocks scrolled well away unmount their images so
+// a long session — or a kept-mounted, hidden picker — never accumulates decoded
+// emotes. This is the lazy-mount technique FFZ and 7TV both use, adapted to the
+// width-bucketed grid. `children` is a thunk so off-screen cells are never even
+// constructed; `onActivate` fires once when the block first becomes visible
+// (used to bump its emotes to the front of the disk-cache queue).
+const LazyEmoteBlock = memo(({ scrollRef, estimatedHeight, gridClass, onActivate, children }: {
+  scrollRef: React.RefObject<HTMLDivElement>;
+  estimatedHeight: number;
+  gridClass: string;
+  onActivate?: () => void;
+  children: () => React.ReactNode;
+}) => {
+  const ref = useRef<HTMLDivElement>(null);
+  const [visible, setVisible] = useState(false);
+  const activatedRef = useRef(false);
+  useEffect(() => {
+    const el = ref.current;
+    const root = scrollRef.current;
+    if (!el || !root) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const obs = new IntersectionObserver(
+      (entries) => {
+        const intersecting = entries[0]?.isIntersecting ?? false;
+        if (timer) clearTimeout(timer);
+        if (intersecting) {
+          // Small debounce so a fast scroll-through never decodes the block.
+          timer = setTimeout(() => {
+            setVisible(true);
+            if (!activatedRef.current) {
+              activatedRef.current = true;
+              onActivate?.();
+            }
+          }, 80);
+        } else {
+          // Evict shortly after leaving so RAM tracks the visible window, even
+          // while the picker is kept mounted-but-hidden (display:none reports
+          // every block as not-intersecting, so closing frees the images).
+          timer = setTimeout(() => setVisible(false), 500);
+        }
+      },
+      { root, rootMargin: '600px 0px' },
+    );
+    obs.observe(el);
+    return () => {
+      obs.disconnect();
+      if (timer) clearTimeout(timer);
+    };
+    // onActivate is read through a once-guard, not a dep — the observer is
+    // rebuilt only if the scroll container itself changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scrollRef]);
+  return (
+    <div
+      ref={ref}
+      className={visible ? gridClass : undefined}
+      style={visible ? undefined : { minHeight: estimatedHeight }}
+    >
+      {visible ? children() : null}
+    </div>
+  );
+});
+
 const HYPE_MESSAGES = [
   // Classic hype
   'HYYYYPE! 🚂',
@@ -471,6 +571,30 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
     if (activeView === 'viewers' && !isModerator) setActiveView('chat');
   }, [activeView, isModerator]);
   const [showEmotePicker, setShowEmotePicker] = useState(false);
+  // Keep-mounted picker: once opened, the picker stays in the tree and is hidden
+  // with display:none instead of being unmounted, so reopening is a style flip
+  // (no grid rebuild, no re-running the section/block layout). `pickerFullyClosed`
+  // latches true only after the close animation finishes, when display:none is
+  // applied — that frees the lazy blocks' images (they then observe as
+  // not-intersecting) so a hidden picker holds ~no image RAM while its cheap
+  // placeholder structure stays built for an instant reopen.
+  const [pickerMounted, setPickerMounted] = useState(false);
+  const [pickerFullyClosed, setPickerFullyClosed] = useState(true);
+  useEffect(() => {
+    if (showEmotePicker) {
+      setPickerMounted(true);
+      setPickerFullyClosed(false);
+    }
+  }, [showEmotePicker]);
+  // While the picker is open, fill the emote disk cache aggressively (the user is
+  // actively waiting on these); the matching cleanup drops back to the polite
+  // background trickle on close. Ref-counted in the service so split panes /
+  // popouts compose without one close cutting another's burst short.
+  useEffect(() => {
+    if (!showEmotePicker) return;
+    setEmoteCacheBurst(true);
+    return () => setEmoteCacheBurst(false);
+  }, [showEmotePicker]);
   // Multi-account "send as" picker. Only shown when 2+ accounts are linked, so a
   // single-account user sees no change. Load the registry once on mount.
   const linkedAccountCount = useSendAccountStore((s) => s.accounts.length);
@@ -939,6 +1063,21 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
     getViewerCount();
   }, [getViewerCount]);
   useVisibleInterval(getViewerCount, 60000);
+
+  // Auto-heal a degraded emote set. If this channel's set was fetched while 7TV
+  // was down, its 7TV array is empty (7TV's trending+global are always present
+  // when the API is healthy). Re-fetch on a gentle, visibility-gated cadence so
+  // emotes recover on their own once 7TV is back, instead of needing a manual
+  // /refresh. Stops as soon as 7TV returns (the set is no longer empty).
+  useVisibleInterval(() => {
+    const login = currentStream?.user_login;
+    const id = currentStream?.user_id;
+    if (!login || !id) return;
+    const set = getChannelEmotes(login);
+    if (set && set['7tv'].length === 0) {
+      void refreshChannelEmotes(login, id);
+    }
+  }, 60000);
 
   useEffect(() => {
     let headerElement: HTMLElement | null = null;
@@ -1871,6 +2010,13 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
       const emoteSet = await ensureChannelEmotes(channelName, channelId ?? '');
       setIsLoadingEmotes(false); // Clear loading state immediately after emotes arrive
 
+      // Proactively warm the on-disk cache for the WHOLE set at the size it will
+      // render, stream-politely (same single-serial, idle-scheduled queue as
+      // display caching — this only feeds it more items, it does not raise the
+      // download rate). This is what makes a later open of the picker disk-first
+      // instead of re-pulling provider CDNs for every cell on every open.
+      if (emoteSet) queueChannelEmotesForCaching(emoteSet);
+
       // Note: We use loading="lazy" on emote picker images instead of preloading
       // This prevents WebView connection throttling issues with 900+ images
 
@@ -2767,10 +2913,10 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
 
   // Group emotes by width categories for better grid layout
   const groupedWidthEmotes = useMemo(() => {
-    const groups = new Map<string, { label: string, emotes: Emote[], gridCols: string }>();
-    groups.set('standard', { label: 'Standard', emotes: [], gridCols: 'grid-cols-7' });
-    groups.set('wide', { label: 'Wide', emotes: [], gridCols: 'grid-cols-4' });
-    groups.set('ultrawide', { label: 'Ultra Wide', emotes: [], gridCols: 'grid-cols-3' });
+    const groups = new Map<string, { label: string, emotes: Emote[], gridCols: string, cols: number }>();
+    groups.set('standard', { label: 'Standard', emotes: [], gridCols: 'grid-cols-7', cols: 7 });
+    groups.set('wide', { label: 'Wide', emotes: [], gridCols: 'grid-cols-4', cols: 4 });
+    groups.set('ultrawide', { label: 'Ultra Wide', emotes: [], gridCols: 'grid-cols-3', cols: 3 });
 
     for (const emote of filteredEmotes) {
       const width = emote.width || 32;
@@ -3551,14 +3697,15 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
         <div className="flex-shrink-0 border-t border-borderSubtle" style={{ backgroundColor: 'rgba(12, 12, 13, 0.9)' }}>
           <div className="p-2">
             <div className="relative">
-              <AnimatePresence>
-              {showEmotePicker && (
-                <motion.div 
-                  initial={{ opacity: 0, y: 10, scale: 0.98 }}
-                  animate={{ opacity: 1, y: 0, scale: 1 }}
-                  exit={{ opacity: 0, y: 10, scale: 0.98 }}
+              {pickerMounted && (
+                <motion.div
+                  initial="closed"
+                  variants={{ open: { opacity: 1, y: 0, scale: 1 }, closed: { opacity: 0, y: 10, scale: 0.98 } }}
+                  animate={showEmotePicker ? 'open' : 'closed'}
                   transition={{ type: "spring", stiffness: 400, damping: 30 }}
-                  className="absolute bottom-full left-0 right-0 mb-2 h-[520px] max-h-[calc(100vh-120px)] border border-borderSubtle rounded-lg shadow-lg flex flex-col overflow-hidden origin-bottom" style={{ backgroundColor: 'rgba(12, 12, 13, 0.95)' }}>
+                  onAnimationComplete={(def) => { if (def === 'closed') setPickerFullyClosed(true); }}
+                  className="absolute bottom-full left-0 right-0 mb-2 h-[520px] max-h-[calc(100vh-120px)] border border-borderSubtle rounded-lg shadow-lg flex flex-col overflow-hidden origin-bottom"
+                  style={{ backgroundColor: 'rgba(12, 12, 13, 0.95)', display: (!showEmotePicker && pickerFullyClosed) ? 'none' : undefined, pointerEvents: showEmotePicker ? 'auto' : 'none' }}>
                   <div className="p-2 border-b border-borderSubtle">
                     <input type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="Search emotes..."
                       className="w-full glass-input text-xs px-3 py-1.5 placeholder-textSecondary" />
@@ -3645,25 +3792,35 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
                             <h3 className="text-[10px] text-textSecondary uppercase tracking-wider font-bold mb-2 -mx-2 px-4 sticky top-0 py-1.5 border-b border-borderSubtle z-10 backdrop-blur-ultra" style={{ backgroundColor: 'rgba(12, 12, 13, 0.95)' }}>
                               <span className="text-textPrimary">{group.name}</span> <span className="opacity-50">({group.emotes.length})</span>
                             </h3>
-                            <div className="grid grid-cols-7 gap-2 px-1">
-                              {group.emotes.map((emote, idx) => {
+                            {chunkArray(group.emotes, TWITCH_COLS * TWITCH_BLOCK_ROWS).map((block, bi) => {
+                              const rows = Math.ceil(block.length / TWITCH_COLS);
+                              return (
+                                <LazyEmoteBlock
+                                  key={`${groupKey}-blk-${bi}`}
+                                  scrollRef={emoteScrollRef}
+                                  estimatedHeight={rows * TWITCH_ROW_PX}
+                                  gridClass="grid grid-cols-7 gap-2 px-1"
+                                  onActivate={() => { const tier = inlineEmoteTier(); for (const e of block) queueEmoteForDisplayCaching(e.id, e.provider, e.url, tier, true); }}
+                                >
+                              {() => block.map((emote, idx) => {
                                 const isFavorited = isFavoriteEmote(emote.id);
+                                const liveSrc = getCachedEmoteUrl(emote.id, emote.provider) || emote.localUrl || emote.url;
                                 return (
                                   <div key={`${groupKey}-${emote.provider}-${emote.id}-${idx}`} className="relative group">
                                     <Tooltip content={emote.name}>
                                     <button onClick={() => insertEmote(emote.name)} className="flex flex-col items-center gap-1 p-1.5 hover:bg-glass rounded transition-colors w-full">
                                       <img
-                                        src={emote.localUrl || emote.url}
+                                        src={liveSrc}
                                         alt={emote.name}
                                         loading="lazy"
+                                        decoding="async"
                                         referrerPolicy="no-referrer"
                                         crossOrigin="anonymous"
                                         className="w-8 h-8 object-contain"
-                                        // Don't cache emotes from picker - only from chat messages
                                         onError={(e) => {
-                                          // If cached file failed, try CDN URL
+                                          // Disk/cache miss: fall back to the CDN once, then hide.
                                           const target = e.currentTarget;
-                                          if (emote.localUrl && target.src !== emote.url) {
+                                          if (target.src !== emote.url) {
                                             target.src = emote.url;
                                           } else {
                                             target.style.display = 'none';
@@ -3700,7 +3857,9 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
                                   </div>
                                 );
                               })}
-                            </div>
+                                </LazyEmoteBlock>
+                              );
+                            })}
                           </div>
                         ))}
                       </div>
@@ -3711,8 +3870,17 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
                             <h3 className="text-[10px] text-textSecondary uppercase tracking-wider font-bold mb-2 -mx-2 px-4 sticky top-0 py-1.5 border-b border-borderSubtle z-10 backdrop-blur-ultra" style={{ backgroundColor: 'rgba(12, 12, 13, 0.95)' }}>
                               <span className="text-textPrimary">{group.label}</span> <span className="opacity-50">({group.emotes.length})</span>
                             </h3>
-                            <div className={`grid ${group.gridCols} gap-2 px-1`}>
-                              {group.emotes.map((emote: Emote, idx: number) => {
+                            {chunkArray(group.emotes, group.cols * WIDTH_BLOCK_ROWS).map((block, bi) => {
+                              const rows = Math.ceil(block.length / group.cols);
+                              return (
+                                <LazyEmoteBlock
+                                  key={`${group.label}-blk-${bi}`}
+                                  scrollRef={emoteScrollRef}
+                                  estimatedHeight={rows * WIDTH_ROW_PX}
+                                  gridClass={`grid ${group.gridCols} gap-2 px-1`}
+                                  onActivate={() => { const tier = inlineEmoteTier(); for (const e of block) queueEmoteForDisplayCaching(e.id, e.provider, e.url, tier, true); }}
+                                >
+                              {() => block.map((emote: Emote, idx: number) => {
                                 const isFavorited = isFavoriteEmote(emote.id);
                                 return (
                                   <EmoteGridItem
@@ -3743,7 +3911,9 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
                                   />
                                 );
                               })}
-                            </div>
+                                </LazyEmoteBlock>
+                              );
+                            })}
                           </div>
                         ))}
                       </div>
@@ -3751,8 +3921,7 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
                   </div>
                 </motion.div>
               )}
-              </AnimatePresence>
-              
+
               {/* / Command Autocomplete (Dominated Width) */}
               <AnimatePresence>
                 {showCommandAutocomplete && (

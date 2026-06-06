@@ -104,7 +104,6 @@ import { Logger } from '../utils/logger';
 
 interface ChatMessageProps {
   message: string | BackendChatMessage; // Raw IRC message or Backend Message Object
-  messageIndex?: number; // For alternating backgrounds
   onUsernameClick?: (
     userId: string,
     username: string,
@@ -249,7 +248,11 @@ const chatMessageAreEqual = (prevProps: ChatMessageProps, nextProps: ChatMessage
       return false;
     }
   }
-  if (prevProps.messageIndex !== nextProps.messageIndex) return false;
+  // messageIndex is intentionally NOT compared. It is the array position, which
+  // shifts by N on every flush once the list sits at its cap (busy channel), so
+  // comparing it re-rendered EVERY visible row on EVERY flush — the main-thread
+  // hog behind choppy hype-train/confetti animations. Zebra striping now comes
+  // from CSS :nth-child, so the row no longer needs the index at all.
   if (prevProps.isHighlighted !== nextProps.isHighlighted) return false;
   if (prevProps.moderationContext?.type !== nextProps.moderationContext?.type ||
       prevProps.moderationContext?.duration !== nextProps.moderationContext?.duration) return false;
@@ -266,7 +269,7 @@ const EMPTY_THIRD_PARTY: ThirdPartyBadgeType[] = [];
 
 // Memoized ChatMessage component to prevent unnecessary re-renders
 // This is critical for preventing animation restarts when new messages arrive
-const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, onUsernameClick, onReplyClick, isHighlighted = false, moderationContext = null, onEmoteRightClick, onMessageCopy, onUsernameRightClick, onBadgeClick, emotes, isModerator = false, broadcasterId }: ChatMessageProps) {
+const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, onReplyClick, isHighlighted = false, moderationContext = null, onEmoteRightClick, onMessageCopy, onUsernameRightClick, onBadgeClick, emotes, isModerator = false, broadcasterId }: ChatMessageProps) {
   // Field selectors, NOT a whole-store subscription. This component is mounted
   // once per chat row, so subscribing to the entire store made every row
   // re-render on every unrelated store tick (hours-watched, viewer count, etc.).
@@ -786,15 +789,28 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
       );
       const emoteTier = inlineEmoteTier();
 
+      // Resolve the real provider so the cache key matches the provider-
+      // namespaced key the picker + prefetch write (otherwise disk-first
+      // silently misses). 7TV stays per-tier; others key by `{provider}-{id}`.
+      const emoteProvider = is7TVEmote
+        ? '7tv'
+        : emoteUrl.includes('jtvnw.net')
+          ? 'twitch'
+          : emoteUrl.includes('betterttv')
+            ? 'bttv'
+            : emoteUrl.includes('frankerfacez')
+              ? 'ffz'
+              : undefined;
+
       // Disk-first: prefer the on-disk copy at the rendered tier. On a miss,
       // queue it for caching (per-tier for 7TV) so the NEXT view is local.
       // This is what makes returning to a stream fast instead of re-pulling
       // every emote from the CDN.
       const cachedEmoteUrl = segment.emoteId
-        ? getCachedEmoteUrl(segment.emoteId, is7TVEmote ? '7tv' : undefined, emoteTier)
+        ? getCachedEmoteUrl(segment.emoteId, emoteProvider, emoteTier)
         : undefined;
       if (!cachedEmoteUrl && emoteUrl && !emoteUrl.startsWith('asset://') && !emoteUrl.includes('asset.localhost') && segment.emoteId) {
-        queueEmoteForDisplayCaching(segment.emoteId, is7TVEmote ? '7tv' : undefined, emoteUrl, emoteTier);
+        queueEmoteForDisplayCaching(segment.emoteId, emoteProvider, emoteUrl, emoteTier);
       }
 
       // If it's an overlay (zero-width inside grid), it naturally sits on top and doesn't need negative margins
@@ -2210,14 +2226,8 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
     animationClass = 'animate-highlight-flash';
   }
 
-  // Build background class based on alternating backgrounds setting
-  // Uses theme's surface color for alternating rows
-  let backgroundClass = '';
-
-  if (chatDesign?.alternating_backgrounds) {
-    // Alternate between theme's surface color and default background
-    backgroundClass = messageIndex % 2 === 1 ? 'bg-surface' : '';
-  }
+  // Alternating row backgrounds are handled in CSS (.chat-striped > row:nth-child)
+  // so they cost zero React re-renders. See ChatMessageList + globals.css.
 
   // Build border class based on settings
   // Divider anchored to the TOP of each message instead of the bottom. That
@@ -2287,7 +2297,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, messageIndex = 0, 
       className={`group relative isolate px-3 hover:bg-glass transition-colors ${borderClass} ${animationClass
         } ${isRedemption ? 'highlight-message-gradient' : ''
         } ${isFromSharedChat ? 'border-l-2 border-l-accent/50 bg-accent/5' : ''
-        } ${backgroundClass} ${moderationContext && (chatDesign?.deleted_message_style ?? 'strikethrough') !== 'keep' ? 'opacity-50' : ''} ${bodyDragEnabled ? 'select-none cursor-grab' : ''} ${isBeingDragged ? 'overflow-hidden' : ''}`}
+        } ${moderationContext && (chatDesign?.deleted_message_style ?? 'strikethrough') !== 'keep' ? 'opacity-50' : ''} ${bodyDragEnabled ? 'select-none cursor-grab' : ''} ${isBeingDragged ? 'overflow-hidden' : ''}`}
       style={{
         ...messageStyle,
         ...(builtInEventBg ? { backgroundImage: builtInEventBg } : {}),

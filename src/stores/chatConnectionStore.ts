@@ -597,6 +597,12 @@ export async function reconnectAllChannels(): Promise<void> {
   await reconnectAll();
 }
 
+// [ChatPerf] Instrumentation for the "chat blank for ~30s on join" hunt.
+// Brackets the connect path so a single repro names where the time goes:
+// start_chat (Rust IRC connect + bridge spawn), WS open, or first relayed frame.
+let chatConnectStartedAt = 0;
+let chatFirstFrameLogged = true;
+
 async function connectBridgeForFirstChannel(
   channel: string,
   channelId: string | null,
@@ -608,10 +614,15 @@ async function connectBridgeForFirstChannel(
   wsConnecting = true;
   try {
     Logger.debug(`[ChatStore] Invoking start_chat for ${channel}`);
+    chatConnectStartedAt = performance.now();
+    chatFirstFrameLogged = false;
     const port = await invoke<number>('start_chat', { channel });
+    Logger.info(`[ChatPerf] start_chat (Rust IRC connect + bridge spawn) took ${Math.round(performance.now() - chatConnectStartedAt)}ms`);
     useChatConnectionStore.setState({ wsPort: port });
 
+    const tBeforeWs = performance.now();
     const socket = await openWebSocketWithRetry(port);
+    Logger.info(`[ChatPerf] WS bridge open took ${Math.round(performance.now() - tBeforeWs)}ms (connect total ${Math.round(performance.now() - chatConnectStartedAt)}ms)`);
     ws = socket;
     reconnectAttempts = 0;
     lastMessageTime = Date.now();
@@ -672,11 +683,16 @@ async function initializeBadgesForChannel(channelId: string | null): Promise<voi
 
 async function preloadChannel(channel: string, channelId: string | null): Promise<void> {
   if (!channelId) return;
+  const __tBadges = performance.now();
   await initializeBadgesForChannel(channelId);
+  Logger.info(`[ChatPerf] preload: initializeBadgesForChannel ${Math.round(performance.now() - __tBadges)}ms`);
 
   try {
+    const __tRecent = performance.now();
     const raw = await fetchRecentMessagesAsIRC(channel, channelId);
+    Logger.info(`[ChatPerf] preload: fetchRecentMessages ${Math.round(performance.now() - __tRecent)}ms (${raw.length} msgs)`);
     if (raw.length === 0) return;
+    const __tParse = performance.now();
     let parsed: any[] | null = null;
     let attempts = 0;
     while (attempts < 3 && !parsed) {
@@ -699,6 +715,7 @@ async function preloadChannel(channel: string, channelId: string | null): Promis
         break;
       }
     }
+    Logger.info(`[ChatPerf] preload: parse_historical_messages ${Math.round(performance.now() - __tParse)}ms`);
     withSlice(channel, (slice) => {
       const useParsed = parsed && parsed.length > 0;
       const source: any[] = useParsed ? (parsed as any[]) : raw;
@@ -759,6 +776,11 @@ function handleWsMessage(raw: string) {
   if (raw === 'HEARTBEAT') {
     setAllChannelsError(null);
     return;
+  }
+
+  if (!chatFirstFrameLogged) {
+    chatFirstFrameLogged = true;
+    Logger.info(`[ChatPerf] first chat frame relayed ${Math.round(performance.now() - chatConnectStartedAt)}ms after connect start`);
   }
   if (raw === 'IRC_CONNECTED' || raw === 'RECONNECTED') {
     setAllChannelsConnected(true);

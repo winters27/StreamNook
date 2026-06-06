@@ -272,7 +272,7 @@ export async function fetchIVRModVip(username: string, channel: string): Promise
 /**
  * Fetches recent chat messages from recent-messages API (robotty.de)
  * @param channel - The channel to fetch messages for
- * @returns Array of raw IRC message strings (limited to 50 most recent)
+ * @returns Array of raw IRC message strings (limited to 20 most recent)
  */
 export async function fetchRecentMessages(channel: string): Promise<string[]> {
     const cacheKey = channel.toLowerCase();
@@ -285,10 +285,14 @@ export async function fetchRecentMessages(channel: string): Promise<string[]> {
 
     try {
         Logger.debug('[RecentMessages] Fetching recent messages for:', channel);
-        // Use the robotty.de recent-messages API which returns raw IRC messages
-        // Limit to 50 messages to match Twitch-style chat behavior
+        // Use the robotty.de recent-messages API which returns raw IRC messages.
+        // Limit the backfill to 20: beyond a small Twitch-style scrollback, more
+        // history mainly adds join-time parse cost for messages that live chat
+        // pushes off screen within seconds. (Parse cost scales with this count; it
+        // is not the dominant chat-load cost — the channel emote fetch is — but
+        // there is no reason to carry 50.)
         const response = await fetch(
-            `https://recent-messages.robotty.de/api/v2/recent-messages/${encodeURIComponent(channel)}?limit=50&hide_moderation_messages=true&hide_moderated_messages=true`
+            `https://recent-messages.robotty.de/api/v2/recent-messages/${encodeURIComponent(channel)}?limit=20&hide_moderation_messages=true&hide_moderated_messages=true`
         );
 
         if (!response.ok) {
