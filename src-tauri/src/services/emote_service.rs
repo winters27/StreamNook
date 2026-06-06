@@ -2,11 +2,34 @@ use anyhow::Result;
 use log::{debug, error};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 
 const CLIENT_ID: &str = env!("TWITCH_APP_CLIENT_ID");
+
+// 7TV API circuit breaker. The 7TV API (the endpoint that lists a channel's
+// emotes) has been getting overloaded; when it starts failing we stop hammering
+// it. Exhausting retries on a 7TV request opens the circuit for a cooldown so
+// subsequent 7TV calls fail fast (no waiting on 10s timeouts) instead of grinding
+// a bulk prefetch scan to a halt; a success closes it immediately. Shared by the
+// live picker and the AFK prefetch.
+static SEVENTV_CIRCUIT_OPEN_UNTIL: AtomicU64 = AtomicU64::new(0); // unix secs; 0 = closed
+const SEVENTV_CIRCUIT_COOLDOWN_SECS: u64 = 60;
+
+fn unix_now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// True if the 7TV API circuit is currently open (recent repeated failures). The
+/// prefetch reads this after scanning to know the emote counts are incomplete.
+pub fn seventv_circuit_open() -> bool {
+    unix_now_secs() < SEVENTV_CIRCUIT_OPEN_UNTIL.load(Ordering::Relaxed)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Emote {
@@ -188,9 +211,15 @@ impl EmoteService {
         // Update memory cache
         {
             let mut cache = self.cache.write().await;
-            // If Twitch fetch failed, set timestamp artificially in the past so it expires in 10s
-            // cache_duration is 5 minutes, so 5 mins - 10s = 290s in the past
-            let timestamp = if has_twitch_error {
+            // Back-date the timestamp so a DEGRADED fetch expires fast (~10s)
+            // instead of being pinned for the full 5 min: Twitch failing, OR 7TV
+            // returning nothing. 7TV's trending+global sets are always present
+            // when its API is healthy, so an empty result means 7TV was down — we
+            // don't want to cache that "7TV = nothing" set for the whole session
+            // (the bug that needed a manual /refresh). A short TTL lets it
+            // re-fetch and self-heal once the provider recovers.
+            let degraded = has_twitch_error || emote_set.seven_tv.is_empty();
+            let timestamp = if degraded {
                 SystemTime::now()
                     .checked_sub(Duration::from_secs(290))
                     .unwrap_or(SystemTime::now())
@@ -259,6 +288,75 @@ impl EmoteService {
         let mut cache = self.cache.write().await;
         cache.clear();
         debug!("[EmoteService] Memory cache cleared");
+    }
+
+    /// GET with retry + a 7TV circuit breaker. Retries transient failures
+    /// (network errors, 5xx, 429) with exponential backoff. A non-retryable 4xx
+    /// (e.g. 404 = channel not on 7TV) returns None immediately WITHOUT opening
+    /// the circuit. For 7TV URLs: if the circuit is open it fails fast; exhausting
+    /// retries opens it; a success closes it.
+    async fn get_with_retry(&self, url: &str, attempts: u32) -> Option<reqwest::Response> {
+        let is_seventv = url.contains("7tv.");
+        if is_seventv && seventv_circuit_open() {
+            return None;
+        }
+        // 7TV is the only provider prone to multi-second stalls, and it sits on the
+        // chat-load critical path: parse_historical_messages awaits the channel emote
+        // fetch, whose join waits for ALL providers. A down 7TV at the shared 10s
+        // client timeout x 3 attempts pinned that await ~31s (measured: a 41s
+        // parse_historical that left chat blank on join). Cap 7TV hard — a short
+        // per-request timeout and a SINGLE attempt — so a slow/down 7TV fails in ~4s
+        // and immediately trips the circuit breaker, which then fast-skips 7TV on
+        // every subsequent fetch for the cooldown (so only the first join after a 7TV
+        // outage pays anything). Healthy 7TV answers in ~1s, well under the 4s budget;
+        // the per-request retry resilience it gives up is covered by the circuit's
+        // cooldown re-probe. Other providers keep their full timeout + retry budget.
+        let attempts = if is_seventv { 1 } else { attempts.max(1) };
+        let mut backoff_ms = 300u64;
+        for attempt in 0..attempts {
+            let mut req = self.client.get(url);
+            if is_seventv {
+                req = req.timeout(Duration::from_secs(4));
+            }
+            match req.send().await {
+                Ok(resp) if resp.status().is_success() => {
+                    if is_seventv {
+                        SEVENTV_CIRCUIT_OPEN_UNTIL.store(0, Ordering::Relaxed);
+                    }
+                    return Some(resp);
+                }
+                Ok(resp) => {
+                    let s = resp.status();
+                    // 4xx other than 429 are final and not a provider outage.
+                    if !(s.is_server_error() || s == reqwest::StatusCode::TOO_MANY_REQUESTS) {
+                        return None;
+                    }
+                }
+                Err(_) => {} // network / timeout — retry
+            }
+            if attempt + 1 < attempts {
+                tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+                backoff_ms = (backoff_ms * 2).min(2000);
+            }
+        }
+        if is_seventv {
+            SEVENTV_CIRCUIT_OPEN_UNTIL.store(
+                unix_now_secs() + SEVENTV_CIRCUIT_COOLDOWN_SECS,
+                Ordering::Relaxed,
+            );
+        }
+        None
+    }
+
+    /// Cheap liveness probe for the 7TV API. Used by the prefetch before scanning
+    /// so it can warn that the count is incomplete when 7TV is down, instead of
+    /// reporting a confident total that silently omits most 7TV emotes. Going
+    /// through get_with_retry means a failure also trips the circuit breaker, so
+    /// the scan that follows fails fast on 7TV rather than grinding.
+    pub async fn seventv_api_healthy(&self) -> bool {
+        self.get_with_retry("https://7tv.io/v3/emote-sets/global", 2)
+            .await
+            .is_some()
     }
 
     /// Fetch user-specific Twitch emotes using the Helix API
@@ -647,12 +745,10 @@ impl EmoteService {
 
         // Fetch global 7TV emotes (v3 API)
         match self
-            .client
-            .get("https://7tv.io/v3/emote-sets/global")
-            .send()
+            .get_with_retry("https://7tv.io/v3/emote-sets/global", 3)
             .await
         {
-            Ok(response) if response.status().is_success() => {
+            Some(response) => {
                 if let Ok(json) = response.json::<serde_json::Value>().await {
                     if let Some(global_emotes) = json.get("emotes").and_then(|v| v.as_array()) {
                         for item in global_emotes {
@@ -690,19 +786,16 @@ impl EmoteService {
                     }
                 }
             }
-            Ok(_) => error!("[EmoteService] 7TV global: non-success status"),
-            Err(e) => error!("[EmoteService] 7TV global request failed: {}", e),
+            None => error!("[EmoteService] 7TV global unavailable (after retries)"),
         }
 
         // Fetch channel-specific 7TV emotes
         if let Some(channel_id) = channel_id {
             match self
-                .client
-                .get(format!("https://7tv.io/v3/users/twitch/{}", channel_id))
-                .send()
+                .get_with_retry(&format!("https://7tv.io/v3/users/twitch/{}", channel_id), 3)
                 .await
             {
-                Ok(response) if response.status().is_success() => {
+                Some(response) => {
                     if let Ok(json) = response.json::<serde_json::Value>().await {
                         if let Some(emote_set_emotes) =
                             json.pointer("/emote_set/emotes").and_then(|v| v.as_array())
@@ -747,8 +840,7 @@ impl EmoteService {
                         }
                     }
                 }
-                Ok(_) => {} // Channel not found - not critical
-                Err(e) => error!("[EmoteService] 7TV channel request failed: {}", e),
+                None => {} // 404 (not on 7TV) or unavailable after retries — not critical
             }
         }
 
@@ -757,6 +849,20 @@ impl EmoteService {
         emotes.retain(|emote| seen.insert(emote.id.clone()));
 
         Ok(emotes)
+    }
+
+    /// Pick the best CDN URL for an FFZ emoticon.
+    ///
+    /// Animated FFZ emotes expose a separate `animated` object (WebP) alongside
+    /// the static `urls` (PNG). Prefer the animated 1x variant when present so
+    /// animated emotes actually move, falling back to the static 1x URL, then a
+    /// constructed default.
+    fn ffz_emote_url(item: &serde_json::Value, id: i64) -> String {
+        item.pointer("/animated/1")
+            .and_then(|v| v.as_str())
+            .or_else(|| item.pointer("/urls/1").and_then(|v| v.as_str()))
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("https://cdn.frankerfacez.com/emote/{}/1", id))
     }
 
     async fn fetch_ffz_emotes(&self, channel_name: Option<String>) -> Result<Vec<Emote>> {
@@ -781,17 +887,12 @@ impl EmoteService {
                                         item.get("id").and_then(|v| v.as_i64()),
                                         item.get("name").and_then(|v| v.as_str()),
                                     ) {
-                                        let default_url =
-                                            format!("https://cdn.frankerfacez.com/emote/{}/1", id);
-                                        let url = item
-                                            .pointer("/urls/1")
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or(&default_url);
+                                        let url = Self::ffz_emote_url(item, id);
 
                                         emotes.push(Emote {
                                             id: id.to_string(),
                                             name: name.to_string(),
-                                            url: url.to_string(),
+                                            url,
                                             provider: EmoteProvider::FFZ,
                                             is_zero_width: None,
                                             local_url: None,
@@ -834,19 +935,12 @@ impl EmoteService {
                                             item.get("id").and_then(|v| v.as_i64()),
                                             item.get("name").and_then(|v| v.as_str()),
                                         ) {
-                                            let default_url = format!(
-                                                "https://cdn.frankerfacez.com/emote/{}/1",
-                                                id
-                                            );
-                                            let url = item
-                                                .pointer("/urls/1")
-                                                .and_then(|v| v.as_str())
-                                                .unwrap_or(&default_url);
+                                            let url = Self::ffz_emote_url(item, id);
 
                                             emotes.push(Emote {
                                                 id: id.to_string(),
                                                 name: name.to_string(),
-                                                url: url.to_string(),
+                                                url,
                                                 provider: EmoteProvider::FFZ,
                                                 is_zero_width: None,
                                                 local_url: None,

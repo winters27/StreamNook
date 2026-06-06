@@ -91,10 +91,20 @@ pub async fn parse_historical_messages(
     channel_name: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<Vec<ChatMessage>, String> {
-    // If a channel name is provided, ensure we fetch its emotes before parsing
-    // This allows BTTV/7TV/FFZ emotes to be matched during parse_text_segment
+    // Don't block the backfill on the channel emote fetch. We used to await it so
+    // BTTV/7TV/FFZ emotes could be matched during parse, but that put a slow
+    // provider (a down 7TV) directly in front of the recent-messages display and
+    // left chat blank for seconds. Instead parse immediately with whatever emotes
+    // are already cached (warm on any repeat visit) so chat populates fast like
+    // Twitch, and warm the cache in the BACKGROUND for live messages and the next
+    // visit. Tradeoff: on the first visit to a channel in a session third-party
+    // emotes in the short backfill may render as text until the cache fills;
+    // Twitch emotes (carried in the IRC tags) always render.
     if let Some(channel) = channel_name {
-        IrcService::fetch_and_store_emotes(&channel, state.emote_service.clone()).await;
+        let emote_service = state.emote_service.clone();
+        tokio::spawn(async move {
+            IrcService::fetch_and_store_emotes(&channel, emote_service).await;
+        });
     }
 
     Ok(IrcService::parse_historical_messages(messages).await)
