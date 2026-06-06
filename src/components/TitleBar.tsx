@@ -10,7 +10,8 @@ import AboutWidget from './AboutWidget';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getSelectedCompactViewPreset } from '../constants/compactViewPresets';
-import type { MiningStatus, DropsSettings } from '../types';
+import type { MiningStatus, DropsSettings, DropProgress } from '../types';
+import { deriveMiningDisplay } from '../utils/miningDisplay';
 
 
 import { Logger } from '../utils/logger';
@@ -44,6 +45,11 @@ const TitleBar = () => {
   
   // Mining status state for progress badge and hover preview
   const [miningStatus, setMiningStatus] = useState<MiningStatus | null>(null);
+  // Live per-drop progress, accumulated from 'drops-progress-update' events. The
+  // backend's current_drop carries minutes that only move on its slower poll, so
+  // the badge percentage is derived from this fresher stream instead — the same
+  // source the overlay cards and detail panel trust, keeping all three aligned.
+  const [liveProgress, setLiveProgress] = useState<DropProgress[]>([]);
   const [showDropsPreview, setShowDropsPreview] = useState(false);
   const [previewPos, setPreviewPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
   const dropsButtonRef = useRef<HTMLDivElement>(null);
@@ -113,18 +119,41 @@ const TitleBar = () => {
       // Listen for mining status updates
       const uStatus = await listen<MiningStatus>('mining-status-update', (event) => {
         setMiningStatus(event.payload);
+        // Drop the accumulated per-drop progress once mining stops so a finished
+        // session's numbers can't leak into the next one's fallback derivation.
+        if (!event.payload.is_mining) setLiveProgress([]);
       });
       if (isMounted) unlistenStatus = uStatus;
       else uStatus();
 
       // Listen for progress updates (more frequent)
-      const uProgress = await listen<{ drop_id: string; current_minutes: number; required_minutes: number; campaign_id?: string; drop_name?: string }>('drops-progress-update', (event) => {
+      const uProgress = await listen<{ drop_id: string; current_minutes: number; required_minutes: number; campaign_id?: string; drop_name?: string; timestamp?: number | string }>('drops-progress-update', (event) => {
+        const { drop_id: dropId, current_minutes: currentMinutes, required_minutes: requiredMinutes } = event.payload;
+
+        // Keep a live, per-drop progress map. The badge percentage is derived
+        // from this (via deriveMiningDisplay) so it tracks the freshest minutes
+        // and can still show a value when current_drop hasn't been set yet.
+        setLiveProgress((prev) => {
+          const idx = prev.findIndex((p) => p.drop_id === dropId);
+          const entry: DropProgress = {
+            campaign_id: event.payload.campaign_id || (idx >= 0 ? prev[idx].campaign_id : ''),
+            drop_id: dropId,
+            current_minutes_watched: currentMinutes,
+            required_minutes_watched: requiredMinutes,
+            is_claimed: false,
+            last_updated: String(event.payload.timestamp ?? ''),
+            drop_name: event.payload.drop_name || (idx >= 0 ? prev[idx].drop_name : undefined),
+          };
+          if (idx >= 0) {
+            const next = [...prev];
+            next[idx] = { ...next[idx], ...entry };
+            return next;
+          }
+          return [...prev, entry];
+        });
+
         setMiningStatus((prev) => {
           if (!prev || !prev.is_mining) return prev;
-
-          const dropId = event.payload.drop_id;
-          const currentMinutes = event.payload.current_minutes;
-          const requiredMinutes = event.payload.required_minutes;
 
           // Only update the displayed drop in place when this event is for it.
           // WHICH drop is shown (the one closest to completion) is decided by
@@ -220,13 +249,14 @@ const TitleBar = () => {
     setCurrentBadgeUrl(badgeImages[nextIndex]);
   }, [badgeImages]);
 
-  // Calculate progress percentage
-  const progressPercent = useMemo(() => {
-    if (!miningStatus?.is_mining || !miningStatus?.current_drop) return 0;
-    const { current_minutes, required_minutes } = miningStatus.current_drop;
-    if (required_minutes <= 0) return 0;
-    return Math.min(100, Math.round((current_minutes / required_minutes) * 100));
-  }, [miningStatus]);
+  // Calculate progress percentage through the shared rule so the badge matches
+  // the overlay cards and detail panel. Prefers the freshest live minutes, and
+  // falls back to the drop finishing first when current_drop isn't set yet (so
+  // the badge shows a number instead of reverting to the plain gift icon).
+  const progressPercent = useMemo(
+    () => deriveMiningDisplay(miningStatus, liveProgress)?.percent ?? 0,
+    [miningStatus, liveProgress],
+  );
 
   // Handle hover preview show/hide with delay
   const handleDropsMouseEnter = () => {

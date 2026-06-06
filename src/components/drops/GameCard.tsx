@@ -2,6 +2,7 @@ import { useRef, useEffect, useState } from 'react';
 import { Check, Clock, Package, Square, Play, Heart, DollarSign } from 'lucide-react';
 import type { UnifiedGame, DropProgress, MiningStatus, DropCampaign } from '../../types';
 import { Tooltip } from '../ui/Tooltip';
+import { deriveMiningDisplay } from '../../utils/miningDisplay';
 
 // Helper to check if a campaign is mineable (has time-based drops that require watching)
 function isCampaignMineable(campaign: DropCampaign): boolean {
@@ -94,71 +95,25 @@ export default function GameCard({
         });
     });
 
-    // Find the best drop to display when mining - the one with highest progress % that's not complete
-    // This shows the most relevant progress on the card
-    const findBestProgressDrop = () => {
+    // Derive the mining drop to display through the shared rule so this card,
+    // the title-bar badge, and the detail panel never disagree: the backend
+    // picks WHICH drop (current_drop), but the minutes always come from the
+    // freshest live progress[] value rather than current_drop's slower-moving
+    // copy. Image/name still resolve through the global drop map when the live
+    // data doesn't carry them (live value -> campaign metadata -> generic).
+    const bestDrop = (() => {
         if (!isMining) return null;
-
-        // PRIMARY: Use miningStatus.current_drop if available (has freshest data from backend)
-        if (miningStatus?.current_drop) {
-            const { drop_id, current_minutes, required_minutes, drop_name, drop_image } = miningStatus.current_drop;
-            
-            // SKIP subscription drops (0 required minutes) - they can't be mined
-            // This prevents flickering when the backend sends updates for non-mineable drops
-            if (!required_minutes || required_minutes <= 0) {
-                // Fall through to the fallback logic instead
-            } else {
-                // Use drop_image directly from miningStatus if available, fallback to globalDropMap
-                const metadata = globalDropMap.get(drop_id);
-                const benefitImage = drop_image || metadata?.benefitImage || '';
-                const benefitName = drop_name || metadata?.benefitName || 'Drop';
-
-                return {
-                    dropId: drop_id,
-                    current: Math.min(current_minutes ?? 0, required_minutes), // Cap at required
-                    required: required_minutes,
-                    benefitImage,
-                    benefitName
-                };
-            }
-        }
-
-        // FALLBACK: Get all active (not claimed, not complete) progress entries
-        const activeProgressEntries = progress.filter(p =>
-            !p.is_claimed &&
-            p.current_minutes_watched > 0 &&
-            p.current_minutes_watched < p.required_minutes_watched
-        );
-
-        if (activeProgressEntries.length === 0) {
-            return null;
-        }
-
-        // Find the drop finishing first (fewest watch-minutes remaining), matching
-        // the backend's current_drop rule so the card never disagrees with it.
-        let bestDrop = activeProgressEntries[0];
-        let bestRemaining = bestDrop.required_minutes_watched - bestDrop.current_minutes_watched;
-
-        for (const entry of activeProgressEntries) {
-            const remaining = entry.required_minutes_watched - entry.current_minutes_watched;
-            if (remaining < bestRemaining) {
-                bestDrop = entry;
-                bestRemaining = remaining;
-            }
-        }
-
-        // Use cached drop_image/drop_name from progress if available, fallback to globalDropMap
-        const metadata = globalDropMap.get(bestDrop.drop_id);
+        const display = deriveMiningDisplay(miningStatus, progress);
+        if (!display) return null;
+        const metadata = globalDropMap.get(display.dropId);
         return {
-            dropId: bestDrop.drop_id,
-            current: bestDrop.current_minutes_watched,
-            required: bestDrop.required_minutes_watched,
-            benefitImage: bestDrop.drop_image || metadata?.benefitImage || '',
-            benefitName: bestDrop.drop_name || metadata?.benefitName || 'Drop in progress'
+            dropId: display.dropId,
+            current: display.currentMinutes,
+            required: display.requiredMinutes,
+            benefitImage: display.dropImage || metadata?.benefitImage || '',
+            benefitName: display.dropName || metadata?.benefitName || 'Drop',
         };
-    };
-
-    const bestDrop = findBestProgressDrop();
+    })();
 
     // Mining progress from best drop
     const miningProgress = isMining && bestDrop
