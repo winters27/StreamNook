@@ -307,7 +307,9 @@ body {
   background-color: color-mix(in srgb, var(--color-background-tertiary) calc((1 - var(--glass-strength)) * 100%), transparent);
   background-image: linear-gradient(var(--color-background-secondary), var(--color-background-secondary));
   border-radius: 8px;
-  backdrop-filter: blur(10px);
+  /* Frost scales with the Glassiness slider — blur(0) at 0% (the panel is also
+     fully opaque there via the background-color fade above). */
+  backdrop-filter: blur(calc(10px * var(--glass-strength)));
   /* A highly subtle version of the liquid glass bevel to frame content cards */
   border: 1px solid transparent;
   box-shadow:
@@ -375,6 +377,15 @@ body {
   background: rgba(255, 255, 255, 0.03);
 }
 
+/* Zebra striping for chat rows, opt-in via the `alternating_backgrounds` setting
+   (which adds .chat-striped to the list wrapper). Done in CSS so it costs zero
+   React re-renders: a busy channel's list rotates at its cap every frame, and
+   computing the stripe in JS from the array index re-rendered every row on every
+   flush, which starved the hype-train/confetti animations of main-thread time. */
+.chat-striped > .chat-message-row:nth-child(even) {
+  background-color: var(--color-surface);
+}
+
 /* Keyboard-moderation focus ring on a chat message row. Winters' Glass: a solid
    inset accent bar on the left plus a faint surface tint, no outer glow. */
 .chat-message-row.is-mod-focus {
@@ -438,7 +449,7 @@ body {
     0 1px 2px rgba(0, 0, 0, 0.2);
   border: 1px solid transparent;
   border-radius: 4px;
-  backdrop-filter: blur(6px);
+  backdrop-filter: blur(calc(6px * var(--glass-strength)));
 }
 
 .glass-button {
@@ -451,7 +462,7 @@ body {
     0 0 15px rgba(0, 0, 0, 0.1);
   border: 1px solid transparent;
   border-radius: 8px;
-  backdrop-filter: blur(8px);
+  backdrop-filter: blur(calc(8px * var(--glass-strength)));
   /* Bouncy, fluid elasticity with a softened overshoot (was 2.2, which read as
      a cartoonish bounce) so glass buttons settle smoothly without feeling violent. */
   transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.5);
@@ -467,13 +478,17 @@ body {
     0 0 15px rgba(0, 0, 0, 0.1);
   border: 1px solid transparent;
   border-radius: 8px;
-  backdrop-filter: blur(8px);
+  backdrop-filter: blur(calc(8px * var(--glass-strength)));
 }
 
 /* Liquid Glass Component - Advanced Refraction */
 .liquid-glass-panel {
-  /* Increased density to make the glass feel physically thicker, without acting like a flat dark wall */
-  background-color: rgba(16, 16, 20, 0.35);
+  /* Increased density to make the glass feel physically thicker, without acting
+     like a flat dark wall. Glassiness-aware: the dark glass tint sits on top of
+     an opaque tertiary base that fades in as the slider drops, so at 0% the modal
+     is a fully solid panel rather than a see-through sheet. */
+  background-color: color-mix(in srgb, var(--color-background-tertiary) calc((1 - var(--glass-strength)) * 100%), transparent);
+  background-image: linear-gradient(rgba(16, 16, 20, 0.35), rgba(16, 16, 20, 0.35));
   /* Liquid Specular Highlights via dual internal bevels */
   box-shadow: 
     inset 1px 1px 0 0 rgba(255, 255, 255, 0.18),
@@ -482,10 +497,24 @@ body {
     0 0 20px rgba(0, 0, 0, 0.4);
   border: 1px solid rgba(255,255,255,0.06); 
   border-radius: 12px; 
-  /* Absolute maximum blur radius (96px) to completely melt any structures/text behind it into soft gradients */
-  -webkit-backdrop-filter: blur(96px) saturate(180%);
-  backdrop-filter: blur(96px) saturate(180%);
+  /* Absolute maximum blur radius (96px) to completely melt any structures/text
+     behind it into soft gradients — scaled by the Glassiness slider down to none. */
+  -webkit-backdrop-filter: blur(calc(96px * var(--glass-strength))) saturate(180%);
+  backdrop-filter: blur(calc(96px * var(--glass-strength))) saturate(180%);
   transition: all 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+/* Glassiness floor. At 0% the slider sets html[data-glass="off"]; strip every
+   remaining backdrop blur — Tailwind `backdrop-blur-*` utilities and the inline
+   filters on menus, popovers, badges and media chrome that aren't individually
+   scaled — so the interface is genuinely flat and glass-free, not just less
+   frosted. Surfaces are already made opaque via the live --color-surface* vars
+   and the per-class tint fades, so only the blur needs this global override. */
+html[data-glass="off"] *,
+html[data-glass="off"] *::before,
+html[data-glass="off"] *::after {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
 }
 
 /* ===== Motion preferences (Interface > Motion) =====
@@ -566,7 +595,7 @@ html[data-motion="reduced"] .animate-shimmer {
   background: var(--color-surface);
   border: 1px solid var(--color-border-subtle);
   border-radius: 12px; /* Smoother curve fits this style better */
-  backdrop-filter: blur(8px);
+  backdrop-filter: blur(calc(8px * var(--glass-strength)));
   
   /* The exact Neumorphic formulation provided: long offsets, high blur, negative spread */
   box-shadow: 
@@ -927,8 +956,8 @@ html[data-motion="reduced"] .animate-shimmer {
 
 /* Custom ultra-blur for floating header */
 .backdrop-blur-ultra {
-  backdrop-filter: blur(64px) saturate(180%);
-  -webkit-backdrop-filter: blur(64px) saturate(180%);
+  backdrop-filter: blur(calc(64px * var(--glass-strength))) saturate(180%);
+  -webkit-backdrop-filter: blur(calc(64px * var(--glass-strength))) saturate(180%);
 }
 
 /* Iridescent animation for shared chat title bar */
@@ -1518,6 +1547,32 @@ html[data-motion="reduced"] .animate-shimmer {
 
 .video-player-container .plyr--full-ui input[type="range"]::-moz-range-track {
   background: rgba(255, 255, 255, 0.1);
+}
+
+/* Vertical EQ-style faders for the Audio Boost controls in Settings. Native
+   accent-color (Tailwind's accent-accent) themes the fill; this just stands the
+   slider up and sizes it. writing-mode + direction:rtl puts the low end at the
+   bottom and the high end at the top, like a real channel fader. */
+.eq-fader {
+  writing-mode: vertical-lr;
+  direction: rtl;
+  width: 24px;
+  height: 132px;
+  cursor: pointer;
+}
+
+/* Audio Boost control-bar toggle: when active, light it up as an accent chip
+   (a fill plus a subtle inset rim, no outer glow) so "on" reads at a glance
+   rather than just an icon tint. Off state falls back to the normal control. */
+.video-player-container .plyr__control[data-streamnook-audioboost].is-active {
+  color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 28%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 55%, transparent);
+  border-radius: 6px;
+}
+.video-player-container .plyr__control[data-streamnook-audioboost].is-active:hover {
+  background: color-mix(in srgb, var(--color-accent) 38%, transparent);
+  color: var(--color-accent);
 }
 
 /* Time display */

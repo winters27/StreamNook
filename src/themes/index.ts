@@ -1458,6 +1458,64 @@ export const getOledTheme = (accentHex?: string): Theme => {
     };
 };
 
+// ─── Global glassiness ───────────────────────────────────────────────────────
+// The Glassiness slider (Theme settings) scales every glass surface from the
+// signature frosted, see-through look (100%) down to a completely flat, solid,
+// blur-free interface (0%) for users who don't want any glass at all. Two things
+// move together for that to read as "no glass": the surface TINTS lose their
+// transparency, and the backdrop BLUR goes.
+//
+// Transparency is handled here in JS by recomputing --color-surface* live, so
+// every consumer degrades in lockstep — the .glass-* classes, Tailwind
+// `bg-surface`, and inline var(--color-surface) reads alike — with no per-surface
+// CSS. Blur is handled in globals.css: the main glass classes scale their blur by
+// --glass-strength, and html[data-glass="off"] hard-strips any remaining
+// backdrop-filter at 0%.
+
+// The untouched per-theme surface tints, captured on every applyTheme so the
+// slider can re-derive the live colours without re-running the whole theme.
+let activeSurfaceTints: {
+    surface: string;
+    surfaceHover: string;
+    surfaceActive: string;
+    tertiary: string;
+} | null = null;
+
+// Last glassiness applied (0..1), so applyTheme can repaint surfaces at the
+// user's chosen level instead of flashing full glass on a theme switch.
+let lastGlassStrength = 1;
+
+// Blend a translucent surface tint toward a solid colour as glassiness drops.
+// At strength 1 the original tint is returned (signature glass); at strength 0
+// the tint is composited over the theme's opaque tertiary surface (source-over)
+// and returned fully opaque; in between, colour and alpha interpolate, so the
+// slider is a smooth continuum rather than an on/off switch.
+const blendSurfaceForGlass = (tint: string, tertiaryHex: string, strength: number): string => {
+    const a = parseColorOpacity(tint) / 100;
+    const { r, g, b } = hexToRgb(parseColorToHex(tint));
+    const base = hexToRgb(parseColorToHex(tertiaryHex));
+    // Opaque source-over of the tint onto the tertiary surface.
+    const solidR = r * a + base.r * (1 - a);
+    const solidG = g * a + base.g * (1 - a);
+    const solidB = b * a + base.b * (1 - a);
+    // Interpolate raw (strength 1) → solid (strength 0).
+    const lr = Math.round(r * strength + solidR * (1 - strength));
+    const lg = Math.round(g * strength + solidG * (1 - strength));
+    const lb = Math.round(b * strength + solidB * (1 - strength));
+    const la = a * strength + (1 - strength);
+    return `rgba(${lr}, ${lg}, ${lb}, ${la.toFixed(3)})`;
+};
+
+// Paint the live --color-surface* vars for a given glassiness (0..1).
+const writeSurfaceGlass = (strength: number): void => {
+    if (!activeSurfaceTints) return;
+    const root = document.documentElement;
+    const { surface, surfaceHover, surfaceActive, tertiary } = activeSurfaceTints;
+    root.style.setProperty('--color-surface', blendSurfaceForGlass(surface, tertiary, strength));
+    root.style.setProperty('--color-surface-hover', blendSurfaceForGlass(surfaceHover, tertiary, strength));
+    root.style.setProperty('--color-surface-active', blendSurfaceForGlass(surfaceActive, tertiary, strength));
+};
+
 // Apply theme to CSS variables
 export const applyTheme = (theme: Theme): void => {
     const root = document.documentElement;
@@ -1468,10 +1526,17 @@ export const applyTheme = (theme: Theme): void => {
     root.style.setProperty('--color-background-secondary', palette.backgroundSecondary);
     root.style.setProperty('--color-background-tertiary', palette.backgroundTertiary);
 
-    // Surface colors
-    root.style.setProperty('--color-surface', palette.surface);
-    root.style.setProperty('--color-surface-hover', palette.surfaceHover);
-    root.style.setProperty('--color-surface-active', palette.surfaceActive);
+    // Surface colors. Capture the raw per-theme tints, then paint them at the
+    // current glassiness via writeSurfaceGlass so switching themes never flashes
+    // full glass when the user has dialled it down (and a reduced level carries
+    // straight over to the new palette). applyGlassStrength repaints on slider move.
+    activeSurfaceTints = {
+        surface: palette.surface,
+        surfaceHover: palette.surfaceHover,
+        surfaceActive: palette.surfaceActive,
+        tertiary: palette.backgroundTertiary,
+    };
+    writeSurfaceGlass(lastGlassStrength);
 
     // Text colors
     root.style.setProperty('--color-text-primary', palette.textPrimary);
@@ -1523,14 +1588,20 @@ export const applyTheme = (theme: Theme): void => {
 // theme is tuned around.
 export const DEFAULT_GLASS_TRANSPARENCY = 100;
 
-// Apply the global glassiness multiplier to the live document. The value is a
-// percent (0-100): 100 leaves panels fully see-through (the signature look),
-// 0 makes them fully solid. Stored on :root as --glass-strength, which the
-// .glass-panel compositing in globals.css reads. Kept separate from applyTheme
-// so switching themes never resets the user's chosen glassiness.
+// Apply the global glassiness to the live document. `transparency` is a percent
+// (0-100): 100 is full frosted glass (the signature look every theme is tuned
+// around), 0 is a completely flat, solid, blur-free interface. Writes
+// --glass-strength (read by the blur scaling in globals.css), repaints the
+// surface tints toward solid, and flags data-glass="off" at 0 so the CSS floor
+// strips any remaining backdrop blur. Kept separate from applyTheme so switching
+// themes never resets the user's chosen glassiness.
 export const applyGlassStrength = (transparency: number): void => {
     const clamped = Math.max(0, Math.min(100, transparency)) / 100;
-    document.documentElement.style.setProperty('--glass-strength', String(clamped));
+    lastGlassStrength = clamped;
+    const root = document.documentElement;
+    root.style.setProperty('--glass-strength', String(clamped));
+    writeSurfaceGlass(clamped);
+    root.setAttribute('data-glass', clamped === 0 ? 'off' : 'on');
 };
 
 // ─── App font ───────────────────────────────────────────────────────────────

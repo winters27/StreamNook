@@ -320,8 +320,8 @@ const ThemeSettings = () => {
                 </div>
             </div>
 
-            {/* Global Glassiness — scales how see-through panels are across every theme.
-                100% is the signature frosted look; lower makes panels progressively solid. */}
+            {/* Global Glassiness — scales every glass surface across every theme, from the
+                signature frosted look (100%) down to a fully flat, solid, blur-free UI (0%). */}
             <div className="glass-panel rounded-lg p-4 space-y-3">
                 <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
@@ -341,8 +341,12 @@ const ThemeSettings = () => {
                     onKeyUp={(e) => commitGlass(parseInt(e.currentTarget.value, 10))}
                     className="w-full accent-accent cursor-pointer"
                 />
+                <div className="flex items-center justify-between text-[10px] text-textMuted">
+                    <span>Solid</span>
+                    <span>Frosted glass</span>
+                </div>
                 <p className="text-xs text-textMuted">
-                    How see-through panels are, for every theme. 100% is the signature frosted look; lower makes panels more solid.
+                    How see-through and frosted every surface is, for every theme. 100% is the signature glass; 0% removes all transparency and blur for a completely flat, solid look.
                 </p>
             </div>
 
