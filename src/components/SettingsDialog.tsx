@@ -80,7 +80,7 @@ const HERO_BEVEL =
   'inset 1px 1px 0 0 rgba(255,255,255,0.14), inset -1px -1px 0 0 rgba(0,0,0,0.22), 0 4px 10px rgba(0,0,0,0.18)';
 
 const SettingsDialog = () => {
-  const { isSettingsOpen, settingsInitialTab, closeSettings, isAuthenticated, currentUser, signOutActiveAccount, settings } = useAppStore();
+  const { isSettingsOpen, settingsInitialTab, settingsInitialSection, closeSettings, isAuthenticated, currentUser, signOutActiveAccount, settings } = useAppStore();
   const [activeTab, setActiveTab] = useState<SettingsTab>('Player');
   const [searchQuery, setSearchQuery] = useState('');
   const [signOutConfirm, setSignOutConfirm] = useState(false);
@@ -103,6 +103,23 @@ const SettingsDialog = () => {
       queueMicrotask(() => setActiveTab(settingsInitialTab));
     }
   }, [settingsInitialTab]);
+
+  // When opened with a target section (e.g. via a right-click shortcut), scroll
+  // to it once the tab's content is rendered. Double rAF defers past the
+  // scroll-to-top effect below so this lands last. Mirrors handleResultSelect.
+  useEffect(() => {
+    if (!isSettingsOpen || !settingsInitialSection) return;
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const el = document.getElementById(settingsInitialSection);
+        if (el && contentRef.current) {
+          const containerTop = contentRef.current.getBoundingClientRect().top;
+          const elTop = el.getBoundingClientRect().top;
+          contentRef.current.scrollBy({ top: elTop - containerTop - 8, behavior: 'smooth' });
+        }
+      });
+    });
+  }, [isSettingsOpen, settingsInitialSection, activeTab]);
 
   useEffect(() => {
     if (!isSettingsOpen) {

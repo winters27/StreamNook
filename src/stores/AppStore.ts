@@ -206,6 +206,9 @@ interface AppState {
   isLoading: boolean;
   isSettingsOpen: boolean;
   settingsInitialTab: SettingsTab | null;
+  // DOM id of a settings section to scroll to when the dialog opens (e.g. from a
+  // right-click shortcut). Consumed by SettingsDialog, cleared on close.
+  settingsInitialSection: string | null;
   // Twitch user_id of the member whose public StreamNook profile is open in
   // the draggable viewer overlay, or null when closed.
   profileViewerUserId: string | null;
@@ -327,7 +330,7 @@ interface AppState {
   /** Apply a backend ad auto-pivot: the relay already hot-swapped to a clean
    *  region, so point the player at the fresh URL to resync cleanly. */
   applyAdPivot: (url: string, region?: string) => void;
-  openSettings: (initialTab?: SettingsTab) => void;
+  openSettings: (initialTab?: SettingsTab, initialSection?: string) => void;
   closeSettings: () => void;
   openProfileViewer: (userId: string) => void;
   closeProfileViewer: () => void;
@@ -452,6 +455,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   isLoading: false,
   isSettingsOpen: false,
   settingsInitialTab: null,
+  settingsInitialSection: null,
   profileViewerUserId: null,
   profileViewerPreview: null,
   isCommandPaletteOpen: false,
@@ -2013,13 +2017,17 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({ isLoading: false });
     }
   },
-  openSettings: (initialTab?: SettingsTab) => {
+  openSettings: (initialTab?: SettingsTab, initialSection?: string) => {
     trackActivity('Opened Settings' + (initialTab ? ` (${initialTab})` : ''));
-    set({ isSettingsOpen: true, settingsInitialTab: initialTab || null });
+    set({
+      isSettingsOpen: true,
+      settingsInitialTab: initialTab || null,
+      settingsInitialSection: initialSection || null,
+    });
   },
   closeSettings: () => {
     trackActivity('Closed Settings');
-    set({ isSettingsOpen: false, settingsInitialTab: null });
+    set({ isSettingsOpen: false, settingsInitialTab: null, settingsInitialSection: null });
   },
   openProfileViewer: (userId: string) => {
     // A normal view (another member, or self from chat) is never a preview:
