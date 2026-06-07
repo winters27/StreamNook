@@ -109,6 +109,53 @@ export function invalidateUserCosmetics(userId: string): void {
 }
 
 /**
+ * Optimistically reflect the signed-in user's OWN paint/badge change without
+ * waiting on 7TV's read-after-write propagation. The mutation lands on 7TV's
+ * write path instantly, but its read API lags a few seconds, so an immediate
+ * re-fetch pulls back the OLD selection and re-caches it (the user then sees no
+ * change until a reload). Instead we flip the `selected` flag on the already
+ * cached owned cosmetics (the chosen paint/badge is in the inventory we last
+ * fetched) and republish, so chat rows + the profile card repaint at once.
+ *
+ * Pass only the field that changed: `{ paintId }` leaves badges untouched and
+ * vice-versa. A null id means "unequipped" (nothing selected). Returns false if
+ * nothing is cached for the user yet, so the caller can fall back to a fetch.
+ */
+export function applyLocalCosmeticSelection(
+  userId: string,
+  change: { paintId?: string | null; badgeId?: string | null },
+): boolean {
+  const current = inMemoryCosmeticsCache.get(userId);
+  if (!current) return false;
+
+  const next: CachedCosmetics = {
+    ...current,
+    paints:
+      'paintId' in change
+        ? current.paints.map((p) => ({ ...p, selected: p.id === change.paintId }))
+        : current.paints,
+    badges:
+      'badgeId' in change
+        ? current.badges.map((b) => ({ ...b, selected: b.id === change.badgeId }))
+        : current.badges,
+  };
+
+  // The full-profile cache embeds the same cosmetics, so keep it in sync or the
+  // profile overlay keeps serving the old selection after a change.
+  const profile = inMemoryProfileCache.get(userId);
+  if (profile) {
+    inMemoryProfileCache.set(userId, {
+      ...profile,
+      seventvCosmetics: next,
+      lastUpdated: Date.now(),
+    });
+  }
+
+  publishCosmetics(userId, next);
+  return true;
+}
+
+/**
  * Force a genuinely fresh cosmetics resolution: clear BOTH cache layers (this
  * module's LRU + the lower-level seventvService userCache) and re-fetch.
  *

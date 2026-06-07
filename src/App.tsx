@@ -3,7 +3,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { useAppStore, type WhisperImportProgress } from './stores/AppStore';
 import { useContextMenuStore } from './stores/contextMenuStore';
 import { listenForSettingsUpdates } from './utils/settingsBroadcast';
-import { trackPresence, isSupabaseConfigured, incrementStat, incrementChannelWatch, subscribeToStreamNookRegistry, subscribeToCosmeticsRegistry, subscribeToAtmospheresRegistry } from './services/supabaseService';
+import { trackPresence, isSupabaseConfigured, incrementStat, incrementChannelWatch, subscribeToStreamNookRegistry, subscribeToCosmeticsRegistry, subscribeToAtmospheresRegistry, refreshEntitlementRegistries } from './services/supabaseService';
 import TitleBar from './components/TitleBar';
 import DynamicIsland from './components/DynamicIsland';
 import VideoPlayer from './components/VideoPlayer';
@@ -22,6 +22,7 @@ import { MultiNookView } from './components/multi-nook/MultiNookView';
 import MultiNookChatSwitcher from './components/multi-nook/MultiNookChatSwitcher';
 import LoadingWidget from './components/LoadingWidget';
 import ToastManager from './components/ToastManager';
+import EntitlementUnlockNote from './components/EntitlementUnlockNote';
 import AnnouncementsBanner from './components/AnnouncementsBanner';
 import { TooltipManager } from './components/ui/TooltipManager';
 import { Tooltip } from './components/ui/Tooltip';
@@ -378,7 +379,24 @@ function App() {
     const cleanupRegistry = subscribeToStreamNookRegistry();
     const cleanupCosmetics = subscribeToCosmeticsRegistry();
     const cleanupAtmospheres = subscribeToAtmospheresRegistry();
-    return () => { cleanupRegistry?.(); cleanupCosmetics?.(); cleanupAtmospheres?.(); };
+
+    // When the user returns to the app (e.g. after finishing a purchase on
+    // streamnook.app in their browser), re-pull entitlements so a freshly
+    // granted badge/perk shows right away even if the realtime channel happened
+    // to miss the event. Throttled so rapid alt-tabbing doesn't spam the network.
+    let lastResync = 0;
+    const onFocus = () => {
+      const now = Date.now();
+      if (now - lastResync < 10_000) return;
+      lastResync = now;
+      refreshEntitlementRegistries();
+    };
+    window.addEventListener('focus', onFocus);
+
+    return () => {
+      cleanupRegistry?.(); cleanupCosmetics?.(); cleanupAtmospheres?.();
+      window.removeEventListener('focus', onFocus);
+    };
   }, []);
 
   useEffect(() => {
@@ -1612,6 +1630,7 @@ function App() {
       />
       <AnnouncementsBanner />
       <ToastManager />
+      <EntitlementUnlockNote />
       <TooltipManager />
       <CommandPalette />
       <StreamContextMenu />

@@ -96,6 +96,21 @@ pub async fn get_streamnook_identities(
     Ok(map)
 }
 
+/// What `set_streamnook_identity` returns: the saved loadout (flattened to the
+/// same shape `IdentityLoadout` had) plus the authoritative resolved bundle the
+/// server computed for the just-saved selection. Returning the resolved bundle
+/// here lets the client populate its render cache directly instead of re-reading
+/// the `?resolve=1` endpoint, which is edge-cached ~60s and would otherwise serve
+/// the pre-write value and make a fresh change look unsaved. `resolved` is
+/// optional so an older backend that doesn't send it degrades gracefully.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetIdentityResult {
+    #[serde(flatten)]
+    pub loadout: IdentityLoadout,
+    #[serde(default)]
+    pub resolved: Option<ResolvedIdentity>,
+}
+
 /// Write the current user's loadout. The server validates the bearer token
 /// against Twitch and only writes the row it resolves to, so a client can never
 /// set another user's identity.
@@ -105,7 +120,7 @@ pub async fn set_streamnook_identity(
     paint: Option<String>,
     customized: bool,
     account_id: Option<String>,
-) -> Result<IdentityLoadout, String> {
+) -> Result<SetIdentityResult, String> {
     // Authenticate the write as the chosen account when one is given (a linked
     // secondary), else the primary. The server upserts whichever account the
     // bearer token resolves to, so each account can only write its own row.
@@ -137,7 +152,7 @@ pub async fn set_streamnook_identity(
         return Err(format!("Identity write failed ({}): {}", status, body));
     }
 
-    resp.json::<IdentityLoadout>()
+    resp.json::<SetIdentityResult>()
         .await
         .map_err(|e| format!("Bad response: {}", e))
 }

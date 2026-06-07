@@ -1094,6 +1094,10 @@ export const subscribeToStreamNookRegistry = (
     }
 
     if (!snRegistryChannel) {
+        // See subscribeToCosmeticsRegistry for the reconnect rationale: realtime
+        // does not replay events missed while disconnected, so re-pull on every
+        // reconnect (not the initial connect) to self-heal without a restart.
+        let connectedOnce = false;
         snRegistryChannel = supabase
             .channel('streamnook-registry')
             .on('postgres_changes', {
@@ -1103,7 +1107,12 @@ export const subscribeToStreamNookRegistry = (
             }, () => {
                 loadStreamNookRegistry();
             })
-            .subscribe();
+            .subscribe((status) => {
+                if (status === 'SUBSCRIBED') {
+                    if (connectedOnce) loadStreamNookRegistry();
+                    connectedOnce = true;
+                }
+            });
     }
 
     return () => {
@@ -1249,6 +1258,14 @@ export const subscribeToCosmeticsRegistry = (
     }
 
     if (!cosmeticsChannel) {
+        // Supabase fires SUBSCRIBED on the initial connect AND on every reconnect
+        // after a drop (sleep/wake, network blip, server hiccup). Realtime does
+        // NOT replay events missed while disconnected, so a grant that landed
+        // during the gap (e.g. a streamnook.app purchase completing while the
+        // socket was down) would otherwise only show after an app restart.
+        // Re-pull on every reconnect (skipping the first connect, which the eager
+        // load above already covered) so a running client self-heals on its own.
+        let connectedOnce = false;
         cosmeticsChannel = supabase
             .channel('cosmetics-registry')
             .on('postgres_changes', {
@@ -1261,7 +1278,12 @@ export const subscribeToCosmeticsRegistry = (
                 schema: 'public',
                 table: 'user_cosmetic_active',
             }, () => { loadCosmetics(); })
-            .subscribe();
+            .subscribe((status) => {
+                if (status === 'SUBSCRIBED') {
+                    if (connectedOnce) loadCosmetics();
+                    connectedOnce = true;
+                }
+            });
     }
 
     return () => {
@@ -1448,6 +1470,8 @@ export const subscribeToAtmospheresRegistry = (
     }
 
     if (!atmospheresChannel) {
+        // See subscribeToCosmeticsRegistry for the reconnect rationale.
+        let connectedOnce = false;
         atmospheresChannel = supabase
             .channel('atmospheres-registry')
             .on('postgres_changes', {
@@ -1455,7 +1479,12 @@ export const subscribeToAtmospheresRegistry = (
                 schema: 'public',
                 table: 'atmospheres',
             }, () => { loadAtmospheres(); })
-            .subscribe();
+            .subscribe((status) => {
+                if (status === 'SUBSCRIBED') {
+                    if (connectedOnce) loadAtmospheres();
+                    connectedOnce = true;
+                }
+            });
     }
 
     return () => {
@@ -1492,6 +1521,21 @@ export const getAtmospheresVersion = (): number => atmospheresVersion;
 export const whenAtmospheresReady = (): Promise<void> => {
     if (atmospheresLoaded || !supabase) return Promise.resolve();
     return loadAtmospheres();
+};
+
+/**
+ * Force a re-pull of the entitlement-bearing registries (cosmetics + user
+ * registry + atmospheres). Wired to window focus in App.tsx so that when the
+ * user returns to the app after completing a purchase on streamnook.app in their
+ * browser, any grant the realtime channel happened to miss (e.g. it was
+ * mid-reconnect) still shows immediately, with no app restart. All three loaders
+ * are single-flight + idempotent, so calling this freely is safe.
+ */
+export const refreshEntitlementRegistries = (): void => {
+    if (!supabase) return;
+    loadCosmetics();
+    loadStreamNookRegistry();
+    loadAtmospheres();
 };
 
 // ─── Profile snapshot cache (stale-while-revalidate) ───────────────────────
@@ -1559,6 +1603,25 @@ export const upsertProfileSnapshot = async (
         if (error) Logger.warn('[Supabase] upsertProfileSnapshot failed:', error.message);
     } catch (e) {
         Logger.warn('[Supabase] upsertProfileSnapshot exception:', e);
+    }
+};
+
+/**
+ * Optimistically patch ONLY the profileTheme of a member's cached snapshot after
+ * they change their atmosphere, so the next profile-card open (theirs or anyone
+ * else's) reflects it without waiting for the lazy stale-rewrite, and so the
+ * instant snapshot render can't clobber the fresh prefs with the old theme. The
+ * other snapshot fields are untouched (a theme change doesn't affect them), so it
+ * stays consistent. No-op when no snapshot exists yet (the overlay builds fresh).
+ */
+export const patchProfileSnapshotTheme = async (userId: string, theme: string): Promise<void> => {
+    if (!supabase || !userId) return;
+    try {
+        const existing = await getProfileSnapshot(userId);
+        if (!existing || existing.snapshot.profileTheme === theme) return;
+        await upsertProfileSnapshot(userId, { ...existing.snapshot, profileTheme: theme });
+    } catch (e) {
+        Logger.warn('[Supabase] patchProfileSnapshotTheme failed:', e);
     }
 };
 
@@ -1689,4 +1752,5 @@ export default {
     subscribeCosmeticsVersion,
     getCosmeticsVersion,
     setActiveCosmetic,
+    refreshEntitlementRegistries,
 };

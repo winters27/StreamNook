@@ -149,6 +149,19 @@ export function clearResolvedIdentity(userId: string): void {
   notifyResolved(userId);
 }
 
+/**
+ * Seed the resolved-bundle cache directly from an authoritative write response.
+ * The identity write now returns the server-resolved bundle, so the member's own
+ * chat row can repaint with the just-saved selection WITHOUT re-reading the
+ * `?resolve=1` endpoint (edge-cached ~60s, which would serve the pre-write value
+ * and make the change look like it didn't take). notifyResolved fires so chat
+ * re-reads synchronously from the now-fresh cache.
+ */
+export function setResolvedIdentityFromWrite(userId: string, data: ResolvedIdentity): void {
+  resolvedCache.set(userId, { data, ts: Date.now() });
+  notifyResolved(userId);
+}
+
 export async function getResolvedIdentity(userId: string): Promise<ResolvedIdentity> {
   if (!userId) return defaultResolved(userId);
   const hit = resolvedCache.get(userId);
@@ -189,11 +202,11 @@ export async function setIdentity(
   customized: boolean,
   accountId?: string,
 ): Promise<void> {
-  // Optimistic local update.
+  // Optimistic local loadout update. We deliberately do NOT clearResolvedIdentity
+  // here: clearing it would make chat immediately re-read the edge-cached
+  // resolve endpoint and re-cache the PRE-write bundle (the exact stale-read this
+  // change avoids). The resolved bundle is updated below from the write itself.
   publish(userId, { twitch_user_id: userId, customized, badges, paint, updated_at: null });
-  // Force the resolved bundle to re-fetch so the member's own chat row reflects
-  // the change rather than serving a stale resolved copy.
-  clearResolvedIdentity(userId);
   try {
     // `accountId` routes the write through that linked account's token (the
     // server authorizes per-account); omitted ⇒ the primary.
@@ -202,9 +215,19 @@ export async function setIdentity(
       paint,
       customized,
       accountId: accountId ?? null,
-    })) as IdentityLoadout;
-    publish(saved.twitch_user_id || userId, saved);
-    clearResolvedIdentity(saved.twitch_user_id || userId);
+    })) as IdentityLoadout & { resolved?: ResolvedIdentity | null };
+    const { resolved, ...loadout } = saved;
+    const id = loadout.twitch_user_id || userId;
+    publish(id, loadout);
+    if (resolved) {
+      // Authoritative resolved bundle from the write — seed the cache directly,
+      // no racy re-read of the edge-cached endpoint.
+      setResolvedIdentityFromWrite(id, resolved);
+    } else {
+      // Older backend without resolved-on-write: fall back to the clear+re-fetch
+      // (still correct, just subject to the ~60s cache it used to be).
+      clearResolvedIdentity(id);
+    }
   } catch (e) {
     Logger.error('[identityService] set failed:', e);
     throw e;

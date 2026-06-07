@@ -39,6 +39,7 @@ import {
   setActiveCosmetic,
   getProfilePrefs,
   setProfileTheme,
+  patchProfileSnapshotTheme,
   setHiddenSections,
   getAccolades,
 } from '../../services/supabaseService';
@@ -57,7 +58,7 @@ import {
   pauseCardAnimations,
   type CaptureMode,
 } from '../../utils/shareProfile';
-import { clearCosmeticsMemoryCache, invalidateUserCosmetics, getCosmeticsWithFallback } from '../../services/cosmeticsCache';
+import { clearCosmeticsMemoryCache, invalidateUserCosmetics, getCosmeticsWithFallback, applyLocalCosmeticSelection } from '../../services/cosmeticsCache';
 import { buildBttvProBadge, resolveBttvProUrl } from '../../services/bttvProBadge';
 import { invoke } from '@tauri-apps/api/core';
 import { Logger } from '../../utils/logger';
@@ -398,6 +399,11 @@ const ProfileSettings = () => {
     if (!bypassTier && !tierMet(tier)) return; // locked until the required tier is met
     setProfileThemeState(id);
     void setProfileTheme(currentUser.user_id, id);
+    // Keep the cached profile snapshot's theme in sync so the profile CARD (ours
+    // and anyone else's) reflects the change on the next open, instead of serving
+    // the old atmosphere until the lazy stale-rewrite. Without this the stale
+    // snapshot could also clobber the fresh prefs read on our own card.
+    void patchProfileSnapshotTheme(currentUser.user_id, id);
     // Push the new theme to chat immediately (no Supabase read race) so our own
     // messages update in real time; switching away from an Atmosphere clears it.
     refreshAtmosphere(currentUser.user_id, getAtmosphere(id) ? id : null);
@@ -584,13 +590,20 @@ const ProfileSettings = () => {
       if (result.success && mountedRef.current) {
         setSeventvPaint(paint);
         setAllSeventvPaints((prev) => prev.map((p) => ({ ...p, selected: p.id === paintId })));
-        // Drop both layers of cached cosmetics for this user, then trigger a
-        // fresh fetch so the cosmetics-cache subscription notifies chat rows
-        // with the new selection immediately.
+        // Reflect the change everywhere NOW. 7TV's read API lags the mutation by
+        // a few seconds, so a re-fetch here would re-cache the OLD paint (the
+        // change wouldn't show until a reload). Instead flip the selection on the
+        // cached cosmetics so chat rows + profile card repaint at once.
+        // clear7TVCache drops the lower-level 7TV-service entry so a later natural
+        // fetch is fresh once 7TV is consistent (prevents stale resurrection).
         clear7TVCache();
         if (currentUser?.user_id) {
-          invalidateUserCosmetics(currentUser.user_id);
-          void getCosmeticsWithFallback(currentUser.user_id).catch(() => {});
+          const applied = applyLocalCosmeticSelection(currentUser.user_id, { paintId });
+          if (!applied) {
+            // Nothing cached to flip — fall back to a fresh fetch.
+            invalidateUserCosmetics(currentUser.user_id);
+            void getCosmeticsWithFallback(currentUser.user_id).catch(() => {});
+          }
         }
       }
     } catch (e: unknown) {
@@ -615,10 +628,16 @@ const ProfileSettings = () => {
       const result = (await invoke('set_seventv_badge', { userId: seventvUserId, badgeId })) as { success: boolean };
       if (result.success && mountedRef.current) {
         setSeventvBadges((prev) => prev.map((b) => ({ ...b, selected: b.id === badgeId })));
+        // Optimistic flip (same rationale as paint): 7TV's read lags the write,
+        // so re-fetching would re-cache the old badge. clear7TVCache keeps the
+        // lower-level entry fresh for a later natural fetch.
         clear7TVCache();
         if (currentUser?.user_id) {
-          invalidateUserCosmetics(currentUser.user_id);
-          void getCosmeticsWithFallback(currentUser.user_id).catch(() => {});
+          const applied = applyLocalCosmeticSelection(currentUser.user_id, { badgeId });
+          if (!applied) {
+            invalidateUserCosmetics(currentUser.user_id);
+            void getCosmeticsWithFallback(currentUser.user_id).catch(() => {});
+          }
         }
         updateProfilePreview({ bumpBadges: true }); // re-resolve the preview's badge row
       }
