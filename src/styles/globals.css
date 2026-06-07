@@ -1742,6 +1742,17 @@ html[data-motion="reduced"] .animate-shimmer {
 
 .video-player-container:has(.plyr--fullscreen-fallback) {
   transform: none !important;
+  /* Lift the whole fullscreen cell above every sibling tile. Each MultiNook cell
+     is its own stacking context (position: relative + z-index: 1), so the
+     fullscreen .plyr's z-index: 10000000 is trapped inside this cell and only
+     competes at the cell's level (1) against the other tiles. With every tile
+     tied at 1, DOM order breaks the tie, so any tile ordered after this one in
+     the DOM paints on top and "shows through" the fullscreen (and they pile up
+     as you fullscreen more tiles). Raising the cell itself puts its entire
+     subtree — the fixed .plyr plus the title/subscribe overlays — above all
+     other tiles regardless of DOM order. Only applies while a tile is fullscreen;
+     harmless for the single player, which has no sibling tiles. */
+  z-index: 2147483646 !important;
 }
 
 /* Custom overlay positioning for Plyr fullscreen mode */
