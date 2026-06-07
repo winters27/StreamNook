@@ -44,7 +44,7 @@ const VideoPlayer = () => {
   const hlsRef = useRef<Hls | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const progressUpdateIntervalRef = useRef<number | null>(null);
-  const { streamUrl, settings, activeQuality, adSource, getAvailableQualities, changeStreamQuality, handleStreamOffline, isAutoSwitching, currentStream, restartStream, exitStream, toggleHome, isHomeActive, streamOriginCategory, setHomeActiveTab, setHomeSelectedCategory, triggerChatRefresh, isAuthenticated, currentMediaType, createClip, isCreatingClip, originalMediaUrl, openStreamerMedia } = useAppStore();
+  const { streamUrl, settings, activeQuality, adSource, getAvailableQualities, changeStreamQuality, handleStreamOffline, isAutoSwitching, currentStream, reloadStreamAndChat, exitStream, toggleHome, isHomeActive, streamOriginCategory, setHomeActiveTab, setHomeSelectedCategory, isAuthenticated, currentMediaType, createClip, isCreatingClip, originalMediaUrl, openStreamerMedia } = useAppStore();
   // Clippable: a live broadcast, or any VOD that's loaded — including the latest
   // VOD auto-loaded into the offline-chat space (still currentMediaType
   // 'offline_chat', but a real VOD is playing, exposed via originalMediaUrl).
@@ -1922,15 +1922,15 @@ const VideoPlayer = () => {
             </Tooltip>
           )}
 
-          {/* Restart Stream Button */}
+          {/* Reload Stream + Chat Button — hard refresh of both the video and
+              the chat connection, not just the stream. */}
           {overlayButtonOn('refresh') && currentMediaType === 'live' && (
-            <Tooltip content="Refresh" side="bottom">
+            <Tooltip content="Reload stream & chat" side="bottom">
             <button
               onClick={async () => {
                 setIsRestarting(true);
                 try {
-                  await restartStream();
-                  triggerChatRefresh();
+                  await reloadStreamAndChat();
                 } finally {
                   setIsRestarting(false);
                 }

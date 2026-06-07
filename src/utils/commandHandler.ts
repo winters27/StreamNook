@@ -671,6 +671,20 @@ export const handleSlashCommand = async (
         }
         return true;
       }
+      case 'reload': {
+        // Hard refresh of BOTH the stream and chat — the command-line twin of
+        // the overlay Refresh button. /refresh (above) only busts the emote
+        // cache; this restarts the video feed and reconnects/reloads chat.
+        const app = useAppStore.getState();
+        const stream = app.currentStream;
+        if (!stream?.user_login || app.currentMediaType !== 'live') {
+          addToast('/reload: no active live stream', 'error');
+          return true;
+        }
+        addToast('Reloading stream and chat...', 'info');
+        void app.reloadStreamAndChat();
+        return true;
+      }
       case 'nuke': {
         if (!broadcasterLogin) {
           addToast('/nuke: no active channel', 'error');

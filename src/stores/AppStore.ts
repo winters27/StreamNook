@@ -325,6 +325,7 @@ interface AppState {
   playMedia: (type: 'clip' | 'video', url: string, info: MediaInfo) => Promise<void>;
   stopStream: (options?: { preserveBackend?: boolean }) => Promise<void>;
   restartStream: () => Promise<void>;  // Restart current stream (stops and starts again)
+  reloadStreamAndChat: () => Promise<void>;  // Hard refresh: restart the stream AND reconnect/reload chat
   getAvailableQualities: () => Promise<string[]>;
   changeStreamQuality: (quality: string) => Promise<void>;
   /** Apply a backend ad auto-pivot: the relay already hot-swapped to a clean
@@ -388,9 +389,6 @@ interface AppState {
   // Category cache actions
   setCachedTopGames: (games: TwitchCategory[], cursor: string | null, hasMore: boolean) => void;
   appendCachedTopGames: (games: TwitchCategory[], cursor: string | null, hasMore: boolean) => void;
-  // Chat refresh signal
-  chatRefreshKey: number;
-  triggerChatRefresh: () => void;
   setDropsSearchTerm: (term: string) => void;
   navigateToHomeTab: (tab: HomeTab, category?: TwitchCategory) => void;
   navigateToCategoryByName: (categoryName: string) => Promise<void>;
@@ -512,7 +510,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   cachedGamesCursor: null,
   cachedHasMoreGames: true,
   cachedTopGamesTimestamp: 0,
-  chatRefreshKey: 0,
   modLogs: [],
   loadedModLogChannels: new Set<string>(),
   addModLog: (log) => {
@@ -618,7 +615,6 @@ export const useAppStore = create<AppState>((set, get) => ({
       invoke('clear_mod_logs', { channel }).catch(() => {});
     }
   },
-  triggerChatRefresh: () => set((state) => ({ chatRefreshKey: state.chatRefreshKey + 1 })),
   dropsSearchTerm: '',
   // Centralized drops cache
   dropsCache: null,
@@ -1411,6 +1407,31 @@ export const useAppStore = create<AppState>((set, get) => ({
         Logger.error('[Stream] Retry also failed:', retryError);
       }
     }
+  },
+
+  reloadStreamAndChat: async () => {
+    const { currentStream, currentMediaType } = get();
+    if (!currentStream) {
+      Logger.warn('[Stream] Cannot reload: no current stream');
+      return;
+    }
+    // Kick off the stream restart and the chat hard-refresh together so one
+    // press reloads both at once instead of serially. Chat only applies to a
+    // live channel (clips/VODs hold no IRC connection), matching restartStream's
+    // own live-only guard. Promise.allSettled so a failure in one half doesn't
+    // abort the other.
+    const tasks: Promise<unknown>[] = [get().restartStream()];
+    if (currentMediaType === 'live' && currentStream.user_login) {
+      tasks.push(
+        (async () => {
+          // Dynamic import to avoid a static cycle (chatConnectionStore imports
+          // this store). Mirrors how commandHandler reaches the chat store.
+          const { hardRefreshChannel } = await import('./chatConnectionStore');
+          await hardRefreshChannel(currentStream.user_login, currentStream.user_id ?? null);
+        })(),
+      );
+    }
+    await Promise.allSettled(tasks);
   },
 
   getAvailableQualities: async () => {

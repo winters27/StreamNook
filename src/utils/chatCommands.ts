@@ -67,6 +67,7 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
   { name: 'nuke', usage: '/nuke <pattern> <action> <past[:future]>', description: 'Mass-action by phrase or /regex/. action = delete | ban | duration. Example: /nuke spam ban 5m:1m', category: 'Moderator' },
   { name: 'undo', usage: '/undo', description: 'Reverse the most recent /nuke on this channel (bans/timeouts only — deletes are permanent)', category: 'Moderator' },
   { name: 'refresh', usage: '/refresh', description: 'Force re-fetch emotes for this channel (busts the local cache)', category: 'Everyone' },
+  { name: 'reload', usage: '/reload', description: 'Hard refresh: restart the stream and reconnect/reload chat (not just emotes)', category: 'Everyone' },
 ];
 
 // Reserved trigger names — user-defined commands matching these never fire

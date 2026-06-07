@@ -597,6 +597,48 @@ export async function reconnectAllChannels(): Promise<void> {
   await reconnectAll();
 }
 
+/**
+ * Hard-refresh a single channel's chat — the chat-side analog of restarting the
+ * stream. Wipes the visible message buffer + dedup/moderation state, busts and
+ * re-fetches the channel's emote set, then forces the shared IRC bridge to tear
+ * down and reconnect (which re-preloads recent history into the cleared buffer).
+ *
+ * Used by the overlay Refresh button and the /reload command so a refresh
+ * reloads BOTH the video and chat, not just the video. The plain "reconnect
+ * because the channel is unchanged" path is a deliberate no-op (see
+ * useTwitchChat.connectChat), so a true refresh has to go through here.
+ * No-op when the channel isn't currently acquired.
+ */
+export async function hardRefreshChannel(
+  channel: string,
+  channelId: string | null,
+): Promise<void> {
+  const key = channel.toLowerCase();
+  const slice = useChatConnectionStore.getState().channels.get(key);
+  if (!slice) return;
+
+  // Visibly reset the channel so the reconnect repopulates it from scratch:
+  // empty buffer, cleared dedup set, no lingering moderation overlays.
+  // liveMessageCount resets so the "N new since paused" baseline starts clean.
+  withSlice(key, (s) => {
+    s.messages = [];
+    s.seenMessageIds = new Set();
+    s.deletedMessageIds = new Set();
+    s.clearedUserContexts = new Map();
+    s.liveMessageCount = 0;
+  });
+  pendingByChannel.delete(key);
+
+  // Bust the emote cache and re-fetch. Fire-and-forget — the picker re-renders
+  // via its subscription when the fresh set lands; chat doesn't block on it.
+  if (channelId) void refreshChannelEmotes(key, channelId);
+
+  // Tear down + reconnect the IRC bridge. connectBridgeForFirstChannel re-runs
+  // preloadChannel for the first channel, re-seeding recent history into the
+  // buffer we just cleared.
+  await reconnectAll();
+}
+
 // [ChatPerf] Instrumentation for the "chat blank for ~30s on join" hunt.
 // Brackets the connect path so a single repro names where the time goes:
 // start_chat (Rust IRC connect + bridge spawn), WS open, or first relayed frame.
