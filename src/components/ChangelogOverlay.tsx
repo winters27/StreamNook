@@ -221,7 +221,18 @@ const ChangelogOverlay = ({ version, onClose }: ChangelogOverlayProps) => {
   const formatDate = (dateStr: string) => {
     if (!dateStr) return '';
     try {
-      const date = new Date(dateStr);
+      const trimmed = dateStr.trim();
+      // CHANGELOG dates arrive as date-only "YYYY-MM-DD". new Date() reads those
+      // as UTC midnight, which renders a day early in any timezone behind UTC.
+      // Parse date-only values as local dates so the day matches the changelog.
+      // Full timestamps (with a time component) pass through unchanged.
+      let date: Date;
+      if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+        const [y, m, d] = trimmed.split('-').map(Number);
+        date = new Date(y, m - 1, d);
+      } else {
+        date = new Date(trimmed);
+      }
       return date.toLocaleDateString('en-US', {
         year: 'numeric',
         month: 'long',
