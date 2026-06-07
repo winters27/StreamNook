@@ -1148,7 +1148,7 @@ const DynamicIsland = () => {
                 // at the normal title-bar layer (z-50). The element stays mounted
                 // across this toggle (only the class changes), so there is no
                 // re-mount flash of the unread-count badge.
-                className={`fixed left-1/2 -translate-x-1/2 top-1 ${isSettingsOpen ? 'z-[55]' : 'z-50'}`}
+                className={`fixed left-1/2 -translate-x-1/2 top-0.5 ${isSettingsOpen ? 'z-[55]' : 'z-50'}`}
                 style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
             >
                 <motion.div
@@ -1159,7 +1159,11 @@ const DynamicIsland = () => {
                     initial={false}
                     animate={{
                         width: isExpanded ? expandedWidth : getCollapsedWidth(),
-                        height: isExpanded ? Math.min(maxHeight, 64 + notifications.length * itemHeight) : 24,
+                        // Collapsed pill sits in the title bar with even 2px gaps top and
+                        // bottom. The bar is h-[33px] but its 1px bottom border eats the
+                        // last pixel, leaving a 32px content area; container at top-0.5
+                        // (2px) + a 28px pill lands 2px above that bottom edge.
+                        height: isExpanded ? Math.min(maxHeight, 64 + notifications.length * itemHeight) : 28,
                     }}
                     transition={{
                         // Softer than a snappy popup so the pill flows open and
@@ -1183,11 +1187,12 @@ const DynamicIsland = () => {
                     style={{
                         backgroundColor: '#000000',
                         borderRadius: isExpanded ? 20 : 14,
+                        // No outer rim. The expanded panel keeps a soft black drop
+                        // shadow for depth; the collapsed pill is pure black. Unread
+                        // still surfaces via the accent dot, not a border ring.
                         boxShadow: isExpanded
-                            ? '0 0 0 1px rgba(255, 255, 255, 0.12), 0 8px 32px rgba(0, 0, 0, 0.4)'
-                            : hasUnread
-                                ? '0 0 0 1px rgba(255, 255, 255, 0.15)'
-                                : 'none',
+                            ? '0 8px 32px rgba(0, 0, 0, 0.4)'
+                            : 'none',
                         transition: 'box-shadow 0.3s ease',
                     }}
                 >
@@ -1215,27 +1220,13 @@ const DynamicIsland = () => {
                                         </span>
                                     </motion.div>
                                 ) : (
-                                    // Default state: sound indicator on the left, a "live now" glance centered.
-                                    <div className="flex items-center w-full">
-                                        {/* Sound indicator */}
-                                        <div className="w-4 flex-shrink-0">
-                                            {soundEnabled ? (
-                                                <SpeakerHigh size={16} className="text-white/60" />
-                                            ) : (
-                                                <SpeakerSlash size={16} className="text-white/40" />
-                                            )}
-                                        </div>
-
-                                        {/* Center: a quiet dot when there are unread notifications, else nothing.
-                                            The count itself lives in the expanded header. */}
-                                        <div className="flex-1 flex items-center justify-center">
-                                            {hasUnread ? (
-                                                <span className="block w-1.5 h-1.5 rounded-full bg-accent" />
-                                            ) : null}
-                                        </div>
-
-                                        {/* Balancing spacer on the right */}
-                                        <div className="w-4 flex-shrink-0" />
+                                    // Default state: just a quiet accent dot when there are
+                                    // unread notifications, otherwise an empty black pill.
+                                    // The count itself lives in the expanded header.
+                                    <div className="flex items-center justify-center w-full">
+                                        {hasUnread ? (
+                                            <span className="block w-1.5 h-1.5 rounded-full bg-accent" />
+                                        ) : null}
                                     </div>
                                 )}
                             </motion.div>
