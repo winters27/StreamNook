@@ -1,3 +1,33 @@
+## [7.8.4] - 2026-06-06
+## 🎉 New: Save and reload your multi-stream layouts with Grid Presets
+> Build the perfect multi-stream grid once, then save it as a named preset and bring it back any time with a single click. Swap between your favorite lineups, drop a preset on top of what you are already watching, and give each one a custom icon from game art or a channel avatar. Searching for channels to add now works right inside the preset editor too.
+
+---
+
+### ✨ Features
+- **Friendlier offline tiles**: When a channel is offline or cannot load, its tile now shows a clear status with one-tap Retry and Hide buttons instead of spinning forever.
+- **Per-tile quality that sticks**: The stream quality you choose for a tile in multi-view is now remembered across restarts and saved with your backups.
+- **Instant unlock celebrations**: The moment a Subscriber or Supporter badge purchase comes through, a gentle notification slides in to confirm it, with no restart needed.
+- **Clickable member badges**: Tap someone's StreamNook number badge on their profile card to open their public profile, even from a popped-out window.
+- **Favorites get their own section**: Favorited channels now sit in a dedicated section above Followed, and you can hide the Recommended section entirely from Interface settings.
+- **One-tap reload**: The player refresh button, and a new /reload chat command, now reload the video and reconnect chat together in a single action.
+- **Twitch-first emote search**: Typing a colon, like :PogU, now surfaces Twitch and sub emotes ahead of third-party sets.
+
+### 🐛 Bug Fixes
+- **Smoother multi-stream startup**: Tiles now wait for a small buffer cushion before playing, so cold-starting several streams at once no longer stalls right after they load.
+- **One offline channel no longer drags down the grid**: A tile that cannot go live stops retrying in the background, keeping the rest of your streams responsive.
+- **Login and popup windows restored**: 7TV login, automation, and chat-identity windows open reliably again.
+- **Up-to-date 7TV sign-in**: Logging in to 7TV now uses the current flow that actually issues a token.
+- **Cosmetics update right away**: Changing your badge or paint now repaints your chat row and profile card immediately instead of waiting up to a minute.
+- **Missed unlocks catch up on their own**: Badges or perks granted while you were away now appear when you return to the app or reconnect, without a restart.
+- **Fullscreen tiles come to the front**: Fullscreening a tile in the grid now lifts it cleanly above the other tiles.
+- **Changelog dates show the right day**: Date-only entries no longer appear a day early in time zones behind UTC.
+- **No more doubled badge**: Members without an equipped cosmetic now show a single default badge instead of two.
+
+### 🔧 Maintenance
+- **Refined title-bar pill**: The notification pill sits more cleanly in the title bar with a subtler unread indicator.
+- **Consistent sidebar glass**: The floating sidebar now follows your Glassiness setting like every other glass surface.
+
 ## [7.8.3] - 2026-06-05
 ### ✨ Features
 - **Audio Boost**: Make stream audio louder and more even. A built-in compressor evens out quiet talking and loud moments and lifts overall loudness past the source without the harsh distortion of cranking volume past max. Turn it on from the player control bar or Player settings, fine-tune it with on-screen sliders right over the video, and reset to defaults anytime. Off until you enable it.
