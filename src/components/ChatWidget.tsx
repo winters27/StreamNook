@@ -1313,20 +1313,6 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
     };
   }, [currentStream?.user_login, currentStream?.user_id, isMultiNookActive, channelOverride, setChatPaused]);
 
-  // Chat refresh signal — triggered by VideoPlayer's refresh button
-  const chatRefreshKey = useAppStore((s) => s.chatRefreshKey);
-  const chatRefreshMountRef = useRef(chatRefreshKey);
-  useEffect(() => {
-    // Skip initial mount
-    if (chatRefreshMountRef.current === chatRefreshKey) return;
-    chatRefreshMountRef.current = chatRefreshKey;
-
-    if (currentStream?.user_login) {
-      Logger.info('[ChatWidget] Chat refresh triggered — reconnecting...');
-      connectChat(currentStream.user_login, currentStream.user_id);
-    }
-  }, [chatRefreshKey, currentStream?.user_login, currentStream?.user_id, connectChat]);
-
   // Force unpause chat when returning from About view
   useEffect(() => {
     if (activeView === 'chat') {
@@ -2687,19 +2673,18 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
    *   - Optionally chatter display names are appended at the lowest tier.
    *   - Match mode is prefix-only ("starts_with") or substring ("includes").
    *   - Dedupe by case-folded name so cross-provider duplicates collapse.
+   *   - A leading ':' (':Pog') is stripped before matching and flips the
+   *     provider order to Twitch-first, so Twitch-native / sub emotes lead.
+   *     A leading '@' instead prefixes the chatter match list.
    *
    * Ranking is a strict (providerTier, favoriteRank, alphabetical) tuple so a
-   * favorited Twitch emote never jumps over a non-favorited 7TV match. Provider
-   * tiers, lowest = best: 7tv (0), bttv (1), ffz (2), twitch (3), chatter (4).
-   * Within a provider, favorited emotes come first, then alphabetical.
+   * favorited Twitch emote never jumps over a non-favorited 7TV match. Default
+   * provider tiers, lowest = best: 7tv (0), bttv (1), ffz (2), twitch (3),
+   * chatter (4); a colon query reorders providers to twitch (0), 7tv (1),
+   * bttv (2), ffz (3) and drops chatters. Within a provider, favorited emotes
+   * come first, then alphabetical.
    */
   const TAB_MATCH_LIMIT = 50;
-  const PROVIDER_TIER: Record<Emote['provider'], number> = {
-    '7tv': 0,
-    bttv: 1,
-    ffz: 2,
-    twitch: 3,
-  };
   const getMatchingEmoteTokens = useCallback((query: string): EmoteTabCandidate[] => {
     if (!query) return [];
     const mode: 'starts_with' | 'includes' = settings.chat_input?.emote_tab_complete_match_mode ?? 'starts_with';
@@ -2709,24 +2694,43 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
     type Ranked = { item: EmoteTabCandidate; providerTier: number; favoriteRank: number };
     const ranked: Ranked[] = [];
 
-    const stripAt = q.startsWith('@') ? q.slice(1) : q;
     const isAtQuery = q.startsWith('@');
+    // A leading ':' is the Twitch-native trigger convention: ':Pog' should match
+    // the emote 'Pog' (no emote name contains a colon) and float Twitch emotes to
+    // the front of the carousel. A trailing ':' (':Pog:') is tolerated too. The
+    // '@' (chatter) and ':' (Twitch-first) prefixes are mutually exclusive.
+    const isColonQuery = q.startsWith(':');
+    const stripAt = isAtQuery
+      ? q.slice(1)
+      : isColonQuery
+        ? q.slice(1).replace(/:$/, '')
+        : q;
     const test = (token: string) => {
       const t = token.toLowerCase();
       return mode === 'starts_with' ? t.startsWith(stripAt) : t.includes(stripAt);
     };
 
-    if (emotes && !isAtQuery) {
+    if (emotes && !isAtQuery && stripAt) {
       const favoriteIds = new Set(favoriteEmotes.map(f => f.id));
       // Walk providers in tier order so the seen-set drops cross-provider dupes
       // in favor of the higher-tier provider (e.g. a 7TV "Kappa" wins over the
-      // Twitch one).
-      const ordered: Array<[Emote['provider'], Emote[] | undefined]> = [
-        ['7tv', emotes['7tv']],
-        ['bttv', emotes.bttv],
-        ['ffz', emotes.ffz],
-        ['twitch', emotes.twitch],
-      ];
+      // Twitch one). A colon-prefixed query flips Twitch to the front so
+      // Twitch-native / sub emotes lead, with the third-party sets as fallback.
+      const ordered: Array<[Emote['provider'], Emote[] | undefined]> = isColonQuery
+        ? [
+            ['twitch', emotes.twitch],
+            ['7tv', emotes['7tv']],
+            ['bttv', emotes.bttv],
+            ['ffz', emotes.ffz],
+          ]
+        : [
+            ['7tv', emotes['7tv']],
+            ['bttv', emotes.bttv],
+            ['ffz', emotes.ffz],
+            ['twitch', emotes.twitch],
+          ];
+      const tierOf = (provider: Emote['provider']) =>
+        ordered.findIndex(([p]) => p === provider);
       for (const [provider, list] of ordered) {
         if (!list) continue;
         for (const e of list) {
@@ -2735,11 +2739,11 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
           if (!test(e.name)) continue;
           seen.add(key);
           ranked.push({
-            providerTier: PROVIDER_TIER[provider],
+            providerTier: tierOf(provider),
             favoriteRank: favoriteIds.has(e.id) ? 0 : 1,
             item: {
               name: e.name,
-              priority: PROVIDER_TIER[provider],
+              priority: tierOf(provider),
               emote: {
                 id: e.id,
                 name: e.name,
@@ -2754,7 +2758,7 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
       }
     }
 
-    if (includeChatters) {
+    if (includeChatters && !isColonQuery) {
       const chatters = getMatchingUsers(stripAt);
       for (const u of chatters) {
         const dn = u.displayName || u.username;
