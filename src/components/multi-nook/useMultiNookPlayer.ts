@@ -183,7 +183,7 @@ export const useMultiNookPlayer = ({
         nudgeOffset: 0.2, 
         nudgeMaxRetry: 3, 
         maxFragLookUpTolerance: 0.5, 
-        liveSyncDuration: currentSettings.low_latency_mode ? 6 : 8, // Seconds behind the live edge. hls.js won't hold closer than ~the stream's #EXT-X-TARGETDURATION (Twitch declares 6 even for ~2s segments) without stalling, so config alone can't beat ~6-8s; real low latency is the relay-side targetduration rewrite + PREFETCH promotion.
+        liveSyncDuration: 8, // Fixed at 8s for tiles, independent of low_latency_mode. Grid tiles run deliberately tiny per-tile buffers (maxBufferLength 15) for RAM, so they can't absorb a normal ~3s Twitch segment-delivery gap at a tight cushion — 6 stalled in the wild. Per-tile latency isn't perceptually important in a grid, so favor a solid 8s cushion over riding the live edge. (Real low latency would need the relay-side targetduration rewrite + PREFETCH promotion, parked.)
         liveMaxLatencyDuration: 600, // Massive drift ceiling so manual scrobbling backwards into the DVR buffer isn't violently snapped to live edge.
         maxLiveSyncPlaybackRate: 1.15,
         liveDurationInfinity: true, 
