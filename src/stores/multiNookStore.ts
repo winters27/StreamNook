@@ -103,6 +103,11 @@ interface MultiNookState {
   /** Id of the preset the current grid was loaded from, or null. Drives the
    *  toolbar's "equipped preset" icon and the Stop action. Persisted with slots. */
   activePresetId: string | null;
+  /** Id of the slot currently filling the whole grid area (solo-like), or null.
+   *  Ephemeral view state: never persisted, always cleared on exit/teardown. The
+   *  maximized tile is restyled in place (no remount) so its HLS player keeps
+   *  running; the other tiles stay mounted but hidden behind it. */
+  maximizedSlotId: string | null;
   slots: MultiNookSlot[];
   flyingAnimation: { x: number; y: number; id: number } | null;
   suckUpLogin: string | null;
@@ -121,6 +126,12 @@ interface MultiNookState {
   retrySlot: (id: string) => void;
   reorderSlots: (newSlots: MultiNookSlot[]) => void;
   toggleFocusSlot: (id: string) => void;
+  /** Toggle a tile filling the whole grid area. Maximizing also focuses the tile
+   *  (takes over audio + chat) so it behaves like the solo player. Passing the
+   *  already-maximized id, or any id while it is maximized, restores the grid. */
+  toggleMaximizeSlot: (id: string) => void;
+  /** Directly set (or clear with null) the maximized tile. Used by Esc / teardown. */
+  setMaximizedSlot: (id: string | null) => void;
   dockSlot: (id: string) => void;
   undockSlot: (id: string) => void;
   swapDockedSlot: (id: string) => void;
@@ -146,6 +157,7 @@ export const usemultiNookStore = create<MultiNookState>((set, get) => ({
   isChatHidden: false,
   activeChatChannelId: null,
   activePresetId: null,
+  maximizedSlotId: null,
   slots: [],
   flyingAnimation: null,
   suckUpLogin: null,
@@ -254,7 +266,7 @@ export const usemultiNookStore = create<MultiNookState>((set, get) => ({
     // streamUrl is intentionally left undefined: MultiNookView's missing-stream
     // loader picks these up and concurrently starts the proxies on the next frame.
     // Tag the grid with the preset it came from (replace mode = the grid IS this preset).
-    set({ slots: newSlots, activeChatChannelId: pickActiveChatChannel(newSlots), activePresetId: presetId ?? null });
+    set({ slots: newSlots, activeChatChannelId: pickActiveChatChannel(newSlots), activePresetId: presetId ?? null, maximizedSlotId: null });
 
     for (const slot of newSlots) {
       if (slot.channelId) {
@@ -289,7 +301,7 @@ export const usemultiNookStore = create<MultiNookState>((set, get) => ({
         invoke('unregister_active_channel', { channelId: slot.channelId }).catch(() => {});
       }
     }
-    set({ slots: [], activeChatChannelId: null, activePresetId: null });
+    set({ slots: [], activeChatChannelId: null, activePresetId: null, maximizedSlotId: null });
 
     // Revert presence to idle since nothing is playing.
     const settings = useAppStore.getState().settings;
@@ -429,7 +441,7 @@ export const usemultiNookStore = create<MultiNookState>((set, get) => ({
         }
       }
 
-      set({ activeChatChannelId: null, slots: [] }); // Maintain chat hidden state
+      set({ activeChatChannelId: null, slots: [], maximizedSlotId: null }); // Maintain chat hidden state
 
       // Restore Home view if no single stream is playing
       if (!useAppStore.getState().streamUrl) {
@@ -566,6 +578,11 @@ export const usemultiNookStore = create<MultiNookState>((set, get) => ({
       });
     }
     
+    // Removing the maximized tile drops back to the grid.
+    if (get().maximizedSlotId === id) {
+      set({ maximizedSlotId: null });
+    }
+
     // Removing the last tile also un-equips the preset (the grid is now empty).
     set(newSlots.length === 0 ? { slots: newSlots, activePresetId: null } : { slots: newSlots });
 
@@ -662,6 +679,38 @@ export const usemultiNookStore = create<MultiNookState>((set, get) => ({
     }
   },
 
+  toggleMaximizeSlot: (id: string) => {
+    const { slots, maximizedSlotId, saveSlots } = get();
+    const slot = slots.find(s => s.id === id);
+    // Only visible tiles can be maximized (docked tiles aren't on the grid).
+    if (!slot || slot.isMinimized) return;
+
+    // Already filling the space (this tile or, defensively, any tile) → restore grid.
+    if (maximizedSlotId) {
+      set({ maximizedSlotId: null });
+      return;
+    }
+
+    // Maximize this tile AND focus it: unmute it, mute everyone else, so it acts
+    // exactly like the solo player. Mirrors toggleFocusSlot's "focus this" branch.
+    const newSlots = slots.map(s => ({
+      ...s,
+      isFocused: s.id === id,
+      muted: s.id !== id,
+    }));
+    set({ maximizedSlotId: id, slots: newSlots });
+    saveSlots();
+
+    // Move chat to the maximized stream so chat matches what you're watching.
+    if (slot.channelId) {
+      set({ activeChatChannelId: slot.channelId });
+    }
+  },
+
+  setMaximizedSlot: (id: string | null) => {
+    set({ maximizedSlotId: id });
+  },
+
   dockSlot: (id: string) => {
     const { slots, saveSlots } = get();
     const slot = slots.find(s => s.id === id);
@@ -681,7 +730,8 @@ export const usemultiNookStore = create<MultiNookState>((set, get) => ({
       return s;
     });
 
-    set({ slots: newSlots });
+    // Docking the maximized tile takes it off the grid → restore the grid view.
+    set(get().maximizedSlotId === id ? { slots: newSlots, maximizedSlotId: null } : { slots: newSlots });
     saveSlots();
   },
 
@@ -728,16 +778,19 @@ export const usemultiNookStore = create<MultiNookState>((set, get) => ({
         return { ...s, isMinimized: false, isFocused: true, muted: false };
       }
       if (s.id === slotToDock.id) {
-        // Dock the old one
+        // Dock the old one. If it was the maximized tile, the grid restore is
+        // handled below by clearing maximizedSlotId.
         return { ...s, isMinimized: true, isFocused: false, muted: true };
       }
       // If we are swapping, we assume 1-stream viewing mode, so mute all others
       return { ...s, isFocused: false, muted: true };
     });
-    
-    set({ slots: newSlots });
+
+    // A swap reshuffles which tile is the active one, so drop any fill-the-space
+    // overlay back to the grid (the swapped-in tile is freshly restored/focused).
+    set(get().maximizedSlotId ? { slots: newSlots, maximizedSlotId: null } : { slots: newSlots });
     saveSlots();
-    
+
     if (slotToRestore.channelId) {
       set({ activeChatChannelId: slotToRestore.channelId });
     }

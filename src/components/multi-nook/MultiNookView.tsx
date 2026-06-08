@@ -35,9 +35,26 @@ const UNDOCK_DROP_ID = 'undock-drop-zone';
 const DOCKED_PREFIX = 'docked::';
 
 export const MultiNookView: React.FC = () => {
-  const { slots, reorderSlots, dockSlot, undockSlot, batchLoadMissingStreams } = usemultiNookStore();
+  const { slots, reorderSlots, dockSlot, undockSlot, batchLoadMissingStreams, maximizedSlotId, setMaximizedSlot } = usemultiNookStore();
   const visibleSlots = useMemo(() => slots.filter((s) => !s.isMinimized), [slots]);
   const minimizedSlots = useMemo(() => slots.filter((s) => s.isMinimized), [slots]);
+
+  // A maximized tile only counts while it's still a visible slot — guards against
+  // a stale id (e.g. the tile was docked/removed) painting an empty overlay.
+  const isMaximizing = maximizedSlotId != null && visibleSlots.some((s) => s.id === maximizedSlotId);
+
+  // Esc restores the grid while a tile is filling the space.
+  useEffect(() => {
+    if (!isMaximizing) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setMaximizedSlot(null);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [isMaximizing, setMaximizedSlot]);
 
   // Mount the global Co-Stream Sync Controller
   useMultiNookSync();
@@ -288,7 +305,7 @@ export const MultiNookView: React.FC = () => {
           dockedPrefix={DOCKED_PREFIX}
         />
 
-        <div className="flex-1 w-full p-2 relative overflow-hidden" ref={containerRef}>
+        <div className={`flex-1 w-full relative overflow-hidden ${isMaximizing ? '' : 'p-2'}`} ref={containerRef}>
           {visibleSlots.length === 0 && !showUndockZone ? (
             <MultiNookTutorial />
           ) : (
@@ -305,12 +322,27 @@ export const MultiNookView: React.FC = () => {
                 >
                   {stableDomSlots.map((slot) => {
                     const cssOrder = orderMap.get(slot.id) ?? 0;
+                    const isThisMaximized = isMaximizing && slot.id === maximizedSlotId;
+
+                    // While one tile fills the space, restyle it IN PLACE to an
+                    // absolute full-bleed overlay (no remount → HLS keeps running,
+                    // framer's `layout` animates the zoom) and collapse the rest to
+                    // display:none. They stay mounted (still in the React tree), so
+                    // their players keep buffering for an instant restore.
+                    let cellStyle: React.CSSProperties = { width: cellWidth, height: cellHeight };
+                    if (isMaximizing) {
+                      cellStyle = isThisMaximized
+                        ? { position: 'absolute', inset: 0, width: '100%', height: '100%', zIndex: 30, margin: 0 }
+                        : { display: 'none' };
+                    }
+
                     return (
-                      <MultiNookCell 
-                        key={slot.id} 
-                        slot={slot} 
-                        cssOrder={cssOrder * 2} 
-                        customStyle={{ width: cellWidth, height: cellHeight }}
+                      <MultiNookCell
+                        key={slot.id}
+                        slot={slot}
+                        cssOrder={cssOrder * 2}
+                        customStyle={cellStyle}
+                        isMaximized={isThisMaximized}
                       />
                     );
                   })}

@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useSortable } from '@dnd-kit/sortable';
 import { motion } from 'framer-motion';
 import { invoke } from '@tauri-apps/api/core';
@@ -8,7 +8,7 @@ import { usemultiNookStore } from '../../stores/multiNookStore';
 import { useChannelSocial } from '../../hooks/useChannelSocial';
 import StreamTitleWithEmojis from '../StreamTitleWithEmojis';
 import { Tooltip } from '../ui/Tooltip';
-import { GripHorizontal, Undo2, Loader2, RefreshCcw, EyeOff, WifiOff } from 'lucide-react';
+import { GripHorizontal, Undo2, Loader2, RefreshCcw, EyeOff, WifiOff, Maximize2, Minimize2 } from 'lucide-react';
 import { Heart, HeartBreak, X as XIcon } from 'phosphor-react';
 import { Logger } from '../../utils/logger';
 
@@ -17,11 +17,25 @@ interface MultiNookCellProps {
   cssOrder?: number;
   gridSpanClass?: string;
   customStyle?: React.CSSProperties;
+  /** True when this tile is filling the whole grid area (solo-like). */
+  isMaximized?: boolean;
 }
 
-export const MultiNookCell: React.FC<MultiNookCellProps> = ({ slot, cssOrder, gridSpanClass = '', customStyle = {} }) => {
+/** A single pending "unfocus" (focus toggle-off) shared across all tiles. Clicking
+ *  a focused tile defers the unfocus briefly so a double-click (which fills the
+ *  space) can cancel it first — that's what stops the audible mute/unmute flip on
+ *  the way to maximizing. Focus-ON stays instant; only this toggle-off is deferred. */
+let pendingFocusToggle: ReturnType<typeof setTimeout> | null = null;
+const clearPendingFocusToggle = () => {
+  if (pendingFocusToggle) {
+    clearTimeout(pendingFocusToggle);
+    pendingFocusToggle = null;
+  }
+};
+
+export const MultiNookCell: React.FC<MultiNookCellProps> = ({ slot, cssOrder, gridSpanClass = '', customStyle = {}, isMaximized = false }) => {
   const { id, channelLogin, channelName, channelId, volume, muted, isFocused, streamUrl, isMinimized = false, loadError, profileImageUrl } = slot;
-  const { toggleFocusSlot, dockSlot, removeSlot, changeSlotQuality, retrySlot } = usemultiNookStore();
+  const { toggleFocusSlot, toggleMaximizeSlot, dockSlot, removeSlot, changeSlotQuality, retrySlot } = usemultiNookStore();
 
   // Offline tiles show the offline overlay instead of an endless loading spinner.
   const isLoading = !streamUrl && !loadError;
@@ -197,6 +211,33 @@ export const MultiNookCell: React.FC<MultiNookCellProps> = ({ slot, cssOrder, gr
     isDragging,
   } = useSortable({ id });
 
+  // Merge dnd-kit's node ref with our own so we can attach a native listener.
+  const cellRef = useRef<HTMLDivElement | null>(null);
+  const setRefs = useCallback((node: HTMLDivElement | null) => {
+    setNodeRef(node);
+    cellRef.current = node;
+  }, [setNodeRef]);
+
+  // Capture-phase double-click handler. Runs on the cell (an ancestor of Plyr's
+  // container) BEFORE the event reaches Plyr, so stopPropagation here prevents
+  // Plyr's own dblclick→fullscreen (which the bridge turns into true OS
+  // fullscreen). Double-click now means ONE thing: fill the space / restore.
+  useEffect(() => {
+    const el = cellRef.current;
+    if (!el) return;
+    const onDblCapture = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      // Let real player controls (incl. the fullscreen button) behave normally.
+      if (target.closest('button') || target.closest('.plyr__controls') || target.closest('.plyr__menu')) return;
+      e.stopPropagation();
+      e.preventDefault();
+      clearPendingFocusToggle(); // a double-click cancels any deferred unfocus
+      toggleMaximizeSlot(id);
+    };
+    el.addEventListener('dblclick', onDblCapture, { capture: true });
+    return () => el.removeEventListener('dblclick', onDblCapture, { capture: true });
+  }, [id, toggleMaximizeSlot]);
+
   // Map dnd-kit's drag offset cleanly to Framer Motion's coordinate space
   const x = transform ? Math.round(transform.x) : 0;
   const y = transform ? Math.round(transform.y) : 0;
@@ -216,25 +257,43 @@ export const MultiNookCell: React.FC<MultiNookCellProps> = ({ slot, cssOrder, gr
       layout
       animate={{ x, y, scale }}
       transition={isDragging ? { duration: 0 } : { type: 'spring', stiffness: 350, damping: 30 }}
-      ref={setNodeRef}
+      ref={setRefs}
       style={combinedStyle}
       onClick={(e) => {
-        // Only focus if the click wasn't on a button, tool, or plyr control slider
+        // Ignore clicks on buttons, tools, or plyr control sliders.
         const target = e.target as HTMLElement;
-        if (!target.closest('button') && !target.closest('.plyr__controls') && !target.closest('.plyr__menu')) {
+        if (target.closest('button') || target.closest('.plyr__controls') || target.closest('.plyr__menu')) return;
+        // While maximized, a bare click shouldn't change focus (you're already
+        // watching this one). The second click of a double-click (detail === 2)
+        // is left for the capture-phase dblclick handler that fills the space.
+        if (isMaximized || e.detail >= 2) return;
+        clearPendingFocusToggle();
+        if (!isFocused) {
+          // Focusing a tile (the common audio switch) stays instant.
           toggleFocusSlot(id);
+        } else {
+          // Un-focusing (unmute-all) is deferred so a double-click can cancel it
+          // before it fires — no mute/unmute flip while maximizing this tile.
+          pendingFocusToggle = setTimeout(() => {
+            pendingFocusToggle = null;
+            toggleFocusSlot(id);
+          }, 260);
         }
       }}
-      className={`${gridSpanClass} relative w-full h-full rounded-lg overflow-hidden border border-white/5 ${
-        isFocused ? 'shadow-[0_0_25px_var(--color-accent-muted)]' : ''
+      className={`${gridSpanClass} relative w-full h-full overflow-hidden ${
+        isMaximized ? '' : 'rounded-lg border border-white/5'
+      } ${
+        isFocused && !isMaximized ? 'shadow-[0_0_25px_var(--color-accent-muted)]' : ''
       } ${
         isDragging ? 'opacity-50 blur-sm' : 'opacity-100'
-      } bg-black/40 transition-[box-shadow,opacity,filter] duration-300 group flex items-center justify-center video-player-container [&_.plyr]:w-full [&_.plyr]:h-full [&_.plyr]:absolute [&_.plyr]:inset-0 cursor-pointer`}
+      } bg-black/40 transition-[box-shadow,opacity,filter] duration-300 group flex items-center justify-center video-player-container [&_.plyr]:w-full [&_.plyr]:h-full [&_.plyr]:absolute [&_.plyr]:inset-0 ${
+        isMaximized ? 'cursor-default' : 'cursor-pointer'
+      }`}
     >
       <video
         ref={videoRef}
         className="w-full h-full"
-        style={{ backgroundColor: '#000', objectFit: 'cover' }}
+        style={{ backgroundColor: '#000', objectFit: isMaximized ? 'contain' : 'cover' }}
         autoPlay
         playsInline
       />
@@ -302,19 +361,21 @@ export const MultiNookCell: React.FC<MultiNookCellProps> = ({ slot, cssOrder, gr
       >
         <div className="absolute inset-0 bg-gradient-to-b from-black/60 via-black/20 to-transparent pointer-events-none" />
         <div className="relative px-3 pt-2 pb-6 flex items-start justify-between">
-          {/* Absolute Center Grab Handle */}
-          <div className="absolute left-1/2 -translate-x-1/2 top-1.5 z-20">
-            <Tooltip content="Drag to reposition stream" delay={500} side="top">
-              <div
-                className="cursor-grab active:cursor-grabbing flex items-center justify-center px-3 py-1 glass-button rounded-lg text-emerald-300 hover:text-emerald-200 active:scale-95 [&_*]:cursor-grab"
-                style={{ backgroundColor: 'rgba(16, 185, 129, 0.20)', backdropFilter: 'blur(16px)' }}
-                {...attributes}
-                {...listeners}
-              >
-                <GripHorizontal className="w-5 h-5 drop-shadow-md" />
-              </div>
-            </Tooltip>
-          </div>
+          {/* Absolute Center Grab Handle — hidden while maximized (nothing to reorder) */}
+          {!isMaximized && (
+            <div className="absolute left-1/2 -translate-x-1/2 top-1.5 z-20">
+              <Tooltip content="Drag to reposition stream" delay={500} side="top">
+                <div
+                  className="cursor-grab active:cursor-grabbing flex items-center justify-center px-3 py-1 glass-button rounded-lg text-emerald-300 hover:text-emerald-200 active:scale-95 [&_*]:cursor-grab"
+                  style={{ backgroundColor: 'rgba(16, 185, 129, 0.20)', backdropFilter: 'blur(16px)' }}
+                  {...attributes}
+                  {...listeners}
+                >
+                  <GripHorizontal className="w-5 h-5 drop-shadow-md" />
+                </div>
+              </Tooltip>
+            </div>
+          )}
 
           {/* Left: Title */}
           <div className="flex-1 min-w-0 pr-12 z-10">
@@ -399,16 +460,33 @@ export const MultiNookCell: React.FC<MultiNookCellProps> = ({ slot, cssOrder, gr
               </>
             )}
 
-            {/* Dock (minimize to the tray strip) */}
-            <Tooltip content="Dock Stream" delay={200} side="top">
+            {/* Spotlight this stream (fills the space) / restore the grid */}
+            <Tooltip content={isMaximized ? 'Back to grid · double-click or Esc' : 'Spotlight · double-click'} delay={200} side="top">
               <button
-                onClick={() => dockSlot(id)}
+                onClick={() => toggleMaximizeSlot(id)}
                 className={glassButton}
                 style={{ backdropFilter: 'blur(16px)' }}
               >
-                <Undo2 className="w-4 h-4 text-white" />
+                {isMaximized ? (
+                  <Minimize2 className="w-4 h-4 text-white" />
+                ) : (
+                  <Maximize2 className="w-4 h-4 text-white" />
+                )}
               </button>
             </Tooltip>
+
+            {/* Dock (minimize to the tray strip) — hidden while maximized */}
+            {!isMaximized && (
+              <Tooltip content="Dock Stream" delay={200} side="top">
+                <button
+                  onClick={() => dockSlot(id)}
+                  className={glassButton}
+                  style={{ backdropFilter: 'blur(16px)' }}
+                >
+                  <Undo2 className="w-4 h-4 text-white" />
+                </button>
+              </Tooltip>
+            )}
 
             {/* Close (remove from grid) */}
             <Tooltip content="Close Stream" delay={200} side="top">
