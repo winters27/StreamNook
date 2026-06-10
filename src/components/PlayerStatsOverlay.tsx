@@ -5,10 +5,13 @@ import { Activity, Radio, X } from 'lucide-react';
 
 // Live playback telemetry overlay (the "behind live" + FPS readout). Reads hls.js
 // and the <video> element directly each second while open, so it costs nothing
-// when collapsed. The latency figure is measured to the live edge hls.js can see
-// (the last fully-published segment). Twitch's prefetch segments sit ahead of that
-// edge and hls.js doesn't consume them yet, so this reads to the published edge.
-// It becomes true-live once the relay promotes prefetch segments.
+// when collapsed. "Behind live" is wall-clock end-to-end: local time minus the
+// PROGRAM-DATE-TIME of the frame on screen (the same metric as Twitch's own
+// "Latency To Broadcaster" stat, so the two players read comparably). The
+// playlist-edge distance (hls.latency) is only a fallback: when the relay promotes
+// prefetch hints, the playlist edge is declared ahead of what the encoder has
+// produced, so edge distance over-reads by the ~2-4s of future nobody is behind.
+// PDT instead trusts the local clock, and NTP keeps that within ~0.5s.
 
 interface AdSourceLike {
   mode?: string;
@@ -18,6 +21,8 @@ interface AdSourceLike {
 
 interface Metrics {
   latency: number | null;
+  /** Configured live-sync cushion (seconds behind the frontier the path is DESIGNED to ride). */
+  syncTarget: number | null;
   resolution: string | null;
   fps: number | null;
   bitrateMbps: number | null;
@@ -29,6 +34,7 @@ interface Metrics {
 
 const EMPTY: Metrics = {
   latency: null,
+  syncTarget: null,
   resolution: null,
   fps: null,
   bitrateMbps: null,
@@ -74,24 +80,34 @@ function readMetrics(hls: Hls | null, video: HTMLVideoElement | null): Metrics {
     if (typeof hls.bandwidthEstimate === 'number' && hls.bandwidthEstimate > 0) {
       m.bandwidthMbps = hls.bandwidthEstimate / 1_000_000;
     }
-    // Prefer hls.js's own latency tracker; fall back to (live edge - playhead).
+    // Wall-clock end-to-end first: now minus the PDT timestamp of the playing
+    // frame (Twitch playlists always carry PROGRAM-DATE-TIME and both relay paths
+    // pass it through). Edge-based fallbacks only for streams without PDT.
     let lat: number | null = null;
-    if (typeof hls.latency === 'number' && hls.latency > 0) {
+    const playingDate = hls.playingDate;
+    if (playingDate) {
+      lat = Math.max(0, (Date.now() - playingDate.getTime()) / 1000);
+    } else if (typeof hls.latency === 'number' && hls.latency > 0) {
       lat = hls.latency;
     } else if (lvl?.details && video) {
       const edge = lvl.details.edge;
       if (Number.isFinite(edge)) lat = Math.max(0, edge - video.currentTime);
     }
     m.latency = lat;
+    const sync = hls.config.liveSyncDuration;
+    if (typeof sync === 'number' && Number.isFinite(sync)) m.syncTarget = sync;
   }
 
   return m;
 }
 
+// Thresholds are for the END-TO-END number: ~2-3s is the LL-HLS path, ~7-8s is the
+// natural floor of the conservative non-LL cushion (6s cushion + ~2s encode+CDN
+// pipeline), so red starts only past what any healthy mode can sit at.
 function latencyClass(latency: number | null): string {
   if (latency == null) return 'text-textPrimary';
   if (latency <= 4) return 'text-emerald-400';
-  if (latency <= 8) return 'text-amber-400';
+  if (latency <= 9) return 'text-amber-400';
   return 'text-red-400';
 }
 
@@ -138,11 +154,16 @@ const PlayerStatsOverlay = ({ hlsRef, videoRef, open, onToggle, onGoLive, adSour
         : `Proxy${adSource.region ? ` ${adSource.region}` : ''}`
     : null;
 
-  const showGoLive = metrics.latency != null && metrics.latency > 5;
+  // Go Live is for genuine drift (a scrub-back or latency creep), not the path's
+  // natural floor: every mode rides ~syncTarget behind the download frontier plus
+  // ~2s of encode+CDN pipeline it can never recover, so "behind live" cannot go
+  // below roughly syncTarget + 2 by design. Only offer the button well past that.
+  const goLiveFloor = (metrics.syncTarget ?? 4) + 4;
+  const showGoLive = metrics.latency != null && metrics.latency > goLiveFloor;
 
   return (
     <div className="absolute bottom-16 left-4 z-50 w-52 pointer-events-auto">
-      <div className="glass-panel rounded-lg border border-white/10 bg-background/85 backdrop-blur-md px-3 py-2.5 text-xs">
+      <div className="glass-panel rounded-lg border border-white/10 bg-background/95 backdrop-blur-md px-3 py-2.5 text-xs">
         <div className="flex items-center justify-between mb-2">
           <div className="flex items-center gap-1.5">
             <Activity size={13} className="text-accent" />
