@@ -17,6 +17,8 @@ import CommandPalette from './components/CommandPalette';
 import { useCommandPaletteHotkey } from './hooks/useCommandPaletteHotkey';
 import { useKeybindings } from './keybindings';
 import { startSnippetSync } from './stores/snippetStore';
+import { startListSync } from './stores/listStore';
+import ListsPanel from './components/ListsPanel';
 import { usemultiNookStore } from './stores/multiNookStore';
 import { MultiNookView } from './components/multi-nook/MultiNookView';
 import MultiNookChatSwitcher from './components/multi-nook/MultiNookChatSwitcher';
@@ -77,23 +79,32 @@ function App() {
   useCommandPaletteHotkey();
   useKeybindings();
   useEffect(() => {
-    // Subscribe to snippet-store updates from MultiChat popouts so favoriting
-    // or adding a custom snippet over there propagates here without reload.
-    let unlisten: (() => void) | undefined;
+    // Subscribe to snippet-store and list-store updates from MultiChat popouts
+    // so changes made over there propagate here without reload.
+    let unlistenSnippets: (() => void) | undefined;
+    let unlistenLists: (() => void) | undefined;
     let cancelled = false;
     void startSnippetSync().then((u) => {
       if (cancelled) {
         u?.();
         return;
       }
-      unlisten = u;
+      unlistenSnippets = u;
+    });
+    void startListSync().then((u) => {
+      if (cancelled) {
+        u?.();
+        return;
+      }
+      unlistenLists = u;
     });
     return () => {
       cancelled = true;
-      unlisten?.();
+      unlistenSnippets?.();
+      unlistenLists?.();
     };
   }, []);
-  const { loadSettings, chatPlacement, isLoading, streamUrl, currentMediaType, checkAuthStatus, addToast, showBadgesOverlay, setShowBadgesOverlay, badgesOverlayInitialPaintId, badgesOverlayInitialBadgeId, badgesOverlayInitialStreamNook, badgesOverlayInitialTarget, showWhispersOverlay, setShowWhispersOverlay, settings, updateSettings, isTheaterMode, isHomeActive, loadActiveDropsCache, profileModalUser, setProfileModalUser, openSettings } = useAppStore();
+  const { loadSettings, chatPlacement, isLoading, streamUrl, currentMediaType, checkAuthStatus, addToast, showBadgesOverlay, setShowBadgesOverlay, badgesOverlayInitialPaintId, badgesOverlayInitialBadgeId, badgesOverlayInitialStreamNook, badgesOverlayInitialTarget, showWhispersOverlay, setShowWhispersOverlay, showListsPanel, settings, updateSettings, isTheaterMode, isHomeActive, loadActiveDropsCache, profileModalUser, setProfileModalUser, openSettings } = useAppStore();
   // Channels owned by StreamNook MultiChat popouts. When the currently-watched
   // channel is in here, the in-app chat panel collapses so the popout becomes
   // the sole chat surface — no duplicate chat across windows.
@@ -1624,6 +1635,9 @@ function App() {
         isOpen={showWhispersOverlay}
         onClose={() => setShowWhispersOverlay(false)}
       />
+      <AnimatePresence>
+        {showListsPanel && <ListsPanel />}
+      </AnimatePresence>
       <SetupWizard
         isOpen={showSetupWizard}
         onClose={() => setShowSetupWizard(false)}

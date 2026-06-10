@@ -67,6 +67,7 @@ const JUMP_TO_IDS = [
   'qa.openDrops',
   'qa.openBadges',
   'qa.openWhispers',
+  'qa.openLists',
   'qa.openMultiChat',
   'qa.goHome',
   'qa.openSettings',

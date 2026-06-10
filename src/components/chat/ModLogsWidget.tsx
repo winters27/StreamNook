@@ -8,6 +8,8 @@ import { openProfilePopup } from '../../utils/openProfilePopup';
 import { colorForAction, highlightContainerStyle, type HighlightStyleKey } from '../../utils/modLogCategories';
 import { useAvatar } from '../../utils/avatarCache';
 import { Tooltip } from '../ui/Tooltip';
+import { ClipboardList } from 'lucide-react';
+import { ListsSurface } from '../lists/ListsSurface';
 
 // Newest entries are prepended at the top. Keep the view pinned to the top (so
 // the newest is always visible and older entries slide down beneath it) while
@@ -299,6 +301,17 @@ function loadSplitPref(): boolean {
   }
 }
 
+// Persisted preference for showing the Lists column inside this pane. Default
+// off; like the split pref it's a viewing preference shared across windows.
+const LISTS_PREF_KEY = 'streamnook.modlogs.lists';
+function loadListsPref(): boolean {
+  try {
+    return localStorage.getItem(LISTS_PREF_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
 // `forceShow` lets a host render the pane regardless of the global
 // `settings.show_mod_logs` preference. The main app leaves it unset (the pane
 // follows the global setting); the MultiChat popout passes `forceShow` because
@@ -395,6 +408,22 @@ export const ModLogsWidget: React.FC<{
     });
   }, []);
 
+  // Lists column: the user's reference lists living inside this pane, taking
+  // an even flex slot exactly like a channel column. With a single channel the
+  // pane splits logs | lists.
+  const [showLists, setShowLists] = useState<boolean>(loadListsPref);
+  const toggleLists = useCallback(() => {
+    setShowLists((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem(LISTS_PREF_KEY, next ? '1' : '0');
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+  }, []);
+
   // Load each active channel's persisted history (so reopening restores it), and
   // prune entries + load-guards for channels no longer open anywhere.
   useEffect(() => {
@@ -458,6 +487,17 @@ export const ModLogsWidget: React.FC<{
               </button>
             </Tooltip>
           )}
+          <Tooltip content={showLists ? 'Hide lists' : 'Show lists in this pane'}>
+            <button
+              onClick={toggleLists}
+              aria-pressed={showLists}
+              className={`p-1 rounded transition-colors ${
+                showLists ? 'text-accent' : 'text-textSecondary hover:text-text hover:bg-background'
+              }`}
+            >
+              <ClipboardList className="w-4 h-4" />
+            </button>
+          </Tooltip>
           {visibleLogs.length > 0 && (
             <span className="text-xs text-textSecondary bg-background px-2 py-0.5 rounded-full">
               {visibleLogs.length}
@@ -489,10 +529,12 @@ export const ModLogsWidget: React.FC<{
         </div>
       </div>
 
-      {/* Logs Container — combined single list, or a column per channel when split */}
-      {isSplit ? (
-        <div className="flex min-h-0 flex-1 flex-row overflow-hidden">
-          {activeChannels.map((ch, i) => (
+      {/* Logs Container — combined single list, or a column per channel when
+          split, plus the Lists column when toggled on. Lists take an even flex
+          slot exactly like a channel column. */}
+      <div className="flex min-h-0 flex-1 flex-row overflow-hidden">
+        {isSplit ? (
+          activeChannels.map((ch, i) => (
             <ModLogColumn
               key={ch.login}
               channel={ch}
@@ -501,37 +543,42 @@ export const ModLogsWidget: React.FC<{
               highlightStyle={highlightStyle}
               isFirst={i === 0}
             />
-          ))}
-        </div>
-      ) : (
-        <div
-          ref={logsContainerRef}
-          style={{ overflowAnchor: 'none' }}
-          className="flex-1 overflow-y-auto scrollbar-thin scrollbar-thumb-accent scrollbar-track-transparent p-2 space-y-1.5"
-        >
-          <AnimatePresence initial={false}>
-            {visibleLogs.length === 0 ? (
-              <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                className="flex items-center justify-center h-full text-textSecondary text-sm"
-              >
-                No moderation events yet
-              </motion.div>
-            ) : (
-              visibleLogs.map((log) => (
-                <ModLogRow
-                  key={log.id}
-                  log={log}
-                  colors={modColors}
-                  highlightStyle={highlightStyle}
-                  showChannel={showChannelPerEntry}
-                />
-              ))
-            )}
-          </AnimatePresence>
-        </div>
-      )}
+          ))
+        ) : (
+          <div
+            ref={logsContainerRef}
+            style={{ overflowAnchor: 'none' }}
+            className="min-w-0 flex-1 overflow-y-auto scrollbar-thin scrollbar-thumb-accent scrollbar-track-transparent p-2 space-y-1.5"
+          >
+            <AnimatePresence initial={false}>
+              {visibleLogs.length === 0 ? (
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  className="flex items-center justify-center h-full text-textSecondary text-sm"
+                >
+                  No moderation events yet
+                </motion.div>
+              ) : (
+                visibleLogs.map((log) => (
+                  <ModLogRow
+                    key={log.id}
+                    log={log}
+                    colors={modColors}
+                    highlightStyle={highlightStyle}
+                    showChannel={showChannelPerEntry}
+                  />
+                ))
+              )}
+            </AnimatePresence>
+          </div>
+        )}
+        {showLists && (
+          <div className="flex min-w-0 flex-1 flex-col overflow-hidden border-l border-borderSubtle">
+            <ListsSurface variant="docked" />
+          </div>
+        )}
+      </div>
     </div>
   );
 };

@@ -26,6 +26,7 @@ import CommandPalette from '../CommandPalette';
 import ClipModal from '../ClipModal';
 import { useCommandPaletteHotkey } from '../../hooks/useCommandPaletteHotkey';
 import { startSnippetSync } from '../../stores/snippetStore';
+import { startListSync } from '../../stores/listStore';
 import { TooltipManager } from '../ui/TooltipManager';
 import {
   acquireChannel,
@@ -227,18 +228,29 @@ async function minimizeWindow(): Promise<void> {
 export default function MultiChatWindow() {
   useCommandPaletteHotkey();
   useEffect(() => {
-    let unlisten: (() => void) | undefined;
+    let unlistenSnippets: (() => void) | undefined;
+    let unlistenLists: (() => void) | undefined;
     let cancelled = false;
     void startSnippetSync().then((u) => {
       if (cancelled) {
         u?.();
         return;
       }
-      unlisten = u;
+      unlistenSnippets = u;
+    });
+    // The mod-logs pane can host the Lists column, so this window needs the
+    // cross-window list sync too.
+    void startListSync().then((u) => {
+      if (cancelled) {
+        u?.();
+        return;
+      }
+      unlistenLists = u;
     });
     return () => {
       cancelled = true;
-      unlisten?.();
+      unlistenSnippets?.();
+      unlistenLists?.();
     };
   }, []);
   const [params] = useState<ParsedMultiChatParams>(() => parseMultiChatParams());

@@ -135,6 +135,19 @@ function build(): BindableCommand[] {
       run: () => app().setShowWhispersOverlay(true),
     },
     {
+      id: 'qa.openLists',
+      label: 'Toggle Lists panel',
+      description: 'Floating panel of your reference lists: usernames, commands, titles.',
+      category: 'Navigation',
+      context: 'global',
+      defaultBindings: ['Ctrl+Shift+L'],
+      keywords: 'lists notes reference ban evaders commands copy paste',
+      run: () => {
+        const s = app();
+        s.setShowListsPanel(!s.showListsPanel);
+      },
+    },
+    {
       id: 'qa.refreshFollows',
       label: 'Refresh followed streams',
       category: 'Navigation',

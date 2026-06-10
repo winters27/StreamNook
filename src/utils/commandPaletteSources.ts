@@ -22,6 +22,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { useAppStore, type SettingsTab } from '../stores/AppStore';
 import { useChatUserStore } from '../stores/chatUserStore';
 import { useSnippetStore } from '../stores/snippetStore';
+import { useListStore } from '../stores/listStore';
 import { Logger } from './logger';
 import { getBuiltInSnippets, type Snippet } from './commandPaletteCopypastas';
 import type { TwitchStream, TwitchVideo, TwitchClip } from '../types';
@@ -213,6 +214,14 @@ function buildQuickActions(): PaletteItem[] {
       subtitle: 'DMs imported from Twitch',
       keywords: 'whispers dms messages inbox',
       run: () => useAppStore.getState().setShowWhispersOverlay(true),
+    },
+    {
+      id: 'qa.openLists',
+      section: 'Quick Actions',
+      title: 'Open Lists',
+      subtitle: 'Your reference lists: usernames, commands, titles',
+      keywords: 'lists list notes reference ban evaders snipers commands copy paste',
+      run: () => useAppStore.getState().openListsPanel(),
     },
     {
       id: 'qa.openProfile',
@@ -851,6 +860,23 @@ export function getSnippetItems(): PaletteItem[] {
   );
 }
 
+// ---------- User lists -------------------------------------------------------
+
+/** One row per user list, opening the Lists panel with that list active.
+ *  Pulled fresh per render (same approach as getSnippetItems) so lists
+ *  created or renamed in the panel surface immediately. */
+export function getUserListItems(): PaletteItem[] {
+  return useListStore.getState().lists.map((list) => ({
+    id: `list.${list.id}`,
+    section: 'Quick Actions' as const,
+    title: `Open list: ${list.name}`,
+    subtitle: `Lists · ${list.entries.length} ${list.entries.length === 1 ? 'entry' : 'entries'}`,
+    keywords: `list lists open ${list.name.toLowerCase()}`,
+    initial: list.name.slice(0, 1).toUpperCase(),
+    run: () => useAppStore.getState().openListsPanel(list.id),
+  }));
+}
+
 // Hotkey-driven actions that aren't otherwise in the static catalog — surfaced
 // so every bindable action is reachable from the palette (and shows its
 // hotkey). Player controls no-op gracefully when nothing is playing; the stream
@@ -880,6 +906,7 @@ export function getStaticItems(): PaletteItem[] {
   const quick = buildQuickActions();
   const settings = buildSettingsItems();
   const snippets = getSnippetItems();
+  const userLists = getUserListItems();
   const socials = getCurrentStreamSocialItems();
   const playerControls = buildPlayerControlItems();
   const items: PaletteItem[] = [
@@ -893,6 +920,7 @@ export function getStaticItems(): PaletteItem[] {
     ...settings,
     ...playerControls,
     ...snippets,
+    ...userLists,
     ...socials,
   ];
   // Enrich rows whose id matches a bindable command with their current key

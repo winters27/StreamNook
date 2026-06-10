@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client';
 import App from './App.tsx';
 import ProfileCardPage from './pages/ProfileCardPage.tsx';
 import MultiChatWindow from './components/multichat/MultiChatWindow.tsx';
+import ListsWindow from './components/lists/ListsWindow.tsx';
 import { MotionScope } from './components/MotionScope.tsx';
 // Side-effect import: registers `window.openMultiChatWindow` for popout spawning.
 import './utils/multichatWindow';
@@ -31,11 +32,12 @@ localStorage.removeItem('plyr');
 const hash = window.location.hash;
 const isProfileCard = hash.startsWith('#/profile');
 const isMultiChat = hash.startsWith('#/multichat');
+const isListsWindow = hash.startsWith('#/lists');
 
 ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
   <React.StrictMode>
     <MotionScope>
-      {isMultiChat ? <MultiChatWindow /> : isProfileCard ? <ProfileCardPage /> : <App />}
+      {isMultiChat ? <MultiChatWindow /> : isListsWindow ? <ListsWindow /> : isProfileCard ? <ProfileCardPage /> : <App />}
     </MotionScope>
   </React.StrictMode>
 );

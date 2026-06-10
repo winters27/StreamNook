@@ -10,7 +10,8 @@
     "whisper-scraper",
     "twitch-login",
     "drops-login",
-    "multichat-*"
+    "multichat-*",
+    "lists-*"
   ],
   "permissions": [
     "core:window:allow-close",
@@ -32,6 +33,7 @@
     "core:window:allow-set-size",
     "core:window:allow-set-position",
     "core:window:allow-set-focus",
+    "core:window:allow-set-always-on-top",
     "core:window:allow-current-monitor",
     "core:window:allow-get-all-windows",
     "core:webview:allow-create-webview-window",
