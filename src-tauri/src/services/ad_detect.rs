@@ -277,6 +277,26 @@ pub fn retarget_playlist(playlist: &str) -> Option<String> {
 /// hint toward real time. The URLs are absolute (same CDN as the normal segments),
 /// so the player fetches them directly, exactly as it already does for the others.
 ///
+/// REFRESH-STABILITY (the load-bearing part — getting this wrong is what made the
+/// player hard-freeze with a fatal `levelParsingError`):
+/// hls.js reconciles every live-playlist refresh by matching segments on their
+/// media-sequence number and requiring, for each segment present in both the old
+/// and new playlist, that the URL path (after the trailing `?query` is stripped)
+/// AND the discontinuity counter `cc` are identical. `cc` is the running count of
+/// `#EXT-X-DISCONTINUITY` tags before a segment. Twitch signals a prefetch-boundary
+/// discontinuity with the SEPARATE tag `#EXT-X-PREFETCH-DISCONTINUITY`, which hls.js
+/// does not understand and silently drops. So a naive promotion (pass the marker
+/// through, just rewrite the hint) gives a promoted segment `cc=X` now but `cc=X+1`
+/// once Twitch finalizes it carrying a real `#EXT-X-DISCONTINUITY` — same SN, mismatched
+/// `cc`, fatal `levelParsingError` on the first refresh, never recovers.
+/// Fix: translate `#EXT-X-PREFETCH-DISCONTINUITY` into a real `#EXT-X-DISCONTINUITY`
+/// emitted immediately before the promoted segment it precedes, so the promoted and
+/// the eventual finalized form agree on `cc`. We deliberately do NOT touch
+/// `#EXT-X-MEDIA-SEQUENCE` (appending hints at the tail gives them the same SN they
+/// get when finalized) or `#EXT-X-DISCONTINUITY-SEQUENCE` (it seeds the cc of the
+/// FIRST segment in the window; tail-appended hints never shift it, and adjusting it
+/// would corrupt the already-published segments' cc). No cross-poll state is needed.
+///
 /// MUST only be called on an ad-free playlist: a prefetch segment landing inside an
 /// ad break could be the ad itself, and promoting it would fast-path it past the
 /// segment filter. Callers gate on the ad-detection state. Returns `None` when there
@@ -297,8 +317,23 @@ pub fn promote_prefetch(playlist: &str) -> Option<String> {
 
     let mut out = String::with_capacity(playlist.len() + 96);
     let mut promoted = false;
+    // Held when we've seen a `#EXT-X-PREFETCH-DISCONTINUITY` and are waiting to emit
+    // the real `#EXT-X-DISCONTINUITY` immediately before the next promoted segment.
+    let mut pending_discontinuity = false;
     for line in playlist.lines() {
-        if let Some(url) = line.trim().strip_prefix("#EXT-X-TWITCH-PREFETCH:") {
+        let trimmed = line.trim();
+        // Match the prefetch-discontinuity marker BEFORE the prefetch hint check.
+        // It carries no value; convert it to a real discontinuity in front of the
+        // hint it precedes, never pass the proprietary tag through (hls.js drops it).
+        if trimmed.starts_with("#EXT-X-PREFETCH-DISCONTINUITY") {
+            pending_discontinuity = true;
+            continue;
+        }
+        if let Some(url) = trimmed.strip_prefix("#EXT-X-TWITCH-PREFETCH:") {
+            if pending_discontinuity {
+                out.push_str("#EXT-X-DISCONTINUITY\n");
+                pending_discontinuity = false;
+            }
             out.push_str(&format!("#EXTINF:{:.3},live\n{}\n", dur, url.trim()));
             promoted = true;
         } else {
@@ -441,5 +476,169 @@ https://cdn/seg1.ts\n\
     fn promote_prefetch_noop_without_hints() {
         let pl = "#EXTM3U\n#EXTINF:2.000,live\nhttps://cdn/seg1.ts\n";
         assert!(promote_prefetch(pl).is_none());
+    }
+
+    // ──── Refresh-stability harness ────
+    // Model of how hls.js assigns each segment a (media-sequence number, URL with
+    // the trailing `?query` stripped, discontinuity counter) so we can prove its
+    // cross-refresh consistency check passes without running hls.js. Rules mirror the
+    // bundled parser: SN seeds from `#EXT-X-MEDIA-SEQUENCE` (default 0) and bumps once
+    // per segment URI; cc seeds from `#EXT-X-DISCONTINUITY-SEQUENCE` (default 0) and
+    // bumps on each `#EXT-X-DISCONTINUITY`; the URL is compared with everything from
+    // the first `?` onward removed.
+    fn parse_segments(playlist: &str) -> Vec<(u64, String, u64)> {
+        let lines: Vec<&str> = playlist.lines().collect();
+        let mut sn: u64 = 0;
+        let mut cc: u64 = 0;
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < lines.len() {
+            let t = lines[i].trim();
+            if let Some(v) = t.strip_prefix("#EXT-X-MEDIA-SEQUENCE:") {
+                sn = v.trim().parse().unwrap_or(0);
+            } else if let Some(v) = t.strip_prefix("#EXT-X-DISCONTINUITY-SEQUENCE:") {
+                cc = v.trim().parse().unwrap_or(0);
+            } else if t == "#EXT-X-DISCONTINUITY" {
+                cc += 1;
+            } else if t.starts_with("#EXTINF:") {
+                // The URI is the next non-tag line; skip forward to it.
+                let mut j = i + 1;
+                while j < lines.len() && (lines[j].trim().is_empty() || lines[j].trim().starts_with('#')) {
+                    j += 1;
+                }
+                if j < lines.len() {
+                    let u = lines[j].trim();
+                    let path = u.split('?').next().unwrap_or(u).to_string();
+                    out.push((sn, path, cc));
+                    sn += 1;
+                    i = j;
+                }
+            }
+            i += 1;
+        }
+        out
+    }
+
+    /// Assert that every media-sequence number present in BOTH polls resolves to the
+    /// same URL path and the same cc — exactly hls.js's `mapFragmentIntersection`
+    /// rule. A violation is what fires the fatal `levelParsingError`.
+    fn assert_refresh_consistent(poll_n: &str, poll_n1: &str) {
+        let a = parse_segments(poll_n);
+        let b = parse_segments(poll_n1);
+        for (sn_a, url_a, cc_a) in &a {
+            if let Some((_, url_b, cc_b)) = b.iter().find(|(sn_b, _, _)| sn_b == sn_a) {
+                assert_eq!(url_a, url_b, "URL path mismatch at sn {sn_a}");
+                assert_eq!(cc_a, cc_b, "cc mismatch at sn {sn_a} ({cc_a} != {cc_b})");
+            }
+        }
+        // Guard against an empty overlap silently passing.
+        let overlap = a
+            .iter()
+            .filter(|(sn_a, _, _)| b.iter().any(|(sn_b, _, _)| sn_b == sn_a))
+            .count();
+        assert!(overlap >= 2, "expected a real SN overlap, got {overlap}");
+    }
+
+    #[test]
+    fn promote_translates_prefetch_discontinuity() {
+        let pl = "#EXTM3U\n\
+#EXT-X-TARGETDURATION:2\n\
+#EXT-X-MEDIA-SEQUENCE:100\n\
+#EXTINF:2.000,live\n\
+https://cdn/seg100.ts\n\
+#EXT-X-PREFETCH-DISCONTINUITY\n\
+#EXT-X-TWITCH-PREFETCH:https://cdn/seg101.ts?token=A\n";
+        let out = promote_prefetch(pl).expect("should promote");
+        // The proprietary marker is gone, replaced by a real discontinuity placed
+        // immediately before the promoted segment.
+        assert!(!out.contains("#EXT-X-PREFETCH-DISCONTINUITY"));
+        assert!(out.contains("#EXT-X-DISCONTINUITY\n#EXTINF:2.000,live\nhttps://cdn/seg101.ts"));
+        // Exactly one discontinuity was introduced (no spurious extras).
+        assert_eq!(out.matches("#EXT-X-DISCONTINUITY").count(), 1);
+    }
+
+    #[test]
+    fn refresh_stable_cc_across_finalize() {
+        // Poll N: four published segments, then a prefetch-discontinuity opening the
+        // first hint (seg104), then a second hint (seg105).
+        let poll_n = "#EXTM3U\n\
+#EXT-X-TARGETDURATION:2\n\
+#EXT-X-MEDIA-SEQUENCE:100\n\
+#EXTINF:2.000,live\nhttps://cdn/seg100.ts\n\
+#EXTINF:2.000,live\nhttps://cdn/seg101.ts\n\
+#EXTINF:2.000,live\nhttps://cdn/seg102.ts\n\
+#EXTINF:2.000,live\nhttps://cdn/seg103.ts\n\
+#EXT-X-PREFETCH-DISCONTINUITY\n\
+#EXT-X-TWITCH-PREFETCH:https://cdn/seg104.ts?token=A\n\
+#EXT-X-TWITCH-PREFETCH:https://cdn/seg105.ts?token=A\n";
+        // Poll N+1: window advanced by one (seg100 rolled off). seg104 has finalized,
+        // now carrying the REAL discontinuity Twitch promised via the marker. seg105
+        // is still a hint; seg106 is the new hint. Queries rotated (token=B) to prove
+        // they're ignored by the path comparison.
+        let poll_n1 = "#EXTM3U\n\
+#EXT-X-TARGETDURATION:2\n\
+#EXT-X-MEDIA-SEQUENCE:101\n\
+#EXTINF:2.000,live\nhttps://cdn/seg101.ts\n\
+#EXTINF:2.000,live\nhttps://cdn/seg102.ts\n\
+#EXTINF:2.000,live\nhttps://cdn/seg103.ts\n\
+#EXT-X-DISCONTINUITY\n\
+#EXTINF:2.000,live\nhttps://cdn/seg104.ts?token=B\n\
+#EXT-X-TWITCH-PREFETCH:https://cdn/seg105.ts?token=B\n\
+#EXT-X-TWITCH-PREFETCH:https://cdn/seg106.ts?token=B\n";
+        let pn = promote_prefetch(poll_n).expect("poll N has hints");
+        let pn1 = promote_prefetch(poll_n1).expect("poll N+1 has hints");
+        // The promoted poll N must agree with the finalized poll N+1 on every shared
+        // SN. This is the exact case the naive promotion failed (seg104 cc 0 vs 1).
+        assert_refresh_consistent(&pn, &pn1);
+        // Spot-check the headline segment: cc must be 1 in both (one discontinuity
+        // before it), proving the marker→discontinuity translation lined them up.
+        let seg104_n = parse_segments(&pn).into_iter().find(|(sn, _, _)| *sn == 104).unwrap();
+        let seg104_n1 = parse_segments(&pn1).into_iter().find(|(sn, _, _)| *sn == 104).unwrap();
+        assert_eq!(seg104_n.2, 1);
+        assert_eq!(seg104_n1.2, 1);
+    }
+
+    #[test]
+    fn refresh_stable_steady_stream_no_discontinuity() {
+        // No discontinuity anywhere: cc must stay 0 across the finalize boundary, and
+        // promotion must not invent one.
+        let poll_n = "#EXTM3U\n\
+#EXT-X-MEDIA-SEQUENCE:200\n\
+#EXTINF:2.000,live\nhttps://cdn/seg200.ts\n\
+#EXTINF:2.000,live\nhttps://cdn/seg201.ts\n\
+#EXT-X-TWITCH-PREFETCH:https://cdn/seg202.ts?token=A\n\
+#EXT-X-TWITCH-PREFETCH:https://cdn/seg203.ts?token=A\n";
+        let poll_n1 = "#EXTM3U\n\
+#EXT-X-MEDIA-SEQUENCE:201\n\
+#EXTINF:2.000,live\nhttps://cdn/seg201.ts\n\
+#EXTINF:2.000,live\nhttps://cdn/seg202.ts?token=B\n\
+#EXT-X-TWITCH-PREFETCH:https://cdn/seg203.ts?token=B\n\
+#EXT-X-TWITCH-PREFETCH:https://cdn/seg204.ts?token=B\n";
+        let pn = promote_prefetch(poll_n).expect("hints");
+        let pn1 = promote_prefetch(poll_n1).expect("hints");
+        assert!(!pn.contains("#EXT-X-DISCONTINUITY"));
+        assert_refresh_consistent(&pn, &pn1);
+    }
+
+    #[test]
+    fn promote_preserves_published_segment_cc() {
+        // A published mid-window discontinuity plus a seeded discontinuity-sequence:
+        // promotion must leave the published segments' cc untouched and only add cc at
+        // the tail.
+        let pl = "#EXTM3U\n\
+#EXT-X-MEDIA-SEQUENCE:300\n\
+#EXT-X-DISCONTINUITY-SEQUENCE:7\n\
+#EXTINF:2.000,live\nhttps://cdn/seg300.ts\n\
+#EXT-X-DISCONTINUITY\n\
+#EXTINF:2.000,live\nhttps://cdn/seg301.ts\n\
+#EXT-X-PREFETCH-DISCONTINUITY\n\
+#EXT-X-TWITCH-PREFETCH:https://cdn/seg302.ts?token=A\n";
+        let out = promote_prefetch(pl).expect("hints");
+        let segs = parse_segments(&out);
+        // Published: seg300 cc=7 (seed), seg301 cc=8 (one real discontinuity).
+        assert_eq!(segs.iter().find(|(sn, _, _)| *sn == 300).unwrap().2, 7);
+        assert_eq!(segs.iter().find(|(sn, _, _)| *sn == 301).unwrap().2, 8);
+        // Promoted tail: seg302 cc=9 (the translated prefetch-discontinuity).
+        assert_eq!(segs.iter().find(|(sn, _, _)| *sn == 302).unwrap().2, 9);
     }
 }
