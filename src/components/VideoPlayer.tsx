@@ -17,6 +17,7 @@ import { qualitiesEquivalent } from '../utils/quality';
 
 import { Logger } from '../utils/logger';
 import { syncTauriWindowFullscreen } from '../utils/windowFullscreen';
+import { startLatencyGovernor } from '../utils/liveLatencyGovernor';
 import {
   applyAudioBoost,
   resolveAudioBoost,
@@ -42,9 +43,12 @@ const VideoPlayer = () => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const playerRef = useRef<Plyr | null>(null);
   const hlsRef = useRef<Hls | null>(null);
+  // Stops the continuous live-latency governor for the current hls instance. Held
+  // in a ref so it survives player recreation and is torn down with the instance.
+  const latencyGovernorStopRef = useRef<(() => void) | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const progressUpdateIntervalRef = useRef<number | null>(null);
-  const { streamUrl, settings, activeQuality, adSource, getAvailableQualities, changeStreamQuality, handleStreamOffline, isAutoSwitching, currentStream, reloadStreamAndChat, exitStream, toggleHome, isHomeActive, streamOriginCategory, setHomeActiveTab, setHomeSelectedCategory, isAuthenticated, currentMediaType, createClip, isCreatingClip, originalMediaUrl, openStreamerMedia } = useAppStore();
+  const { streamUrl, settings, activeQuality, adSource, getAvailableQualities, changeStreamQuality, handleStreamOffline, isAutoSwitching, currentStream, reloadStreamAndChat, restartStream, isRestartingStream, exitStream, toggleHome, isHomeActive, streamOriginCategory, setHomeActiveTab, setHomeSelectedCategory, isAuthenticated, currentMediaType, createClip, isCreatingClip, originalMediaUrl, openStreamerMedia } = useAppStore();
   // Clippable: a live broadcast, or any VOD that's loaded — including the latest
   // VOD auto-loaded into the offline-chat space (still currentMediaType
   // 'offline_chat', but a real VOD is playing, exposed via originalMediaUrl).
@@ -296,14 +300,14 @@ const VideoPlayer = () => {
 
 
 
-  // Fetch available qualities from Streamlink (live streams only)
-  // Clips and VODs don't need quality switching via Streamlink — they serve a single MP4.
+  // Fetch available qualities from the resolver (live streams only)
+  // Clips and VODs don't need quality switching — they serve a single MP4.
   useEffect(() => {
     if (streamUrl && currentMediaType === 'live') {
       getAvailableQualities().then(qualities => {
         if (qualities.length > 0) {
           setAvailableQualities(qualities);
-          Logger.debug('[Quality] Fetched from Streamlink:', qualities);
+          Logger.debug('[Quality] Fetched from resolver:', qualities);
         }
       });
     } else {
@@ -318,12 +322,12 @@ const VideoPlayer = () => {
     if (!container || availableQualities.length === 0) return;
 
     // Reflect the quality actually playing (activeQuality) in the menu state,
-    // not the saved preference (settings.quality). They diverge whenever
-    // Streamlink fell back to the closest available quality because the
+    // not the saved preference (settings.quality). They diverge whenever the
+    // resolver fell back to the closest available quality because the
     // saved preference wasn't offered for this stream.
     const displayedQuality = activeQuality ?? settings.quality;
 
-    Logger.debug('[Quality] Setting up menu with Streamlink qualities:', availableQualities);
+    Logger.debug('[Quality] Setting up menu with available qualities:', availableQualities);
     Logger.debug('[Quality] Active quality:', activeQuality, 'saved preference:', settings.quality);
 
     let attempts = 0;
@@ -497,7 +501,7 @@ const VideoPlayer = () => {
     }
   }, []);
 
-  const createPlayer = useCallback(() => {
+  const createPlayer = useCallback(async () => {
     if (!videoRef.current || !streamUrl) return;
 
     const video = videoRef.current;
@@ -613,12 +617,25 @@ const VideoPlayer = () => {
     } else if (Hls.isSupported()) {
       Logger.debug('[HLS] HLS.js is supported, creating player...');
 
+      // Is the relay's LL-HLS origin active for this channel? It is brought up at
+      // stream start (before this runs), and `lowLatencyMode` can only be chosen at
+      // construction, so resolve it now. When active, the relay serves a real LL-HLS
+      // playlist (parts + blocking reload) and hls.js's native low-latency controller
+      // rides ~2s from live; when not (normal-latency channel or kill-switch
+      // fallback), we keep the stable non-LL path (cushion + governor).
+      let isLowLatencyChannel = false;
+      if (currentSettings.low_latency_mode) {
+        try {
+          isLowLatencyChannel = await invoke<boolean>('get_stream_low_latency');
+        } catch { /* command unavailable / stream gone */ }
+      }
+      Logger.debug(`[HLS] low-latency origin active for this channel: ${isLowLatencyChannel}`);
 
       // Create HLS.js instance with optimized settings
       const hls = new Hls({
         debug: false,
         enableWorker: true,
-        lowLatencyMode: false, // Force false: LL-HLS chunk parsing causes cyclic starvation with proxies
+        lowLatencyMode: isLowLatencyChannel, // Per-channel: true only when the relay LL-HLS origin is serving parts. Universal true would activate hls.js's playback-rate controller on normal channels and fight liveLatencyGovernor.
         startFragPrefetch: false, // Disabled: prefetching double-buffers massive TS chunks in V8 heap
         backBufferLength: 30, // Keep 30 seconds of back buffer
         maxBufferLength: currentSettings.max_buffer_length || 30, // Buffer ahead
@@ -629,9 +646,9 @@ const VideoPlayer = () => {
         nudgeOffset: 0.2, // Restored closer to default — buffer gate fixes the real issue
         nudgeMaxRetry: 3, // Restored to default
         maxFragLookUpTolerance: 0.5, // More tolerant fragment lookup
-        liveSyncDuration: currentSettings.low_latency_mode ? 6 : 8, // Seconds behind the live edge. 6 (not 4) on purpose: 4 parked the playhead right on the live edge and a normal ~3s Twitch segment-delivery gap drained the buffer and stalled (confirmed live: "Time since last fragment: 2997ms"). 4 only ever held in the faide bench (~5.2s) where delivery happened to be smooth; in the wild the ~3s jitter crosses it. 6 keeps ~3s of slack to absorb that jitter while still beating the 8 baseline. Both the relay targetduration rewrite (ad_detect::retarget_playlist) and the cold-start buffer-gate SNAP keep this effective. Toggle off = 8s. Stall-free sub-6 needs the prefetch-promotion path (smooth delivery + PREFETCH, currently parked), not a smaller blanket cushion.
+        liveSyncDuration: isLowLatencyChannel ? 2 : (currentSettings.low_latency_mode ? 6 : 8), // Target seconds behind live. LL origin active: 2s (parts are consumed progressively, so the playhead can ride that close without the whole-segment wait). Otherwise the stable non-LL cushion: 6 on (absorbs ~3s Twitch jitter), 8 off.
         liveMaxLatencyDuration: 60, // Capped to 60s to allow GC. Prevents holding massive 10min TS buffers in RAM. Must stay > liveSyncDuration.
-        maxLiveSyncPlaybackRate: 1.15, // Rubber-band catch-up speed. Kept gentle on purpose: aggressive catch-up outruns live segment production and stalls at the edge.
+        maxLiveSyncPlaybackRate: isLowLatencyChannel ? 1.1 : 1.15, // LL origin: hls.js's native LL controller owns catch-up (gentle 1.1). Non-LL: inert (the controller only runs in lowLatencyMode); liveLatencyGovernor owns catch-up there instead.
         liveDurationInfinity: true, // Live stream has infinite duration
         manifestLoadingTimeOut: 10000, // 10s timeout for manifest
         manifestLoadingMaxRetry: 3, // Retry manifest 3 times
@@ -652,6 +669,28 @@ const VideoPlayer = () => {
       });
 
       hlsRef.current = hls;
+
+      // Continuous live-latency maintenance. hls.js's own catch-up is gated off by
+      // lowLatencyMode:false, so without this the playhead drifts further behind
+      // live across the session. The governor only nudges playbackRate (never seeks,
+      // which would freeze a live stream) and reads its target from
+      // hls.config.liveSyncDuration, so it adapts to the adaptive cushion set below.
+      if (latencyGovernorStopRef.current) {
+        latencyGovernorStopRef.current();
+        latencyGovernorStopRef.current = null;
+      }
+      // The governor targets the FORWARD BUFFER, so it speeds up only when there is
+      // excess downloaded content to consume (drift) and stays quiet on tight
+      // low-latency delivery where the buffer is naturally small — it cannot starve.
+      // Defaults (ceiling 1.05, band 1.5) are tuned for the solo player. Only on the
+      // non-LL path: in LL mode hls.js's own latency controller owns playbackRate, so
+      // running the governor too would have two controllers fighting over the rate.
+      if (!isLowLatencyChannel) {
+        latencyGovernorStopRef.current = startLatencyGovernor(hls, video, {
+          label: 'solo',
+          log: Logger.debug,
+        });
+      }
 
       // HLS.js event handlers
       hls.on(Hls.Events.MANIFEST_PARSED, (_event, data) => {
@@ -678,19 +717,16 @@ const VideoPlayer = () => {
         // re-download). On a low-latency stream with Low Latency on, tighten the
         // cushion to ~2s.
         //
-        // TEMPORARILY DISABLED in lockstep with the relay's prefetch promotion
-        // (stream_server.rs `enable_prefetch_promotion`). The 2s cushion is only
-        // safe when promotion has pushed the live edge ~2s forward; with promotion
-        // off the edge sits further back, so 2s parks the playhead on the buffered
-        // edge and any segment jitter stalls it (see the liveSyncDuration config
-        // note: "going below 4 needs a LOW-latency broadcast"). Low Latency on
-        // keeps the safe 4s base. Re-enable both flags together.
+        // SUPERSEDED by the LL-HLS origin. This block was the whole-segment promotion
+        // era's cushion tightening (~3-4s). Real low latency now comes from the relay
+        // origin + hls.js lowLatencyMode (set at construction above), which targets ~2s
+        // directly. Leaving it off avoids overriding that liveSyncDuration mid-stream.
         const ENABLE_LL_CUSHION_TIGHTEN: boolean = false;
         if (ENABLE_LL_CUSHION_TIGHTEN && currentSettings.low_latency_mode) {
           invoke<boolean>('get_stream_low_latency').then((lowLatency) => {
             if (lowLatency && hlsRef.current === hls) {
-              hls.config.liveSyncDuration = 2;
-              Logger.debug('[HLS] Low-latency channel — cushion tightened to 2s');
+              hls.config.liveSyncDuration = 3;
+              Logger.debug('[HLS] Low-latency channel — cushion tightened to 3s');
             }
           }).catch(() => { /* command unavailable / stream gone */ });
         }
@@ -799,11 +835,37 @@ const VideoPlayer = () => {
             }, 300);
           });
         }
-        // Don't play here. The FRAG_BUFFERED gate below will call play()
-        // once enough buffer exists (partial segment + one full segment).
-        // This prevents the cold-start stall. No seeking — HLS.js positions
-        // naturally via liveSyncDuration.
-        Logger.debug('[HLS] Manifest parsed — waiting for buffer depth before play...');
+        if (isLowLatencyChannel) {
+          // LL path: hls.js fires part-based buffering, not the whole-segment
+          // FRAG_BUFFERED our gate listens for, so the gate + its 5s fallback are
+          // skipped below. Don't play at manifest parse though: on a warm origin
+          // (stream refresh) the manifest lands before hls.js has level details, so
+          // playing here rolls the clock from 0 while the first data appends at the
+          // live position, stalling at @0 until hls.js's own start seek wins (and
+          // our stall recovery fights it with +0.5s nudges). Wait one LEVEL_LOADED
+          // (details known), put the playhead at the live sync point, then play.
+          hls.once(Hls.Events.LEVEL_LOADED, (_e, data) => {
+            const cushion =
+              typeof hls.config.liveSyncDuration === 'number' ? hls.config.liveSyncDuration : 2;
+            const edge = data.details.edge;
+            const pos =
+              hls.liveSyncPosition ?? (Number.isFinite(edge) ? Math.max(0, edge - cushion) : null);
+            if (pos != null && Number.isFinite(pos) && pos > 0) {
+              video.currentTime = pos;
+            }
+            Logger.debug(
+              `[HLS] Level loaded (LL) — starting playback at ${video.currentTime.toFixed(2)}`,
+            );
+            video.play().catch(() => {
+              video.muted = true;
+              video.play().catch(() => Logger.debug('[HLS] LL muted autoplay also failed'));
+            });
+          });
+        } else {
+          // Non-LL: don't play here. The FRAG_BUFFERED gate below calls play() once
+          // enough buffer exists, then snaps to the cushion. Prevents cold-start stall.
+          Logger.debug('[HLS] Manifest parsed — waiting for buffer depth before play...');
+        }
       });
 
       hls.on(Hls.Events.ERROR, (_event, data) => {
@@ -1017,10 +1079,15 @@ const VideoPlayer = () => {
       // segment (the slow-load regression). 3 clears on the two already-available
       // segments instead.
       let playStarted = false;
-      const GATE_THRESHOLD = 3;
+      // On the LL path hls.js positions at the live edge itself; we only need a tiny
+      // buffer before starting and must NOT snap (hls.js owns the playhead). On the
+      // non-LL path keep the 3s gate + snap that makes the cushion control latency.
+      const GATE_THRESHOLD = isLowLatencyChannel ? 1 : 3;
 
       hls.on(Hls.Events.FRAG_BUFFERED, () => {
-        if (playStarted || !currentSettings.autoplay) return;
+        // LL path started playback in MANIFEST_PARSED and positions via hls.js; the
+        // whole-segment gate doesn't apply (and FRAG_BUFFERED is unreliable per-part).
+        if (playStarted || !currentSettings.autoplay || isLowLatencyChannel) return;
 
         const buffered = video.buffered;
         if (buffered.length === 0) return;
@@ -1035,10 +1102,11 @@ const VideoPlayer = () => {
         // Snap to the live-sync point (cushion behind the freshest buffered edge),
         // clamped so we never seek into an unbuffered hole. No-op when the buffer
         // is already within the cushion (e.g. low-latency off), so it never pushes
-        // anyone CLOSER than their setting asks for.
+        // anyone CLOSER than their setting asks for. Skipped on the LL path — hls.js's
+        // low-latency controller owns positioning there, and a manual seek would fight it.
         const syncDur = hls.config.liveSyncDuration ?? 4;
         const target = Math.max(bufStart, bufEnd - syncDur);
-        if (target > video.currentTime + 0.5) {
+        if (!isLowLatencyChannel && target > video.currentTime + 0.5) {
           video.currentTime = target;
         }
 
@@ -1050,14 +1118,16 @@ const VideoPlayer = () => {
         });
       });
 
-      // Fallback timeout
-      bufferGateTimeoutRef.current = setTimeout(() => {
-        if (!playStarted && currentSettings.autoplay) {
-          playStarted = true;
-          Logger.debug('[HLS] Buffer gate timeout — starting playback');
-          video.play().catch(() => {});
-        }
-      }, 5000);
+      // Fallback timeout (non-LL only: the LL path already started in MANIFEST_PARSED).
+      if (!isLowLatencyChannel) {
+        bufferGateTimeoutRef.current = setTimeout(() => {
+          if (!playStarted && currentSettings.autoplay) {
+            playStarted = true;
+            Logger.debug('[HLS] Buffer gate timeout — starting playback');
+            video.play().catch(() => {});
+          }
+        }, 5000);
+      }
 
       // Load the stream
       hls.loadSource(streamUrl);
@@ -1171,6 +1241,21 @@ const VideoPlayer = () => {
   // handleStreamOffline is accessed via ref to keep this callback stable.
   }, [streamUrl]);
 
+  // Freeze the loader the moment a restart begins. The backend (relay + LL
+  // origin) stops before the new stream URL arrives, so without this the old
+  // hls.js instance keeps polling a dead origin for the ~1-2s of resolve time and
+  // churns non-fatal errors (fragGap "GAP tag found", empty loads) that count
+  // toward the auto-switch error budget. The [streamUrl] effect below does the
+  // real teardown when the new URL lands; this only stops network activity.
+  useEffect(() => {
+    if (!isRestartingStream) return;
+    try {
+      hlsRef.current?.stopLoad();
+    } catch {
+      /* instance may be mid-teardown */
+    }
+  }, [isRestartingStream]);
+
   useEffect(() => {
     const videoElement = videoRef.current;
     if (!videoElement || !streamUrl) return;
@@ -1231,6 +1316,12 @@ const VideoPlayer = () => {
       if (progressUpdateIntervalRef.current) {
         cancelAnimationFrame(progressUpdateIntervalRef.current);
         progressUpdateIntervalRef.current = null;
+      }
+
+      // Stop the live-latency governor before tearing down the instance.
+      if (latencyGovernorStopRef.current) {
+        latencyGovernorStopRef.current();
+        latencyGovernorStopRef.current = null;
       }
 
       // Destroy HLS.js instance
@@ -1295,6 +1386,30 @@ const VideoPlayer = () => {
       playerRef.current.muted = playerSettings.muted;
     }
   }, [playerSettings.volume, playerSettings.muted]);
+
+  // Make the Low Latency toggle authoritative on a running stream. The cushion is
+  // baked into the hls.js instance at construction (and tightened per-channel after
+  // MANIFEST_PARSED), so flipping the toggle mid-stream otherwise does nothing until
+  // the next stream change. Rebuilding the player is the only way to apply the new
+  // cushion in BOTH directions cleanly: tightening could be eased in by the governor,
+  // but loosening (on -> off) cannot without seeking the playhead backward, which is
+  // unsafe on a live stream. A restart is consistent with how a quality change
+  // already reloads, and toggling latency is an infrequent, deliberate action.
+  //
+  // We compare against the PREVIOUS value (seeded to the current one) rather than a
+  // first-run flag, so neither the initial mount nor React StrictMode's double-invoke
+  // nor a remount (which restartStream itself causes) is mistaken for a toggle — only
+  // a genuine flip restarts. A first-run flag would let StrictMode's second invoke
+  // fire a restart on mount, which then remounts and loops (the toast spam).
+  const prevLowLatencyRef = useRef(playerSettings.low_latency_mode);
+  useEffect(() => {
+    if (prevLowLatencyRef.current === playerSettings.low_latency_mode) return;
+    prevLowLatencyRef.current = playerSettings.low_latency_mode;
+    if (currentStream && currentMediaType === 'live') {
+      Logger.debug('[HLS] Low Latency toggled — restarting stream to apply the new cushion');
+      restartStream();
+    }
+  }, [playerSettings.low_latency_mode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Expose an imperative control adapter to the keybinding engine. Methods read
   // playerRef.current at call time so they survive player recreation; isActive()
@@ -1445,18 +1560,34 @@ const VideoPlayer = () => {
   }, []);
 
   // Snap the playhead back to the live edge (used by the stats panel's "Go Live"
-  // button and after scrubbing into the DVR window). hls.js exposes the synced
-  // live position; jump there and resume if paused.
+  // button and after scrubbing into the DVR window). Never seek to an unbuffered
+  // position: a live hls.js stream parked beyond its buffer freezes, and
+  // hls.liveSyncPosition can sit AHEAD of anything downloadable when the relay
+  // promotes prefetch hints (the declared edge includes still-encoding segments).
+  // So the jump is clamped inside the buffered range with ~2s of forward buffer
+  // left to play on. If even the buffered frontier is far behind the sync position
+  // the DOWNLOAD itself fell behind (e.g. after system sleep); no seek can fix
+  // that, so restart the stream, which cold-starts at the edge. The threshold is 5
+  // because a healthy promotion playlist legitimately declares ~2-4s the player
+  // cannot fetch yet; only a gap beyond that means the pipeline is actually stuck.
   const goLive = useCallback(() => {
     const hls = hlsRef.current;
     const video = videoRef.current;
     if (!hls || !video) return;
+    const b = video.buffered;
+    const bufferedEnd = b.length > 0 ? b.end(b.length - 1) : 0;
     const pos = hls.liveSyncPosition;
-    if (pos != null && Number.isFinite(pos)) {
-      video.currentTime = pos;
-      if (video.paused) video.play().catch(() => { /* autoplay policy / teardown */ });
+    const syncPos = pos != null && Number.isFinite(pos) ? pos : null;
+    if (bufferedEnd === 0 || (syncPos != null && syncPos - bufferedEnd > 5)) {
+      restartStream();
+      return;
     }
-  }, []);
+    const target = Math.min(syncPos ?? Infinity, bufferedEnd - 2);
+    if (Number.isFinite(target) && target > video.currentTime + 0.25) {
+      video.currentTime = target;
+    }
+    if (video.paused) video.play().catch(() => { /* autoplay policy / teardown */ });
+  }, [restartStream]);
 
   // Handle mouse events for overlay visibility (works in both normal and fullscreen modes)
   useEffect(() => {
