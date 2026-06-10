@@ -221,7 +221,7 @@ export const StreamContextMenu: React.FC = () => {
     // Open the streamer's chat in a new MultiChat popout window without
     // starting their stream. Useful when you want chat-only mode without
     // committing CPU/bandwidth to playing the video — the popout polls live
-    // metadata (viewer count, uptime, etc.) but never starts Streamlink.
+    // metadata (viewer count, uptime, etc.) but never starts playback.
     const handleOpenInMultiChat = async (e: React.MouseEvent) => {
         e.stopPropagation();
         closeMenu();
