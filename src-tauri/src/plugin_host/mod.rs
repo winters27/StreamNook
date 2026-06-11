@@ -148,6 +148,9 @@ pub struct PluginInfo {
     pub running: bool,
     /// Runtime kind: "process" or "ui".
     pub kind: String,
+    /// True when the plugin contributes an in-app UI module the frontend
+    /// loads: a ui plugin, or a process plugin with a ui_entry (hybrid).
+    pub has_ui: bool,
     pub source: String,
     pub granted: registry::GrantedCaps,
     pub credential_consent: HashMap<String, String>,
@@ -298,6 +301,7 @@ impl PluginHost {
                     running.contains_key(&p.id)
                 },
                 kind: p.kind.clone(),
+                has_ui: p.kind == "ui" || p.ui_entry.is_some(),
                 source: p.source.clone(),
                 granted: p.granted.clone(),
                 credential_consent: p.credential_consent.clone(),
@@ -535,7 +539,7 @@ impl PluginHost {
     }
 
     pub async fn set_enabled(&self, plugin_id: &str, enabled: bool) -> Result<()> {
-        let kind = {
+        let (kind, has_ui) = {
             let mut registry = self.inner.registry.lock().await;
             let plugin = registry
                 .plugins
@@ -543,48 +547,59 @@ impl PluginHost {
                 .find(|p| p.id == plugin_id)
                 .ok_or_else(|| anyhow!("plugin '{plugin_id}' is not installed"))?;
             plugin.enabled = enabled;
-            let kind = plugin.kind.clone();
+            let info = (plugin.kind.clone(), plugin.kind == "ui" || plugin.ui_entry.is_some());
             registry::save(&registry)?;
-            kind
+            info
         };
-        if kind == "ui" {
-            // No process to supervise. The frontend loader listens for this
-            // signal and loads or unloads the module in each window.
+        // The process part: spawn or shut down the sidecar. A pure ui plugin
+        // has none. A hybrid (process + ui_entry) plugin runs both.
+        if kind == "process" {
+            if enabled {
+                if !self.inner.running.read().await.contains_key(plugin_id) {
+                    self.spawn_supervisor(plugin_id.to_string());
+                }
+            } else if let Some(handle) = self.inner.running.read().await.get(plugin_id) {
+                let _ = handle.cmd_tx.send(SupCmd::Shutdown);
+            }
+        }
+        // The UI part: the frontend loader listens for this signal and loads
+        // or unloads the module in each window. Emitted for any plugin that
+        // contributes UI, so a pure-ui plugin loads even though no process
+        // event would otherwise fire.
+        if has_ui {
             let _ = self.inner.app.emit(
                 "plugin://state-changed",
                 serde_json::json!({ "plugin_id": plugin_id, "running": enabled }),
             );
-            return Ok(());
-        }
-        if enabled {
-            if !self.inner.running.read().await.contains_key(plugin_id) {
-                self.spawn_supervisor(plugin_id.to_string());
-            }
-        } else if let Some(handle) = self.inner.running.read().await.get(plugin_id) {
-            let _ = handle.cmd_tx.send(SupCmd::Shutdown);
         }
         Ok(())
     }
 
-    /// Reads the bundled module of an enabled ui plugin for the frontend
-    /// loader (UI_PLUGINS.md). Fails closed on kind and enabled state.
+    /// Reads the in-app UI module of an enabled plugin for the frontend loader
+    /// (UI_PLUGINS.md): a ui plugin's `entry`, or a hybrid process plugin's
+    /// `ui_entry`. Fails closed when the plugin has no UI or is not enabled.
     pub async fn ui_bundle(&self, plugin_id: &str) -> Result<String> {
-        let (dir, entry) = {
+        let (dir, module) = {
             let registry = self.inner.registry.lock().await;
             let plugin = registry
                 .plugins
                 .iter()
                 .find(|p| p.id == plugin_id)
                 .ok_or_else(|| anyhow!("plugin '{plugin_id}' is not installed"))?;
-            if plugin.kind != "ui" {
-                bail!("plugin '{plugin_id}' is not a ui plugin");
-            }
             if !plugin.enabled {
                 bail!("plugin '{plugin_id}' is not enabled");
             }
-            (plugin.dir.clone(), plugin.entry.clone())
+            let module = if plugin.kind == "ui" {
+                plugin.entry.clone()
+            } else {
+                plugin
+                    .ui_entry
+                    .clone()
+                    .ok_or_else(|| anyhow!("plugin '{plugin_id}' has no UI module"))?
+            };
+            (plugin.dir.clone(), module)
         };
-        let path = std::path::Path::new(&dir).join(&entry);
+        let path = std::path::Path::new(&dir).join(&module);
         std::fs::read_to_string(&path)
             .map_err(|e| anyhow!("failed to read the plugin module {}: {e}", path.display()))
     }

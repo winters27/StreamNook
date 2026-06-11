@@ -49,8 +49,9 @@ ui           = ["panel"]
 | `entry` | string | Path of the executable (`process`) or bundled JavaScript module (`ui`), relative to the plugin directory. Must not contain `..` or be absolute |
 | `args` | string array | `process` only: arguments passed at spawn. Optional, default empty |
 | `transport` | string | `process` only: `"stdio"` in v1. `"socket"` is reserved and rejected by the v1 host |
+| `ui_entry` | string | Optional, `process` only: path of an in-app UI module the sidecar ships alongside itself (a hybrid plugin). Same path rules as `entry`. See UI_PLUGINS.md |
 
-For `kind = "ui"` the `[capabilities]` and `[contributes]` blocks stay empty; the module contract in UI_PLUGINS.md is the complete surface. The `ui` kind was added after protocol v1 froze; it is additive (a `ui` plugin's `host_min` must be a version that knows the kind, and older hosts fail closed on the unknown value).
+For `kind = "ui"` the `[capabilities]` and `[contributes]` blocks stay empty; the module contract in UI_PLUGINS.md is the complete surface. A hybrid `process` plugin that sets `ui_entry` keeps its capabilities and contributions for the sidecar. The `ui` kind and `ui_entry` were added after protocol v1 froze; both are additive (the plugin's `host_min` must be a version that knows them, and older hosts fail closed on the unknown value or field).
 
 ## `[capabilities]`
 

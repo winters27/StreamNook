@@ -13,6 +13,7 @@ import type { KeybindCategory } from '../keybindings/types';
 import {
   addOverlay,
   addPaletteProvider,
+  addSettingsPanel,
   addSlotContribution,
   addTitleBarButton,
   clearPluginContributions,
@@ -68,6 +69,10 @@ export function buildPluginApi(pluginId: string): { api: PluginApi; dispose: () 
         }),
       registerPaletteItems: (provider: Parameters<PluginApi['commands']['registerPaletteItems']>[0]) =>
         addPaletteProvider(pluginId, provider),
+    }),
+    settings: Object.freeze({
+      registerPanel: (Component: Parameters<PluginApi['settings']['registerPanel']>[0]) =>
+        addSettingsPanel(pluginId, Component),
     }),
     windows: Object.freeze({
       open: (options: Parameters<PluginApi['windows']['open']>[0]) =>

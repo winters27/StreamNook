@@ -22,6 +22,7 @@ import OfficialBadge from '../plugins/OfficialBadge';
 import PluginConsentModal, { ConsentSubject } from '../plugins/PluginConsentModal';
 import PluginDetailOverlay from '../plugins/PluginDetailOverlay';
 import PluginPanelRenderer from '../plugins/PluginPanelRenderer';
+import { usePluginUiRegistry } from '../../plugins-ui/registry';
 import {
   capabilityLines,
   compareVersions,
@@ -136,6 +137,9 @@ const Hairline = () => <div className="mx-3 my-1 h-px bg-white/[0.06]" />;
 
 const PluginsSettings = () => {
   const addToast = useAppStore((s) => s.addToast);
+  // Settings panels contributed by loaded ui plugins (the in-process
+  // equivalent of a process plugin's host-rendered panel).
+  const uiSettingsPanels = usePluginUiRegistry((s) => s.settingsPanels);
   const [plugins, setPlugins] = useState<PluginInfo[]>([]);
   const [sources, setSources] = useState<SourceInfo[]>([]);
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -537,6 +541,11 @@ const PluginsSettings = () => {
           {plugins.map((plugin) => {
             const isExpanded = expanded === plugin.id;
             const isPanelOpen = panelOpen === plugin.id;
+            // A plugin has a settings panel either via the wire protocol
+            // (process plugins, has_panel) or by contributing its own
+            // component (ui plugins, registered while loaded).
+            const UiSettingsPanel = uiSettingsPanels[plugin.id];
+            const hasSettings = (plugin.has_panel || !!UiSettingsPanel) && plugin.enabled;
             return (
               <div key={plugin.id} className="glass-panel rounded-lg p-4">
                 <div className="flex items-center gap-3.5">
@@ -569,7 +578,7 @@ const PluginsSettings = () => {
                     </p>
                   </div>
                   <div className="flex flex-shrink-0 items-center gap-0.5">
-                    {plugin.has_panel && plugin.enabled && (
+                    {hasSettings && (
                       <IconAction
                         hint="Plugin settings"
                         active={isPanelOpen}
@@ -713,7 +722,11 @@ const PluginsSettings = () => {
 
                 <Reveal open={isPanelOpen}>
                   <div className="mt-3">
-                    <PluginPanelRenderer pluginId={plugin.id} />
+                    {UiSettingsPanel ? (
+                      <UiSettingsPanel />
+                    ) : (
+                      <PluginPanelRenderer pluginId={plugin.id} />
+                    )}
                   </div>
                 </Reveal>
               </div>

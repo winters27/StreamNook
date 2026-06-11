@@ -12,7 +12,8 @@ import { setApi } from './host';
 import { startListSync, useListStore } from './listStore';
 import { ListsSurface } from './ListsSurface';
 import { ListsPanel } from './ListsPanel';
-import { useListsUi, openListsPanel, toggleListsPanel } from './uiStore';
+import { ListsSettings } from './ListsSettings';
+import { useListsUi, useListsSettings, openListsPanel, toggleListsPanel } from './uiStore';
 
 const ListsOverlay: FC = () => {
   const open = useListsUi((s) => s.panelOpen);
@@ -45,15 +46,20 @@ export function activate(api: PluginApi): void {
   migrateDockPreference();
   void startListSync();
 
+  // Author picks the icon; the user decides whether it rides in the title bar
+  // (the toggle lives in this plugin's settings panel, below).
   api.ui.registerTitleBarButton({
     id: 'lists',
     tooltip: 'Lists',
     Icon: ClipboardList,
     onClick: toggleListsPanel,
     useIsActive: () => useListsUi((s) => s.panelOpen),
+    useIsVisible: () => useListsSettings((s) => s.titleBarButton),
   });
 
   api.ui.registerOverlay({ id: 'lists-panel', Component: ListsOverlay });
+
+  api.settings.registerPanel(ListsSettings);
 
   api.ui.registerSlot('modlogs.dock', {
     id: 'lists',

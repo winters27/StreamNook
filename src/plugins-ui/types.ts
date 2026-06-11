@@ -15,6 +15,10 @@ export interface TitleBarButtonContribution {
   onClick: () => void;
   /** Optional React hook: whether the button shows the accent tint. */
   useIsActive?: () => boolean;
+  /** Optional React hook: whether the button is shown at all. Lets a plugin
+   *  gate its title-bar presence on one of its own settings. Defaults to
+   *  always visible. */
+  useIsVisible?: () => boolean;
 }
 
 /** A component mounted at the app root, above the main layout. The component
@@ -94,6 +98,12 @@ export interface PluginApi {
   commands: {
     registerKeybinding: (command: PluginKeybinding) => void;
     registerPaletteItems: (provider: () => PluginPaletteItem[]) => void;
+  };
+
+  settings: {
+    /** Register this plugin's own settings component, rendered on its card in
+     *  the plugins page. The plugin ships the UI; the host just mounts it. */
+    registerPanel: (Component: React.ComponentType) => void;
   };
 
   windows: {

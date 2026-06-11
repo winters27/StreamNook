@@ -103,6 +103,20 @@ pub struct RuntimeSpec {
     pub args: Vec<String>,
     #[serde(default = "default_transport")]
     pub transport: String,
+    /// Optional in-app UI module for a `process` plugin (a "hybrid" plugin):
+    /// the sidecar does the background work, this bundle contributes its
+    /// native UI. Relative path, same rules as `entry`. See UI_PLUGINS.md.
+    #[serde(default)]
+    pub ui_entry: Option<String>,
+}
+
+/// A relative path that stays inside the plugin directory.
+fn is_safe_relative_path(p: &str) -> bool {
+    !(p.is_empty()
+        || p.contains("..")
+        || p.starts_with('/')
+        || p.starts_with('\\')
+        || p.chars().nth(1) == Some(':'))
 }
 
 fn default_transport() -> String {
@@ -212,6 +226,9 @@ impl PluginManifest {
                 {
                     bail!("a ui plugin's [capabilities] lists must be empty (see UI_PLUGINS.md)");
                 }
+                if self.runtime.ui_entry.is_some() {
+                    bail!("a ui plugin's module is `entry`; `ui_entry` is only for process plugins");
+                }
             }
             "wasm" => bail!("runtime.kind 'wasm' is reserved and not supported by this host"),
             other => bail!("unknown runtime.kind '{other}'"),
@@ -225,14 +242,14 @@ impl PluginManifest {
                 other => bail!("unknown runtime.transport '{other}'"),
             }
         }
-        let entry = &self.runtime.entry;
-        if entry.is_empty()
-            || entry.contains("..")
-            || entry.starts_with('/')
-            || entry.starts_with('\\')
-            || entry.chars().nth(1) == Some(':')
-        {
+        if !is_safe_relative_path(&self.runtime.entry) {
             bail!("runtime.entry must be a relative path inside the plugin directory");
+        }
+        // A process plugin may carry a ui_entry (hybrid: sidecar + native UI).
+        if let Some(ui_entry) = &self.runtime.ui_entry {
+            if !is_safe_relative_path(ui_entry) {
+                bail!("runtime.ui_entry must be a relative path inside the plugin directory");
+            }
         }
 
         // capabilities: unknown strings fail closed

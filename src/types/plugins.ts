@@ -28,6 +28,9 @@ export interface PluginInfo {
   /** Runtime kind: "process" (separate executable) or "ui" (in-app module).
    *  For ui plugins, running mirrors enabled (the frontend loads them). */
   kind: 'process' | 'ui';
+  /** True when the plugin contributes an in-app UI module the frontend loads:
+   *  a ui plugin, or a process plugin with a ui_entry (hybrid). */
+  has_ui: boolean;
   source: string;
   granted: GrantedCaps;
   credential_consent: Record<string, string>;

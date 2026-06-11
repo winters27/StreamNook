@@ -1,6 +1,6 @@
-// Open/closed state of the floating Lists panel in this window. Plugin-local:
-// the title bar button, hotkey, palette rows, and the panel itself all read
-// and write here.
+// Open/closed state of the floating Lists panel in this window, plus the
+// plugin's own settings. Plugin-local: the title bar button, hotkey, palette
+// rows, and the panel itself all read and write here.
 
 import { create } from 'zustand';
 
@@ -26,4 +26,37 @@ export function closeListsPanel(): void {
 export function toggleListsPanel(): void {
   if (useListsUi.getState().panelOpen) closeListsPanel();
   else openListsPanel();
+}
+
+// ---- Plugin settings -------------------------------------------------------
+// Persisted in localStorage so the choice survives restarts and is shared
+// across this app's windows.
+
+const SETTING_TITLEBAR = 'streamnook.lists.titlebarButton';
+
+function loadBool(key: string, fallback: boolean): boolean {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw === null ? fallback : raw === '1';
+  } catch {
+    return fallback;
+  }
+}
+
+interface ListsSettingsState {
+  /** Whether the Lists button appears in the app's title bar. */
+  titleBarButton: boolean;
+}
+
+export const useListsSettings = create<ListsSettingsState>(() => ({
+  titleBarButton: loadBool(SETTING_TITLEBAR, true),
+}));
+
+export function setTitleBarButton(on: boolean): void {
+  try {
+    localStorage.setItem(SETTING_TITLEBAR, on ? '1' : '0');
+  } catch {
+    // best effort
+  }
+  useListsSettings.setState({ titleBarButton: on });
 }

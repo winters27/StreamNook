@@ -39,6 +39,9 @@ pub struct InstalledPlugin {
     /// Absolute directory the plugin runs from (contains plugin.toml and the entry).
     pub dir: String,
     pub entry: String,
+    /// Optional in-app UI module for a process plugin (hybrid: sidecar + UI).
+    #[serde(default)]
+    pub ui_entry: Option<String>,
     #[serde(default)]
     pub args: Vec<String>,
     pub granted: GrantedCaps,

@@ -12,7 +12,10 @@ const PluginTitleBarButton = ({
   contribution: TitleBarButtonContribution;
 }) => {
   const useIsActive = contribution.useIsActive ?? (() => false);
+  const useIsVisible = contribution.useIsVisible ?? (() => true);
   const isActive = useIsActive();
+  const isVisible = useIsVisible();
+  if (!isVisible) return null;
   return (
     <Tooltip content={contribution.tooltip} delay={200}>
       <button

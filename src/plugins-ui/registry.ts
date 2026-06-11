@@ -4,6 +4,7 @@
 // everything it registered.
 
 import { create } from 'zustand';
+import type { ComponentType } from 'react';
 import type {
   OverlayContribution,
   PluginPaletteItem,
@@ -18,6 +19,9 @@ interface PluginUiRegistryState {
   overlays: Keyed<OverlayContribution>[];
   slots: Record<string, Keyed<SlotContribution>[]>;
   paletteProviders: { pluginId: string; provider: () => PluginPaletteItem[] }[];
+  /** A plugin's own settings component, rendered on its card in the plugins
+   *  page. The in-process equivalent of a process plugin's host-rendered panel. */
+  settingsPanels: Record<string, ComponentType>;
 }
 
 export const usePluginUiRegistry = create<PluginUiRegistryState>(() => ({
@@ -25,6 +29,7 @@ export const usePluginUiRegistry = create<PluginUiRegistryState>(() => ({
   overlays: [],
   slots: {},
   paletteProviders: [],
+  settingsPanels: {},
 }));
 
 export function addTitleBarButton(
@@ -75,19 +80,30 @@ export function addPaletteProvider(
   }));
 }
 
+export function addSettingsPanel(pluginId: string, Component: ComponentType): void {
+  usePluginUiRegistry.setState((s) => ({
+    settingsPanels: { ...s.settingsPanels, [pluginId]: Component },
+  }));
+}
+
 /** Removes every contribution a plugin registered (called at unload). */
 export function clearPluginContributions(pluginId: string): void {
-  usePluginUiRegistry.setState((s) => ({
-    titleBarButtons: s.titleBarButtons.filter((b) => b.pluginId !== pluginId),
-    overlays: s.overlays.filter((o) => o.pluginId !== pluginId),
-    slots: Object.fromEntries(
-      Object.entries(s.slots).map(([slot, list]) => [
-        slot,
-        list.filter((c) => c.pluginId !== pluginId),
-      ]),
-    ),
-    paletteProviders: s.paletteProviders.filter((p) => p.pluginId !== pluginId),
-  }));
+  usePluginUiRegistry.setState((s) => {
+    const settingsPanels = { ...s.settingsPanels };
+    delete settingsPanels[pluginId];
+    return {
+      titleBarButtons: s.titleBarButtons.filter((b) => b.pluginId !== pluginId),
+      overlays: s.overlays.filter((o) => o.pluginId !== pluginId),
+      slots: Object.fromEntries(
+        Object.entries(s.slots).map(([slot, list]) => [
+          slot,
+          list.filter((c) => c.pluginId !== pluginId),
+        ]),
+      ),
+      paletteProviders: s.paletteProviders.filter((p) => p.pluginId !== pluginId),
+      settingsPanels,
+    };
+  });
 }
 
 const EMPTY_SLOT: Keyed<SlotContribution>[] = [];

@@ -15,6 +15,7 @@ interface PluginInfoLite {
   id: string;
   name: string;
   kind?: string;
+  has_ui?: boolean;
   enabled: boolean;
 }
 
@@ -79,8 +80,10 @@ export async function syncUiPlugins(onError?: (message: string) => void): Promis
   syncing = true;
   try {
     const all = await invoke<PluginInfoLite[]>('plugins_list');
+    // Load any enabled plugin that contributes a UI module: pure ui plugins
+    // and hybrid process plugins (a sidecar with a ui_entry) alike.
     const want = new Set(
-      all.filter((p) => p.kind === 'ui' && p.enabled).map((p) => p.id),
+      all.filter((p) => p.enabled && (p.has_ui ?? p.kind === 'ui')).map((p) => p.id),
     );
     for (const [id, handle] of [...loaded]) {
       if (!want.has(id)) {
