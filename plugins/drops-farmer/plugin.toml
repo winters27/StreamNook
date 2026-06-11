@@ -1,10 +1,10 @@
 id          = "community.drops-farmer"
 name        = "Drops and Points Farmer"
 version     = "0.1.0"
-author      = "community"
+author      = "StreamNook"
 tier        = "C"
 description = "Background channel-points farming and drops mining, kept out of the core app as an opt-in add-on."
-homepage    = "https://github.com/winters27/StreamNook"
+homepage    = "https://github.com/StreamNook/streamnook-plugins"
 host_min    = "7.0.0"
 
 [runtime]
