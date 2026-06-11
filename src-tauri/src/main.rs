@@ -879,6 +879,7 @@ fn main() {
             plugins_revoke_credential,
             plugins_reset_credential_consent,
             plugins_audit_log,
+            plugins_fetch_readme,
             plugins_report_stream_event,
         ])
         // Window-event handler. Two behaviors:

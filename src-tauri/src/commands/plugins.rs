@@ -201,6 +201,14 @@ pub async fn plugins_audit_log(
     Ok(state.plugin_host.audit_log(&plugin_id))
 }
 
+/// Marketplace detail page README fetch (presentation only).
+#[tauri::command]
+pub async fn plugins_fetch_readme(url: String) -> Result<String, String> {
+    crate::plugin_host::install::fetch_readme(&url)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn plugins_report_stream_event(
     kind: String,

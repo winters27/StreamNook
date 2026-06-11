@@ -18,9 +18,11 @@ import { SettingsSection } from './_primitives';
 import { Tooltip } from '../ui/Tooltip';
 import TierBadge from '../plugins/TierBadge';
 import PluginConsentModal, { ConsentSubject } from '../plugins/PluginConsentModal';
+import PluginDetailOverlay from '../plugins/PluginDetailOverlay';
 import PluginPanelRenderer from '../plugins/PluginPanelRenderer';
 import {
   capabilityLines,
+  compareVersions,
   IndexEntry,
   PluginInfo,
   PluginTier,
@@ -137,6 +139,7 @@ const PluginsSettings = () => {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [panelOpen, setPanelOpen] = useState<string | null>(null);
   const [browse, setBrowse] = useState<{ url: string; entries: IndexEntry[] } | null>(null);
+  const [detail, setDetail] = useState<{ entry: IndexEntry; source: SourceInfo } | null>(null);
   const [newSourceUrl, setNewSourceUrl] = useState('');
   const [showAddSource, setShowAddSource] = useState(false);
   const [confirmSourceUrl, setConfirmSourceUrl] = useState<string | null>(null);
@@ -227,8 +230,15 @@ const PluginsSettings = () => {
   const installFromSource = async (source: SourceInfo, entry: IndexEntry) => {
     // Two-step install: download, verify, and stage first; the consent
     // dialog then shows the actual manifest capabilities; commit registers.
+    // Updating a running plugin stops it first; it is re-enabled after the
+    // commit (tier C runs back through its risk dialog on that re-enable).
     setBusy(true);
     try {
+      const existing = plugins.find((p) => p.id === entry.id);
+      const wasEnabled = existing?.enabled ?? false;
+      if (wasEnabled) {
+        await invoke('plugins_set_enabled', { pluginId: entry.id, enabled: false });
+      }
       const preview = await invoke<{ token: string; record: PluginInfo }>(
         'plugins_begin_install',
         { sourceUrl: source.url, pluginId: entry.id }
@@ -245,15 +255,31 @@ const PluginsSettings = () => {
         },
         proceed: async () => {
           try {
-            await invoke<PluginInfo>('plugins_commit_install', { token: preview.token });
-            addToast(`Installed ${entry.name} (disabled until you enable it)`, 'success');
+            const installed = await invoke<PluginInfo>('plugins_commit_install', {
+              token: preview.token,
+            });
+            addToast(
+              existing
+                ? `Updated ${entry.name} to v${installed.version}`
+                : `Installed ${entry.name} (disabled until you enable it)`,
+              'success'
+            );
             await refresh();
+            if (wasEnabled) await setEnabled(installed, true);
           } catch (err) {
             fail(err);
           }
         },
         abort: async () => {
           await invoke('plugins_cancel_install', { token: preview.token }).catch(() => {});
+          // A declined update restores the prior state: the still-installed
+          // old version goes back to running if it was running before.
+          if (wasEnabled) {
+            await invoke('plugins_set_enabled', { pluginId: entry.id, enabled: true }).catch(
+              () => {}
+            );
+          }
+          await refresh();
         },
       });
     } catch (err) {
@@ -599,14 +625,33 @@ const PluginsSettings = () => {
                   </p>
                 )}
                 {browse?.entries.map((entry) => {
-                  const installed = plugins.some(
-                    (p) => p.id === entry.id && p.version === entry.version
+                  const installedPlugin = plugins.find((p) => p.id === entry.id);
+                  const hasUpdate = Boolean(
+                    installedPlugin && compareVersions(entry.version, installedPlugin.version) > 0
                   );
+                  const isCurrent = Boolean(installedPlugin) && !hasUpdate;
                   return (
-                    <div
+                    <button
                       key={entry.id}
-                      className="flex items-center gap-3 rounded-lg bg-white/[0.03] px-3 py-2.5"
+                      type="button"
+                      onClick={() => setDetail({ entry, source })}
+                      className="flex w-full items-center gap-3 rounded-lg bg-white/[0.03] px-3 py-2.5 text-left transition-colors hover:bg-white/[0.06]"
                     >
+                      <div
+                        className="flex h-9 w-9 flex-shrink-0 items-center justify-center overflow-hidden rounded-lg"
+                        style={{ background: TIER_TINT[entry.tier], boxShadow: TILE_BEVEL }}
+                      >
+                        {entry.icon_url ? (
+                          <img
+                            src={entry.icon_url}
+                            alt=""
+                            className="h-full w-full object-cover"
+                            loading="lazy"
+                          />
+                        ) : (
+                          <Puzzle size={16} strokeWidth={2.25} className="text-textPrimary" />
+                        )}
+                      </div>
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2">
                           <span className="truncate text-[13px] font-medium text-textPrimary">
@@ -618,13 +663,16 @@ const PluginsSettings = () => {
                           v{entry.version} by {entry.author.name} · {entry.description}
                         </p>
                       </div>
-                      <Chip
-                        label={installed ? 'Installed' : 'Install'}
-                        emphasis={!installed}
-                        disabled={busy || installed}
-                        onClick={() => installFromSource(source, entry)}
-                      />
-                    </div>
+                      <span
+                        className={`flex-shrink-0 rounded-lg border px-3 py-1.5 text-[12px] font-medium ${
+                          isCurrent
+                            ? 'border-white/5 bg-white/[0.03] text-textMuted'
+                            : 'border-accent/25 bg-accent/15 text-textPrimary'
+                        }`}
+                      >
+                        {hasUpdate ? 'Update' : isCurrent ? 'Installed' : 'View'}
+                      </span>
+                    </button>
                   );
                 })}
               </div>
@@ -722,6 +770,19 @@ const PluginsSettings = () => {
           </div>
         )}
       </SettingsSection>
+
+      <PluginDetailOverlay
+        entry={detail?.entry ?? null}
+        sourceName={detail?.source.name ?? ''}
+        installed={plugins.find((p) => p.id === detail?.entry.id)}
+        busy={busy}
+        onClose={() => setDetail(null)}
+        onInstall={(entry) => {
+          const source = detail?.source;
+          setDetail(null);
+          if (source) installFromSource(source, entry);
+        }}
+      />
 
       <PluginConsentModal
         subject={consent?.subject ?? null}

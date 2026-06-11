@@ -47,6 +47,21 @@ pub struct IndexEntry {
     pub released_at: Option<String>,
     pub author: IndexAuthor,
     pub artifact: IndexArtifact,
+    // Marketplace metadata, all optional (additive index fields; see
+    // SIGNING.md). Presentation only: none of it affects verification.
+    #[serde(default)]
+    pub icon_url: Option<String>,
+    #[serde(default)]
+    pub banner_url: Option<String>,
+    /// Raw markdown the detail page renders (a GitHub raw README URL works).
+    #[serde(default)]
+    pub readme_url: Option<String>,
+    #[serde(default)]
+    pub downloads: Option<u64>,
+    #[serde(default)]
+    pub created_at: Option<String>,
+    #[serde(default)]
+    pub updated_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -55,6 +70,10 @@ pub struct IndexAuthor {
     pub pubkey: String,
     #[serde(default)]
     pub previous_pubkeys: Vec<String>,
+    /// Curator-asserted identity check, shown as a verified mark next to the
+    /// author. Meaningful exactly as far as the source operator is trusted.
+    #[serde(default)]
+    pub verified: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -88,6 +107,15 @@ async fn http_get_bytes(url: &str, cap: usize) -> Result<Vec<u8>> {
 async fn http_get_text(url: &str, cap: usize) -> Result<String> {
     let bytes = http_get_bytes(url, cap).await?;
     String::from_utf8(bytes).map_err(|_| anyhow!("{url} is not valid UTF-8"))
+}
+
+/// Fetches marketplace README markdown for the detail page (1 MiB cap,
+/// https only). Presentation only; rendered client side as plain markdown.
+pub async fn fetch_readme(url: &str) -> Result<String> {
+    if !url.starts_with("https://") {
+        bail!("readme_url must be an https URL");
+    }
+    http_get_text(url, 1024 * 1024).await
 }
 
 /// Fetches and verifies an index document. With `pinned_operator_key` set,

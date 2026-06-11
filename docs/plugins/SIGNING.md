@@ -71,6 +71,19 @@ Rules:
 - The official index lists Tier A and B plugins only. Tier C entries in the official index are invalid and ignored by the host. Community indexes may list any tier.
 - `tier` in the index is set by the index curator. The host rejects an artifact whose manifest tier disagrees with the index entry.
 
+### Marketplace metadata (optional, additive)
+
+A plugin entry may carry presentation fields the marketplace detail page uses. None of them participate in verification, all are optional, and hosts that predate a field ignore it:
+
+| Field | Meaning |
+|---|---|
+| `icon_url` | Square icon shown on the entry and detail page (https) |
+| `banner_url` | Wide banner image across the top of the detail page (https) |
+| `readme_url` | Raw markdown rendered as the detail page body; a GitHub raw README URL is the expected shape. Rendered as plain markdown, never as HTML |
+| `downloads` | Install count as the curator tracks it |
+| `created_at`, `updated_at` | RFC 3339 timestamps shown in the detail footer |
+| `author.verified` | Curator-asserted identity check, shown as a verified mark next to the author name. Worth exactly as much as the source operator's curation |
+
 ## Verification at install
 
 In order, failing closed at the first mismatch:

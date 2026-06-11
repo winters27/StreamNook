@@ -20,6 +20,7 @@ The deliberate omission that makes this work: the host exposes no generic HTTP m
 | [MANIFEST.md](MANIFEST.md) | The `plugin.toml` schema every plugin ships, and the risk-tier definitions |
 | [CAPABILITIES.md](CAPABILITIES.md) | The capability vocabulary, what each grants, and the exact consent language shown to users |
 | [SIGNING.md](SIGNING.md) | Artifact signing, the index document format, key pinning, and key rotation |
+| [OFFICIAL.md](OFFICIAL.md) | What an official StreamNook plugin is, branding conventions, and what can never be official |
 
 ## Status
 
