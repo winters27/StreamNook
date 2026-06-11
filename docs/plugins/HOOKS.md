@@ -16,12 +16,12 @@ Hook ids are namespaced (`feature.name`), defined by the host feature that expos
 
 ```toml
 [contributes]
-actions  = ["drops.mine", "drops.mine-auto", "drops.mine-all", "drops.stop", "drops.configure"]
+actions  = ["drops.mine", "drops.mine-auto", "drops.mine-all", "drops.stop"]
 status   = ["drops.status"]
 provides = ["drops.mining"]
 ```
 
-A plugin can also be configured through an action rather than a host-rendered panel: the drops plugin handles `drops.configure` (the app's native Drops settings, pushed in as args), so its settings UI is core's own rich settings tab, not a constrained panel schema. The native UI is the single source of config; the plugin keeps none of its own.
+Settings are a host-rendered panel built from generic field types (see MANIFEST.md and the register_panel schema in PROTOCOL.md), so a plugin gets a rich native settings screen without core importing or naming anything plugin-specific. The field vocabulary includes list and picker types (`channel_list`, `string_list` as add-remove chips, `slider`), so a settings screen is never a bare text box. Any plugin composes the same generic fields; the host renders them blind to which plugin it is.
 
 ## Wire protocol (additive to PROTOCOL.md v1)
 

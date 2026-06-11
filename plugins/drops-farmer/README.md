@@ -14,7 +14,7 @@ It does all of its own networking and uses a Twitch login token that StreamNook'
 
 ## Settings
 
-This plugin has no settings UI of its own. It is configured entirely from StreamNook's native Drops center (priority and excluded games, selection strategy, recovery, channel-points target list, and so on), which pushes its settings to the plugin through the `drops.configure` hook. The Drops center's mine, stop, and Mine All controls drive the plugin through the `drops.mine` / `drops.mine-auto` / `drops.stop` hooks, and the plugin reports live progress back through the `drops.status` slot.
+Settings are a rich host-rendered panel, declared from generic field types (a Twitch channel picker, add-and-remove game lists, sliders, selects, toggles), so StreamNook renders the screen without importing or naming anything specific to this plugin. The panel appears under the plugin on the Plugins page. The Drops center's mine, stop, and Mine All controls drive the plugin through the `drops.mine` / `drops.mine-auto` / `drops.stop` hooks, and the plugin reports live progress back through the `drops.status` slot.
 
 ## Building
 

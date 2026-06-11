@@ -20,7 +20,6 @@ import TierBadge from '../plugins/TierBadge';
 import PluginConsentModal, { ConsentSubject } from '../plugins/PluginConsentModal';
 import PluginDetailOverlay from '../plugins/PluginDetailOverlay';
 import PluginPanelRenderer from '../plugins/PluginPanelRenderer';
-import DropsAutomationSettings from '../plugins/DropsAutomationSettings';
 import {
   capabilityLines,
   compareVersions,
@@ -39,22 +38,6 @@ const TIER_TINT: Record<PluginTier, string> = {
   B: 'rgba(225, 185, 120, 0.16)',
   C: 'rgba(225, 130, 130, 0.16)',
 };
-
-// A plugin that provides one of these features gets core's matching rich
-// settings screen rendered as its own settings, instead of the generic
-// host-rendered panel. The component code lives in the app (a separate
-// process can't ship React), but it is gated on the plugin and reads/writes
-// the plugin's config, so the settings belong to the plugin.
-const RICH_SETTINGS: Record<string, React.FC<{ pluginId: string }>> = {
-  'drops.mining': DropsAutomationSettings,
-};
-
-function richSettingsFor(plugin: PluginInfo): React.FC<{ pluginId: string }> | null {
-  for (const key of plugin.granted.provides ?? []) {
-    if (RICH_SETTINGS[key]) return RICH_SETTINGS[key];
-  }
-  return null;
-}
 
 const Toggle = ({ enabled, onChange }: { enabled: boolean; onChange: () => void }) => (
   <button
@@ -425,7 +408,7 @@ const PluginsSettings = () => {
                     </p>
                   </div>
                   <div className="flex flex-shrink-0 items-center gap-0.5">
-                    {(plugin.has_panel || richSettingsFor(plugin)) && plugin.enabled && (
+                    {plugin.has_panel && plugin.enabled && (
                       <IconAction
                         hint="Plugin settings"
                         active={isPanelOpen}
@@ -569,14 +552,7 @@ const PluginsSettings = () => {
 
                 <Reveal open={isPanelOpen}>
                   <div className="mt-3">
-                    {(() => {
-                      const Rich = richSettingsFor(plugin);
-                      return Rich ? (
-                        <Rich pluginId={plugin.id} />
-                      ) : (
-                        <PluginPanelRenderer pluginId={plugin.id} />
-                      );
-                    })()}
+                    <PluginPanelRenderer pluginId={plugin.id} />
                   </div>
                 </Reveal>
               </div>

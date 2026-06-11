@@ -299,7 +299,7 @@ fn validate_panel_schema(schema: &Value) -> Result<(), RpcErr> {
                 .and_then(|t| t.as_str())
                 .ok_or_else(|| RpcErr::invalid_params("every field needs a type"))?;
             match field_type {
-                "toggle" | "number" | "text" | "string_list" => {}
+                "toggle" | "number" | "text" | "string_list" | "channel_list" | "slider" => {}
                 "select" => {
                     let has_options = field
                         .get("options")

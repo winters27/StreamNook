@@ -72,14 +72,35 @@ export function compareVersions(a: string, b: string): number {
 
 export interface PanelField {
   key: string;
-  type: 'toggle' | 'number' | 'select' | 'text' | 'string_list';
+  // Generic field types any plugin can declare. The host renders each one
+  // with a rich native control; the plugin never ships UI.
+  type:
+    | 'toggle'
+    | 'number'
+    | 'select'
+    | 'text'
+    | 'string_list' // add-and-remove chip rows (not a textarea)
+    | 'channel_list' // Twitch channel search picker (avatars, live dots)
+    | 'slider'; // range with a value readout
   label: string;
   description?: string;
   default?: unknown;
   min?: number;
   max?: number;
+  step?: number;
+  /** Unit suffix shown next to a slider's value, e.g. "min". */
+  unit?: string;
+  /** Divides a slider's raw value for display (e.g. 60 to show seconds as minutes). */
+  display_divisor?: number;
   placeholder?: string;
   options?: { value: string; label: string }[];
+}
+
+/** One channel entry stored by a `channel_list` field. */
+export interface PanelChannel {
+  channel_id: string;
+  channel_login: string;
+  display_name: string;
 }
 
 export interface PanelSection {

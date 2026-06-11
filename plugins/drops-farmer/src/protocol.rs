@@ -153,11 +153,11 @@ async fn read_frame(reader: &mut BufReader<Stdin>) -> Result<Option<Value>> {
 /// An inbound message the engine acts on. The initialize/ping/shutdown
 /// requests are answered inline in the read loop and not forwarded.
 pub enum Inbound {
-    /// Handshake: the host's data directory, where the plugin persists config.
-    Init { data_dir: String },
     Initialized,
     FollowedLive(Value),
     WatchTick,
+    /// The user changed values in the host-rendered settings panel.
+    PanelChange(Value),
     /// A hooked action the host UI invoked. The engine handles it and replies
     /// to `id` via the Host so the host's call resolves.
     Action { id: Value, action: String, args: Value },
@@ -189,16 +189,9 @@ pub async fn read_loop(stdin: Stdin, host: Host, tx: tokio::sync::mpsc::Sender<I
                 match m {
                     "initialize" => {
                         // Hooks are static for this plugin, so answer inline.
-                        let data_dir = frame
-                            .get("params")
-                            .and_then(|p| p.get("data_dir"))
-                            .and_then(|d| d.as_str())
-                            .unwrap_or_default()
-                            .to_string();
                         let _ = host
-                            .respond(id, json!({ "plugin_version": env!("CARGO_PKG_VERSION"), "hooks": ["on_followed_live", "on_watch_tick"] }))
+                            .respond(id, json!({ "plugin_version": env!("CARGO_PKG_VERSION"), "hooks": ["on_followed_live", "on_watch_tick", "on_panel_change"] }))
                             .await;
-                        let _ = tx.send(Inbound::Init { data_dir }).await;
                     }
                     "ping" => {
                         let _ = host.respond(id, json!({})).await;
@@ -238,6 +231,13 @@ pub async fn read_loop(stdin: Stdin, host: Host, tx: tokio::sync::mpsc::Sender<I
                 }
                 "on_watch_tick" => {
                     let _ = tx.send(Inbound::WatchTick).await;
+                }
+                "on_panel_change" => {
+                    let _ = tx
+                        .send(Inbound::PanelChange(
+                            frame.get("params").cloned().unwrap_or(Value::Null),
+                        ))
+                        .await;
                 }
                 "exit" => std::process::exit(0),
                 _ => {}

@@ -60,12 +60,6 @@ struct Farmer {
     user_id: Option<String>,
     credential_denied: bool,
     miner: mining::Miner,
-    /// Directory the host gave us to persist state in.
-    data_dir: String,
-    /// The plugin's own config (the rich DropsSettings shape). This plugin
-    /// owns and persists its automation config; the app's settings screen
-    /// reads it via drops.get-config and writes it via drops.configure.
-    config: Value,
 }
 
 impl Farmer {
@@ -84,93 +78,119 @@ impl Farmer {
             user_id: None,
             credential_denied: false,
             miner: mining::Miner::new(),
-            data_dir: String::new(),
-            config: json!({}),
         }
     }
 
-    fn config_path(&self) -> std::path::PathBuf {
-        std::path::Path::new(&self.data_dir).join("config.json")
-    }
-
-    /// Loads persisted config on startup and applies it, resuming auto-mining
-    /// if it was on. Called once the host hands over the data directory.
-    fn load_config(&mut self) {
-        if let Ok(text) = std::fs::read_to_string(self.config_path()) {
-            if let Ok(value) = serde_json::from_str::<Value>(&text) {
-                self.config = value.clone();
-                self.apply_config(&value);
-                if value.get("auto_mining_enabled").and_then(|v| v.as_bool()) == Some(true) {
-                    self.miner.set_target(MiningTarget::Auto);
+    /// The settings panel the host renders from generic field types. The host
+    /// has no knowledge of these keys or of this plugin; it just draws the
+    /// fields and stores their values, which come back to us as panel values.
+    fn panel_schema() -> Value {
+        json!({
+            "title": "Drops and Points Farmer",
+            "sections": [
+                {
+                    "label": "Channel points",
+                    "description": "Farms channel points on your followed live channels in the background. The channel you're watching already earns on its own.",
+                    "fields": [
+                        { "key": "points_active", "type": "toggle", "label": "Background farming", "description": "Pause without uninstalling.", "default": true },
+                        { "key": "reserve_slot", "type": "toggle", "label": "Leave a slot for the channel you're watching", "default": true },
+                        { "key": "priority_channels", "type": "channel_list", "label": "Priority channels", "description": "Farm these first; the rest of your follows fill any remaining slot." }
+                    ]
+                },
+                {
+                    "label": "Drops mining",
+                    "description": "Watches a stream that has an active drop and claims each drop when it completes.",
+                    "fields": [
+                        { "key": "mining_active", "type": "toggle", "label": "Mine drops", "default": false },
+                        { "key": "priority_games", "type": "string_list", "label": "Priority games", "description": "Mined first, in order.", "placeholder": "Add a game..." },
+                        { "key": "excluded_games", "type": "string_list", "label": "Excluded games", "description": "Never mined.", "placeholder": "Block a game..." },
+                        { "key": "priority_mode", "type": "select", "label": "Strategy", "default": "PriorityOnly", "options": [
+                            { "value": "PriorityOnly", "label": "Priority games only" },
+                            { "value": "EndingSoonest", "label": "Campaigns ending soonest" },
+                            { "value": "LowAvailFirst", "label": "Low availability first" }
+                        ] }
+                    ]
+                },
+                {
+                    "label": "Recovery",
+                    "description": "How mining reacts when a stream stalls, goes offline, or changes game.",
+                    "fields": [
+                        { "key": "recovery_mode", "type": "select", "label": "Mode", "default": "Automatic", "options": [
+                            { "value": "Automatic", "label": "Automatic" },
+                            { "value": "Relaxed", "label": "Relaxed" },
+                            { "value": "ManualOnly", "label": "Manual only" }
+                        ] },
+                        { "key": "detect_game_change", "type": "toggle", "label": "Switch if the stream changes game", "default": true },
+                        { "key": "stale_seconds", "type": "slider", "label": "Stall timeout", "description": "Switch channels after this long with no drop progress.", "min": 180, "max": 900, "step": 60, "display_divisor": 60, "unit": "min", "default": 420 },
+                        { "key": "blacklist_seconds", "type": "slider", "label": "Avoid a failed channel for", "min": 300, "max": 1800, "step": 60, "display_divisor": 60, "unit": "min", "default": 600 }
+                    ]
                 }
-            }
-        }
+            ]
+        })
     }
 
-    fn save_config(&self) {
-        if self.data_dir.is_empty() {
-            return;
+    /// Maps the host-stored panel values into the engine's settings. Keys are
+    /// defined by this plugin's own schema above, not by the host.
+    fn apply_panel_values(&mut self, v: &Value) {
+        if let Some(b) = v.get("points_active").and_then(|x| x.as_bool()) {
+            self.settings.active = b;
         }
-        if let Ok(text) = serde_json::to_string_pretty(&self.config) {
-            let _ = std::fs::write(self.config_path(), text);
-        }
-    }
-
-    /// Applies the app's native Drops settings (the rich DropsSettings shape)
-    /// pushed via drops.configure. This is the single source of config; the
-    /// plugin keeps no settings UI of its own. The mining target (start/stop,
-    /// or a specific campaign) is driven separately by the mine actions, not
-    /// by config, so editing settings never disturbs what is being mined.
-    fn apply_config(&mut self, s: &Value) {
-        // Channel-points farming.
-        if let Some(active) = s.get("auto_claim_channel_points").and_then(|v| v.as_bool()) {
-            self.settings.active = active;
-        }
-        let reserve = s
-            .get("reserve_token_for_current_stream")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(true);
+        let reserve = v.get("reserve_slot").and_then(|x| x.as_bool()).unwrap_or(true);
         // The watched channel is covered by the core heartbeat, so a reserved
-        // token leaves the background farmer one slot; otherwise it uses both.
+        // slot leaves the background farmer one slot; otherwise it uses both.
         self.settings.max_concurrent = if reserve { 1 } else { 2 };
-        if let Some(arr) = s.get("priority_farm_channels").and_then(|v| v.as_array()) {
+        if let Some(arr) = v.get("priority_channels").and_then(|x| x.as_array()) {
             self.settings.priority_logins = arr
                 .iter()
                 .filter_map(|c| c.get("channel_login").and_then(|l| l.as_str()))
                 .map(|l| l.to_lowercase())
                 .collect();
         }
-
-        // Drops mining.
+        if let Some(b) = v.get("mining_active").and_then(|x| x.as_bool()) {
+            if b {
+                if !self.miner.is_active() {
+                    self.miner.set_target(MiningTarget::Auto);
+                }
+            } else {
+                self.miner.set_target(MiningTarget::Stopped);
+            }
+        }
         let m = &mut self.miner.settings;
-        if let Some(list) = s.get("priority_games").and_then(|v| v.as_array()) {
+        if let Some(list) = v.get("priority_games").and_then(|x| x.as_array()) {
             m.priority_games = string_list(list);
         }
-        if let Some(list) = s.get("excluded_games").and_then(|v| v.as_array()) {
+        if let Some(list) = v.get("excluded_games").and_then(|x| x.as_array()) {
             m.excluded_games = string_list(list);
         }
-        if let Some(mode) = s.get("priority_mode").and_then(|v| v.as_str()) {
+        if let Some(mode) = v.get("priority_mode").and_then(|x| x.as_str()) {
             m.priority_mode = PriorityMode::parse(mode);
         }
-        if let Some(rec) = s.get("recovery_settings") {
-            if let Some(mode) = rec.get("recovery_mode").and_then(|v| v.as_str()) {
-                m.recovery_mode = RecoveryMode::parse(mode);
-            }
-            if let Some(d) = rec.get("detect_game_category_change").and_then(|v| v.as_bool()) {
-                m.detect_game_change = d;
-            }
-            if let Some(n) = rec.get("stale_progress_threshold_seconds").and_then(|v| v.as_u64()) {
-                m.stale_threshold_secs = n;
-            }
-            if let Some(n) = rec.get("streamer_blacklist_duration_seconds").and_then(|v| v.as_u64()) {
-                m.blacklist_secs = n;
-            }
+        if let Some(mode) = v.get("recovery_mode").and_then(|x| x.as_str()) {
+            m.recovery_mode = RecoveryMode::parse(mode);
+        }
+        if let Some(b) = v.get("detect_game_change").and_then(|x| x.as_bool()) {
+            m.detect_game_change = b;
+        }
+        if let Some(n) = v.get("stale_seconds").and_then(|x| x.as_u64()) {
+            m.stale_threshold_secs = n;
+        }
+        if let Some(n) = v.get("blacklist_seconds").and_then(|x| x.as_u64()) {
+            m.blacklist_secs = n;
         }
     }
 
     async fn on_initialized(&mut self) {
-        // No host-rendered panel: this plugin is configured from the app's
-        // native Drops settings, pushed in via the drops.configure action.
+        // Register the rich panel and load its persisted values. The host
+        // renders it from generic field types and stores the values for us.
+        let _ = self
+            .host
+            .request("register_panel", json!({ "schema": Self::panel_schema() }))
+            .await;
+        if let Ok(result) = self.host.request("get_panel_values", json!({})).await {
+            if let Some(values) = result.get("values") {
+                self.apply_panel_values(values);
+            }
+        }
         self.host.log("info", "drops-farmer initialized").await;
     }
 
@@ -194,13 +214,6 @@ impl Farmer {
                 self.miner.set_target(MiningTarget::Stopped);
                 json!({ "ok": true })
             }
-            "drops.configure" => {
-                self.config = args.clone();
-                self.apply_config(args);
-                self.save_config();
-                json!({ "ok": true })
-            }
-            "drops.get-config" => self.config.clone(),
             other => {
                 let _ = self
                     .host
@@ -448,13 +461,14 @@ async fn main() {
     let mut farmer = Farmer::new(host);
     while let Some(event) = rx.recv().await {
         match event {
-            Inbound::Init { data_dir } => {
-                farmer.data_dir = data_dir;
-                farmer.load_config();
-            }
             Inbound::Initialized => farmer.on_initialized().await,
             Inbound::FollowedLive(params) => farmer.on_followed_live(&params),
             Inbound::WatchTick => farmer.on_tick().await,
+            Inbound::PanelChange(params) => {
+                if let Some(values) = params.get("values") {
+                    farmer.apply_panel_values(values);
+                }
+            }
             Inbound::Action { id, action, args } => {
                 farmer.handle_action(id, &action, &args).await;
             }

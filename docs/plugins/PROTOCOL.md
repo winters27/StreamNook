@@ -169,7 +169,7 @@ Registers (or replaces) the plugin's settings panel. The host renders it; the pl
 }
 ```
 
-Field types in v1: `toggle` (boolean), `number`, `select` (one of `options`), `text`, `string_list`. The host persists values per plugin and delivers changes via `on_panel_change`.
+Field types in v1: `toggle` (boolean), `number`, `select` (one of `options`), `text`, `string_list` (rendered as add-and-remove chip rows, value is a string array), `channel_list` (a Twitch channel search-and-pick control, value is an array of `{ channel_id, channel_login, display_name }`), and `slider` (a range with `min`/`max`/`step`, plus optional `unit` and `display_divisor` for the readout). The host renders each type with a rich native control and persists values per plugin, delivering changes via `on_panel_change`. These are generic: any plugin composes them, and the host renders them without knowing which plugin or feature it serves.
 
 ### get_panel_values
 
