@@ -8,8 +8,19 @@ import { Search, Gift, MonitorPlay, BarChart3, Settings as SettingsIcon, Package
 import { Dropdown } from './ui/Dropdown';
 import {
     UnifiedGame, DropCampaign, DropProgress, DropsStatistics,
-    MiningStatus, DropsDeviceCodeInfo, InventoryResponse, InventoryItem, CompletedDrop
+    MiningStatus, MiningChannel, CurrentDropInfo, DropsDeviceCodeInfo, InventoryResponse, InventoryItem, CompletedDrop
 } from '../types';
+
+// Shape the drops mining plugin pushes into its status slot (see HOOKS.md).
+interface DropsStatusValue {
+    active?: boolean;
+    is_mining?: boolean;
+    game_name?: string | null;
+    campaign_id?: string | null;
+    channel_login?: string | null;
+    current_minutes?: number | null;
+    required_minutes?: number | null;
+}
 import LoadingWidget from './LoadingWidget';
 import GameCard from './drops/GameCard';
 import GameDetailPanel from './drops/GameDetailPanel';
@@ -68,6 +79,11 @@ export default function DropsCenter() {
 
     // Mining State
     const [miningStatus, setMiningStatus] = useState<MiningStatus | null>(null);
+    // Id of a plugin that provides drops mining, or null. When set, the
+    // cockpit's mine controls drive the plugin through the general hooks
+    // instead of the built-in miner. Core never names the plugin.
+    const [pluginMiningId, setPluginMiningId] = useState<string | null>(null);
+    const pluginMiningRef = useRef<string | null>(null);
 
     // UI State
     const [activeTab, setActiveTab] = useState<Tab>('games');
@@ -395,6 +411,109 @@ export default function DropsCenter() {
         }
     };
 
+    // ---- Plugin-backed mining routing ----
+    // Keep the ref in step with the state so the once-set status listener
+    // reads the current provider.
+    useEffect(() => {
+        pluginMiningRef.current = pluginMiningId;
+    }, [pluginMiningId]);
+
+    // Track which plugin (if any) provides drops mining, and translate its
+    // status pushes into the mining-status shape the cockpit already renders.
+    useEffect(() => {
+        let disposed = false;
+        const refreshProvider = async () => {
+            try {
+                const id = await invoke<string | null>('plugins_provides', { feature: 'drops.mining' });
+                if (!disposed) setPluginMiningId(id ?? null);
+            } catch { /* plugin host unavailable */ }
+        };
+        refreshProvider();
+
+        const unlisteners: (() => void)[] = [];
+        const setup = async () => {
+            const unState = await listen('plugin://state-changed', () => refreshProvider());
+            const unStatus = await listen<{ slot: string; value: DropsStatusValue }>(
+                'plugin://status',
+                (event) => {
+                    if (!pluginMiningRef.current || event.payload.slot !== 'drops.status') return;
+                    const v = event.payload.value || {};
+                    const channel: MiningChannel | null = v.channel_login
+                        ? {
+                              id: '',
+                              name: v.channel_login,
+                              display_name: v.channel_login,
+                              game_name: v.game_name ?? '',
+                              viewer_count: 0,
+                              is_live: true,
+                              drops_enabled: true,
+                          }
+                        : null;
+                    const drop: CurrentDropInfo | null = v.game_name
+                        ? {
+                              campaign_id: v.campaign_id ?? '',
+                              campaign_name: '',
+                              drop_id: '',
+                              drop_name: '',
+                              required_minutes: v.required_minutes ?? 0,
+                              current_minutes: v.current_minutes ?? 0,
+                              game_name: v.game_name,
+                          }
+                        : null;
+                    setMiningStatus({
+                        is_mining: !!v.is_mining,
+                        current_channel: channel,
+                        current_campaign: v.campaign_id ?? null,
+                        current_drop: drop,
+                        eligible_channels: [],
+                        last_update: new Date().toISOString(),
+                    });
+                    useAppStore.getState().setMiningActive(!!v.is_mining || !!v.active);
+                }
+            );
+            if (disposed) {
+                unState();
+                unStatus();
+            } else {
+                unlisteners.push(unState, unStatus);
+            }
+        };
+        setup();
+        return () => {
+            disposed = true;
+            unlisteners.forEach((u) => u());
+        };
+    }, []);
+
+    // These route to the plugin when one provides mining, else the built-in
+    // miner. Every mine control goes through them, so the cockpit feels native
+    // either way.
+    const mineAuto = async () => {
+        if (pluginMiningId) {
+            await invoke('plugins_invoke_action', { action: 'drops.mine-auto', args: {} });
+            return;
+        }
+        await invoke('start_auto_mining');
+    };
+    const mineCampaign = async (campaignId: string, channelId?: string | null) => {
+        if (pluginMiningId) {
+            await invoke('plugins_invoke_action', { action: 'drops.mine', args: { campaign_id: campaignId } });
+            return;
+        }
+        if (channelId) {
+            await invoke('start_campaign_mining_with_channel', { campaignId, channelId });
+            return;
+        }
+        await invoke('start_campaign_mining', { campaignId });
+    };
+    const stopMining = async () => {
+        if (pluginMiningId) {
+            await invoke('plugins_invoke_action', { action: 'drops.stop', args: {} });
+            return;
+        }
+        await invoke('stop_auto_mining');
+    };
+
     const handleStartMining = (campaignId: string, campaignName: string, gameName: string) => {
         setPendingCampaign({ id: campaignId, name: campaignName, gameName });
         setChannelPickerOpen(true);
@@ -409,14 +528,7 @@ export default function DropsCenter() {
                 await updateDropsSettings({ auto_mining_enabled: false });
             }
 
-            if (channelId) {
-                await invoke('start_campaign_mining_with_channel', {
-                    campaignId: pendingCampaign.id,
-                    channelId,
-                });
-            } else {
-                await invoke('start_campaign_mining', { campaignId: pendingCampaign.id });
-            }
+            await mineCampaign(pendingCampaign.id, channelId);
             addToast('Started mining campaign', 'success');
         } catch (err) {
             Logger.error('Failed to start mining:', err);
@@ -445,7 +557,7 @@ export default function DropsCenter() {
             setProgress([]);
 
             // Then call the backend to actually stop
-            await invoke('stop_auto_mining');
+            await stopMining();
             addToast('Mining stopped', 'info');
         } catch (err) {
             Logger.error('Failed to stop mining:', err);
@@ -459,7 +571,7 @@ export default function DropsCenter() {
 
     const handleStartAutoMining = async () => {
         try {
-            await invoke('start_auto_mining');
+            await mineAuto();
             addToast('Auto-mining started', 'success');
         } catch (err) {
             Logger.error('Failed to start auto mining:', err);
@@ -841,6 +953,21 @@ export default function DropsCenter() {
             const campaign = game?.active_campaigns.find(c => c.id === id);
             return campaign?.name || id;
         }));
+
+        // When a plugin powers mining, it auto-progresses through eligible
+        // campaigns by priority, so Mine All maps to auto-mine and the built-in
+        // per-campaign queue below is skipped.
+        if (pluginMiningId) {
+            try {
+                await stopMining();
+                await mineAuto();
+                addToast(`Mining available campaigns for ${gameName}`, 'success');
+            } catch (err) {
+                Logger.error('Failed to start mining:', err);
+                addToast('Failed to start mining', 'error');
+            }
+            return;
+        }
 
         // Stop any current mining first (AFTER checking completion status)
         if (miningStatus?.is_mining) {
@@ -1276,6 +1403,9 @@ export default function DropsCenter() {
 
         const setupListeners = async () => {
             const uStatus = await listen<MiningStatus>('mining-status-update', (event) => {
+                // When a plugin powers mining, its pushes (via plugin://status)
+                // are the source of truth; ignore the built-in miner's events.
+                if (pluginMiningRef.current) return;
                 Logger.debug('[DropsCenter] Mining status update:', event.payload);
                 setMiningStatus(event.payload);
                 
