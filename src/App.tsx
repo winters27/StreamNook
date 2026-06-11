@@ -1406,7 +1406,7 @@ function App() {
                 transition={{ duration: 0.2 }}
                 className="absolute inset-0 z-50 bg-black"
               >
-                <LoadingWidget useFunnyMessages={true} showProxyNote={settings.streamlink?.use_proxy ?? false} />
+                <LoadingWidget useFunnyMessages={true} />
               </motion.div>
             )}
           </AnimatePresence>
@@ -1473,7 +1473,7 @@ function App() {
                           transition={{ duration: 0.2 }}
                           className="absolute inset-0 z-20"
                         >
-                          <LoadingWidget useFunnyMessages={true} showProxyNote={settings.streamlink?.use_proxy ?? false} />
+                          <LoadingWidget useFunnyMessages={true} />
                         </motion.div>
                       )}
                     </AnimatePresence>
