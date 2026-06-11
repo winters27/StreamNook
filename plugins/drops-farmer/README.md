@@ -6,9 +6,10 @@ It does its own networking and uses your Twitch login, handed over by StreamNook
 
 ## What it does
 
-- Watches up to two of your followed live channels at a time to accrue channel points, rotating through the pool over time, the same way the former built-in farmer did.
-- Sweeps for and claims bonus chests across your live channels every few minutes.
-- The channel you are actively watching in StreamNook already earns points on its own (the core reports it), so this plugin farms the others.
+Enabling the plugin starts nothing on its own. It makes drops mining and optional background points farming available, and you choose what runs:
+
+- Drops mining: click a drop in the Drops center and it mines that drop headlessly, no watching required. Stop or switch by clicking another. (Mine All auto-mines through your campaigns by the priority you set.)
+- Background channel points farming is opt-in (off by default): turn it on in the plugin settings to farm points on your other followed channels. The channel you are actively watching always earns on its own.
 
 It does all of its own networking and uses a Twitch login token that StreamNook's credential broker hands over only after you explicitly consent. The watch report uses the `sendSpadeEvents` GraphQL mutation.
 

@@ -39,7 +39,9 @@ struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            active: true,
+            // Background points farming is opt-in: enabling the plugin starts
+            // nothing on its own. The user turns this on in settings.
+            active: false,
             max_concurrent: MAX_CONCURRENT_DEFAULT,
             priority_logins: Vec::new(),
         }
@@ -90,19 +92,18 @@ impl Farmer {
             "sections": [
                 {
                     "label": "Channel points",
-                    "description": "Farms channel points on your followed live channels in the background. The channel you're watching already earns on its own.",
+                    "description": "Optionally farm channel points on your followed live channels in the background. Off unless you turn it on; the channel you're watching always earns on its own.",
                     "fields": [
-                        { "key": "points_active", "type": "toggle", "label": "Background farming", "description": "Pause without uninstalling.", "default": true },
+                        { "key": "points_active", "type": "toggle", "label": "Background points farming", "description": "Off by default. When on, farms points on your followed channels.", "default": false },
                         { "key": "reserve_slot", "type": "toggle", "label": "Leave a slot for the channel you're watching", "default": true },
                         { "key": "priority_channels", "type": "channel_list", "label": "Priority channels", "description": "Farm these first; the rest of your follows fill any remaining slot." }
                     ]
                 },
                 {
                     "label": "Drops mining",
-                    "description": "Watches a stream that has an active drop and claims each drop when it completes.",
+                    "description": "Start mining a drop by clicking it in the Drops center; it then mines headlessly, no watching needed. These settings only tune which games auto-mine prefers when you use Mine All.",
                     "fields": [
-                        { "key": "mining_active", "type": "toggle", "label": "Mine drops", "default": false },
-                        { "key": "priority_games", "type": "string_list", "label": "Priority games", "description": "Mined first, in order.", "placeholder": "Add a game..." },
+                        { "key": "priority_games", "type": "string_list", "label": "Priority games", "description": "Preferred first when mining several, in order.", "placeholder": "Add a game..." },
                         { "key": "excluded_games", "type": "string_list", "label": "Excluded games", "description": "Never mined.", "placeholder": "Block a game..." },
                         { "key": "priority_mode", "type": "select", "label": "Strategy", "default": "PriorityOnly", "options": [
                             { "value": "PriorityOnly", "label": "Priority games only" },
@@ -146,15 +147,9 @@ impl Farmer {
                 .map(|l| l.to_lowercase())
                 .collect();
         }
-        if let Some(b) = v.get("mining_active").and_then(|x| x.as_bool()) {
-            if b {
-                if !self.miner.is_active() {
-                    self.miner.set_target(MiningTarget::Auto);
-                }
-            } else {
-                self.miner.set_target(MiningTarget::Stopped);
-            }
-        }
+        // Mining is not a background toggle: it starts only when the user
+        // clicks a drop in the Drops center (drops.mine) or Mine All
+        // (drops.mine-auto), and stops via drops.stop. Settings only tune it.
         let m = &mut self.miner.settings;
         if let Some(list) = v.get("priority_games").and_then(|x| x.as_array()) {
             m.priority_games = string_list(list);

@@ -514,6 +514,17 @@ export default function DropsCenter() {
     };
 
     const handleStartMining = (campaignId: string, campaignName: string, gameName: string) => {
+        // With the plugin powering mining, it picks an eligible channel itself,
+        // so clicking a drop just starts it — no channel picker step.
+        if (pluginMiningId) {
+            mineCampaign(campaignId)
+                .then(() => addToast('Started mining', 'success'))
+                .catch((err) => {
+                    Logger.error('Failed to start mining:', err);
+                    addToast('Failed to start mining', 'error');
+                });
+            return;
+        }
         setPendingCampaign({ id: campaignId, name: campaignName, gameName });
         setChannelPickerOpen(true);
     };
