@@ -1,0 +1,21 @@
+id          = "community.drops-farmer"
+name        = "Drops and Points Farmer"
+version     = "0.1.0"
+author      = "community"
+tier        = "C"
+description = "Background channel-points farming and drops mining. Automates watching, which Twitch prohibits."
+homepage    = "https://github.com/winters27/StreamNook"
+host_min    = "7.0.0"
+
+[runtime]
+kind      = "process"
+entry     = "target/release/drops-farmer.exe"
+args      = []
+transport = "stdio"
+
+[capabilities]
+events       = ["on_followed_live", "on_watch_tick", "on_panel_change"]
+host_methods = ["notify", "log", "register_panel", "get_panel_values"]
+credentials  = ["twitch.android"]
+network      = "external"
+ui           = ["panel"]

@@ -449,9 +449,19 @@ Phase 3, core parity heartbeat:
 
 Phase 4, first extraction (drops and points farming, as a Rust sidecar):
 
-- [ ] Carve the channel-points rotation, reserved second slot, bonus auto-claim timer, drops auto-mining, channel auto-switch, drop auto-claim, mass PubSub monitoring, and the Android device-code drops auth out of the core into a separate sidecar binary speaking the plugin protocol.
-- [ ] The plugin does its own GQL and heartbeat over its own network stack, using a credential handed over through the broker on consent. The core emits `on_followed_live`, `on_watch_tick`, and channel events, and contains none of the mining logic or the spade and `sendSpadeEvents` calls.
-- [ ] Retire the legacy `spade.twitch.tv/track` path along with the extracted farmer; the plugin standardizes on `sendSpadeEvents`.
+Done in increments so the app and the sidecar both stay buildable throughout; core-side removal is last, after the sidecar is verified, so the fallback is never broken before the replacement is proven.
+
+Increment 1 (done): the sidecar exists and farms channel points.
+- [x] Stand up the farming sidecar as a standalone Rust binary crate (`plugins/drops-farmer/`) speaking the plugin protocol over stdio. Channel-points logic ported: up to two concurrent channels, least-recently-watched rotation every 15 minutes, priority-channel preference (replaces the reserved-slot concept; core's parity heartbeat already covers the actively watched channel), and a bonus-chest claim sweep every 5 minutes.
+- [x] The plugin does its own GQL and watch reporting over its own `reqwest` stack, using the `twitch.android` credential handed over through the broker on consent. It standardizes on `sendSpadeEvents` (no legacy `spade.twitch.tv/track`). Client ids: the public web client id is a constant for context reads; the Android client id comes from the credential handover.
+- [x] Handshake, panel registration, panel values, and the credential request verified against a host-style protocol harness; the sidecar fails gracefully on a bad token.
+
+Increment 2 (pending): port drops auto-mining (campaign selection, eligible-channel pick, synthetic watch, channel auto-switch, drop auto-claim) into the same sidecar.
+
+Increment 3 (pending), core-side removal, only after the sidecar is verified live:
+- [ ] Carve the channel-points rotation, bonus auto-claim timer, drops auto-mining, channel auto-switch, drop auto-claim, mass PubSub monitoring, and the Android device-code drops auth out of the core. (`BackgroundService`, `mining_service`, `channel_points_service`, the websocket pools, and the `auto_claim_channel_points` startup gate.)
+- [ ] Confirm the core emits `on_followed_live`, `on_watch_tick`, and channel events (already wired in Phase 3) and contains none of the mining logic or the spade / `sendSpadeEvents` calls.
+- [ ] Retire the legacy `spade.twitch.tv/track` path with the extracted farmer.
 - [ ] Move the DropsCenter and DropsSettings controls into the plugin's host-rendered panel. Remove the duplicated settings surface.
 - [ ] Verify the core binary no longer contains the farming endpoints or loops.
 
