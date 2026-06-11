@@ -1,9 +1,9 @@
 id          = "community.drops-farmer"
-name        = "Drops and Points Farmer"
+name        = "Autopilot"
 version     = "0.1.0"
 author      = "StreamNook"
 tier        = "C"
-description = "Background channel-points farming and drops mining, kept out of the core app as an opt-in add-on."
+description = "Earn Twitch drops and channel points in the background, without keeping a stream open."
 homepage    = "https://github.com/StreamNook/streamnook-plugins"
 host_min    = "7.0.0"
 

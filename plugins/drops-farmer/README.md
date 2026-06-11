@@ -1,6 +1,6 @@
-# Drops and Points Farmer
+# Autopilot
 
-A StreamNook plugin that farms Twitch channel points (and, in a later version, mines drops) in the background, across your followed live channels. It runs as a separate program that StreamNook starts and talks to. It lives outside the core app as an opt-in add-on, so the core stays lean and you run it only if you want it.
+A StreamNook plugin that earns Twitch drops and channel points in the background, without keeping a stream open. It runs as a separate program that StreamNook starts and talks to. It lives outside the core app as an opt-in add-on, so the core stays lean and you run it only if you want it.
 
 It does its own networking and uses your Twitch login, handed over by StreamNook's credential broker after you allow it, so it can watch and claim on your account.
 
