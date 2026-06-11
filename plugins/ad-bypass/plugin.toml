@@ -1,0 +1,30 @@
+id          = "community.ad-bypass"
+name        = "Ad-Free Playback"
+version     = "0.1.0"
+author      = "community"
+tier        = "C"
+description = "Resolves live streams through community playlist proxies for ad-free viewing, kept out of the core app as an opt-in add-on."
+homepage    = "https://github.com/winters27/StreamNook"
+host_min    = "7.0.0"
+
+[runtime]
+kind      = "process"
+entry     = "target/release/ad-bypass.exe"
+args      = []
+transport = "stdio"
+
+[capabilities]
+events       = ["on_ad_window", "on_panel_change"]
+host_methods = ["set_upstream", "notify", "log", "register_panel", "get_panel_values"]
+credentials  = []
+network      = "external"
+ui           = ["panel"]
+
+# Hooks this plugin fills. The app invokes playback.resolve for non-entitled
+# live starts and hands over the channel, quality, and its own master; this
+# plugin answers with a proxy-resolved master. When the host reports an ad
+# window on a stream this plugin resolved, it re-resolves through a different
+# region and swaps the relay upstream via set_upstream.
+[contributes]
+actions  = ["playback.resolve"]
+provides = ["playback.resolve"]

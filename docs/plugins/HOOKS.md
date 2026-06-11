@@ -50,6 +50,46 @@ The host ignores a slot the plugin did not declare. Accepted pushes are forwarde
 - `plugins_provides(feature) -> plugin_id | null` — core UI checks whether a feature is backed before enabling its controls.
 - `plugin://status` event — core UI subscribes to receive a plugin's status-slot pushes.
 
+## Hook catalog
+
+Contracts for the hooks core currently exposes. Hook names are owned by the host feature; any plugin may fill them.
+
+### Drops center (`drops.*`)
+
+- Actions: `drops.mine { campaign_id? }`, `drops.mine-auto`, `drops.mine-all`, `drops.stop` — each returns `{ "ok": true }`.
+- Status slot: `drops.status` — `{ active, is_mining, game_name, campaign_id, channel_login, current_minutes, required_minutes }`.
+- Provides: `drops.mining` lights up the Drops center's mine controls.
+
+### Playback resolution (`playback.*`)
+
+- Action: `playback.resolve` — invoked when a live stream starts and the viewer is not already entitled to watch it ad-free (Twitch Turbo or a channel subscription). Entitled streams never reach the hook.
+
+  Args:
+
+  ```json
+  {
+    "stream_id": "solo",
+    "channel": "somechannel",
+    "quality": "best",
+    "auth_master": "<the master playlist core resolved itself, or null>"
+  }
+  ```
+
+  `stream_id` is the relay session id this resolution will serve (`solo`, or a multi-stream tile id); the plugin keeps it to address later `set_upstream` calls and to match `on_ad_window` events. `auth_master` is core's own direct resolution when it succeeded; a plugin that resolves through an anonymous source can merge the above-1080p tiers from it, since anonymous masters are capped at 1080p.
+
+  Response, either shape:
+
+  ```json
+  { "master": "<HLS master playlist body>", "base": "https://...", "region": "EU" }
+  { "declined": true }
+  ```
+
+  On `master`, core parses it and selects the variant exactly as it would its own resolution; `base` and `region` are optional provenance for the player's source badge. On `declined` (or any error or timeout), core falls back to its own direct resolution.
+
+- Provides: `playback.resolve` makes core invoke the action at stream start.
+
+The mid-stream loop pairs this hook with the protocol surface: core emits `on_ad_window` on every ad-state transition for a relay session, and the plugin answers a leaked ad window by re-resolving and calling `set_upstream` with a fresh media-playlist URL for that session.
+
 ## Why this shape
 
 It keeps the host generic. The Drops center is a core feature, so it owns the `drops.*` hook names, but it has no knowledge of any particular plugin: it invokes actions, reads a status slot, and checks a provides flag. The farming plugin happens to fill those hooks; a different miner could fill the same ones. The same mechanism serves every future plugin, so features become extension points rather than per-plugin wiring.

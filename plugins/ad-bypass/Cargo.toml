@@ -1,0 +1,22 @@
+[package]
+name = "ad-bypass"
+version = "0.1.0"
+edition = "2021"
+description = "StreamNook ad-free playback plugin (proxy resolution) — community add-on"
+
+[[bin]]
+name = "ad-bypass"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", features = ["json", "gzip"] }
+futures = "0.3"
+anyhow = "1"
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true

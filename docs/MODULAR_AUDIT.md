@@ -468,10 +468,10 @@ Increment 3 (pending), core-side removal, only after the sidecar is verified liv
 
 Phase 5, second extraction (ad bypass, plugin-owns-resolution):
 
-- [ ] Move the proxy racing, high-tier splice, auto-pivot, proxy health, and the first-launch auto-optimizer into the ad-bypass plugin. The plugin resolves and hands core an upstream URL via `set_upstream`; core emits `on_ad_window` for pivots.
-- [ ] Make the core relay ad-neutral: `filter_ad_segments` never runs in core, on any path, including the entitled one. Ad detection (read-only) stays.
-- [ ] Remove the bundled proxy list and the auto-optimizer default from core.
-- [ ] Verify MultiNook per-tile upstreams work with the plugin-supplied resolution.
+- [x] Move the proxy racing, high-tier splice, auto-pivot, proxy health, and the first-launch auto-optimizer into the ad-bypass plugin (`plugins/ad-bypass/`, id `community.ad-bypass`). The shape refined in implementation: at stream start core invokes the plugin's `playback.resolve` action (non-entitled only) and the plugin answers with a proxy-resolved master playlist body, core's own master riding along in the args so the plugin splices the above-1080p tiers; `set_upstream` is the mid-stream path, answered to `on_ad_window` with a fresh media-playlist URL after re-resolving a clean region. Contract documented in docs/plugins/HOOKS.md (hook catalog).
+- [x] Make the core relay ad-neutral: `filter_ad_segments` deleted outright (decision 4's accepted cost: a leak-through segment plays as an ad), the auto-pivot machinery removed, ad detection (read-only) stays and now feeds `on_ad_window` on every transition, solo and per tile. `resolve_live` is entitlement-first then direct, and works anonymously again (the proxy used to cover logged-out viewers).
+- [x] Remove the bundled proxy list and the auto-optimizer default from core (proxy_health service and commands deleted, proxyAutoOptimizer.ts and ProxyHealthChecker.tsx removed, `use_proxy`/`proxy_playlist`/optimizer settings keys dropped from StreamlinkSettings; the player badge gains a "plugin" mode in place of "proxy").
+- [ ] Verify MultiNook per-tile upstreams work with the plugin-supplied resolution. (Runtime verification pending: per-tile resolve delegation and `set_upstream` are wired; a tile upstream swap has no frontend reload handler yet, so a mid-stream tile pivot relies on hls.js error recovery until that lands.)
 
 Phase 6, credential spike and DOM-automation removal:
 
