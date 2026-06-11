@@ -236,6 +236,13 @@ impl Engine {
             .and_then(|v| v.as_str())
             .unwrap_or("best")
             .to_string();
+        // A new resolve for this stream id means the relay session moved on to
+        // a new stream. The old session must die NOW, on every outcome: if it
+        // survived a decline below, a later ad window on the new stream would
+        // pivot the relay onto the OLD channel's playlist.
+        if !stream_id.is_empty() {
+            self.sessions.remove(&stream_id);
+        }
         if !self.settings.enabled || channel.is_empty() || stream_id.is_empty() {
             let _ = self.host.respond(id, json!({ "declined": true })).await;
             return;

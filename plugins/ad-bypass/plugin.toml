@@ -15,7 +15,7 @@ transport = "stdio"
 
 [capabilities]
 events       = ["on_ad_window", "on_panel_change"]
-host_methods = ["set_upstream", "notify", "log", "register_panel", "get_panel_values"]
+host_methods = ["set_upstream", "log", "register_panel", "get_panel_values"]
 credentials  = []
 network      = "external"
 ui           = ["panel"]
