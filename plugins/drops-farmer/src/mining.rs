@@ -339,7 +339,9 @@ pub struct Miner {
     campaigns: Vec<Campaign>,
     campaigns_tick: u64,
     current: Option<MiningChannel>,
-    current_game_id: String,
+    /// The campaign we are mining. Kept sticky so Auto mode doesn't re-pick a
+    /// different (equally-ranked) campaign every tick and thrash.
+    current_campaign_id: Option<String>,
     last_minutes: i32,
     last_progress_tick: u64,
     /// channel_id -> tick when its blacklist expires.
@@ -354,7 +356,7 @@ impl Miner {
             campaigns: Vec::new(),
             campaigns_tick: 0,
             current: None,
-            current_game_id: String::new(),
+            current_campaign_id: None,
             last_minutes: -1,
             last_progress_tick: 0,
             blacklist: HashMap::new(),
@@ -368,6 +370,7 @@ impl Miner {
     pub fn set_target(&mut self, target: MiningTarget) {
         if target == MiningTarget::Stopped {
             self.current = None;
+            self.current_campaign_id = None;
         }
         self.target = target;
     }
@@ -375,9 +378,10 @@ impl Miner {
     /// A status snapshot for the host UI's drops.status slot.
     pub fn status(&self) -> Value {
         let campaign = self
-            .current
+            .current_campaign_id
             .as_ref()
-            .and_then(|_| self.campaigns.iter().find(|c| c.game_id == self.current_game_id));
+            .filter(|_| self.current.is_some())
+            .and_then(|id| self.campaigns.iter().find(|c| &c.id == id));
         json!({
             "active": self.is_active(),
             "is_mining": self.current.is_some(),
@@ -509,7 +513,15 @@ impl Miner {
 
         let campaign = match &self.target {
             MiningTarget::Stopped => None,
-            MiningTarget::Auto => self.ranked_campaigns().into_iter().next(),
+            MiningTarget::Auto => {
+                // Stay on the current campaign while it is still minable, so we
+                // don't switch between equally-ranked campaigns every tick.
+                let ranked = self.ranked_campaigns();
+                self.current_campaign_id
+                    .as_ref()
+                    .and_then(|id| ranked.iter().find(|c| &c.id == id).cloned())
+                    .or_else(|| ranked.into_iter().next())
+            }
             MiningTarget::Campaign(id) => self
                 .campaigns
                 .iter()
@@ -518,10 +530,11 @@ impl Miner {
         };
         let Some(campaign) = campaign else {
             self.current = None;
+            self.current_campaign_id = None;
             return None;
         };
 
-        // Stall detection against the active drop's progress for this game.
+        // Stall detection against the active drop's progress for this campaign.
         let active_minutes = self
             .campaigns
             .iter()
@@ -529,7 +542,7 @@ impl Miner {
             .and_then(|c| c.active_drop())
             .map(|d| d.current_minutes)
             .unwrap_or(self.last_minutes);
-        if self.current.is_some() && campaign.game_id == self.current_game_id {
+        if self.current.is_some() && self.current_campaign_id.as_deref() == Some(campaign.id.as_str()) {
             if active_minutes > self.last_minutes {
                 self.last_minutes = active_minutes;
                 self.last_progress_tick = tick_count;
@@ -546,19 +559,24 @@ impl Miner {
             }
         }
 
-        // Acquire a channel if we don't have a valid one for this campaign.
-        if self.current.is_none() || campaign.game_id != self.current_game_id {
+        // Acquire a channel if we don't have one for the current campaign.
+        if self.current.is_none()
+            || self.current_campaign_id.as_deref() != Some(campaign.id.as_str())
+        {
             match self.pick_channel(client, cred, &campaign).await {
                 Some(ch) => {
                     host.log("info", format!("mining {} for {}", ch.login, campaign.game_name))
                         .await;
                     self.current = Some(ch);
-                    self.current_game_id = campaign.game_id.clone();
+                    self.current_campaign_id = Some(campaign.id.clone());
                     self.last_minutes = active_minutes;
                     self.last_progress_tick = tick_count;
                 }
                 None => {
+                    // No live channel for this campaign right now; drop it so a
+                    // different campaign can be tried next tick.
                     self.current = None;
+                    self.current_campaign_id = None;
                     return None;
                 }
             }
