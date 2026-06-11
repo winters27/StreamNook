@@ -18,9 +18,7 @@ import OfficialBadge from './OfficialBadge';
 import MarkdownLite from './MarkdownLite';
 import { Tooltip } from '../ui/Tooltip';
 import { Logger } from '../../utils/logger';
-
-const TILE_BEVEL =
-  'inset 1px 1px 0 0 rgba(255,255,255,0.10), inset -1px -1px 0 0 rgba(0,0,0,0.18)';
+import PluginIcon from './PluginIcon';
 
 const TIER_WASH: Record<PluginTier, string> = {
   A: 'linear-gradient(160deg, rgba(110, 200, 160, 0.14), rgba(110, 200, 160, 0.03))',
@@ -161,20 +159,14 @@ const PluginDetailOverlay = ({ entry, sourceName, installed, busy, onInstall, on
 
             {/* Identity row */}
             <div className="flex flex-shrink-0 items-center gap-3.5 px-5 py-4">
-              <div
-                className="flex h-12 w-12 flex-shrink-0 items-center justify-center overflow-hidden rounded-xl"
-                style={
-                  entry.icon_url
-                    ? undefined
-                    : { backgroundImage: TIER_WASH[entry.tier], boxShadow: TILE_BEVEL }
-                }
-              >
-                {entry.icon_url ? (
-                  <img src={entry.icon_url} alt="" className="h-full w-full object-cover" />
-                ) : (
-                  <Puzzle size={22} strokeWidth={2} className="text-textPrimary" />
-                )}
-              </div>
+              <PluginIcon
+                iconUrl={entry.icon_url}
+                official={!!entry.official}
+                author={entry.author.name}
+                tier={entry.tier}
+                sizeClass="h-12 w-12 rounded-xl"
+                glyphSize={22}
+              />
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
                   <span className="truncate text-[15px] font-semibold text-textPrimary">

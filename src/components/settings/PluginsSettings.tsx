@@ -22,25 +22,19 @@ import OfficialBadge from '../plugins/OfficialBadge';
 import PluginConsentModal, { ConsentSubject } from '../plugins/PluginConsentModal';
 import PluginDetailOverlay from '../plugins/PluginDetailOverlay';
 import PluginPanelRenderer from '../plugins/PluginPanelRenderer';
+import PluginIcon from '../plugins/PluginIcon';
 import { usePluginUiRegistry } from '../../plugins-ui/registry';
 import {
   capabilityLines,
   compareVersions,
   IndexEntry,
   PluginInfo,
-  PluginTier,
   SourceInfo,
 } from '../../types/plugins';
 import { Logger } from '../../utils/logger';
 
 const TILE_BEVEL =
   'inset 1px 1px 0 0 rgba(255,255,255,0.10), inset -1px -1px 0 0 rgba(0,0,0,0.18)';
-
-const TIER_TINT: Record<PluginTier, string> = {
-  A: 'rgba(110, 200, 160, 0.16)',
-  B: 'rgba(225, 185, 120, 0.16)',
-  C: 'rgba(225, 130, 130, 0.16)',
-};
 
 const Toggle = ({ enabled, onChange }: { enabled: boolean; onChange: () => void }) => (
   <button
@@ -450,25 +444,14 @@ const PluginsSettings = () => {
                   className="flex flex-col rounded-xl border border-white/5 bg-white/[0.03] p-3.5 text-left transition-colors hover:bg-white/[0.06]"
                 >
                   <div className="flex items-center gap-3">
-                    <div
-                      className="flex h-11 w-11 flex-shrink-0 items-center justify-center overflow-hidden rounded-xl"
-                      style={
-                        entry.icon_url
-                          ? undefined
-                          : { background: TIER_TINT[entry.tier], boxShadow: TILE_BEVEL }
-                      }
-                    >
-                      {entry.icon_url ? (
-                        <img
-                          src={entry.icon_url}
-                          alt=""
-                          className="h-full w-full object-cover"
-                          loading="lazy"
-                        />
-                      ) : (
-                        <Puzzle size={20} strokeWidth={2.25} className="text-textPrimary" />
-                      )}
-                    </div>
+                    <PluginIcon
+                      iconUrl={entry.icon_url}
+                      official={!!entry.official}
+                      author={entry.author.name}
+                      tier={entry.tier}
+                      sizeClass="h-11 w-11 rounded-xl"
+                      glyphSize={20}
+                    />
                     <div className="min-w-0 flex-1">
                       <span className="block truncate text-[13px] font-semibold text-textPrimary">
                         {entry.name}
@@ -546,15 +529,20 @@ const PluginsSettings = () => {
             // component (ui plugins, registered while loaded).
             const UiSettingsPanel = uiSettingsPanels[plugin.id];
             const hasSettings = (plugin.has_panel || !!UiSettingsPanel) && plugin.enabled;
+            // Official-ness isn't stored on the installed record; derive it
+            // from the source the plugin came from (built-in source = official).
+            const pluginOfficial =
+              sources.find((s) => s.url === plugin.source)?.official ?? false;
             return (
               <div key={plugin.id} className="glass-panel rounded-lg p-4">
                 <div className="flex items-center gap-3.5">
-                  <div
-                    className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg"
-                    style={{ background: TIER_TINT[plugin.tier], boxShadow: TILE_BEVEL }}
-                  >
-                    <Puzzle size={18} strokeWidth={2.25} className="text-textPrimary" />
-                  </div>
+                  <PluginIcon
+                    official={pluginOfficial}
+                    author={plugin.author}
+                    tier={plugin.tier}
+                    sizeClass="h-10 w-10 rounded-lg"
+                    glyphSize={18}
+                  />
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                       <span className="truncate text-[14px] font-semibold text-textPrimary">
