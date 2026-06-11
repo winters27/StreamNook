@@ -1,4 +1,4 @@
-// listStore: user-curated reference lists for the Lists panel.
+// listStore: user-curated reference lists.
 //
 // A list is a named collection of short text entries the user wants at hand
 // while watching or moderating: known ban evaders, reusable chat commands,
@@ -7,21 +7,21 @@
 // alongside the text but is never included when the entry is copied, so the
 // copied value stays paste-clean for /ban and friends.
 //
-// Persistence + cross-window sync mirror snippetStore exactly: everything
-// lives in localStorage, every mutation persists synchronously, and a Tauri
-// event tells other windows to re-read. The originating window stamps a
-// sender id so it can ignore its own broadcast.
+// Persistence + cross-window sync: everything lives in localStorage (shared
+// across the app's windows), every mutation persists synchronously, and an
+// app-wide event tells other windows to re-read. The originating window
+// stamps a sender id so it can ignore its own broadcast. The storage keys
+// predate the plugin, so lists created before the extraction carry over.
 
 import { create } from 'zustand';
-import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { Logger } from '../utils/logger';
+import { getApi } from './host';
 
 const STORAGE_LISTS = 'streamnook.lists.v1';
 const STORAGE_ACTIVE = 'streamnook.lists.active.v1';
 
 const LISTS_UPDATED_EVENT = 'streamnook-lists-updated';
 
-// Per-window-load random id, same pattern as snippetStore / settingsBroadcast.
+// Per-window-load random id so a window can ignore its own broadcast.
 const SENDER_ID =
   typeof crypto !== 'undefined' && 'randomUUID' in crypto
     ? crypto.randomUUID()
@@ -63,13 +63,23 @@ interface ListStoreState {
 
 // ---------- localStorage helpers --------------------------------------------
 
+/** The store initializes at module evaluation, before activate hands over the
+ *  api, so logging must not depend on it. */
+function logWarn(...args: unknown[]): void {
+  try {
+    getApi().log.warn(...args);
+  } catch {
+    console.warn('[lists]', ...args);
+  }
+}
+
 function readJSON<T>(key: string, fallback: T): T {
   try {
     const raw = localStorage.getItem(key);
     if (!raw) return fallback;
     return JSON.parse(raw) as T;
   } catch (err) {
-    Logger.warn(`[listStore] read ${key} failed:`, err);
+    logWarn(`[listStore] read ${key} failed:`, err);
     return fallback;
   }
 }
@@ -78,7 +88,7 @@ function writeJSON(key: string, value: unknown): void {
   try {
     localStorage.setItem(key, JSON.stringify(value));
   } catch (err) {
-    Logger.warn(`[listStore] write ${key} failed:`, err);
+    logWarn(`[listStore] write ${key} failed:`, err);
   }
 }
 
@@ -120,9 +130,9 @@ function persist(lists: UserList[], activeListId: string | null): void {
 
 async function broadcastUpdate(): Promise<void> {
   try {
-    await emit(LISTS_UPDATED_EVENT, { source: SENDER_ID });
+    await getApi().events.emit(LISTS_UPDATED_EVENT, { source: SENDER_ID });
   } catch (err) {
-    Logger.warn('[listStore] broadcast failed (non-fatal):', err);
+    logWarn('[listStore] broadcast failed (non-fatal):', err);
   }
 }
 
@@ -243,16 +253,16 @@ export function reloadListStore(): void {
   useListStore.setState({ lists, activeListId: loadActiveListId(lists) });
 }
 
-/** Mount once per window: subscribes this window's store to updates emitted
- *  by other windows. Same idiom as startSnippetSync. */
-export async function startListSync(): Promise<UnlistenFn | undefined> {
+/** Start once per window: subscribes this window's store to updates emitted
+ *  by other windows. The api cleans the listener up at unload. */
+export async function startListSync(): Promise<(() => void) | undefined> {
   try {
-    return await listen<{ source: string }>(LISTS_UPDATED_EVENT, (event) => {
-      if (event.payload?.source === SENDER_ID) return;
+    return await getApi().events.listen(LISTS_UPDATED_EVENT, (payload) => {
+      if ((payload as { source?: string } | null)?.source === SENDER_ID) return;
       reloadListStore();
     });
   } catch (err) {
-    Logger.warn('[listStore] startListSync failed:', err);
+    logWarn('[listStore] startListSync failed:', err);
     return undefined;
   }
 }

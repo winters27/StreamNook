@@ -235,6 +235,20 @@ pub async fn plugins_provides(
     Ok(state.plugin_host.provides(&feature).await)
 }
 
+/// The bundled module source of an enabled ui plugin, read for the frontend
+/// loader (see docs/plugins/UI_PLUGINS.md).
+#[tauri::command]
+pub async fn plugins_ui_bundle(
+    plugin_id: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    state
+        .plugin_host
+        .ui_bundle(&plugin_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn plugins_report_stream_event(
     kind: String,

@@ -1,7 +1,7 @@
-// ListsSurface: the shared core of the Lists feature, hosted by two chromes:
-// the in-app floating panel (ListsPanel) and the standalone popout window
-// (ListsWindow). Everything list-shaped lives here; the hosts only provide
-// positioning, sizing, and window controls.
+// ListsSurface: the shared core of the Lists feature, hosted by three
+// chromes: the in-app floating panel (ListsPanel), the standalone popout
+// window, and the Moderator Logs dock column. Everything list-shaped lives
+// here; the hosts only provide positioning, sizing, and window controls.
 //
 // Interaction model:
 //   - Click an entry to copy its text. Feedback is an inline check on the row
@@ -13,7 +13,8 @@
 //     someone" annotations don't pollute what gets pasted into /ban.
 //   - Toolbar: live entry count, A-Z / added-order sort, copy-the-whole-list.
 
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import type { PointerEvent as ReactPointerEvent, ClipboardEvent as ReactClipboardEvent, ReactNode, FC } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   ArrowDownAZ,
@@ -27,11 +28,8 @@ import {
   Search,
   Trash2,
 } from 'lucide-react';
-import { useAppStore } from '../../stores/AppStore';
-import { usemultiNookStore } from '../../stores/multiNookStore';
-import { useListStore, type ListEntry, type UserList } from '../../stores/listStore';
-import { Tooltip } from '../ui/Tooltip';
-import { Logger } from '../../utils/logger';
+import { getApi } from './host';
+import { useListStore, type ListEntry, type UserList } from './listStore';
 
 const COPIED_FLASH_MS = 1200;
 const FLASH_MS = 1800;
@@ -60,50 +58,35 @@ function splitPastedList(text: string): { text: string; note?: string }[] {
     .filter((e) => e.text);
 }
 
-/** Insert text into the main chat compose box at the caret. Uses the native
- *  value setter + synthetic input event so React's controlled textarea picks
- *  the change up (same approach as StreamContextMenu's paste action). */
-function insertIntoChatInput(text: string): boolean {
-  const el = document.getElementById('chat-compose-input');
-  if (!(el instanceof HTMLTextAreaElement)) return false;
-  el.focus();
-  const start = el.selectionStart ?? el.value.length;
-  const end = el.selectionEnd ?? el.value.length;
-  const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value')?.set;
-  if (!setter) return false;
-  setter.call(el, el.value.slice(0, start) + text + el.value.slice(end));
-  el.dispatchEvent(new Event('input', { bubbles: true }));
-  el.setSelectionRange(start + text.length, start + text.length);
-  return true;
-}
-
 export interface ListsSurfaceProps {
   /** 'floating' = the in-app corner panel; 'window' = the popout OS window;
    *  'docked' = a column inside the Mod Logs pane. */
   variant: 'floating' | 'window' | 'docked';
   /** Right-aligned header controls supplied by the host chrome (pop out,
    *  close). The window host leaves this empty; its titlebar has the controls. */
-  trailing?: React.ReactNode;
+  trailing?: ReactNode;
   /** Floating host passes its drag-start here so the header doubles as the
    *  drag handle. */
-  onHeaderPointerDown?: (e: React.PointerEvent) => void;
+  onHeaderPointerDown?: (e: ReactPointerEvent) => void;
   /** Switch to this list on mount (palette "Open list: X" rows). */
   initialListId?: string | null;
 }
 
-export const ListsSurface: React.FC<ListsSurfaceProps> = ({
+export const ListsSurface: FC<ListsSurfaceProps> = ({
   variant,
   trailing,
   onHeaderPointerDown,
   initialListId,
 }) => {
+  const api = getApi();
+  const { Tooltip } = api.components;
+
   // Insert-into-chat needs the main window's compose box: present when a
-  // stream is watched or MultiNook is up. The popout window (and the Mod Logs
-  // pane inside a MultiChat popout) has no such box, and there currentStream /
-  // MultiNook are empty in that window's own store, so the gate self-resolves.
-  const watchingHere = useAppStore((s) => !!s.currentStream);
-  const multiNookActive = usemultiNookStore((s) => s.isMultiNookActive);
-  const hasChat = variant !== 'window' && (watchingHere || multiNookActive);
+  // stream is watched or the multi-stream grid is up. The popout window (and
+  // the Mod Logs pane inside a MultiChat popout) has no such box, and there
+  // the host's per-window state is empty, so the gate self-resolves.
+  const hasTarget = api.chat.useHasTarget();
+  const hasChat = variant !== 'window' && hasTarget;
 
   const lists = useListStore((s) => s.lists);
   const activeListId = useListStore((s) => s.activeListId);
@@ -192,7 +175,7 @@ export const ListsSurface: React.FC<ListsSurfaceProps> = ({
       if (copiedTimer.current) window.clearTimeout(copiedTimer.current);
       copiedTimer.current = window.setTimeout(() => setCopiedId(null), COPIED_FLASH_MS);
     } catch (err) {
-      Logger.warn('[ListsSurface] clipboard write failed:', err);
+      api.log.warn('[ListsSurface] clipboard write failed:', err);
     }
   };
 
@@ -202,13 +185,13 @@ export const ListsSurface: React.FC<ListsSurfaceProps> = ({
       await navigator.clipboard.writeText(visibleEntries.map((e) => e.text).join('\n'));
       flashMessage(`Copied ${visibleEntries.length} ${visibleEntries.length === 1 ? 'entry' : 'entries'}`);
     } catch (err) {
-      Logger.warn('[ListsSurface] clipboard write failed:', err);
+      api.log.warn('[ListsSurface] clipboard write failed:', err);
     }
   };
 
   const insertEntry = (entry: ListEntry) => {
     // Fall back to copying when no chat compose box is mounted.
-    if (!insertIntoChatInput(entry.text)) void copyEntry(entry);
+    if (!api.chat.insertText(entry.text)) void copyEntry(entry);
   };
 
   const submitDraft = () => {
@@ -219,7 +202,7 @@ export const ListsSurface: React.FC<ListsSurfaceProps> = ({
     setDraft('');
   };
 
-  const handleDraftPaste = (e: React.ClipboardEvent<HTMLInputElement>) => {
+  const handleDraftPaste = (e: ReactClipboardEvent<HTMLInputElement>) => {
     if (!activeList) return;
     const items = splitPastedList(e.clipboardData.getData('text'));
     // A plain single value falls through to the default paste so it can still

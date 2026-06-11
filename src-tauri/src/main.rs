@@ -887,6 +887,7 @@ fn main() {
             plugins_invoke_action,
             plugins_provides,
             plugins_report_stream_event,
+            plugins_ui_bundle,
         ])
         // Window-event handler. Two behaviors:
         //

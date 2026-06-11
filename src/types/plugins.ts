@@ -25,6 +25,9 @@ export interface PluginInfo {
   homepage: string | null;
   enabled: boolean;
   running: boolean;
+  /** Runtime kind: "process" (separate executable) or "ui" (in-app module).
+   *  For ui plugins, running mirrors enabled (the frontend loads them). */
+  kind: 'process' | 'ui';
   source: string;
   granted: GrantedCaps;
   credential_consent: Record<string, string>;

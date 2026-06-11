@@ -8,8 +8,7 @@ import { openProfilePopup } from '../../utils/openProfilePopup';
 import { colorForAction, highlightContainerStyle, type HighlightStyleKey } from '../../utils/modLogCategories';
 import { useAvatar } from '../../utils/avatarCache';
 import { Tooltip } from '../ui/Tooltip';
-import { ClipboardList } from 'lucide-react';
-import { ListsSurface } from '../lists/ListsSurface';
+import { usePluginUiRegistry, selectSlot } from '../../plugins-ui/registry';
 
 // Newest entries are prepended at the top. Keep the view pinned to the top (so
 // the newest is always visible and older entries slide down beneath it) while
@@ -301,12 +300,13 @@ function loadSplitPref(): boolean {
   }
 }
 
-// Persisted preference for showing the Lists column inside this pane. Default
-// off; like the split pref it's a viewing preference shared across windows.
-const LISTS_PREF_KEY = 'streamnook.modlogs.lists';
-function loadListsPref(): boolean {
+// Persisted per-contribution preference for showing a plugin-docked column
+// inside this pane (the `modlogs.dock` slot). Default off; like the split
+// pref it's a viewing preference shared across windows.
+const dockPrefKey = (id: string) => `streamnook.modlogs.dock.${id}`;
+function loadDockPref(id: string): boolean {
   try {
-    return localStorage.getItem(LISTS_PREF_KEY) === '1';
+    return localStorage.getItem(dockPrefKey(id)) === '1';
   } catch {
     return false;
   }
@@ -408,21 +408,28 @@ export const ModLogsWidget: React.FC<{
     });
   }, []);
 
-  // Lists column: the user's reference lists living inside this pane, taking
-  // an even flex slot exactly like a channel column. With a single channel the
-  // pane splits logs | lists.
-  const [showLists, setShowLists] = useState<boolean>(loadListsPref);
-  const toggleLists = useCallback(() => {
-    setShowLists((prev) => {
-      const next = !prev;
-      try {
-        localStorage.setItem(LISTS_PREF_KEY, next ? '1' : '0');
-      } catch {
-        // ignore
-      }
-      return next;
-    });
-  }, []);
+  // Plugin-docked columns (the `modlogs.dock` slot): each contribution gets a
+  // header toggle and, when on, an even flex slot exactly like a channel
+  // column. With a single channel the pane splits logs | docked column.
+  // Persisted values are read per contribution set; in-session toggles layer
+  // on top (no effect needed, so no setState-in-effect cascade).
+  const dockContributions = usePluginUiRegistry(selectSlot('modlogs.dock'));
+  const persistedDockPrefs = useMemo(() => {
+    const map: Record<string, boolean> = {};
+    for (const c of dockContributions) map[c.id] = loadDockPref(c.id);
+    return map;
+  }, [dockContributions]);
+  const [dockOverrides, setDockOverrides] = useState<Record<string, boolean>>({});
+  const isDockOn = (id: string) => dockOverrides[id] ?? persistedDockPrefs[id] ?? false;
+  const toggleDock = (id: string) => {
+    const next = !isDockOn(id);
+    try {
+      localStorage.setItem(dockPrefKey(id), next ? '1' : '0');
+    } catch {
+      // ignore
+    }
+    setDockOverrides((prev) => ({ ...prev, [id]: next }));
+  };
 
   // Load each active channel's persisted history (so reopening restores it), and
   // prune entries + load-guards for channels no longer open anywhere.
@@ -487,17 +494,22 @@ export const ModLogsWidget: React.FC<{
               </button>
             </Tooltip>
           )}
-          <Tooltip content={showLists ? 'Hide lists' : 'Show lists in this pane'}>
-            <button
-              onClick={toggleLists}
-              aria-pressed={showLists}
-              className={`p-1 rounded transition-colors ${
-                showLists ? 'text-accent' : 'text-textSecondary hover:text-text hover:bg-background'
-              }`}
+          {dockContributions.map((c) => (
+            <Tooltip
+              key={`${c.pluginId}:${c.id}`}
+              content={isDockOn(c.id) ? `Hide ${c.label}` : `Show ${c.label} in this pane`}
             >
-              <ClipboardList className="w-4 h-4" />
-            </button>
-          </Tooltip>
+              <button
+                onClick={() => toggleDock(c.id)}
+                aria-pressed={isDockOn(c.id)}
+                className={`p-1 rounded transition-colors ${
+                  isDockOn(c.id) ? 'text-accent' : 'text-textSecondary hover:text-text hover:bg-background'
+                }`}
+              >
+                <c.Icon className="w-4 h-4" />
+              </button>
+            </Tooltip>
+          ))}
           {visibleLogs.length > 0 && (
             <span className="text-xs text-textSecondary bg-background px-2 py-0.5 rounded-full">
               {visibleLogs.length}
@@ -530,8 +542,8 @@ export const ModLogsWidget: React.FC<{
       </div>
 
       {/* Logs Container — combined single list, or a column per channel when
-          split, plus the Lists column when toggled on. Lists take an even flex
-          slot exactly like a channel column. */}
+          split, plus any toggled-on plugin-docked columns. Each takes an even
+          flex slot exactly like a channel column. */}
       <div className="flex min-h-0 flex-1 flex-row overflow-hidden">
         {isSplit ? (
           activeChannels.map((ch, i) => (
@@ -573,11 +585,16 @@ export const ModLogsWidget: React.FC<{
             </AnimatePresence>
           </div>
         )}
-        {showLists && (
-          <div className="flex min-w-0 flex-1 flex-col overflow-hidden border-l border-borderSubtle">
-            <ListsSurface variant="docked" />
-          </div>
-        )}
+        {dockContributions
+          .filter((c) => isDockOn(c.id))
+          .map((c) => (
+            <div
+              key={`${c.pluginId}:${c.id}`}
+              className="flex min-w-0 flex-1 flex-col overflow-hidden border-l border-borderSubtle"
+            >
+              <c.Component />
+            </div>
+          ))}
       </div>
     </div>
   );

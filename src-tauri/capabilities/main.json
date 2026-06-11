@@ -11,7 +11,7 @@
     "twitch-login",
     "drops-login",
     "multichat-*",
-    "lists-*"
+    "plugin-*"
   ],
   "permissions": [
     "core:window:allow-close",

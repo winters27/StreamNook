@@ -45,10 +45,12 @@ ui           = ["panel"]
 
 | Field | Type | Constraints |
 |---|---|---|
-| `kind` | string | `"process"` in v1. `"wasm"` is reserved and rejected by the v1 host |
-| `entry` | string | Path of the executable, relative to the plugin directory. Must not contain `..` or be absolute |
-| `args` | string array | Arguments passed at spawn. Optional, default empty |
-| `transport` | string | `"stdio"` in v1. `"socket"` is reserved and rejected by the v1 host |
+| `kind` | string | `"process"` (a separate executable) or `"ui"` (an in-app interface module, see UI_PLUGINS.md). `"wasm"` is reserved and rejected |
+| `entry` | string | Path of the executable (`process`) or bundled JavaScript module (`ui`), relative to the plugin directory. Must not contain `..` or be absolute |
+| `args` | string array | `process` only: arguments passed at spawn. Optional, default empty |
+| `transport` | string | `process` only: `"stdio"` in v1. `"socket"` is reserved and rejected by the v1 host |
+
+For `kind = "ui"` the `[capabilities]` and `[contributes]` blocks stay empty; the module contract in UI_PLUGINS.md is the complete surface. The `ui` kind was added after protocol v1 froze; it is additive (a `ui` plugin's `host_min` must be a version that knows the kind, and older hosts fail closed on the unknown value).
 
 ## `[capabilities]`
 

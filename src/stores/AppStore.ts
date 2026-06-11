@@ -255,11 +255,6 @@ interface AppState {
   // a cross-channel "add to a set" picker. Set by clicking an emote in chat.
   emoteSpotlight: { id: string; name: string } | null;
   showWhispersOverlay: boolean;
-  // Lists panel: floating user-curated reference lists (ban evaders,
-  // reusable commands, stream titles). Non-modal so chat stays usable.
-  showListsPanel: boolean;
-  // When set, the panel switches to this list on open (palette per-list rows).
-  listsPanelInitialListId: string | null;
   showDashboardOverlay: boolean;
   whisperTargetUser: { id: string; login: string; display_name: string; profile_image_url?: string } | null;
   // Whisper import state (persistent across wizard open/close)
@@ -377,8 +372,6 @@ interface AppState {
   openEmoteSpotlight: (emoteId: string, name: string) => void;
   setEmoteSpotlight: (e: { id: string; name: string } | null) => void;
   setShowWhispersOverlay: (show: boolean) => void;
-  setShowListsPanel: (show: boolean) => void;
-  openListsPanel: (listId?: string) => void;
   setShowDashboardOverlay: (show: boolean) => void;
   openWhisperWithUser: (user: { id: string; login: string; display_name: string; profile_image_url?: string }) => void;
   clearWhisperTargetUser: () => void;
@@ -491,8 +484,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   emoteSetsOverlayInitialTab: null,
   emoteSpotlight: null,
   showWhispersOverlay: false,
-  showListsPanel: false,
-  listsPanelInitialListId: null,
   showDashboardOverlay: false,
   whisperTargetUser: null,
   isHomeActive: true,
@@ -2201,15 +2192,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ showWhispersOverlay: show });
     // Clear target user when closing
     if (!show) set({ whisperTargetUser: null });
-  },
-  setShowListsPanel: (show: boolean) => {
-    if (show) trackActivity('Opened Lists');
-    set({ showListsPanel: show });
-    if (!show) set({ listsPanelInitialListId: null });
-  },
-  openListsPanel: (listId?: string) => {
-    trackActivity('Opened Lists');
-    set({ showListsPanel: true, listsPanelInitialListId: listId ?? null });
   },
   setShowDashboardOverlay: (show: boolean) => {
     if (show) trackActivity('Opened Dashboard');

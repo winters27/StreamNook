@@ -1,10 +1,15 @@
 # StreamNook Plugin System
 
-StreamNook supports opt-in plugins that run as separate programs and talk to the app over a small JSON-RPC interface. The core binary ships with zero plugins, contains none of their behavior, and provides them nothing beyond the narrow surface documented here.
+StreamNook supports opt-in plugins in two runtime kinds. The core binary ships with zero plugins, contains none of their behavior, and provides them nothing beyond the narrow surfaces documented here.
 
-## Why out-of-process
+- `process` plugins run as separate programs beside the app and talk JSON-RPC over stdio. The kind for background behavior: long-running loops, own networking, work independent of the interface.
+- `ui` plugins are JavaScript modules the app loads into its own interface. The kind for interface features: panels, buttons, popout windows, palette commands. See UI_PLUGINS.md.
 
-Plugins are separate executables with their own networking, not libraries loaded into the app:
+Both kinds share the manifest, the marketplace, the signing chain, and the install and consent flow.
+
+## Why out-of-process for behavior plugins
+
+`process` plugins are separate executables with their own networking, not libraries loaded into the app:
 
 - An OS process boundary is the strongest practical isolation. A crashing or misbehaving plugin cannot corrupt the app.
 - The plugin's network traffic originates from the plugin's process, not the app's. The core never contains the endpoints, queries, or loops a plugin uses.
@@ -21,6 +26,7 @@ The deliberate omission that makes this work: the host exposes no generic HTTP m
 | [CAPABILITIES.md](CAPABILITIES.md) | The capability vocabulary, what each grants, and the exact consent language shown to users |
 | [SIGNING.md](SIGNING.md) | Artifact signing, the index document format, key pinning, and key rotation |
 | [HOOKS.md](HOOKS.md) | How native UI delegates to plugins: named action / status / provides hooks, no plugin-specific code in core |
+| [UI_PLUGINS.md](UI_PLUGINS.md) | The `ui` runtime kind: module contract, the `api` surface, slots, build guidance |
 | [OFFICIAL.md](OFFICIAL.md) | What an official StreamNook plugin is, branding conventions, and what can never be official |
 
 ## Status

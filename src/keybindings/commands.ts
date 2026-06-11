@@ -50,11 +50,43 @@ const startRelativeFollow = (dir: 1 | -1): void => {
 
 let cache: BindableCommand[] | null = null;
 
-/** All bindable commands. Cached: the list is static (handlers read live state
- *  at call time, so caching the definitions is safe). */
+// ---------------- Plugin-registered commands ----------------
+// UI plugins (src/plugins-ui/) contribute bindable commands at load and lose
+// them at unload. They dispatch, list in the Keybindings settings, and accept
+// user rebinds exactly like built-ins; overrides persist under the command id,
+// so a plugin reusing a historical id keeps existing user rebinds working.
+
+const pluginCommands: { pluginId: string; command: BindableCommand }[] = [];
+
+export function registerPluginCommand(pluginId: string, command: BindableCommand): void {
+  if (getBindableCommands().some((c) => c.id === command.id)) {
+    unregisterPluginCommand(pluginId, command.id);
+    if (getBindableCommands().some((c) => c.id === command.id)) return; // built-in owns the id
+  }
+  pluginCommands.push({ pluginId, command });
+}
+
+function unregisterPluginCommand(pluginId: string, commandId: string): void {
+  for (let i = pluginCommands.length - 1; i >= 0; i--) {
+    if (pluginCommands[i].pluginId === pluginId && pluginCommands[i].command.id === commandId) {
+      pluginCommands.splice(i, 1);
+    }
+  }
+}
+
+export function unregisterPluginCommands(pluginId: string): void {
+  for (let i = pluginCommands.length - 1; i >= 0; i--) {
+    if (pluginCommands[i].pluginId === pluginId) pluginCommands.splice(i, 1);
+  }
+}
+
+/** All bindable commands. Built-ins are cached (their definitions are static;
+ *  handlers read live state at call time); plugin commands are appended live. */
 export function getBindableCommands(): BindableCommand[] {
   if (!cache) cache = build();
-  return cache;
+  return pluginCommands.length === 0
+    ? cache
+    : [...cache, ...pluginCommands.map((p) => p.command)];
 }
 
 export function getBindableCommand(id: string): BindableCommand | undefined {
@@ -133,19 +165,6 @@ function build(): BindableCommand[] {
       defaultBindings: ['Ctrl+Shift+W'],
       keywords: 'whispers dms direct messages inbox',
       run: () => app().setShowWhispersOverlay(true),
-    },
-    {
-      id: 'qa.openLists',
-      label: 'Toggle Lists panel',
-      description: 'Floating panel of your reference lists: usernames, commands, titles.',
-      category: 'Navigation',
-      context: 'global',
-      defaultBindings: ['Ctrl+Shift+L'],
-      keywords: 'lists notes reference ban evaders commands copy paste',
-      run: () => {
-        const s = app();
-        s.setShowListsPanel(!s.showListsPanel);
-      },
     },
     {
       id: 'qa.refreshFollows',

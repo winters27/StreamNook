@@ -3,15 +3,16 @@
 // A non-modal corner panel (the stream and chat stay fully interactive) that
 // the user can drag anywhere by its header and resize from the bottom-right
 // corner. The "pop out" control hands the surface off to its own OS window
-// (ListsWindow) for placement outside the app entirely.
+// for placement outside the app entirely.
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import type { PointerEvent as ReactPointerEvent, FC } from 'react';
 import { motion, useDragControls, useMotionValue } from 'framer-motion';
 import { PictureInPicture2, X } from 'lucide-react';
-import { useAppStore } from '../stores/AppStore';
-import { ListsSurface } from './lists/ListsSurface';
-import { openListsWindow } from '../utils/listsWindow';
-import { Tooltip } from './ui/Tooltip';
+import { getApi } from './host';
+import { ListsSurface } from './ListsSurface';
+import { useListsUi, closeListsPanel } from './uiStore';
+import { LISTS_WINDOW } from './windowOptions';
 
 const EDGE_MARGIN = 8;
 const DEFAULT_W = 320;
@@ -28,9 +29,10 @@ interface DragBounds {
   bottom: number;
 }
 
-export const ListsPanel: React.FC = () => {
-  const setShowListsPanel = useAppStore((s) => s.setShowListsPanel);
-  const initialListId = useAppStore((s) => s.listsPanelInitialListId);
+export const ListsPanel: FC = () => {
+  const api = getApi();
+  const { Tooltip } = api.components;
+  const initialListId = useListsUi((s) => s.initialListId);
 
   const panelRef = useRef<HTMLDivElement>(null);
   const dragControls = useDragControls();
@@ -72,14 +74,14 @@ export const ListsPanel: React.FC = () => {
 
   const resizeState = useRef<{ px: number; py: number; w: number; h: number } | null>(null);
 
-  const onResizePointerDown = (e: React.PointerEvent) => {
+  const onResizePointerDown = (e: ReactPointerEvent) => {
     e.preventDefault();
     e.stopPropagation();
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     resizeState.current = { px: e.clientX, py: e.clientY, w: size.w, h: size.h };
   };
 
-  const onResizePointerMove = (e: React.PointerEvent) => {
+  const onResizePointerMove = (e: ReactPointerEvent) => {
     const s = resizeState.current;
     if (!s) return;
     const rect = panelRef.current?.getBoundingClientRect();
@@ -95,15 +97,15 @@ export const ListsPanel: React.FC = () => {
     resizeState.current = null;
   };
 
-  const startHeaderDrag = (e: React.PointerEvent) => {
+  const startHeaderDrag = (e: ReactPointerEvent) => {
     // Only blank header space drags; buttons and inputs keep their clicks.
     if ((e.target as HTMLElement).closest('button, input')) return;
     dragControls.start(e);
   };
 
   const popOut = () => {
-    void openListsWindow();
-    setShowListsPanel(false);
+    void api.windows.open(LISTS_WINDOW);
+    closeListsPanel();
   };
 
   return (
@@ -138,7 +140,7 @@ export const ListsPanel: React.FC = () => {
             </Tooltip>
             <Tooltip content="Close" delay={300}>
               <button
-                onClick={() => setShowListsPanel(false)}
+                onClick={closeListsPanel}
                 className="p-1 text-textSecondary hover:text-textPrimary rounded transition-colors"
               >
                 <X size={14} />

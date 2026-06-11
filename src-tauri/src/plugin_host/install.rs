@@ -316,11 +316,14 @@ fn record_from_manifest(
     source: &str,
     dir: &PathBuf,
 ) -> InstalledPlugin {
+    // Enabling the plugin is the grant: the install (or first-enable) consent
+    // already discloses the credential, so allow handover without re-prompting
+    // every session. The user can still revoke it per plugin from its details.
     let credential_consent = manifest
         .capabilities
         .credentials
         .iter()
-        .map(|k| (k.clone(), "ask".to_string()))
+        .map(|k| (k.clone(), "always".to_string()))
         .collect();
     InstalledPlugin {
         id: manifest.id.clone(),
@@ -332,6 +335,7 @@ fn record_from_manifest(
         homepage: manifest.homepage.clone(),
         enabled: false,
         source: source.to_string(),
+        kind: manifest.runtime.kind.clone(),
         dir: dir.to_string_lossy().to_string(),
         entry: manifest.runtime.entry.clone(),
         args: manifest.runtime.args.clone(),

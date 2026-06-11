@@ -33,6 +33,9 @@ pub struct InstalledPlugin {
     pub enabled: bool,
     /// Source index URL, or "local-dev" for a folder install.
     pub source: String,
+    /// Runtime kind: "process" (separate executable) or "ui" (in-app module).
+    #[serde(default = "default_kind")]
+    pub kind: String,
     /// Absolute directory the plugin runs from (contains plugin.toml and the entry).
     pub dir: String,
     pub entry: String,
@@ -42,6 +45,10 @@ pub struct InstalledPlugin {
     /// Per credential kind: "ask" (default), "always", or "revoked".
     #[serde(default)]
     pub credential_consent: HashMap<String, String>,
+}
+
+fn default_kind() -> String {
+    "process".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

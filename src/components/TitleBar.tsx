@@ -1,5 +1,5 @@
 import { Window } from '@tauri-apps/api/window';
-import { Gift, User, Settings, Store, Proportions, MessageCircle, Pickaxe, Clock, Tv, RotateCw, ClipboardList } from 'lucide-react';
+import { Gift, User, Settings, Store, Proportions, MessageCircle, Pickaxe, Clock, Tv, RotateCw } from 'lucide-react';
 import { Minus, X, CornersOut, CornersIn, Medal } from 'phosphor-react';
 import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
@@ -17,6 +17,7 @@ import { deriveMiningDisplay } from '../utils/miningDisplay';
 import { Logger } from '../utils/logger';
 import { useVisibleInterval } from '../utils/useVisibleInterval';
 import { Tooltip } from './ui/Tooltip';
+import PluginTitleBarButtons from '../plugins-ui/PluginTitleBarButtons';
 
 /** Maps the discrete stage strings emitted by Rust's bundle-update-progress
  *  event to a fill percentage for the progress bar. */
@@ -34,7 +35,7 @@ const getUpdateStageProgress = (stage: string | null): number => {
 const TitleBar = () => {
   const store = useAppStore();
 
-  const { openSettings, setShowDropsOverlay, setShowMarketplaceOverlay, setShowBadgesOverlay, setShowWhispersOverlay, showListsPanel, setShowListsPanel, isAuthenticated, currentUser, isMiningActive, isTheaterMode, toggleTheaterMode, streamUrl, settings, whisperImportState, updateInfo, setUpdateInfo, addToast } = store;
+  const { openSettings, setShowDropsOverlay, setShowMarketplaceOverlay, setShowBadgesOverlay, setShowWhispersOverlay, isAuthenticated, currentUser, isMiningActive, isTheaterMode, toggleTheaterMode, streamUrl, settings, whisperImportState, updateInfo, setUpdateInfo, addToast } = store;
   const [isUpdating, setIsUpdating] = useState(false);
   const [updateProgress, setUpdateProgress] = useState<string | null>(null);
   const [showAbout, setShowAbout] = useState(false);
@@ -608,17 +609,8 @@ const TitleBar = () => {
         </div>
 
         <div className="flex space-x-1" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
-          {/* Lists Button */}
-          <Tooltip content="Lists" delay={200}>
-            <button
-              onClick={() => setShowListsPanel(!showListsPanel)}
-              className={`p-1.5 rounded transition-all duration-200 ${
-                showListsPanel ? 'text-accent' : 'text-textSecondary hover:text-textPrimary'
-              }`}
-            >
-              <ClipboardList size={16} />
-            </button>
-          </Tooltip>
+          {/* Buttons contributed by ui plugins (rendered in native style) */}
+          <PluginTitleBarButtons />
 
           {/* Whispers Button */}
           <Tooltip content="Whispers" delay={200}>

@@ -201,13 +201,29 @@ impl PluginManifest {
         // runtime
         match self.runtime.kind.as_str() {
             "process" => {}
+            // An in-app interface module (UI_PLUGINS.md). No process is
+            // spawned, so transport/args do not apply and the wire-protocol
+            // capability lists stay empty.
+            "ui" => {
+                if !self.capabilities.events.is_empty()
+                    || !self.capabilities.host_methods.is_empty()
+                    || !self.capabilities.credentials.is_empty()
+                    || !self.capabilities.ui.is_empty()
+                {
+                    bail!("a ui plugin's [capabilities] lists must be empty (see UI_PLUGINS.md)");
+                }
+            }
             "wasm" => bail!("runtime.kind 'wasm' is reserved and not supported by this host"),
             other => bail!("unknown runtime.kind '{other}'"),
         }
-        match self.runtime.transport.as_str() {
-            "stdio" => {}
-            "socket" => bail!("runtime.transport 'socket' is reserved and not supported by this host"),
-            other => bail!("unknown runtime.transport '{other}'"),
+        if self.runtime.kind == "process" {
+            match self.runtime.transport.as_str() {
+                "stdio" => {}
+                "socket" => {
+                    bail!("runtime.transport 'socket' is reserved and not supported by this host")
+                }
+                other => bail!("unknown runtime.transport '{other}'"),
+            }
         }
         let entry = &self.runtime.entry;
         if entry.is_empty()
