@@ -479,6 +479,10 @@ pub struct Settings {
     /// its user-assigned chord strings. Absent ids fall back to code defaults.
     #[serde(default)]
     pub keybindings: HashMap<String, Vec<String>>,
+    /// Chat logging to plain text files (one folder per channel, one file per
+    /// day), written by services::chat_logger_service.
+    #[serde(default)]
+    pub chat_logging: ChatLoggingSettings,
     /// Catch-all for preference groups the frontend manages but this struct does
     /// not model field-by-field: highlight phrases, custom chat commands,
     /// moderation prefs, custom themes, the OLED accent, and any future ones.
@@ -522,7 +526,52 @@ impl Default for Settings {
             multi_nook_chat_hidden: false,
             show_mod_logs: false,
             keybindings: HashMap::new(),
+            chat_logging: ChatLoggingSettings::default(),
             extra: HashMap::new(),
+        }
+    }
+}
+
+/// One channel entry in the chat-logging allowlist. The shape matches the
+/// frontend channel picker so the list round-trips with its display data;
+/// only `channel_login` drives the filter.
+#[derive(Serialize, Deserialize, Clone, Default)]
+pub struct ChatLogChannel {
+    #[serde(default)]
+    pub channel_id: String,
+    #[serde(default)]
+    pub channel_login: String,
+    #[serde(default)]
+    pub display_name: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct ChatLoggingSettings {
+    /// Off by default: writing files to disk is the user's call.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Custom base folder; empty uses ChatLogs under the app data dir.
+    #[serde(default)]
+    pub folder: String,
+    /// Channels to log; empty logs every channel the app has open.
+    #[serde(default)]
+    pub channels: Vec<ChatLogChannel>,
+    /// Also log subscriptions, raids, announcements, and moderation actions.
+    #[serde(default = "default_true")]
+    pub include_events: bool,
+    /// Start each line with the time it was sent.
+    #[serde(default = "default_true")]
+    pub timestamps: bool,
+}
+
+impl Default for ChatLoggingSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            folder: String::new(),
+            channels: Vec::new(),
+            include_events: true,
+            timestamps: true,
         }
     }
 }

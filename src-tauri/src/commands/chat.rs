@@ -1,9 +1,29 @@
 use crate::models::chat_layout::ChatMessage;
 use crate::models::settings::AppState;
+use crate::services::chat_logger_service::ChatLoggerService;
 use crate::services::chat_service::{ChatService, SendResult};
 use crate::services::irc_service::IrcService;
 use anyhow::Result;
 use tauri::State;
+
+/// The folder chat logs are written to right now (the custom folder when one
+/// is set, else the default under the app data dir), for the settings UI.
+/// While logging is enabled the folder is created, so opening it always works.
+#[tauri::command]
+pub async fn get_chat_log_dir(state: State<'_, AppState>) -> Result<String, String> {
+    let (folder, enabled) = state
+        .settings
+        .lock()
+        .map(|s| (s.chat_logging.folder.clone(), s.chat_logging.enabled))
+        .map_err(|_| "settings unavailable".to_string())?;
+    let Some(dir) = ChatLoggerService::resolve_dir(&folder) else {
+        return Ok(String::new());
+    };
+    if enabled {
+        let _ = std::fs::create_dir_all(&dir);
+    }
+    Ok(dir.to_string_lossy().to_string())
+}
 
 #[tauri::command]
 pub async fn start_chat(channel: String, state: State<'_, AppState>) -> Result<u16, String> {

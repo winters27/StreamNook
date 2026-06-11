@@ -63,6 +63,16 @@ export interface FarmChannel {
   display_name: string;
 }
 
+// Chat logging to plain text files: one folder per channel, one file per day.
+// Mirrors ChatLoggingSettings on the Rust side, which does the writing.
+export interface ChatLoggingSettings {
+  enabled?: boolean; // Off by default
+  folder?: string; // Custom base folder; empty uses ChatLogs under the app data dir
+  channels?: FarmChannel[]; // Channels to log; empty logs every channel you open
+  include_events?: boolean; // Also log subs, raids, announcements, and moderation actions (default: true)
+  timestamps?: boolean; // Start each line with the time it was sent (default: true)
+}
+
 export interface DropsSettings {
   auto_claim_drops: boolean;
   auto_claim_channel_points: boolean;
@@ -587,6 +597,7 @@ export interface Settings {
   multi_nook_presets?: MultiNookPreset[]; // Saved, named channel sets openable into the grid in one click
   multi_nook_active_preset_id?: string; // Id of the preset currently loaded into the grid (the "equipped" preset), if any
   show_mod_logs?: boolean; // Whether to display the Mod Logs pane
+  chat_logging?: ChatLoggingSettings; // Save chat to plain text files as you watch
   moderation?: ModerationSettings;
   keybindings?: KeybindingOverrides; // Customizable keyboard shortcut overrides (id -> chords)
   // Which action buttons show in the video player's top-right overlay, by id:

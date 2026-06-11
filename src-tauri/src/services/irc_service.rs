@@ -8,6 +8,7 @@ use crate::services::layout_service::LayoutService;
 use crate::services::twitch_service::TwitchService;
 use crate::services::user_message_history_service::UserMessageHistoryService;
 use crate::plugin_host::PluginHost;
+use crate::services::chat_logger_service::ChatLoggerService;
 use anyhow::Result;
 use futures_util::{SinkExt, StreamExt};
 use log::{debug, error};
@@ -170,6 +171,7 @@ impl IrcService {
         let layout_service = state.layout_service.clone();
         let emote_service = state.emote_service.clone();
         let _ = PLUGIN_HOST.set(state.plugin_host.clone());
+        ChatLoggerService::init(state.settings.clone());
 
         // Idempotency: if the IRC service is already running, don't tear it
         // down. Instead, JOIN the requested channel onto the existing
@@ -595,6 +597,8 @@ impl IrcService {
                         .await;
                 }
 
+                ChatLoggerService::log_message(&chat_msg);
+
                 if let Some(host) = PLUGIN_HOST.get() {
                     if host.wants_chat_messages().await {
                         host.emit_chat_message(chat_event_params(&chat_msg)).await;
@@ -661,6 +665,8 @@ impl IrcService {
                     chat_msg.metadata.msg_type,
                     chat_msg.content.len()
                 );
+
+                ChatLoggerService::log_message(&chat_msg);
 
                 if let Some(host) = PLUGIN_HOST.get() {
                     if host.wants_chat_messages().await {
@@ -801,12 +807,16 @@ impl IrcService {
                 let deleted_text = trimmed
                     .rfind(" :")
                     .map(|idx| trimmed[idx + 2..].trim().to_string());
+                let login = Self::extract_tag_value(trimmed, "login").unwrap_or_default();
+                if let Some(ch) = &channel_name {
+                    ChatLoggerService::log_deleted_message(ch, &login, deleted_text.as_deref());
+                }
                 // Send deletion event to frontend, tagged with channel for routing
                 let delete_event = json!({
                     "type": "CLEARMSG",
                     "channel": channel_name,
                     "target_msg_id": target_msg_id,
-                    "login": Self::extract_tag_value(trimmed, "login").unwrap_or_default(),
+                    "login": login,
                     "message": deleted_text
                 });
                 let _ = tx.send(delete_event.to_string());
@@ -830,12 +840,20 @@ impl IrcService {
                 None
             };
 
+            let ban_duration_secs = ban_duration.map(|d| d.parse::<u64>().unwrap_or(0));
+            if let Some(ch) = &channel_name {
+                match &target_user {
+                    Some(user) => ChatLoggerService::log_timeout(ch, user, ban_duration_secs),
+                    None => ChatLoggerService::log_chat_cleared(ch),
+                }
+            }
+
             let clear_event = json!({
                 "type": "CLEARCHAT",
                 "channel": channel_name,
                 "target_user_id": target_user_id,
                 "target_user": target_user,
-                "ban_duration": ban_duration.map(|d| d.parse::<u64>().unwrap_or(0))
+                "ban_duration": ban_duration_secs
             });
             let _ = tx.send(clear_event.to_string());
         } else if trimmed.contains("NOTICE") {
@@ -1144,38 +1162,53 @@ impl IrcService {
         w.flush().await?;
         drop(w);
 
-        // Twitch IRC does not echo your own PRIVMSG back, so forward locally
-        // sent messages to plugins here, mirroring the chat UI's local echo.
-        // Delivered with empty id (no server-assigned message id exists).
-        if let Some(host) = PLUGIN_HOST.get() {
-            if host.wants_chat_messages().await {
-                let (login, user_id) = get_own_identity()
-                    .lock()
-                    .await
-                    .clone()
-                    .unwrap_or_default();
-                let (text, is_action) = match message.strip_prefix("/me ") {
-                    Some(rest) => (rest, true),
-                    None => (message, false),
-                };
-                host.emit_chat_message(json!({
-                    "channel": channel,
-                    "message": {
-                        "id": "",
-                        "user_id": user_id,
-                        "login": login,
-                        "display_name": login,
-                        "color": Value::Null,
-                        "badges": [],
-                        "text": text,
-                        "is_action": is_action,
-                        "msg_type": Value::Null,
-                        "system_message": Value::Null,
-                        "bits": Value::Null,
-                        "ts": chrono::Utc::now().to_rfc3339(),
-                    }
-                }))
-                .await;
+        // Messages sent over THIS connection get no IRC echo (Helix sends do,
+        // and reach the parsed-message path like anyone else's). Surface them
+        // to the chat logger and plugins from here, mirroring the chat UI's
+        // local echo. Slash-commands other than /me are not chat lines (their
+        // effects, like timeouts, are logged where the server reports them).
+        let is_command = message.starts_with('/') && !message.starts_with("/me ");
+        if !is_command {
+            let login = get_own_identity()
+                .lock()
+                .await
+                .as_ref()
+                .map(|(login, _)| login.clone())
+                .unwrap_or_default();
+            ChatLoggerService::log_own_message(&channel, &login, message);
+        }
+        // Plugin delivery uses an empty id (no server-assigned id exists).
+        if !is_command {
+            if let Some(host) = PLUGIN_HOST.get() {
+                if host.wants_chat_messages().await {
+                    let (login, user_id) = get_own_identity()
+                        .lock()
+                        .await
+                        .clone()
+                        .unwrap_or_default();
+                    let (text, is_action) = match message.strip_prefix("/me ") {
+                        Some(rest) => (rest, true),
+                        None => (message, false),
+                    };
+                    host.emit_chat_message(json!({
+                        "channel": channel,
+                        "message": {
+                            "id": "",
+                            "user_id": user_id,
+                            "login": login,
+                            "display_name": login,
+                            "color": Value::Null,
+                            "badges": [],
+                            "text": text,
+                            "is_action": is_action,
+                            "msg_type": Value::Null,
+                            "system_message": Value::Null,
+                            "bits": Value::Null,
+                            "ts": chrono::Utc::now().to_rfc3339(),
+                        }
+                    }))
+                    .await;
+                }
             }
         }
 

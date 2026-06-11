@@ -587,6 +587,7 @@ fn main() {
             append_mod_log,
             clear_mod_logs,
             parse_historical_messages,
+            get_chat_log_dir,
             update_chat_settings,
             clear_chat,
             delete_chat_message,

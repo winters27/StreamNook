@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { X } from 'lucide-react';
 import { useAppStore } from '../../stores/AppStore';
+import PanelChannelList from '../plugins/PanelChannelList';
 import { trustableHost } from '../../services/linkPreviewService';
 import { Tooltip } from '../ui/Tooltip';
 import { Dropdown } from '../ui/Dropdown';
@@ -274,6 +276,42 @@ const ChatSettings = () => {
       cosmetics: { ...settings.cosmetics, ...patch },
     });
 
+  const logging = settings.chat_logging ?? {};
+  const loggingEnabled = logging.enabled ?? false;
+  const setLogging = (patch: Partial<NonNullable<typeof settings.chat_logging>>) =>
+    updateSettings({
+      ...settings,
+      chat_logging: { ...logging, ...patch },
+    });
+
+  // The folder logs land in right now (custom or default), resolved by the
+  // backend so the displayed path always matches what the writer uses.
+  const [logDir, setLogDir] = useState('');
+  useEffect(() => {
+    invoke<string>('get_chat_log_dir')
+      .then(setLogDir)
+      .catch(() => setLogDir(''));
+  }, [logging.folder, loggingEnabled]);
+
+  const browseLogFolder = async () => {
+    try {
+      const { open } = await import('@tauri-apps/plugin-dialog');
+      const picked = await open({ directory: true, multiple: false });
+      if (typeof picked === 'string' && picked) setLogging({ folder: picked });
+    } catch {
+      // Dialog dismissed or unavailable; keep the current folder.
+    }
+  };
+
+  const openLogFolder = async () => {
+    try {
+      const { open } = await import('@tauri-apps/plugin-shell');
+      if (logDir) await open(logDir);
+    } catch {
+      // The folder appears once the first line is logged.
+    }
+  };
+
   return (
     <div className="space-y-8">
       <SettingsSection label="Chat Placement">
@@ -309,6 +347,82 @@ const ChatSettings = () => {
             />
           }
         />
+      </SettingsSection>
+
+      <SettingsSection label="Chat Logging">
+        <SettingsRow
+          title="Save chat logs"
+          description="Write chat to plain text files as you watch: one folder per channel, one file per day."
+          control={
+            <Toggle
+              enabled={loggingEnabled}
+              onChange={() => setLogging({ enabled: !loggingEnabled })}
+            />
+          }
+        />
+        {loggingEnabled && (
+          <>
+            <SettingsRow title="Log folder">
+              <div className="flex items-center gap-2">
+                <div className="glass-input min-w-0 flex-1 truncate rounded-md px-3 py-1.5 text-[13px] text-textPrimary">
+                  {logDir}
+                </div>
+                <button
+                  type="button"
+                  onClick={browseLogFolder}
+                  className="flex-shrink-0 rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-[13px] text-textSecondary transition-colors hover:bg-white/10 hover:text-textPrimary"
+                >
+                  Browse
+                </button>
+                {(logging.folder ?? '') !== '' && (
+                  <button
+                    type="button"
+                    onClick={() => setLogging({ folder: '' })}
+                    className="flex-shrink-0 rounded-md px-2 py-1.5 text-[13px] text-textMuted transition-colors hover:bg-white/5 hover:text-textPrimary"
+                  >
+                    Reset
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={openLogFolder}
+                  className="flex-shrink-0 rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-[13px] text-textSecondary transition-colors hover:bg-white/10 hover:text-textPrimary"
+                >
+                  Open
+                </button>
+              </div>
+            </SettingsRow>
+            <SettingsRow
+              title="Only log these channels"
+              description="Leave empty to log every channel you open."
+            >
+              <PanelChannelList
+                value={logging.channels ?? []}
+                onChange={(channels) => setLogging({ channels })}
+              />
+            </SettingsRow>
+            <SettingsRow
+              title="Timestamps"
+              description="Start each line with the time it was sent."
+              control={
+                <Toggle
+                  enabled={logging.timestamps ?? true}
+                  onChange={() => setLogging({ timestamps: !(logging.timestamps ?? true) })}
+                />
+              }
+            />
+            <SettingsRow
+              title="Events and moderation"
+              description="Also log subscriptions, raids, announcements, timeouts, and deleted messages."
+              control={
+                <Toggle
+                  enabled={logging.include_events ?? true}
+                  onChange={() => setLogging({ include_events: !(logging.include_events ?? true) })}
+                />
+              }
+            />
+          </>
+        )}
       </SettingsSection>
 
       <SettingsSection label="Chat Design">
