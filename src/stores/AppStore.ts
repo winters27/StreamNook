@@ -228,6 +228,8 @@ interface AppState {
   isCommandPaletteOpen: boolean;
   updateInfo: { current_version: string; latest_version: string } | null;
   showLiveStreamsOverlay: boolean;
+  showMarketplaceOverlay: boolean;
+  setShowMarketplaceOverlay: (show: boolean) => void;
   showDropsOverlay: boolean;
   /**
    * Latches true the first time the user opens the drops overlay this session.
@@ -475,6 +477,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   isCommandPaletteOpen: false,
   updateInfo: null,
   showLiveStreamsOverlay: false,
+  showMarketplaceOverlay: false,
+  setShowMarketplaceOverlay: (show: boolean) => set({ showMarketplaceOverlay: show }),
   showDropsOverlay: false,
   dropsOverlayEverOpened: false,
   showBadgesOverlay: false,

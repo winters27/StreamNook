@@ -1,5 +1,5 @@
 import { Window } from '@tauri-apps/api/window';
-import { Gift, User, Settings, Proportions, MessageCircle, Pickaxe, Clock, Tv, RotateCw, ClipboardList } from 'lucide-react';
+import { Gift, User, Settings, Store, Proportions, MessageCircle, Pickaxe, Clock, Tv, RotateCw, ClipboardList } from 'lucide-react';
 import { Minus, X, CornersOut, CornersIn, Medal } from 'phosphor-react';
 import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
@@ -34,7 +34,7 @@ const getUpdateStageProgress = (stage: string | null): number => {
 const TitleBar = () => {
   const store = useAppStore();
 
-  const { openSettings, setShowDropsOverlay, setShowBadgesOverlay, setShowWhispersOverlay, showListsPanel, setShowListsPanel, isAuthenticated, currentUser, isMiningActive, isTheaterMode, toggleTheaterMode, streamUrl, settings, whisperImportState, updateInfo, setUpdateInfo, addToast } = store;
+  const { openSettings, setShowDropsOverlay, setShowMarketplaceOverlay, setShowBadgesOverlay, setShowWhispersOverlay, showListsPanel, setShowListsPanel, isAuthenticated, currentUser, isMiningActive, isTheaterMode, toggleTheaterMode, streamUrl, settings, whisperImportState, updateInfo, setUpdateInfo, addToast } = store;
   const [isUpdating, setIsUpdating] = useState(false);
   const [updateProgress, setUpdateProgress] = useState<string | null>(null);
   const [showAbout, setShowAbout] = useState(false);
@@ -500,6 +500,16 @@ const TitleBar = () => {
               document.body
             )}
           </div>
+
+          {/* Marketplace Button — opens the plugin store */}
+          <Tooltip content="Marketplace" delay={200}>
+            <button
+              onClick={() => setShowMarketplaceOverlay(true)}
+              className="w-7 h-7 flex items-center justify-center text-textSecondary hover:text-textPrimary rounded transition-colors duration-200"
+            >
+              <Store size={16} />
+            </button>
+          </Tooltip>
 
           {/* Badges Button — dynamic badge icon that cycles on unhover */}
           <Tooltip content="Global Badges" delay={200}>
