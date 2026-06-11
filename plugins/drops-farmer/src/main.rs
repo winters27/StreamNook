@@ -218,6 +218,50 @@ impl Farmer {
             }
         };
         let _ = self.host.respond(id, result).await;
+        // Reflect the new target right away. When mining, run one step now so a
+        // real status (channel, game, progress) flows within a second instead
+        // of waiting up to a full minute for the next tick; when stopped, push
+        // the cleared status so the UI stands down immediately.
+        if self.miner.is_active() {
+            self.kick_mining().await;
+        } else {
+            self.host.set_status("drops.status", self.miner.status()).await;
+        }
+    }
+
+    /// Runs one mining step immediately, outside the 60-second watch tick, so a
+    /// freshly started mine resolves a channel and reports progress at once
+    /// rather than appearing to do nothing until the next tick. No-op when
+    /// mining is idle or no credential is available.
+    async fn kick_mining(&mut self) {
+        if !self.miner.is_active() {
+            return;
+        }
+        let Some(cred) = self.ensure_credential().await else {
+            return;
+        };
+        if self.user_id.is_none() {
+            match twitch::fetch_user_id(&self.client, &cred.token).await {
+                Ok(id) => self.user_id = Some(id),
+                Err(e) => {
+                    self.host.log("error", format!("user id fetch failed: {e}")).await;
+                    return;
+                }
+            }
+        }
+        let user_id = self.user_id.clone().unwrap();
+        self.tick_count += 1;
+        self.miner
+            .tick(
+                &self.client,
+                &cred,
+                &user_id,
+                &self.device_id,
+                &self.session_id,
+                self.tick_count,
+                &self.host,
+            )
+            .await;
         self.host.set_status("drops.status", self.miner.status()).await;
     }
 

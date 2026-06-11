@@ -8,19 +8,9 @@ import { Search, Gift, MonitorPlay, BarChart3, Package, ArrowDownUp } from 'luci
 import { Dropdown } from './ui/Dropdown';
 import {
     UnifiedGame, DropCampaign, DropProgress, DropsStatistics,
-    MiningStatus, MiningChannel, CurrentDropInfo, DropsDeviceCodeInfo, InventoryResponse, InventoryItem, CompletedDrop
+    MiningStatus, DropsDeviceCodeInfo, InventoryResponse, InventoryItem, CompletedDrop
 } from '../types';
 
-// Shape the drops mining plugin pushes into its status slot (see HOOKS.md).
-interface DropsStatusValue {
-    active?: boolean;
-    is_mining?: boolean;
-    game_name?: string | null;
-    campaign_id?: string | null;
-    channel_login?: string | null;
-    current_minutes?: number | null;
-    required_minutes?: number | null;
-}
 import LoadingWidget from './LoadingWidget';
 import GameCard from './drops/GameCard';
 import GameDetailPanel from './drops/GameDetailPanel';
@@ -82,7 +72,6 @@ export default function DropsCenter() {
     // cockpit's mine controls drive the plugin through the general hooks
     // instead of the built-in miner. Core never names the plugin.
     const [pluginMiningId, setPluginMiningId] = useState<string | null>(null);
-    const pluginMiningRef = useRef<string | null>(null);
 
     // UI State
     const [activeTab, setActiveTab] = useState<Tab>('games');
@@ -411,14 +400,10 @@ export default function DropsCenter() {
     };
 
     // ---- Plugin-backed mining routing ----
-    // Keep the ref in step with the state so the once-set status listener
-    // reads the current provider.
-    useEffect(() => {
-        pluginMiningRef.current = pluginMiningId;
-    }, [pluginMiningId]);
-
-    // Track which plugin (if any) provides drops mining, and translate its
-    // status pushes into the mining-status shape the cockpit already renders.
+    // Track which plugin (if any) provides drops mining, so the mine controls
+    // route to it. A global PluginMiningBridge translates the plugin's status
+    // pushes into the native 'mining-status-update' event the cockpit consumes
+    // below, so there is nothing to translate here.
     useEffect(() => {
         let disposed = false;
         const refreshProvider = async () => {
@@ -432,49 +417,10 @@ export default function DropsCenter() {
         const unlisteners: (() => void)[] = [];
         const setup = async () => {
             const unState = await listen('plugin://state-changed', () => refreshProvider());
-            const unStatus = await listen<{ slot: string; value: DropsStatusValue }>(
-                'plugin://status',
-                (event) => {
-                    if (!pluginMiningRef.current || event.payload.slot !== 'drops.status') return;
-                    const v = event.payload.value || {};
-                    const channel: MiningChannel | null = v.channel_login
-                        ? {
-                              id: '',
-                              name: v.channel_login,
-                              display_name: v.channel_login,
-                              game_name: v.game_name ?? '',
-                              viewer_count: 0,
-                              is_live: true,
-                              drops_enabled: true,
-                          }
-                        : null;
-                    const drop: CurrentDropInfo | null = v.game_name
-                        ? {
-                              campaign_id: v.campaign_id ?? '',
-                              campaign_name: '',
-                              drop_id: '',
-                              drop_name: '',
-                              required_minutes: v.required_minutes ?? 0,
-                              current_minutes: v.current_minutes ?? 0,
-                              game_name: v.game_name,
-                          }
-                        : null;
-                    setMiningStatus({
-                        is_mining: !!v.is_mining,
-                        current_channel: channel,
-                        current_campaign: v.campaign_id ?? null,
-                        current_drop: drop,
-                        eligible_channels: [],
-                        last_update: new Date().toISOString(),
-                    });
-                    useAppStore.getState().setMiningActive(!!v.is_mining || !!v.active);
-                }
-            );
             if (disposed) {
                 unState();
-                unStatus();
             } else {
-                unlisteners.push(unState, unStatus);
+                unlisteners.push(unState);
             }
         };
         setup();
@@ -515,8 +461,27 @@ export default function DropsCenter() {
 
     const handleStartMining = (campaignId: string, campaignName: string, gameName: string) => {
         // With the plugin powering mining, it picks an eligible channel itself,
-        // so clicking a drop just starts it — no channel picker step.
+        // so clicking a drop just starts it, no channel picker step.
         if (pluginMiningId) {
+            // Light up the native mining UI at once (title bar badge, and this
+            // game shifting to the top) while the plugin resolves a channel and
+            // reports real progress through the bridge a moment later.
+            emit('mining-status-update', {
+                is_mining: true,
+                current_channel: null,
+                current_campaign: campaignId,
+                current_drop: {
+                    campaign_id: campaignId,
+                    campaign_name: campaignName,
+                    drop_id: campaignId,
+                    drop_name: '',
+                    required_minutes: 0,
+                    current_minutes: 0,
+                    game_name: gameName,
+                },
+                eligible_channels: [],
+                last_update: new Date().toISOString(),
+            } as MiningStatus).catch(() => {});
             mineCampaign(campaignId)
                 .then(() => addToast('Started mining', 'success'))
                 .catch((err) => {
@@ -1403,9 +1368,9 @@ export default function DropsCenter() {
 
         const setupListeners = async () => {
             const uStatus = await listen<MiningStatus>('mining-status-update', (event) => {
-                // When a plugin powers mining, its pushes (via plugin://status)
-                // are the source of truth; ignore the built-in miner's events.
-                if (pluginMiningRef.current) return;
+                // Single source of truth for mining status, whether it comes
+                // from the built-in miner or from a plugin (bridged into this
+                // same event by PluginMiningBridge).
                 Logger.debug('[DropsCenter] Mining status update:', event.payload);
                 setMiningStatus(event.payload);
                 

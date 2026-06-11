@@ -30,6 +30,7 @@ import { TooltipManager } from './components/ui/TooltipManager';
 import { Tooltip } from './components/ui/Tooltip';
 import { SearchProfileModal } from './components/SearchProfileModal';
 import DropsOverlay from './components/DropsOverlay';
+import PluginMiningBridge from './components/plugins/PluginMiningBridge';
 import BadgesOverlay from './components/BadgesOverlay';
 import EmoteSetsOverlay from './components/EmoteSetsOverlay';
 import EmoteSpotlight from './components/EmoteSpotlight';
@@ -1590,6 +1591,7 @@ function App() {
       <SettingsDialog />
       <PublicProfileOverlay />
       <DropsOverlay />
+      <PluginMiningBridge />
       <EmoteSetsOverlay />
       <EmoteSpotlight />
 
