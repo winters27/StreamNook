@@ -60,6 +60,12 @@ struct Farmer {
     user_id: Option<String>,
     credential_denied: bool,
     miner: mining::Miner,
+    /// Directory the host gave us to persist state in.
+    data_dir: String,
+    /// The plugin's own config (the rich DropsSettings shape). This plugin
+    /// owns and persists its automation config; the app's settings screen
+    /// reads it via drops.get-config and writes it via drops.configure.
+    config: Value,
 }
 
 impl Farmer {
@@ -78,6 +84,35 @@ impl Farmer {
             user_id: None,
             credential_denied: false,
             miner: mining::Miner::new(),
+            data_dir: String::new(),
+            config: json!({}),
+        }
+    }
+
+    fn config_path(&self) -> std::path::PathBuf {
+        std::path::Path::new(&self.data_dir).join("config.json")
+    }
+
+    /// Loads persisted config on startup and applies it, resuming auto-mining
+    /// if it was on. Called once the host hands over the data directory.
+    fn load_config(&mut self) {
+        if let Ok(text) = std::fs::read_to_string(self.config_path()) {
+            if let Ok(value) = serde_json::from_str::<Value>(&text) {
+                self.config = value.clone();
+                self.apply_config(&value);
+                if value.get("auto_mining_enabled").and_then(|v| v.as_bool()) == Some(true) {
+                    self.miner.set_target(MiningTarget::Auto);
+                }
+            }
+        }
+    }
+
+    fn save_config(&self) {
+        if self.data_dir.is_empty() {
+            return;
+        }
+        if let Ok(text) = serde_json::to_string_pretty(&self.config) {
+            let _ = std::fs::write(self.config_path(), text);
         }
     }
 
@@ -160,9 +195,12 @@ impl Farmer {
                 json!({ "ok": true })
             }
             "drops.configure" => {
+                self.config = args.clone();
                 self.apply_config(args);
+                self.save_config();
                 json!({ "ok": true })
             }
+            "drops.get-config" => self.config.clone(),
             other => {
                 let _ = self
                     .host
@@ -410,6 +448,10 @@ async fn main() {
     let mut farmer = Farmer::new(host);
     while let Some(event) = rx.recv().await {
         match event {
+            Inbound::Init { data_dir } => {
+                farmer.data_dir = data_dir;
+                farmer.load_config();
+            }
             Inbound::Initialized => farmer.on_initialized().await,
             Inbound::FollowedLive(params) => farmer.on_followed_live(&params),
             Inbound::WatchTick => farmer.on_tick().await,

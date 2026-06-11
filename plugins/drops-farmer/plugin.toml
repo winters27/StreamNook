@@ -23,6 +23,6 @@ network      = "external"
 # handles the mine/stop/configure actions, pushes live status, and provides
 # the mining feature so the app drives it through its own native UI.
 [contributes]
-actions  = ["drops.mine", "drops.mine-auto", "drops.mine-all", "drops.stop", "drops.configure"]
+actions  = ["drops.mine", "drops.mine-auto", "drops.mine-all", "drops.stop", "drops.configure", "drops.get-config"]
 status   = ["drops.status"]
 provides = ["drops.mining"]

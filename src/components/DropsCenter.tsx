@@ -4,7 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { useAppStore } from '../stores/AppStore';
 import { listen, emit } from '@tauri-apps/api/event';
-import { Search, Gift, MonitorPlay, BarChart3, Settings as SettingsIcon, Package, ArrowDownUp } from 'lucide-react';
+import { Search, Gift, MonitorPlay, BarChart3, Package, ArrowDownUp } from 'lucide-react';
 import { Dropdown } from './ui/Dropdown';
 import {
     UnifiedGame, DropCampaign, DropProgress, DropsStatistics,
@@ -25,7 +25,6 @@ import LoadingWidget from './LoadingWidget';
 import GameCard from './drops/GameCard';
 import GameDetailPanel from './drops/GameDetailPanel';
 import DropsStatsTab from './drops/DropsStatsTab';
-import DropsSettingsTab from './drops/DropsSettingsTab';
 import DropsInventoryTab from './drops/DropsInventoryTab';
 import ChannelPickerModal from './drops/ChannelPickerModal';
 import { getAllUserBadgesWithEarned } from '../services/badgeService';
@@ -39,7 +38,7 @@ const TwitchIcon = ({ size = 20 }: { size?: number }) => (
     </svg>
 );
 
-type Tab = 'games' | 'inventory' | 'stats' | 'settings';
+type Tab = 'games' | 'inventory' | 'stats';
 
 interface DropsSettings {
     auto_claim_drops: boolean;
@@ -569,16 +568,6 @@ export default function DropsCenter() {
         }
     };
 
-    const handleStartAutoMining = async () => {
-        try {
-            await mineAuto();
-            addToast('Auto-mining started', 'success');
-        } catch (err) {
-            Logger.error('Failed to start auto mining:', err);
-            addToast('Failed to start auto-mining', 'error');
-        }
-    };
-
     const updateDropsSettings = async (newSettings: Partial<DropsSettings>) => {
         try {
             const current = dropsSettings || {
@@ -605,16 +594,6 @@ export default function DropsCenter() {
                 ...useAppStore.getState().settings,
                 drops: updatedSettings
             });
-
-            // When a plugin powers mining, it is configured from these native
-            // settings (the plugin has no settings UI of its own). Push the
-            // change so it takes effect immediately.
-            if (pluginMiningId) {
-                invoke('plugins_invoke_action', {
-                    action: 'drops.configure',
-                    args: updatedSettings,
-                }).catch((e) => Logger.warn('[DropsCenter] plugin configure failed:', e));
-            }
         } catch (err) {
             Logger.error('Failed to update drops settings:', err);
             addToast('Failed to save settings', 'error');
@@ -1954,25 +1933,6 @@ export default function DropsCenter() {
                             <span>Stats</span>
                         </span>
                     </button>
-                    <button
-                        onClick={() => setActiveTab('settings')}
-                        className={`group relative flex items-center gap-2 px-3 py-1.5 text-sm font-medium rounded-lg transition-all duration-300 whitespace-nowrap ${activeTab === 'settings'
-                            ? 'text-white'
-                            : 'text-textSecondary hover:text-textPrimary'
-                            }`}
-                    >
-                        {activeTab === 'settings' && (
-                            <motion.div
-                                layoutId="dropsTabHighlight"
-                                className="absolute inset-0 glass-button-static rounded-lg"
-                                transition={{ type: "spring", stiffness: 350, damping: 30 }}
-                            />
-                        )}
-                        <span className={`relative z-10 flex items-center gap-2 transition-all duration-300 ${activeTab !== 'settings' ? 'group-hover:drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]' : ''}`}>
-                            <SettingsIcon size={16} />
-                            <span>Settings</span>
-                        </span>
-                    </button>
                 </div>
                 </LayoutGroup>
 
@@ -2123,15 +2083,6 @@ export default function DropsCenter() {
                     />
                 )}
 
-                {/* Settings Tab */}
-                {!isLoading && activeTab === 'settings' && (
-                    <DropsSettingsTab
-                        settings={dropsSettings}
-                        onUpdateSettings={updateDropsSettings}
-                        onStartAutoMining={handleStartAutoMining}
-                        onStopMining={handleStopMining}
-                    />
-                )}
             </div>
         </div>
     );

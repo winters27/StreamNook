@@ -37,7 +37,6 @@ import BadgeDetailOverlay from './components/BadgeDetailOverlay';
 import ChangelogOverlay from './components/ChangelogOverlay';
 import WhispersWidget from './components/WhispersWidget';
 import PluginRuntimeBridge from './components/plugins/PluginRuntimeBridge';
-import DropsPluginConfigSync from './components/plugins/DropsPluginConfigSync';
 import SetupWizard from './components/SetupWizard';
 import Sidebar from './components/Sidebar';
 import ClipModal from './components/ClipModal';
@@ -1638,7 +1637,6 @@ function App() {
         onClose={() => setShowWhispersOverlay(false)}
       />
       <PluginRuntimeBridge />
-      <DropsPluginConfigSync />
       <AnimatePresence>
         {showListsPanel && <ListsPanel />}
       </AnimatePresence>
