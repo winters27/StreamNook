@@ -5,13 +5,12 @@ import { Activity, Radio, X } from 'lucide-react';
 
 // Live playback telemetry overlay (the "behind live" + FPS readout). Reads hls.js
 // and the <video> element directly each second while open, so it costs nothing
-// when collapsed. "Behind live" is wall-clock end-to-end: local time minus the
-// PROGRAM-DATE-TIME of the frame on screen (the same metric as Twitch's own
-// "Latency To Broadcaster" stat, so the two players read comparably). The
-// playlist-edge distance (hls.latency) is only a fallback: when the relay promotes
-// prefetch hints, the playlist edge is declared ahead of what the encoder has
-// produced, so edge distance over-reads by the ~2-4s of future nobody is behind.
-// PDT instead trusts the local clock, and NTP keeps that within ~0.5s.
+// when collapsed. "Behind live" is the playhead's distance from the live edge. On the
+// LL-HLS-origin path it's `hls.latency` (the gap to the newest real part the origin
+// serves — honest because only parts with bytes are listed, no phantom-future edge).
+// PROGRAM-DATE-TIME is deliberately NOT the primary source: Twitch's PDT base is not
+// reliable wall-clock and varies per stream, so `now - PDT` could read ~0 (clamped) or
+// wildly high. PDT/edge remain fallbacks for non-LL streams without a usable latency.
 
 interface AdSourceLike {
   mode?: string;
@@ -80,15 +79,28 @@ function readMetrics(hls: Hls | null, video: HTMLVideoElement | null): Metrics {
     if (typeof hls.bandwidthEstimate === 'number' && hls.bandwidthEstimate > 0) {
       m.bandwidthMbps = hls.bandwidthEstimate / 1_000_000;
     }
-    // Wall-clock end-to-end first: now minus the PDT timestamp of the playing
-    // frame (Twitch playlists always carry PROGRAM-DATE-TIME and both relay paths
-    // pass it through). Edge-based fallbacks only for streams without PDT.
+    // "Behind live" = distance from the playhead to the live edge.
+    //
+    // On the LL-HLS-origin path (lowLatencyMode), `hls.latency` is the honest metric:
+    // it's the gap from the playhead to the newest REAL part the origin serves (the
+    // origin only lists parts whose bytes exist, so there's no phantom-future
+    // over-read). We deliberately do NOT use PROGRAM-DATE-TIME here: Twitch's PDT is
+    // not guaranteed real wall-clock and its base varies per stream (observed reading
+    // anywhere from a correct ~2s to 90s+), and when it runs slightly ahead of the
+    // local clock the old `max(0, now - PDT)` clamped to 0 — the "shows 0s when really
+    // ~2s" bug. PDT/edge stay as fallbacks for non-LL streams that have no usable
+    // hls.latency.
     let lat: number | null = null;
+    const hlsLat = typeof hls.latency === 'number' && hls.latency > 0 ? hls.latency : null;
+    const isLowLatency = hls.config?.lowLatencyMode === true;
     const playingDate = hls.playingDate;
-    if (playingDate) {
-      lat = Math.max(0, (Date.now() - playingDate.getTime()) / 1000);
-    } else if (typeof hls.latency === 'number' && hls.latency > 0) {
-      lat = hls.latency;
+    const pdtLat = playingDate ? (Date.now() - playingDate.getTime()) / 1000 : null;
+    if (isLowLatency && hlsLat != null) {
+      lat = hlsLat;
+    } else if (pdtLat != null && pdtLat > 0.2 && pdtLat < 60) {
+      lat = pdtLat; // sane PDT (non-LL streams)
+    } else if (hlsLat != null) {
+      lat = hlsLat;
     } else if (lvl?.details && video) {
       const edge = lvl.details.edge;
       if (Number.isFinite(edge)) lat = Math.max(0, edge - video.currentTime);

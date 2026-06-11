@@ -669,7 +669,7 @@ const PluginsSettings = () => {
                       <>
                         <Hairline />
                         {plugin.granted.credentials.map((kind) => {
-                          const state = plugin.credential_consent[kind] ?? 'ask';
+                          const state = plugin.credential_consent[kind] ?? 'always';
                           return (
                             <div
                               key={kind}
@@ -678,16 +678,11 @@ const PluginsSettings = () => {
                               <span className="flex items-center gap-2 text-[12px] text-textSecondary">
                                 <KeyRound size={12} className="flex-shrink-0 text-red-300" />
                                 <span>
-                                  Twitch login ·{' '}
-                                  {state === 'always'
-                                    ? 'allowed without asking'
-                                    : state === 'revoked'
-                                      ? 'revoked'
-                                      : 'asks each session'}
+                                  Twitch login · {state === 'revoked' ? 'revoked' : 'allowed'}
                                 </span>
                               </span>
                               <Chip
-                                label={state === 'revoked' ? 'Allow asking again' : 'Revoke'}
+                                label={state === 'revoked' ? 'Allow' : 'Revoke'}
                                 onClick={async () => {
                                   try {
                                     await invoke(

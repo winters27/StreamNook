@@ -235,7 +235,7 @@ async fn get_credential(
                 .map_err(|e| RpcErr::credential_unavailable(&e.to_string()))?;
             registry::audit_append(
                 &record.id,
-                &format!("credential handover kind=twitch.android"),
+                "credential handover kind=twitch.android",
             );
             debug!(
                 "[PluginHost] credential twitch.android handed to {}",

@@ -99,10 +99,25 @@ static APP_HANDLE: once_cell::sync::OnceCell<tauri::AppHandle> = once_cell::sync
 /// instead of re-downloading the manifest itself just to look.
 static LOW_LATENCY: AtomicBool = AtomicBool::new(false);
 
-/// True when the live stream being relayed is low-latency. The LL-HLS origin is the
-/// authority when active (it owns the playlist, so the pull-through scan that sets
-/// LOW_LATENCY never runs for those channels); fall back to the scan flag otherwise.
+/// True ONLY when the LL-HLS origin is actively serving parts for this stream. This
+/// is what the player keys `lowLatencyMode` on: it means a real spec LL-HLS playlist
+/// (`#EXT-X-PART` + blocking reload) is being served, so hls.js's native low-latency
+/// controller has parts to consume. It must NOT be true merely because the upstream
+/// has PREFETCH hints — driving hls.js into low-latency mode against a no-parts
+/// (promotion) playlist mistimes its blocking reloads and stalls (the regression
+/// behind the "plays then hangs 15-20s behind" reports on H.264/TS channels, where
+/// the CMAF origin can't activate).
 pub fn is_low_latency() -> bool {
+    crate::services::ll_origin::is_active()
+}
+
+/// True when the upstream is a low-latency broadcast (carries PREFETCH hints),
+/// regardless of whether the LL-HLS origin took over. When the origin is inactive
+/// (e.g. an H.264/TS channel with the TS origin off), the relay still promotes the
+/// hints, so the player can ride a tighter cushion than a normal-latency channel —
+/// WITHOUT entering hls.js low-latency mode. Seeded from the start probe and kept
+/// fresh by the per-poll playlist scan.
+pub fn prefetch_present() -> bool {
     crate::services::ll_origin::is_active() || LOW_LATENCY.load(Ordering::Relaxed)
 }
 
@@ -293,7 +308,16 @@ impl StreamServer {
             *PROXY_URL.lock().await = Some(stream_url);
             // New stream on the existing server: clear stale ad-detection state.
             reset_ad_state();
-            crate::services::ll_origin::start(upstream).await;
+            let outcome = crate::services::ll_origin::start(upstream).await;
+            // Seed the low-latency flag from the start probe so the player's mode
+            // query is correct before the first relay playlist fetch sets it. The
+            // origin owns the playlist when active, so the per-poll scan never runs
+            // for those channels — this is the only place it gets set there.
+            LOW_LATENCY.store(outcome.has_prefetch, Ordering::Relaxed);
+            log::debug!(
+                "[StreamServer] LL origin start (reuse): active={} prefetch={}",
+                outcome.active, outcome.has_prefetch
+            );
             // Return the existing port by parsing it from a static variable
             return Self::get_current_port().await;
         }
@@ -303,7 +327,12 @@ impl StreamServer {
 
         *PROXY_URL.lock().await = Some(stream_url);
         reset_ad_state();
-        crate::services::ll_origin::start(upstream).await;
+        let outcome = crate::services::ll_origin::start(upstream).await;
+        LOW_LATENCY.store(outcome.has_prefetch, Ordering::Relaxed);
+        log::debug!(
+            "[StreamServer] LL origin start: active={} prefetch={}",
+            outcome.active, outcome.has_prefetch
+        );
 
         // Store the port
         *CURRENT_PORT.lock().await = Some(port);
@@ -364,16 +393,35 @@ impl StreamServer {
             if let Some(rest) = request_path.strip_prefix("part/") {
                 if let Some((sn, k)) = parse_part_path(rest) {
                     if let Some(bytes) = crate::services::ll_origin::get_part(sn, k) {
+                        let h = if crate::services::ll_diagnostics::is_active() {
+                            crate::services::ll_diagnostics::quick_hash(bytes.as_ref())
+                        } else {
+                            0
+                        };
+                        crate::services::ll_diagnostics::event(&format!(
+                            "\"ev\":\"o_part\",\"sn\":{sn},\"k\":{k},\"len\":{},\"h\":{h}",
+                            bytes.len()
+                        ));
                         return Ok(media_response(bytes.as_ref().clone()));
                     }
+                    crate::services::ll_diagnostics::event(&format!(
+                        "\"ev\":\"o_part_miss\",\"sn\":{sn},\"k\":{k}"
+                    ));
                 }
                 return Ok(empty_cors(404));
             }
             if let Some(rest) = request_path.strip_prefix("seg/") {
                 if let Some(sn) = rest.strip_suffix(".ts").and_then(|s| s.parse::<u64>().ok()) {
                     if let Some(bytes) = crate::services::ll_origin::get_segment(sn) {
+                        // Whole-segment fetch (the suspected A/V-skew trigger): record sn
+                        // and size so it correlates with the frontend append burst.
+                        crate::services::ll_diagnostics::event(&format!(
+                            "\"ev\":\"o_seg\",\"sn\":{sn},\"len\":{}",
+                            bytes.len()
+                        ));
                         return Ok(media_response(bytes));
                     }
+                    crate::services::ll_diagnostics::event(&format!("\"ev\":\"o_seg_miss\",\"sn\":{sn}"));
                 }
                 return Ok(empty_cors(404));
             }

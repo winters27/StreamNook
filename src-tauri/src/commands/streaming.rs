@@ -269,13 +269,59 @@ pub async fn stop_stream() -> Result<(), String> {
     StreamServer::stop().await.map_err(|e| e.to_string())
 }
 
-/// Whether the live stream currently being relayed is a low-latency Twitch
-/// broadcast (the relay sees PREFETCH hints on it). The player polls this once
-/// after playback starts to decide whether to ride a tighter live cushion —
-/// cheaper than re-downloading the manifest just to look for the hints itself.
+/// Whether the relay's LL-HLS origin is actively serving parts for this stream.
+/// True ⇒ hls.js should run in `lowLatencyMode` (a real `#EXT-X-PART` playlist with
+/// blocking reload is being served). The player reads this once at construction to
+/// pick the hls.js mode. NOT the same as "the channel is low-latency" — see
+/// `get_stream_prefetch_present`.
 #[tauri::command]
 pub fn get_stream_low_latency() -> bool {
     crate::services::stream_server::is_low_latency()
+}
+
+/// Whether the upstream is a low-latency broadcast (PREFETCH hints present), even
+/// when the LL-HLS origin didn't take over (e.g. an H.264/TS channel). The relay
+/// promotes the hints on that path, so the player rides a tighter cushion than a
+/// normal-latency channel WITHOUT entering hls.js low-latency mode. Cheaper than
+/// re-downloading the manifest to look for the hints itself.
+#[tauri::command]
+pub fn get_stream_prefetch_present() -> bool {
+    crate::services::stream_server::prefetch_present()
+}
+
+/// Report which video codecs this machine can decode and the user allows (families:
+/// "av1","hevc","h264"), most-preferred first. The frontend probes
+/// `MediaSource.isTypeSupported` and the `enhanced_codecs` setting and calls this at
+/// startup and whenever the setting changes. The resolver then prefers the most
+/// efficient decodable codec at a given resolution (which also routes AV1/HEVC CMAF
+/// streams through the low-latency origin). H.264 is always kept as the fallback, so
+/// selection can never resolve to a codec this machine can't play.
+#[tauri::command]
+pub fn set_codec_preference(prefs: Vec<String>) {
+    crate::services::twitch_resolver::set_codec_preference(prefs);
+}
+
+/// Start a low-latency diagnostic recording session. Returns the full path of the
+/// JSONL file the frontend (and origin) will append timestamped records to, so a
+/// live drift/A-V-sync session can be analyzed from recorded facts. Rotates files.
+#[tauri::command]
+pub fn start_ll_diag(label: String) -> Result<String, String> {
+    crate::services::ll_diagnostics::start_session(&label)
+        .map(|p| p.to_string_lossy().to_string())
+        .map_err(|e| e.to_string())
+}
+
+/// Append a batch of already-serialized JSON-line records to the active diagnostic
+/// session. Best-effort; never errors playback.
+#[tauri::command]
+pub fn append_ll_diag(lines: Vec<String>) {
+    crate::services::ll_diagnostics::append_lines(&lines);
+}
+
+/// End the active diagnostic session.
+#[tauri::command]
+pub fn stop_ll_diag() {
+    crate::services::ll_diagnostics::stop_session();
 }
 
 /// Current ad-detection state for the live stream the local player is pulling.

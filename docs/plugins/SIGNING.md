@@ -68,8 +68,21 @@ Rules:
 
 - `format` is the index schema version, currently 1. Hosts ignore unknown fields.
 - Artifacts are hosted by their authors or the index operator, never by StreamNook's own distribution infrastructure.
-- The official index lists Tier A and B plugins only. Tier C entries in the official index are invalid and ignored by the host. Community indexes may list any tier.
+- Any index may list any tier. Curation (what the operator approved into the index), not the tier, decides what appears.
 - `tier` in the index is set by the index curator. The host rejects an artifact whose manifest tier disagrees with the index entry.
+
+### Per-platform artifacts
+
+An entry may ship a build per platform under `platforms`, keyed by `<os>-<arch>` (`windows-x86_64`, `macos-x86_64`, `macos-aarch64`, `linux-x86_64`, `linux-aarch64`); each value has the same shape as `artifact`:
+
+```json
+"platforms": {
+  "windows-x86_64": { "url": "...", "sha256": "<hex>", "size": 123, "signature_url": "...zip.minisig" },
+  "macos-aarch64":  { "url": "...", "sha256": "<hex>", "size": 123, "signature_url": "...zip.minisig" }
+}
+```
+
+The host installs the build matching the user's platform: a `platforms` entry for the current `<os>-<arch>`, else the bare top-level `artifact` (which counts only as `windows-x86_64`). A plugin with no build for the running platform shows as unavailable rather than installing the wrong binary. Each platform's zip carries its own `plugin.toml` (the `runtime.entry` filename differs per platform); `id`, `version`, and `tier` must be identical across them and match the index entry. Each platform's zip is signed by the author the same way.
 
 ### Marketplace metadata (optional, additive)
 

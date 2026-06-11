@@ -14,7 +14,95 @@ use crate::services::quality::{pick_closest_quality, sort_qualities_descending};
 use anyhow::{anyhow, Context, Result};
 use log::debug;
 use serde_json::{json, Value};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
+
+/// Ordered list of video codec families the player may resolve to (most-preferred
+/// first), set by the frontend after probing `MediaSource.isTypeSupported` and the
+/// `enhanced_codecs` setting. Empty until reported = H.264-only (the always-safe
+/// baseline). This is the gate that makes the AV1/HEVC selection capability-aware:
+/// StreamNook serves a single variant with NO in-player codec fallback, so resolving
+/// to a codec this machine can't decode would be a black screen. Selection never
+/// returns a codec outside this list, and H.264 is always kept in it.
+static CODEC_PREF: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Set the allowed/decodable video codec families ("av1" | "hevc" | "h264"),
+/// most-preferred first. H.264 is always appended so an undecodable codec can never
+/// be the only eligible option. Called from the `set_codec_preference` command.
+pub fn set_codec_preference(mut prefs: Vec<String>) {
+    prefs.retain(|s| matches!(s.as_str(), "av1" | "hevc" | "h264"));
+    if !prefs.iter().any(|s| s == "h264") {
+        prefs.push("h264".to_string());
+    }
+    *CODEC_PREF.lock().unwrap() = prefs;
+}
+
+/// The effective preference (never empty: defaults to H.264-only before the
+/// frontend reports).
+fn effective_codec_pref() -> Vec<String> {
+    let p = CODEC_PREF.lock().unwrap().clone();
+    if p.is_empty() {
+        vec!["h264".to_string()]
+    } else {
+        p
+    }
+}
+
+/// Classify a `CODECS="..."` attribute's first (video) codec into a family name.
+/// An empty/missing codec is treated as H.264 (the safe, universally-decodable
+/// default).
+fn codec_family(codecs: Option<&str>) -> &'static str {
+    let first = codecs.and_then(|c| c.split(',').next()).unwrap_or("").trim();
+    if first.starts_with("av01") {
+        "av1"
+    } else if first.starts_with("hev1") || first.starts_with("hvc1") {
+        "hevc"
+    } else if first.starts_with("avc1") || first.starts_with("avc3") || first.is_empty() {
+        "h264"
+    } else {
+        "other"
+    }
+}
+
+/// Position of a variant's codec family in `pref` (lower = more preferred);
+/// `usize::MAX` when the codec isn't allowed/decodable on this machine.
+fn codec_rank(v: &Variant, pref: &[String]) -> usize {
+    let fam = codec_family(v.codecs.as_deref());
+    pref.iter().position(|p| p == fam).unwrap_or(usize::MAX)
+}
+
+/// Two renditions are the "same quality" when height matches and fps is within a
+/// frame (Twitch emits identical "60.000" strings, but tolerate float noise).
+fn same_quality(a: &Variant, height: Option<u32>, fps: Option<f64>) -> bool {
+    a.height == height
+        && match (a.fps, fps) {
+            (Some(x), Some(y)) => (x - y).abs() < 1.0,
+            (None, None) => true,
+            _ => false,
+        }
+}
+
+/// Among the variants at `(height, fps)` whose codec is allowed, the index of the
+/// most-preferred codec (ties broken by higher bandwidth). `None` when none are
+/// eligible (e.g. that resolution is offered only in a codec this machine can't
+/// decode), so callers fall back to a guaranteed-decodable rendition.
+fn prefer_codec_at(
+    variants: &[Variant],
+    height: Option<u32>,
+    fps: Option<f64>,
+    pref: &[String],
+) -> Option<usize> {
+    variants
+        .iter()
+        .enumerate()
+        .filter(|(_, v)| same_quality(v, height, fps) && codec_rank(v, pref) != usize::MAX)
+        .min_by(|(_, a), (_, b)| {
+            codec_rank(a, pref)
+                .cmp(&codec_rank(b, pref))
+                .then(b.bandwidth.cmp(&a.bandwidth))
+        })
+        .map(|(i, _)| i)
+}
 
 /// Clip access-token GQL op (`VideoAccessToken_Clip`). Sent as the full inline
 /// query rather than a persisted-query hash: Twitch rotates the stored hashes and
@@ -262,12 +350,16 @@ pub fn select_variant(variants: &[Variant], requested: &str) -> Option<(usize, S
     let idx = variants
         .iter()
         .position(|v| v.name.eq_ignore_ascii_case(&chosen))?;
+    // At the matched resolution, prefer the most-efficient decodable codec (same
+    // capability gate as "best"); keep the matched rendition when none is preferable.
+    let pref = effective_codec_pref();
+    let idx = prefer_codec_at(variants, variants[idx].height, variants[idx].fps, &pref).unwrap_or(idx);
     Some((idx, variants[idx].name.clone()))
 }
 
-/// "best" = the source rendition. Twitch tags it `GROUP-ID="chunked"`; if that's
-/// absent, fall back to the highest (height, fps, bandwidth) video rendition.
-fn best_index(variants: &[Variant]) -> Option<usize> {
+/// The source rendition (codec-agnostic): Twitch tags it `GROUP-ID="chunked"`; if
+/// that's absent, the highest (height, fps, bandwidth) video rendition.
+fn source_index(variants: &[Variant]) -> Option<usize> {
     if let Some(i) = variants
         .iter()
         .position(|v| v.group_id.eq_ignore_ascii_case("chunked"))
@@ -290,6 +382,23 @@ fn best_index(variants: &[Variant]) -> Option<usize> {
         })
         .map(|(i, _)| i)
         .or(Some(0))
+}
+
+/// "best" = the source quality, but in the most-preferred DECODABLE codec offered at
+/// that same resolution. This is the `enhanced_codecs` win: AV1/HEVC are more
+/// efficient at equal resolution and ship as CMAF, so picking them also routes the
+/// stream through the low-latency origin. It never trades resolution for codec, and
+/// when no allowed codec is offered at the source resolution it returns the source
+/// rendition unchanged (so behavior is identical to before until the frontend
+/// reports AV1/HEVC as decodable).
+fn best_index(variants: &[Variant]) -> Option<usize> {
+    best_index_with(variants, &effective_codec_pref())
+}
+
+fn best_index_with(variants: &[Variant], pref: &[String]) -> Option<usize> {
+    let src = source_index(variants)?;
+    let (h, f) = (variants[src].height, variants[src].fps);
+    Some(prefer_codec_at(variants, h, f, pref).unwrap_or(src))
 }
 
 /// "worst" = the lowest-height video rendition (audio_only has no resolution and
@@ -949,6 +1058,90 @@ https://x/936.m3u8\n";
         assert_eq!(v[bi].name, "1440p60");
         let (ci, _) = select_variant(&v, "936p60").unwrap();
         assert_eq!(v[ci].name, "936p60");
+    }
+
+    // ── codec-aware selection (enhanced_codecs) ──
+
+    /// A channel offering both H.264 and a more-efficient AV1 at 1080p60, plus a
+    /// 720p AV1 tier, to exercise "prefer codec at the same resolution, never
+    /// downgrade resolution for codec".
+    fn codec_master() -> Vec<Variant> {
+        parse_master(
+            "#EXTM3U\n\
+#EXT-X-MEDIA:TYPE=VIDEO,GROUP-ID=\"chunked\",NAME=\"1080p60\"\n\
+#EXT-X-STREAM-INF:BANDWIDTH=8000000,RESOLUTION=1920x1080,CODECS=\"avc1.4D402A,mp4a.40.2\",VIDEO=\"chunked\",FRAME-RATE=60.000\n\
+https://x/h264-1080.m3u8\n\
+#EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080,CODECS=\"av01.0.08M.08,mp4a.40.2\",FRAME-RATE=60.000,IVS-NAME=\"1080p60-av1\"\n\
+https://x/av1-1080.m3u8\n\
+#EXT-X-STREAM-INF:BANDWIDTH=3000000,RESOLUTION=1280x720,CODECS=\"hev1.1.6.L93.B0,mp4a.40.2\",FRAME-RATE=60.000,IVS-NAME=\"720p60-hevc\"\n\
+https://x/hevc-720.m3u8\n",
+        )
+    }
+
+    #[test]
+    fn codec_family_classifies_fourccs() {
+        assert_eq!(codec_family(Some("av01.0.08M.08,mp4a.40.2")), "av1");
+        assert_eq!(codec_family(Some("hev1.1.6.L93.B0")), "hevc");
+        assert_eq!(codec_family(Some("hvc1.1.6.L93.B0")), "hevc");
+        assert_eq!(codec_family(Some("avc1.4D402A,mp4a.40.2")), "h264");
+        assert_eq!(codec_family(None), "h264"); // unlabeled → safe default
+        assert_eq!(codec_family(Some("vp09.00.10.08")), "other");
+    }
+
+    #[test]
+    fn best_prefers_av1_at_source_resolution_when_decodable() {
+        let v = codec_master();
+        let pref = vec!["av1".to_string(), "hevc".to_string(), "h264".to_string()];
+        let i = best_index_with(&v, &pref).unwrap();
+        // Same 1080p resolution as the H.264 source, but the AV1 rendition.
+        assert_eq!(v[i].url, "https://x/av1-1080.m3u8");
+        assert_eq!(codec_family(v[i].codecs.as_deref()), "av1");
+    }
+
+    #[test]
+    fn best_falls_back_to_h264_when_enhanced_off() {
+        let v = codec_master();
+        let pref = vec!["h264".to_string()]; // enhanced off / nothing else decodable
+        let i = best_index_with(&v, &pref).unwrap();
+        assert_eq!(v[i].url, "https://x/h264-1080.m3u8");
+    }
+
+    #[test]
+    fn best_never_downgrades_resolution_for_a_fancier_codec() {
+        // AV1/HEVC only exist BELOW the source resolution here (source is H.264 1080).
+        let v = parse_master(
+            "#EXTM3U\n\
+#EXT-X-STREAM-INF:BANDWIDTH=8000000,RESOLUTION=1920x1080,CODECS=\"avc1.4D402A\",VIDEO=\"chunked\",FRAME-RATE=60.000\n\
+https://x/h264-1080.m3u8\n\
+#EXT-X-MEDIA:TYPE=VIDEO,GROUP-ID=\"chunked\",NAME=\"1080p60\"\n\
+#EXT-X-STREAM-INF:BANDWIDTH=4000000,RESOLUTION=1280x720,CODECS=\"av01.0.08M.08\",FRAME-RATE=60.000,IVS-NAME=\"720p60\"\n\
+https://x/av1-720.m3u8\n",
+        );
+        let pref = vec!["av1".to_string(), "hevc".to_string(), "h264".to_string()];
+        let i = best_index_with(&v, &pref).unwrap();
+        // Stays at 1080p H.264; does NOT drop to 720p just because it's AV1.
+        assert_eq!(v[i].height, Some(1080));
+        assert_eq!(codec_family(v[i].codecs.as_deref()), "h264");
+    }
+
+    #[test]
+    fn hevc_chosen_only_when_allowed() {
+        // At 720p the only option is HEVC. With HEVC allowed it's eligible; without,
+        // prefer_codec_at finds nothing decodable there (caller keeps its fallback).
+        let v = codec_master();
+        let with_hevc = vec!["hevc".to_string(), "h264".to_string()];
+        assert!(prefer_codec_at(&v, Some(720), Some(60.0), &with_hevc).is_some());
+        let no_hevc = vec!["h264".to_string()];
+        assert!(prefer_codec_at(&v, Some(720), Some(60.0), &no_hevc).is_none());
+    }
+
+    #[test]
+    fn set_codec_preference_filters_junk_and_always_keeps_h264() {
+        set_codec_preference(vec!["av1".into(), "vp9".into(), "hevc".into()]);
+        assert_eq!(effective_codec_pref(), vec!["av1", "hevc", "h264"]); // vp9 dropped
+        // Reset to the default-equivalent so any concurrent test sees H.264-only.
+        set_codec_preference(vec![]);
+        assert_eq!(effective_codec_pref(), vec!["h264"]);
     }
 
     #[test]

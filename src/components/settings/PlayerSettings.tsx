@@ -4,6 +4,7 @@ import { SettingsSection, SettingsRow, SegmentedSelect } from './_primitives';
 import { DEFAULT_AUDIO_BOOST } from '../../types';
 import { Fader } from '../AudioBoostFaders';
 import { audioBoostFaderDefs, audioBoostResetPatch } from '../../utils/audioBoost';
+import { reportCodecPreference } from '../../utils/codecPreference';
 
 const Toggle = ({ enabled, onChange }: { enabled: boolean; onChange: () => void }) => (
   <button
@@ -189,12 +190,16 @@ const PlayerSettings = () => {
           control={
             <Toggle
               enabled={streamlink.enhanced_codecs ?? true}
-              onChange={() =>
+              onChange={() => {
+                const next = !(streamlink.enhanced_codecs ?? true);
                 updateSettings({
                   ...settings,
-                  streamlink: { ...streamlink, enhanced_codecs: !(streamlink.enhanced_codecs ?? true) },
-                })
-              }
+                  streamlink: { ...streamlink, enhanced_codecs: next },
+                });
+                // Re-probe + report so the change takes effect on the next resolve
+                // without waiting for an app restart.
+                reportCodecPreference(next);
+              }}
             />
           }
         />

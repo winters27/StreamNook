@@ -567,6 +567,11 @@ fn main() {
             stop_stream,
             get_ad_detection,
             get_stream_low_latency,
+            get_stream_prefetch_present,
+            set_codec_preference,
+            start_ll_diag,
+            append_ll_diag,
+            stop_ll_diag,
             get_stream_qualities,
             change_stream_quality,
             // Multi-stream commands

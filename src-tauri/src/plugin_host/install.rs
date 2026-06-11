@@ -3,6 +3,7 @@
 
 use anyhow::{anyhow, bail, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::io::Cursor;
 use std::path::PathBuf;
 
@@ -73,6 +74,24 @@ pub struct IndexEntry {
     /// someone else) leave this false; being in the index is their approval.
     #[serde(default)]
     pub official: bool,
+    /// Per-platform builds keyed by "<os>-<arch>" (windows-x86_64,
+    /// macos-aarch64, macos-x86_64, linux-x86_64, ...). The bare `artifact`
+    /// above is the windows-x86_64 build; other platforms go here. The app
+    /// installs whichever matches the user's platform.
+    #[serde(default)]
+    pub platforms: HashMap<String, IndexArtifact>,
+}
+
+impl IndexEntry {
+    /// The artifact to install on the running platform, or None when the plugin
+    /// ships no build for it. Prefers a matching `platforms` entry; the bare
+    /// `artifact` counts only as the windows-x86_64 build.
+    pub fn artifact_for_platform(&self) -> Option<&IndexArtifact> {
+        let target = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
+        self.platforms
+            .get(&target)
+            .or_else(|| (target == "windows-x86_64").then_some(&self.artifact))
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -229,10 +248,13 @@ pub async fn prepare_install(
     // tier, decides what appears. The manifest tier must still match below.
     Tier::parse(&entry.tier)?;
 
-    // Artifact download and verification.
-    let artifact = http_get_bytes(&entry.artifact.url, MAX_ARTIFACT_BYTES).await?;
-    signing::check_sha256(&artifact, &entry.artifact.sha256)?;
-    let signature = http_get_text(&entry.artifact.signature_url, 64 * 1024).await?;
+    // Pick the build for this platform, then download and verify it.
+    let meta = entry
+        .artifact_for_platform()
+        .ok_or_else(|| anyhow!("'{plugin_id}' has no build for this platform"))?;
+    let artifact = http_get_bytes(&meta.url, MAX_ARTIFACT_BYTES).await?;
+    signing::check_sha256(&artifact, &meta.sha256)?;
+    let signature = http_get_text(&meta.signature_url, 64 * 1024).await?;
 
     // Author key pinning (trust-on-first-use, rotation with proof).
     let author_key = match pinned_author_key {
@@ -247,7 +269,7 @@ pub async fn prepare_install(
                 );
             }
             let prev_sig =
-                http_get_text(&format!("{}.prev", entry.artifact.signature_url), 64 * 1024)
+                http_get_text(&format!("{}.prev", meta.signature_url), 64 * 1024)
                     .await
                     .map_err(|_| {
                         anyhow!(

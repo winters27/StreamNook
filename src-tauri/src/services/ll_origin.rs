@@ -74,6 +74,78 @@ const BACKFILL_SEGMENTS: usize = 2;
 const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 /// Max wait for the next chunk of the in-progress segment before treating it as done.
 const CHUNK_TIMEOUT: Duration = Duration::from_secs(10);
+/// Master switch for the MPEG-TS low-latency origin. Twitch serves H.264 (the
+/// "chunked"/source quality on the vast majority of channels) as MPEG-TS with NO
+/// `#EXT-X-MAP`; only HEVC/AV1 variants are CMAF. The CMAF origin silently no-ops
+/// on TS, so without this the true-2s path never runs for most streams and the
+/// player falls back to whole-segment promotion (~3-3.5s). Unlike the CMAF path,
+/// the TS part demuxer in hls.js needs a real-stream sign-off, so this stays a
+/// one-line opt-in until a build is curl+playback verified. When false (or if a TS
+/// stream can't be chunked), the origin stays inactive and the stable promotion
+/// fallback serves the stream — never worse than before.
+const ENABLE_TS_LL_ORIGIN: bool = true;
+/// Target real part duration for the TS chunker, in 90 kHz PTS ticks (~0.30s).
+/// Kept well under `PART_TARGET` (0.5s) so every emitted part is spec-legal even
+/// when a frame straddles the boundary. CMAF parts come pre-split by Twitch
+/// (~0.105s) so this only governs TS.
+const TS_PART_PTS: u64 = 27_000;
+
+/// Segment container. Twitch ships CMAF (fMP4, with `#EXT-X-MAP`) for HEVC/AV1 and
+/// MPEG-TS (no init segment) for H.264. The two split into low-latency parts
+/// differently and render slightly different playlists (TS has no `#EXT-X-MAP`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Container {
+    /// fMP4: parts are `moof`+`mdat` pairs; an `#EXT-X-MAP` init segment is required.
+    Cmaf,
+    /// MPEG-TS: parts are runs of 188-byte packets cut at video-PES boundaries; no
+    /// init segment (TS is self-initializing — PAT/PMT lead each segment).
+    Ts,
+}
+
+/// Container-tagged streaming splitter: turns a (possibly partial) segment byte
+/// stream into low-latency parts. CMAF cuts on box pairs; TS cuts on packet-aligned
+/// video-PES boundaries.
+enum Chunker {
+    Cmaf(BoxChunker),
+    Ts(TsChunker),
+}
+
+impl Chunker {
+    fn new(container: Container) -> Self {
+        match container {
+            Container::Cmaf => Chunker::Cmaf(BoxChunker::new()),
+            Container::Ts => Chunker::Ts(TsChunker::new()),
+        }
+    }
+    /// Each part is returned with its media duration in seconds. CMAF parts come
+    /// pre-split by Twitch (~0.105s) and the nominal value is fine (≈19 parts ≈ 2s).
+    /// TS parts MUST carry their real PTS-derived duration: with only ~7 parts per
+    /// segment, a nominal 0.1s would undercount the segment to ~0.7s, and hls.js then
+    /// re-downloads the whole 2s segment on top of the parts (double-appended video =
+    /// the repeat-and-drift boomerang). Real durations make the parts tile the segment.
+    fn push(&mut self, data: &[u8]) -> Vec<(Vec<u8>, f64)> {
+        match self {
+            Chunker::Cmaf(c) => c.push(data).into_iter().map(|b| (b, NOMINAL_PART_DUR)).collect(),
+            Chunker::Ts(c) => c.push(data),
+        }
+    }
+    fn flush(&mut self) -> Option<(Vec<u8>, f64)> {
+        match self {
+            Chunker::Cmaf(c) => c.flush().map(|b| (b, NOMINAL_PART_DUR)),
+            Chunker::Ts(c) => c.flush(),
+        }
+    }
+}
+
+/// What `start()` found, so the relay can tell the player apart three ways: a real
+/// LL-HLS origin is serving parts (`active` → hls.js `lowLatencyMode`), or it isn't
+/// but the upstream is a low-latency broadcast (`has_prefetch` → the player rides a
+/// tighter promotion cushion), or neither (normal-latency → the wide cushion).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct StartOutcome {
+    pub active: bool,
+    pub has_prefetch: bool,
+}
 
 #[derive(Clone)]
 struct Part {
@@ -90,7 +162,9 @@ struct Segment {
 }
 
 struct LiveEdge {
+    /// CMAF init segment URL. Empty for `Container::Ts` (TS needs no `#EXT-X-MAP`).
     init_url: String,
+    container: Container,
     target_duration: u64,
     part_target: f64,
     segments: VecDeque<Segment>,
@@ -189,6 +263,172 @@ impl BoxChunker {
     }
 }
 
+// ──────────────────────────── MPEG-TS chunker ────────────────────────────
+
+const TS_PACKET: usize = 188;
+const TS_SYNC: u8 = 0x47;
+
+/// Splits an MPEG-TS byte stream into low-latency parts. Cuts only on 188-byte
+/// packet boundaries (never mid-packet) and only at the start of a video PES
+/// (payload-unit-start on a `0xE0..=0xEF` stream), so every part begins on an access
+/// unit. A new part is cut once ~`TS_PART_PTS` of video has accumulated since the
+/// part started. Because a Twitch TS segment leads with PAT/PMT and a keyframe, the
+/// first part of each segment is the independently-decodable one (the playlist marks
+/// only part 0 `INDEPENDENT=YES`).
+///
+/// Robustness: re-syncs on a lost `0x47`, tolerates partial trailing packets (held
+/// until the next push), and ignores non-video PIDs for cut decisions (they ride
+/// along in whichever part they fall in — valid TS, harmless to the demuxer).
+struct TsChunker {
+    buf: Vec<u8>,
+    current: Vec<u8>,
+    /// PTS (90 kHz) at which the in-progress part started; None until the first
+    /// video PES of the part is seen.
+    part_start_pts: Option<u64>,
+    /// Most recent video PTS seen (used to estimate the final part's duration at flush,
+    /// when there is no following PES to measure against).
+    last_pts: Option<u64>,
+}
+
+/// 90 kHz ticks per second (MPEG-TS PTS clock).
+const TS_CLOCK: f64 = 90_000.0;
+
+impl TsChunker {
+    fn new() -> Self {
+        Self { buf: Vec::new(), current: Vec::new(), part_start_pts: None, last_pts: None }
+    }
+
+    fn push(&mut self, data: &[u8]) -> Vec<(Vec<u8>, f64)> {
+        self.buf.extend_from_slice(data);
+        let mut parts = Vec::new();
+        let mut i = 0;
+        while i + TS_PACKET <= self.buf.len() {
+            // Re-sync: a packet must begin with the sync byte. If not, scan forward
+            // to the next 0x47 and realign (a dropped/garbled packet otherwise
+            // poisons every subsequent boundary).
+            if self.buf[i] != TS_SYNC {
+                match self.buf[i + 1..].iter().position(|&b| b == TS_SYNC) {
+                    Some(off) => {
+                        i += 1 + off;
+                        continue;
+                    }
+                    None => {
+                        i = self.buf.len(); // no sync in the rest; drop it
+                        break;
+                    }
+                }
+            }
+            let pkt = &self.buf[i..i + TS_PACKET];
+            if let Some(pts) = video_pes_pts(pkt) {
+                self.last_pts = Some(pts);
+                // A video PES (access unit) starts here. Cut the previous part BEFORE
+                // this packet once enough has accumulated SINCE THE PART'S FIRST PES,
+                // so the new part starts on this access unit.
+                //
+                // The first video PES of a part NEVER triggers a cut (`None` ⇒ false):
+                // a Twitch TS segment leads with PAT/PMT then the keyframe PES, so the
+                // first PES must stay with that lead in part 0 — otherwise part 0 (which
+                // the playlist marks INDEPENDENT=YES) would hold only PAT/PMT and the
+                // keyframe would land in part 1, starting hls.js mid-GOP (garbage
+                // frames / apparent stall).
+                let should_cut = match self.part_start_pts {
+                    Some(start) => {
+                        // `wrapping_sub` guards a backwards PTS (rare splice/wrap): a
+                        // huge delta (>= 2^32 ticks) is treated as not-yet-elapsed.
+                        let e = pts.wrapping_sub(start);
+                        (TS_PART_PTS..(1u64 << 32)).contains(&e)
+                    }
+                    None => false,
+                };
+                if !self.current.is_empty() && should_cut {
+                    // The completed part spans [part_start_pts, pts): its real duration
+                    // is that PTS delta. This is what makes the parts tile the segment.
+                    let start = self.part_start_pts.unwrap_or(pts);
+                    let dur = pts.wrapping_sub(start) as f64 / TS_CLOCK;
+                    parts.push((std::mem::take(&mut self.current), dur));
+                    self.part_start_pts = Some(pts);
+                } else if self.part_start_pts.is_none() {
+                    self.part_start_pts = Some(pts);
+                }
+            }
+            self.current.extend_from_slice(pkt);
+            i += TS_PACKET;
+        }
+        self.buf.drain(..i);
+        parts
+    }
+
+    /// Stream ended: emit any accumulated packets as the final part. Its duration is
+    /// estimated from the last video PTS (plus ~one 60 fps frame, since the part runs
+    /// to the end of that last frame); falls back to the nominal when no PTS was seen.
+    fn flush(&mut self) -> Option<(Vec<u8>, f64)> {
+        if !self.buf.is_empty() {
+            // A trailing partial packet is unusual but shouldn't be dropped; the
+            // demuxer ignores a short final packet.
+            let rest = std::mem::take(&mut self.buf);
+            self.current.extend_from_slice(&rest);
+        }
+        let dur = match (self.part_start_pts, self.last_pts) {
+            (Some(start), Some(last)) if last > start => {
+                (last - start) as f64 / TS_CLOCK + (1.0 / 60.0)
+            }
+            _ => NOMINAL_PART_DUR,
+        };
+        self.part_start_pts = None;
+        self.last_pts = None;
+        if self.current.is_empty() {
+            None
+        } else {
+            Some((std::mem::take(&mut self.current), dur))
+        }
+    }
+}
+
+/// If `pkt` (one 188-byte TS packet) carries the start of a video PES
+/// (`0x000001` start code, stream_id `0xE0..=0xEF`) with a PTS, return the 33-bit
+/// PTS. Returns None for continuation packets, non-video PIDs, and PES without PTS.
+fn video_pes_pts(pkt: &[u8]) -> Option<u64> {
+    if pkt.len() < TS_PACKET || pkt[0] != TS_SYNC {
+        return None;
+    }
+    // payload_unit_start_indicator
+    if pkt[1] & 0x40 == 0 {
+        return None;
+    }
+    let adaptation = (pkt[3] >> 4) & 0x3;
+    if adaptation == 0 || adaptation == 2 {
+        return None; // no payload (adaptation-only/reserved)
+    }
+    let mut p = 4;
+    if adaptation == 3 {
+        let af_len = pkt[4] as usize;
+        p = 5 + af_len;
+    }
+    // PES start code + stream_id
+    if p + 9 > pkt.len() || pkt[p] != 0x00 || pkt[p + 1] != 0x00 || pkt[p + 2] != 0x01 {
+        return None;
+    }
+    let stream_id = pkt[p + 3];
+    if !(0xE0..=0xEF).contains(&stream_id) {
+        return None; // not a video stream
+    }
+    let pts_dts_flags = (pkt[p + 7] >> 6) & 0x3;
+    if pts_dts_flags == 0 {
+        return None; // PES present but carries no PTS
+    }
+    let b = &pkt[p + 9..];
+    if b.len() < 5 {
+        return None;
+    }
+    // 33-bit PTS packed across 5 bytes with marker bits (ISO 13818-1).
+    let pts = (((b[0] as u64 >> 1) & 0x07) << 30)
+        | ((b[1] as u64) << 22)
+        | (((b[2] as u64 >> 1) & 0x7F) << 15)
+        | ((b[3] as u64) << 7)
+        | ((b[4] as u64 >> 1) & 0x7F);
+    Some(pts)
+}
+
 // ──────────────────────────── upstream playlist parse ────────────────────────────
 
 struct Upstream {
@@ -278,6 +518,17 @@ impl LlOrigin {
         self.live_edge.lock().unwrap().is_some()
     }
 
+    /// The container of the active edge (defaults to CMAF when inactive; callers
+    /// only consult it while streaming a known-active edge).
+    fn container(&self) -> Container {
+        self.live_edge
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|e| e.container)
+            .unwrap_or(Container::Cmaf)
+    }
+
     /// Stop any running reader and clear state. Called on stream stop / restart.
     pub fn stop(&self) {
         self.generation.fetch_add(1, Ordering::SeqCst);
@@ -288,14 +539,17 @@ impl LlOrigin {
         self.notify.notify_waiters();
     }
 
-    /// Probe the upstream and, if it's a low-latency broadcast, build the initial live
-    /// edge (backfilling a couple of complete segments) and spawn the streaming reader.
-    /// Returns true if the origin activated (LL channel). Awaited from stream start so
-    /// the player can read the result before constructing hls.js.
-    pub async fn start(self: Arc<Self>, upstream_playlist_url: String) -> bool {
+    /// Probe the upstream and, if it's a low-latency broadcast we can serve, build the
+    /// initial live edge (backfilling a couple of complete segments) and spawn the
+    /// streaming reader. Returns `{active, has_prefetch}`: `active` when the origin took
+    /// over (LL channel), `has_prefetch` whenever the upstream carries PREFETCH hints
+    /// (so the relay can still flag a low-latency channel for the promotion fallback even
+    /// when the origin declined). Awaited from stream start so the player can read the
+    /// result before constructing hls.js.
+    pub async fn start(self: Arc<Self>, upstream_playlist_url: String) -> StartOutcome {
         self.stop();
         if DISABLED.load(Ordering::Relaxed) {
-            return false;
+            return StartOutcome::default();
         }
         let gen = self.generation.load(Ordering::SeqCst);
         let client = http_client();
@@ -304,23 +558,31 @@ impl LlOrigin {
             Ok(r) => r.text().await.unwrap_or_default(),
             Err(e) => {
                 warn!("[LLOrigin] initial playlist fetch failed: {e}");
-                return false;
+                return StartOutcome::default();
             }
         };
         let base = base_of(&upstream_playlist_url);
         let up = parse_upstream(&text, &base);
+        let has_prefetch = !up.prefetch.is_empty();
+        let inactive = StartOutcome { active: false, has_prefetch };
 
         // Not a low-latency broadcast (no prefetch hints): leave the origin inactive so
         // the relay uses the stable whole-segment path.
         if up.prefetch.is_empty() || up.published.is_empty() {
             debug!("[LLOrigin] not a low-latency stream (no prefetch); origin inactive");
-            return false;
+            return inactive;
         }
-        let init_url = match up.init_url.clone() {
-            Some(u) => u,
+
+        // Pick the container from the upstream shape: `#EXT-X-MAP` ⇒ CMAF (fMP4),
+        // otherwise MPEG-TS. TS is the H.264 (source/"chunked") case — the common one.
+        let (container, init_url) = match up.init_url.clone() {
+            Some(u) => (Container::Cmaf, u),
             None => {
-                warn!("[LLOrigin] low-latency stream without EXT-X-MAP; origin inactive");
-                return false;
+                if !ENABLE_TS_LL_ORIGIN {
+                    debug!("[LLOrigin] low-latency MPEG-TS stream; TS origin disabled, using fallback");
+                    return inactive;
+                }
+                (Container::Ts, String::new())
             }
         };
 
@@ -338,7 +600,7 @@ impl LlOrigin {
             match client.get(&url).timeout(FETCH_TIMEOUT).send().await.ok() {
                 Some(resp) => {
                     let bytes = resp.bytes().await.map(|b| b.to_vec()).unwrap_or_default();
-                    let parts = split_complete(&bytes);
+                    let parts = split_complete(&bytes, container);
                     if !parts.is_empty() {
                         segments.push_back(make_segment(sn, pdt, true, parts));
                     }
@@ -348,11 +610,12 @@ impl LlOrigin {
         }
         if segments.is_empty() {
             warn!("[LLOrigin] backfill produced no complete segments; origin inactive");
-            return false;
+            return inactive;
         }
 
         *self.live_edge.lock().unwrap() = Some(LiveEdge {
             init_url,
+            container,
             // Declare the real ~2s segment size, NOT Twitch's inflated TARGETDURATION:6.
             // hls.js uses targetduration for reload cadence and tune-in goal math; an
             // inflated value makes it mis-time part requests.
@@ -360,11 +623,11 @@ impl LlOrigin {
             part_target: PART_TARGET,
             segments,
         });
-        info!("[LLOrigin] activated (low-latency origin) for {upstream_playlist_url}");
+        info!("[LLOrigin] activated ({container:?} low-latency origin) for {upstream_playlist_url}");
 
         let handle = tokio::spawn(run_reader(self.clone(), upstream_playlist_url, client, gen));
         *self.reader_task.lock().unwrap() = Some(handle);
-        true
+        StartOutcome { active: true, has_prefetch: true }
     }
 }
 
@@ -384,13 +647,17 @@ fn make_segment(sn: u64, pdt: Option<String>, complete: bool, part_bytes: Vec<Ve
     }
 }
 
-/// Split a fully-downloaded segment into parts (one per moof+mdat).
-fn split_complete(bytes: &[u8]) -> Vec<Vec<u8>> {
-    let mut chunker = BoxChunker::new();
-    let mut parts = chunker.push(bytes);
-    if let Some(tail) = chunker.flush() {
+/// Split a fully-downloaded segment into parts (CMAF: one per moof+mdat; TS: runs of
+/// packets cut at video-PES boundaries).
+fn split_complete(bytes: &[u8], container: Container) -> Vec<Vec<u8>> {
+    let mut chunker = Chunker::new(container);
+    let mut parts: Vec<Vec<u8>> = chunker.push(bytes).into_iter().map(|(b, _)| b).collect();
+    if let Some((tail, _)) = chunker.flush() {
         parts.push(tail);
     }
+    // Durations are dropped here: complete (backfilled) segments are normalized to
+    // an even TARGET_DURATION/count split in `make_segment`, which sums to exactly
+    // the segment duration.
     parts
 }
 
@@ -423,8 +690,12 @@ async fn run_reader(origin: Arc<LlOrigin>, upstream_playlist_url: String, client
             };
             if contiguous {
                 match tokio::time::timeout(PREOPEN_WAIT, &mut handle).await {
-                    Ok(Ok(Some((resp, pdt)))) => match origin.push_shell(sn, pdt) {
+                    Ok(Ok(Some((resp, pdt)))) => match origin.push_shell(sn, pdt.clone()) {
                         Some(true) => {
+                            crate::services::ll_diagnostics::event(&format!(
+                                "\"ev\":\"o_shell\",\"path\":\"fast\",\"sn\":{sn},\"pdt\":{}",
+                                pdt.as_deref().map(|p| format!("\"{p}\"")).unwrap_or_else(|| "null".into())
+                            ));
                             origin.notify.notify_waiters();
                             let next = tokio::spawn(preopen_next(
                                 client.clone(),
@@ -435,6 +706,9 @@ async fn run_reader(origin: Arc<LlOrigin>, upstream_playlist_url: String, client
                             if !origin.finish_segment(sn) {
                                 return;
                             }
+                            crate::services::ll_diagnostics::event(&format!(
+                                "\"ev\":\"o_finish\",\"path\":\"fast\",\"sn\":{sn}"
+                            ));
                             origin.notify.notify_waiters();
                             preopened = Some((sn + 1, next));
                             continue;
@@ -540,7 +814,7 @@ async fn run_reader(origin: Arc<LlOrigin>, upstream_playlist_url: String, client
                     filled = false;
                     break;
                 };
-                match fetch_published(&client, sn, seg_pdt.clone(), url).await {
+                match fetch_published(&client, sn, seg_pdt.clone(), url, origin.container()).await {
                     Some(seg) => fetched.push(seg),
                     None => {
                         filled = false;
@@ -567,7 +841,15 @@ async fn run_reader(origin: Arc<LlOrigin>, upstream_playlist_url: String, client
                             warn!(
                                 "[LLOrigin] window resync: newest held {newest_in_window}, upstream starts at {oldest_published}, in-progress {inprogress_sn}"
                             );
+                            crate::services::ll_diagnostics::event(&format!(
+                                "\"ev\":\"o_rebuild\",\"newest\":{newest_in_window},\"oldest\":{oldest_published},\"inprogress\":{inprogress_sn}"
+                            ));
                             edge.segments.clear();
+                        } else if !fetched.is_empty() {
+                            crate::services::ll_diagnostics::event(&format!(
+                                "\"ev\":\"o_catchup\",\"n\":{},\"upto\":{inprogress_sn}",
+                                fetched.len()
+                            ));
                         }
                         edge.segments.extend(fetched);
                         while edge.segments.len() > origin.max_segments {
@@ -582,11 +864,15 @@ async fn run_reader(origin: Arc<LlOrigin>, upstream_playlist_url: String, client
 
         // Create the in-progress segment shell and stream its parts in, preopening
         // the following segment's connection so the next boundary is seamless.
-        match origin.push_shell(inprogress_sn, pdt) {
+        match origin.push_shell(inprogress_sn, pdt.clone()) {
             Some(true) => {}
             Some(false) => continue,
             None => return,
         }
+        crate::services::ll_diagnostics::event(&format!(
+            "\"ev\":\"o_shell\",\"path\":\"poll\",\"sn\":{inprogress_sn},\"pdt\":{}",
+            pdt.as_deref().map(|p| format!("\"{p}\"")).unwrap_or_else(|| "null".into())
+        ));
         origin.notify.notify_waiters();
 
         let next = tokio::spawn(preopen_next(
@@ -599,6 +885,9 @@ async fn run_reader(origin: Arc<LlOrigin>, upstream_playlist_url: String, client
         if !origin.finish_segment(inprogress_sn) {
             return;
         }
+        crate::services::ll_diagnostics::event(&format!(
+            "\"ev\":\"o_finish\",\"path\":\"poll\",\"sn\":{inprogress_sn}"
+        ));
         origin.notify.notify_waiters();
         preopened = Some((inprogress_sn + 1, next));
     }
@@ -686,6 +975,7 @@ async fn fetch_published(
     sn: u64,
     pdt: Option<String>,
     url: &str,
+    container: Container,
 ) -> Option<Segment> {
     let resp = match client.get(url).timeout(FETCH_TIMEOUT).send().await {
         Ok(r) => r,
@@ -701,7 +991,7 @@ async fn fetch_published(
             return None;
         }
     };
-    let parts = split_complete(&bytes);
+    let parts = split_complete(&bytes, container);
     if parts.is_empty() {
         warn!("[LLOrigin] catch-up segment sn {sn} produced no parts");
         return None;
@@ -729,15 +1019,15 @@ async fn stream_segment(
 
 /// Read an already-open in-progress response, publishing parts as chunks land.
 async fn stream_response(origin: &LlOrigin, mut resp: Response, sn: u64, gen: u64) {
-    let mut chunker = BoxChunker::new();
+    let mut chunker = Chunker::new(origin.container());
     loop {
         if gen != origin.generation.load(Ordering::SeqCst) {
             return;
         }
         match tokio::time::timeout(CHUNK_TIMEOUT, resp.chunk()).await {
             Ok(Ok(Some(bytes))) => {
-                for part in chunker.push(&bytes) {
-                    if !origin.append_part(sn, part) {
+                for (part, dur) in chunker.push(&bytes) {
+                    if !origin.append_part(sn, part, dur) {
                         return; // edge gone
                     }
                     origin.notify.notify_waiters();
@@ -754,8 +1044,8 @@ async fn stream_response(origin: &LlOrigin, mut resp: Response, sn: u64, gen: u6
             }
         }
     }
-    if let Some(tail) = chunker.flush() {
-        if origin.append_part(sn, tail) {
+    if let Some((tail, dur)) = chunker.flush() {
+        if origin.append_part(sn, tail, dur) {
             origin.notify.notify_waiters();
         }
     }
@@ -785,18 +1075,26 @@ impl LlOrigin {
         Some(true)
     }
 
-    /// Mark `sn` complete and normalize part durations now that the count is
-    /// known. Returns false if the edge is gone.
+    /// Mark `sn` complete and set its `#EXTINF` to the SUM of its (immutable) part
+    /// durations, so the parts tile the segment exactly without ever rewriting a
+    /// published part's duration.
+    ///
+    /// Parts MUST be immutable once served: a part whose listed duration changes
+    /// across a playlist refresh is treated by hls.js as a new part and RE-FETCHED,
+    /// and re-appending an identical TS part makes hls.js extend the video timeline
+    /// while the audio coalesces — progressive A/V drift (proven from a live capture:
+    /// re-fetches of `part/<sn>/0` at each segment boundary, each adding ~0.5s of
+    /// video-ahead-of-audio). The earlier even-split rewrite here was the cause.
+    /// Returns false if the edge is gone.
     fn finish_segment(&self, sn: u64) -> bool {
         let mut g = self.live_edge.lock().unwrap();
         match g.as_mut() {
             Some(edge) => {
                 if let Some(seg) = edge.segments.iter_mut().find(|s| s.sn == sn) {
                     seg.complete = true;
-                    let count = seg.parts.len().max(1);
-                    let dur = TARGET_DURATION as f64 / count as f64;
-                    for p in seg.parts.iter_mut() {
-                        p.duration = dur;
+                    let sum: f64 = seg.parts.iter().map(|p| p.duration).sum();
+                    if sum > 0.0 {
+                        seg.duration = sum; // EXTINF == Σ part durations; parts untouched
                     }
                 }
                 true
@@ -805,14 +1103,15 @@ impl LlOrigin {
         }
     }
 
-    /// Append a part to the segment with `sn`. Returns false if the edge is gone.
-    fn append_part(&self, sn: u64, bytes: Vec<u8>) -> bool {
+    /// Append a part (with its real media duration) to the segment with `sn`. Returns
+    /// false if the edge is gone.
+    fn append_part(&self, sn: u64, bytes: Vec<u8>, duration: f64) -> bool {
         let mut g = self.live_edge.lock().unwrap();
         match g.as_mut() {
             Some(edge) => {
                 if let Some(seg) = edge.segments.iter_mut().find(|s| s.sn == sn) {
                     seg.parts.push(Part {
-                        duration: NOMINAL_PART_DUR,
+                        duration,
                         bytes: Arc::new(bytes),
                     });
                 }
@@ -893,7 +1192,15 @@ fn render_locked(edge: &LiveEdge) -> String {
     s.push_str("#EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES,PART-HOLD-BACK=1.500\n");
     let media_seq = edge.segments.front().map(|s| s.sn).unwrap_or(0);
     s.push_str(&format!("#EXT-X-MEDIA-SEQUENCE:{media_seq}\n"));
-    s.push_str(&format!("#EXT-X-MAP:URI=\"{}\"\n", edge.init_url));
+    // CMAF needs its init segment; MPEG-TS is self-initializing (PAT/PMT lead each
+    // segment) and must NOT carry an `#EXT-X-MAP`.
+    if edge.container == Container::Cmaf {
+        s.push_str(&format!("#EXT-X-MAP:URI=\"{}\"\n", edge.init_url));
+    }
+    let part_ext = match edge.container {
+        Container::Cmaf => "mp4",
+        Container::Ts => "ts",
+    };
     let n = edge.segments.len();
     for (i, seg) in edge.segments.iter().enumerate() {
         if let Some(pdt) = &seg.pdt {
@@ -915,8 +1222,8 @@ fn render_locked(edge: &LiveEdge) -> String {
                 // stall. With only part 0 marked, hls.js starts at a real keyframe.
                 let independent = if k == 0 { ",INDEPENDENT=YES" } else { "" };
                 s.push_str(&format!(
-                    "#EXT-X-PART:DURATION={:.3},URI=\"part/{}/{}.mp4\"{}\n",
-                    p.duration, seg.sn, k, independent
+                    "#EXT-X-PART:DURATION={:.3},URI=\"part/{}/{}.{}\"{}\n",
+                    p.duration, seg.sn, k, part_ext, independent
                 ));
             }
         }
@@ -974,7 +1281,7 @@ pub fn stop() {
     SOLO.stop()
 }
 
-pub async fn start(upstream_playlist_url: String) -> bool {
+pub async fn start(upstream_playlist_url: String) -> StartOutcome {
     SOLO.clone().start(upstream_playlist_url).await
 }
 
@@ -1015,9 +1322,13 @@ pub(crate) fn parse_directive(query: &str, key: &str) -> Option<u64> {
     })
 }
 
-/// Parse `part/<sn>/<k>.mp4` -> (sn, k).
+/// Parse `part/<sn>/<k>.<ext>` -> (sn, k). The extension (`.mp4` for CMAF, `.ts` for
+/// MPEG-TS) is cosmetic — hls.js picks the demuxer from the bytes — so accept either.
 pub(crate) fn parse_part_path(rest: &str) -> Option<(u64, usize)> {
-    let rest = rest.strip_suffix(".mp4").unwrap_or(rest);
+    let rest = rest
+        .strip_suffix(".mp4")
+        .or_else(|| rest.strip_suffix(".ts"))
+        .unwrap_or(rest);
     let mut it = rest.splitn(2, '/');
     let sn = it.next()?.parse().ok()?;
     let k = it.next()?.parse().ok()?;
@@ -1025,9 +1336,17 @@ pub(crate) fn parse_part_path(rest: &str) -> Option<(u64, usize)> {
 }
 
 pub(crate) fn media_response(bytes: Vec<u8>) -> warp::http::Response<Vec<u8>> {
+    // Sniff the container so a TS part is labelled MP2T (CMAF stays mp4). hls.js
+    // demuxes from the bytes regardless, but the honest content-type avoids any
+    // strict-MIME edge cases.
+    let content_type = if bytes.first() == Some(&TS_SYNC) {
+        "video/MP2T"
+    } else {
+        "video/mp4"
+    };
     warp::http::Response::builder()
         .status(200)
-        .header("Content-Type", "video/mp4")
+        .header("Content-Type", content_type)
         .header("Access-Control-Allow-Origin", "*")
         .header("Access-Control-Allow-Methods", "GET, OPTIONS")
         .header("Access-Control-Allow-Headers", "*")
@@ -1094,7 +1413,7 @@ mod tests {
     #[test]
     fn chunker_splits_on_moof_mdat_pairs() {
         let (full, expected) = fake_segment(19);
-        let parts = split_complete(&full);
+        let parts = split_complete(&full, Container::Cmaf);
         assert_eq!(parts.len(), 19);
         assert_eq!(parts, expected);
         // Parts reassemble into the original byte stream exactly.
@@ -1115,6 +1434,190 @@ mod tests {
             got.push(tail);
         }
         assert_eq!(got, expected);
+    }
+
+    // ── MPEG-TS chunker ──
+
+    /// Build one 188-byte TS packet on PID 0x100. `pts` (90 kHz) is encoded as a
+    /// video PES header when `pusi` is set; otherwise it's a payload-only
+    /// continuation packet. Remaining payload is zero-filled to 188 bytes.
+    fn ts_packet(pusi: bool, stream_id: u8, pts: Option<u64>, cc: u8) -> Vec<u8> {
+        let pid: u16 = 0x100;
+        let mut p = vec![0u8; TS_PACKET];
+        p[0] = TS_SYNC;
+        p[1] = (if pusi { 0x40 } else { 0x00 }) | ((pid >> 8) as u8 & 0x1F);
+        p[2] = (pid & 0xFF) as u8;
+        p[3] = 0x10 | (cc & 0x0F); // adaptation=01 (payload only)
+        if pusi {
+            let mut h = vec![0x00, 0x00, 0x01, stream_id, 0x00, 0x00, 0x80];
+            if let Some(pts) = pts {
+                h.push(0x80); // PTS_DTS_flags = '10'
+                h.push(0x05); // PES_header_data_length
+                h.push(0x20 | (((pts >> 30) & 0x07) << 1) as u8 | 0x01);
+                h.push(((pts >> 22) & 0xFF) as u8);
+                h.push(((((pts >> 15) & 0x7F) << 1) | 0x01) as u8);
+                h.push(((pts >> 7) & 0xFF) as u8);
+                h.push((((pts & 0x7F) << 1) | 0x01) as u8);
+            } else {
+                h.push(0x00); // PTS_DTS_flags = '00'
+                h.push(0x00);
+            }
+            p[4..4 + h.len()].copy_from_slice(&h);
+        }
+        p
+    }
+
+    #[test]
+    fn ts_pts_parses_and_rejects_non_video() {
+        // A known PTS round-trips through the parser.
+        let pkt = ts_packet(true, 0xE0, Some(123_456), 0);
+        assert_eq!(video_pes_pts(&pkt), Some(123_456));
+        // Audio PES (0xC0) is not a cut point.
+        assert_eq!(video_pes_pts(&ts_packet(true, 0xC0, Some(99), 0)), None);
+        // A continuation packet (no PUSI) is not a cut point.
+        assert_eq!(video_pes_pts(&ts_packet(false, 0xE0, None, 1)), None);
+        // A video PES with no PTS is not a cut point.
+        assert_eq!(video_pes_pts(&ts_packet(true, 0xE0, None, 0)), None);
+    }
+
+    #[test]
+    fn ts_chunker_cuts_on_pes_boundaries_by_pts() {
+        // 12 access units, one TS packet each, spaced 0.1s (9000 ticks). With a
+        // 0.3s (27000-tick) part target, a cut falls every 3rd PES.
+        let mut full = Vec::new();
+        let mut pkts = Vec::new();
+        for i in 0..12u64 {
+            let pkt = ts_packet(true, 0xE0, Some(i * 9000), (i % 16) as u8);
+            full.extend_from_slice(&pkt);
+            pkts.push(pkt);
+        }
+        let mut chunker = TsChunker::new();
+        let mut raw = chunker.push(&full);
+        if let Some(tail) = chunker.flush() {
+            raw.push(tail);
+        }
+        // Cuts before PES 3, 6, 9 → parts [0..3),[3..6),[6..9),[9..12).
+        assert_eq!(raw.len(), 4);
+        // Each cut part spans 3 access units × 0.1s = 0.3s of real PTS time.
+        for (_, dur) in &raw[..3] {
+            assert!((*dur - 0.3).abs() < 0.001, "cut part duration is the real PTS span");
+        }
+        let parts: Vec<Vec<u8>> = raw.into_iter().map(|(b, _)| b).collect();
+        for part in &parts {
+            assert_eq!(part.len() % TS_PACKET, 0, "parts are packet-aligned");
+            assert_eq!(part.len(), 3 * TS_PACKET, "each part holds 3 access units");
+        }
+        // Part 0 begins at the first packet (the keyframe/PAT-PMT lead is never cut).
+        assert_eq!(&parts[0][..TS_PACKET], pkts[0].as_slice());
+        // Lossless: parts reassemble into the original byte stream.
+        assert_eq!(parts.concat(), full);
+    }
+
+    #[test]
+    fn ts_chunker_part_durations_sum_to_the_segment() {
+        // The boomerang fix: parts must tile the segment, not undercount it. 10 access
+        // units at 0.1s each = a 1.0s span; the part durations must add up to ~that.
+        let mut full = Vec::new();
+        for i in 0..10u64 {
+            full.extend_from_slice(&ts_packet(true, 0xE0, Some(i * 9000), (i % 16) as u8));
+        }
+        let mut chunker = TsChunker::new();
+        let mut raw = chunker.push(&full);
+        if let Some(tail) = chunker.flush() {
+            raw.push(tail);
+        }
+        let total: f64 = raw.iter().map(|(_, d)| d).sum();
+        // 3 cut parts of 0.3s + the single-frame flush tail's nominal estimate ≈ 1.0s
+        // (the point: ~the 0.9s real span, NOT the ~0.4s a fixed-nominal would give).
+        assert!(total > 0.85 && total < 1.15, "parts tile the segment span (got {total})");
+    }
+
+    #[test]
+    fn ts_chunker_keeps_continuation_packets_in_their_part() {
+        // PES(pts0) + 2 continuation packets, then PES(pts=27000): the continuations
+        // ride in part 0; the cut lands at the second PES.
+        let mut full = Vec::new();
+        full.extend_from_slice(&ts_packet(true, 0xE0, Some(0), 0));
+        full.extend_from_slice(&ts_packet(false, 0xE0, None, 1));
+        full.extend_from_slice(&ts_packet(false, 0xE0, None, 2));
+        full.extend_from_slice(&ts_packet(true, 0xE0, Some(27_000), 3));
+        let mut chunker = TsChunker::new();
+        let mut raw = chunker.push(&full);
+        if let Some(tail) = chunker.flush() {
+            raw.push(tail);
+        }
+        let parts: Vec<Vec<u8>> = raw.into_iter().map(|(b, _)| b).collect();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0].len(), 3 * TS_PACKET); // PES + 2 continuations
+        assert_eq!(parts[1].len(), TS_PACKET);
+        assert_eq!(parts.concat(), full);
+    }
+
+    #[test]
+    fn ts_chunker_reassembles_under_byte_split_feeds() {
+        // Feeding the same stream one byte at a time must produce identical parts
+        // (the reader receives arbitrary network chunk boundaries).
+        let mut full = Vec::new();
+        for i in 0..9u64 {
+            full.extend_from_slice(&ts_packet(true, 0xE0, Some(i * 9000), (i % 16) as u8));
+        }
+        let mut whole = TsChunker::new();
+        let mut want = whole.push(&full);
+        if let Some(t) = whole.flush() {
+            want.push(t);
+        }
+        let mut drip = TsChunker::new();
+        let mut got: Vec<(Vec<u8>, f64)> = Vec::new();
+        for b in &full {
+            got.extend(drip.push(&[*b]));
+        }
+        if let Some(t) = drip.flush() {
+            got.push(t);
+        }
+        assert_eq!(got, want);
+        let bytes: Vec<u8> = got.into_iter().flat_map(|(b, _)| b).collect();
+        assert_eq!(bytes, full);
+    }
+
+    #[test]
+    fn ts_chunker_keeps_psi_lead_with_keyframe_in_part0() {
+        // A real segment leads with non-PES packets (PAT/PMT) before the keyframe PES.
+        // Those must ride in part 0 WITH the first keyframe — never split off into a
+        // keyframe-less independent part 0. Simulate the lead with two no-PTS packets
+        // (video_pes_pts returns None for them), then PES(0), PES(27000), PES(54000).
+        let mut full = Vec::new();
+        full.extend_from_slice(&ts_packet(false, 0xE0, None, 0)); // PAT-like
+        full.extend_from_slice(&ts_packet(false, 0xE0, None, 1)); // PMT-like
+        let keyframe = ts_packet(true, 0xE0, Some(0), 2);
+        full.extend_from_slice(&keyframe);
+        full.extend_from_slice(&ts_packet(true, 0xE0, Some(27_000), 3));
+        full.extend_from_slice(&ts_packet(true, 0xE0, Some(54_000), 4));
+        let mut chunker = TsChunker::new();
+        let mut raw = chunker.push(&full);
+        if let Some(t) = chunker.flush() {
+            raw.push(t);
+        }
+        let parts: Vec<Vec<u8>> = raw.into_iter().map(|(b, _)| b).collect();
+        // part 0 = [lead, lead, keyframe PES] (3 packets), then a cut at pts 27000.
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[0].len(), 3 * TS_PACKET);
+        // The keyframe PES sits in part 0 (third packet), NOT split off into part 1.
+        assert_eq!(&parts[0][2 * TS_PACKET..3 * TS_PACKET], keyframe.as_slice());
+        assert_eq!(parts.concat(), full);
+    }
+
+    #[test]
+    fn ts_chunker_resyncs_after_garbage() {
+        // A run of non-sync bytes ahead of a valid packet is skipped, not absorbed
+        // into a part (a dropped/garbled packet otherwise poisons every boundary).
+        let pkt = ts_packet(true, 0xE0, Some(0), 0);
+        let mut stream = vec![0xAB, 0xCD, 0xEF]; // junk, no 0x47
+        stream.extend_from_slice(&pkt);
+        let mut chunker = TsChunker::new();
+        let parts = chunker.push(&stream);
+        assert!(parts.is_empty()); // single PES, no cut yet
+        let (tail, _dur) = chunker.flush().unwrap();
+        assert_eq!(tail, pkt); // the junk was dropped; the packet survives intact
     }
 
     #[test]
@@ -1176,6 +1679,7 @@ mod tests {
         segs.push_back(make_segment(101, None, true, vec![vec![3], vec![4]]));
         let edge = LiveEdge {
             init_url: "https://cdn/init.mp4".into(),
+            container: Container::Cmaf,
             target_duration: 2,
             part_target: PART_TARGET,
             segments: segs,
@@ -1191,6 +1695,7 @@ mod tests {
         lone.push_back(make_segment(100, None, true, vec![vec![1]]));
         let edge = LiveEdge {
             init_url: "https://cdn/init.mp4".into(),
+            container: Container::Cmaf,
             target_duration: 2,
             part_target: PART_TARGET,
             segments: lone,
@@ -1211,6 +1716,7 @@ mod tests {
         });
         let edge = LiveEdge {
             init_url: "https://cdn/init.mp4".into(),
+            container: Container::Cmaf,
             target_duration: 2,
             part_target: PART_TARGET,
             segments: segs,
@@ -1244,6 +1750,7 @@ mod tests {
         });
         let edge = LiveEdge {
             init_url: "https://cdn/init.mp4".into(),
+            container: Container::Cmaf,
             target_duration: 2,
             part_target: PART_TARGET,
             segments: segs,
@@ -1267,5 +1774,35 @@ mod tests {
         // has_part: the in-progress segment exposes its 3 parts.
         assert!(has_part_locked(&edge, 102, 2));
         assert!(!has_part_locked(&edge, 102, 3));
+    }
+
+    #[test]
+    fn render_omits_map_and_uses_ts_parts_for_mpeg_ts() {
+        let mut segs = VecDeque::new();
+        segs.push_back(make_segment(50, Some("PDT0".into()), true, vec![vec![1], vec![2]]));
+        segs.push_back(Segment {
+            sn: 51,
+            pdt: Some("PDT1".into()),
+            complete: false,
+            duration: 2.0,
+            parts: vec![Part { duration: 0.3, bytes: Arc::new(vec![3]) }],
+        });
+        let edge = LiveEdge {
+            init_url: String::new(),
+            container: Container::Ts,
+            target_duration: 2,
+            part_target: PART_TARGET,
+            segments: segs,
+        };
+        let pl = render_locked(&edge);
+        // TS is self-initializing: NO #EXT-X-MAP.
+        assert!(!pl.contains("#EXT-X-MAP"));
+        // Parts and complete segments use the .ts extension.
+        assert!(pl.contains("part/51/0.ts"));
+        assert!(pl.contains("seg/50.ts"));
+        // Still a valid LL-HLS playlist shape.
+        assert!(pl.contains("#EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES"));
+        assert!(pl.contains("#EXT-X-PART:DURATION="));
+        assert!(pl.contains("INDEPENDENT=YES"));
     }
 }
