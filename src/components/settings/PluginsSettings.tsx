@@ -448,7 +448,11 @@ const PluginsSettings = () => {
                   <div className="flex items-center gap-3">
                     <div
                       className="flex h-11 w-11 flex-shrink-0 items-center justify-center overflow-hidden rounded-xl"
-                      style={{ background: TIER_TINT[entry.tier], boxShadow: TILE_BEVEL }}
+                      style={
+                        entry.icon_url
+                          ? undefined
+                          : { background: TIER_TINT[entry.tier], boxShadow: TILE_BEVEL }
+                      }
                     >
                       {entry.icon_url ? (
                         <img

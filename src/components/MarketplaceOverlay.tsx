@@ -52,7 +52,7 @@ export default function MarketplaceOverlay() {
             </div>
 
             {/* Content */}
-            <div className="flex-1 overflow-y-auto px-5 py-5">
+            <div className="scrollbar-thin flex-1 overflow-y-auto px-5 py-5">
               <PluginsSettings />
             </div>
           </motion.div>

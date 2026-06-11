@@ -466,10 +466,31 @@ impl PluginHost {
         registry.plugins.retain(|p| p.id != plugin_id);
         registry::save(&registry)?;
         drop(registry);
-        // State dir holds the unpacked pkg, logs, and panel state. A local-dev
-        // source folder lives outside it and is never touched.
+        // Delete the plugin's folder from disk: the unpacked pkg (its exe and
+        // assets), logs, and panel state. A local-dev source folder lives
+        // outside it and is never touched. On Windows the just-stopped process
+        // can hold its exe a moment longer, so retry briefly rather than
+        // leaving the folder behind.
         if let Ok(dir) = registry::plugin_state_dir(plugin_id) {
-            let _ = std::fs::remove_dir_all(dir);
+            let mut removed = false;
+            for _ in 0..20 {
+                match std::fs::remove_dir_all(&dir) {
+                    Ok(_) => {
+                        removed = true;
+                        break;
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        removed = true;
+                        break;
+                    }
+                    Err(_) => tokio::time::sleep(std::time::Duration::from_millis(100)).await,
+                }
+            }
+            if !removed {
+                log::warn!(
+                    "[PluginHost] could not fully remove {plugin_id}'s folder; files may still be locked"
+                );
+            }
         }
         Ok(())
     }

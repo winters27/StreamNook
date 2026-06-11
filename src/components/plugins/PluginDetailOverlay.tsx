@@ -163,11 +163,11 @@ const PluginDetailOverlay = ({ entry, sourceName, installed, busy, onInstall, on
             <div className="flex flex-shrink-0 items-center gap-3.5 px-5 py-4">
               <div
                 className="flex h-12 w-12 flex-shrink-0 items-center justify-center overflow-hidden rounded-xl"
-                style={{
-                  background: entry.icon_url ? 'rgba(255,255,255,0.04)' : undefined,
-                  backgroundImage: entry.icon_url ? undefined : TIER_WASH[entry.tier],
-                  boxShadow: TILE_BEVEL,
-                }}
+                style={
+                  entry.icon_url
+                    ? undefined
+                    : { backgroundImage: TIER_WASH[entry.tier], boxShadow: TILE_BEVEL }
+                }
               >
                 {entry.icon_url ? (
                   <img src={entry.icon_url} alt="" className="h-full w-full object-cover" />
