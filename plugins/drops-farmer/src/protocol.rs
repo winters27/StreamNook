@@ -156,7 +156,6 @@ pub enum Inbound {
     Initialized,
     FollowedLive(Value),
     WatchTick,
-    PanelChange(Value),
     /// A hooked action the host UI invoked. The engine handles it and replies
     /// to `id` via the Host so the host's call resolves.
     Action { id: Value, action: String, args: Value },
@@ -189,7 +188,7 @@ pub async fn read_loop(stdin: Stdin, host: Host, tx: tokio::sync::mpsc::Sender<I
                     "initialize" => {
                         // Hooks are static for this plugin, so answer inline.
                         let _ = host
-                            .respond(id, json!({ "plugin_version": env!("CARGO_PKG_VERSION"), "hooks": ["on_followed_live", "on_watch_tick", "on_panel_change"] }))
+                            .respond(id, json!({ "plugin_version": env!("CARGO_PKG_VERSION"), "hooks": ["on_followed_live", "on_watch_tick"] }))
                             .await;
                     }
                     "ping" => {
@@ -230,13 +229,6 @@ pub async fn read_loop(stdin: Stdin, host: Host, tx: tokio::sync::mpsc::Sender<I
                 }
                 "on_watch_tick" => {
                     let _ = tx.send(Inbound::WatchTick).await;
-                }
-                "on_panel_change" => {
-                    let _ = tx
-                        .send(Inbound::PanelChange(
-                            frame.get("params").cloned().unwrap_or(Value::Null),
-                        ))
-                        .await;
                 }
                 "exit" => std::process::exit(0),
                 _ => {}

@@ -10,7 +10,7 @@ mod mining;
 mod protocol;
 mod twitch;
 
-use mining::{MiningSettings, MiningTarget, PriorityMode, RecoveryMode};
+use mining::{MiningTarget, PriorityMode, RecoveryMode};
 use protocol::{read_loop, Host, Inbound};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -81,104 +81,61 @@ impl Farmer {
         }
     }
 
-    /// The host-rendered settings panel.
-    fn panel_schema() -> Value {
-        json!({
-            "title": "Drops and Points Farmer",
-            "sections": [
-                {
-                    "label": "Channel points",
-                    "description": "Farms channel points on your followed live channels in the background. The channel you are actively watching already earns on its own.",
-                    "fields": [
-                        { "key": "active", "type": "toggle", "label": "Farming active", "description": "Pause without uninstalling.", "default": true },
-                        { "key": "max_concurrent", "type": "number", "label": "Channels at once", "description": "Twitch credits points on up to two channels at a time.", "min": 1, "max": 2, "default": 2 },
-                        { "key": "priority_channels", "type": "string_list", "label": "Priority channels", "description": "Logins to farm first, one per line. Others fill the remaining slots." }
-                    ]
-                },
-                {
-                    "label": "Drops mining",
-                    "description": "Watches a stream that has an active drop campaign and claims each drop when it completes. A mined channel counts as one of the two watch slots.",
-                    "fields": [
-                        { "key": "mining_active", "type": "toggle", "label": "Mine drops", "default": false },
-                        { "key": "priority_games", "type": "string_list", "label": "Priority games", "description": "Game names to mine first, one per line." },
-                        { "key": "excluded_games", "type": "string_list", "label": "Excluded games", "description": "Game names to never mine, one per line." },
-                        { "key": "priority_mode", "type": "select", "label": "Selection", "default": "PriorityOnly", "options": [
-                            { "value": "PriorityOnly", "label": "Priority games only" },
-                            { "value": "EndingSoonest", "label": "Ending soonest first" },
-                            { "value": "LowAvailFirst", "label": "Low availability first" }
-                        ] }
-                    ]
-                },
-                {
-                    "label": "Recovery",
-                    "description": "How mining reacts when a stream stalls, goes offline, or changes game.",
-                    "fields": [
-                        { "key": "recovery_mode", "type": "select", "label": "Mode", "default": "Automatic", "options": [
-                            { "value": "Automatic", "label": "Automatic" },
-                            { "value": "Relaxed", "label": "Relaxed" },
-                            { "value": "ManualOnly", "label": "Manual only" }
-                        ] },
-                        { "key": "detect_game_change", "type": "toggle", "label": "Switch if the stream changes game", "default": true },
-                        { "key": "stale_minutes", "type": "number", "label": "Stall timeout (minutes)", "description": "Switch channels after this long with no drop progress.", "min": 2, "max": 30, "default": 7 }
-                    ]
-                }
-            ]
-        })
-    }
-
-    fn apply_panel_values(&mut self, values: &Value) {
-        if let Some(active) = values.get("active").and_then(|v| v.as_bool()) {
+    /// Applies the app's native Drops settings (the rich DropsSettings shape)
+    /// pushed via drops.configure. This is the single source of config; the
+    /// plugin keeps no settings UI of its own. The mining target (start/stop,
+    /// or a specific campaign) is driven separately by the mine actions, not
+    /// by config, so editing settings never disturbs what is being mined.
+    fn apply_config(&mut self, s: &Value) {
+        // Channel-points farming.
+        if let Some(active) = s.get("auto_claim_channel_points").and_then(|v| v.as_bool()) {
             self.settings.active = active;
         }
-        if let Some(n) = values.get("max_concurrent").and_then(|v| v.as_u64()) {
-            self.settings.max_concurrent = (n as usize).clamp(1, 2);
-        }
-        if let Some(list) = values.get("priority_channels").and_then(|v| v.as_array()) {
-            self.settings.priority_logins = string_list(list);
+        let reserve = s
+            .get("reserve_token_for_current_stream")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+        // The watched channel is covered by the core heartbeat, so a reserved
+        // token leaves the background farmer one slot; otherwise it uses both.
+        self.settings.max_concurrent = if reserve { 1 } else { 2 };
+        if let Some(arr) = s.get("priority_farm_channels").and_then(|v| v.as_array()) {
+            self.settings.priority_logins = arr
+                .iter()
+                .filter_map(|c| c.get("channel_login").and_then(|l| l.as_str()))
+                .map(|l| l.to_lowercase())
+                .collect();
         }
 
-        // Drops mining. The panel toggle maps to auto-mining; the cockpit can
-        // override with a specific campaign through a hooked action.
-        if let Some(active) = values.get("mining_active").and_then(|v| v.as_bool()) {
-            if active {
-                if !self.miner.is_active() {
-                    self.miner.set_target(MiningTarget::Auto);
-                }
-            } else {
-                self.miner.set_target(MiningTarget::Stopped);
-            }
-        }
-        let m: &mut MiningSettings = &mut self.miner.settings;
-        if let Some(list) = values.get("priority_games").and_then(|v| v.as_array()) {
+        // Drops mining.
+        let m = &mut self.miner.settings;
+        if let Some(list) = s.get("priority_games").and_then(|v| v.as_array()) {
             m.priority_games = string_list(list);
         }
-        if let Some(list) = values.get("excluded_games").and_then(|v| v.as_array()) {
+        if let Some(list) = s.get("excluded_games").and_then(|v| v.as_array()) {
             m.excluded_games = string_list(list);
         }
-        if let Some(mode) = values.get("priority_mode").and_then(|v| v.as_str()) {
+        if let Some(mode) = s.get("priority_mode").and_then(|v| v.as_str()) {
             m.priority_mode = PriorityMode::parse(mode);
         }
-        if let Some(mode) = values.get("recovery_mode").and_then(|v| v.as_str()) {
-            m.recovery_mode = RecoveryMode::parse(mode);
-        }
-        if let Some(d) = values.get("detect_game_change").and_then(|v| v.as_bool()) {
-            m.detect_game_change = d;
-        }
-        if let Some(n) = values.get("stale_minutes").and_then(|v| v.as_u64()) {
-            m.stale_threshold_secs = n.clamp(2, 30) * 60;
+        if let Some(rec) = s.get("recovery_settings") {
+            if let Some(mode) = rec.get("recovery_mode").and_then(|v| v.as_str()) {
+                m.recovery_mode = RecoveryMode::parse(mode);
+            }
+            if let Some(d) = rec.get("detect_game_category_change").and_then(|v| v.as_bool()) {
+                m.detect_game_change = d;
+            }
+            if let Some(n) = rec.get("stale_progress_threshold_seconds").and_then(|v| v.as_u64()) {
+                m.stale_threshold_secs = n;
+            }
+            if let Some(n) = rec.get("streamer_blacklist_duration_seconds").and_then(|v| v.as_u64()) {
+                m.blacklist_secs = n;
+            }
         }
     }
 
     async fn on_initialized(&mut self) {
-        let _ = self
-            .host
-            .request("register_panel", json!({ "schema": Self::panel_schema() }))
-            .await;
-        if let Ok(result) = self.host.request("get_panel_values", json!({})).await {
-            if let Some(values) = result.get("values") {
-                self.apply_panel_values(values);
-            }
-        }
+        // No host-rendered panel: this plugin is configured from the app's
+        // native Drops settings, pushed in via the drops.configure action.
         self.host.log("info", "drops-farmer initialized").await;
     }
 
@@ -200,6 +157,10 @@ impl Farmer {
             }
             "drops.stop" => {
                 self.miner.set_target(MiningTarget::Stopped);
+                json!({ "ok": true })
+            }
+            "drops.configure" => {
+                self.apply_config(args);
                 json!({ "ok": true })
             }
             other => {
@@ -452,11 +413,6 @@ async fn main() {
             Inbound::Initialized => farmer.on_initialized().await,
             Inbound::FollowedLive(params) => farmer.on_followed_live(&params),
             Inbound::WatchTick => farmer.on_tick().await,
-            Inbound::PanelChange(params) => {
-                if let Some(values) = params.get("values") {
-                    farmer.apply_panel_values(values);
-                }
-            }
             Inbound::Action { id, action, args } => {
                 farmer.handle_action(id, &action, &args).await;
             }

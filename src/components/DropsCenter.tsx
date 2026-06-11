@@ -605,6 +605,16 @@ export default function DropsCenter() {
                 ...useAppStore.getState().settings,
                 drops: updatedSettings
             });
+
+            // When a plugin powers mining, it is configured from these native
+            // settings (the plugin has no settings UI of its own). Push the
+            // change so it takes effect immediately.
+            if (pluginMiningId) {
+                invoke('plugins_invoke_action', {
+                    action: 'drops.configure',
+                    args: updatedSettings,
+                }).catch((e) => Logger.warn('[DropsCenter] plugin configure failed:', e));
+            }
         } catch (err) {
             Logger.error('Failed to update drops settings:', err);
             addToast('Failed to save settings', 'error');

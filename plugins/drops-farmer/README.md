@@ -14,11 +14,7 @@ It does all of its own networking and uses a Twitch login token that StreamNook'
 
 ## Settings
 
-Configured from the plugin's panel in StreamNook (Settings, Plugins):
-
-- Farming active: pause without uninstalling.
-- Channels at once: one or two (Twitch credits points on up to two at a time).
-- Priority channels: logins to farm first; the rest fill remaining slots.
+This plugin has no settings UI of its own. It is configured entirely from StreamNook's native Drops center (priority and excluded games, selection strategy, recovery, channel-points target list, and so on), which pushes its settings to the plugin through the `drops.configure` hook. The Drops center's mine, stop, and Mine All controls drive the plugin through the `drops.mine` / `drops.mine-auto` / `drops.stop` hooks, and the plugin reports live progress back through the `drops.status` slot.
 
 ## Building
 
