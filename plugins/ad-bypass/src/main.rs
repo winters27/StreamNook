@@ -108,7 +108,7 @@ impl Engine {
     /// fields and stores their values, which come back to us as panel values.
     fn panel_schema() -> Value {
         json!({
-            "title": "Ad-Free Playback",
+            "title": "Ad Bypass",
             "sections": [
                 {
                     "label": "Resolution",
