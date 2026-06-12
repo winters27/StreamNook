@@ -3,7 +3,7 @@ name        = "Ad Bypass"
 version     = "0.1.0"
 author      = "community"
 tier        = "C"
-description = "Resolves live streams through community playlist proxies for ad-free viewing, kept out of the core app as an opt-in add-on."
+description = "Resolves live streams through community playlist proxies for ad-free viewing."
 homepage    = "https://github.com/winters27/StreamNook"
 host_min    = "7.0.0"
 
