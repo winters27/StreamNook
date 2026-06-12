@@ -477,10 +477,8 @@ const PluginsSettings = () => {
                   <div className="mt-3 flex items-center justify-between">
                     <span className="text-[11px] text-textMuted">v{entry.version}</span>
                     <span
-                      className={`rounded-lg border px-2.5 py-1 text-[11px] font-medium ${
-                        isCurrent
-                          ? 'border-white/5 bg-white/[0.03] text-textMuted'
-                          : 'border-accent/25 bg-accent/15 text-textPrimary'
+                      className={`glass-button-static px-2.5 py-1 text-[11px] font-medium ${
+                        isCurrent ? 'text-emerald-300' : 'text-accent'
                       }`}
                     >
                       {hasUpdate ? 'Update' : isCurrent ? 'Installed' : 'Get'}

@@ -9,22 +9,15 @@ import {
   ExternalLink,
   Package,
   PackageCheck,
-  Puzzle,
   X,
 } from 'lucide-react';
-import { IndexEntry, PluginInfo, PluginTier, compareVersions } from '../../types/plugins';
+import { IndexEntry, PluginInfo, compareVersions } from '../../types/plugins';
 import TierBadge from './TierBadge';
 import OfficialBadge from './OfficialBadge';
 import MarkdownLite from './MarkdownLite';
 import { Tooltip } from '../ui/Tooltip';
 import { Logger } from '../../utils/logger';
 import PluginIcon from './PluginIcon';
-
-const TIER_WASH: Record<PluginTier, string> = {
-  A: 'linear-gradient(160deg, rgba(110, 200, 160, 0.14), rgba(110, 200, 160, 0.03))',
-  B: 'linear-gradient(160deg, rgba(225, 185, 120, 0.14), rgba(225, 185, 120, 0.03))',
-  C: 'linear-gradient(160deg, rgba(225, 130, 130, 0.14), rgba(225, 130, 130, 0.03))',
-};
 
 const openExternal = async (url: string) => {
   try {
@@ -129,30 +122,15 @@ const PluginDetailOverlay = ({ entry, sourceName, installed, busy, onInstall, on
             transition={{ type: 'spring', stiffness: 380, damping: 32 }}
             className="glass-panel relative z-10 flex max-h-[86vh] w-[620px] max-w-[92vw] flex-col overflow-hidden"
           >
-            {/* Banner */}
-            <div className="relative h-36 flex-shrink-0 overflow-hidden">
-              {entry.banner_url ? (
-                <img
-                  src={entry.banner_url}
-                  alt=""
-                  className="h-full w-full object-cover"
-                  loading="lazy"
-                />
-              ) : (
-                <div
-                  className="flex h-full w-full items-center justify-center"
-                  style={{ background: TIER_WASH[entry.tier] }}
-                >
-                  <Puzzle size={56} strokeWidth={1.5} className="text-white/[0.07]" />
-                </div>
-              )}
+            {/* Close */}
+            <div className="flex flex-shrink-0 items-center justify-end px-3 pt-2.5">
               <Tooltip content="Close" delay={200}>
                 <button
                   type="button"
                   onClick={onClose}
-                  className="absolute right-3 top-3 rounded-md bg-black/40 p-1.5 text-textSecondary backdrop-blur-sm transition-colors hover:bg-black/60 hover:text-textPrimary"
+                  className="rounded-md p-1.5 text-textSecondary transition-colors hover:bg-white/10 hover:text-textPrimary"
                 >
-                  <X size={15} />
+                  <X size={16} />
                 </button>
               </Tooltip>
             </div>
@@ -200,10 +178,12 @@ const PluginDetailOverlay = ({ entry, sourceName, installed, busy, onInstall, on
                   type="button"
                   disabled={actionDisabled}
                   onClick={() => onInstall(entry)}
-                  className={`flex items-center gap-1.5 rounded-lg border px-4 py-2 text-[13px] font-medium transition-colors ${
-                    actionDisabled
-                      ? 'cursor-default border-white/10 bg-white/5 text-textMuted'
-                      : 'border-accent/25 bg-accent/15 text-textPrimary hover:bg-accent/25'
+                  className={`flex items-center gap-1.5 px-4 py-2 text-[13px] font-medium ${
+                    isInstalled && !hasUpdate
+                      ? 'glass-button-static cursor-default text-emerald-300'
+                      : actionDisabled
+                        ? 'glass-button-static cursor-default text-textMuted'
+                        : 'glass-button text-accent'
                   }`}
                 >
                   {isInstalled && !hasUpdate ? (
