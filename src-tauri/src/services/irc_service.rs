@@ -48,18 +48,21 @@ static WS_PORT: OnceLock<Mutex<Option<u16>>> = OnceLock::new();
 static USER_BADGES_CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
 static ROOM_STATE_CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
 static CHANNEL_EMOTES: OnceLock<Mutex<HashMap<String, EmoteSet>>> = OnceLock::new();
-// Per-channel consumer refcount. Each consumer claim (a window's chat store
-// acquiring the channel via `start_chat` / `join_chat_channel`) increments;
-// each `leave_chat_channel` decrements. Actual IRC JOIN / PART only happens
-// at the 0->1 / 1->0 transitions, so a popout opening for xqc while main's
-// ChatWidget is unmounting (also for xqc) doesn't lose the channel — whichever
-// IPC arrives first, the channel stays JOINed as long as any window still
-// wants it. Ensure-only callers (stream-start warm-up, reconnect re-attach,
-// the defensive re-JOIN in send_message) MUST NOT touch this count: they are
-// not new consumers, and a claim nothing releases leaves the count above the
-// real consumer total, so `leave_channel` never reaches zero and the room
-// keeps streaming traffic after every consumer is gone.
-static CHANNEL_REFCOUNT: OnceLock<Mutex<HashMap<String, u32>>> = OnceLock::new();
+// Per-channel consumer claims, keyed by window label (lowercase channel ->
+// set of window labels). A window's chat store claims via `start_chat` /
+// `join_chat_channel` and releases via `leave_chat_channel`; the IRC JOIN /
+// PART happen on the no-consumers <-> some-consumers transitions, so a popout
+// opening for xqc while main's ChatWidget is unmounting (also for xqc)
+// doesn't lose the channel — whichever IPC arrives first, the channel stays
+// JOINed as long as any window still wants it. Sets instead of counts because
+// a JS context can claim more than once for the same want (webview reload,
+// reconnect re-attach) and can die without releasing (popout window closed,
+// webview reload): inserting the same label twice is a no-op, and
+// `release_window_claims` sweeps a dead window's claims wholesale. Ensure-only
+// callers (the stream-start warm-up, the defensive re-JOIN in send_message)
+// never touch these sets: they are not consumers, and a claim nothing releases
+// would keep the room streaming traffic after every consumer is gone.
+static CHANNEL_CONSUMERS: OnceLock<Mutex<HashMap<String, HashSet<String>>>> = OnceLock::new();
 // Handle to the plugin host so parsed chat lines can be forwarded to plugins
 // subscribed to on_chat_message. Set once, on the first chat start.
 static PLUGIN_HOST: OnceLock<Arc<PluginHost>> = OnceLock::new();
@@ -114,8 +117,8 @@ fn get_ws_port() -> &'static Mutex<Option<u16>> {
     WS_PORT.get_or_init(|| Mutex::new(None))
 }
 
-fn get_channel_refcount() -> &'static Mutex<HashMap<String, u32>> {
-    CHANNEL_REFCOUNT.get_or_init(|| Mutex::new(HashMap::new()))
+fn get_channel_consumers() -> &'static Mutex<HashMap<String, HashSet<String>>> {
+    CHANNEL_CONSUMERS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn get_own_identity() -> &'static Mutex<Option<(String, String)>> {
@@ -172,12 +175,20 @@ fn extract_channel_from_irc_line(line: &str) -> Option<String> {
 }
 
 impl IrcService {
-    /// `claim` distinguishes a real new consumer (a window's chat store
-    /// acquiring the channel) from ensure-only callers (the stream-start
-    /// warm-up, reconnect re-attach). Only consumers may bump the per-channel
-    /// refcount; ensure-only callers just need the bridge up and the channel
-    /// JOINed.
-    pub async fn start(channel: &str, state: &AppState, claim: bool) -> Result<u16> {
+    /// `claim` marks the caller as a real consumer (a window's chat store
+    /// acquiring the channel); the stream-start warm-up passes false and just
+    /// needs the bridge up and the channel JOINed. `reattach` is set by the
+    /// reconnect path, whose store still holds channels: it suppresses the
+    /// stale-claim sweep that a fresh first-acquire start performs. `window`
+    /// is the calling window's label, the key consumer claims are recorded
+    /// under.
+    pub async fn start(
+        channel: &str,
+        state: &AppState,
+        claim: bool,
+        reattach: bool,
+        window: &str,
+    ) -> Result<u16> {
         let layout_service = state.layout_service.clone();
         let emote_service = state.emote_service.clone();
         let _ = PLUGIN_HOST.set(state.plugin_host.clone());
@@ -197,17 +208,34 @@ impl IrcService {
             if irc_alive && ws_alive {
                 if let Some(port) = existing_port {
                     let key = channel.to_lowercase();
-                    // `join_channel` is refcount-aware: it bumps the
-                    // per-channel consumer count and only sends IRC JOIN on
-                    // the 0->1 transition. Ensure-only callers skip the bump
-                    // (their consumer, if any, already counted itself).
-                    // Best-effort: failures here just mean the channel hasn't
-                    // been added to the existing IRC session; the caller will
-                    // see that messages aren't arriving and can recover.
+                    // `join_channel` is claim-aware: it records this window in
+                    // the channel's consumer set and only sends IRC JOIN when
+                    // no consumer held it. Ensure-only callers (warm-up) skip
+                    // the claim. Best-effort: failures here just mean the
+                    // channel hasn't been added to the existing IRC session;
+                    // the caller will see that messages aren't arriving and
+                    // can recover.
                     let join_result = if claim {
-                        Self::join_channel(&key).await
+                        let r = Self::join_channel(&key, window).await;
+                        // A window claim-starts its bridge only when its JS
+                        // store holds no channels, so any claims still
+                        // recorded for this window are leftovers from a
+                        // previous JS context of the same window (webview
+                        // reload). Sweep them so their rooms PART. The
+                        // reconnect re-attach path skips this: its store DOES
+                        // still hold channels, and it re-claims each of them
+                        // right after this call.
+                        if !reattach {
+                            Self::release_window_claims(window, Some(&key)).await;
+                        }
+                        r
                     } else {
-                        Self::ensure_joined(&key).await
+                        let r = Self::ensure_joined(&key).await;
+                        // A warm-up means a stream is starting; any channel
+                        // still joined with no consumer is a leftover from a
+                        // previous warm-up that no UI ever claimed.
+                        Self::part_unclaimed(&key).await;
+                        r
                     };
                     if let Err(e) = join_result {
                         log::warn!("[IRC Chat] idempotent JOIN failed for {}: {}", key, e);
@@ -243,16 +271,21 @@ impl IrcService {
         get_user_badges_cache().lock().await.clear();
         get_room_state_cache().lock().await.clear();
         get_channel_emotes().lock().await.clear();
-        // Seed the consumer refcount: this is the first window to ask for the
+        // Seed the consumer claims: this is the first window to ask for the
         // initial channel; the IRC JOIN is performed implicitly by
         // run_irc_connection below, so we just account for it here. Ensure-only
-        // cold starts seed nothing: the first real acquire claims the slot via
-        // join_channel (which sees the channel already joined and only counts).
+        // cold starts seed nothing: the first real acquire claims via
+        // join_channel (which sees the channel already joined and only records
+        // the claim). Clearing wipes other windows' claims along with the dead
+        // connection; their stores reconnect and re-claim on their own.
         {
-            let mut refcounts = get_channel_refcount().lock().await;
-            refcounts.clear();
+            let mut consumers = get_channel_consumers().lock().await;
+            consumers.clear();
             if claim {
-                refcounts.insert(channel.to_lowercase(), 1);
+                consumers.insert(
+                    channel.to_lowercase(),
+                    HashSet::from([window.to_string()]),
+                );
             }
         }
 
@@ -1255,37 +1288,41 @@ impl IrcService {
         None
     }
 
-    pub async fn join_channel(channel: &str) -> Result<()> {
+    pub async fn join_channel(channel: &str, window: &str) -> Result<()> {
         let key = channel.to_lowercase();
 
-        // Refcount first. Multiple windows may JOIN the same channel
-        // concurrently (main + N MultiChat popouts); only the first one
-        // actually sends JOIN to IRC. Subsequent consumers just bump the
-        // count so leave_channel knows the channel is still wanted.
-        let new_count = {
-            let mut refcounts = get_channel_refcount().lock().await;
-            let entry = refcounts.entry(key.clone()).or_insert(0);
-            *entry += 1;
-            *entry
+        // Claim first. Multiple windows may JOIN the same channel concurrently
+        // (main + N MultiChat popouts); each records its window label in the
+        // channel's consumer set, and only the transition from no consumers
+        // sends the IRC JOIN. A window re-claiming a channel it already holds
+        // (a webview reload re-acquiring, a reconnect re-attach) is a no-op,
+        // which is what keeps claims from inflating: the set can never hold a
+        // window twice, so releases always balance.
+        let newly_claimed = {
+            let mut consumers = get_channel_consumers().lock().await;
+            consumers
+                .entry(key.clone())
+                .or_default()
+                .insert(window.to_string())
         };
 
-        if new_count > 1 {
+        if !newly_claimed {
             debug!(
-                "[IRC Chat] join_channel({}): refcount now {}, reusing existing JOIN",
-                key, new_count
+                "[IRC Chat] join_channel({}): window {} already a consumer, reusing JOIN",
+                key, window
             );
             return Ok(());
         }
 
-        // First consumer: make sure the channel is actually JOINed. On failure,
-        // give back the consumer slot we claimed so a later retry or the
-        // reconnect path can JOIN cleanly instead of seeing refcount > 1.
+        // Make sure the channel is actually JOINed (no-op when another window
+        // got there first). On failure, give back the claim so a later retry
+        // can JOIN cleanly instead of seeing an existing consumer.
         if let Err(e) = Self::ensure_joined(&key).await {
-            let mut refcounts = get_channel_refcount().lock().await;
-            if let Some(entry) = refcounts.get_mut(&key) {
-                *entry = entry.saturating_sub(1);
-                if *entry == 0 {
-                    refcounts.remove(&key);
+            let mut consumers = get_channel_consumers().lock().await;
+            if let Some(entry) = consumers.get_mut(&key) {
+                entry.remove(window);
+                if entry.is_empty() {
+                    consumers.remove(&key);
                 }
             }
             return Err(e);
@@ -1294,20 +1331,10 @@ impl IrcService {
         Ok(())
     }
 
-    /// Re-JOIN a channel after a bridge reconnect without claiming a consumer
-    /// slot. The consumer counted itself when it first acquired the channel;
-    /// counting it again on every reconnect would push the refcount past the
-    /// number of real consumers, and `leave_channel` would then never reach
-    /// zero, leaving the room joined (and its traffic flowing) after every
-    /// consumer is gone.
-    pub async fn rejoin_channel(channel: &str) -> Result<()> {
-        Self::ensure_joined(&channel.to_lowercase()).await
-    }
-
     /// Send the IRC JOIN for `key` (lowercase) and set up its per-channel
     /// subscriptions. No-op when the channel is already in the current set
     /// (its subscriptions were set up by whoever joined it). Never touches the
-    /// consumer refcount; callers decide whether a consumer slot is claimed.
+    /// consumer sets; callers decide whether a consumer claim is recorded.
     async fn ensure_joined(key: &str) -> Result<()> {
         if get_current_channels().lock().await.contains(key) {
             return Ok(());
@@ -1346,35 +1373,112 @@ impl IrcService {
         Ok(())
     }
 
-    pub async fn leave_channel(channel: &str) -> Result<()> {
+    pub async fn leave_channel(channel: &str, window: &str) -> Result<()> {
         let key = channel.to_lowercase();
 
-        // Refcount first. The MultiChat popout flow fires `start_chat` for
-        // the new window's channel and then unmounts main's ChatWidget,
-        // which fires `leave_chat_channel` for the same channel. Without
-        // refcounting, the unconditional PART here would race with — and
+        // Release the claim first. The MultiChat popout flow fires `start_chat`
+        // for the new window's channel and then unmounts main's ChatWidget,
+        // which fires `leave_chat_channel` for the same channel. Without the
+        // consumer sets, the unconditional PART here would race with — and
         // usually lose to — the popout's start_chat, leaving the popout
         // subscribed to a channel nobody is JOINed to. Only the last
         // consumer's leave actually PARTs.
-        let new_count = {
-            let mut refcounts = get_channel_refcount().lock().await;
-            let entry = refcounts.entry(key.clone()).or_insert(1);
-            *entry = entry.saturating_sub(1);
-            let n = *entry;
-            if n == 0 {
-                refcounts.remove(&key);
+        let remaining = {
+            let mut consumers = get_channel_consumers().lock().await;
+            match consumers.get_mut(&key) {
+                Some(entry) => {
+                    entry.remove(window);
+                    let n = entry.len();
+                    if n == 0 {
+                        consumers.remove(&key);
+                    }
+                    n
+                }
+                None => 0,
             }
-            n
         };
 
-        if new_count > 0 {
+        if remaining > 0 {
             debug!(
-                "[IRC Chat] leave_channel({}): refcount now {}, keeping JOIN",
-                key, new_count
+                "[IRC Chat] leave_channel({}): {} consumer(s) remain, keeping JOIN",
+                key, remaining
             );
             return Ok(());
         }
 
+        Self::part_channel(&key).await?;
+        debug!("[IRC Chat] Left channel: #{} (last consumer)", key);
+        Ok(())
+    }
+
+    /// Drop every consumer claim held by `window`, PARTing channels whose
+    /// consumer set empties. `keep` exempts one channel (the one the window is
+    /// in the middle of claiming). Two callers: the window-destroyed handler
+    /// (a destroyed webview never runs its React cleanup, so its claims would
+    /// otherwise pin channels JOINed forever) and a fresh-claim `start_chat`
+    /// (a window only cold-claims its bridge when its JS store holds no
+    /// channels, so claims still recorded for it belong to a previous JS
+    /// context of the same window, e.g. before a webview reload).
+    pub async fn release_window_claims(window: &str, keep: Option<&str>) {
+        let emptied: Vec<String> = {
+            let mut consumers = get_channel_consumers().lock().await;
+            let mut emptied = Vec::new();
+            consumers.retain(|channel, set| {
+                if keep == Some(channel.as_str()) {
+                    return true;
+                }
+                set.remove(window);
+                if set.is_empty() {
+                    emptied.push(channel.clone());
+                    false
+                } else {
+                    true
+                }
+            });
+            emptied
+        };
+
+        for channel in emptied {
+            debug!(
+                "[IRC Chat] releasing stale claim on {} held by window {}",
+                channel, window
+            );
+            if let Err(e) = Self::part_channel(&channel).await {
+                log::warn!("[IRC Chat] stale-claim PART for {} failed: {}", channel, e);
+            }
+        }
+    }
+
+    /// PART any joined channel that no window claims, except `keep`. Joined-
+    /// but-unclaimed channels come from the ensure-only paths: the stream
+    /// warm-up JOINs before any chat UI mounts, and if no UI ever claims on
+    /// top (chat hidden), there is no release to retire the room on a stream
+    /// switch. The next warm-up reaps them here instead.
+    async fn part_unclaimed(keep: &str) {
+        let joined: Vec<String> = get_current_channels()
+            .lock()
+            .await
+            .iter()
+            .cloned()
+            .collect();
+        let orphans: Vec<String> = {
+            let consumers = get_channel_consumers().lock().await;
+            joined
+                .into_iter()
+                .filter(|c| c != keep && consumers.get(c).map_or(true, |s| s.is_empty()))
+                .collect()
+        };
+        for channel in orphans {
+            debug!("[IRC Chat] PARTing unclaimed channel {}", channel);
+            if let Err(e) = Self::part_channel(&channel).await {
+                log::warn!("[IRC Chat] unclaimed PART for {} failed: {}", channel, e);
+            }
+        }
+    }
+
+    /// Send the IRC PART for `key` (lowercase) and tear down its per-channel
+    /// caches and subscriptions. Consumer accounting is the caller's job.
+    async fn part_channel(key: &str) -> Result<()> {
         let writer_lock = get_irc_writer().lock().await;
         let writer = writer_lock
             .as_ref()
@@ -1387,21 +1491,19 @@ impl IrcService {
         w.flush().await?;
         drop(w);
 
-        get_current_channels().lock().await.remove(&key);
+        get_current_channels().lock().await.remove(key);
 
         // Drop per-channel caches so PARTed channels don't accumulate memory.
         // If the user re-JOINs later, fetch_and_store_emotes runs again and
         // USERSTATE/ROOMSTATE refill from the next IRC frames.
-        get_channel_emotes().lock().await.remove(&key);
-        get_user_badges_cache().lock().await.remove(&key);
-        get_room_state_cache().lock().await.remove(&key);
+        get_channel_emotes().lock().await.remove(key);
+        get_user_badges_cache().lock().await.remove(key);
+        get_room_state_cache().lock().await.remove(key);
 
         // Stop receiving 7TV EventAPI updates for this channel.
-        crate::services::seventv_eventapi::unsubscribe_channel(&key).await;
+        crate::services::seventv_eventapi::unsubscribe_channel(key).await;
         // Stop the moderator-view subscription for this channel.
-        crate::services::eventsub_moderation::unsubscribe_channel(&key).await;
-
-        debug!("[IRC Chat] Left channel: #{} (last consumer)", key);
+        crate::services::eventsub_moderation::unsubscribe_channel(key).await;
 
         Ok(())
     }
@@ -2417,7 +2519,7 @@ impl IrcService {
         get_channel_emotes().lock().await.clear();
         get_user_badges_cache().lock().await.clear();
         get_room_state_cache().lock().await.clear();
-        get_channel_refcount().lock().await.clear();
+        get_channel_consumers().lock().await.clear();
 
         // Drop all 7TV EventAPI subscriptions so the idle socket stops
         // receiving updates for channels nobody is viewing anymore.

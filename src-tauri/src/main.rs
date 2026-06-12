@@ -587,7 +587,6 @@ fn main() {
             send_chat_message,
             join_chat_channel,
             leave_chat_channel,
-            rejoin_chat_channel,
             start_multi_chat,
             load_mod_logs,
             append_mod_log,
@@ -911,6 +910,17 @@ fn main() {
         .on_window_event(|window, event| {
             let label = window.label().to_string();
             let app_handle = window.app_handle().clone();
+
+            if let WindowEvent::Destroyed = event {
+                // A destroyed webview never runs its React cleanup, so any
+                // chat consumer claims it still holds would pin those channels
+                // JOINed (and their IRC traffic flowing) forever. Sweep them;
+                // channels with no remaining consumers PART.
+                let gone = label.clone();
+                tauri::async_runtime::spawn(async move {
+                    services::irc_service::IrcService::release_window_claims(&gone, None).await;
+                });
+            }
 
             if label == "main" {
                 if let WindowEvent::CloseRequested { api, .. } = event {

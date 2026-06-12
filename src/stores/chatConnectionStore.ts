@@ -566,16 +566,14 @@ async function reconnectAll() {
   }
   intentionalDisconnect = false;
 
-  // Re-attach with the first channel, then re-JOIN the rest. In the usual
-  // case only this window's local WebSocket died and the Rust IRC service is
-  // still alive, holding the consumer refcounts our channels claimed when they
-  // were acquired. Re-attaching must therefore NOT claim new consumer slots
-  // (`reattach: true` / `rejoin_chat_channel`): a second claim per reconnect
-  // has no matching release, the refcount never returns to zero, and the
-  // channel keeps streaming IRC traffic after every consumer is gone. When the
-  // Rust side really is dead, `start_chat` cold-starts it and the no-claim
-  // path still ends with each channel JOINed; `leave_channel` PARTs cleanly
-  // from a zero count.
+  // Re-attach with the first channel, then re-claim the rest. The Rust side
+  // records consumer claims per window label in a set, so re-claiming a
+  // channel this window already holds is a no-op (claims cannot inflate) and
+  // re-claiming after a true cold restart (the Rust IRC service died and its
+  // claim table was wiped) correctly re-registers us. `reattach: true` tells
+  // start_chat to skip its stale-claim sweep: that sweep assumes a window
+  // claim-starting its bridge holds no channels, which is true for a first
+  // acquire but not here.
   const first = channels[0];
   const firstSlice = state.channels.get(first);
   if (!firstSlice) return;
@@ -584,7 +582,7 @@ async function reconnectAll() {
     await connectBridgeForFirstChannel(first, firstSlice.channelId, true);
     for (const ch of channels.slice(1)) {
       try {
-        await invoke('rejoin_chat_channel', { channel: ch });
+        await invoke('join_chat_channel', { channel: ch });
       } catch (err) {
         Logger.error(`[ChatStore] Failed to re-JOIN ${ch} during reconnect:`, err);
       }
@@ -656,9 +654,9 @@ let chatFirstFrameLogged = true;
 async function connectBridgeForFirstChannel(
   channel: string,
   channelId: string | null,
-  // True when re-attaching after a reconnect: the channel's consumer slot was
-  // already claimed when the slice was created, so the bridge bring-up must
-  // not claim another (see reconnectAll).
+  // True when re-attaching after a reconnect, when this window's store still
+  // holds channels; it suppresses the Rust-side sweep of this window's stale
+  // claims that a fresh first-acquire start performs (see reconnectAll).
   reattach = false,
 ): Promise<void> {
   if (wsConnecting) {
@@ -670,7 +668,7 @@ async function connectBridgeForFirstChannel(
     Logger.debug(`[ChatStore] Invoking start_chat for ${channel}`);
     chatConnectStartedAt = performance.now();
     chatFirstFrameLogged = false;
-    const port = await invoke<number>('start_chat', { channel, claim: !reattach });
+    const port = await invoke<number>('start_chat', { channel, reattach });
     Logger.info(`[ChatPerf] start_chat (Rust IRC connect + bridge spawn) took ${Math.round(performance.now() - chatConnectStartedAt)}ms`);
     useChatConnectionStore.setState({ wsPort: port });
 

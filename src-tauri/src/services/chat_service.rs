@@ -22,8 +22,14 @@ pub struct SendResult {
 pub struct ChatService;
 
 impl ChatService {
-    pub async fn start(channel: &str, state: &AppState, claim: bool) -> Result<u16> {
-        IrcService::start(channel, state, claim).await
+    pub async fn start(
+        channel: &str,
+        state: &AppState,
+        claim: bool,
+        reattach: bool,
+        window: &str,
+    ) -> Result<u16> {
+        IrcService::start(channel, state, claim, reattach, window).await
     }
 
     pub async fn send_message(
@@ -146,8 +152,8 @@ impl ChatService {
         IrcService::stop().await
     }
 
-    pub async fn join_channel(channel: &str, state: &AppState) -> Result<()> {
-        IrcService::join_channel(channel).await?;
+    pub async fn join_channel(channel: &str, state: &AppState, window: &str) -> Result<()> {
+        IrcService::join_channel(channel, window).await?;
         // Populate the per-channel emote cache for the newly-JOINed channel.
         // Without this, `parse_text_segment` can't find 7TV/FFZ/BTTV emotes
         // for messages from this channel (it reads from CHANNEL_EMOTES which
@@ -159,17 +165,7 @@ impl ChatService {
         Ok(())
     }
 
-    pub async fn leave_channel(channel: &str) -> Result<()> {
-        IrcService::leave_channel(channel).await
-    }
-
-    /// Re-JOIN after a bridge reconnect without claiming a consumer slot.
-    /// Mirrors `join_channel`'s emote-cache population: after a true cold
-    /// restart the per-channel emote cache was cleared with the rest of the
-    /// IRC state, so segment parsing needs it refilled.
-    pub async fn rejoin_channel(channel: &str, state: &AppState) -> Result<()> {
-        IrcService::rejoin_channel(channel).await?;
-        IrcService::fetch_and_store_emotes(channel, state.emote_service.clone()).await;
-        Ok(())
+    pub async fn leave_channel(channel: &str, window: &str) -> Result<()> {
+        IrcService::leave_channel(channel, window).await
     }
 }

@@ -25,19 +25,31 @@ pub async fn get_chat_log_dir(state: State<'_, AppState>) -> Result<String, Stri
     Ok(dir.to_string_lossy().to_string())
 }
 
-/// `claim` (default true) marks the caller as a real chat consumer that will
-/// later balance itself with `leave_chat_channel`. Pass false for ensure-only
-/// calls (the stream-start warm-up) so the channel can still PART once its
-/// actual consumers are gone.
+/// `claim` (default true) marks the calling window as a real chat consumer
+/// that will later balance itself with `leave_chat_channel`. Pass false for
+/// ensure-only calls (the stream-start warm-up) so the channel can still PART
+/// once its actual consumers are gone. `reattach` (default false) is for the
+/// reconnect path, whose store still holds channels: it suppresses the sweep
+/// of this window's recorded claims that a fresh first-acquire start performs
+/// (that sweep is what garbage-collects claims left behind by a previous JS
+/// context of the same window, e.g. before a webview reload).
 #[tauri::command]
 pub async fn start_chat(
     channel: String,
     claim: Option<bool>,
+    reattach: Option<bool>,
+    window: tauri::Window,
     state: State<'_, AppState>,
 ) -> Result<u16, String> {
-    ChatService::start(&channel, &state, claim.unwrap_or(true))
-        .await
-        .map_err(|e| e.to_string())
+    ChatService::start(
+        &channel,
+        &state,
+        claim.unwrap_or(true),
+        reattach.unwrap_or(false),
+        window.label(),
+    )
+    .await
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -67,29 +79,19 @@ pub async fn send_chat_message(
 }
 
 #[tauri::command]
-pub async fn join_chat_channel(channel: String, state: State<'_, AppState>) -> Result<(), String> {
-    ChatService::join_channel(&channel, &state)
-        .await
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub async fn leave_chat_channel(channel: String) -> Result<(), String> {
-    ChatService::leave_channel(&channel)
-        .await
-        .map_err(|e| e.to_string())
-}
-
-/// Re-JOIN a channel after a bridge reconnect. Unlike `join_chat_channel`,
-/// this claims no consumer slot: the caller's original claim either still
-/// stands (only the window-local WebSocket died) or was wiped with the dead
-/// connection. Re-attaching is not a new consumer either way.
-#[tauri::command]
-pub async fn rejoin_chat_channel(
+pub async fn join_chat_channel(
     channel: String,
+    window: tauri::Window,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    ChatService::rejoin_channel(&channel, &state)
+    ChatService::join_channel(&channel, &state, window.label())
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn leave_chat_channel(channel: String, window: tauri::Window) -> Result<(), String> {
+    ChatService::leave_channel(&channel, window.label())
         .await
         .map_err(|e| e.to_string())
 }
@@ -97,6 +99,7 @@ pub async fn rejoin_chat_channel(
 #[tauri::command]
 pub async fn start_multi_chat(
     channels: Vec<String>,
+    window: tauri::Window,
     state: State<'_, AppState>,
 ) -> Result<u16, String> {
     if channels.is_empty() {
@@ -104,14 +107,14 @@ pub async fn start_multi_chat(
     }
 
     // Start with the first channel
-    let port = ChatService::start(&channels[0], &state, true)
+    let port = ChatService::start(&channels[0], &state, true, false, window.label())
         .await
         .map_err(|e| e.to_string())?;
 
     // Join the rest (each call also populates the per-channel emote cache so
     // 7TV/FFZ/BTTV emotes render for these channels too)
     for channel in channels.iter().skip(1) {
-        ChatService::join_channel(channel, &state)
+        ChatService::join_channel(channel, &state, window.label())
             .await
             .unwrap_or_else(|e| {
                 log::error!(
