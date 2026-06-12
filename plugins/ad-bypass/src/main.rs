@@ -10,6 +10,7 @@
 //! re-resolves through a different region and swaps the relay's upstream via
 //! `set_upstream`. The core StreamNook binary contains none of this behavior.
 
+mod detect;
 mod master;
 mod protocol;
 mod proxies;
@@ -17,7 +18,15 @@ mod proxies;
 use protocol::{read_loop, Host, Inbound};
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::sync::mpsc::Sender;
+use tokio::sync::Mutex as AsyncMutex;
+
+/// How often the per-session ad watcher re-polls its media playlist.
+const WATCH_INTERVAL: Duration = Duration::from_secs(2);
+/// Consecutive failed polls before the watcher assumes the stream ended and exits.
+const WATCH_MAX_FAILS: u32 = 5;
 
 /// Minimum spacing between region pivots for one session, so a stretch where
 /// every region serves ads cannot thrash the player with reloads.
@@ -52,6 +61,12 @@ struct Session {
     current_base: String,
     tried: Vec<String>,
     last_pivot: Option<Instant>,
+    /// The media playlist this plugin's own watcher polls for ad markers,
+    /// updated whenever the upstream is pivoted so the watcher follows it.
+    watch_url: Arc<AsyncMutex<String>>,
+    /// The background ad-watcher task, aborted when the session ends or is
+    /// replaced so a stale watcher can't keep polling a dead stream.
+    watcher: Option<tokio::task::AbortHandle>,
 }
 
 struct Engine {
@@ -59,10 +74,12 @@ struct Engine {
     client: reqwest::Client,
     settings: Settings,
     sessions: HashMap<String, Session>,
+    /// Handed to each watcher so it can raise `AdDetected` back to the engine.
+    events: Sender<Inbound>,
 }
 
 impl Engine {
-    fn new(host: Host) -> Self {
+    fn new(host: Host, events: Sender<Inbound>) -> Self {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(8))
             .user_agent(proxies::USER_AGENT)
@@ -73,6 +90,16 @@ impl Engine {
             client,
             settings: Settings::default(),
             sessions: HashMap::new(),
+            events,
+        }
+    }
+
+    /// Removes a session and stops its ad watcher.
+    fn drop_session(&mut self, stream_id: &str) {
+        if let Some(s) = self.sessions.remove(stream_id) {
+            if let Some(w) = s.watcher {
+                w.abort();
+            }
         }
     }
 
@@ -237,11 +264,11 @@ impl Engine {
             .unwrap_or("best")
             .to_string();
         // A new resolve for this stream id means the relay session moved on to
-        // a new stream. The old session must die NOW, on every outcome: if it
-        // survived a decline below, a later ad window on the new stream would
-        // pivot the relay onto the OLD channel's playlist.
+        // a new stream. The old session (and its ad watcher) must die NOW, on
+        // every outcome: if it survived a decline below, a later pivot on the
+        // new stream would swap the relay onto the OLD channel's playlist.
         if !stream_id.is_empty() {
-            self.sessions.remove(&stream_id);
+            self.drop_session(&stream_id);
         }
         if !self.settings.enabled || channel.is_empty() || stream_id.is_empty() {
             let _ = self.host.respond(id, json!({ "declined": true })).await;
@@ -258,6 +285,12 @@ impl Engine {
             let _ = self.host.respond(id, json!({ "declined": true })).await;
             return;
         };
+
+        // A proxy media playlist for this plugin's own ad watcher to poll, chosen
+        // before any high-tier splice (the watcher follows a proxy tier, where a
+        // leaking region's ads would surface). None when the master has no usable
+        // variant — then the session still serves, just without a mid-stream pivot.
+        let watch_target = master::select_variant(&master::parse_master(&body), &quality);
 
         if self.settings.splice_high_tiers {
             if let Some(auth_master) = args.get("auth_master").and_then(|v| v.as_str()) {
@@ -278,6 +311,21 @@ impl Engine {
                 ),
             )
             .await;
+
+        // Start the per-session ad watcher: it polls the proxy media playlist in
+        // this process and raises AdDetected on an ad onset, so the engine can
+        // pivot without the core relay ever scanning for ads.
+        let watch_url = Arc::new(AsyncMutex::new(watch_target.clone().unwrap_or_default()));
+        let watcher = watch_target.map(|_| {
+            tokio::spawn(watch_for_ads(
+                stream_id.clone(),
+                watch_url.clone(),
+                self.client.clone(),
+                self.events.clone(),
+            ))
+            .abort_handle()
+        });
+
         self.sessions.insert(
             stream_id,
             Session {
@@ -286,6 +334,8 @@ impl Engine {
                 current_base: base.clone(),
                 tried: vec![base.clone()],
                 last_pivot: None,
+                watch_url,
+                watcher,
             },
         );
         let _ = self
@@ -294,21 +344,15 @@ impl Engine {
             .await;
     }
 
-    /// An ad window opened on a relay session. If it is one this plugin
-    /// resolved, the current region is leaking ads: re-resolve through a
-    /// region not yet tried and hand the relay the new upstream.
-    async fn on_ad_window(&mut self, params: &Value) {
-        let active = params.get("active").and_then(|v| v.as_bool()).unwrap_or(false);
-        let stream_id = params
-            .get("stream_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string();
-        if !active || !self.sessions.contains_key(&stream_id) {
+    /// This plugin's own watcher saw an ad window open on a session it resolved:
+    /// the current region is leaking ads, so re-resolve through a region not yet
+    /// tried, hand the relay the new upstream, and point the watcher at it.
+    async fn on_ad_detected(&mut self, stream_id: &str) {
+        if !self.sessions.contains_key(stream_id) {
             return;
         }
         {
-            let session = self.sessions.get(&stream_id).unwrap();
+            let session = self.sessions.get(stream_id).unwrap();
             if session
                 .last_pivot
                 .is_some_and(|t| t.elapsed() < PIVOT_COOLDOWN)
@@ -318,8 +362,7 @@ impl Engine {
         }
 
         let (channel, quality, exclude) = {
-            let session = self.sessions.get_mut(&stream_id).unwrap();
-            session.last_pivot = Some(Instant::now());
+            let session = self.sessions.get_mut(stream_id).unwrap();
             // When every base has been tried, keep only the leaking one
             // excluded so the next round can retry the rest of the pool.
             let pool_size = proxies::BUNDLED.len() + self.settings.custom_proxies.len();
@@ -336,7 +379,7 @@ impl Engine {
         self.host
             .log(
                 "info",
-                format!("{channel}: ad window reported; re-resolving through another region"),
+                format!("{channel}: ads detected; re-resolving through another region"),
             )
             .await;
         let Some((base, body)) = self.resolve_master(&channel, &exclude).await else {
@@ -374,11 +417,16 @@ impl Engine {
                         ),
                     )
                     .await;
-                if let Some(session) = self.sessions.get_mut(&stream_id) {
+                if let Some(session) = self.sessions.get_mut(stream_id) {
+                    // The cooldown starts on a SUCCESSFUL pivot, so a stretch of
+                    // failed re-resolves doesn't burn it.
+                    session.last_pivot = Some(Instant::now());
                     session.current_base = base.clone();
                     if !session.tried.contains(&base) {
                         session.tried.push(base);
                     }
+                    // Follow the new upstream so the watcher catches a fresh leak.
+                    *session.watch_url.lock().await = url;
                 }
             }
             Err(e) => {
@@ -386,9 +434,56 @@ impl Engine {
                 self.host
                     .log("info", format!("{channel}: set_upstream failed: {e}"))
                     .await;
-                self.sessions.remove(&stream_id);
+                self.drop_session(stream_id);
             }
         }
+    }
+}
+
+/// Polls one session's proxy media playlist for ad markers and raises
+/// `AdDetected` on each ad onset. Runs until the engine drops the session
+/// (aborting this task) or the playlist disappears for a while (stream ended).
+/// This is where all ad detection lives: in the plugin's own process, never
+/// in the core relay.
+async fn watch_for_ads(
+    stream_id: String,
+    watch_url: Arc<AsyncMutex<String>>,
+    client: reqwest::Client,
+    events: Sender<Inbound>,
+) {
+    let mut was_ads = false;
+    let mut fails: u32 = 0;
+    loop {
+        tokio::time::sleep(WATCH_INTERVAL).await;
+        let url = watch_url.lock().await.clone();
+        if url.is_empty() {
+            continue;
+        }
+        let text = match client.get(&url).timeout(Duration::from_secs(4)).send().await {
+            Ok(r) => r.text().await.unwrap_or_default(),
+            Err(_) => {
+                fails += 1;
+                if fails >= WATCH_MAX_FAILS {
+                    return;
+                }
+                continue;
+            }
+        };
+        fails = 0;
+        let ads = detect::has_ads(&text);
+        if ads && !was_ads {
+            // Clean -> ad transition: ask the engine to pivot. Stop if it's gone.
+            if events
+                .send(Inbound::AdDetected {
+                    stream_id: stream_id.clone(),
+                })
+                .await
+                .is_err()
+            {
+                return;
+            }
+        }
+        was_ads = ads;
     }
 }
 
@@ -420,13 +515,14 @@ async fn main() {
     let host = Host::new(tokio::io::stdout());
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Inbound>(64);
 
-    tokio::spawn(read_loop(tokio::io::stdin(), host.clone(), tx));
+    // The read loop and every per-session watcher feed the same event channel.
+    tokio::spawn(read_loop(tokio::io::stdin(), host.clone(), tx.clone()));
 
-    let mut engine = Engine::new(host);
+    let mut engine = Engine::new(host, tx);
     while let Some(event) = rx.recv().await {
         match event {
             Inbound::Initialized => engine.on_initialized().await,
-            Inbound::AdWindow(params) => engine.on_ad_window(&params).await,
+            Inbound::AdDetected { stream_id } => engine.on_ad_detected(&stream_id).await,
             Inbound::PanelChange(params) => {
                 if let Some(values) = params.get("values") {
                     engine.apply_panel_values(values);

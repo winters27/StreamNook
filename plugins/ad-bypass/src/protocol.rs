@@ -140,8 +140,11 @@ async fn read_frame(reader: &mut BufReader<Stdin>) -> Result<Option<Value>> {
 /// requests are answered inline in the read loop and not forwarded.
 pub enum Inbound {
     Initialized,
-    /// Read-only ad-detection state changed for a relay session.
-    AdWindow(Value),
+    /// This plugin's own ad watcher saw an ad window open on the named relay
+    /// session. Not a host message: the watcher polls the playlist it resolved
+    /// in this process and raises this so the engine pivots. The core relay
+    /// never scans for ads.
+    AdDetected { stream_id: String },
     /// The user changed values in the host-rendered settings panel.
     PanelChange(Value),
     /// A hooked action the host invoked (playback.resolve). The engine
@@ -174,9 +177,11 @@ pub async fn read_loop(stdin: Stdin, host: Host, tx: tokio::sync::mpsc::Sender<I
                 let id = frame.get("id").cloned().unwrap_or(Value::Null);
                 match m {
                     "initialize" => {
-                        // Hooks are static for this plugin, so answer inline.
+                        // Hooks are static for this plugin, so answer inline. It
+                        // does its own ad detection, so it subscribes to no ad
+                        // events from the host.
                         let _ = host
-                            .respond(id, json!({ "plugin_version": env!("CARGO_PKG_VERSION"), "hooks": ["on_ad_window", "on_panel_change"] }))
+                            .respond(id, json!({ "plugin_version": env!("CARGO_PKG_VERSION"), "hooks": ["on_panel_change"] }))
                             .await;
                     }
                     "ping" => {
@@ -207,13 +212,6 @@ pub async fn read_loop(stdin: Stdin, host: Host, tx: tokio::sync::mpsc::Sender<I
             (false, Some(m)) => match m {
                 "initialized" => {
                     let _ = tx.send(Inbound::Initialized).await;
-                }
-                "on_ad_window" => {
-                    let _ = tx
-                        .send(Inbound::AdWindow(
-                            frame.get("params").cloned().unwrap_or(Value::Null),
-                        ))
-                        .await;
                 }
                 "on_panel_change" => {
                     let _ = tx

@@ -14,7 +14,7 @@ args      = []
 transport = "stdio"
 
 [capabilities]
-events       = ["on_ad_window", "on_panel_change"]
+events       = ["on_panel_change"]
 host_methods = ["set_upstream", "log", "register_panel", "get_panel_values"]
 credentials  = []
 network      = "external"
@@ -22,9 +22,10 @@ ui           = ["panel"]
 
 # Hooks this plugin fills. The app invokes playback.resolve for non-entitled
 # live starts and hands over the channel, quality, and its own master; this
-# plugin answers with a proxy-resolved master. When the host reports an ad
-# window on a stream this plugin resolved, it re-resolves through a different
-# region and swaps the relay upstream via set_upstream.
+# plugin answers with a proxy-resolved master. It then detects ad windows in
+# its OWN process (polling the playlist it resolved), and when a region starts
+# leaking ads it re-resolves through a different region and swaps the relay
+# upstream via set_upstream. The core app never scans for ads.
 [contributes]
 actions  = ["playback.resolve"]
 provides = ["playback.resolve"]
