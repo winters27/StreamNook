@@ -23,6 +23,7 @@ import PluginConsentModal, { ConsentSubject } from '../plugins/PluginConsentModa
 import PluginDetailOverlay from '../plugins/PluginDetailOverlay';
 import PluginPanelRenderer from '../plugins/PluginPanelRenderer';
 import PluginIcon from '../plugins/PluginIcon';
+import InstalledBadge from '../plugins/InstalledBadge';
 import { usePluginUiRegistry } from '../../plugins-ui/registry';
 import {
   capabilityLines,
@@ -476,13 +477,13 @@ const PluginsSettings = () => {
                   </p>
                   <div className="mt-3 flex items-center justify-between">
                     <span className="text-[11px] text-textMuted">v{entry.version}</span>
-                    <span
-                      className={`glass-button-static px-2.5 py-1 text-[11px] font-medium ${
-                        isCurrent ? 'text-emerald-300' : 'text-accent'
-                      }`}
-                    >
-                      {hasUpdate ? 'Update' : isCurrent ? 'Installed' : 'Get'}
-                    </span>
+                    {isCurrent ? (
+                      <InstalledBadge />
+                    ) : (
+                      <span className="glass-button-static px-2.5 py-1 text-[11px] font-medium text-accent">
+                        {hasUpdate ? 'Update' : 'Get'}
+                      </span>
+                    )}
                   </div>
                 </button>
               );

@@ -18,6 +18,7 @@ import MarkdownLite from './MarkdownLite';
 import { Tooltip } from '../ui/Tooltip';
 import { Logger } from '../../utils/logger';
 import PluginIcon from './PluginIcon';
+import InstalledBadge from './InstalledBadge';
 
 const openExternal = async (url: string) => {
   try {
@@ -98,8 +99,6 @@ const PluginDetailOverlay = ({ entry, sourceName, installed, busy, onInstall, on
   const hasUpdate = Boolean(
     entry && installed && compareVersions(entry.version, installed.version) > 0
   );
-  const actionLabel = hasUpdate ? 'Update' : isInstalled ? 'Installed' : 'Install';
-  const actionDisabled = busy || (isInstalled && !hasUpdate);
 
   const created = formatDate(entry?.created_at ?? entry?.released_at);
   const updated = formatDate(entry?.updated_at);
@@ -174,25 +173,19 @@ const PluginDetailOverlay = ({ entry, sourceName, installed, busy, onInstall, on
                     </button>
                   </Tooltip>
                 )}
-                <button
-                  type="button"
-                  disabled={actionDisabled}
-                  onClick={() => onInstall(entry)}
-                  className={`flex items-center gap-1.5 px-4 py-2 text-[13px] font-medium ${
-                    isInstalled && !hasUpdate
-                      ? 'glass-button-static cursor-default text-emerald-300'
-                      : actionDisabled
-                        ? 'glass-button-static cursor-default text-textMuted'
-                        : 'glass-button text-accent'
-                  }`}
-                >
-                  {isInstalled && !hasUpdate ? (
-                    <PackageCheck size={14} />
-                  ) : (
+                {isInstalled && !hasUpdate ? (
+                  <InstalledBadge />
+                ) : (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => onInstall(entry)}
+                    className="glass-button flex items-center gap-1.5 px-4 py-2 text-[13px] font-medium text-accent disabled:cursor-default disabled:text-textMuted"
+                  >
                     <Download size={14} />
-                  )}
-                  {actionLabel}
-                </button>
+                    {hasUpdate ? 'Update' : 'Install'}
+                  </button>
+                )}
               </div>
             </div>
 
