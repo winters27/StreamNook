@@ -187,6 +187,16 @@ const PluginsSettings = () => {
     };
   }, [refresh]);
 
+  // Re-fetch every source on a timer while the marketplace is open, so a
+  // plugin published to the index shows up on its own without reopening or
+  // restarting (bounded by the source CDN's cache, ~minutes). `catalogTick`
+  // also lets a manual refresh force it.
+  const [catalogTick, setCatalogTick] = useState(0);
+  useEffect(() => {
+    const id = window.setInterval(() => setCatalogTick((t) => t + 1), 60_000);
+    return () => window.clearInterval(id);
+  }, []);
+
   // Aggregate every source's listings into one searchable catalog, so the
   // store shows all approved plugins up front (official source first, so it
   // wins when the same plugin id appears in more than one source).
@@ -213,7 +223,7 @@ const PluginsSettings = () => {
     return () => {
       cancelled = true;
     };
-  }, [sources]);
+  }, [sources, catalogTick]);
 
   const filteredCatalog = useMemo(() => {
     const q = search.trim().toLowerCase();
