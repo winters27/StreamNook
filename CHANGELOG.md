@@ -1,3 +1,7 @@
+## [7.8.7] - 2026-06-12
+### 🔧 Maintenance
+- **StreamNook is moving to its own GitHub organization**: The project is getting a proper home at github.com/StreamNook instead of living under a personal account. This update teaches the built-in updater to follow the project to its new address, so install it to keep receiving future releases automatically.
+
 ## [7.8.6] - 2026-06-10
 ## 🎉 New: Low latency playback, rebuilt to ride seconds behind live
 > StreamNook now picks up video in small pieces as the broadcaster encodes them, instead of waiting for whole segments to finish. On channels with low latency enabled, that puts you roughly two to three seconds behind the broadcaster, in the solo player and in every Multi-Nook tile. Channels without low latency keep playing exactly as before.
