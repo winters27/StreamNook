@@ -445,9 +445,12 @@ const PluginsSettings = () => {
                   className="flex flex-col rounded-xl border border-white/5 bg-white/[0.03] p-3.5 text-left transition-colors hover:bg-white/[0.06]"
                 >
                   <div className="min-w-0">
-                    <span className="block truncate text-[14px] font-semibold text-textPrimary">
-                      {entry.name}
-                    </span>
+                    <div className="flex items-center gap-1.5">
+                      <span className="truncate text-[14px] font-semibold text-textPrimary">
+                        {entry.name}
+                      </span>
+                      {entry.official && <OfficialBadge />}
+                    </div>
                     <span className="mt-1 flex items-center gap-1.5 text-[11px] text-textMuted">
                       <PluginIcon
                         iconUrl={entry.icon_url}
@@ -461,7 +464,6 @@ const PluginsSettings = () => {
                     </span>
                   </div>
                   <div className="mt-2.5 flex items-center gap-1.5">
-                    {entry.official && <OfficialBadge />}
                     <TierBadge tier={entry.tier} />
                   </div>
                   <p
@@ -538,6 +540,7 @@ const PluginsSettings = () => {
                       <span className="truncate text-[14px] font-semibold text-textPrimary">
                         {plugin.name}
                       </span>
+                      {pluginOfficial && <OfficialBadge />}
                       <TierBadge tier={plugin.tier} />
                       {plugin.source === 'local-dev' && (
                         <span className="rounded border border-sky-400/20 bg-sky-500/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-sky-300">
