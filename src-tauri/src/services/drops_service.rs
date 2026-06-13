@@ -221,6 +221,12 @@ impl DropsService {
 
     /// Create headers for GQL requests (mimicking TwitchDropsMiner's auth_state.headers())
     fn create_gql_headers(&self, token: &str) -> HeaderMap {
+        Self::gql_headers(token, &self.device_id, &self.session_id)
+    }
+
+    /// Builds the Android-client GQL headers from owned values, so the detached
+    /// watched-channel monitor task can issue authenticated reads without `&self`.
+    fn gql_headers(token: &str, device_id: &str, session_id: &str) -> HeaderMap {
         let mut headers = HeaderMap::new();
         headers.insert("Client-ID", HeaderValue::from_static(CLIENT_ID));
         headers.insert(ACCEPT, HeaderValue::from_static("*/*"));
@@ -232,13 +238,10 @@ impl DropsService {
         );
         headers.insert("Origin", HeaderValue::from_static(CLIENT_URL));
         headers.insert("Referer", HeaderValue::from_static(CLIENT_URL));
-        headers.insert(
-            "X-Device-Id",
-            HeaderValue::from_str(&self.device_id).unwrap(),
-        );
+        headers.insert("X-Device-Id", HeaderValue::from_str(device_id).unwrap());
         headers.insert(
             "Client-Session-Id",
-            HeaderValue::from_str(&self.session_id).unwrap(),
+            HeaderValue::from_str(session_id).unwrap(),
         );
         headers
     }
@@ -639,6 +642,19 @@ impl DropsService {
     /// Internal method to fetch campaigns from API (no caching)
     /// This should only be called by get_all_active_campaigns_cached or during mining operations
     pub(crate) async fn fetch_all_active_campaigns_from_api(&self) -> Result<Vec<DropCampaign>> {
+        Self::fetch_active_campaigns(&self.client, &self.device_id, &self.session_id).await
+    }
+
+    /// Fetches all active drop campaigns with per-account progress (each drop's
+    /// `self.currentMinutesWatched` / `isClaimed`). Takes only owned values so
+    /// the watched-channel monitor task can refresh progress without `&self`.
+    /// Drop progress on Twitch is account-wide, so this reads back exactly what
+    /// the watch heartbeat earned on the on-screen channel.
+    pub(crate) async fn fetch_active_campaigns(
+        client: &Client,
+        device_id: &str,
+        session_id: &str,
+    ) -> Result<Vec<DropCampaign>> {
         debug!("[fetch_all_active_campaigns_from_api] Starting (no filters)...");
 
         let token = match DropsAuthService::get_token().await {
@@ -710,10 +726,9 @@ impl DropsService {
         }
         "#;
 
-        let response = self
-            .client
+        let response = client
             .post("https://gql.twitch.tv/gql")
-            .headers(self.create_gql_headers(&token))
+            .headers(Self::gql_headers(&token, device_id, session_id))
             .json(&serde_json::json!({
                 "query": query,
                 "variables": {}
@@ -972,19 +987,28 @@ impl DropsService {
         Ok(result)
     }
 
-    /// Updates the service's internal state with fresh campaign data and calculates progress.
-    pub async fn update_campaigns_and_progress(&self, campaigns: &[DropCampaign]) {
-        let mut progress_map = self.drop_progress.write().await;
-        progress_map.clear(); // Clear old progress before updating
-
+    /// Builds the drop-progress map from campaign data. Account-wide progress
+    /// lives in each drop's `self` field. Shared by the UI sync path and the
+    /// watched-channel monitor refresh so the two never drift.
+    fn progress_from_campaigns(campaigns: &[DropCampaign]) -> HashMap<String, DropProgress> {
+        let mut map = HashMap::new();
         for campaign in campaigns {
             for drop in &campaign.time_based_drops {
                 if let Some(mut progress) = drop.progress.clone() {
                     progress.campaign_id = campaign.id.clone();
                     progress.drop_id = drop.id.clone();
-                    progress_map.insert(drop.id.clone(), progress);
+                    map.insert(drop.id.clone(), progress);
                 }
             }
+        }
+        map
+    }
+
+    /// Updates the service's internal state with fresh campaign data and calculates progress.
+    pub async fn update_campaigns_and_progress(&self, campaigns: &[DropCampaign]) {
+        {
+            let mut progress_map = self.drop_progress.write().await;
+            *progress_map = Self::progress_from_campaigns(campaigns);
         }
 
         // Update cached campaign count
@@ -1284,12 +1308,19 @@ impl DropsService {
         channel_id: &str,
         _channel_name: &str,
         claim_id: &str,
-    ) -> Result<i32> {
+    ) -> Result<BonusClaimResult> {
         let token = DropsAuthService::get_token().await?;
 
+        // Field selection mirrors the official web client's ClaimCommunityPoints
+        // (verified capture): `claim.pointsEarnedTotal` is the exact credited
+        // amount (multipliers included), `currentPoints` is the new balance.
         let mutation = r#"
         mutation ClaimCommunityPoints($input: ClaimCommunityPointsInput!) {
             claimCommunityPoints(input: $input) {
+                claim {
+                    pointsEarnedTotal
+                    pointsEarnedBaseline
+                }
                 currentPoints
                 error {
                     code
@@ -1323,13 +1354,20 @@ impl DropsService {
             ));
         }
 
-        // Parse response to get points earned
         let result: serde_json::Value = response.json().await?;
-        let current_points = result["data"]["claimCommunityPoints"]["currentPoints"]
+        let payload = &result["data"]["claimCommunityPoints"];
+        let new_balance = payload["currentPoints"].as_i64().unwrap_or(0) as i32;
+        // Bonus chests are 50 at baseline; fall back to that if the response
+        // omits the earned fields for any reason.
+        let points_earned = payload["claim"]["pointsEarnedTotal"]
             .as_i64()
-            .unwrap_or(0) as i32;
+            .or_else(|| payload["claim"]["pointsEarnedBaseline"].as_i64())
+            .unwrap_or(50) as i32;
 
-        Ok(current_points)
+        Ok(BonusClaimResult {
+            new_balance,
+            points_earned,
+        })
     }
 
     pub async fn get_drop_progress(&self) -> Vec<DropProgress> {
@@ -1436,13 +1474,12 @@ impl DropsService {
         let settings = self.settings.clone();
         let drop_progress = self.drop_progress.clone();
         let claimed_drops = self.claimed_drops.clone();
-        let channel_points_history = self.channel_points_history.clone();
-        let lifetime_points_mined = self.lifetime_points_mined.clone();
-        let channel_points_balances = self.channel_points_balances.clone();
         let monitoring_active = self.monitoring_active.clone();
         let current_channel = self.current_channel.clone();
         let attempted_claims = self.attempted_claims.clone();
         let client = self.client.clone();
+        let device_id = self.device_id.clone();
+        let session_id = self.session_id.clone();
 
         // Spawn background monitoring task
         tokio::spawn(async move {
@@ -1450,6 +1487,13 @@ impl DropsService {
                 "Started drops and channel points monitoring for {}",
                 channel_name
             );
+
+            // Watched-channel drop progress is account-wide: the heartbeat earns
+            // it server-side, and this poll reads it back so the Drops center and
+            // the finished-drop auto-claim below work with no background miner.
+            // Refreshed on its own cadence rather than every check tick.
+            const PROGRESS_REFRESH_SECS: i64 = 120;
+            let mut last_progress_refresh: Option<DateTime<Utc>> = None;
 
             loop {
                 // Check if monitoring should continue
@@ -1465,68 +1509,38 @@ impl DropsService {
 
                 // Get current channel info
                 let channel_info = current_channel.read().await.clone();
-                if let Some((ch_id, ch_name)) = channel_info {
-                    // Check channel points
-                    if let Ok(claim_available) = Self::check_channel_points_internal(
-                        &client,
-                        &ch_id,
-                        &ch_name,
-                        &channel_points_balances,
-                    )
-                    .await
-                    {
-                        if let Some(claim) = claim_available {
-                            // Notify about available claim
-                            if current_settings.notify_on_drop_available {
-                                let _ = app_handle.emit("channel-points-available", &claim);
+                if channel_info.is_some() {
+                    // The watched channel's bonus chest is claimed by the
+                    // frontend (ChatWidget, `auto_claim_points_watching`), the
+                    // single user-present surface. The background multi-channel
+                    // sweep lives in the opt-in farming plugin. This loop only
+                    // keeps drop progress fresh and claims finished drops below.
+
+                    // Refresh account-wide drop progress so the watched channel's
+                    // earned minutes (credited by the heartbeat) reach the Drops
+                    // center display and the auto-claim below. This is the core,
+                    // always-on watched-channel path; the background miner is a
+                    // separate opt-in plugin.
+                    let refresh_due = last_progress_refresh
+                        .map(|t| {
+                            Utc::now().signed_duration_since(t).num_seconds()
+                                >= PROGRESS_REFRESH_SECS
+                        })
+                        .unwrap_or(true);
+                    if refresh_due {
+                        match Self::fetch_active_campaigns(&client, &device_id, &session_id).await {
+                            Ok(campaigns) => {
+                                let fresh = Self::progress_from_campaigns(&campaigns);
+                                *drop_progress.write().await = fresh;
+                                last_progress_refresh = Some(Utc::now());
                             }
-
-                            // Auto-claim if enabled
-                            if current_settings.auto_claim_channel_points {
-                                match Self::claim_channel_points_internal(
-                                    &client, &ch_id, &ch_name, &claim.id,
-                                )
-                                .await
-                                {
-                                    Ok(new_balance) => {
-                                        debug!(
-                                            "Auto-claimed {} channel points! New balance: {}",
-                                            claim.points_earned, new_balance
-                                        );
-
-                                        // Add to history
-                                        {
-                                            let mut history = channel_points_history.write().await;
-                                            history.push(claim.clone());
-                                        }
-
-                                        // Accumulate lifetime auto-claimed points (persisted across sessions)
-                                        let claimed_points = claim.points_earned.max(0) as i64;
-                                        if claimed_points > 0 {
-                                            let total = {
-                                                let mut lifetime =
-                                                    lifetime_points_mined.write().await;
-                                                *lifetime += claimed_points;
-                                                *lifetime
-                                            };
-                                            save_lifetime_points_mined(total);
-                                        }
-
-                                        // Notify about successful claim
-                                        if current_settings.notify_on_points_claimed {
-                                            let _ =
-                                                app_handle.emit("channel-points-claimed", &claim);
-                                        }
-                                    }
-                                    Err(e) => {
-                                        error!("Failed to auto-claim channel points: {}", e);
-                                    }
-                                }
+                            Err(e) => {
+                                debug!("Watched-channel drop progress refresh failed: {}", e);
                             }
                         }
                     }
 
-                    // Check for claimable drops (progress is updated via WebSocket, no need to fetch campaigns)
+                    // Check for claimable drops from the refreshed progress map.
                     // Filter out drops we've already attempted to claim to prevent spam
                     let claimable_drops: Vec<DropProgress> = {
                         let progress_map = drop_progress.read().await;
@@ -1657,178 +1671,6 @@ impl DropsService {
     }
 
     // Internal helper methods that don't require &self
-    async fn check_channel_points_internal(
-        client: &Client,
-        channel_id: &str,
-        channel_name: &str,
-        balances: &Arc<RwLock<HashMap<String, ChannelPointsBalance>>>,
-    ) -> Result<Option<ChannelPointsClaim>> {
-        let token = DropsAuthService::get_token().await?;
-
-        // Create headers similar to the main methods
-        let mut headers = HeaderMap::new();
-        headers.insert("Client-ID", HeaderValue::from_static(CLIENT_ID));
-        headers.insert(ACCEPT, HeaderValue::from_static("*/*"));
-        headers.insert("Accept-Language", HeaderValue::from_static("en-US"));
-        headers.insert("Accept-Encoding", HeaderValue::from_static("gzip"));
-        headers.insert(
-            AUTHORIZATION,
-            HeaderValue::from_str(&format!("OAuth {}", token)).unwrap(),
-        );
-        headers.insert("Origin", HeaderValue::from_static(CLIENT_URL));
-        headers.insert("Referer", HeaderValue::from_static(CLIENT_URL));
-
-        // Use persisted query like TwitchDropsMiner
-        let response = client
-            .post("https://gql.twitch.tv/gql")
-            .headers(headers)
-            .json(&serde_json::json!({
-                "operationName": "ChannelPointsContext",
-                "variables": {
-                    "channelLogin": channel_name.to_lowercase()
-                },
-                "extensions": {
-                    "persistedQuery": {
-                        "version": 1,
-                        "sha256Hash": "9988086babc615a918a1e9a722ff41d98847acac822645209ac7379eecb27152"
-                    }
-                }
-            }))
-            .send()
-            .await?;
-
-        let response_json: serde_json::Value = response.json().await?;
-
-        // Check for errors
-        if let Some(errors) = response_json.get("errors") {
-            return Err(anyhow::anyhow!("GraphQL errors: {:?}", errors));
-        }
-
-        // Parse the response - structure is: data.channel.self.communityPoints
-        if let Some(data) = response_json.get("data") {
-            if let Some(channel) = data.get("channel") {
-                let channel_id_from_response = channel
-                    .get("id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(channel_id);
-
-                if let Some(self_data) = channel.get("self") {
-                    if let Some(community_points) = self_data.get("communityPoints") {
-                        let balance_val = community_points
-                            .get("balance")
-                            .and_then(|v| v.as_i64())
-                            .unwrap_or(0) as i32;
-
-                        // Update balance
-                        let balance = ChannelPointsBalance {
-                            channel_id: channel_id_from_response.to_string(),
-                            channel_name: channel_name.to_string(),
-                            balance: balance_val,
-                            last_updated: Utc::now(),
-                            points_name: None, // Not fetched via persisted query
-                            points_icon_url: None,
-                        };
-
-                        let mut balances_lock = balances.write().await;
-                        balances_lock.insert(channel_id_from_response.to_string(), balance);
-
-                        // Check if there's a claim available
-                        if let Some(available_claim) = community_points.get("availableClaim") {
-                            if !available_claim.is_null() {
-                                let claim_id = available_claim
-                                    .get("id")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("")
-                                    .to_string();
-                                let points_earned = available_claim
-                                    .get("pointsEarnedTotal")
-                                    .or_else(|| available_claim.get("pointsEarnedBaseline"))
-                                    .and_then(|v| v.as_i64())
-                                    .unwrap_or(50)
-                                    as i32;
-
-                                return Ok(Some(ChannelPointsClaim {
-                                    id: claim_id,
-                                    channel_id: channel_id_from_response.to_string(),
-                                    channel_name: channel_name.to_string(),
-                                    points_earned,
-                                    claimed_at: Utc::now(),
-                                    claim_type: ChannelPointsClaimType::Watch,
-                                }));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(None)
-    }
-
-    async fn claim_channel_points_internal(
-        client: &Client,
-        channel_id: &str,
-        _channel_name: &str,
-        claim_id: &str,
-    ) -> Result<i32> {
-        let token = DropsAuthService::get_token().await?;
-
-        // Create headers similar to the main methods
-        let mut headers = HeaderMap::new();
-        headers.insert("Client-ID", HeaderValue::from_static(CLIENT_ID));
-        headers.insert(ACCEPT, HeaderValue::from_static("*/*"));
-        headers.insert("Accept-Language", HeaderValue::from_static("en-US"));
-        headers.insert("Accept-Encoding", HeaderValue::from_static("gzip"));
-        headers.insert(
-            AUTHORIZATION,
-            HeaderValue::from_str(&format!("OAuth {}", token)).unwrap(),
-        );
-        headers.insert("Origin", HeaderValue::from_static(CLIENT_URL));
-        headers.insert("Referer", HeaderValue::from_static(CLIENT_URL));
-
-        let mutation = r#"
-        mutation ClaimCommunityPoints($input: ClaimCommunityPointsInput!) {
-            claimCommunityPoints(input: $input) {
-                currentPoints
-                error {
-                    code
-                }
-            }
-        }
-        "#;
-
-        let response = client
-            .post("https://gql.twitch.tv/gql")
-            .headers(headers)
-            .json(&serde_json::json!({
-                "query": mutation,
-                "variables": {
-                    "input": {
-                        "channelID": channel_id,
-                        "claimID": claim_id
-                    }
-                }
-            }))
-            .send()
-            .await?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let error_text = response.text().await?;
-            return Err(anyhow::anyhow!(
-                "Failed to claim channel points: {}",
-                error_text
-            ));
-        }
-
-        let result: serde_json::Value = response.json().await?;
-        let current_points = result["data"]["claimCommunityPoints"]["currentPoints"]
-            .as_i64()
-            .unwrap_or(0) as i32;
-
-        Ok(current_points)
-    }
-
     async fn get_active_campaigns_internal(
         client: &Client,
         drop_progress: &Arc<RwLock<HashMap<String, DropProgress>>>,

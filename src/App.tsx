@@ -18,6 +18,7 @@ import { useCommandPaletteHotkey } from './hooks/useCommandPaletteHotkey';
 import { useKeybindings } from './keybindings';
 import { startSnippetSync } from './stores/snippetStore';
 import PluginUiHost from './plugins-ui/PluginUiHost';
+import PluginUpdatesChecker from './components/plugins/PluginUpdatesChecker';
 import PluginOverlayOutlet from './plugins-ui/PluginOverlayOutlet';
 import { usemultiNookStore } from './stores/multiNookStore';
 import { MultiNookView } from './components/multi-nook/MultiNookView';
@@ -130,6 +131,9 @@ function App() {
   
   const [showChangelog, setShowChangelog] = useState(false);
   const [changelogVersion, setChangelogVersion] = useState<string | null>(null);
+  // Dev-only: a changelog opened by the simulated-update reload, so its close
+  // doesn't persist last_seen_version (the version isn't really installed).
+  const devForcedChangelogRef = useRef(false);
   const [showSetupWizard, setShowSetupWizard] = useState(false);
 
   // Track previous placement and chat size to detect changes
@@ -207,7 +211,7 @@ function App() {
           }
 
           const size = await window.innerSize();
-          const titleBarHeight = 33;
+          const titleBarHeight = 40;
 
           Logger.debug('[ChatSize] Calculating window size to preserve video dimensions');
           Logger.debug('[ChatSize] Old layout:', oldPlacement, 'with chat size', oldChatSize);
@@ -426,6 +430,12 @@ function App() {
     const initializeApp = async () => {
       await loadSettings();
       await checkAuthStatus();
+
+      // Resume the stream (and mining) the user was on before an update restart.
+      // Consume-once and best-effort; runs after auth so startStream has a token.
+      void import('./services/sessionResume').then(({ resumePreviousSession }) =>
+        resumePreviousSession(),
+      );
 
       // Clean up orphaned localStorage from migrated services (one-time cleanup)
       // Badge polling service moved to Rust - remove old localStorage keys
@@ -805,9 +815,30 @@ function App() {
     }
   }, [settings.quality, updateSettings, addToast]);
 
+  // Dev-only: after a simulated-update reload, pop the changelog for the version
+  // we "updated" to, mirroring how production shows it after a real update. The
+  // flag survives the webview reload via sessionStorage.
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    const v = sessionStorage.getItem('streamnook-dev-changelog');
+    if (v) {
+      sessionStorage.removeItem('streamnook-dev-changelog');
+      devForcedChangelogRef.current = true;
+      setChangelogVersion(v);
+      setShowChangelog(true);
+    }
+  }, []);
+
   // Handle changelog close - update the last seen version
   const handleChangelogClose = async () => {
     setShowChangelog(false);
+
+    // A dev-forced preview never really installed that version, so don't record
+    // it as seen (that would suppress the real changelog or mis-trigger it later).
+    if (devForcedChangelogRef.current) {
+      devForcedChangelogRef.current = false;
+      return;
+    }
 
     if (changelogVersion) {
       try {
@@ -844,8 +875,8 @@ function App() {
             settings.compact_view?.customPresets
           );
 
-          // Title bar height is approximately 33px, window borders are 1px each side
-          const titleBarHeight = 33;
+          // Title bar height is 40px, window borders are 1px each side
+          const titleBarHeight = 40;
           const windowBorderWidth = 2; // 1px border on each side
           // Subtract borders so total window width matches the preset exactly
           const targetWidth = preset.width - windowBorderWidth;
@@ -1023,8 +1054,8 @@ function App() {
         Logger.debug('[AspectRatio] Chat size:', currentChatSize);
         Logger.debug('[AspectRatio] Chat placement:', currentChatPlacement);
 
-        // Title bar height is approximately 33px
-        const titleBarHeight = 33;
+        // Title bar height is 40px
+        const titleBarHeight = 40;
 
         let targetAspectRatio = 16.0 / 9.0;
         
@@ -1131,7 +1162,7 @@ function App() {
         const width = size.width;
         const height = size.height;
 
-        const titleBarHeight = 33;
+        const titleBarHeight = 40;
 
         let targetAspectRatio = 16.0 / 9.0;
         // Dynamically measure sidebar
@@ -1627,6 +1658,7 @@ function App() {
       />
       <PluginRuntimeBridge />
       <PluginUiHost />
+      <PluginUpdatesChecker />
       <PluginOverlayOutlet />
       <SetupWizard
         isOpen={showSetupWizard}

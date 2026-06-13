@@ -32,7 +32,8 @@ use commands::{
     cosmetics_cache::*, diagnostic_logging::*, discord::*, drops::*, emoji::*, emote_prefetch::*,
     emotes::*, eventsub::*, hype_train::*, identity::*, justlog::*, layout::*, link_preview::*,
     logs::*, mod_log_storage::*, multi_nook::*, plugins::*, profile_cache::*, resub::*,
-    screen_capture::*, settings::*, seventv::*, seventv_cosmetics::*, seventv_cosmetics_fetch::*,
+    screen_capture::*, session::*, settings::*, seventv::*, seventv_cosmetics::*,
+    seventv_cosmetics_fetch::*,
     streaming::*, subscriptions::*, twitch::*, universal_cache::*, user_profile::*,
     watch_streak::*, whisper_storage::*,
 };
@@ -43,7 +44,6 @@ use services::badge_polling_service::BadgePollingService;
 use services::cache_service;
 use services::drops_service::DropsService;
 use services::live_notification_service::LiveNotificationService;
-use services::mining_service::MiningService;
 use services::whisper_service::WhisperService;
 use std::sync::{Arc, Mutex};
 use tauri::{
@@ -219,9 +219,6 @@ fn main() {
         settings.drops.clone(),
     )));
 
-    // Initialize mining service with drops service reference
-    let mining_service = Arc::new(TokioMutex::new(MiningService::new(drops_service.clone())));
-
     let settings_arc = Arc::new(Mutex::new(settings));
 
     // Initialize live notification service
@@ -264,6 +261,10 @@ fn main() {
         .manage(eventsub_service_state)
         .setup(move |app| {
             let app_handle = app.handle().clone();
+            // Runtime stall detector: measures backend freezes (tokio-blocked vs
+            // whole-process) and records them to the capture file. Started here,
+            // inside the tokio runtime Tauri set up.
+            services::runtime_watchdog::start();
             // Hand the stream server an app handle so the ad auto-pivot can emit
             // its `ad-pivot` reload event to the player.
             services::stream_server::set_app_handle(app_handle.clone());
@@ -289,7 +290,6 @@ fn main() {
 
             // Create and manage the background service correctly within the setup hook
             let background_service = Arc::new(TokioMutex::new(BackgroundService::new(
-                Arc::new(tokio::sync::RwLock::new(settings_arc.lock().unwrap().clone())),
                 app_handle.clone(),
                 drops_service.clone(),
             )));
@@ -311,7 +311,6 @@ fn main() {
             let app_state = AppState {
                 settings: settings_arc,
                 drops_service,
-                mining_service,
                 background_service: background_service.clone(),
                 layout_service: layout_service.clone(),
                 emote_service: emote_service.clone(),
@@ -732,13 +731,6 @@ fn main() {
             update_monitoring_channel,
             report_player_playing,
             // Mining commands
-            start_auto_mining,
-            start_campaign_mining,
-            get_eligible_channels_for_campaign,
-            start_campaign_mining_with_channel,
-            stop_auto_mining,
-            get_mining_status,
-            is_auto_mining,
             // Drops Authentication commands
             start_drops_device_flow,
             poll_drops_token,
@@ -751,8 +743,6 @@ fn main() {
             get_active_prediction,
             get_channel_points_for_channel,
             // Watch token allocation commands
-            set_reserved_channel,
-            get_reserved_channel,
             // Channel Points Rewards commands
             get_channel_rewards,
             redeem_channel_reward,
@@ -768,6 +758,10 @@ fn main() {
             check_for_bundle_update,
             extract_bundled_components,
             download_and_install_bundle,
+            restart_to_apply_update,
+            // Session resume
+            save_resume_snapshot,
+            take_resume_snapshot,
             // Announcements
             fetch_announcements,
             fetch_user_chat_logs,

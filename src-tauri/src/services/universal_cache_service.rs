@@ -88,11 +88,16 @@ fn ensure_flush_task() {
                         continue;
                     }
                 };
-                if let Err(e) = save_manifest_to_disk(&snapshot) {
-                    debug!(
-                        "[UniversalCache] Debounced manifest flush failed (will retry): {}",
-                        e
-                    );
+                // On the blocking pool: the manifest can be large JSON, and a
+                // sync write here (on this runtime task) stalls every async task
+                // in the process — the same sync-fs-on-runtime class behind the
+                // `rt_stall` freezes.
+                let flushed =
+                    tokio::task::spawn_blocking(move || save_manifest_to_disk(&snapshot)).await;
+                if !matches!(flushed, Ok(Ok(()))) {
+                    if let Ok(Err(e)) = flushed {
+                        debug!("[UniversalCache] Debounced manifest flush failed (will retry): {e}");
+                    }
                     MANIFEST_DIRTY.store(true, Ordering::Release);
                 }
             }
@@ -399,24 +404,31 @@ async fn download_universal_manifest() -> Result<bool> {
     }
 }
 
-/// Get an item from cache (checks local first, downloads manifest if needed)
-/// NOTE: This function is optimized for fast reads - it doesn't acquire locks for cache hits
+/// Read a SINGLE entry (cloned) plus `last_sync` from the in-memory manifest,
+/// without cloning the whole manifest. `load_manifest()` clones every entry
+/// (thousands), so doing it per-lookup is heavy CPU on the calling thread — a
+/// busy channel / prefetch-plan issues thousands of `get_cached_item` calls and
+/// the cumulative full-manifest clones blocked the async runtime (a mid-session
+/// `rt_stall`). This reads only what a lookup needs.
+fn peek_entry(id: &str) -> Result<(Option<UniversalCacheEntry>, Option<u64>)> {
+    let guard = MANIFEST_MEMORY
+        .read()
+        .map_err(|_| anyhow::anyhow!("manifest memory lock poisoned"))?;
+    Ok((guard.entries.get(id).cloned(), guard.last_sync))
+}
+
+/// Get an item from cache (checks local first, downloads manifest if needed).
+/// Reads only the requested entry from memory — no full-manifest clone.
 pub async fn get_cached_item(
     cache_type: CacheType,
     id: &str,
 ) -> Result<Option<UniversalCacheEntry>> {
-    // Load manifest WITHOUT lock for fast cache reads
-    // This is safe because:
-    // 1. load_manifest handles corrupted files gracefully
-    // 2. We only read, never write here
-    // 3. Worst case: we get slightly stale data or miss a just-added entry
-    let manifest = load_manifest()?;
+    let (entry, last_sync) = peek_entry(id)?;
 
     // Check if we have it locally
-    if let Some(entry) = manifest.entries.get(id) {
-        // Verify it's the right type and not expired
+    if let Some(entry) = entry {
         if entry.cache_type == cache_type && !is_cache_expired(&entry.metadata) {
-            return Ok(Some(entry.clone()));
+            return Ok(Some(entry));
         } else if is_cache_expired(&entry.metadata) {
             debug!("[UniversalCache] Local cache entry for {} is expired", id);
         }
@@ -426,10 +438,9 @@ pub async fn get_cached_item(
     // in the last day. (The primary daily refresh runs at app start via
     // auto_sync_if_stale, which compares remote vs local timestamp; this is
     // the fallback for lookup-misses during a single very long session.)
-    let should_download = manifest.last_sync.is_none() || {
+    let should_download = last_sync.is_none() || {
         let current_time = get_current_timestamp();
-        let last_sync = manifest.last_sync.unwrap_or(0);
-        current_time - last_sync > 24 * 60 * 60 // More than 1 day old
+        current_time - last_sync.unwrap_or(0) > 24 * 60 * 60 // More than 1 day old
     };
 
     if should_download {
@@ -437,14 +448,11 @@ pub async fn get_cached_item(
         let downloaded = download_universal_manifest().await?;
 
         if downloaded {
-            // Reload manifest after download (no lock needed for reads)
-            let manifest = load_manifest()?;
-
-            // Try to find the item again
-            if let Some(entry) = manifest.entries.get(id) {
+            let (entry, _) = peek_entry(id)?;
+            if let Some(entry) = entry {
                 if entry.cache_type == cache_type && !is_cache_expired(&entry.metadata) {
                     debug!("[UniversalCache] Found {} in downloaded manifest", id);
-                    return Ok(Some(entry.clone()));
+                    return Ok(Some(entry));
                 }
             }
         }
@@ -453,20 +461,25 @@ pub async fn get_cached_item(
     Ok(None)
 }
 
-/// Save an item to local cache (with lock to prevent concurrent writes)
+/// Save an item to local cache (with lock to prevent concurrent writes).
+///
+/// The body runs on the blocking pool: `load_manifest()` + `save_manifest()`
+/// each clone the ENTIRE manifest (thousands of accumulated entries), so a sync
+/// run on a runtime worker is heavy CPU that stalls every async task — observed
+/// as a multi-second `rt_stall` when mid-session caching fires on a large
+/// manifest. (The O(N^2) per-file clone cost remains; this just keeps it off
+/// the async runtime. A true fix batches the manifest update — see the batch
+/// variant below, which `cache_file` callers should prefer for bulk work.)
 pub async fn save_cached_item(entry: UniversalCacheEntry) -> Result<()> {
-    // Acquire lock to prevent concurrent writes
-    let _lock = MANIFEST_LOCK.lock().unwrap();
-
-    let mut manifest = load_manifest()?;
-
-    // Add or update entry
-    manifest.entries.insert(entry.id.clone(), entry);
-
-    // Save manifest
-    save_manifest(&manifest)?;
-
-    Ok(())
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        let _lock = MANIFEST_LOCK.lock().unwrap();
+        let mut manifest = load_manifest()?;
+        manifest.entries.insert(entry.id.clone(), entry);
+        save_manifest(&manifest)?;
+        Ok(())
+    })
+    .await
+    .context("save_cached_item task panicked")?
 }
 
 /// Insert many file entries with a SINGLE manifest clone-pair under one lock,
@@ -478,13 +491,19 @@ pub async fn save_cached_items_batch(entries: Vec<UniversalCacheEntry>) -> Resul
     if entries.is_empty() {
         return Ok(());
     }
-    let _lock = MANIFEST_LOCK.lock().unwrap();
-    let mut manifest = load_manifest()?;
-    for entry in entries {
-        manifest.entries.insert(entry.id.clone(), entry);
-    }
-    save_manifest(&manifest)?;
-    Ok(())
+    // Blocking pool: the manifest clone-pair is heavy CPU on a big cache; never
+    // on the async runtime (see save_cached_item).
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        let _lock = MANIFEST_LOCK.lock().unwrap();
+        let mut manifest = load_manifest()?;
+        for entry in entries {
+            manifest.entries.insert(entry.id.clone(), entry);
+        }
+        save_manifest(&manifest)?;
+        Ok(())
+    })
+    .await
+    .context("save_cached_items_batch task panicked")?
 }
 
 /// Save a new item to cache with metadata
@@ -496,10 +515,11 @@ pub async fn cache_item(
     source: String,
     expiry_days: u32,
 ) -> Result<()> {
-    // Preserve existing position if the entry already has one
-    let existing_position = load_manifest()
+    // Preserve existing position if the entry already has one. peek_entry reads
+    // just this entry — not a full-manifest clone (see get_cached_item).
+    let existing_position = peek_entry(&id)
         .ok()
-        .and_then(|m| m.entries.get(&id).and_then(|e| e.position));
+        .and_then(|(e, _)| e.and_then(|e| e.position));
 
     let entry = UniversalCacheEntry {
         id: id.clone(),
@@ -1170,8 +1190,17 @@ pub async fn cache_file(
     let file_name = format!("{}.{}", safe_id, extension);
     let file_path = type_dir.join(&file_name);
 
-    let mut file = fs::File::create(&file_path)?;
-    std::io::copy(&mut Cursor::new(bytes), &mut file)?;
+    // Write on the blocking pool: a channel join downloads many emotes/badges
+    // and a sync write per file on the runtime saturates the worker threads
+    // (the join-time freeze). The HTTP fetch above is already async.
+    let write_path = file_path.clone();
+    tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+        let mut file = fs::File::create(&write_path)?;
+        std::io::copy(&mut Cursor::new(bytes), &mut file)?;
+        Ok(())
+    })
+    .await
+    .context("cache_file write task panicked")??;
 
     let path_str = file_path.to_string_lossy().to_string();
     let manifest_id = format!("file:{}", id);
@@ -1243,8 +1272,17 @@ pub async fn download_file_to_disk(
     let file_name = format!("{}.{}", safe_id, extension);
     let file_path = type_dir.join(&file_name);
 
-    let mut file = fs::File::create(&file_path)?;
-    std::io::copy(&mut Cursor::new(bytes), &mut file)?;
+    // Write on the blocking pool: a channel join downloads many emotes/badges
+    // and a sync write per file on the runtime saturates the worker threads
+    // (the join-time freeze). The HTTP fetch above is already async.
+    let write_path = file_path.clone();
+    tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+        let mut file = fs::File::create(&write_path)?;
+        std::io::copy(&mut Cursor::new(bytes), &mut file)?;
+        Ok(())
+    })
+    .await
+    .context("cache_file write task panicked")??;
 
     let path_str = file_path.to_string_lossy().to_string();
     let manifest_id = format!("file:{}", id);

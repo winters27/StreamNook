@@ -16,14 +16,24 @@ lazy_static! {
 /// Initialize the logging system.
 /// Call this once at application startup.
 pub fn init_logging() {
-    // Build a custom env_logger that respects our runtime filter
-    env_logger::Builder::new()
-        .filter_level(LevelFilter::Debug) // Allow all levels initially
+    // Terminal default is INFO, not DEBUG: debug-level logs are the per-frame /
+    // per-request firehose that makes the dev terminal unreadable (and the
+    // sheer write volume is itself overhead). INFO keeps lifecycle + meaningful
+    // lines. RUST_LOG overrides if a developer wants the firehose back, and the
+    // runtime toggle below can still raise to Debug. The structured file
+    // capture (ll_diagnostics) is independent of this and stays full-fidelity.
+    let mut builder = env_logger::Builder::new();
+    if std::env::var("RUST_LOG").is_ok() {
+        builder.parse_default_env();
+    } else {
+        builder.filter_level(LevelFilter::Info);
+    }
+    builder
         .format_timestamp_millis()
         .format_module_path(true)
         .init();
 
-    println!("[DiagnosticLogger] Logging system initialized");
+    println!("[DiagnosticLogger] Logging system initialized (terminal: info; file capture: full)");
 }
 
 /// Set whether diagnostic logging is enabled.
@@ -31,9 +41,10 @@ pub fn init_logging() {
 pub fn set_diagnostics_enabled(enabled: bool) {
     DIAGNOSTICS_ENABLED.store(enabled, Ordering::SeqCst);
 
-    // Update the log level filter
+    // Update the log level filter. "Enabled" raises to Info (not Debug — debug
+    // is the firehose that floods the terminal); disabled drops to Warn.
     let level = if enabled {
-        LevelFilter::Debug
+        LevelFilter::Info
     } else {
         LevelFilter::Warn
     };

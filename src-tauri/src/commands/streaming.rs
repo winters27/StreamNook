@@ -311,17 +311,18 @@ pub fn start_ll_diag(label: String) -> Result<String, String> {
         .map_err(|e| e.to_string())
 }
 
-/// Append a batch of already-serialized JSON-line records to the active diagnostic
-/// session. Best-effort; never errors playback.
+/// Append a batch of already-serialized JSON-line records to the diagnostic
+/// session identified by `path` (records from superseded sessions are dropped,
+/// see `ll_diagnostics::append_lines`). Best-effort; never errors playback.
 #[tauri::command]
-pub fn append_ll_diag(lines: Vec<String>) {
-    crate::services::ll_diagnostics::append_lines(&lines);
+pub fn append_ll_diag(lines: Vec<String>, path: String) {
+    crate::services::ll_diagnostics::append_lines(&lines, &path);
 }
 
-/// End the active diagnostic session.
+/// End the diagnostic session identified by `path` (no-op if superseded).
 #[tauri::command]
-pub fn stop_ll_diag() {
-    crate::services::ll_diagnostics::stop_session();
+pub fn stop_ll_diag(path: String) {
+    crate::services::ll_diagnostics::stop_session(&path);
 }
 
 /// Current ad-detection state for the live stream the local player is pulling.

@@ -423,10 +423,20 @@ export default function DropsInventoryTab({
 
                         return (
                             <div key={group.gameId} className="glass-panel border border-borderLight overflow-hidden">
-                                {/* Game Header - Clickable */}
-                                <button
+                                {/* Game Header - Clickable. A div (not a button) so
+                                    the "Claim All" button can live inside it without
+                                    nesting one button in another. */}
+                                <div
+                                    role="button"
+                                    tabIndex={0}
                                     onClick={() => toggleGameExpanded(group.gameId)}
-                                    className="w-full flex items-center gap-3 p-3 hover:bg-surface/50 transition-colors"
+                                    onKeyDown={(e) => {
+                                        if (e.key === 'Enter' || e.key === ' ') {
+                                            e.preventDefault();
+                                            toggleGameExpanded(group.gameId);
+                                        }
+                                    }}
+                                    className="w-full flex items-center gap-3 p-3 hover:bg-surface/50 transition-colors cursor-pointer"
                                 >
                                     {/* Box Art */}
                                     <img
@@ -498,7 +508,7 @@ export default function DropsInventoryTab({
                                             <ChevronRight size={18} className="text-textSecondary" />
                                         )}
                                     </div>
-                                </button>
+                                </div>
 
                                 {/* Expanded Content */}
                                 {isExpanded && (

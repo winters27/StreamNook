@@ -249,6 +249,7 @@ const ChatSettings = () => {
     shorten_links: stored?.shorten_links ?? true,
     link_preview_trusted_domains: stored?.link_preview_trusted_domains ?? [],
     pinned_collapsed_style: stored?.pinned_collapsed_style ?? 'bar',
+    pinned_start_collapsed: stored?.pinned_start_collapsed ?? true,
   };
 
   const setDesign = (patch: Partial<typeof cd>) => {
@@ -531,6 +532,17 @@ const ChatSettings = () => {
             />
           )}
         </SettingsRow>
+
+        <SettingsRow
+          title="Pins Start Collapsed"
+          description="Show the pinned message as its compact one-line bar when you enter a channel. Click the bar to expand it; turn this off to always open pins fully expanded."
+          control={
+            <Toggle
+              enabled={cd.pinned_start_collapsed ?? true}
+              onChange={() => setDesign({ pinned_start_collapsed: !(cd.pinned_start_collapsed ?? true) })}
+            />
+          }
+        />
 
         <SettingsRow
           title="Collapsed Pinned Message"

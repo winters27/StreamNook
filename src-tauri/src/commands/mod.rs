@@ -31,6 +31,7 @@ pub mod plugins;
 pub mod profile_cache;
 pub mod resub;
 pub mod screen_capture;
+pub mod session;
 pub mod settings;
 pub mod seventv;
 pub mod seventv_cosmetics;

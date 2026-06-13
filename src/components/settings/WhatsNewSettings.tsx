@@ -4,82 +4,12 @@ import { Loader2, Github, ChevronDown, ChevronRight, AlertCircle, Sparkles, Bug,
 import { parseInlineMarkdown } from '../../services/markdownService';
 import { Logger } from '../../utils/logger';
 import { Tooltip } from '../ui/Tooltip';
-
-interface GitHubRelease {
-    tag_name: string;
-    name: string | null;
-    body: string;
-    published_at: string;
-    html_url: string;
-    draft: boolean;
-    prerelease: boolean;
-}
-
-const REPO = 'winters27/StreamNook';
-const RELEASES_URL = `https://api.github.com/repos/${REPO}/releases?per_page=20`;
-// Bumped from _v1 to _v2 when the cache schema gained an etag field. Old v1
-// entries (no etag) won't be picked up, so any user who had stale releases
-// pinned in localStorage from before this fix gets a clean re-fetch on first
-// open.
-const CACHE_KEY = 'streamnook_whatsnew_cache_v2';
-
-interface CachedReleases {
-    fetchedAt: number;
-    etag: string | null;
-    releases: GitHubRelease[];
-}
-
-const loadCache = (): CachedReleases | null => {
-    try {
-        const raw = localStorage.getItem(CACHE_KEY);
-        if (!raw) return null;
-        const parsed: CachedReleases = JSON.parse(raw);
-        if (!parsed.releases || !Array.isArray(parsed.releases)) return null;
-        return parsed;
-    } catch {
-        return null;
-    }
-};
-
-const saveCache = (data: CachedReleases) => {
-    try {
-        localStorage.setItem(CACHE_KEY, JSON.stringify(data));
-    } catch {
-        // Silently fail; cache is opportunistic.
-    }
-};
-
-// Fetch using GitHub's conditional-request flow. If we have a previous ETag we
-// send `If-None-Match`; GitHub returns 304 when nothing has changed and 304s
-// don't count against the 60/hour unauthenticated rate limit, so we can probe
-// on every mount essentially for free. When `bypassEtag` is true we skip the
-// header so the user can force a true refresh (e.g. if they suspect CDN lag).
-type FetchResult =
-    | { ok: true; kind: 'fresh'; releases: GitHubRelease[]; etag: string | null }
-    | { ok: true; kind: 'not-modified' }
-    | { ok: false; error: string };
-
-const fetchReleases = async (opts: { bypassEtag?: boolean; signal?: AbortSignal } = {}): Promise<FetchResult> => {
-    try {
-        const headers: Record<string, string> = { Accept: 'application/vnd.github+json' };
-        if (!opts.bypassEtag) {
-            const cached = loadCache();
-            if (cached?.etag) headers['If-None-Match'] = cached.etag;
-        }
-        const response = await fetch(RELEASES_URL, { headers, signal: opts.signal });
-        if (response.status === 304) return { ok: true, kind: 'not-modified' };
-        if (!response.ok) throw new Error(`GitHub API ${response.status}`);
-        const data = (await response.json()) as GitHubRelease[];
-        return {
-            ok: true,
-            kind: 'fresh',
-            releases: data.filter((r) => !r.draft),
-            etag: response.headers.get('ETag'),
-        };
-    } catch (e) {
-        return { ok: false, error: String(e) };
-    }
-};
+import {
+    fetchReleases,
+    loadReleasesCache,
+    saveReleasesCache,
+    type GitHubRelease,
+} from '../../services/releasesService';
 
 const formatPublishedDate = (iso: string): string => {
     try {
@@ -228,7 +158,7 @@ const ReleaseCard = ({
 };
 
 const WhatsNewSettings = () => {
-    const initialCache = loadCache();
+    const initialCache = loadReleasesCache();
     const [releases, setReleases] = useState<GitHubRelease[] | null>(initialCache?.releases ?? null);
     const [isLoading, setIsLoading] = useState(!initialCache);
     const [error, setError] = useState<string | null>(null);
@@ -242,7 +172,7 @@ const WhatsNewSettings = () => {
             if (result.ok) {
                 if (result.kind === 'fresh') {
                     setReleases(result.releases);
-                    saveCache({ fetchedAt: Date.now(), etag: result.etag, releases: result.releases });
+                    saveReleasesCache({ fetchedAt: Date.now(), etag: result.etag, releases: result.releases });
                 }
                 // 304 not-modified: keep cached state, nothing to do
                 setError(null);
@@ -265,7 +195,7 @@ const WhatsNewSettings = () => {
         const result = await fetchReleases({ bypassEtag: true });
         if (result.ok && result.kind === 'fresh') {
             setReleases(result.releases);
-            saveCache({ fetchedAt: Date.now(), etag: result.etag, releases: result.releases });
+            saveReleasesCache({ fetchedAt: Date.now(), etag: result.etag, releases: result.releases });
             setError(null);
         } else if (!result.ok) {
             Logger.warn('Refresh failed:', result.error);

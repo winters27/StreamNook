@@ -29,6 +29,12 @@ interface Metrics {
   bufferSec: number | null;
   dropped: number;
   droppedPct: number | null;
+  /** Whether the STREAMER has low latency enabled on their end (Twitch sends
+   *  PREFETCH hints). null = unknown/non-live. Lets the user tell "I'm 6s behind
+   *  because the streamer disabled LL" from "because my app did". */
+  sourceLowLatency: boolean | null;
+  /** Current playback speed (1.0 = real time; >1 = catching up to live). */
+  playbackRate: number | null;
 }
 
 const EMPTY: Metrics = {
@@ -41,6 +47,8 @@ const EMPTY: Metrics = {
   bufferSec: null,
   dropped: 0,
   droppedPct: null,
+  sourceLowLatency: null,
+  playbackRate: null,
 };
 
 function readMetrics(hls: Hls | null, video: HTMLVideoElement | null): Metrics {
@@ -53,6 +61,7 @@ function readMetrics(hls: Hls | null, video: HTMLVideoElement | null): Metrics {
     } catch {
       /* buffered can throw if the element is mid-teardown */
     }
+    if (typeof video.playbackRate === 'number') m.playbackRate = video.playbackRate;
     try {
       const q = video.getVideoPlaybackQuality?.();
       if (q) {
@@ -67,6 +76,13 @@ function readMetrics(hls: Hls | null, video: HTMLVideoElement | null): Metrics {
   }
 
   if (hls) {
+    // Streamer-side low latency: the player stamps the delivery path at
+    // construction. 'll'/'promotion' mean Twitch sent PREFETCH hints (streamer
+    // LL on); 'plain' means they didn't (streamer LL off).
+    const srcHint = (hls as unknown as { __snPathHint?: string }).__snPathHint;
+    if (srcHint === 'll' || srcHint === 'promotion') m.sourceLowLatency = true;
+    else if (srcHint === 'plain') m.sourceLowLatency = false;
+
     const lvlIndex = hls.currentLevel >= 0 ? hls.currentLevel : hls.loadLevel;
     const lvl = lvlIndex >= 0 ? hls.levels?.[lvlIndex] : undefined;
     if (lvl) {
@@ -95,12 +111,21 @@ function readMetrics(hls: Hls | null, video: HTMLVideoElement | null): Metrics {
     const isLowLatency = hls.config?.lowLatencyMode === true;
     const playingDate = hls.playingDate;
     const pdtLat = playingDate ? (Date.now() - playingDate.getTime()) / 1000 : null;
-    if (isLowLatency && hlsLat != null) {
+    // Per-path honest ruler (set by the player at construction). PDT is ONLY
+    // trustworthy enough as the promotion path's lesser evil: its base is
+    // per-channel arbitrary (observed reading 7.5s while the content sat ~0.5s
+    // behind Twitch's player), so a PLAIN non-LL channel prefers hls.latency —
+    // its playlist is truthful, unlike promotion's phantom-future hints.
+    const pathHint = (hls as unknown as { __snPathHint?: string }).__snPathHint;
+    const preferPdt = pathHint === 'promotion' || (pathHint == null && !isLowLatency);
+    if ((isLowLatency || pathHint === 'plain' || pathHint === 'll') && hlsLat != null) {
       lat = hlsLat;
-    } else if (pdtLat != null && pdtLat > 0.2 && pdtLat < 60) {
-      lat = pdtLat; // sane PDT (non-LL streams)
+    } else if (preferPdt && pdtLat != null && pdtLat > 0.2 && pdtLat < 60) {
+      lat = pdtLat;
     } else if (hlsLat != null) {
       lat = hlsLat;
+    } else if (pdtLat != null && pdtLat > 0.2 && pdtLat < 60) {
+      lat = pdtLat;
     } else if (lvl?.details && video) {
       const edge = lvl.details.edge;
       if (Number.isFinite(edge)) lat = Math.max(0, edge - video.currentTime);
@@ -113,13 +138,16 @@ function readMetrics(hls: Hls | null, video: HTMLVideoElement | null): Metrics {
   return m;
 }
 
-// Thresholds are for the END-TO-END number: ~2-3s is the LL-HLS path, ~7-8s is the
-// natural floor of the conservative non-LL cushion (6s cushion + ~2s encode+CDN
-// pipeline), so red starts only past what any healthy mode can sit at.
-function latencyClass(latency: number | null): string {
+// Thresholds are RELATIVE to the path's configured cushion: every mode rides
+// ~syncTarget behind the frontier plus ~2s of encode+CDN pipeline by design,
+// so a healthy 6s-cushion channel sitting at 7.5s must read green, while an
+// LL channel at the same 7.5s is genuinely drifting. Absolute thresholds made
+// healthy non-LL channels permanently amber.
+function latencyClass(latency: number | null, syncTarget: number | null): string {
   if (latency == null) return 'text-textPrimary';
-  if (latency <= 4) return 'text-emerald-400';
-  if (latency <= 9) return 'text-amber-400';
+  const target = syncTarget ?? 4;
+  if (latency <= target + 3) return 'text-emerald-400';
+  if (latency <= target + 6) return 'text-amber-400';
   return 'text-red-400';
 }
 
@@ -190,8 +218,24 @@ const PlayerStatsOverlay = ({ hlsRef, videoRef, open, onToggle, onGoLive, adSour
           <Row
             label="Behind live"
             value={metrics.latency != null ? `${metrics.latency.toFixed(1)}s` : '-'}
-            valueClass={latencyClass(metrics.latency)}
+            valueClass={latencyClass(metrics.latency, metrics.syncTarget)}
           />
+          <Row
+            label="Speed"
+            value={metrics.playbackRate != null ? `${metrics.playbackRate.toFixed(2)}x` : '-'}
+            valueClass={
+              metrics.playbackRate != null && Math.abs(metrics.playbackRate - 1) > 0.005
+                ? 'text-amber-400'
+                : undefined
+            }
+          />
+          {metrics.sourceLowLatency != null && (
+            <Row
+              label="Source low latency"
+              value={metrics.sourceLowLatency ? 'On (streamer)' : 'Off (streamer)'}
+              valueClass={metrics.sourceLowLatency ? 'text-emerald-400' : 'text-textSecondary'}
+            />
+          )}
           <Row
             label="Resolution"
             value={metrics.resolution ? `${metrics.resolution}${metrics.fps ? metrics.fps : ''}` : '-'}

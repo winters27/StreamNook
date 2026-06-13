@@ -1291,6 +1291,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     const preserveBackend = options?.preserveBackend ?? false;
     trackActivity('Stopped stream');
     try {
+      // Unmount the player (VideoPlayer is keyed on streamUrl) BEFORE the backend
+      // kills the relay. The reverse order leaves hls.js live-polling the dead
+      // relay port until the full state clear below, spraying non-fatal
+      // levelLoadError + CORS noise for every poll that lands in that window.
+      set({ streamUrl: null });
+
       await invoke('stop_stream');
 
       // preserveBackend: handing the channel off to MultiNook, which keeps
@@ -1646,22 +1652,6 @@ export const useAppStore = create<AppState>((set, get) => ({
           Logger.debug('Started drops monitoring for', channelName);
           
           invoke('register_active_channel', { channelId }).catch(() => {});
-
-          // Auto-reserve watch token for this stream (if enabled in settings)
-          // This ensures the user is "present" in chat for gifted sub eligibility
-          try {
-            const dropsSettings = await invoke<{ reserve_token_for_current_stream?: boolean; auto_reserve_on_watch?: boolean }>('get_drops_settings');
-            if (dropsSettings?.reserve_token_for_current_stream && dropsSettings?.auto_reserve_on_watch) {
-              await invoke('set_reserved_channel', {
-                channelId,
-                channelLogin: channelName
-              });
-              Logger.debug('Auto-reserved watch token for', channelName);
-            }
-          } catch (reserveError) {
-            Logger.warn('Could not auto-reserve watch token:', reserveError);
-            // Non-critical, stream can still work
-          }
         }
       } catch (e) {
         Logger.warn('Could not start drops monitoring:', e);

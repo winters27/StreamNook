@@ -1,167 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { Plus, X } from 'lucide-react';
 import { PanelChannel, PanelField, PanelSchema, PanelValues } from '../../types/plugins';
 import { Logger } from '../../utils/logger';
-import PanelChannelList from './PanelChannelList';
+import { Toggle, ChipList, FolderPicker, Slider, Select, ChannelList } from './uiKit';
 
 interface Props {
   pluginId: string;
 }
-
-const Toggle = ({ enabled, onChange }: { enabled: boolean; onChange: () => void }) => (
-  <button
-    type="button"
-    onClick={onChange}
-    className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${
-      enabled ? 'bg-accent' : 'bg-gray-600'
-    }`}
-  >
-    <span
-      className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-        enabled ? 'translate-x-6' : 'translate-x-1'
-      }`}
-    />
-  </button>
-);
-
-// Add-and-remove chip rows for a list of strings (not a textarea).
-const ChipList = ({
-  items,
-  placeholder,
-  onChange,
-}: {
-  items: string[];
-  placeholder?: string;
-  onChange: (next: string[]) => void;
-}) => {
-  const [input, setInput] = useState('');
-  const add = () => {
-    const v = input.trim();
-    if (v && !items.includes(v)) onChange([...items, v]);
-    setInput('');
-  };
-  return (
-    <div className="mt-2">
-      <div className="mb-2 space-y-1.5">
-        {items.length > 0 ? (
-          items.map((item, i) => (
-            <div
-              key={item}
-              className="group flex items-center gap-3 rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2"
-            >
-              <span className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded bg-white/5 font-mono text-[11px] text-textSecondary">
-                {i + 1}
-              </span>
-              <span className="min-w-0 flex-1 truncate text-[13px] text-textPrimary">{item}</span>
-              <button
-                type="button"
-                onClick={() => onChange(items.filter((x) => x !== item))}
-                className="rounded p-1 text-textMuted opacity-0 transition-all hover:bg-red-500/10 hover:text-red-300 group-hover:opacity-100"
-              >
-                <X size={14} />
-              </button>
-            </div>
-          ))
-        ) : (
-          <div className="rounded-lg border border-dashed border-white/10 bg-white/[0.02] px-3 py-2.5 text-center text-[12px] italic text-textSecondary">
-            None added.
-          </div>
-        )}
-      </div>
-      <div className="flex gap-2">
-        <input
-          type="text"
-          value={input}
-          placeholder={placeholder ?? 'Add...'}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && add()}
-          className="glass-input flex-1 rounded-md px-3 py-1.5 text-[13px] text-textPrimary"
-        />
-        <button
-          type="button"
-          onClick={add}
-          disabled={!input.trim()}
-          className="flex items-center gap-1 rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-[13px] text-textSecondary transition-colors hover:bg-white/10 hover:text-textPrimary disabled:opacity-50"
-        >
-          <Plus size={14} />
-          Add
-        </button>
-      </div>
-    </div>
-  );
-};
-
-// A directory path with a native browse dialog. Empty string means "plugin
-// default"; the field's placeholder describes what that default is.
-const FolderPicker = ({
-  value,
-  placeholder,
-  onChange,
-}: {
-  value: string;
-  placeholder?: string;
-  onChange: (next: string) => void;
-}) => {
-  const browse = async () => {
-    try {
-      const { open } = await import('@tauri-apps/plugin-dialog');
-      const picked = await open({ directory: true, multiple: false });
-      if (typeof picked === 'string' && picked) onChange(picked);
-    } catch (err) {
-      Logger.error('[Plugins] folder pick failed:', err);
-    }
-  };
-  return (
-    <div className="mt-2 flex items-center gap-2">
-      <div className="glass-input min-w-0 flex-1 truncate rounded-md px-3 py-1.5 text-[13px]">
-        {value ? (
-          <span className="text-textPrimary">{value}</span>
-        ) : (
-          <span className="italic text-textSecondary">{placeholder ?? 'Default'}</span>
-        )}
-      </div>
-      <button
-        type="button"
-        onClick={browse}
-        className="flex-shrink-0 rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-[13px] text-textSecondary transition-colors hover:bg-white/10 hover:text-textPrimary"
-      >
-        Browse
-      </button>
-      {value && (
-        <button
-          type="button"
-          onClick={() => onChange('')}
-          className="flex-shrink-0 rounded-md px-2 py-1.5 text-[13px] text-textMuted transition-colors hover:bg-white/5 hover:text-textPrimary"
-        >
-          Reset
-        </button>
-      )}
-    </div>
-  );
-};
-
-const Slider = ({ field, value, onChange }: { field: PanelField; value: number; onChange: (n: number) => void }) => {
-  const divisor = field.display_divisor ?? 1;
-  const shown = divisor > 1 ? Math.round(value / divisor) : value;
-  return (
-    <div className="mt-1">
-      <div className="mb-1 text-[12px] text-textSecondary">
-        {shown}
-        {field.unit ? ` ${field.unit}` : ''}
-      </div>
-      <input
-        type="range"
-        min={field.min}
-        max={field.max}
-        step={field.step ?? 1}
-        value={value}
-        onChange={(e) => onChange(Number(e.target.value))}
-        className="w-full cursor-pointer accent-accent"
-      />
-    </div>
-  );
-};
 
 /**
  * Renders a plugin's settings panel from the generic field vocabulary it
@@ -246,17 +91,11 @@ const PluginPanelRenderer = ({ pluginId }: Props) => {
         );
       case 'select':
         return (
-          <select
-            className="glass-input rounded-md bg-transparent px-2 py-1 text-[13px] text-textPrimary"
+          <Select
             value={String(valueOf(field) ?? '')}
-            onChange={(e) => commit(field.key, e.target.value)}
-          >
-            {(field.options ?? []).map((opt) => (
-              <option key={opt.value} value={opt.value} className="bg-zinc-900">
-                {opt.label}
-              </option>
-            ))}
-          </select>
+            options={field.options ?? []}
+            onChange={(v) => commit(field.key, v)}
+          />
         );
       default:
         return null;
@@ -275,14 +114,22 @@ const PluginPanelRenderer = ({ pluginId }: Props) => {
         );
       case 'channel_list':
         return (
-          <PanelChannelList
+          <ChannelList
             value={Array.isArray(valueOf(field)) ? (valueOf(field) as unknown as PanelChannel[]) : []}
             onChange={(next) => commit(field.key, next)}
           />
         );
       case 'slider':
         return (
-          <Slider field={field} value={Number(valueOf(field) ?? field.min ?? 0)} onChange={(n) => commit(field.key, n)} />
+          <Slider
+            value={Number(valueOf(field) ?? field.min ?? 0)}
+            min={field.min}
+            max={field.max}
+            step={field.step}
+            unit={field.unit}
+            displayDivisor={field.display_divisor}
+            onChange={(n) => commit(field.key, n)}
+          />
         );
       case 'folder':
         return (

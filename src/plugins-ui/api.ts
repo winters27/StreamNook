@@ -19,6 +19,7 @@ import {
   clearPluginContributions,
 } from './registry';
 import { HOST_LIBS } from './hostLibs';
+import { UI_KIT } from '../components/plugins/uiKit';
 import { insertIntoChatInput, useHasChatTarget } from './chatBridge';
 import { openPluginWindow } from './windows';
 import type { PluginApi, PluginKeybinding } from './types';
@@ -44,7 +45,7 @@ export function buildPluginApi(pluginId: string): { api: PluginApi; dispose: () 
   const api: PluginApi = Object.freeze({
     pluginId,
     libs: HOST_LIBS,
-    components: Object.freeze({ Tooltip }),
+    components: Object.freeze({ Tooltip, ...UI_KIT }),
     ui: Object.freeze({
       registerTitleBarButton: (contribution: Parameters<PluginApi['ui']['registerTitleBarButton']>[0]) =>
         addTitleBarButton(pluginId, contribution),

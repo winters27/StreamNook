@@ -184,6 +184,9 @@ export interface ChatDesignSettings {
   // + truncated text) you can click to expand; 'hidden' keeps the prior behavior
   // where only the header pin icon remains. Default 'bar'.
   pinned_collapsed_style?: 'bar' | 'hidden';
+  // Pinned messages start collapsed to the compact bar when entering a channel;
+  // expanding is a per-channel choice that lasts until you switch. Default true.
+  pinned_start_collapsed?: boolean;
   // --- Username prefix styling (normal messages only; action/"/me" stay plain) ---
   // Glyph rendered between the username and the message body.
   username_separator?: 'none' | 'colon' | 'dot' | 'arrow' | 'pipe' | 'dash';

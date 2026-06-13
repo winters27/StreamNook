@@ -207,7 +207,7 @@ impl ChatLoggerService {
             st.base = base.clone();
         }
         let date = Local::now().format("%Y-%m-%d").to_string();
-        let stale = st.open.get(channel).map_or(true, |e| e.date != date);
+        let stale = st.open.get(channel).is_none_or(|e| e.date != date);
         if stale {
             match Self::open_file(&base, channel, &date) {
                 Ok(file) => {
@@ -264,10 +264,10 @@ fn safe_dir_name(channel: &str) -> String {
 
 /// Readable timeout durations: 600 -> "10m", 90 -> "1m 30s", 7200 -> "2h".
 fn human_duration(secs: u64) -> String {
-    if secs >= 3600 && secs % 3600 == 0 {
+    if secs >= 3600 && secs.is_multiple_of(3600) {
         format!("{}h", secs / 3600)
     } else if secs >= 60 {
-        if secs % 60 == 0 {
+        if secs.is_multiple_of(60) {
             format!("{}m", secs / 60)
         } else {
             format!("{}m {}s", secs / 60, secs % 60)

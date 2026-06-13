@@ -2,10 +2,14 @@
 //!
 //! Reports exactly what the official web player reports: one minute-watched
 //! event per minute for the single channel the user is actually watching,
-//! while it is playing, on the working `sendSpadeEvents` GraphQL path. This
-//! is the piece that makes channel points accrue and drop progress advance
-//! for the on-screen stream. It never reports more than one channel, never
-//! reports an off-screen channel, and never claims anything.
+//! while it is playing. The minute goes out on both watch-reporting paths,
+//! because spade ingestion is split: the `sendSpadeEvents` GraphQL mutation
+//! credits drop progress but not channel points, while the legacy spade
+//! track endpoint still credits channel points but not drops. Reporting on
+//! one path only silently stops the other kind of crediting. This is the
+//! piece that makes channel points accrue and drop progress advance for the
+//! on-screen stream. It never reports more than one channel, never reports
+//! an off-screen channel, and never claims anything.
 //!
 //! The target follows the active-channel chokepoints the frontend already
 //! drives (stream start, channel hot-swap, stream stop), which also track
@@ -31,6 +35,10 @@ use tokio::sync::RwLock;
 use crate::services::drops_auth_service::DropsAuthService;
 
 const CLIENT_ID: &str = env!("TWITCH_ANDROID_CLIENT_ID");
+
+/// Legacy spade ingestion endpoint. Accepts the same minute-watched event as
+/// the GraphQL mutation but feeds the pipeline that credits channel points.
+const SPADE_URL: &str = "https://spade.twitch.tv/track";
 
 /// How often the broadcast id and game info are re-resolved. Streams that
 /// restart get a new broadcast id; the official player re-learns it too.
@@ -178,6 +186,21 @@ impl WatchHeartbeatService {
             Ok(false) => debug!("[Heartbeat] minute-watched not credited for {}", target.login),
             Err(e) => warn!("[Heartbeat] send failed for {}: {e}", target.login),
         }
+
+        match self
+            .send_minute_watched_legacy(&target, &broadcast_id, &token)
+            .await
+        {
+            Ok(true) => debug!(
+                "[Heartbeat] points minute-watched accepted for {} ({})",
+                target.login, target.channel_id
+            ),
+            Ok(false) => debug!(
+                "[Heartbeat] points minute-watched rejected for {}",
+                target.login
+            ),
+            Err(e) => warn!("[Heartbeat] points send failed for {}: {e}", target.login),
+        }
     }
 
     /// One GQL read: the live broadcast id plus game info for the payload.
@@ -294,5 +317,43 @@ impl WatchHeartbeatService {
         }
         let body: serde_json::Value = response.json().await.unwrap_or(json!({}));
         Ok(body["data"]["sendSpadeEvents"]["statusCode"].as_i64() == Some(204))
+    }
+
+    /// The same watched minute on the legacy spade track endpoint, which is
+    /// the path that credits channel points. Field set matches the payload
+    /// the channel-points service has verified against this endpoint;
+    /// `location` and `player` are required there and absent from the GQL
+    /// event. Plain base64, form-encoded, no gzip. HTTP 204 means accepted.
+    async fn send_minute_watched_legacy(
+        &self,
+        target: &WatchTarget,
+        broadcast_id: &str,
+        token: &str,
+    ) -> Result<bool> {
+        let user_id = self.user_id(token).await?;
+        let payload = json!([{
+            "event": "minute-watched",
+            "properties": {
+                "broadcast_id": broadcast_id,
+                "channel_id": target.channel_id,
+                "channel": target.login,
+                "hidden": false,
+                "live": true,
+                "location": "channel",
+                "logged_in": true,
+                "muted": false,
+                "player": "site",
+                "user_id": user_id
+            }
+        }]);
+        let encoded = general_purpose::STANDARD.encode(serde_json::to_string(&payload)?.as_bytes());
+        let response = self
+            .client
+            .post(SPADE_URL)
+            .form(&[("data", encoded)])
+            .timeout(Duration::from_secs(15))
+            .send()
+            .await?;
+        Ok(response.status().as_u16() == 204)
     }
 }

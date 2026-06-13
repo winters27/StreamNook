@@ -536,6 +536,9 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
   // their profile backdrop, rendered behind their message.
   const atmosphereId = useChatUserStore((s) => (userId ? s.users.get(userId)?.atmosphereId ?? null : null));
   const atmosphere = atmosphereId ? getAtmosphere(atmosphereId) : null;
+  // Frost behind the text only when the atmosphere declares it needs it (busy
+  // washes); subtle ones render the text bare.
+  const atmosphereFrost = !!atmosphere?.chatFrost;
   const [broadcasterType] = useState<string | null>(null);
   const [isMentioned, setIsMentioned] = useState(false);
   const [isReplyToMe, setIsReplyToMe] = useState(false);
@@ -2397,7 +2400,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
         {formattedTimestamp && (
           <div
             className={`text-[10px] leading-tight mb-0.5 text-textSecondary ${
-              atmosphere
+              atmosphereFrost
                 ? 'block w-fit rounded-sm bg-[rgba(5,6,13,0.2)] px-1 opacity-70 backdrop-blur-[4px]'
                 : 'opacity-50'
             }`}
@@ -2406,10 +2409,11 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
           </div>
         )}
         {/* Badges and Message content - inline flow so wrapped text starts at left edge.
-            For an atmosphere message this is one frosted block hugging the
-            badges + name + message (the timestamp gets its own separate frost
-            above), so the text/badges stay readable over the animated wash. */}
-        <div className={atmosphere ? 'inline-block max-w-full rounded-md bg-[rgba(5,6,13,0.22)] px-1.5 py-0.5 backdrop-blur-[4px]' : 'min-w-0'}>
+            When the atmosphere asks for frost (chatFrost) this is one frosted
+            block hugging the badges + name + message (the timestamp gets its
+            own separate frost above), so the text/badges stay readable over a
+            busy wash. */}
+        <div className={atmosphereFrost ? 'inline-block max-w-full rounded-md bg-[rgba(5,6,13,0.22)] px-1.5 py-0.5 backdrop-blur-[4px]' : 'min-w-0'}>
           {/* Badges */}
           {isSN || (isFromSharedChat && channelProfileImage) || parsed.badges.length > 0 || seventvBadge || thirdPartyBadges.length > 0 ? (
             <span className="inline-flex items-center gap-1 mr-1.5 align-middle">

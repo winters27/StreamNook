@@ -31,14 +31,6 @@ pub async fn update_drops_settings(
         app_settings.drops = settings.clone();
     }
 
-    // Keep the running background service in sync: it holds its own clone of
-    // Settings, so without this push the farming loops would not see a toggle
-    // change until the next launch.
-    {
-        let bg_service = state.background_service.lock().await;
-        bg_service.update_drops_settings(settings).await;
-    }
-
     // Save to disk
     let settings_to_save = {
         let app_settings = state.settings.lock().map_err(|e| e.to_string())?;
@@ -116,7 +108,7 @@ pub async fn claim_channel_points(
     channel_name: String,
     claim_id: String,
     state: State<'_, AppState>,
-) -> Result<i32, String> {
+) -> Result<BonusClaimResult, String> {
     let drops_service = state.drops_service.lock().await;
     drops_service
         .claim_channel_points(&channel_id, &channel_name, &claim_id)
@@ -184,6 +176,14 @@ async fn report_active_channel(state: &State<'_, AppState>, channel_id: &str, lo
             None,
         )
         .await;
+    // Follow the on-screen channel with the realtime socket so its bonus chest
+    // surfaces instantly and its predictions come through.
+    state
+        .background_service
+        .lock()
+        .await
+        .set_watched_channel(channel_id.to_string(), login.to_string())
+        .await;
 }
 
 #[tauri::command]
@@ -215,6 +215,12 @@ pub async fn stop_drops_monitoring(state: State<'_, AppState>) -> Result<(), Str
             .report_stream_event("stop", Some(prev), None, None)
             .await;
     }
+    state
+        .background_service
+        .lock()
+        .await
+        .clear_watched_channel()
+        .await;
     Ok(())
 }
 
@@ -245,80 +251,6 @@ pub async fn report_player_playing(
     Ok(())
 }
 
-// Mining commands
-#[tauri::command]
-pub async fn start_auto_mining(
-    state: State<'_, AppState>,
-    app_handle: AppHandle,
-) -> Result<(), String> {
-    let mining_service = state.mining_service.lock().await;
-    mining_service
-        .start_mining(app_handle)
-        .await
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub async fn start_campaign_mining(
-    campaign_id: String,
-    state: State<'_, AppState>,
-    app_handle: AppHandle,
-) -> Result<(), String> {
-    let mining_service = state.mining_service.lock().await;
-    mining_service
-        .start_campaign_mining(campaign_id, app_handle)
-        .await
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub async fn get_eligible_channels_for_campaign(
-    campaign_id: String,
-    state: State<'_, AppState>,
-) -> Result<Vec<crate::models::drops::MiningChannel>, String> {
-    let mining_service = state.mining_service.lock().await;
-    mining_service
-        .get_eligible_channels_for_campaign(campaign_id)
-        .await
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub async fn start_campaign_mining_with_channel(
-    campaign_id: String,
-    channel_id: String,
-    state: State<'_, AppState>,
-    app_handle: AppHandle,
-) -> Result<(), String> {
-    let mining_service = state.mining_service.lock().await;
-    mining_service
-        .start_campaign_mining_with_channel(campaign_id, channel_id, app_handle)
-        .await
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub async fn stop_auto_mining(
-    state: State<'_, AppState>,
-    app_handle: AppHandle,
-) -> Result<(), String> {
-    let mining_service = state.mining_service.lock().await;
-    mining_service.stop_mining(app_handle).await;
-    Ok(())
-}
-
-#[tauri::command]
-pub async fn get_mining_status(state: State<'_, AppState>) -> Result<MiningStatus, String> {
-    let mining_service = state.mining_service.lock().await;
-    Ok(mining_service.get_mining_status().await)
-}
-
-#[tauri::command]
-pub async fn is_auto_mining(state: State<'_, AppState>) -> Result<bool, String> {
-    let mining_service = state.mining_service.lock().await;
-    Ok(mining_service.is_mining().await)
-}
-
 // Drops Authentication commands
 #[tauri::command]
 pub async fn start_drops_device_flow() -> Result<DropsDeviceCodeInfo, String> {
@@ -339,15 +271,7 @@ pub async fn poll_drops_token(
 }
 
 #[tauri::command]
-pub async fn drops_logout(state: State<'_, AppState>, app_handle: AppHandle) -> Result<(), String> {
-    // Stop mining BEFORE clearing tokens. stop_mining aborts the PubSub WS task
-    // and flips is_running=false so the watch-payload loop exits at its next
-    // tick. Without this the loop would keep posting watch events with a now-
-    // invalid token (silent 401s) and the WS would keep PINGing PubSub.
-    {
-        let mining_service = state.mining_service.lock().await;
-        mining_service.stop_mining(app_handle).await;
-    }
+pub async fn drops_logout() -> Result<(), String> {
     DropsAuthService::logout().await.map_err(|e| e.to_string())
 }
 
@@ -593,7 +517,7 @@ pub async fn get_channel_points_for_channel(
     use reqwest::Client;
     use serde_json::json;
 
-    // Use web client ID for this query (matches the working channel_points_service)
+    // Use the web client ID for this read query.
     const CLIENT_ID: &str = env!("TWITCH_WEB_CLIENT_ID");
 
     let token = DropsAuthService::get_token()
@@ -602,7 +526,6 @@ pub async fn get_channel_points_for_channel(
 
     let client = HTTP_CLIENT.clone();
 
-    // Use the same query structure as channel_points_service which works correctly
     // Include communityPointsSettings to get custom points name and icon
     let query = r#"
     query ChannelPointsContext($channelLogin: String!) {
@@ -652,43 +575,6 @@ pub async fn get_channel_points_for_channel(
         .map_err(|e| format!("Failed to parse channel points response: {}", e))?;
 
     Ok(result)
-}
-
-// Watch token allocation commands
-#[tauri::command]
-pub async fn set_reserved_channel(
-    state: State<'_, AppState>,
-    channel_id: Option<String>,
-    channel_login: Option<String>,
-) -> Result<(), String> {
-    let bg_service = state.background_service.lock().await;
-
-    match (channel_id, channel_login) {
-        (Some(id), Some(login)) => {
-            bg_service.reserve_channel(id, login).await;
-        }
-        (None, None) => {
-            bg_service.clear_reservation().await;
-        }
-        _ => return Err("Must provide both channel_id and channel_login, or neither".into()),
-    }
-
-    Ok(())
-}
-
-#[tauri::command]
-pub async fn get_reserved_channel(
-    state: State<'_, AppState>,
-) -> Result<Option<ReservedStreamSlot>, String> {
-    let bg_service = state.background_service.lock().await;
-    let reservation = bg_service.get_reservation().await;
-
-    // Return the reservation if it has a channel_id, otherwise None
-    if reservation.channel_id.is_some() {
-        Ok(Some(reservation))
-    } else {
-        Ok(None)
-    }
 }
 
 // Channel Points Rewards commands

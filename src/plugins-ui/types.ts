@@ -6,6 +6,7 @@ import type * as React from 'react';
 import type * as ReactJsxRuntime from 'react/jsx-runtime';
 import type * as FramerMotion from 'framer-motion';
 import type { TooltipProps } from '../components/ui/Tooltip';
+import type { UiKit } from '../components/plugins/uiKit';
 
 /** A button in the title bar's action cluster, rendered in native style. */
 export interface TitleBarButtonContribution {
@@ -84,10 +85,12 @@ export interface PluginApi {
     framerMotion: typeof FramerMotion;
   };
 
-  /** Native components plugins should reuse instead of rebuilding. */
+  /** Native components plugins should reuse instead of rebuilding: the Tooltip
+   *  plus the settings UI kit (toggles, chip lists, sliders, the channel
+   *  search-picker, section/row layout) so a plugin's own panel looks native. */
   components: {
     Tooltip: React.FC<TooltipProps>;
-  };
+  } & UiKit;
 
   ui: {
     registerTitleBarButton: (contribution: TitleBarButtonContribution) => void;

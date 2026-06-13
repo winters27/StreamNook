@@ -20,6 +20,14 @@ static SERVER_HANDLE: Lazy<Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>> =
     Lazy::new(|| Arc::new(Mutex::new(None)));
 static PROXY_URL: Lazy<Arc<Mutex<Option<String>>>> = Lazy::new(|| Arc::new(Mutex::new(None)));
 static CURRENT_PORT: Lazy<Arc<Mutex<Option<u16>>>> = Lazy::new(|| Arc::new(Mutex::new(None)));
+/// Serializes solo `start_proxy_server` calls end to end. The existence check,
+/// `ll_origin::start` (a multi-second backfill await), and the SERVER_HANDLE write
+/// are otherwise non-atomic, so two concurrent cold starts (e.g. a fast channel
+/// re-trigger) could both see "no server", both bind warp, and both run the shared
+/// SOLO origin's start — one silently wiping the other's edge mid-setup. Held for
+/// the whole function so the second caller observes a fully-initialized server and
+/// takes the reuse path.
+static SOLO_START_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
 /// Global HTTP client with optimized connection pooling
 static HTTP_CLIENT: Lazy<Client> = Lazy::new(|| {
@@ -277,6 +285,11 @@ impl StreamServer {
         // can read `get_stream_low_latency` and pick the right hls.js mode.
         let upstream = stream_url.clone();
 
+        // Serialize the whole start sequence (TOCTOU guard): without this two
+        // concurrent cold starts could both spawn a warp server and both run the
+        // shared SOLO origin's start, racing each other's edge setup.
+        let _init_guard = SOLO_START_LOCK.lock().await;
+
         // Check if server is already running
         let server_exists = SERVER_HANDLE.lock().await.is_some();
 
@@ -347,6 +360,17 @@ impl StreamServer {
         // connection can still deliver a final poll. A warp rejection here would
         // answer it with a bare 404 (no CORS headers), which the webview reports
         // as a CORS error. Answer with a CORS'd 404 so the straggler dies quietly.
+        // First touch of every request. During famine incidents, playlist
+        // requests provably leave hls.js and produce no o_pl for seconds: this
+        // either shows them arriving here (blockage in our routing below) or
+        // not arriving at all (blockage in the socket/accept layer or the
+        // webview's pool) — the last unattributed hop.
+        if crate::services::ll_diagnostics::is_active() {
+            crate::services::ll_diagnostics::event(&format!(
+                "\"ev\":\"o_req\",\"p\":{:?}",
+                path.as_str()
+            ));
+        }
         let Some(manifest_url) = proxy_url.lock().await.clone() else {
             return Ok(empty_cors(404));
         };
@@ -370,6 +394,17 @@ impl StreamServer {
         // segments (served from memory). This must come before the non-LL stable-URL
         // redirect, which shares the `seg/` prefix.
         if crate::services::ll_origin::is_active() {
+            // Origin-generated init segment (TS transmux path).
+            if request_path == "init.mp4" {
+                if let Some(bytes) = crate::services::ll_origin::get_init() {
+                    crate::services::ll_diagnostics::event(&format!(
+                        "\"ev\":\"o_init\",\"len\":{}",
+                        bytes.len()
+                    ));
+                    return Ok(media_response(bytes.as_ref().clone()));
+                }
+                return Ok(empty_cors(404));
+            }
             if let Some(rest) = request_path.strip_prefix("part/") {
                 if let Some((sn, k)) = parse_part_path(rest) {
                     if let Some(bytes) = crate::services::ll_origin::get_part(sn, k) {
@@ -408,7 +443,20 @@ impl StreamServer {
             if request_path == "stream.m3u8" || request_path.is_empty() {
                 let msn = parse_directive(&raw_query, "_HLS_msn");
                 let part = parse_directive(&raw_query, "_HLS_part");
+                // Serve-side timing: hls.js reports levelLoadTimeOut pairs before
+                // stalls even though the blocking hold is bounded well under its
+                // budget; this measures whether the server ever actually exceeds
+                // it, separating origin-side delay from client-side accounting.
+                let t0 = std::time::Instant::now();
                 if let Some(pl) = crate::services::ll_origin::serve_playlist(msn, part).await {
+                    if crate::services::ll_diagnostics::is_active() {
+                        crate::services::ll_diagnostics::event(&format!(
+                            "\"ev\":\"o_pl\",\"ms\":{},\"msn\":{},\"part\":{}",
+                            t0.elapsed().as_millis(),
+                            msn.map(|v| v as i64).unwrap_or(-1),
+                            part.map(|v| v as i64).unwrap_or(-1)
+                        ));
+                    }
                     return Ok(playlist_response(pl.into_bytes()));
                 }
                 // Origin went inactive between the check and now: fall through.

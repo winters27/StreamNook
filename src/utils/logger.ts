@@ -22,6 +22,36 @@ const originalConsole = {
 // Diagnostics state - defaults to enabled for safety
 let diagnosticsEnabled = true;
 
+// Console verbosity is SEPARATE from diagnostics. The file-based capture
+// (llDiagnostics) does not depend on console output at all, so the per-frame
+// debug firehose can be silenced in the console — which both makes the console
+// readable AND removes a real source of webview main-thread jank (thousands of
+// console writes/sec go through the devtools protocol and can stall the JS
+// thread; a 1.6s tick gap was observed). Default OFF. Re-enable live from the
+// devtools console with `__snConsole(true)`, or set the localStorage key.
+let consoleVerbose = false;
+try {
+  consoleVerbose = localStorage.getItem('streamnook_console_verbose') === 'true';
+} catch {
+  /* localStorage unavailable */
+}
+
+/** Toggle the debug/info console firehose at runtime (persisted). warn/error are unaffected. */
+export const setConsoleVerbose = (on: boolean): void => {
+  consoleVerbose = on;
+  try {
+    localStorage.setItem('streamnook_console_verbose', String(on));
+  } catch {
+    /* ignore */
+  }
+  originalConsole.warn(`[Logger] console verbose = ${on}`);
+};
+try {
+  (window as unknown as { __snConsole?: (on: boolean) => void }).__snConsole = setConsoleVerbose;
+} catch {
+  /* no window */
+}
+
 // Check localStorage for cached setting immediately on module load
 // This allows correct behavior before Tauri settings are loaded
 try {
@@ -29,11 +59,8 @@ try {
   if (cached !== null) {
     diagnosticsEnabled = cached === 'true';
   }
-  // Debug output to verify logger status on startup (use warn so it always shows)
-  originalConsole.warn('[Logger] Initialized - diagnosticsEnabled:', diagnosticsEnabled, '(cached:', cached, ')');
 } catch {
   // localStorage not available, keep default
-  originalConsole.warn('[Logger] Initialized - diagnosticsEnabled:', diagnosticsEnabled, '(no localStorage)');
 }
 
 
@@ -72,17 +99,19 @@ export const Logger = {
    * Use for detailed development information.
    */
   debug: (...args: unknown[]): void => {
-    if (diagnosticsEnabled) {
+    // Console firehose gated behind consoleVerbose (default OFF), NOT
+    // diagnosticsEnabled — the file capture is independent and stays full.
+    if (consoleVerbose) {
       originalConsole.log(...args);
     }
   },
 
   /**
-   * Info-level logging. Silenced when diagnostics are disabled.
+   * Info-level logging. Silenced unless console verbose is on.
    * Use for general operational information.
    */
   info: (...args: unknown[]): void => {
-    if (diagnosticsEnabled) {
+    if (consoleVerbose) {
       originalConsole.info(...args);
     }
   },

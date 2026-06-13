@@ -19,6 +19,11 @@ docs/*
 # Drops folder (local mining tool) - only root level, not src/components/drops
 /drops/
 
+# Plugin source trees (developed here, shipped as signed artifacts through the
+# plugins index - not bundled with or pushed to the app repo). Root-level only,
+# so src/components/drops and docs/plugins are unaffected.
+/plugins/
+
 # Streamlink portable (for development - bundled in production releases)
 /streamlink/
 

@@ -18,7 +18,7 @@ import { qualitiesEquivalent } from '../utils/quality';
 import { Logger } from '../utils/logger';
 import { syncTauriWindowFullscreen } from '../utils/windowFullscreen';
 import { startLatencyGovernor } from '../utils/liveLatencyGovernor';
-import { startLLDiagnostics, stopLLDiagnostics } from '../utils/llDiagnostics';
+import { startLLDiagnostics, stopLLDiagnostics, llDiagNote, isLLDiagEnabled } from '../utils/llDiagnostics';
 import {
   applyAudioBoost,
   resolveAudioBoost,
@@ -40,10 +40,51 @@ function paintAudioBoostButton(btn: Element | null, on: boolean): void {
   if (tip) tip.textContent = on ? 'Audio Boost: On' : 'Audio Boost: Off';
 }
 
+// Per-channel learned cushion (LL path). The stall-adaptive cushion proves a
+// channel's delivery wobbliness during a session; remembering it means a wobbly
+// channel pays its stalls ONCE ever instead of once per session, while clean
+// channels keep the tight default. The learned value relaxes by 0.5s per day
+// since it was set, so one bad night doesn't tax a channel forever.
+// 2.0 by owner decision 2026-06-12: at 1.5 every upstream famine over ~1.5s
+// cost one visible blip per channel until its cushion learned; 2.0 absorbs the
+// common sub-2s famine class silently for ~0.5s more latency (~2.5-3s from
+// live, Twitch's own neighborhood). Origin-side ABR is the eventual no-trade
+// answer; revisit this default when it ships.
+const LL_CUSHION_DEFAULT = 2.0;
+// Version the learned-cushion store: every time a stall-causing pipeline bug
+// is fixed, cushions learned from those stalls are poisoned lessons that pin
+// channels above the intended ~2-2.5s settle. v1 = CMAF nominal-duration era;
+// v2 = truncated-flush/404-spiral era. Bump to orphan and re-learn.
+const llCushionKey = (channel: string) => `streamnook.ll-cushion.v3.${channel.toLowerCase()}`;
+function learnedLLCushion(channel: string | undefined): number {
+  if (!channel) return LL_CUSHION_DEFAULT;
+  try {
+    const raw = localStorage.getItem(llCushionKey(channel));
+    if (!raw) return LL_CUSHION_DEFAULT;
+    const { c, t } = JSON.parse(raw) as { c: number; t: number };
+    if (!Number.isFinite(c) || !Number.isFinite(t)) return LL_CUSHION_DEFAULT;
+    const days = Math.max(0, (Date.now() - t) / 86_400_000);
+    return Math.max(LL_CUSHION_DEFAULT, Math.min(3.0, c - 0.5 * days));
+  } catch {
+    return LL_CUSHION_DEFAULT;
+  }
+}
+function rememberLLCushion(channel: string | undefined, cushion: number) {
+  if (!channel) return;
+  try {
+    localStorage.setItem(llCushionKey(channel), JSON.stringify({ c: cushion, t: Date.now() }));
+  } catch {
+    /* storage full/blocked: the session keeps its in-memory value */
+  }
+}
+
 const VideoPlayer = () => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const playerRef = useRef<Plyr | null>(null);
   const hlsRef = useRef<Hls | null>(null);
+  // Monotonic token for createPlayer invocations; see the comment at the top
+  // of createPlayer. Bumped by every invocation and by effect teardown.
+  const createSeqRef = useRef(0);
   // Stops the continuous live-latency governor for the current hls instance. Held
   // in a ref so it survives player recreation and is torn down with the instance.
   const latencyGovernorStopRef = useRef<(() => void) | null>(null);
@@ -506,6 +547,19 @@ const VideoPlayer = () => {
   const createPlayer = useCallback(async () => {
     if (!videoRef.current || !streamUrl) return;
 
+    // Invalidation token closing the async-creation race: the awaits below
+    // (LL probes) sit between the destroy-existing phase and `new Hls`, so two
+    // overlapping invocations (React StrictMode's dev double-mount, or a fast
+    // channel swap racing the deferred recreate) both pass the destroy phase
+    // and BOTH construct — the one losing the ref assignment became an
+    // unkillable zombie player that kept downloading the stream forever.
+    // Proven live 2026-06-12: every relay playlist request arrived twice, the
+    // duplicates serialized on the socket pool and stacked blocking holds past
+    // hls.js's reload budget (the recurring levelLoadTimeOut pairs), and every
+    // segment was fetched twice (the phantom bandwidth behind the catch-up
+    // spiral). Any superseding invocation or teardown bumps the sequence; a
+    // stale invocation aborts at the next checkpoint.
+    const seq = ++createSeqRef.current;
     const video = videoRef.current;
 
     // Clear previously attached video listeners to prevent memory leaks from stacking closures
@@ -645,11 +699,64 @@ const VideoPlayer = () => {
           prefetchPresent = await invoke<boolean>('get_stream_prefetch_present');
         } catch { /* command unavailable / stream gone */ }
       }
+      // Superseded while awaiting the probes: a newer invocation (or teardown)
+      // owns the element now. Constructing would create the zombie player.
+      if (seq !== createSeqRef.current) {
+        Logger.debug('[HLS] Player init superseded mid-probe; aborting this invocation');
+        return;
+      }
       Logger.debug(`[HLS] LL-HLS origin active=${isLowLatencyChannel}, low-latency channel (prefetch)=${prefetchPresent}`);
 
       // Create HLS.js instance with optimized settings
       const hls = new Hls({
-        debug: false,
+        // A custom logger sink ONLY when diagnostics are enabled; otherwise
+        // `false` so hls.js does zero internal logging (no per-line string
+        // formatting / mirror work). When on, hls.js explains every internal
+        // playhead intervention (live-edge resync, start-position seeks, hole
+        // skips) through warn/log lines forwarded to the lldiag capture.
+        debug: isLLDiagEnabled() ? {
+          trace: () => {},
+          debug: () => {},
+          // info/log are chatty (per-fragment lines), but the MediaSource-EOS
+          // chain documents itself ONLY at this level ("buffer reached EOS",
+          // "Queueing EOS", "Calling mediaSource.endOfStream()") — mirror just
+          // the lines that can explain a wrongly-ended live stream into the
+          // capture (not the console).
+          log: (...args: unknown[]) => {
+            const msg = args.map(String).join(' ');
+            if (/EOS|endOfStream|Media source|ENDLIST|live|detach/i.test(msg)) {
+              llDiagNote(msg);
+            }
+          },
+          info: (...args: unknown[]) => {
+            const msg = args.map(String).join(' ');
+            if (/EOS|endOfStream|Media source|ENDLIST|live|detach/i.test(msg)) {
+              llDiagNote(msg);
+            }
+          },
+          warn: (...args: unknown[]) => {
+            const msg = args.map(String).join(' ');
+            // Benign chatter filtered from the console (kept in captures):
+            // - segment boundaries overlap ~1ms and hls.js trims each one;
+            // - "Need buffer at X but next unloaded part starts at Y" is its
+            //   live-edge wait state — the "next unloaded" bookmark sits at the
+            //   in-progress segment's start until that segment completes, so
+            //   the message cycles ~2-4s behind the buffer forever by design
+            //   (verified non-accumulating across a 70-minute capture).
+            if (
+              !msg.includes('overlapping between fragments detected') &&
+              !msg.includes('but next unloaded part starts at')
+            ) {
+              Logger.debug('[hls.js]', msg);
+            }
+            llDiagNote(msg);
+          },
+          error: (...args: unknown[]) => {
+            const msg = args.map(String).join(' ');
+            Logger.debug('[hls.js:error]', msg);
+            llDiagNote(msg);
+          },
+        } : false,
         enableWorker: true,
         lowLatencyMode: isLowLatencyChannel, // Per-channel: true only when the relay LL-HLS origin is serving parts. Universal true would activate hls.js's playback-rate controller on normal channels and fight liveLatencyGovernor.
         startFragPrefetch: false, // Disabled: prefetching double-buffers massive TS chunks in V8 heap
@@ -663,12 +770,24 @@ const VideoPlayer = () => {
         nudgeMaxRetry: 3, // Restored to default
         maxFragLookUpTolerance: 0.5, // More tolerant fragment lookup
         liveSyncDuration: isLowLatencyChannel
-          ? 2 // LL-HLS origin active: parts are consumed progressively, so the playhead rides ~2s without the whole-segment wait (Twitch-player parity).
+          // LL-HLS origin active: parts are consumed progressively, so the
+          // playhead rides near-live without the whole-segment wait. True
+          // latency settles at roughly cushion + governor band + origin
+          // pipeline (~0.5-1s), so the 2.0 default lands ~2.5-3s from live
+          // (Twitch's own player rides ~2.5s). Starts from the channel's
+          // LEARNED cushion when this channel's delivery proved wobbly before
+          // (see learnedLLCushion; relaxes back over days).
+          ? learnedLLCushion(currentStream?.user_login)
           : (prefetchPresent
               ? 4 // Low-latency channel via promotion (no origin, e.g. H.264/TS): the relay freshens the edge, so a 4s cushion is the proven-stable ~3-3.5s-true floor (smooth LL delivery, no jitter to absorb).
               : (currentSettings.low_latency_mode ? 6 : 8)), // Normal-latency channel: 6 absorbs ~3s segment jitter; 8 when low latency is off.
         liveMaxLatencyDuration: 60, // Capped to 60s to allow GC. Prevents holding massive 10min TS buffers in RAM. Must stay > liveSyncDuration.
-        maxLiveSyncPlaybackRate: isLowLatencyChannel ? 1.1 : 1.15, // LL origin: hls.js's native LL controller owns catch-up (gentle 1.1). Non-LL: inert (the controller only runs in lowLatencyMode); liveLatencyGovernor owns catch-up there instead.
+        // 1 = hls.js's latency controller is fully inert on EVERY path (its rate is
+        // quantized to 0.05 steps — dist ~32618 — and each abrupt step is audible
+        // through the pitch corrector as a pop/warble, obvious on music, and reads
+        // as a micro-hitch; 86 steps in one capture). liveLatencyGovernor owns
+        // catch-up on both paths instead, with a smooth ramp.
+        maxLiveSyncPlaybackRate: 1,
         liveDurationInfinity: true, // Live stream has infinite duration
         manifestLoadingTimeOut: 10000, // 10s timeout for manifest
         manifestLoadingMaxRetry: 3, // Retry manifest 3 times
@@ -687,6 +806,16 @@ const VideoPlayer = () => {
         abrBandWidthFactor: 0.95, // Slightly conservative with bandwidth
         abrBandWidthUpFactor: 0.7, // Cautious when upgrading quality
       });
+
+      // Which delivery path this instance rides, for the stats overlay's
+      // latency-metric choice (each path has a different honest ruler:
+      // ll/plain -> hls.latency; promotion -> PDT, because the promoted
+      // prefetch hints inflate hls.js's edge with phantom future).
+      (hls as unknown as { __snPathHint?: string }).__snPathHint = isLowLatencyChannel
+        ? 'll'
+        : prefetchPresent
+          ? 'promotion'
+          : 'plain';
 
       hlsRef.current = hls;
 
@@ -710,22 +839,57 @@ const VideoPlayer = () => {
       // The governor targets the FORWARD BUFFER, so it speeds up only when there is
       // excess downloaded content to consume (drift) and stays quiet on tight
       // low-latency delivery where the buffer is naturally small — it cannot starve.
-      // Defaults (ceiling 1.05, band 1.5) are tuned for the solo player. Only on the
-      // non-LL path: in LL mode hls.js's own latency controller owns playbackRate, so
-      // running the governor too would have two controllers fighting over the rate.
-      if (!isLowLatencyChannel) {
-        latencyGovernorStopRef.current = startLatencyGovernor(hls, video, {
-          label: 'solo',
-          log: Logger.debug,
-        });
-      }
+      // It owns catch-up on BOTH paths (hls.js's own controller is disabled via
+      // maxLiveSyncPlaybackRate: 1 — its 0.05-quantized rate steps are audible).
+      // LL channels get the gentle Twitch-parity profile: 1.03 ceiling with a
+      // gradual ramp, engaging only past the delivery-jitter band.
+      latencyGovernorStopRef.current = isLowLatencyChannel
+        ? startLatencyGovernor(hls, video, {
+            label: 'solo-ll',
+            // Drive BEHIND-LIVE (the playhead's distance from the live edge) to
+            // ~2.6s by speeding up — NOT by shrinking the buffer. The origin
+            // refills the buffer from the edge as fast as we consume it, so the
+            // buffer stays full while the playhead moves closer to live.
+            // hls.latency is honest here (LL-origin lists only real parts). The
+            // `floor` below still protects the buffer, so catch-up never stalls.
+            latencyTarget: 2.6,
+            getLatency: () =>
+              typeof hls.latency === 'number' && hls.latency > 0 ? hls.latency : null,
+            // Steeper gain than the legacy 0.03: latency targeting needs real
+            // catch-up a few hundred ms over target. 0.12/s reaches the 1.08
+            // ceiling by ~3.4s behind and gives ~1.02x at 2.9s (the old 0.03
+            // gave 1.003x there — invisible and below the apply threshold, the
+            // "stuck at 1.00x" report). Ramp + buffer floor keep it smooth/safe.
+            gain: 0.12,
+            ceiling: 1.08,
+            // Tight band: engage just 0.1s past the 2.6s target, so the playhead
+            // is actively pulled toward ~2.6-2.7 rather than allowed to sit at 2.9.
+            band: 0.1,
+            // Low-buffer protection: on the LL path the forward buffer CANNOT
+            // exceed the distance behind live, so the margin is inherently
+            // ~1.5s; when delivery wobbles and the buffer dips under the
+            // floor, ease down to 0.97x instead of running it dry (a 3%
+            // slowdown is imperceptible; the stalls it prevents missed by
+            // milliseconds).
+            floor: 0.8,
+            slowRate: 0.97,
+            // 500ms ticks so the slow side reacts inside a draining window;
+            // with rampStep 0.01 transitions still glide (0.02/s).
+            tickMs: 500,
+            rampStep: 0.01,
+            log: Logger.debug,
+          })
+        : startLatencyGovernor(hls, video, {
+            label: 'solo',
+            log: Logger.debug,
+          });
 
       // Behind-live recovery watchdog (LL path only). A transient upstream stall
       // (Twitch's CDN pausing the in-progress segment for >cushion seconds) drains the
       // buffer, stalls, and leaves the playhead re-anchored at the START of the origin's
-      // window — ~12s behind live — where hls.js's own catch-up gives up, so it rides
-      // there forever (observed live). hls.js's gentle 1.1 rate handles small drift, but
-      // not a sudden whole-window jump. When the forward buffer sits well past the
+      // window — ~12s behind live — where rate catch-up alone takes ages, so it rides
+      // there forever (observed live). The governor's gentle 1.03 handles small drift,
+      // but not a sudden whole-window jump. When the forward buffer sits well past the
       // cushion for a couple of checks, snap back into the buffer to ~cushion behind the
       // edge (the same in-buffer seek Go Live uses — safe because the target is already
       // downloaded; only a truly empty buffer needs a full restart). Cooldown prevents
@@ -736,11 +900,15 @@ const VideoPlayer = () => {
       }
       if (isLowLatencyChannel) {
         let over = 0;
+        let frozen = 0;
+        let lastCt = -1;
         let lastRecover = 0;
         behindLiveWatchdogRef.current = setInterval(() => {
           const v = (hls.media as HTMLVideoElement | null) ?? video;
           if (!v || v.paused || v.seeking) {
             over = 0;
+            frozen = 0;
+            lastCt = -1;
             return;
           }
           const b = v.buffered;
@@ -750,13 +918,19 @@ const VideoPlayer = () => {
               ? hls.config.liveSyncDuration
               : 2;
           const fwd = end - v.currentTime;
-          // Beyond cushion + 5s = a real fall-behind. Normal LL forward buffer is
-          // ~cushion (2s); a drought re-anchors the playhead to the start of the origin's
-          // ~12s window, so the fall-behind sits far above any legit part-burst spike —
-          // the +5 keeps brief spikes from triggering a visible snap. A huge value (DVR
-          // scrub-back) is left to the user.
+          // Has the playhead advanced since the last tick? In a healthy ride it
+          // moves ~1 tick-worth per tick (≥1.9s at 2s ticks); a real stall pins it.
+          const advanced = lastCt >= 0 && v.currentTime - lastCt > 0.05;
+          lastCt = v.currentTime;
+          // Beyond cushion + 5s = a real fall-behind (OVERSHOOT: lots of reachable
+          // buffer ahead). Normal LL forward buffer is ~cushion (2s); a drought
+          // re-anchors the playhead to the start of the origin's ~12s window, so the
+          // fall-behind sits far above any legit part-burst spike — the +5 keeps brief
+          // spikes from triggering a visible snap. A huge value (DVR scrub-back) is the
+          // user's, left alone.
           if (fwd > cushion + 5 && fwd < 120) {
             over += 1;
+            frozen = 0;
             if (over >= 2 && Date.now() - lastRecover > 15000) {
               lastRecover = Date.now();
               over = 0;
@@ -770,8 +944,41 @@ const VideoPlayer = () => {
                 }
               }
             }
+          } else if (!advanced && fwd < 1.5) {
+            // UNDERSHOOT: the playhead is frozen with no reachable forward buffer —
+            // a famine outlasted the local buffer, the player drained to ~0 and
+            // hls.js gave up (its catch-up re-anchored to think it is near live, so
+            // wallLat then climbs 1s/s forever; observed summit1g 2026-06-12,
+            // wallLat 6s -> 78s over 70s with rate pinned at 0.97 and no rescue).
+            // The overshoot branch above can never fire here (fwd is below, not
+            // above, threshold). After ~8s of a pinned playhead, recover: if fresh
+            // live data has landed as a separate buffered range ahead of the hole,
+            // snap into it (already downloaded, safe); otherwise restart so the
+            // session re-anchors to the live edge instead of drifting forever.
+            over = 0;
+            frozen += 1;
+            if (frozen >= 4 && Date.now() - lastRecover > 15000) {
+              lastRecover = Date.now();
+              frozen = 0;
+              let snapped = false;
+              for (let i = 0; i < b.length; i++) {
+                // A range strictly ahead of the stuck playhead with real content.
+                if (b.start(i) > v.currentTime + 0.1 && b.end(i) - b.start(i) > 0.5) {
+                  const target = Math.max(b.start(i) + 0.1, b.end(i) - cushion);
+                  Logger.debug(`[HLS] behind-live watchdog: playhead frozen at ${v.currentTime.toFixed(1)}, snapping into live range -> ${target.toFixed(1)}`);
+                  v.currentTime = target;
+                  snapped = true;
+                  break;
+                }
+              }
+              if (!snapped) {
+                Logger.debug('[HLS] behind-live watchdog: playhead frozen with no reachable buffer, restarting to re-anchor to live');
+                restartStream();
+              }
+            }
           } else {
             over = 0;
+            frozen = 0;
           }
         }, 2000);
       }
@@ -971,23 +1178,58 @@ const VideoPlayer = () => {
           if (data.details === 'bufferStalledError') {
             Logger.debug('[HLS] Buffer stalled, attempting recovery...');
 
+            // Stall-adaptive cushion (LL path): each real stall proves this
+            // session's delivery is wobblier than the cushion tolerates, so
+            // raise the target half a second (cap 3s). Clean channels keep the
+            // tight ~2-2.5s ride; unstable ones settle where they stop
+            // stuttering instead of stalling at a fixed tight target. The
+            // governor and watchdog read liveSyncDuration live, and the buffer
+            // that accumulates while delivery recovers simply stops being
+            // consumed at the higher target — no seek, no visible action.
+            // Session-scoped on purpose: a channel that stalled once will
+            // likely wobble again, so the cushion does not decay back.
+            if (isLowLatencyChannel) {
+              const cur =
+                typeof hls.config.liveSyncDuration === 'number' &&
+                Number.isFinite(hls.config.liveSyncDuration)
+                  ? hls.config.liveSyncDuration
+                  : LL_CUSHION_DEFAULT;
+              if (cur < 3.0) {
+                hls.config.liveSyncDuration = Math.min(3.0, cur + 0.5);
+                Logger.debug(
+                  `[HLS] LL stall: cushion ${cur.toFixed(1)}s -> ${hls.config.liveSyncDuration.toFixed(1)}s`,
+                );
+                // Remember per channel so the next session starts here instead
+                // of re-discovering the wobble one stall at a time.
+                rememberLLCushion(currentStream?.user_login, hls.config.liveSyncDuration);
+              }
+            }
+
             // Try to recover by seeking slightly forward if video is paused
             if (video.paused && !userInitiatedPauseRef.current) {
               Logger.debug('[HLS] Video is paused due to stall, attempting to resume playback');
               video.play().catch(e => Logger.debug('[HLS] Resume play failed:', e));
             }
 
-            // If we have buffered data ahead, try jumping to it
-            const buffered = video.buffered;
-            if (buffered.length > 0) {
-              const currentTime = video.currentTime;
-              const bufferedEnd = buffered.end(buffered.length - 1);
+            // If we have buffered data ahead, try jumping to it. NON-LL path
+            // only: on the LL path a forward seek toward the edge mid-playback
+            // is the documented freeze (it flushes MSE coded-frame state and
+            // invalidates the blocking reload the origin holds for the next
+            // part). An LL stall is handled instead by the cushion bump above
+            // plus the behind-live watchdog's in-buffer snap, which only ever
+            // seeks to already-downloaded content.
+            if (!isLowLatencyChannel) {
+              const buffered = video.buffered;
+              if (buffered.length > 0) {
+                const currentTime = video.currentTime;
+                const bufferedEnd = buffered.end(buffered.length - 1);
 
-              // If we're significantly behind the buffered end, seek forward
-              if (bufferedEnd - currentTime > 2.0) {
-                const seekTarget = currentTime + 0.5; // Small jump forward
-                Logger.debug(`[HLS] Seeking forward from ${currentTime} to ${seekTarget} to recover from stall`);
-                video.currentTime = seekTarget;
+                // If we're significantly behind the buffered end, seek forward
+                if (bufferedEnd - currentTime > 2.0) {
+                  const seekTarget = currentTime + 0.5; // Small jump forward
+                  Logger.debug(`[HLS] Seeking forward from ${currentTime} to ${seekTarget} to recover from stall`);
+                  video.currentTime = seekTarget;
+                }
               }
             }
 
@@ -1394,6 +1636,9 @@ const VideoPlayer = () => {
 
     // Cleanup
     return () => {
+      // Invalidate any createPlayer invocation still awaiting its async probes
+      // (it would otherwise construct an orphaned player after this teardown).
+      createSeqRef.current++;
       // Clear a pending deferred-recreate so createPlayer can't fire after teardown
       if (recreateTimeoutId) clearTimeout(recreateTimeoutId);
       // Cancel progress update animation frame

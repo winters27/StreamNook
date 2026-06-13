@@ -299,6 +299,12 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
   {
     tab: 'Chat',
     section: 'Chat Design',
+    title: 'Pins Start Collapsed',
+    description: 'Show the pinned message as its compact one-line bar when you enter a channel instead of fully expanded.'
+  },
+  {
+    tab: 'Chat',
+    section: 'Chat Design',
     title: 'Collapsed Pinned Message',
     description: 'When a pinned message is collapsed, shrink it to a thin one-line bar (sender + truncated text) instead of hiding it entirely.'
   },

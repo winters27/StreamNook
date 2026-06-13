@@ -4,6 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   ChevronDown,
+  Download,
   FolderOpen,
   Globe,
   KeyRound,
@@ -542,6 +543,13 @@ const PluginsSettings = () => {
             // from the source the plugin came from (built-in source = official).
             const pluginOfficial =
               sources.find((s) => s.url === plugin.source)?.official ?? false;
+            // An update is available when a source's catalog lists a newer
+            // version of this installed plugin. Surfacing it here (the Installed
+            // tab) means users update their own plugins without hunting for them
+            // in a large Discover catalog.
+            const updateMatch = catalog.find(
+              (c) => c.entry.id === plugin.id && compareVersions(c.entry.version, plugin.version) > 0,
+            );
             return (
               <div key={plugin.id} className="glass-panel rounded-lg p-4">
                 <div className="flex items-center gap-3.5">
@@ -577,6 +585,19 @@ const PluginsSettings = () => {
                     </p>
                   </div>
                   <div className="flex flex-shrink-0 items-center gap-0.5">
+                    {updateMatch && (
+                      <Tooltip content={`Update to v${updateMatch.entry.version}`} delay={200}>
+                        <button
+                          type="button"
+                          onClick={() => installFromSource(updateMatch.source, updateMatch.entry)}
+                          disabled={busy}
+                          className="glass-button-static mr-1 flex flex-shrink-0 items-center gap-1.5 px-2.5 py-1 text-[12px] font-semibold text-amber-400 disabled:opacity-50"
+                        >
+                          <Download size={13} />
+                          Update
+                        </button>
+                      </Tooltip>
+                    )}
                     {hasSettings && (
                       <IconAction
                         hint="Plugin settings"

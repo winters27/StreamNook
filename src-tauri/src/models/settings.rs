@@ -2,7 +2,6 @@ use crate::services::background_service::BackgroundService;
 use crate::services::drops_service::DropsService;
 use crate::services::emote_service::EmoteService;
 use crate::services::layout_service::LayoutService;
-use crate::services::mining_service::MiningService;
 use crate::services::twitch_auth_service::TwitchAuthService;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -580,7 +579,6 @@ impl Default for ChatLoggingSettings {
 pub struct AppState {
     pub settings: Arc<Mutex<Settings>>,
     pub drops_service: Arc<TokioMutex<DropsService>>,
-    pub mining_service: Arc<TokioMutex<MiningService>>,
     pub background_service: Arc<TokioMutex<BackgroundService>>,
     pub layout_service: Arc<LayoutService>,
     pub emote_service: Arc<RwLock<EmoteService>>,

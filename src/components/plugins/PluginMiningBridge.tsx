@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, emit } from '@tauri-apps/api/event';
 import { useAppStore } from '../../stores/AppStore';
-import type { MiningStatus, MiningChannel, CurrentDropInfo } from '../../types';
+import type { MiningStatus, MiningChannel, CurrentDropInfo, DropCampaign, TimeBasedDrop } from '../../types';
 
 // Shape a drops-mining plugin pushes into its status slot (see HOOKS.md). The
 // host never names the plugin; it only knows the generic `drops.mining`
@@ -13,6 +13,7 @@ interface DropsStatusValue {
     game_name?: string | null;
     campaign_id?: string | null;
     channel_login?: string | null;
+    drop_name?: string | null;
     current_minutes?: number | null;
     required_minutes?: number | null;
 }
@@ -32,10 +33,51 @@ interface DropsStatusValue {
  */
 export default function PluginMiningBridge() {
     const providerRef = useRef<string | null>(null);
+    // Campaign cache used only to resolve a reward NAME for the title bar when a
+    // plugin's status push doesn't carry one (older plugin builds). The name
+    // lives only in campaign data; the backend progress records don't have it.
+    const campaignsRef = useRef<DropCampaign[]>([]);
+    const fetchingRef = useRef(false);
+    const lastFetchRef = useRef(0);
 
     useEffect(() => {
         let disposed = false;
         const unlisteners: (() => void)[] = [];
+
+        const refreshCampaigns = async () => {
+            if (fetchingRef.current || Date.now() - lastFetchRef.current < 60_000) return;
+            lastFetchRef.current = Date.now();
+            fetchingRef.current = true;
+            try {
+                const list = await invoke<DropCampaign[]>('get_active_drop_campaigns');
+                if (!disposed && Array.isArray(list)) campaignsRef.current = list;
+            } catch {
+                /* campaigns unavailable */
+            } finally {
+                fetchingRef.current = false;
+            }
+        };
+
+        // The reward currently being worked toward in a campaign: the unclaimed,
+        // still-incomplete mineable drop closest to finishing (fewest minutes
+        // left). Mirrors what the miner is actually progressing.
+        const resolveDropName = (campaignId: string): string => {
+            const campaign = campaignsRef.current.find((c) => c.id === campaignId);
+            if (!campaign) return '';
+            const remaining = (d: TimeBasedDrop) =>
+                (d.progress?.required_minutes_watched ?? d.required_minutes_watched) -
+                (d.progress?.current_minutes_watched ?? 0);
+            let best: TimeBasedDrop | null = null;
+            for (const d of campaign.time_based_drops) {
+                if ((d.required_minutes_watched ?? 0) <= 0 || d.progress?.is_claimed) continue;
+                if (remaining(d) <= 0) continue;
+                if (!best || remaining(d) < remaining(best)) best = d;
+            }
+            const pick = best
+                ?? campaign.time_based_drops.find((d) => (d.required_minutes_watched ?? 0) > 0)
+                ?? null;
+            return pick ? (pick.benefit_edges?.[0]?.name || pick.name || '') : '';
+        };
 
         const refreshProvider = async () => {
             try {
@@ -44,6 +86,9 @@ export default function PluginMiningBridge() {
                 const next = id ?? null;
                 const had = providerRef.current;
                 providerRef.current = next;
+                // Warm the campaign cache while a mining plugin is active, so a
+                // name is ready to resolve the moment mining starts.
+                if (next) refreshCampaigns();
                 // The mining provider went away (plugin disabled or removed). It
                 // can't push a final stopped status once its process is gone, so
                 // stand the native mining UI down here, otherwise a reopened
@@ -86,6 +131,15 @@ export default function PluginMiningBridge() {
                               drops_enabled: true,
                           }
                         : null;
+                    // Reward name: prefer what the plugin reports; fall back to
+                    // resolving it from campaign data for plugin builds that
+                    // don't send it. A cache miss kicks off a refresh so the next
+                    // status push resolves.
+                    let dropName = (v.drop_name ?? '').trim();
+                    if (!dropName && v.campaign_id) {
+                        dropName = resolveDropName(v.campaign_id);
+                        if (!dropName) refreshCampaigns();
+                    }
                     const drop: CurrentDropInfo | null = v.game_name
                         ? {
                               campaign_id: v.campaign_id ?? '',
@@ -94,7 +148,7 @@ export default function PluginMiningBridge() {
                               // campaign so the title bar's per-drop matching
                               // stays stable across pushes.
                               drop_id: v.campaign_id ?? '',
-                              drop_name: '',
+                              drop_name: dropName,
                               required_minutes: v.required_minutes ?? 0,
                               current_minutes: v.current_minutes ?? 0,
                               game_name: v.game_name,

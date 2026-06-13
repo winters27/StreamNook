@@ -247,6 +247,13 @@ impl MultiNookServer {
         // complete segments (served from memory); the upstream proxy below only
         // handles the non-LL case.
         if origin.is_active() {
+            // Origin-generated init segment (TS transmux path).
+            if request_path == "init.mp4" {
+                if let Some(bytes) = origin.get_init() {
+                    return Ok(media_response(bytes.as_ref().clone()));
+                }
+                return Ok(empty_cors(404));
+            }
             if let Some(rest) = request_path.strip_prefix("part/") {
                 if let Some((sn, k)) = parse_part_path(rest) {
                     if let Some(bytes) = origin.get_part(sn, k) {

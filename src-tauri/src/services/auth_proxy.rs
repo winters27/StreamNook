@@ -153,6 +153,20 @@ pub fn get_status(channel: &str) -> Option<PlaybackStatus> {
 /// master this way); works anonymously otherwise, same as the logged-out web
 /// player. Returns the master playlist body.
 pub(crate) async fn fetch_auth_master(channel: &str, oauth_token: Option<&str>) -> Result<String> {
+    // Dev switch: drop the viewer credential so the playback token carries no
+    // entitlement. Lets an ad-free account (Turbo/sub) reproduce what un-
+    // entitled viewers receive — server-side ad splices in particular — which
+    // is otherwise untestable from such an account. Set
+    // STREAMNOOK_FORCE_ANON_PLAYBACK=1 in the dev shell; never set in release.
+    let oauth_token = if std::env::var("STREAMNOOK_FORCE_ANON_PLAYBACK")
+        .map(|v| v != "0" && !v.is_empty())
+        .unwrap_or(false)
+    {
+        warn!("[AuthProxy] STREAMNOOK_FORCE_ANON_PLAYBACK set: requesting {channel} anonymously");
+        None
+    } else {
+        oauth_token
+    };
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(8))
         .user_agent(USER_AGENT)

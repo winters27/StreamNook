@@ -70,6 +70,7 @@ import { pickHoursRoast, type PickedRoast } from '../../utils/hoursWatchedRoasts
 import { SEASONAL_ACCOLADES, getActiveSeasonalAccoladeIds, isCakeDay, CAKE_DAY_ID } from '../../utils/seasonalAccolades';
 import { RESTLESS_ACCOLADE_ID } from '../../utils/notifAchievement';
 import SubscriptionsSection from './SubscriptionsSection';
+import MembershipSection from './MembershipSection';
 import TopEmotesSection from './TopEmotesSection';
 import { ProfileAccentContext, ProfileCompactContext } from './profileAccentContext';
 
@@ -719,6 +720,8 @@ const ProfileOverview = ({
     </div>
   );
 
+  const membershipEl = isOwnProfile ? <MembershipSection userId={userId} /> : null;
+
   const subsEl = isOwnProfile ? <SubscriptionsSection login={login} /> : null;
 
   const emotesEl = sectionHidden('emotes') ? null : <TopEmotesSection userId={userId} />;
@@ -794,6 +797,7 @@ const ProfileOverview = ({
       {heroEl}
       {twitchEl}
       {lifetimeEl}
+      {membershipEl}
       {subsEl}
       {emotesEl}
       {accoladesEl}

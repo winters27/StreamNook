@@ -1028,6 +1028,76 @@ export const isStripeSubscriber = async (userId: string): Promise<boolean> => {
     }
 };
 
+/**
+ * The member's own StreamNook membership facts for the profile Overview card:
+ * current Stripe subscription state (status, renewal/end date, cancellation)
+ * plus lifetime tenure (member since, total months). Both tables are
+ * SELECT-readable under the anon key. Gifted (complimentary) memberships are
+ * admin-only server-side, so a gifted member shows tenure without a billing
+ * status here.
+ */
+export interface StreamNookMembership {
+    /** Stripe status of the latest subscription, or null when none exists. */
+    status: string | null;
+    currentPeriodEnd: string | null;
+    cancelAtPeriodEnd: boolean;
+    /** When the current subscription started. */
+    startedAt: string | null;
+    /** When cancellation was requested (set while the sub runs out its paid period). */
+    canceledAt: string | null;
+    /** When a canceled subscription actually ended. */
+    endedAt: string | null;
+    totalMonths: number;
+    /** First-ever paid month, the lifetime "member since" anchor. */
+    firstSubscribedAt: string | null;
+    lastPaidAt: string | null;
+}
+
+export const getStreamNookMembership = async (
+    userId: string,
+): Promise<StreamNookMembership | null> => {
+    if (!supabase || !userId) return null;
+    try {
+        // select * so the read tolerates date columns that predate the
+        // subscription_dates migration instead of erroring.
+        const [subRes, tenureRes] = await Promise.all([
+            supabase
+                .from('stripe_subscriptions')
+                .select('*')
+                .eq('twitch_user_id', userId)
+                .order('updated_at', { ascending: false })
+                .limit(1)
+                .maybeSingle(),
+            supabase
+                .from('user_subscriber_state')
+                .select('*')
+                .eq('twitch_user_id', userId)
+                .maybeSingle(),
+        ]);
+        if (subRes.error) Logger.warn('[Supabase] membership sub read failed:', subRes.error.message);
+        if (tenureRes.error) Logger.warn('[Supabase] membership tenure read failed:', tenureRes.error.message);
+
+        const sub = subRes.data as Record<string, unknown> | null;
+        const tenure = tenureRes.data as Record<string, unknown> | null;
+        if (!sub && !tenure) return null;
+
+        return {
+            status: (sub?.status as string | undefined) ?? null,
+            currentPeriodEnd: (sub?.current_period_end as string | undefined) ?? null,
+            cancelAtPeriodEnd: Boolean(sub?.cancel_at_period_end),
+            startedAt: (sub?.started_at as string | undefined) ?? (sub?.created_at as string | undefined) ?? null,
+            canceledAt: (sub?.canceled_at as string | undefined) ?? null,
+            endedAt: (sub?.ended_at as string | undefined) ?? null,
+            totalMonths: Number(tenure?.total_months ?? 0),
+            firstSubscribedAt: (tenure?.first_subscribed_at as string | undefined) ?? null,
+            lastPaidAt: (tenure?.last_paid_at as string | undefined) ?? null,
+        };
+    } catch (error) {
+        Logger.warn('[Supabase] getStreamNookMembership failed:', error);
+        return null;
+    }
+};
+
 // ============================================================================
 // StreamNook user registry (P2P badge)
 // ============================================================================
@@ -1390,6 +1460,7 @@ interface AtmosphereRow {
     layers2: string | null;
     motion: string;
     chat_edge: string;
+    chat_frost: boolean | null;
     unlock_kind: string;
     unlock_accolade_id: string | null;
     sort_order: number;
@@ -1408,6 +1479,7 @@ const rowToAtmosphere = (row: AtmosphereRow): Atmosphere => ({
     layers2: row.layers2 ?? undefined,
     motion: row.motion === 'drift' ? 'drift' : 'aurora',
     chatEdge: row.chat_edge,
+    chatFrost: !!row.chat_frost,
     unlock: row.unlock_kind === 'accolade' && row.unlock_accolade_id
         ? { kind: 'accolade', accoladeId: row.unlock_accolade_id }
         : { kind: 'subscriber' },

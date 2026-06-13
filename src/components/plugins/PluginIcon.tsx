@@ -58,7 +58,9 @@ export function PluginIcon({
         : null;
   const showImage = !!resolved && !failed;
   return (
-    <div
+    // A span (with display:flex from the class) so the icon can sit inside
+    // text containers like <p> without invalid DOM nesting.
+    <span
       className={`flex flex-shrink-0 items-center justify-center overflow-hidden ${sizeClass}`}
       style={showImage ? undefined : { background: TIER_TINT[tier], boxShadow: TILE_BEVEL }}
     >
@@ -74,7 +76,7 @@ export function PluginIcon({
       ) : (
         <Puzzle size={glyphSize} strokeWidth={2.25} className="text-textPrimary" />
       )}
-    </div>
+    </span>
   );
 }
 

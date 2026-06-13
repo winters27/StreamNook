@@ -45,6 +45,11 @@ export interface Atmosphere {
   // A 1px gradient edge drawn down the left of the member's chat message row (in
   // place of a flat accent bar).
   chatEdge: string;
+  // Frosted readability block (dark translucent fill + slight backdrop blur)
+  // behind the member's chat text. Only for atmospheres whose wash is busy
+  // enough to fight the text (typically image-backed ones); subtle gradient
+  // washes leave it off.
+  chatFrost?: boolean;
   // How this Atmosphere is unlocked. 'subscriber' = the paid subscriber tier
   // (the default for the house line). 'accolade' = earned by unlocking a
   // specific accolade, available to ANY member regardless of subscription.

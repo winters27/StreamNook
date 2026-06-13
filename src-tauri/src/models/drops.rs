@@ -123,6 +123,16 @@ pub struct ChannelPointsClaim {
     pub claim_type: ChannelPointsClaimType,
 }
 
+/// Result of claiming a bonus chest. `points_earned` is the exact amount the
+/// claim credited (`claim.pointsEarnedTotal` in the mutation response, which
+/// includes any active multipliers), and `new_balance` is the post-claim
+/// total. Both come straight from the `ClaimCommunityPoints` payload.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BonusClaimResult {
+    pub new_balance: i32,
+    pub points_earned: i32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ChannelPointsClaimType {
     Watch,      // Regular watch time bonus

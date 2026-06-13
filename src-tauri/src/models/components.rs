@@ -43,6 +43,11 @@ pub struct BundleUpdateStatus {
     pub download_size: Option<String>,
     pub component_changes: Option<ComponentChanges>,
     pub release_notes: Option<String>,
+    /// Expected SHA-256 of the bundle, when the source advertises one (the
+    /// streamnook.app manifest does). The installer verifies the download
+    /// against this before swapping the exe. None = no integrity check.
+    #[serde(default)]
+    pub sha256: Option<String>,
 }
 
 /// Details about which components changed
@@ -145,6 +150,7 @@ impl ComponentManifest {
             download_size: None,
             component_changes,
             release_notes: None,
+            sha256: None,
         }
     }
 }

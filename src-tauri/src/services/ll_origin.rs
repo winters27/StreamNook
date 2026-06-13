@@ -48,8 +48,14 @@ pub(crate) const TILE_MAX_SEGMENTS: usize = 4;
 /// chunks so every real part is comfortably under it (spec requires that), and so
 /// hls.js's edge clamp (`edge - partTarget`) leaves headroom.
 const PART_TARGET: f64 = 0.5;
-/// Advisory per-part duration in the playlist. hls.js derives real timing from the
-/// fMP4 sample tables, not this, so a nominal value is fine.
+/// Fallback per-part duration for CMAF parts whose real span could not be
+/// measured (init unavailable / parse failure). NOT merely advisory: hls.js
+/// SUMS declared playlist durations to place fragments, and a systematic
+/// declared-vs-real error compounds into playlist-vs-buffer drift — real
+/// Twitch CMAF parts run ~0.105s, and declaring 0.1 drifted the playlist edge
+/// ~6.6s behind played media in an hour (summit1g 2026-06-12: hls.js "reset
+/// currentTime" rewinds + a MediaSource-ended recovery loop). Measured
+/// durations from the part's own sample tables are the primary path.
 const NOMINAL_PART_DUR: f64 = 0.1;
 const TARGET_DURATION: u64 = 2;
 /// How long a blocking reload waits for the requested part before returning the
@@ -58,8 +64,14 @@ const TARGET_DURATION: u64 = 2;
 /// `max(PART-TARGET * 3, TARGETDURATION * 0.8)` = 1.6s for this origin (hls.js
 /// dist ~36182, "the default of 10000ms is counter productive to blocking
 /// playlist reload requests"); a 4s hold tripped `levelLoadTimeOut` on every
-/// part drought. 1.4s leaves transit margin under that cap.
-const BLOCK_TIMEOUT: Duration = Duration::from_millis(1400);
+/// part drought. 1.4s tripped it about once per session, and 1.2s still
+/// occasionally (two in a row drained the 1.5s cushion to a stall once on
+/// 2026-06-12): the 1.6s budget also covers transit AND any queueing behind a
+/// part fetch on a shared keep-alive connection, so the hold itself gets 1.0s.
+/// During a real part drought the shorter hold just means hls.js re-polls
+/// sooner; nothing is lost. If timeouts still appear, the next lever is the
+/// declared PART-TARGET (0.5 -> 0.667 raises hls.js's cap to 2.0s), not this.
+const BLOCK_TIMEOUT: Duration = Duration::from_millis(1000);
 /// How long the reader waits for a preopened next-segment connection before
 /// abandoning it for the poll path. Normally ready instantly (the previous
 /// segment just finished, so the next is already producing).
@@ -72,8 +84,29 @@ const BACKFILL_SEGMENTS: usize = 2;
 /// per-chunk read timeout instead. Without these, a hung fetch could block stream
 /// start or freeze the reader.
 const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
-/// Max wait for the next chunk of the in-progress segment before treating it as done.
-const CHUNK_TIMEOUT: Duration = Duration::from_secs(10);
+/// Max wait for the FIRST chunk of an in-progress segment. Generous on purpose:
+/// the CDN holds a preopened GET until the segment starts producing, so a slow
+/// segment start legitimately spends a couple of seconds here (2.5s+ shell gaps
+/// observed on healthy streams).
+const FIRST_CHUNK_TIMEOUT: Duration = Duration::from_secs(4);
+/// Max MID-STREAM silence before the segment is abandoned (flush what arrived,
+/// mark complete, move to the next). Chunks normally land every ~0.3s or
+/// faster; multi-second silence means the upstream transfer stalled, and
+/// waiting it out is exactly the part drought that starves the player (5s
+/// production gaps -> drained buffer -> stall, ohnepixel capture 2026-06-12).
+/// The next segment is usually already preopened and producing, so abandoning
+/// the dead tail converts a 5-10s freeze into a sub-frame skip (the transmuxer
+/// resets its half-assembled PES; the next segment leads with an IDR).
+const MIDSTREAM_CHUNK_TIMEOUT: Duration = Duration::from_secs(2);
+/// Wall-clock grace past the segment's own duration before a TRICKLING
+/// transfer is abandoned too. Silence detection misses slow-but-alive
+/// transfers: a 2s segment that took 5s to deliver produced a 4.5s part gap
+/// and a stall (repullze capture 2026-06-12) while the following segments sat
+/// complete upstream. A live in-progress segment finishes ~its duration after
+/// its first chunk; running this far past that means delivery is slower than
+/// real time and the famine only grows. Measured from the FIRST chunk (a
+/// preopened connection legitimately idles until the segment starts).
+const SEGMENT_DEADLINE_GRACE: f64 = 1.5;
 /// Master switch for the MPEG-TS low-latency origin. Twitch serves H.264 (the
 /// "chunked"/source quality on the vast majority of channels) as MPEG-TS with NO
 /// `#EXT-X-MAP`; only HEVC/AV1 variants are CMAF. The CMAF origin silently no-ops
@@ -89,6 +122,16 @@ const ENABLE_TS_LL_ORIGIN: bool = true;
 /// when a frame straddles the boundary. CMAF parts come pre-split by Twitch
 /// (~0.105s) so this only governs TS.
 const TS_PART_PTS: u64 = 27_000;
+/// Transmux TS parts to fMP4 before publishing them, so hls.js takes its
+/// passthrough path (explicit per-sample timestamps, no stateful JS remux).
+/// This is the structural fix for the duplicate-append A/V fork: hls.js
+/// occasionally re-fetches a fragment it already buffered (trigger unknown;
+/// 7 of 83 fragments in the 2026-06-11 streamdatabase capture), and on the raw
+/// TS path each re-append inserted 2s of duplicate video at the buffer end
+/// while audio coalesced, desyncing A/V by -2s per occurrence. With fMP4 the
+/// same re-append overwrites the same time range and is harmless. When false,
+/// raw TS parts are served exactly as before (kill switch).
+const ENABLE_TS_TRANSMUX: bool = true;
 
 /// Segment container. Twitch ships CMAF (fMP4, with `#EXT-X-MAP`) for HEVC/AV1 and
 /// MPEG-TS (no init segment) for H.264. The two split into low-latency parts
@@ -164,10 +207,23 @@ struct Segment {
 struct LiveEdge {
     /// CMAF init segment URL. Empty for `Container::Ts` (TS needs no `#EXT-X-MAP`).
     init_url: String,
+    /// Origin-generated init segment (TS transmux path). When set, the playlist
+    /// advertises `#EXT-X-MAP:URI="init.mp4"` and the relay serves these bytes;
+    /// parts are fMP4 regardless of `container` (which still selects the
+    /// CHUNKER for the upstream byte stream).
+    init_bytes: Option<Arc<Vec<u8>>>,
     container: Container,
     target_duration: u64,
     part_target: f64,
     segments: VecDeque<Segment>,
+}
+
+impl LiveEdge {
+    /// Whether the parts served to the player are fMP4 (native CMAF upstream or
+    /// the TS transmux), which decides the `#EXT-X-MAP` line and part extension.
+    fn cmaf_presented(&self) -> bool {
+        self.container == Container::Cmaf || self.init_bytes.is_some()
+    }
 }
 
 /// One live-edge origin. Solo and MultiNook each route their relay traffic to an
@@ -176,12 +232,34 @@ pub struct LlOrigin {
     live_edge: Mutex<Option<LiveEdge>>,
     /// Wakes blocked playlist reloads whenever the edge gains a part or segment.
     notify: Notify,
+    /// Monotonic change marker for the served playlist: bumped by `wake_serves`
+    /// alongside every notify. Directive-less playlist holds compare against it
+    /// to mean "anything changed since the request arrived".
+    edge_version: AtomicU64,
     reader_task: Mutex<Option<JoinHandle<()>>>,
     /// Generation counter: bumped on every start/stop so a lingering reader task can
     /// detect it has been superseded and exit even before its `abort()` lands.
     generation: AtomicU64,
     /// Live window size (complete segments + the in-progress one).
     max_segments: usize,
+    /// TS-to-fMP4 transmuxer, present only on the TS path with
+    /// `ENABLE_TS_TRANSMUX`. Behind its own lock (not `live_edge`) so per-part
+    /// CPU work never contends with playlist/part serving. Access is naturally
+    /// sequential: activation backfill, then the single reader task.
+    transmux: Mutex<Option<crate::services::ts_fmp4::Transmuxer>>,
+    /// CMAF path only: the video track's (track_id, timescale) from the
+    /// upstream init segment, fetched once at activation. Lets every published
+    /// part carry its MEASURED duration instead of `NOMINAL_PART_DUR` (the
+    /// nominal lie compounds into playlist-vs-buffer drift; see that const).
+    cmaf_video: Mutex<Option<(u32, u32)>>,
+    /// Retirement grace for segments leaving the window (eviction or rebuild):
+    /// a playlist already in the player's hands may still reference them, and
+    /// a 404 on a LISTED part breaks the immutability contract — hls.js
+    /// penalizes the "pathway", marks the fragment as a GAP, and spirals
+    /// (observed live: 404 on part/10193/0 during a famine rebuild, then a
+    /// fragGap retry storm). Retired segments stay servable until they age out
+    /// of this small ring.
+    retired: Mutex<VecDeque<Segment>>,
 }
 
 /// Hard kill switch: when true, no origin activates and the relays fall back to the
@@ -249,17 +327,152 @@ impl BoxChunker {
         parts
     }
 
-    /// Stream ended: fold any leftover bytes into a final part.
+    /// Stream ended: DROP any leftovers. A published part must be a complete
+    /// `moof`+`mdat` group or nothing — a clean CMAF segment ends exactly at an
+    /// mdat boundary (push() already emitted everything), so leftovers only
+    /// exist when the transfer was ABANDONED mid-box. Appending a truncated
+    /// box makes the browser run MSE's append-error algorithm, which ENDS the
+    /// MediaSource ("readyState: ended" append-failure loops, observed live on
+    /// summit1g 2026-06-12), and a complete moof without its mdat leaves the
+    /// SourceBuffer stuck in PARSING_MEDIA_SEGMENT (the timestampOffset
+    /// error). The dropped tail is just the abandoned segment's lost media,
+    /// which the playlist already accounts for.
     fn flush(&mut self) -> Option<Vec<u8>> {
-        if !self.buf.is_empty() {
-            let rest = std::mem::take(&mut self.buf);
-            self.current.extend_from_slice(&rest);
+        if !self.buf.is_empty() || !self.current.is_empty() {
+            log::info!(
+                "[LLOrigin] dropping {} leftover CMAF bytes (incomplete fragment at stream end)",
+                self.buf.len() + self.current.len()
+            );
         }
-        if self.current.is_empty() {
-            None
-        } else {
-            Some(std::mem::take(&mut self.current))
+        self.buf.clear();
+        self.current.clear();
+        None
+    }
+}
+
+// ──────────────────────── CMAF duration measurement ────────────────────────
+
+/// Iterate top-level ISO-BMFF boxes in `data` as (fourcc, body) pairs.
+fn iter_boxes(data: &[u8]) -> impl Iterator<Item = (&[u8], &[u8])> {
+    let mut i = 0usize;
+    std::iter::from_fn(move || {
+        if i + 8 > data.len() {
+            return None;
         }
+        let size = u32::from_be_bytes(data[i..i + 4].try_into().unwrap()) as usize;
+        if size < 8 || i + size > data.len() {
+            return None;
+        }
+        let item = (&data[i + 4..i + 8], &data[i + 8..i + size]);
+        i += size;
+        Some(item)
+    })
+}
+
+fn find_box<'a>(data: &'a [u8], fourcc: &[u8; 4]) -> Option<&'a [u8]> {
+    iter_boxes(data).find(|(k, _)| *k == fourcc).map(|(_, b)| b)
+}
+
+/// Extract the VIDEO track's (track_id, timescale) from a CMAF init segment.
+/// This is what converts a part's `trun` sample durations into seconds.
+fn parse_cmaf_video_track(init: &[u8]) -> Option<(u32, u32)> {
+    let moov = find_box(init, b"moov")?;
+    for (kind, trak) in iter_boxes(moov) {
+        if kind != b"trak" {
+            continue;
+        }
+        let Some(mdia) = find_box(trak, b"mdia") else { continue };
+        let Some(hdlr) = find_box(mdia, b"hdlr") else { continue };
+        if hdlr.len() < 12 || &hdlr[8..12] != b"vide" {
+            continue;
+        }
+        let tkhd = find_box(trak, b"tkhd")?;
+        let track_id_off = if tkhd.first() == Some(&1) { 20 } else { 12 };
+        let mdhd = find_box(mdia, b"mdhd")?;
+        let timescale_off = if mdhd.first() == Some(&1) { 20 } else { 12 };
+        if tkhd.len() < track_id_off + 4 || mdhd.len() < timescale_off + 4 {
+            continue;
+        }
+        let track_id = u32::from_be_bytes(tkhd[track_id_off..track_id_off + 4].try_into().unwrap());
+        let timescale = u32::from_be_bytes(mdhd[timescale_off..timescale_off + 4].try_into().unwrap());
+        if timescale > 0 {
+            return Some((track_id, timescale));
+        }
+    }
+    None
+}
+
+/// Measure a CMAF part's video span in seconds from its own sample tables:
+/// the sum of the video traf's `trun` sample durations (or the `tfhd` default
+/// duration times the sample count), divided by the init's timescale.
+fn cmaf_part_duration(part: &[u8], track_id: u32, timescale: u32) -> Option<f64> {
+    let mut total_ticks: u64 = 0;
+    for (kind, moof) in iter_boxes(part) {
+        if kind != b"moof" {
+            continue;
+        }
+        for (k2, traf) in iter_boxes(moof) {
+            if k2 != b"traf" {
+                continue;
+            }
+            let Some(tfhd) = find_box(traf, b"tfhd") else { continue };
+            if tfhd.len() < 8 {
+                continue;
+            }
+            let flags = u32::from_be_bytes(tfhd[0..4].try_into().unwrap()) & 0x00FF_FFFF;
+            if u32::from_be_bytes(tfhd[4..8].try_into().unwrap()) != track_id {
+                continue;
+            }
+            // Optional tfhd fields, in flag order, after the track id.
+            let mut off = 8usize;
+            if flags & 0x1 != 0 {
+                off += 8; // base_data_offset
+            }
+            if flags & 0x2 != 0 {
+                off += 4; // sample_description_index
+            }
+            let default_dur = if flags & 0x8 != 0 && tfhd.len() >= off + 4 {
+                Some(u32::from_be_bytes(tfhd[off..off + 4].try_into().unwrap()))
+            } else {
+                None
+            };
+            for (k3, trun) in iter_boxes(traf) {
+                if k3 != b"trun" || trun.len() < 8 {
+                    continue;
+                }
+                let tflags = u32::from_be_bytes(trun[0..4].try_into().unwrap()) & 0x00FF_FFFF;
+                let count = u32::from_be_bytes(trun[4..8].try_into().unwrap());
+                if tflags & 0x100 != 0 {
+                    let mut p = 8usize;
+                    if tflags & 0x1 != 0 {
+                        p += 4; // data_offset
+                    }
+                    if tflags & 0x4 != 0 {
+                        p += 4; // first_sample_flags
+                    }
+                    let per = [0x100u32, 0x200, 0x400, 0x800]
+                        .iter()
+                        .filter(|&&f| tflags & f != 0)
+                        .count()
+                        * 4;
+                    for _ in 0..count {
+                        if trun.len() < p + 4 {
+                            break;
+                        }
+                        total_ticks +=
+                            u32::from_be_bytes(trun[p..p + 4].try_into().unwrap()) as u64;
+                        p += per;
+                    }
+                } else if let Some(d) = default_dur {
+                    total_ticks += d as u64 * count as u64;
+                }
+            }
+        }
+    }
+    if total_ticks == 0 {
+        None
+    } else {
+        Some(total_ticks as f64 / timescale as f64)
     }
 }
 
@@ -508,10 +721,32 @@ impl LlOrigin {
         Arc::new(Self {
             live_edge: Mutex::new(None),
             notify: Notify::new(),
+            edge_version: AtomicU64::new(0),
             reader_task: Mutex::new(None),
             generation: AtomicU64::new(0),
             max_segments,
+            transmux: Mutex::new(None),
+            cmaf_video: Mutex::new(None),
+            retired: Mutex::new(VecDeque::new()),
         })
+    }
+
+    /// Move segments leaving the live window into the retirement ring.
+    fn retire(&self, segs: impl IntoIterator<Item = Segment>) {
+        const RETIRED_CAP: usize = 8;
+        let mut r = self.retired.lock().unwrap();
+        for s in segs {
+            r.push_back(s);
+        }
+        while r.len() > RETIRED_CAP {
+            r.pop_front();
+        }
+    }
+
+    /// Mark the served playlist as changed and wake every blocked reload.
+    fn wake_serves(&self) {
+        self.edge_version.fetch_add(1, Ordering::SeqCst);
+        self.notify.notify_waiters();
     }
 
     pub fn is_active(&self) -> bool {
@@ -529,6 +764,24 @@ impl LlOrigin {
             .unwrap_or(Container::Cmaf)
     }
 
+    /// Deactivate the live edge because the upstream is permanently gone (stream
+    /// offline, or the usher-signed playlist/segment URLs expired after hours).
+    /// Unlike `stop()` this does NOT bump the generation or abort the reader (the
+    /// reader is the caller and returns right after): it just clears the edge so
+    /// `is_active()` goes false, blocking holds release with `None`, and the relay
+    /// falls through to the plain upstream path — which 4xx's into a fatal hls.js
+    /// error (offline UI) on true death, or a graceful non-LL serve if the upstream
+    /// recovered. Without this the reader spun forever serving the last-good
+    /// playlist while `edge_version` never advanced (a silent permanent freeze).
+    fn deactivate_offline(&self, reason: &str) {
+        warn!("[LLOrigin] deactivating origin (upstream gone): {reason}");
+        crate::services::ll_diagnostics::event(&format!("\"ev\":\"o_offline\",\"reason\":{reason:?}"));
+        *self.live_edge.lock().unwrap() = None;
+        *self.transmux.lock().unwrap() = None;
+        *self.cmaf_video.lock().unwrap() = None;
+        self.wake_serves();
+    }
+
     /// Stop any running reader and clear state. Called on stream stop / restart.
     pub fn stop(&self) {
         self.generation.fetch_add(1, Ordering::SeqCst);
@@ -536,7 +789,10 @@ impl LlOrigin {
             h.abort();
         }
         *self.live_edge.lock().unwrap() = None;
-        self.notify.notify_waiters();
+        *self.transmux.lock().unwrap() = None;
+        *self.cmaf_video.lock().unwrap() = None;
+        self.retired.lock().unwrap().clear();
+        self.wake_serves();
     }
 
     /// Probe the upstream and, if it's a low-latency broadcast we can serve, build the
@@ -586,6 +842,35 @@ impl LlOrigin {
             }
         };
 
+        // The transmuxer must exist before backfill so the backfilled segments
+        // are already fMP4 and the init segment is ready before the first
+        // playlist render (hls.js fetches `#EXT-X-MAP` before anything else).
+        *self.transmux.lock().unwrap() = if container == Container::Ts && ENABLE_TS_TRANSMUX {
+            Some(crate::services::ts_fmp4::Transmuxer::new())
+        } else {
+            None
+        };
+
+        // CMAF path: fetch the init once for the video track's timescale, so
+        // every published part carries its measured duration (must happen
+        // before backfill — backfilled parts get durations too).
+        *self.cmaf_video.lock().unwrap() = None;
+        if container == Container::Cmaf && !init_url.is_empty() {
+            match client.get(&init_url).timeout(FETCH_TIMEOUT).send().await {
+                Ok(resp) => {
+                    let bytes = resp.bytes().await.map(|b| b.to_vec()).unwrap_or_default();
+                    let parsed = parse_cmaf_video_track(&bytes);
+                    if parsed.is_none() {
+                        warn!("[LLOrigin] CMAF init parse failed; parts fall back to nominal durations");
+                    }
+                    *self.cmaf_video.lock().unwrap() = parsed;
+                }
+                Err(e) => {
+                    warn!("[LLOrigin] CMAF init fetch failed ({e}); parts fall back to nominal durations");
+                }
+            }
+        }
+
         // Backfill the last few complete segments so the first playlist has #EXTINF.
         let mut segments: VecDeque<Segment> = VecDeque::new();
         let backfill: Vec<_> = up
@@ -600,7 +885,7 @@ impl LlOrigin {
             match client.get(&url).timeout(FETCH_TIMEOUT).send().await.ok() {
                 Some(resp) => {
                     let bytes = resp.bytes().await.map(|b| b.to_vec()).unwrap_or_default();
-                    let parts = split_complete(&bytes, container);
+                    let parts = self.convert_parts(split_complete(&bytes, container));
                     if !parts.is_empty() {
                         segments.push_back(make_segment(sn, pdt, true, parts));
                     }
@@ -613,8 +898,27 @@ impl LlOrigin {
             return inactive;
         }
 
+        // With the transmux on, the init segment must exist before going live; a
+        // stream whose backfill never showed an SPS/PPS can't be presented as
+        // CMAF, so decline activation (the promotion fallback serves it).
+        let init_bytes = {
+            let mut g = self.transmux.lock().unwrap();
+            match g.as_mut() {
+                Some(t) => match t.init_segment() {
+                    Some(b) => Some(Arc::new(b)),
+                    None => {
+                        warn!("[LLOrigin] transmux found no H.264 config in backfill; origin inactive");
+                        *g = None;
+                        return inactive;
+                    }
+                },
+                None => None,
+            }
+        };
+
         *self.live_edge.lock().unwrap() = Some(LiveEdge {
             init_url,
+            init_bytes,
             container,
             // Declare the real ~2s segment size, NOT Twitch's inflated TARGETDURATION:6.
             // hls.js uses targetduration for reload cadence and tune-in goal math; an
@@ -631,18 +935,19 @@ impl LlOrigin {
     }
 }
 
-fn make_segment(sn: u64, pdt: Option<String>, complete: bool, part_bytes: Vec<Vec<u8>>) -> Segment {
-    let count = part_bytes.len().max(1);
-    let dur = TARGET_DURATION as f64 / count as f64;
-    let parts = part_bytes
+fn make_segment(sn: u64, pdt: Option<String>, complete: bool, part_list: Vec<(Vec<u8>, f64)>) -> Segment {
+    let total: f64 = part_list.iter().map(|(_, d)| d).sum();
+    let parts = part_list
         .into_iter()
-        .map(|b| Part { duration: dur, bytes: Arc::new(b) })
+        .map(|(b, duration)| Part { duration, bytes: Arc::new(b) })
         .collect();
     Segment {
         sn,
         pdt,
         complete,
-        duration: TARGET_DURATION as f64,
+        // Sample-measured parts sum to the real span; the raw path's even split
+        // sums to exactly TARGET_DURATION (same value as before).
+        duration: if total > 0.0 { total } else { TARGET_DURATION as f64 },
         parts,
     }
 }
@@ -655,9 +960,9 @@ fn split_complete(bytes: &[u8], container: Container) -> Vec<Vec<u8>> {
     if let Some((tail, _)) = chunker.flush() {
         parts.push(tail);
     }
-    // Durations are dropped here: complete (backfilled) segments are normalized to
-    // an even TARGET_DURATION/count split in `make_segment`, which sums to exactly
-    // the segment duration.
+    // Chunker durations are dropped here: `convert_parts` pairs each part with
+    // its real sample-measured duration (transmux path) or an even
+    // TARGET_DURATION/count split (raw path), summing to the segment either way.
     parts
 }
 
@@ -668,7 +973,10 @@ async fn run_reader(origin: Arc<LlOrigin>, upstream_playlist_url: String, client
     // Connection to the NEXT in-progress segment, opened by `preopen_next` while
     // the current one was still streaming. Consumed by the fast path below;
     // discarded whenever the world doesn't match (the poll path then re-syncs).
-    let mut preopened: Option<(u64, JoinHandle<Option<(Response, Option<String>)>>)> = None;
+    let mut preopened: Option<(u64, JoinHandle<Option<(Response, Option<String>, String)>>)> = None;
+    // Consecutive failing playlist polls; reset on any good poll. Drives offline
+    // deactivation so a permanently-dead upstream stops being served forever.
+    let mut consec_playlist_fail: u32 = 0;
     loop {
         if gen != origin.generation.load(Ordering::SeqCst) {
             return;
@@ -690,26 +998,27 @@ async fn run_reader(origin: Arc<LlOrigin>, upstream_playlist_url: String, client
             };
             if contiguous {
                 match tokio::time::timeout(PREOPEN_WAIT, &mut handle).await {
-                    Ok(Ok(Some((resp, pdt)))) => match origin.push_shell(sn, pdt.clone()) {
+                    Ok(Ok(Some((resp, pdt, seg_url)))) => match origin.push_shell(sn, pdt.clone()) {
                         Some(true) => {
                             crate::services::ll_diagnostics::event(&format!(
                                 "\"ev\":\"o_shell\",\"path\":\"fast\",\"sn\":{sn},\"pdt\":{}",
                                 pdt.as_deref().map(|p| format!("\"{p}\"")).unwrap_or_else(|| "null".into())
                             ));
-                            origin.notify.notify_waiters();
+                            origin.wake_serves();
                             let next = tokio::spawn(preopen_next(
                                 client.clone(),
                                 upstream_playlist_url.clone(),
                                 sn + 1,
                             ));
-                            stream_response(&origin, resp, sn, gen).await;
+                            stream_response(&origin, resp, sn, gen, Some((&client, seg_url.as_str())))
+                                .await;
                             if !origin.finish_segment(sn) {
                                 return;
                             }
                             crate::services::ll_diagnostics::event(&format!(
                                 "\"ev\":\"o_finish\",\"path\":\"fast\",\"sn\":{sn}"
                             ));
-                            origin.notify.notify_waiters();
+                            origin.wake_serves();
                             preopened = Some((sn + 1, next));
                             continue;
                         }
@@ -722,24 +1031,80 @@ async fn run_reader(origin: Arc<LlOrigin>, upstream_playlist_url: String, client
             }
         }
 
-        // Re-fetch the playlist to find the current in-progress segment.
+        // Re-fetch the playlist to find the current in-progress segment. reqwest
+        // returns Ok for any HTTP status, so a 403/404 (stream offline, or an
+        // expired usher-signed URL) would otherwise parse to an empty playlist and
+        // loop forever; inspect the status and count failures toward deactivation.
         let text = match client.get(&upstream_playlist_url).timeout(FETCH_TIMEOUT).send().await {
-            Ok(r) => r.text().await.unwrap_or_default(),
+            Ok(r) => {
+                let status = r.status();
+                if !status.is_success() {
+                    consec_playlist_fail += 1;
+                    warn!("[LLOrigin] reader playlist HTTP {status} ({consec_playlist_fail})");
+                    if consec_playlist_fail >= PLAYLIST_OFFLINE_LIMIT {
+                        origin.deactivate_offline(&format!("playlist HTTP {status}"));
+                        return;
+                    }
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    continue;
+                }
+                r.text().await.unwrap_or_default()
+            }
             Err(e) => {
-                warn!("[LLOrigin] reader playlist fetch failed: {e}");
+                consec_playlist_fail += 1;
+                warn!("[LLOrigin] reader playlist fetch failed: {e} ({consec_playlist_fail})");
+                if consec_playlist_fail >= PLAYLIST_OFFLINE_LIMIT {
+                    origin.deactivate_offline("playlist fetch repeatedly failing");
+                    return;
+                }
                 tokio::time::sleep(Duration::from_millis(500)).await;
                 continue;
             }
         };
         let up = parse_upstream(&text, &base);
         let last_published_sn = match up.published.last() {
-            Some((sn, _, _)) => *sn,
+            Some((sn, _, _)) => {
+                consec_playlist_fail = 0; // a healthy poll
+                *sn
+            }
             None => {
+                consec_playlist_fail += 1;
+                if consec_playlist_fail >= PLAYLIST_OFFLINE_LIMIT {
+                    origin.deactivate_offline("playlist has no segments");
+                    return;
+                }
                 tokio::time::sleep(Duration::from_millis(500)).await;
                 continue;
             }
         };
         let inprogress_sn = last_published_sn + 1;
+        // CMAF passthrough: keep the served `#EXT-X-MAP` URI in sync with the
+        // upstream. The init URL is captured once at activation and hls.js caches
+        // the init bytes keyed by that URL, so if the broadcaster's encoder
+        // reconfigures mid-stream (SSAI ad splice with different parameter sets, a
+        // codec reset) Twitch publishes a NEW init URL while our frozen one keeps
+        // hls.js decoding the new bitstream against stale config (corrupt frames or
+        // a MediaSource append error). Writing the new URL through makes hls.js see
+        // a new MAP URI and re-fetch. TS-transmux serves its own immutable
+        // `init.mp4` (avc3 carries parameter-set changes in-band), so this only
+        // applies to native CMAF passthrough (`init_bytes` is None there).
+        let init_changed = {
+            let mut g = origin.live_edge.lock().unwrap();
+            match g.as_mut() {
+                Some(edge) => match init_url_update(edge, up.init_url.as_deref()) {
+                    Some(new_init) => {
+                        warn!("[LLOrigin] upstream init segment changed; updating #EXT-X-MAP to force re-fetch");
+                        edge.init_url = new_init;
+                        true
+                    }
+                    None => false,
+                },
+                None => return,
+            }
+        };
+        if init_changed {
+            origin.wake_serves();
+        }
         let inprogress_url = match up.prefetch.first() {
             Some(u) => u.clone(),
             None => {
@@ -798,12 +1163,15 @@ async fn run_reader(origin: Arc<LlOrigin>, upstream_playlist_url: String, client
                 Some((sn, _, _)) => *sn,
                 None => unreachable!("published is non-empty (checked above)"),
             };
-            let (rebuild, fetch) = plan_catch_up(
-                newest_in_window,
-                oldest_published,
-                inprogress_sn,
-                origin.max_segments,
-            );
+            let (rebuild, fetch) = plan_catch_up(newest_in_window, oldest_published, inprogress_sn);
+            // A rebuild jumps over segments the transmuxer never saw; completing
+            // its half-assembled pre-gap PES with post-gap bytes would emit one
+            // garbage sample, so drop that state before converting anything.
+            if rebuild {
+                if let Some(t) = origin.transmux.lock().unwrap().as_mut() {
+                    t.reset_assembly();
+                }
+            }
             // Fetch every missing segment BEFORE touching the window, so a blocking
             // reload can never observe an empty or partially rebuilt playlist.
             let mut fetched: Vec<Segment> = Vec::new();
@@ -814,7 +1182,7 @@ async fn run_reader(origin: Arc<LlOrigin>, upstream_playlist_url: String, client
                     filled = false;
                     break;
                 };
-                match fetch_published(&client, sn, seg_pdt.clone(), url, origin.container()).await {
+                match fetch_published(&client, sn, seg_pdt.clone(), url, &origin).await {
                     Some(seg) => fetched.push(seg),
                     None => {
                         filled = false;
@@ -844,7 +1212,8 @@ async fn run_reader(origin: Arc<LlOrigin>, upstream_playlist_url: String, client
                             crate::services::ll_diagnostics::event(&format!(
                                 "\"ev\":\"o_rebuild\",\"newest\":{newest_in_window},\"oldest\":{oldest_published},\"inprogress\":{inprogress_sn}"
                             ));
-                            edge.segments.clear();
+                            let old: Vec<Segment> = edge.segments.drain(..).collect();
+                            origin.retire(old);
                         } else if !fetched.is_empty() {
                             crate::services::ll_diagnostics::event(&format!(
                                 "\"ev\":\"o_catchup\",\"n\":{},\"upto\":{inprogress_sn}",
@@ -853,13 +1222,15 @@ async fn run_reader(origin: Arc<LlOrigin>, upstream_playlist_url: String, client
                         }
                         edge.segments.extend(fetched);
                         while edge.segments.len() > origin.max_segments {
-                            edge.segments.pop_front();
+                            if let Some(s) = edge.segments.pop_front() {
+                                origin.retire([s]);
+                            }
                         }
                     }
                     None => return,
                 }
             }
-            origin.notify.notify_waiters();
+            origin.wake_serves();
         }
 
         // Create the in-progress segment shell and stream its parts in, preopening
@@ -873,7 +1244,7 @@ async fn run_reader(origin: Arc<LlOrigin>, upstream_playlist_url: String, client
             "\"ev\":\"o_shell\",\"path\":\"poll\",\"sn\":{inprogress_sn},\"pdt\":{}",
             pdt.as_deref().map(|p| format!("\"{p}\"")).unwrap_or_else(|| "null".into())
         ));
-        origin.notify.notify_waiters();
+        origin.wake_serves();
 
         let next = tokio::spawn(preopen_next(
             client.clone(),
@@ -888,7 +1259,7 @@ async fn run_reader(origin: Arc<LlOrigin>, upstream_playlist_url: String, client
         crate::services::ll_diagnostics::event(&format!(
             "\"ev\":\"o_finish\",\"path\":\"poll\",\"sn\":{inprogress_sn}"
         ));
-        origin.notify.notify_waiters();
+        origin.wake_serves();
         preopened = Some((inprogress_sn + 1, next));
     }
 }
@@ -904,7 +1275,7 @@ async fn preopen_next(
     client: Client,
     playlist_url: String,
     next_sn: u64,
-) -> Option<(Response, Option<String>)> {
+) -> Option<(Response, Option<String>, String)> {
     let base = base_of(&playlist_url);
     for _ in 0..6 {
         if let Ok(r) = client.get(&playlist_url).timeout(FETCH_TIMEOUT).send().await {
@@ -921,7 +1292,7 @@ async fn preopen_next(
                     let steps = (next_sn - last_sn) as i64;
                     let pdt = last_pdt.as_deref().and_then(|p| advance_pdt_by(p, steps));
                     let resp = client.get(url).send().await.ok()?;
-                    return Some((resp, pdt));
+                    return Some((resp, pdt, url.clone()));
                 }
                 // Hint not advertised yet: poll again shortly.
             }
@@ -948,20 +1319,56 @@ fn advance_pdt_by(pdt: &str, steps: i64) -> Option<String> {
 /// range is always consecutive and ends at `inprogress_sn - 1`, and when not
 /// rebuilding it starts right after `window_newest`, so appending the fetched
 /// segments keeps the window contiguous at every intermediate render.
+/// How many missing segments the reader will fill ADJACENTLY before declaring
+/// a rebuild instead. Catch-up fetches are serial whole-segment downloads; on
+/// a connection delivering near the stream bitrate each one costs about a
+/// segment of real time, so a deep fill can never gain ground (observed live:
+/// o_seg every ~2s for 44s while zero parts published — running to stand
+/// still). One or two segments covers the startup race and a single hiccup;
+/// beyond that, jumping to the live edge keeps the stream playable and the
+/// player re-anchors via the media-sequence advance.
+const CATCH_UP_MAX_SEGMENTS: u64 = 2;
+/// Rebuild backfill: one complete segment before the in-progress one. Smaller
+/// than the activation backfill on purpose — a mid-session rebuild happens
+/// while the player is already starving, and every fetched segment delays the
+/// first fresh part by up to a segment of transfer time. One complete segment
+/// plus the in-progress shell is enough for the playlist contract (the lone
+/// complete segment gets its EXTINF from having the shell as successor).
+const REBUILD_BACKFILL: u64 = 1;
+/// Consecutive failing playlist polls (HTTP 4xx/5xx, fetch error, or a body that
+/// parses to zero published segments) before the upstream is judged permanently
+/// gone and the origin deactivates. Each failing poll sleeps ~500ms, so this is
+/// ~6s of sustained failure — far longer than any transient DNS/network blip or
+/// ad window (ad segments still publish, so an ad never zeroes `published`),
+/// short enough that a truly offline stream surfaces quickly instead of freezing
+/// forever. A single good poll resets the count.
+const PLAYLIST_OFFLINE_LIMIT: u32 = 12;
+
+/// CMAF passthrough only: the new `#EXT-X-MAP` URI to adopt when the upstream's
+/// init segment changed (an encoder/parameter-set reconfig publishes a fresh init
+/// URL), else `None`. Returns `None` for the TS-transmux path (`init_bytes` is
+/// `Some`; its own `init.mp4` is immutable and avc3 carries parameter-set changes
+/// in-band), when the upstream advertises no init, and when nothing changed.
+fn init_url_update(edge: &LiveEdge, upstream_init: Option<&str>) -> Option<String> {
+    let new = upstream_init?;
+    if edge.init_bytes.is_none() && !edge.init_url.is_empty() && edge.init_url != new {
+        Some(new.to_string())
+    } else {
+        None
+    }
+}
+
 fn plan_catch_up(
     window_newest: u64,
     oldest_published: u64,
     inprogress_sn: u64,
-    window_cap: usize,
 ) -> (bool, std::ops::Range<u64>) {
     let first_missing = window_newest + 1;
     let gap = inprogress_sn.saturating_sub(first_missing);
-    if first_missing < oldest_published || gap > window_cap as u64 {
-        // The hole predates the upstream window, or is deeper than ours would
-        // retain anyway: rebuild from the live edge with a fresh backfill.
-        let start = inprogress_sn
-            .saturating_sub(BACKFILL_SEGMENTS as u64)
-            .max(oldest_published);
+    if first_missing < oldest_published || gap > CATCH_UP_MAX_SEGMENTS {
+        // The hole predates the upstream window, or is too deep to fill while
+        // gaining ground: rebuild from the live edge with a minimal backfill.
+        let start = inprogress_sn.saturating_sub(REBUILD_BACKFILL).max(oldest_published);
         (true, start..inprogress_sn)
     } else {
         (false, first_missing..inprogress_sn)
@@ -975,7 +1382,7 @@ async fn fetch_published(
     sn: u64,
     pdt: Option<String>,
     url: &str,
-    container: Container,
+    origin: &LlOrigin,
 ) -> Option<Segment> {
     let resp = match client.get(url).timeout(FETCH_TIMEOUT).send().await {
         Ok(r) => r,
@@ -991,7 +1398,7 @@ async fn fetch_published(
             return None;
         }
     };
-    let parts = split_complete(&bytes, container);
+    let parts = origin.convert_parts(split_complete(&bytes, origin.container()));
     if parts.is_empty() {
         warn!("[LLOrigin] catch-up segment sn {sn} produced no parts");
         return None;
@@ -1014,40 +1421,134 @@ async fn stream_segment(
             return;
         }
     };
-    stream_response(origin, resp, sn, gen).await;
+    stream_response(origin, resp, sn, gen, Some((client, url))).await;
 }
 
 /// Read an already-open in-progress response, publishing parts as chunks land.
-async fn stream_response(origin: &LlOrigin, mut resp: Response, sn: u64, gen: u64) {
+///
+/// On a mid-transfer stall (silence or read error), ONE byte-exact resume is
+/// attempted on a fresh ranged connection before the tail is abandoned: the
+/// stall is usually that connection's problem while the segment keeps growing
+/// on the CDN, and a `Range: bytes=<received>-` pickup continues the byte
+/// stream seamlessly through the SAME chunker and demux state — no media lost,
+/// no bridge needed. `resume` carries the client and segment URL when known.
+async fn stream_response(
+    origin: &LlOrigin,
+    first: Response,
+    sn: u64,
+    gen: u64,
+    resume: Option<(&Client, &str)>,
+) {
     let mut chunker = Chunker::new(origin.container());
+    // True when the body ended cleanly; a read error or timeout means the tail
+    // bytes of this segment never arrived.
+    let mut completed = false;
+    // First chunk gets the long leash (CDN holds the request until the segment
+    // starts); after that, silence means a stalled transfer.
+    let mut first_chunk_at: Option<tokio::time::Instant> = None;
+    // A trickling transfer never trips the silence timeout, so it also gets a
+    // wall-clock deadline: the segment's own duration plus grace. The deadline
+    // spans resumes too — total wall time is what starves the player.
+    let deadline_secs = origin.expected_segment_secs() + SEGMENT_DEADLINE_GRACE;
+    let mut received: u64 = 0;
+    let mut resp = first;
+    let mut resume_left = resume.is_some();
     loop {
         if gen != origin.generation.load(Ordering::SeqCst) {
             return;
         }
-        match tokio::time::timeout(CHUNK_TIMEOUT, resp.chunk()).await {
+        let limit = match first_chunk_at {
+            None => FIRST_CHUNK_TIMEOUT,
+            Some(t0) => {
+                let remaining = (deadline_secs - t0.elapsed().as_secs_f64()).max(0.0);
+                if remaining <= 0.0 {
+                    warn!("[LLOrigin] sn {sn} exceeded its delivery deadline; abandoning the tail");
+                    break;
+                }
+                MIDSTREAM_CHUNK_TIMEOUT.min(Duration::from_secs_f64(remaining))
+            }
+        };
+        match tokio::time::timeout(limit, resp.chunk()).await {
             Ok(Ok(Some(bytes))) => {
+                first_chunk_at.get_or_insert_with(tokio::time::Instant::now);
+                received += bytes.len() as u64;
                 for (part, dur) in chunker.push(&bytes) {
+                    let Some((part, dur)) = origin.convert_part(part, dur) else { continue };
                     if !origin.append_part(sn, part, dur) {
                         return; // edge gone
                     }
-                    origin.notify.notify_waiters();
+                    origin.wake_serves();
                 }
             }
-            Ok(Ok(None)) => break, // segment complete
-            Ok(Err(e)) => {
-                warn!("[LLOrigin] in-progress read error for sn {sn}: {e}");
+            Ok(Ok(None)) => {
+                completed = true;
                 break;
             }
-            Err(_) => {
-                warn!("[LLOrigin] in-progress read timed out for sn {sn}");
+            outcome => {
+                let why = match &outcome {
+                    Ok(Err(e)) => format!("read error: {e}"),
+                    _ => "read timed out".to_string(),
+                };
+                if resume_left {
+                    resume_left = false;
+                    if let Some((client, url)) = resume {
+                        if let Some(r2) = range_resume(client, url, received, sn, &why).await {
+                            resp = r2;
+                            continue;
+                        }
+                    }
+                }
+                warn!("[LLOrigin] in-progress {why} for sn {sn}; abandoning the tail");
                 break;
             }
         }
     }
     if let Some((tail, dur)) = chunker.flush() {
-        if origin.append_part(sn, tail, dur) {
-            origin.notify.notify_waiters();
+        if let Some((tail, dur)) = origin.convert_part(tail, dur) {
+            if origin.append_part(sn, tail, dur) {
+                origin.wake_serves();
+            }
         }
+    }
+    if !completed {
+        // The segment's tail is missing: a PES left half-assembled in the
+        // transmuxer would be completed by the NEXT segment's unrelated bytes
+        // and emit one garbage sample. Drop the partial state — but KEEP the
+        // timeline expectations, so the lost media is bridged into a seamless
+        // output instead of a served hole (the playlist stays sn-contiguous
+        // and cannot express the gap).
+        if let Some(t) = origin.transmux.lock().unwrap().as_mut() {
+            t.drop_partial_input();
+        }
+    }
+}
+
+/// Byte-exact pickup of a stalled segment transfer on a fresh connection.
+/// Only a 206 continues the stream; a 200 would restart the body (duplicate
+/// bytes) and anything else is a refusal — both fall back to abandoning.
+async fn range_resume(
+    client: &Client,
+    url: &str,
+    received: u64,
+    sn: u64,
+    why: &str,
+) -> Option<Response> {
+    let resp = client
+        .get(url)
+        .header(reqwest::header::RANGE, format!("bytes={received}-"))
+        .timeout(Duration::from_millis(1500))
+        .send()
+        .await
+        .ok()?;
+    if resp.status() == reqwest::StatusCode::PARTIAL_CONTENT {
+        info!("[LLOrigin] sn {sn}: {why} at byte {received}; resumed on a fresh ranged connection");
+        crate::services::ll_diagnostics::event(&format!(
+            "\"ev\":\"o_resume\",\"sn\":{sn},\"at\":{received}"
+        ));
+        Some(resp)
+    } else {
+        warn!("[LLOrigin] sn {sn}: range resume refused ({})", resp.status());
+        None
     }
 }
 
@@ -1070,7 +1571,9 @@ impl LlOrigin {
             parts: Vec::new(),
         });
         while edge.segments.len() > self.max_segments {
-            edge.segments.pop_front();
+            if let Some(s) = edge.segments.pop_front() {
+                self.retire([s]);
+            }
         }
         Some(true)
     }
@@ -1101,6 +1604,65 @@ impl LlOrigin {
             }
             None => false,
         }
+    }
+
+    /// Run one TS part through the transmuxer when it is active. `None` means
+    /// the part yielded no complete samples (e.g. a PAT/PMT-only tail) and must
+    /// not be published: a listed part has to serve bytes a demuxer can use.
+    /// Passthrough (bytes and the caller's duration unchanged) when the
+    /// transmux is off.
+    ///
+    /// On the transmux path the published duration is the transmuxer's sample-
+    /// measured span, NOT `dur` from the chunker: the chunker measures
+    /// presentation-timestamp deltas at its cut points, which B-frame arrival
+    /// order systematically inflates (+40-80ms per 2s segment observed live).
+    /// hls.js sums the declared durations to place fragments, so that bias
+    /// compounds until its part lookup drifts past tolerance and it re-fetches
+    /// parts it already buffered (mid-GOP rewrites at the playhead = visible
+    /// artifacting). Sample-measured durations keep playlist arithmetic glued
+    /// to buffer reality.
+    fn convert_part(&self, bytes: Vec<u8>, dur: f64) -> Option<(Vec<u8>, f64)> {
+        let mut g = self.transmux.lock().unwrap();
+        match g.as_mut() {
+            Some(t) => t.push_part(&bytes),
+            None => {
+                // CMAF passthrough: replace the caller's nominal duration with
+                // the part's measured video span (same playlist-honesty rule
+                // as the transmux path; nominal-vs-real error compounds into
+                // playlist-vs-buffer drift).
+                let measured = self
+                    .cmaf_video
+                    .lock()
+                    .unwrap()
+                    .and_then(|(tid, ts)| cmaf_part_duration(&bytes, tid, ts));
+                Some((bytes, measured.unwrap_or(dur)))
+            }
+        }
+    }
+
+    /// Convert a complete segment's split parts, pairing each published part
+    /// with its duration: sample-measured on the transmux path, an even
+    /// `TARGET_DURATION/count` split on the raw path (unchanged behavior — raw
+    /// backfill durations are normalized so they sum to the segment exactly).
+    fn convert_parts(&self, parts: Vec<Vec<u8>>) -> Vec<(Vec<u8>, f64)> {
+        let even = TARGET_DURATION as f64 / parts.len().max(1) as f64;
+        parts.into_iter().filter_map(|p| self.convert_part(p, even)).collect()
+    }
+
+    /// Origin-generated init segment bytes (TS transmux path only).
+    pub fn get_init(&self) -> Option<Arc<Vec<u8>>> {
+        self.live_edge.lock().unwrap().as_ref()?.init_bytes.clone()
+    }
+
+    /// Duration of the most recent complete segment, the wall-clock yardstick
+    /// for the in-progress delivery deadline (segment sizes are per-channel:
+    /// ~2s on most, ~4.2s on some).
+    fn expected_segment_secs(&self) -> f64 {
+        let g = self.live_edge.lock().unwrap();
+        g.as_ref()
+            .and_then(|e| e.segments.iter().rev().find(|s| s.complete).map(|s| s.duration))
+            .filter(|d| d.is_finite() && *d > 0.5)
+            .unwrap_or(TARGET_DURATION as f64)
     }
 
     /// Append a part (with its real media duration) to the segment with `sn`. Returns
@@ -1149,9 +1711,17 @@ fn blocking_satisfied(edge: &LiveEdge, sn: u64, part: u64) -> bool {
 impl LlOrigin {
     /// Serve the LL-HLS playlist, honoring a blocking reload for `(msn, part)`.
     pub async fn serve_playlist(&self, msn: Option<u64>, part: Option<u64>) -> Option<String> {
+        let deadline = tokio::time::Instant::now() + BLOCK_TIMEOUT;
         if let (Some(m), Some(p)) = (msn, part) {
-            let deadline = tokio::time::Instant::now() + BLOCK_TIMEOUT;
+            // Blocking reload: hold until the requested part exists.
             loop {
+                let notified = self.notify.notified();
+                tokio::pin!(notified);
+                // Register the waiter BEFORE the satisfaction check. `Notify`
+                // only registers on first poll (or `enable`), so the old
+                // check-then-await pattern lost any notify that landed between
+                // the check and the await and slept the full hold for nothing.
+                notified.as_mut().enable();
                 {
                     let g = self.live_edge.lock().unwrap();
                     match g.as_ref() {
@@ -1160,15 +1730,34 @@ impl LlOrigin {
                         None => return None,
                     }
                 }
-                // Register interest, then re-check (closes the notify race), then wait.
+                let now = tokio::time::Instant::now();
+                if now >= deadline {
+                    break;
+                }
+                if tokio::time::timeout(deadline - now, notified).await.is_err() {
+                    break;
+                }
+            }
+        } else {
+            // Directive-less reload: hls.js drops its blocking directives after
+            // any MISS (it only sends _HLS_msn when the previous response
+            // ADVANCED) and falls back to plain polling, adding up to a second
+            // of blind discovery delay right when a famine ends. We own both
+            // ends, so plain reloads get hanging-GET semantics too: hold until
+            // the edge changes AT ALL, then respond instantly with the fresh
+            // playlist — recovery is discovered the moment it happens. The
+            // budget for plain reloads is hls.js's normal (non-LL-capped)
+            // playlist policy, far above this hold.
+            let v0 = self.edge_version.load(Ordering::SeqCst);
+            loop {
                 let notified = self.notify.notified();
-                {
-                    let g = self.live_edge.lock().unwrap();
-                    match g.as_ref() {
-                        Some(edge) if blocking_satisfied(edge, m, p) => break,
-                        Some(_) => {}
-                        None => return None,
-                    }
+                tokio::pin!(notified);
+                notified.as_mut().enable();
+                if self.edge_version.load(Ordering::SeqCst) != v0 {
+                    break;
+                }
+                if self.live_edge.lock().unwrap().is_none() {
+                    return None;
                 }
                 let now = tokio::time::Instant::now();
                 if now >= deadline {
@@ -1192,15 +1781,15 @@ fn render_locked(edge: &LiveEdge) -> String {
     s.push_str("#EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES,PART-HOLD-BACK=1.500\n");
     let media_seq = edge.segments.front().map(|s| s.sn).unwrap_or(0);
     s.push_str(&format!("#EXT-X-MEDIA-SEQUENCE:{media_seq}\n"));
-    // CMAF needs its init segment; MPEG-TS is self-initializing (PAT/PMT lead each
-    // segment) and must NOT carry an `#EXT-X-MAP`.
-    if edge.container == Container::Cmaf {
+    // CMAF needs its init segment; raw MPEG-TS is self-initializing (PAT/PMT
+    // lead each segment) and must NOT carry an `#EXT-X-MAP`. The transmux path
+    // serves its own generated init from the relay instead of the upstream URL.
+    if edge.init_bytes.is_some() {
+        s.push_str("#EXT-X-MAP:URI=\"init.mp4\"\n");
+    } else if edge.container == Container::Cmaf {
         s.push_str(&format!("#EXT-X-MAP:URI=\"{}\"\n", edge.init_url));
     }
-    let part_ext = match edge.container {
-        Container::Cmaf => "mp4",
-        Container::Ts => "ts",
-    };
+    let part_ext = if edge.cmaf_presented() { "mp4" } else { "ts" };
     let n = edge.segments.len();
     for (i, seg) in edge.segments.iter().enumerate() {
         if let Some(pdt) = &seg.pdt {
@@ -1246,23 +1835,48 @@ fn render_locked(edge: &LiveEdge) -> String {
 impl LlOrigin {
     /// Bytes for a single part (`part/<sn>/<k>.mp4`).
     pub fn get_part(&self, sn: u64, idx: usize) -> Option<Arc<Vec<u8>>> {
-        let g = self.live_edge.lock().unwrap();
-        let edge = g.as_ref()?;
-        let seg = edge.segments.iter().find(|s| s.sn == sn)?;
-        seg.parts.get(idx).map(|p| p.bytes.clone())
+        {
+            let g = self.live_edge.lock().unwrap();
+            let edge = g.as_ref()?;
+            if let Some(p) = edge
+                .segments
+                .iter()
+                .find(|s| s.sn == sn)
+                .and_then(|s| s.parts.get(idx))
+            {
+                return Some(p.bytes.clone());
+            }
+        }
+        // Retirement grace: the requester is holding a playlist that listed
+        // this part before an eviction/rebuild. Serving the retired bytes
+        // keeps the listed-parts-never-404 contract.
+        let r = self.retired.lock().unwrap();
+        r.iter()
+            .find(|s| s.sn == sn)
+            .and_then(|s| s.parts.get(idx))
+            .map(|p| p.bytes.clone())
     }
 
     /// Bytes for a complete segment (`seg/<sn>.ts`), assembled from its parts in memory.
     pub fn get_segment(&self, sn: u64) -> Option<Vec<u8>> {
-        let g = self.live_edge.lock().unwrap();
-        let edge = g.as_ref()?;
-        let seg = edge.segments.iter().find(|s| s.sn == sn && s.complete)?;
-        let total: usize = seg.parts.iter().map(|p| p.bytes.len()).sum();
-        let mut out = Vec::with_capacity(total);
-        for p in &seg.parts {
-            out.extend_from_slice(&p.bytes);
+        let assemble = |seg: &Segment| {
+            let total: usize = seg.parts.iter().map(|p| p.bytes.len()).sum();
+            let mut out = Vec::with_capacity(total);
+            for p in &seg.parts {
+                out.extend_from_slice(&p.bytes);
+            }
+            out
+        };
+        {
+            let g = self.live_edge.lock().unwrap();
+            let edge = g.as_ref()?;
+            if let Some(seg) = edge.segments.iter().find(|s| s.sn == sn && s.complete) {
+                return Some(assemble(seg));
+            }
         }
-        Some(out)
+        // Retirement grace (see get_part).
+        let r = self.retired.lock().unwrap();
+        r.iter().find(|s| s.sn == sn && s.complete).map(assemble)
     }
 }
 
@@ -1283,6 +1897,10 @@ pub fn stop() {
 
 pub async fn start(upstream_playlist_url: String) -> StartOutcome {
     SOLO.clone().start(upstream_playlist_url).await
+}
+
+pub fn get_init() -> Option<Arc<Vec<u8>>> {
+    SOLO.get_init()
 }
 
 pub async fn serve_playlist(msn: Option<u64>, part: Option<u64>) -> Option<String> {
@@ -1363,6 +1981,14 @@ pub(crate) fn playlist_response(bytes: Vec<u8>) -> warp::http::Response<Vec<u8>>
         .header("Access-Control-Allow-Methods", "GET, OPTIONS")
         .header("Access-Control-Allow-Headers", "*")
         .header("Cache-Control", "no-cache, no-store, must-revalidate, max-age=0")
+        // Fresh connection per playlist request. Playlist responses are the
+        // only HELD responses the relay serves, and captures show the webview
+        // queueing the NEXT playlist request invisibly for seconds during
+        // upstream famines (sent per hls.js stats, never reaching the handler,
+        // arriving in a flood the moment the famine ends). Keep-alive reuse
+        // against held responses is the prime suspect; closing costs nothing
+        // on loopback and isolates the layer. Parts/segments keep keep-alive.
+        .header("Connection", "close")
         .body(bytes)
         .unwrap()
 }
@@ -1378,6 +2004,55 @@ pub(crate) fn empty_cors(status: u16) -> warp::http::Response<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn full_box(typ: &[u8; 4], version: u8, payload: &[u8]) -> Vec<u8> {
+        let mut body = vec![version, 0, 0, 0];
+        body.extend_from_slice(payload);
+        make_box(typ, &body)
+    }
+
+    #[test]
+    fn cmaf_durations_measured_from_sample_tables() {
+        // Init: moov > trak > (tkhd v0 id=1, mdia > (mdhd v0 timescale=90000,
+        // hdlr 'vide')).
+        let mut tkhd = vec![0u8; 8]; // creation+modification
+        tkhd.extend_from_slice(&1u32.to_be_bytes()); // track_id
+        let tkhd = full_box(b"tkhd", 0, &tkhd);
+        let mut mdhd = vec![0u8; 8];
+        mdhd.extend_from_slice(&90_000u32.to_be_bytes()); // timescale
+        mdhd.extend_from_slice(&0u32.to_be_bytes()); // duration
+        let mdhd = full_box(b"mdhd", 0, &mdhd);
+        let mut hdlr_p = vec![0u8; 4]; // pre_defined
+        hdlr_p.extend_from_slice(b"vide");
+        let hdlr = full_box(b"hdlr", 0, &hdlr_p);
+        let mdia = make_box(b"mdia", &[mdhd, hdlr].concat());
+        let trak = make_box(b"trak", &[tkhd, mdia].concat());
+        let moov = make_box(b"moov", &trak);
+        let init = [make_box(b"ftyp", b"isom"), moov].concat();
+        let (tid, ts) = parse_cmaf_video_track(&init).expect("video track parsed");
+        assert_eq!((tid, ts), (1, 90_000));
+
+        // Part: moof > traf > (tfhd id=1 with default_sample_duration=1500,
+        // trun count=6 without per-sample durations) + mdat. 6 x 1500 / 90000.
+        let mut tfhd_p = vec![0u8, 0, 0, 0x08]; // version 0, flags: default-duration present
+        tfhd_p.extend_from_slice(&1u32.to_be_bytes());
+        tfhd_p.extend_from_slice(&1500u32.to_be_bytes());
+        let tfhd = make_box(b"tfhd", &tfhd_p);
+        let mut trun_p = vec![0u8, 0, 0, 0]; // version 0, no optional fields
+        trun_p.extend_from_slice(&6u32.to_be_bytes());
+        let trun = make_box(b"trun", &trun_p);
+        let traf = make_box(b"traf", &[tfhd, trun].concat());
+        let moof = make_box(b"moof", &traf);
+        let part = [moof, make_box(b"mdat", &[0u8; 4])].concat();
+        let d = cmaf_part_duration(&part, 1, 90_000).expect("measured");
+        assert!((d - 0.1).abs() < 1e-9, "6x1500/90000 = 0.1, got {d}");
+    }
+
+    /// Pair fixture part bytes with the raw path's even duration split.
+    fn even_parts(bytes: Vec<Vec<u8>>) -> Vec<(Vec<u8>, f64)> {
+        let dur = TARGET_DURATION as f64 / bytes.len().max(1) as f64;
+        bytes.into_iter().map(|b| (b, dur)).collect()
+    }
 
     /// Build a fake CMAF byte stream: a leading emsg, then `n` moof+mdat pairs.
     fn make_box(typ: &[u8; 4], payload: &[u8]) -> Vec<u8> {
@@ -1645,28 +2320,28 @@ mod tests {
         // The startup race: backfill held ..8551, segment 8552 finalized before the
         // first poll, in-progress is 8553. The plan must fetch exactly 8552 without
         // clearing, so the window never renders a hole.
-        let (rebuild, fetch) = plan_catch_up(8551, 8540, 8553, 6);
+        let (rebuild, fetch) = plan_catch_up(8551, 8540, 8553);
         assert!(!rebuild);
         assert_eq!(fetch.collect::<Vec<_>>(), vec![8552]);
     }
 
     #[test]
     fn catch_up_rebuilds_when_hole_is_unfillable_or_deep() {
-        // Hole predates the upstream window: rebuild with a fresh backfill ending at
-        // the in-progress segment.
-        let (rebuild, fetch) = plan_catch_up(8500, 8540, 8553, 6);
+        // Hole predates the upstream window: rebuild with the minimal backfill.
+        let (rebuild, fetch) = plan_catch_up(8500, 8540, 8553);
         assert!(rebuild);
-        assert_eq!(fetch.collect::<Vec<_>>(), vec![8551, 8552]);
+        assert_eq!(fetch.collect::<Vec<_>>(), vec![8552]);
 
-        // Hole deeper than the window: rebuilding beats fetching doomed segments.
-        let (rebuild, fetch) = plan_catch_up(8540, 8530, 8553, 6);
+        // Hole deeper than CATCH_UP_MAX_SEGMENTS: serial fills can't gain
+        // ground on a constrained connection, so jump to the edge instead.
+        let (rebuild, fetch) = plan_catch_up(8549, 8540, 8553);
         assert!(rebuild);
-        assert_eq!(fetch.collect::<Vec<_>>(), vec![8551, 8552]);
+        assert_eq!(fetch.collect::<Vec<_>>(), vec![8552]);
 
         // Empty window (newest sentinel 0) behaves like a rebuild too.
-        let (rebuild, fetch) = plan_catch_up(0, 8546, 8553, 4);
+        let (rebuild, fetch) = plan_catch_up(0, 8546, 8553);
         assert!(rebuild);
-        assert_eq!(fetch.collect::<Vec<_>>(), vec![8551, 8552]);
+        assert_eq!(fetch.collect::<Vec<_>>(), vec![8552]);
     }
 
     #[test]
@@ -1675,10 +2350,11 @@ mod tests {
         // still-in-progress (parts only), so a client never learns "complete" in
         // the same refresh that first shows the final part.
         let mut segs = VecDeque::new();
-        segs.push_back(make_segment(100, None, true, vec![vec![1], vec![2]]));
-        segs.push_back(make_segment(101, None, true, vec![vec![3], vec![4]]));
+        segs.push_back(make_segment(100, None, true, even_parts(vec![vec![1], vec![2]])));
+        segs.push_back(make_segment(101, None, true, even_parts(vec![vec![3], vec![4]])));
         let edge = LiveEdge {
             init_url: "https://cdn/init.mp4".into(),
+            init_bytes: None,
             container: Container::Cmaf,
             target_duration: 2,
             part_target: PART_TARGET,
@@ -1692,9 +2368,10 @@ mod tests {
         // A lone complete segment still renders EXTINF (a playlist with zero
         // complete segments cannot start playback).
         let mut lone = VecDeque::new();
-        lone.push_back(make_segment(100, None, true, vec![vec![1]]));
+        lone.push_back(make_segment(100, None, true, even_parts(vec![vec![1]])));
         let edge = LiveEdge {
             init_url: "https://cdn/init.mp4".into(),
+            init_bytes: None,
             container: Container::Cmaf,
             target_duration: 2,
             part_target: PART_TARGET,
@@ -1706,7 +2383,7 @@ mod tests {
     #[test]
     fn boundary_blocking_request_rolls_to_next_segment() {
         let mut segs = VecDeque::new();
-        segs.push_back(make_segment(100, None, true, vec![vec![1], vec![2]]));
+        segs.push_back(make_segment(100, None, true, even_parts(vec![vec![1], vec![2]])));
         segs.push_back(Segment {
             sn: 101,
             pdt: None,
@@ -1716,6 +2393,7 @@ mod tests {
         });
         let edge = LiveEdge {
             init_url: "https://cdn/init.mp4".into(),
+            init_bytes: None,
             container: Container::Cmaf,
             target_duration: 2,
             part_target: PART_TARGET,
@@ -1733,9 +2411,9 @@ mod tests {
     #[test]
     fn render_always_has_extinf_and_lists_edge_parts() {
         let mut segs = VecDeque::new();
-        segs.push_back(make_segment(99, Some("PDT9".into()), true, vec![vec![0], vec![9]]));
-        segs.push_back(make_segment(100, Some("PDT0".into()), true, vec![vec![1], vec![2]]));
-        segs.push_back(make_segment(101, Some("PDT1".into()), true, vec![vec![3], vec![4]]));
+        segs.push_back(make_segment(99, Some("PDT9".into()), true, even_parts(vec![vec![0], vec![9]])));
+        segs.push_back(make_segment(100, Some("PDT0".into()), true, even_parts(vec![vec![1], vec![2]])));
+        segs.push_back(make_segment(101, Some("PDT1".into()), true, even_parts(vec![vec![3], vec![4]])));
         // in-progress segment with 3 parts, not complete
         segs.push_back(Segment {
             sn: 102,
@@ -1750,6 +2428,7 @@ mod tests {
         });
         let edge = LiveEdge {
             init_url: "https://cdn/init.mp4".into(),
+            init_bytes: None,
             container: Container::Cmaf,
             target_duration: 2,
             part_target: PART_TARGET,
@@ -1779,7 +2458,7 @@ mod tests {
     #[test]
     fn render_omits_map_and_uses_ts_parts_for_mpeg_ts() {
         let mut segs = VecDeque::new();
-        segs.push_back(make_segment(50, Some("PDT0".into()), true, vec![vec![1], vec![2]]));
+        segs.push_back(make_segment(50, Some("PDT0".into()), true, even_parts(vec![vec![1], vec![2]])));
         segs.push_back(Segment {
             sn: 51,
             pdt: Some("PDT1".into()),
@@ -1789,6 +2468,7 @@ mod tests {
         });
         let edge = LiveEdge {
             init_url: String::new(),
+            init_bytes: None,
             container: Container::Ts,
             target_duration: 2,
             part_target: PART_TARGET,
@@ -1804,5 +2484,94 @@ mod tests {
         assert!(pl.contains("#EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES"));
         assert!(pl.contains("#EXT-X-PART:DURATION="));
         assert!(pl.contains("INDEPENDENT=YES"));
+    }
+
+    #[test]
+    fn render_transmuxed_ts_presents_cmaf() {
+        // A TS edge with origin-generated init bytes (the transmux path) must
+        // advertise the relay-served init and .mp4 parts: the player consumes
+        // fMP4 even though the upstream container is TS.
+        let mut segs = VecDeque::new();
+        segs.push_back(make_segment(50, None, true, even_parts(vec![vec![1], vec![2]])));
+        segs.push_back(make_segment(51, None, true, even_parts(vec![vec![3]])));
+        let edge = LiveEdge {
+            init_url: String::new(),
+            init_bytes: Some(Arc::new(vec![0, 0, 0, 8, b'f', b't', b'y', b'p'])),
+            container: Container::Ts,
+            target_duration: 2,
+            part_target: PART_TARGET,
+            segments: segs,
+        };
+        let pl = render_locked(&edge);
+        assert!(pl.contains("#EXT-X-MAP:URI=\"init.mp4\""));
+        assert!(pl.contains("part/51/0.mp4"));
+        assert!(!pl.contains("part/51/0.ts"));
+    }
+
+    fn ts_edge_with_one_segment() -> LiveEdge {
+        let mut segs = VecDeque::new();
+        segs.push_back(make_segment(1, None, true, even_parts(vec![vec![1]])));
+        LiveEdge {
+            init_url: String::new(),
+            init_bytes: None,
+            container: Container::Ts,
+            target_duration: 2,
+            part_target: PART_TARGET,
+            segments: segs,
+        }
+    }
+
+    #[test]
+    fn deactivate_offline_clears_the_active_edge() {
+        // The permanent-death exit: when the upstream is judged gone, the edge is
+        // cleared so is_active() goes false and serve_playlist returns None (the
+        // relay then falls through instead of serving a stale playlist forever).
+        let origin = LlOrigin::new(6);
+        *origin.live_edge.lock().unwrap() = Some(ts_edge_with_one_segment());
+        assert!(origin.is_active());
+        let before = origin.edge_version.load(Ordering::SeqCst);
+        origin.deactivate_offline("test offline");
+        assert!(!origin.is_active());
+        // serve_playlist must report inactive, not a stale playlist.
+        let served = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap()
+            .block_on(origin.serve_playlist(None, None));
+        assert!(served.is_none());
+        // The change was published so any blocked reload wakes.
+        assert!(origin.edge_version.load(Ordering::SeqCst) > before);
+    }
+
+    #[test]
+    fn init_url_update_only_fires_on_a_cmaf_change() {
+        // CMAF passthrough: a changed upstream MAP URI is adopted (forces hls.js
+        // to re-fetch the init); an unchanged one is not.
+        let cmaf = LiveEdge {
+            init_url: "https://cdn/init_A.mp4".into(),
+            init_bytes: None,
+            container: Container::Cmaf,
+            target_duration: 2,
+            part_target: PART_TARGET,
+            segments: VecDeque::new(),
+        };
+        assert_eq!(
+            init_url_update(&cmaf, Some("https://cdn/init_B.mp4")),
+            Some("https://cdn/init_B.mp4".to_string())
+        );
+        assert_eq!(init_url_update(&cmaf, Some("https://cdn/init_A.mp4")), None);
+        assert_eq!(init_url_update(&cmaf, None), None);
+
+        // TS-transmux path (init_bytes Some): never touched — its init.mp4 is
+        // immutable and avc3 handles parameter-set changes in-band.
+        let transmux = LiveEdge {
+            init_url: String::new(),
+            init_bytes: Some(Arc::new(vec![1, 2, 3])),
+            container: Container::Ts,
+            target_duration: 2,
+            part_target: PART_TARGET,
+            segments: VecDeque::new(),
+        };
+        assert_eq!(init_url_update(&transmux, Some("https://cdn/whatever.mp4")), None);
     }
 }

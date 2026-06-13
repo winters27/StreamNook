@@ -26,14 +26,6 @@ pub async fn save_settings(settings: Settings, state: State<'_, AppState>) -> Re
         *state_settings = settings.clone();
     }
 
-    // Keep the running background service's settings clone in sync so drops
-    // toggle changes made through a whole-settings save reach the farming
-    // loops immediately instead of at next launch.
-    {
-        let bg_service = state.background_service.lock().await;
-        bg_service.update_drops_settings(settings.drops.clone()).await;
-    }
-
     // Save to our custom location in the same directory as cache
     let settings_path = get_settings_path()?;
     let json = serde_json::to_string_pretty(&settings)
@@ -275,8 +267,9 @@ pub async fn send_test_notification(
 
 #[tauri::command]
 pub async fn get_latest_app_version() -> Result<String, String> {
-    // Fetch the latest release page to get the redirect
-    let client = crate::services::http::client_no_redirect().clone();
+    // Follow the full redirect chain so the version survives a repo
+    // rename/transfer (old URLs 301 to the new home before the tag hop)
+    let client = crate::services::http::client().clone();
 
     let response = client
         .get("https://github.com/winters27/StreamNook/releases/latest")
@@ -284,24 +277,18 @@ pub async fn get_latest_app_version() -> Result<String, String> {
         .await
         .map_err(|e| format!("Failed to fetch latest release: {}", e))?;
 
-    // Get the redirect location
-    let location = response
-        .headers()
-        .get("location")
-        .ok_or("No redirect location found")?
-        .to_str()
-        .map_err(|e| format!("Invalid location header: {}", e))?;
+    let final_url = response.url().to_string();
 
-    // Extract version from the redirect URL
+    // Extract version from the final URL
     // Example: https://github.com/winters27/StreamNook/releases/tag/v1.0.1
     let version_regex = Regex::new(r"/tag/v?([0-9]+\.[0-9]+\.[0-9]+)")
         .map_err(|e| format!("Failed to create regex: {}", e))?;
 
     let version = version_regex
-        .captures(location)
+        .captures(&final_url)
         .and_then(|caps| caps.get(1))
         .map(|m| m.as_str().to_string())
-        .ok_or("Failed to extract version from redirect URL")?;
+        .ok_or("Failed to extract version from final release URL")?;
 
     Ok(version)
 }
@@ -414,8 +401,9 @@ pub async fn get_release_notes(version: Option<String>) -> Result<ReleaseNotes, 
 pub async fn download_and_install_app_update(
     app_handle: tauri::AppHandle,
 ) -> Result<String, String> {
-    // First, get the latest version
-    let client = crate::services::http::client_no_redirect().clone();
+    // First, get the latest version. Follow the full redirect chain so this
+    // survives a repo rename/transfer (old URLs 301 to the new home first)
+    let client = crate::services::http::client().clone();
 
     let response = client
         .get("https://github.com/winters27/StreamNook/releases/latest")
@@ -423,23 +411,17 @@ pub async fn download_and_install_app_update(
         .await
         .map_err(|e| format!("Failed to fetch latest release: {}", e))?;
 
-    // Get the redirect location
-    let location = response
-        .headers()
-        .get("location")
-        .ok_or("No redirect location found")?
-        .to_str()
-        .map_err(|e| format!("Invalid location header: {}", e))?;
+    let final_url = response.url().to_string();
 
-    // Extract version from the redirect URL
+    // Extract version from the final URL
     let version_regex = Regex::new(r"/tag/v?([0-9]+\.[0-9]+\.[0-9]+)")
         .map_err(|e| format!("Failed to create regex: {}", e))?;
 
     let version = version_regex
-        .captures(location)
+        .captures(&final_url)
         .and_then(|caps| caps.get(1))
         .map(|m| m.as_str())
-        .ok_or("Failed to extract version from redirect URL")?;
+        .ok_or("Failed to extract version from final release URL")?;
 
     // Construct the download URL for the executable
     // Pattern: https://github.com/winters27/StreamNook/releases/download/v{version}/StreamNook.exe

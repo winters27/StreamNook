@@ -103,8 +103,12 @@ impl BadgePollingService {
             *running = true;
         }
 
-        // Load persisted state once at startup
-        if let Ok(state) = load_state_from_disk() {
+        // Load persisted state once at startup. On the blocking pool: sync file
+        // I/O on a runtime worker stalls every async task in the process (a
+        // Defender-scanned AppData read lands in the hundreds-of-ms range,
+        // observed as recurring `rt_stall side:tokio` events). Same rule applied
+        // to the periodic save below.
+        if let Ok(Ok(state)) = tokio::task::spawn_blocking(load_state_from_disk).await {
             *self.state.write().await = state;
         }
 
@@ -275,10 +279,14 @@ async fn poll_once_impl(
         }
     }
 
-    // Persist updated state
+    // Persist updated state on the blocking pool (never sync-write on the
+    // runtime — see the load note above).
     local_state.last_poll_timestamp_ms = current_time_ms();
-    if let Err(e) = save_state_to_disk(&local_state) {
-        error!("[BadgePolling] Failed to persist state: {e}");
+    let to_save = local_state.clone();
+    match tokio::task::spawn_blocking(move || save_state_to_disk(&to_save)).await {
+        Ok(Err(e)) => error!("[BadgePolling] Failed to persist state: {e}"),
+        Err(e) => error!("[BadgePolling] persist task panicked: {e}"),
+        Ok(Ok(())) => {}
     }
     *state.write().await = local_state;
 

@@ -1148,7 +1148,7 @@ const DynamicIsland = () => {
                 // at the normal title-bar layer (z-50). The element stays mounted
                 // across this toggle (only the class changes), so there is no
                 // re-mount flash of the unread-count badge.
-                className={`fixed left-1/2 -translate-x-1/2 top-0.5 ${isSettingsOpen ? 'z-[55]' : 'z-50'}`}
+                className={`fixed left-1/2 -translate-x-1/2 top-1.5 ${isSettingsOpen ? 'z-[55]' : 'z-50'}`}
                 style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
             >
                 <motion.div
@@ -1159,10 +1159,9 @@ const DynamicIsland = () => {
                     initial={false}
                     animate={{
                         width: isExpanded ? expandedWidth : getCollapsedWidth(),
-                        // Collapsed pill sits in the title bar with even 2px gaps top and
-                        // bottom. The bar is h-[33px] but its 1px bottom border eats the
-                        // last pixel, leaving a 32px content area; container at top-0.5
-                        // (2px) + a 28px pill lands 2px above that bottom edge.
+                        // Collapsed pill sits centered in the title bar. The bar is
+                        // h-[40px] (less a 1px bottom border); container at top-1.5 (6px)
+                        // + a 28px pill leaves an even gap above and below.
                         height: isExpanded ? Math.min(maxHeight, 64 + notifications.length * itemHeight) : 28,
                     }}
                     transition={{

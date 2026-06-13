@@ -4,7 +4,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { useAppStore } from '../stores/AppStore';
 import { listen, emit } from '@tauri-apps/api/event';
-import { Search, Gift, MonitorPlay, BarChart3, Package, ArrowDownUp } from 'lucide-react';
+import { Search, Gift, MonitorPlay, BarChart3, Package, ArrowDownUp, SlidersHorizontal } from 'lucide-react';
+import { usePluginUiRegistry, selectSlot } from '../plugins-ui/registry';
 import { Dropdown } from './ui/Dropdown';
 import {
     UnifiedGame, DropCampaign, DropProgress, DropsStatistics,
@@ -28,7 +29,7 @@ const TwitchIcon = ({ size = 20 }: { size?: number }) => (
     </svg>
 );
 
-type Tab = 'games' | 'inventory' | 'stats';
+type Tab = 'games' | 'inventory' | 'stats' | 'settings';
 
 interface DropsSettings {
     auto_claim_drops: boolean;
@@ -75,6 +76,14 @@ export default function DropsCenter() {
 
     // UI State
     const [activeTab, setActiveTab] = useState<Tab>('games');
+    // A drops-mining plugin contributes its automation settings panel into this
+    // slot; the Settings tab exists only while one does. If the plugin is
+    // disabled while the tab is open, fall back to Games so the view never
+    // strands on an empty tab.
+    const settingsSlots = usePluginUiRegistry(selectSlot('drops.settings'));
+    useEffect(() => {
+        if (activeTab === 'settings' && settingsSlots.length === 0) setActiveTab('games');
+    }, [activeTab, settingsSlots.length]);
     const [searchTerm, setSearchTerm] = useState('');
     // Game grid sort: 'recommended' = relevance order, 'newest'/'oldest' = by most-recent campaign release.
     const [sortMode, setSortMode] = useState<'recommended' | 'newest' | 'oldest'>('recommended');
@@ -116,8 +125,15 @@ export default function DropsCenter() {
     // Derived state for filtering AND sorting (favorites first)
     const filteredGames = useMemo(() => {
         const favoriteGames = dropsSettings?.favorite_games || [];
+        // The actively-mining game pins above everything, even favorites: it's
+        // the one thing happening right now. Derived straight from live
+        // miningStatus so a reopened overlay restores the pin immediately,
+        // not only after the next status push.
+        const miningGameName = (miningStatus?.is_mining
+            ? miningStatus.current_drop?.game_name || miningStatus.current_channel?.game_name
+            : null)?.toLowerCase() || null;
         let games = unifiedGames;
-        
+
         // Apply search filter
         if (searchTerm) {
             const lowerSearch = searchTerm.toLowerCase();
@@ -138,8 +154,13 @@ export default function DropsCenter() {
             return t;
         };
 
-        // Sort: still-mineable favorites pinned first, then by the selected sort mode.
+        // Sort: actively-mining game first, then still-mineable favorites, then by the selected sort mode.
         return [...games].sort((a, b) => {
+            // Actively-mining game pinned at the very top, above favorites.
+            const aMining = miningGameName !== null && a.name.toLowerCase() === miningGameName;
+            const bMining = miningGameName !== null && b.name.toLowerCase() === miningGameName;
+            if (aMining !== bMining) return aMining ? -1 : 1;
+
             // A favorite that's fully claimed is "done", so it drops out of the top
             // pin and sinks to the bottom with the other completed games.
             const aIsFavorite = favoriteGames.some(pg => pg.toLowerCase() === a.name.toLowerCase()) && !a.all_drops_claimed;
@@ -168,7 +189,7 @@ export default function DropsCenter() {
             }
             return a.name.localeCompare(b.name);
         });
-    }, [unifiedGames, searchTerm, dropsSettings?.favorite_games, sortMode]);
+    }, [unifiedGames, searchTerm, dropsSettings?.favorite_games, sortMode, miningStatus]);
 
     // Fetch earned badges on mount for badge drop ownership verification
     useEffect(() => {
@@ -1152,8 +1173,11 @@ export default function DropsCenter() {
                 });
             }
 
-            // Get the current mining game name (case-insensitive) - use freshly fetched status
-            const activeMiningStatus = currentMiningStatus || miningStatus;
+            // Get the current mining game name (case-insensitive). Prefer the
+            // freshly-read live status (set by the plugin bridge and held in the
+            // store while the overlay is closed) over the built-in miner's status
+            // (idle in plugin mode) and the stale component state.
+            const activeMiningStatus = liveStatus || currentMiningStatus || miningStatus;
             const miningGameName = activeMiningStatus?.current_drop?.game_name?.toLowerCase() ||
                 activeMiningStatus?.current_channel?.game_name?.toLowerCase();
 
@@ -1918,6 +1942,27 @@ export default function DropsCenter() {
                             <span>Stats</span>
                         </span>
                     </button>
+                    {settingsSlots.length > 0 && (
+                    <button
+                        onClick={() => setActiveTab('settings')}
+                        className={`group relative flex items-center gap-2 px-3 py-1.5 text-sm font-medium rounded-lg transition-all duration-300 whitespace-nowrap ${activeTab === 'settings'
+                            ? 'text-white'
+                            : 'text-textSecondary hover:text-textPrimary'
+                            }`}
+                    >
+                        {activeTab === 'settings' && (
+                            <motion.div
+                                layoutId="dropsTabHighlight"
+                                className="absolute inset-0 glass-button-static rounded-lg"
+                                transition={{ type: "spring", stiffness: 350, damping: 30 }}
+                            />
+                        )}
+                        <span className={`relative z-10 flex items-center gap-2 transition-all duration-300 ${activeTab !== 'settings' ? 'group-hover:drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]' : ''}`}>
+                            <SlidersHorizontal size={16} />
+                            <span>Settings</span>
+                        </span>
+                    </button>
+                    )}
                 </div>
                 </LayoutGroup>
 
@@ -2066,6 +2111,18 @@ export default function DropsCenter() {
                         progress={progress}
                         onClaimDrop={handleClaimDrop}
                     />
+                )}
+
+                {/* Settings Tab — the automation panel a drops-mining plugin
+                    contributes into the drops.settings slot. Full-height + scroll
+                    so a contribution that manages its own scroll (h-full) is
+                    bounded, and a plain one still scrolls here. */}
+                {activeTab === 'settings' && (
+                    <div className="h-full overflow-y-auto custom-scrollbar">
+                        {settingsSlots.map((c) => (
+                            <c.Component key={`${c.pluginId}:${c.id}`} />
+                        ))}
+                    </div>
                 )}
 
             </div>

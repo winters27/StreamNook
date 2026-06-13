@@ -856,6 +856,9 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
 
   // Channel points state
   const [channelPoints, setChannelPoints] = useState<number | null>(null);
+  // Mirror of the balance so the claim callback can compute a true earned
+  // amount (balance delta) as a fallback, without depending on render state.
+  const channelPointsBalanceRef = useRef<number | null>(null);
   const [channelPointsHovered, setChannelPointsHovered] = useState(false);
   // Bonus-chest claim for the actively watched channel. When auto-claim is on
   // it is collected silently; when off a clickable chest surfaces on the
@@ -864,6 +867,10 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
   const [availableClaim, setAvailableClaim] = useState<{ id: string; channelId: string } | null>(null);
   const [claimingChest, setClaimingChest] = useState(false);
   const claimingChestRef = useRef(false);
+  // Brief "+N" feedback on the points button after a chest is collected,
+  // whether the user clicked it or auto-claim grabbed it.
+  const [claimCelebration, setClaimCelebration] = useState<number | null>(null);
+  const claimCelebrationTimer = useRef<number | null>(null);
   const autoClaimWatching = useAppStore((s) => s.settings.auto_claim_points_watching ?? false);
   const [showChannelPointsMenu, setShowChannelPointsMenu] = useState(false);
   const [isLoadingChannelPoints, setIsLoadingChannelPoints] = useState(false);
@@ -887,9 +894,44 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
     started_at: string;
   }
   const [pinnedMessages, setPinnedMessages] = useState<PinnedMessage[]>([]);
-  const [isPinnedExpanded, setIsPinnedExpanded] = useState(true);
+  const [isPinnedExpanded, setIsPinnedExpanded] = useState(
+    () => !(useAppStore.getState().settings.chat_design?.pinned_start_collapsed ?? true),
+  );
   const seenPinIdRef = useRef<string | null>(null);
   const pinnedContentRef = useRef<HTMLDivElement>(null);
+
+  // Name -> emote lookup for pinned-message bodies. GQL pins arrive as plain
+  // text with no emote ranges, so emotes are matched per whitespace word.
+  // Insertion order is reverse priority so the chat's precedence holds:
+  // 7TV > BTTV > FFZ > Twitch (later inserts overwrite earlier ones).
+  const pinEmoteMap = useMemo(() => {
+    const map = new Map<string, Emote>();
+    if (!emotes) return map;
+    for (const list of [emotes.twitch, emotes.ffz, emotes.bttv, emotes['7tv']]) {
+      for (const e of list) map.set(e.name, e);
+    }
+    return map;
+  }, [emotes]);
+
+  // Render a plain-text chunk of a pinned message with emote words swapped for
+  // inline images. `emoteClass` sets the image size (expanded body vs collapsed bar).
+  const renderPinTextWithEmotes = (text: string, keyPrefix: string, emoteClass: string) => {
+    const tokens = text.split(/(\s+)/);
+    return tokens.map((tok, i) => {
+      const emote = pinEmoteMap.get(tok);
+      if (!emote) return <span key={`${keyPrefix}-${i}`}>{tok}</span>;
+      return (
+        <Tooltip key={`${keyPrefix}-${i}`} content={emote.name}>
+          <img
+            src={emote.url}
+            alt={emote.name}
+            className={`inline-block align-middle object-contain ${emoteClass}`}
+            loading="lazy"
+          />
+        </Tooltip>
+      );
+    });
+  };
 
   // Cache for channel names (broadcaster ID -> display name) used in emote picker grouping
   const [channelNameCache, setChannelNameCache] = useState<Map<string, string>>(new Map());
@@ -1268,7 +1310,7 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
       setWatchStreakDismissed(false);
       // Reset pinned chat state when switching channels
       setPinnedMessages([]);
-      setIsPinnedExpanded(true);
+      setIsPinnedExpanded(!(useAppStore.getState().settings.chat_design?.pinned_start_collapsed ?? true));
       // Reset to chat view when switching channels
       setActiveView('chat');
       
@@ -1354,21 +1396,20 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
         
         Logger.debug('[ChatWidget] Raw GQL response:', JSON.stringify(result).substring(0, 500));
         
-        // Try multiple possible paths since the backend GQL query uses "community.channel" structure
-        // Path 1: data.community.channel.self.communityPoints.balance
-        let balance = result?.data?.community?.channel?.self?.communityPoints?.balance;
+        // The query returns under data.user.channel (the web client nests it
+        // under community.channel); accept either. The SAME communityPoints
+        // object carries the bonus-chest availability, so chest detection rides
+        // this one healthy query instead of a separate stale-hash call.
         const channel = result?.data?.community?.channel || result?.data?.user?.channel;
-        
-        // Path 2: data.user.channel.self.communityPoints.balance (alternative structure)
-        if (balance === undefined) {
-          balance = result?.data?.user?.channel?.self?.communityPoints?.balance;
-        }
-        
-        // Path 3: Direct balance if returned differently
+        const communityPoints =
+          result?.data?.community?.channel?.self?.communityPoints
+          ?? result?.data?.user?.channel?.self?.communityPoints;
+
+        let balance = communityPoints?.balance;
         if (balance === undefined && result?.balance !== undefined) {
           balance = result.balance;
         }
-        
+
         // Extract custom points settings (name and icon)
         const communityPointsSettings = channel?.communityPointsSettings;
         if (communityPointsSettings) {
@@ -1381,19 +1422,27 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
           setCustomPointsName(null);
           setCustomPointsIconUrl(null);
         }
-        
+
         if (typeof balance === 'number') {
           Logger.debug('[ChatWidget] Got channel points balance:', balance);
           setChannelPoints(balance);
+          // Bonus chest rides the same response: availableClaim is { id } when
+          // a chest is ready, null/absent otherwise. Detection only; the
+          // auto-claim effect collects it when the setting is on.
+          const claimId = communityPoints?.availableClaim?.id;
+          if (claimId && currentStream?.user_id) {
+            setAvailableClaim({ id: claimId, channelId: currentStream.user_id });
+          } else {
+            setAvailableClaim(null);
+          }
           return;
         }
-        
+
         // Check if communityPoints is explicitly null (channel points not enabled)
-        const communityPoints = result?.data?.community?.channel?.self?.communityPoints 
-          ?? result?.data?.user?.channel?.self?.communityPoints;
         if (communityPoints === null) {
           Logger.debug('[ChatWidget] Channel points not enabled or user not eligible for this channel');
           setChannelPoints(null);
+          setAvailableClaim(null);
           return;
         }
         
@@ -1409,28 +1458,59 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
     }
     
     Logger.debug('[ChatWidget] All retries exhausted - will update via events');
-  }, [currentStream?.user_login]);
+  }, [currentStream?.user_login, currentStream?.user_id]);
 
-  // Automatically fetch channel points when entering a new channel
+  // Automatically fetch channel points when entering a new channel. Clear any
+  // prior channel's chest first so its claim id can't be clicked against the
+  // new channel during the brief fetch window.
   useEffect(() => {
+    setAvailableClaim(null);
     if (currentStream?.user_login) {
       setIsLoadingChannelPoints(true);
       fetchChannelPoints().finally(() => setIsLoadingChannelPoints(false));
     }
   }, [currentStream?.user_login, fetchChannelPoints]);
 
-  // Claim the watched channel's bonus chest (manual click or auto).
+  // Keep the balance mirror current for the claim callback's delta fallback.
+  useEffect(() => {
+    channelPointsBalanceRef.current = channelPoints;
+  }, [channelPoints]);
+
+  // Claim the watched channel's bonus chest (manual click or auto). The
+  // command returns the exact credited amount (multipliers included) and the
+  // new balance; the "+N" pop uses the credited amount.
   const claimWatchedChest = useCallback(async (claimId: string, channelId: string) => {
     if (claimingChestRef.current) return;
     claimingChestRef.current = true;
     setClaimingChest(true);
     try {
-      await invoke('claim_channel_points', {
+      const result = await invoke<{ new_balance: number; points_earned: number }>('claim_channel_points', {
         channelId,
         channelName: currentStream?.user_login ?? '',
         claimId,
       });
       setAvailableClaim(null);
+      // Show the true credited amount (multipliers included): prefer the claim
+      // response's exact figure, fall back to the balance delta, never a
+      // fabricated preset. This matches the points-claimed notification, which
+      // reflects the same Twitch-credited amount.
+      const prevBalance = channelPointsBalanceRef.current;
+      const earned = result.points_earned > 0
+        ? result.points_earned
+        : (prevBalance !== null && result.new_balance > prevBalance ? result.new_balance - prevBalance : 0);
+      if (result.new_balance > 0) setChannelPoints(result.new_balance);
+      if (earned > 0) {
+        setClaimCelebration(earned);
+        if (claimCelebrationTimer.current) window.clearTimeout(claimCelebrationTimer.current);
+        claimCelebrationTimer.current = window.setTimeout(() => setClaimCelebration(null), 1800);
+        // Keep the profile stat the old backend auto-claim used to feed; the
+        // "+N" pop above is the only on-screen feedback (no toast).
+        if (currentUser?.user_id) {
+          incrementStat(currentUser.user_id, 'channel_points_farmed', earned).catch(err => {
+            Logger.warn('[ChatWidget] Failed to track channel points stat:', err);
+          });
+        }
+      }
       fetchChannelPoints();
     } catch (err) {
       Logger.warn('[ChatWidget] bonus chest claim failed:', err);
@@ -1438,47 +1518,46 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
       claimingChestRef.current = false;
       setClaimingChest(false);
     }
+  }, [currentStream?.user_login, currentUser?.user_id, fetchChannelPoints]);
+
+  // Instant chest detection: PubSub pushes claim-available the moment Twitch
+  // offers the bonus. Detection only — sets availableClaim; the auto-claim
+  // effect below decides whether to collect it.
+  useEffect(() => {
+    if (!currentStream?.user_id) return;
+    const channelId = currentStream.user_id;
+    const unlisten = listen<{ channel_id?: string | null; claim_id?: string }>(
+      'channel-points-claim-available',
+      (event) => {
+        const claimId = event.payload.claim_id;
+        if (!claimId || event.payload.channel_id !== channelId) return;
+        setAvailableClaim({ id: claimId, channelId });
+      }
+    );
+    return () => {
+      unlisten.then(fn => fn());
+    };
+  }, [currentStream?.user_id]);
+
+  // Minute poll so a chest that appears mid-stream still surfaces if the PubSub
+  // push is missed. Detection lives in fetchChannelPoints, which reads
+  // availableClaim off the same healthy balance query (the dedicated
+  // check_channel_points command rode a stale persisted-query hash and silently
+  // returned nothing, so the chest never appeared).
+  useEffect(() => {
+    if (!currentStream?.user_login) return;
+    const interval = setInterval(() => { fetchChannelPoints(); }, 60_000);
+    return () => clearInterval(interval);
   }, [currentStream?.user_login, fetchChannelPoints]);
 
-  // Detect the bonus chest on the channel being watched; auto-claim it when
-  // the setting is on, otherwise surface a clickable chest. Polls each minute
-  // while watching. Silent if the user has no drops login or the channel has
-  // no points (the chest just never appears).
+  // Single auto-collect point: every detection path only sets availableClaim;
+  // when auto-claim is on, this grabs it. Keeping the claim in one place means
+  // detection paths can't double-fire and don't each need claim logic.
   useEffect(() => {
-    if (!currentStream?.user_id || !currentStream?.user_login) {
-      setAvailableClaim(null);
-      return;
+    if (availableClaim && autoClaimWatching && !claimingChestRef.current) {
+      claimWatchedChest(availableClaim.id, availableClaim.channelId);
     }
-    let cancelled = false;
-    const channelId = currentStream.user_id;
-    const channelName = currentStream.user_login;
-    const check = async () => {
-      try {
-        const claim = await invoke<{ id: string } | null>('check_channel_points', {
-          channelId,
-          channelName,
-        });
-        if (cancelled) return;
-        if (claim && claim.id) {
-          if (useAppStore.getState().settings.auto_claim_points_watching) {
-            await claimWatchedChest(claim.id, channelId);
-          } else {
-            setAvailableClaim({ id: claim.id, channelId });
-          }
-        } else {
-          setAvailableClaim(null);
-        }
-      } catch {
-        // No drops login or channel not eligible: nothing to claim.
-      }
-    };
-    check();
-    const interval = setInterval(check, 60_000);
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-    };
-  }, [currentStream?.user_id, currentStream?.user_login, claimWatchedChest]);
+  }, [availableClaim, autoClaimWatching, claimWatchedChest]);
 
   // Fetch resub notification when entering a new channel
   useEffect(() => {
@@ -3445,7 +3524,7 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
         {/* Free Floating Pinned Message Modal */}
         {pinnedMessages.length > 0 && (
           <div className="absolute left-3 right-3 z-[15] pointer-events-none flex flex-col items-center"
-            style={{ 
+            style={{
               top: currentHypeTrain ? '80px' : '48px', // Positioning based on header height
             }}>
             <AnimatePresence>
@@ -3573,7 +3652,9 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
                                   </a>
                                 )
                               ) : (
-                                <span key={index}>{part}</span>
+                                <span key={index}>
+                                  {renderPinTextWithEmotes(part, `pin-${pin.id}-${index}`, 'h-6 max-w-[112px] -my-1')}
+                                </span>
                               )
                             )}
                           </p>
@@ -3638,28 +3719,28 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
                       setIsPinnedExpanded(true);
                       seenPinIdRef.current = pin.id;
                     }}
-                    className="group w-full max-w-sm glass-panel bg-background/[0.45] hover:bg-background/[0.6] shadow-lg mt-2 pointer-events-auto overflow-hidden flex items-center gap-2 px-3 py-2 text-left transition-colors"
+                    className="group w-full max-w-sm glass-panel bg-background/[0.45] hover:bg-background/[0.6] shadow-lg mt-2 pointer-events-auto overflow-hidden flex items-center gap-2.5 px-3.5 py-2.5 text-left transition-colors"
                     style={{ backdropFilter: 'blur(64px) saturate(300%)', WebkitBackdropFilter: 'blur(64px) saturate(300%)' }}
                   >
-                    <svg className="w-3 h-3 text-accent flex-shrink-0" fill="currentColor" viewBox="0 0 16 16">
+                    <svg className="w-3.5 h-3.5 text-accent flex-shrink-0" fill="currentColor" viewBox="0 0 16 16">
                       <path d="M4.146.146A.5.5 0 0 1 4.5 0h7a.5.5 0 0 1 .5.5c0 .68-.342 1.174-.646 1.479-.126.125-.25.224-.354.298v4.431l.078.048c.203.127.476.314.751.555C12.36 7.775 13 8.527 13 9.5a.5.5 0 0 1-.5.5h-4v4.5a.5.5 0 0 1-1 0V10h-4A.5.5 0 0 1 3 9.5c0-.973.64-1.725 1.17-2.189A5.921 5.921 0 0 1 5 6.708V2.277a2.77 2.77 0 0 1-.354-.298C4.342 1.674 4 1.179 4 .5a.5.5 0 0 1 .146-.354z"/>
                     </svg>
                     <span
-                      className="text-xs font-bold flex-shrink-0 max-w-[35%] truncate"
+                      className="text-[13px] font-bold flex-shrink-0 max-w-[35%] truncate"
                       style={{ color: pin.sender_color, textShadow: '0 1px 2px rgba(0,0,0,0.8)' }}
                     >
                       {pin.sender_name}
                     </span>
-                    <span className="text-xs text-textPrimary/85 truncate min-w-0 flex-1">
-                      {pin.message_text}
+                    <span className="text-[13px] text-textPrimary/85 truncate min-w-0 flex-1">
+                      {renderPinTextWithEmotes(pin.message_text, `pinbar-${pin.id}`, 'h-5 max-w-[80px] -my-0.5')}
                     </span>
                     {pinnedMessages.length > 1 && (
-                      <span className="text-[10px] font-semibold text-textSecondary flex-shrink-0 tabular-nums">
+                      <span className="text-[11px] font-semibold text-textSecondary flex-shrink-0 tabular-nums">
                         +{pinnedMessages.length - 1}
                       </span>
                     )}
                     {/* Expand chevron */}
-                    <svg className="w-2.5 h-2.5 text-textSecondary/60 group-hover:text-textSecondary flex-shrink-0 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <svg className="w-3 h-3 text-textSecondary/60 group-hover:text-textSecondary flex-shrink-0 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" />
                     </svg>
                   </motion.button>
@@ -4076,45 +4157,60 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
               )}
 
               <div className="flex items-center gap-2 min-w-0">
-                {/* Bonus chest claim — appears on the watched channel when a
-                    chest is ready and auto-claim is off. Click to collect. */}
-                {availableClaim && !autoClaimWatching && (
-                  <Tooltip content="Claim bonus points" side="top">
-                    <button
-                      onClick={() => claimWatchedChest(availableClaim.id, availableClaim.channelId)}
-                      disabled={claimingChest}
-                      aria-label="Claim channel points bonus"
-                      className="flex-shrink-0 self-center flex items-center justify-center w-9 h-9 text-accent-neon transition-opacity duration-200 animate-pulse hover:animate-none disabled:opacity-50"
-                    >
-                      <svg width={18} height={18} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                        <path d="M20 7h-1.7a3 3 0 0 0-4.3-4 3 3 0 0 0-4 0 3 3 0 0 0-4.3 4H4a1 1 0 0 0-1 1v3a1 1 0 0 0 1 1v6a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-6a1 1 0 0 0 1-1V8a1 1 0 0 0-1-1ZM13 5a1 1 0 1 1 2 0 1 1 0 0 1-1 1h-1V5Zm-4-1a1 1 0 0 1 1 1v1H9a1 1 0 0 1 0-2Zm2 16H6v-6h5v6Zm0-8H5V9h6v3Zm7 8h-5v-6h5v6Zm1-8h-6V9h6v3Z" />
-                      </svg>
-                    </button>
-                  </Tooltip>
-                )}
-                {/* Channel Points button - click to open rewards menu, hover for balance */}
+                {/* Channel Points button. Opens the rewards menu, balance on
+                    hover. While the watched channel has a bonus chest ready
+                    and auto-claim is off, it becomes the claim control. */}
                 <div
                   ref={channelPointsRef}
                   className="relative flex-shrink-0 self-center flex items-center"
                   onMouseEnter={() => setChannelPointsHovered(true)}
                   onMouseLeave={() => setChannelPointsHovered(false)}
                 >
-                  <button
-                    onClick={() => setShowChannelPointsMenu(!showChannelPointsMenu)}
-                    className={`group flex items-center justify-center w-9 h-9 transition-all duration-200 ${showChannelPointsMenu ? 'text-accent-neon' : channelPoints !== null ? 'text-accent-neon' : 'text-textSecondary hover:text-accent-neon'}`}
-                  >
-                    {customPointsIconUrl ? (
-                      <img 
-                        src={customPointsIconUrl} 
-                        alt={customPointsName || "Channel Points"} 
-                        className="w-[18px] h-[18px] transition-all duration-200 group-hover:drop-shadow-[0_0_6px_rgba(200,224,232,0.85)]"
-                      />
-                    ) : (
-                      <ChannelPointsIcon size={18} className="transition-all duration-200 group-hover:drop-shadow-[0_0_6px_rgba(200,224,232,0.85)]" />
+                  {availableClaim && !autoClaimWatching ? (
+                    <Tooltip content="Claim bonus points" side="top">
+                      <button
+                        onClick={() => claimWatchedChest(availableClaim.id, availableClaim.channelId)}
+                        disabled={claimingChest}
+                        aria-label="Claim channel points bonus"
+                        className="chest-attention flex items-center justify-center w-9 h-9 text-accent-neon transition-opacity duration-200 disabled:opacity-50"
+                      >
+                        <svg width={18} height={18} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                          <path fillRule="evenodd" clipRule="evenodd" d="M2 22v-9l2.417-4.029A2 2 0 0 1 6.132 8h11.736a2 2 0 0 1 1.715.971L22 13v9H2Zm18-2v-5h-7v2h-2v-2H4v5h16Zm-2.132-10 1.8 3H4.332l1.8-3h11.736Z" />
+                        </svg>
+                      </button>
+                    </Tooltip>
+                  ) : (
+                    <button
+                      onClick={() => setShowChannelPointsMenu(!showChannelPointsMenu)}
+                      className={`group flex items-center justify-center w-9 h-9 transition-all duration-200 ${showChannelPointsMenu ? 'text-accent-neon' : channelPoints !== null ? 'text-accent-neon' : 'text-textSecondary hover:text-accent-neon'}`}
+                    >
+                      {customPointsIconUrl ? (
+                        <img
+                          src={customPointsIconUrl}
+                          alt={customPointsName || "Channel Points"}
+                          className="w-[18px] h-[18px] transition-all duration-200 group-hover:drop-shadow-[0_0_6px_rgba(200,224,232,0.85)]"
+                        />
+                      ) : (
+                        <ChannelPointsIcon size={18} className="transition-all duration-200 group-hover:drop-shadow-[0_0_6px_rgba(200,224,232,0.85)]" />
+                      )}
+                    </button>
+                  )}
+                  {/* "+N" pop after a chest collect, manual or auto */}
+                  <AnimatePresence>
+                    {claimCelebration !== null && (
+                      <motion.span
+                        initial={{ opacity: 0, x: '-50%', y: 4, scale: 0.85 }}
+                        animate={{ opacity: 1, x: '-50%', y: -16, scale: 1 }}
+                        exit={{ opacity: 0, x: '-50%', y: -24 }}
+                        transition={{ duration: 0.8, ease: 'easeOut' }}
+                        className="absolute left-1/2 top-0 text-[11px] font-semibold text-accent-neon pointer-events-none whitespace-nowrap select-none"
+                      >
+                        +{claimCelebration.toLocaleString()}
+                      </motion.span>
                     )}
-                  </button>
+                  </AnimatePresence>
                   {/* Points tooltip - fixed position to escape overflow-hidden parents */}
-                  {channelPointsHovered && !showChannelPointsMenu && (
+                  {channelPointsHovered && !showChannelPointsMenu && !(availableClaim && !autoClaimWatching) && (
                     <ChannelPointsTooltip
                       anchorRef={channelPointsRef}
                       customPointsIconUrl={customPointsIconUrl}

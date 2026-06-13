@@ -194,7 +194,7 @@ export const useMultiNookPlayer = ({
         maxFragLookUpTolerance: 0.5, 
         liveSyncDuration: isLowLatencyChannel ? 3 : 8, // LL origin: parts are consumed progressively, so tiles can ride near the edge; 3 keeps one segment of headroom over the solo player's 2 because per-tile buffers are tiny. Non-LL: conservative 8s BY POLICY. Grid tiles run deliberately tiny per-tile buffers (maxBufferLength 15) for RAM, so they can't absorb a normal ~3s Twitch segment-delivery gap at a tight cushion on the whole-segment path — 6 stalled in the wild.
         liveMaxLatencyDuration: 600, // Massive drift ceiling so manual scrobbling backwards into the DVR buffer isn't violently snapped to live edge.
-        maxLiveSyncPlaybackRate: isLowLatencyChannel ? 1.1 : 1.15, // LL origin: hls.js's native LL controller owns catch-up (gentle 1.1). Non-LL: inert (the controller only runs in lowLatencyMode); the latency governor below owns catch-up there instead.
+        maxLiveSyncPlaybackRate: 1, // hls.js's latency controller is fully inert on every path (its 0.05-quantized rate steps are audible pops on music); the latency governor below owns catch-up instead.
         liveDurationInfinity: true, 
         manifestLoadingTimeOut: 10000, 
         manifestLoadingMaxRetry: 3, 
@@ -218,20 +218,31 @@ export const useMultiNookPlayer = ({
       // Continuous live-latency maintenance, same forward-buffer governor as the solo
       // player with a slightly wider band for tiles (tiny per-tile buffers, and grid
       // latency isn't perceptually important). It only consumes excess buffer, so it
-      // can't starve a tile. Target is read from hls.config.liveSyncDuration (8s).
-      // Skipped on the LL path: lowLatencyMode activates hls.js's own playback-rate
-      // controller, and the two would fight over the rate.
+      // can't starve a tile. Target is read from hls.config.liveSyncDuration. Owns
+      // catch-up on BOTH paths (hls.js's controller is disabled above); LL tiles get
+      // the gentle ramped profile so rate changes never pop tile audio.
       if (latencyGovernorStopRef.current) {
         latencyGovernorStopRef.current();
         latencyGovernorStopRef.current = null;
       }
-      if (!isLowLatencyChannel) {
-        latencyGovernorStopRef.current = startLatencyGovernor(hls, video, {
-          label: `tile ${streamId}`,
-          band: 2.0,
-          log: Logger.debug,
-        });
-      }
+      latencyGovernorStopRef.current = isLowLatencyChannel
+        ? startLatencyGovernor(hls, video, {
+            label: `tile-ll ${streamId}`,
+            ceiling: 1.03,
+            band: 1.0,
+            // Tiles run tiny buffers; the slow side rides out delivery wobbles
+            // that would otherwise stall the tile.
+            floor: 1.0,
+            slowRate: 0.97,
+            tickMs: 500,
+            rampStep: 0.01,
+            log: Logger.debug,
+          })
+        : startLatencyGovernor(hls, video, {
+            label: `tile ${streamId}`,
+            band: 2.0,
+            log: Logger.debug,
+          });
 
       let playStarted = false;
       let fragsBuffered = 0;
@@ -337,12 +348,17 @@ export const useMultiNookPlayer = ({
              if (video.paused && !userInitiatedPauseRef.current) {
                video.play().catch(() => {});
              }
-             const buffered = video.buffered;
-             if (buffered.length > 0) {
-               const currentTime = video.currentTime;
-               const bufferedEnd = buffered.end(buffered.length - 1);
-               if (bufferedEnd - currentTime > 2.0) {
-                 video.currentTime = currentTime + 0.5;
+             // NON-LL tiles only: a forward seek toward the edge on the LL
+             // path is the documented mid-playback freeze. LL tiles ride the
+             // governor + cushion instead (no in-buffer snap on tiles).
+             if (!isLowLatencyChannel) {
+               const buffered = video.buffered;
+               if (buffered.length > 0) {
+                 const currentTime = video.currentTime;
+                 const bufferedEnd = buffered.end(buffered.length - 1);
+                 if (bufferedEnd - currentTime > 2.0) {
+                   video.currentTime = currentTime + 0.5;
+                 }
                }
              }
            }

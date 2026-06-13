@@ -88,17 +88,129 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Update icon pulse for the title-bar update button. Subtle green drop-shadow
-   swell + opacity flicker. Scoped to .update-icon-pulse only. */
-@keyframes update-icon-pulse {
-  0%, 100% { opacity: 0.85; filter: drop-shadow(0 0 2px rgba(132, 255, 87, 0.3)); }
-  25%      { opacity: 0.5;  filter: drop-shadow(0 0 5px rgba(132, 255, 87, 0.5)); }
-  50%      { opacity: 0.85; filter: drop-shadow(0 0 2px rgba(132, 255, 87, 0.3)); }
-  75%      { opacity: 1;    filter: drop-shadow(0 0 0px rgba(132, 255, 87, 0)); }
+/* Title-bar "Update available" pill. Green glass: a frosted green fill with a
+   crisp inner bevel and a soft outer glow that gently breathes to draw the eye.
+   The glow pulse pauses on hover, where a brighter static glow takes over. */
+@keyframes update-pill-glow {
+  0%, 100% {
+    box-shadow:
+      0 0 10px rgba(132, 255, 87, 0.22),
+      inset 0 0 8px rgba(132, 255, 87, 0.08),
+      inset 1px 1px 0 0 rgba(255, 255, 255, 0.08);
+  }
+  50% {
+    box-shadow:
+      0 0 17px rgba(132, 255, 87, 0.42),
+      inset 0 0 11px rgba(132, 255, 87, 0.14),
+      inset 1px 1px 0 0 rgba(255, 255, 255, 0.08);
+  }
 }
 
-.update-icon-pulse {
-  animation: update-icon-pulse 2.5s ease-in-out infinite;
+.update-pill {
+  color: #aaffb0;
+  background: linear-gradient(180deg, rgba(132, 255, 87, 0.18) 0%, rgba(132, 255, 87, 0.1) 100%);
+  border: 1px solid rgba(132, 255, 87, 0.4);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  animation: update-pill-glow 2.6s ease-in-out infinite;
+  transition: background 0.25s ease, border-color 0.25s ease, color 0.25s ease;
+}
+
+.update-pill:hover {
+  color: #c8ffc0;
+  background: linear-gradient(180deg, rgba(132, 255, 87, 0.28) 0%, rgba(132, 255, 87, 0.16) 100%);
+  border-color: rgba(132, 255, 87, 0.6);
+  /* Stronger steady glow; stop the breathing so hover feels deliberate. */
+  animation: none;
+  box-shadow:
+    0 0 20px rgba(132, 255, 87, 0.5),
+    inset 0 0 12px rgba(132, 255, 87, 0.18),
+    inset 1px 1px 0 0 rgba(255, 255, 255, 0.1);
+}
+
+/* Honor the global motion-off / glass-off switches. */
+html[data-motion="off"] .update-pill { animation: none; }
+
+/* Title-bar icon clusters — related actions sit in a subtle segmented group,
+   each icon getting a hover highlight and a gentle lift. No glow, no chip
+   borders; just a soft grouping background and a tactile hover. */
+.titlebar-icon-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 6px;
+  border-radius: 9999px;
+  /* No fill tint — the interior matches the title bar. Just the inset glass
+     bevel (light top-left edge, dark bottom-right) plus a faint outer drop. */
+  box-shadow:
+    inset 1px 1px 0 0 rgba(255, 255, 255, 0.08),
+    inset -1px -1px 0 0 rgba(0, 0, 0, 0.2),
+    0 1px 2px rgba(0, 0, 0, 0.15);
+}
+
+.titlebar-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 30px;
+  height: 28px;
+  padding: 0 7px;
+  border-radius: 9999px;
+  color: var(--color-text-secondary);
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+.titlebar-icon-btn:hover {
+  color: var(--color-text-primary);
+  background: rgba(255, 255, 255, 0.1);
+}
+.titlebar-icon-btn:active {
+  background: rgba(255, 255, 255, 0.06);
+}
+.titlebar-icon-btn svg,
+.titlebar-icon-btn img {
+  transition: transform 0.2s cubic-bezier(0.34, 1.4, 0.64, 1);
+}
+.titlebar-icon-btn:hover svg,
+.titlebar-icon-btn:hover img {
+  transform: scale(1.12);
+}
+
+/* Window controls — utilitarian rectangular hover, no icon scale, so they read
+   as window chrome rather than app action buttons. */
+.titlebar-window-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 28px;
+  border-radius: 5px;
+  color: var(--color-text-secondary);
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+.titlebar-window-btn:hover {
+  color: var(--color-text-primary);
+  background: rgba(255, 255, 255, 0.08);
+}
+.titlebar-window-btn-close:hover {
+  color: #ffffff;
+  background: #e11d48;
+}
+
+/* Floating glass modal — frosted translucent surface whose blur is local to the
+   modal (it frosts only what's directly behind it, not the whole screen), with
+   an accent-tinted border and a deep drop shadow so it lifts off an unblurred
+   background. Built on the same tokens as the glass primitives. */
+.glass-modal {
+  background: color-mix(in srgb, var(--color-background-tertiary) 78%, transparent);
+  border: 1px solid var(--color-border-light);
+  border-radius: 18px;
+  -webkit-backdrop-filter: blur(28px);
+  backdrop-filter: blur(28px);
+  box-shadow:
+    inset 1px 1px 0 0 rgba(255, 255, 255, 0.07),
+    inset -1px -1px 0 0 rgba(0, 0, 0, 0.25),
+    0 32px 80px -24px rgba(0, 0, 0, 0.75),
+    0 12px 28px -10px rgba(0, 0, 0, 0.55);
 }
 
 /* StreamNook Atmosphere: Aurora. Two curtain layers flow horizontally as a
@@ -2901,5 +3013,26 @@ html[data-motion="reduced"] .animate-shimmer {
       0 0 11px rgba(79, 70, 229, 0.8),     /* indigo-600 */
       0 0 22px rgba(139, 92, 246, 0.55);   /* violet-500 */
   }
+}
+
+/* Bonus-chest "claim me" attention. The chest button rests most of the cycle,
+   then does a short wiggle-and-pop so an unclaimed chest periodically catches
+   the eye instead of sitting there unnoticed. Motion only (no glow). Pauses on
+   hover so it's easy to click. */
+@keyframes chest-attention {
+  0%, 70%, 100% { transform: rotate(0deg) scale(1); }
+  74% { transform: rotate(-13deg) scale(1.14); }
+  79% { transform: rotate(11deg) scale(1.12); }
+  84% { transform: rotate(-8deg) scale(1.08); }
+  89% { transform: rotate(5deg) scale(1.04); }
+  94% { transform: rotate(0deg) scale(1); }
+}
+.chest-attention {
+  animation: chest-attention 3.4s ease-in-out infinite;
+  transform-origin: center;
+  will-change: transform;
+}
+.chest-attention:hover {
+  animation: none;
 }
 

@@ -1,5 +1,5 @@
 import { Window } from '@tauri-apps/api/window';
-import { Gift, User, Settings, Store, Proportions, MessageCircle, Pickaxe, Clock, Tv, RotateCw } from 'lucide-react';
+import { Gift, User, Settings, Store, Proportions, MessageCircle, Pickaxe, Clock, Tv, Download } from 'lucide-react';
 import { Minus, X, CornersOut, CornersIn, Medal } from 'phosphor-react';
 import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
@@ -7,6 +7,8 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useAppStore } from '../stores/AppStore';
 import PenroseLogo from './PenroseLogo';
 import AboutWidget from './AboutWidget';
+import UpdateOverlay, { type UpdatePhase } from './UpdateOverlay';
+import { captureResumeSnapshot } from '../services/sessionResume';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getSelectedCompactViewPreset } from '../constants/compactViewPresets';
@@ -18,26 +20,36 @@ import { Logger } from '../utils/logger';
 import { useVisibleInterval } from '../utils/useVisibleInterval';
 import { Tooltip } from './ui/Tooltip';
 import PluginTitleBarButtons from '../plugins-ui/PluginTitleBarButtons';
+import { usePluginUpdates } from '../stores/pluginUpdatesStore';
 
-/** Maps the discrete stage strings emitted by Rust's bundle-update-progress
- *  event to a fill percentage for the progress bar. */
+/** Maps a bundle-update-progress payload to a 0–100 fill. The download stage
+ *  carries a real byte percentage ("Downloading 47%"); the quick post-download
+ *  stages are fixed points near the end. */
 const getUpdateStageProgress = (stage: string | null): number => {
-  if (!stage) return 5;
+  if (!stage) return 0;
+  // Real byte progress from the streamed download (already scaled to 0–90).
+  const pct = stage.match(/(\d+)\s*%/);
+  if (pct) return Math.min(100, parseInt(pct[1], 10));
   const s = stage.toLowerCase();
-  if (s.includes('complete')) return 100;
-  if (s.includes('restart')) return 95;
-  if (s.includes('install')) return 75;
-  if (s.includes('extract')) return 50;
-  if (s.includes('download')) return 25;
-  return 5;
+  if (s.includes('installed') || s.includes('complete')) return 100;
+  if (s.includes('restart')) return 98;
+  if (s.includes('install')) return 95;
+  if (s.includes('extract')) return 92;
+  if (s.includes('download')) return 2;
+  return 0;
 };
 
 const TitleBar = () => {
   const store = useAppStore();
 
-  const { openSettings, setShowDropsOverlay, setShowMarketplaceOverlay, setShowBadgesOverlay, setShowWhispersOverlay, isAuthenticated, currentUser, isMiningActive, isTheaterMode, toggleTheaterMode, streamUrl, settings, whisperImportState, updateInfo, setUpdateInfo, addToast } = store;
-  const [isUpdating, setIsUpdating] = useState(false);
+  const { openSettings, setShowDropsOverlay, setShowMarketplaceOverlay, setShowBadgesOverlay, setShowWhispersOverlay, isAuthenticated, currentUser, isMiningActive, isTheaterMode, toggleTheaterMode, streamUrl, settings, whisperImportState, updateInfo } = store;
+  // Count of installed plugins with an update available, for the Marketplace badge.
+  const pluginUpdateCount = usePluginUpdates((s) => s.ids.length);
+  // Update flow: 'idle' → 'installing' (download/extract) → 'installed' (staged;
+  // the card shows a brief restart notice, then the app auto-restarts) | 'error'.
+  const [updatePhase, setUpdatePhase] = useState<UpdatePhase | 'idle'>('idle');
   const [updateProgress, setUpdateProgress] = useState<string | null>(null);
+  const [updateError, setUpdateError] = useState<string | null>(null);
   const [showAbout, setShowAbout] = useState(false);
   const [, setShowSplash] = useState(false);
   const [dropsSettings, setDropsSettings] = useState<DropsSettings | null>(null);
@@ -333,15 +345,14 @@ const TitleBar = () => {
     await window.close();
   };
 
-  const handleSettingsOrUpdate = useCallback(async () => {
-    if (isUpdating) return;
-    if (!updateInfo) {
-      openSettings();
-      return;
-    }
-    setIsUpdating(true);
-    setUpdateProgress('Starting update...');
-    addToast(`Updating to v${updateInfo.latest_version}...`, 'info');
+  const handleStartUpdate = useCallback(async () => {
+    // A download or pending restart is uninterruptible; ignore further clicks.
+    if (updatePhase === 'installing' || updatePhase === 'installed') return;
+    if (!updateInfo) return;
+
+    setUpdateError(null);
+    setUpdateProgress('Starting update…');
+    setUpdatePhase('installing');
 
     const unlisten = await listen<string>('bundle-update-progress', (event) => {
       setUpdateProgress(event.payload);
@@ -349,36 +360,65 @@ const TitleBar = () => {
 
     try {
       await invoke('download_and_install_bundle');
-      addToast('Update installed successfully!', 'success');
-      setUpdateInfo(null);
+      // Staged. The overlay shows a restart notice, then calls onRestart.
+      setUpdatePhase('installed');
     } catch (e) {
       Logger.error('Update failed:', e);
-      addToast(`Update failed: ${e}`, 'error');
+      setUpdateError(String(e));
+      setUpdatePhase('error');
     } finally {
       unlisten();
-      setIsUpdating(false);
-      setUpdateProgress(null);
     }
-  }, [updateInfo, isUpdating, openSettings, setUpdateInfo, addToast]);
+  }, [updateInfo, updatePhase]);
+
+  // Restart into the staged update. The backend spawns the swap-and-relaunch
+  // launcher and exits, so on success nothing after this runs. Triggered
+  // automatically by the overlay's restart notice.
+  const handleApplyUpdateRestart = useCallback(async () => {
+    // Snapshot the session first so the relaunched app can restore the stream
+    // (and resume mining) the user was on before the update.
+    await captureResumeSnapshot();
+    try {
+      await invoke('restart_to_apply_update');
+      // Reached only in a dev build: production swaps the exe and exits the
+      // process inside the command above, so this never runs there. Flag the
+      // changelog so the post-reload mount pops it for the version we "updated"
+      // to (prod gets this for free via the version-change check), then reload
+      // the webview to simulate the restart — re-running the resume-on-launch
+      // path without killing the `tauri dev` server.
+      const latest = useAppStore.getState().updateInfo?.latest_version;
+      if (latest) sessionStorage.setItem('streamnook-dev-changelog', latest);
+      window.location.reload();
+    } catch (e) {
+      Logger.error('Restart to apply update failed:', e);
+      setUpdateError(String(e));
+      setUpdatePhase('error');
+    }
+  }, []);
+
+  const handleDismissUpdate = useCallback(() => {
+    setUpdatePhase('idle');
+    setUpdateError(null);
+  }, []);
 
   return (
     <>
       <div
         data-tauri-drag-region
-        className="relative flex items-center justify-between h-[33px] px-3 select-none bg-secondary backdrop-blur-md border-b border-borderSubtle z-50"
+        className="relative flex items-center justify-between h-[40px] px-3 select-none bg-secondary backdrop-blur-md border-b border-borderSubtle z-50"
       >
         {/* Dynamic Island is rendered at the app root (App.tsx), not here, so it
             can lift above the Settings blur overlay. It still pins to the top
             center via fixed positioning, so it visually sits in this title bar. */}
 
-        <div className="flex items-center gap-2" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+        <div className="flex items-center gap-2.5" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
           {/* Penrose Logo */}
           <PenroseLogo onClick={() => setShowAbout(true)} />
 
-
-
+          {/* Grouped action icons */}
+          <div className="titlebar-icon-group">
           {/* Drops Button with Inline Progress Badge */}
-          <div 
+          <div
             className="relative"
             ref={dropsButtonRef}
             onMouseEnter={handleDropsMouseEnter}
@@ -414,7 +454,7 @@ const TitleBar = () => {
                 <Tooltip content={title} delay={200}>
                   <button
                     onClick={() => setShowDropsOverlay(true)}
-                    className={`p-1.5 text-textSecondary hover:text-textPrimary rounded transition-all duration-200 ${showProgressBadge ? 'flex items-center gap-1' : ''}`}
+                    className={`titlebar-icon-btn ${showProgressBadge ? 'gap-1' : ''}`}
                   >
                     {showProgressBadge ? (
                       // Replace icon with inline progress percentage badge when mining
@@ -423,7 +463,7 @@ const TitleBar = () => {
                       </span>
                     ) : (
                       // Normal Gift icon when not mining drops
-                      <Gift size={16} className={isAnyMiningActive ? giftClass : ''} />
+                      <Gift size={14} className={isAnyMiningActive ? giftClass : ''} />
                     )}
                   </button>
                 </Tooltip>
@@ -459,7 +499,7 @@ const TitleBar = () => {
                   <div className="flex items-center gap-2 text-xs">
                     <span className="text-textMuted">Drop:</span>
                     <span className="text-textPrimary font-medium truncate max-w-[140px]">
-                      {miningStatus.current_drop.drop_name}
+                      {miningStatus.current_drop.drop_name || '…'}
                     </span>
                   </div>
                   {miningStatus.current_channel && (
@@ -502,13 +542,26 @@ const TitleBar = () => {
             )}
           </div>
 
-          {/* Marketplace Button — opens the plugin store */}
-          <Tooltip content="Marketplace" delay={200}>
+          {/* Marketplace Button — opens the plugin store. Badged when installed
+              plugins have updates available, so users know without opening it. */}
+          <Tooltip
+            content={
+              pluginUpdateCount > 0
+                ? `Marketplace — ${pluginUpdateCount} update${pluginUpdateCount > 1 ? 's' : ''} available`
+                : 'Marketplace'
+            }
+            delay={200}
+          >
             <button
               onClick={() => setShowMarketplaceOverlay(true)}
-              className="w-7 h-7 flex items-center justify-center text-textSecondary hover:text-textPrimary rounded transition-colors duration-200"
+              className="titlebar-icon-btn relative"
             >
-              <Store size={16} />
+              <Store size={14} />
+              {pluginUpdateCount > 0 && (
+                <span className="absolute -right-0.5 -top-0.5 flex h-3.5 min-w-[14px] items-center justify-center rounded-full bg-amber-500 px-1 text-[9px] font-bold leading-none text-zinc-950">
+                  {pluginUpdateCount}
+                </span>
+              )}
             </button>
           </Tooltip>
 
@@ -517,7 +570,7 @@ const TitleBar = () => {
             <button
               onClick={() => setShowBadgesOverlay(true)}
               onMouseLeave={cycleBadgeIcon}
-              className="w-7 h-7 flex items-center justify-center text-textSecondary hover:text-textPrimary rounded transition-colors duration-200"
+              className="titlebar-icon-btn"
             >
               <AnimatePresence mode="popLayout" initial={false}>
                 {currentBadgeUrl ? (
@@ -529,7 +582,7 @@ const TitleBar = () => {
                     transition={{ duration: 0.15 }}
                     src={currentBadgeUrl}
                     alt="Badge"
-                    className="w-4 h-4 object-contain"
+                    className="w-3.5 h-3.5 object-contain"
                     draggable={false}
                   />
                 ) : (
@@ -539,7 +592,7 @@ const TitleBar = () => {
                     animate={{ opacity: 1 }}
                     exit={{ opacity: 0 }}
                   >
-                    <Medal size={16} />
+                    <Medal size={14} />
                   </motion.div>
                 )}
               </AnimatePresence>
@@ -548,77 +601,60 @@ const TitleBar = () => {
 
 
 
-          {/* Settings / Update button. Morphs into an update trigger when an
-              update is available; one click installs the new bundle. Auto-opens
-              a progress dropdown while installing. */}
-          <div className="relative">
-            <Tooltip
-              content={
-                isUpdating
-                  ? ''
-                  : updateInfo
-                    ? `Update v${updateInfo.current_version} to v${updateInfo.latest_version} (click to install)`
-                    : 'Settings'
-              }
-              delay={200}
+          {/* Settings */}
+          <Tooltip content="Settings" delay={200}>
+            <button
+              onClick={() => openSettings()}
+              className="titlebar-icon-btn settings-gear-btn"
             >
-              <button
-                onClick={handleSettingsOrUpdate}
-                disabled={isUpdating}
-                className={`settings-gear-btn p-1.5 rounded transition-colors duration-200 ${
-                  updateInfo
-                    ? 'text-[#84ff57] hover:bg-[#84ff57]/10'
-                    : 'text-textSecondary hover:text-textPrimary'
-                }`}
-              >
-                {updateInfo ? (
-                  <RotateCw size={16} className={isUpdating ? 'animate-spin' : 'update-icon-pulse'} />
-                ) : (
-                  <Settings size={16} />
-                )}
-              </button>
-            </Tooltip>
-
-            {isUpdating && updateInfo && (
-              <div className="drops-preview-card-right">
-                <div className="flex items-center mb-2">
-                  <span className="text-xs font-semibold text-textPrimary">Updating StreamNook</span>
-                </div>
-
-                <div className="flex items-center gap-2 text-xs mb-3">
-                  <span className="text-textMuted">v{updateInfo.current_version}</span>
-                  <span className="text-textMuted">→</span>
-                  <span className="text-[#84ff57] font-medium">v{updateInfo.latest_version}</span>
-                </div>
-
-                <div className="h-1.5 bg-surface rounded-full overflow-hidden">
-                  <div
-                    className="h-full rounded-full transition-all duration-500"
-                    style={{
-                      width: `${getUpdateStageProgress(updateProgress)}%`,
-                      backgroundColor: '#84ff57',
-                    }}
-                  />
-                </div>
-                <p className="text-[10px] text-textMuted mt-1.5 truncate">
-                  {updateProgress ?? 'Starting update...'}
-                </p>
-              </div>
-            )}
+              <Settings size={14} />
+            </button>
+          </Tooltip>
           </div>
+
+          {/* Update pill — appears only when an update is available. Slides in
+              toward the center / notification island and settles to the right of
+              the action group with a little spring bounce, instead of popping in
+              abruptly. */}
+          <AnimatePresence>
+            {updateInfo && updatePhase === 'idle' && (
+              <motion.div
+                key="update-pill"
+                initial={{ opacity: 0, scale: 0.7, x: 26 }}
+                animate={{ opacity: 1, scale: 1, x: 0 }}
+                exit={{ opacity: 0, scale: 0.7, x: 26 }}
+                transition={{ type: 'spring', stiffness: 520, damping: 17 }}
+              >
+                <Tooltip
+                  content={`Update v${updateInfo.current_version} → v${updateInfo.latest_version}`}
+                  delay={200}
+                >
+                  <button
+                    onClick={handleStartUpdate}
+                    className="update-pill flex items-center gap-1.5 h-[26px] pl-2.5 pr-3 rounded-full whitespace-nowrap"
+                  >
+                    <Download size={13} strokeWidth={2.5} />
+                    <span className="text-xs font-semibold tracking-wide">Update</span>
+                  </button>
+                </Tooltip>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
 
-        <div className="flex space-x-1" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+        <div className="flex items-center gap-2" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
           {/* Buttons contributed by ui plugins (rendered in native style) */}
           <PluginTitleBarButtons />
 
+          {/* Grouped action icons */}
+          <div className="titlebar-icon-group">
           {/* Whispers Button */}
           <Tooltip content="Whispers" delay={200}>
             <button
               onClick={() => setShowWhispersOverlay(true)}
-              className="relative p-1.5 text-textSecondary hover:text-textPrimary rounded transition-all duration-200"
+              className="titlebar-icon-btn relative"
             >
-              <MessageCircle size={16} />
+              <MessageCircle size={14} />
               {/* Import indicator */}
               {whisperImportState.isImporting && (
                 <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-purple-500 rounded-full animate-pulse" />
@@ -630,16 +666,16 @@ const TitleBar = () => {
           <Tooltip content={isAuthenticated ? 'Profile' : 'Sign in'} delay={200}>
             <button
               onClick={() => openSettings('Profile')}
-              className="p-1 text-textSecondary hover:text-textPrimary rounded transition-all duration-200"
+              className="titlebar-icon-btn"
             >
               {isAuthenticated && currentUser?.profile_image_url ? (
                 <img
                   src={currentUser.profile_image_url}
                   alt="Profile"
-                  className="w-5 h-5 rounded-full object-cover"
+                  className="w-[18px] h-[18px] rounded-full object-cover"
                 />
               ) : (
-                <User size={20} />
+                <User size={18} />
               )}
             </button>
           </Tooltip>
@@ -649,48 +685,66 @@ const TitleBar = () => {
             <Tooltip content={isTheaterMode ? 'Exit Compact View' : `Compact View (${getSelectedCompactViewPreset(settings?.compact_view?.selectedPresetId, settings?.compact_view?.customPresets).name})`} delay={200}>
               <button
                 onClick={toggleTheaterMode}
-                className={`p-1.5 !rounded transition-all duration-200 ${isTheaterMode ? 'text-accent glass-input shadow-[0_0_10px_rgba(var(--color-accent-rgb),0.3)]' : 'text-textSecondary hover:text-textPrimary'
-                  }`}
+                className={`titlebar-icon-btn ${isTheaterMode ? '!text-accent !bg-accent/15' : ''}`}
               >
-                <Proportions size={16} />
+                <Proportions size={14} />
               </button>
             </Tooltip>
           )}
+          </div>
 
-
+          {/* Window controls — kept adjacent but not grouped into a pill */}
+          <div className="flex items-center gap-1">
           <Tooltip content="Minimize" delay={200}>
             <button
               onClick={handleMinimize}
-              className="p-1.5 text-textSecondary hover:text-textPrimary rounded transition-all duration-200"
+              className="titlebar-window-btn"
             >
-              <Minus size={16} />
+              <Minus size={14} />
             </button>
           </Tooltip>
           <Tooltip content={isMaximized ? "Restore" : "Maximize"} delay={200}>
             <button
               onClick={handleMaximize}
-              className="p-1.5 text-textSecondary hover:text-textPrimary rounded transition-all duration-200"
+              className="titlebar-window-btn"
             >
               {isMaximized ? (
-                <CornersIn size={16} />
+                <CornersIn size={14} />
               ) : (
-                <CornersOut size={16} />
+                <CornersOut size={14} />
               )}
             </button>
           </Tooltip>
           <Tooltip content="Close" delay={200}>
             <button
               onClick={handleClose}
-              className="p-1.5 text-textSecondary hover:text-red-400 rounded transition-all duration-200"
+              className="titlebar-window-btn titlebar-window-btn-close"
             >
-              <X size={16} />
+              <X size={14} />
             </button>
           </Tooltip>
+          </div>
         </div>
       </div>
 
       {/* About Widget */}
       {showAbout && <AboutWidget onClose={() => setShowAbout(false)} />}
+
+      {/* Centered update card — staged install progress → restart-to-apply. */}
+      <AnimatePresence>
+        {updatePhase !== 'idle' && (
+          <UpdateOverlay
+            phase={updatePhase}
+            currentVersion={updateInfo?.current_version}
+            latestVersion={updateInfo?.latest_version}
+            progressPercent={getUpdateStageProgress(updateProgress)}
+            stageLabel={updateProgress?.replace(/\s*\d+\s*%$/, '…') ?? null}
+            errorMessage={updateError}
+            onRestart={handleApplyUpdateRestart}
+            onDismiss={handleDismissUpdate}
+          />
+        )}
+      </AnimatePresence>
     </>
   );
 };

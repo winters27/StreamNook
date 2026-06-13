@@ -25,6 +25,17 @@ async function stopStreamButKeepChat(): Promise<void> {
   const { useAppStore } = await import('../stores/AppStore');
   const { currentStream } = useAppStore.getState();
 
+  // Clear the in-memory stream state so the main window's UI returns to a
+  // clean home screen next time the user opens it via the tray. Done BEFORE
+  // stop_stream so the player unmounts (VideoPlayer is keyed on streamUrl)
+  // and isn't left polling the dead relay port.
+  useAppStore.setState({
+    streamUrl: null,
+    activeQuality: null,
+    currentStream: null,
+    currentMediaType: null,
+  });
+
   try {
     await invoke('stop_stream');
   } catch (err) {
@@ -40,15 +51,6 @@ async function stopStreamButKeepChat(): Promise<void> {
   if (currentStream?.user_id) {
     invoke('unregister_active_channel', { channelId: currentStream.user_id }).catch(() => {});
   }
-
-  // Clear the in-memory stream state so the main window's UI returns to a
-  // clean home screen next time the user opens it via the tray.
-  useAppStore.setState({
-    streamUrl: null,
-    activeQuality: null,
-    currentStream: null,
-    currentMediaType: null,
-  });
 
   Logger.debug('[TrayBridge] Stream stopped for tray hide; chat preserved');
 }
