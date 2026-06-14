@@ -201,11 +201,19 @@ html[data-motion="off"] .update-pill { animation: none; }
    an accent-tinted border and a deep drop shadow so it lifts off an unblurred
    background. Built on the same tokens as the glass primitives. */
 .glass-modal {
-  background: color-mix(in srgb, var(--color-background-tertiary) 78%, transparent);
+  /* Glassiness-aware, same two-layer composite as .glass-panel: the 78% tint
+     always sits on top, and an opaque tertiary base fades IN as the slider
+     drops, so the modal goes fully solid at 0% and frost scales with strength.
+     At strength 1 it's identical to the original pure-tint surface. */
+  background-color: color-mix(in srgb, var(--color-background-tertiary) calc((1 - var(--glass-strength)) * 100%), transparent);
+  background-image: linear-gradient(
+    color-mix(in srgb, var(--color-background-tertiary) 78%, transparent),
+    color-mix(in srgb, var(--color-background-tertiary) 78%, transparent)
+  );
   border: 1px solid var(--color-border-light);
   border-radius: 18px;
-  -webkit-backdrop-filter: blur(28px);
-  backdrop-filter: blur(28px);
+  -webkit-backdrop-filter: blur(calc(28px * var(--glass-strength)));
+  backdrop-filter: blur(calc(28px * var(--glass-strength)));
   box-shadow:
     inset 1px 1px 0 0 rgba(255, 255, 255, 0.07),
     inset -1px -1px 0 0 rgba(0, 0, 0, 0.25),
