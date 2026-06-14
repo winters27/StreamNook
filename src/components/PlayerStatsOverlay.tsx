@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { RefObject } from 'react';
 import type Hls from 'hls.js';
 import { Activity, Radio, X } from 'lucide-react';
@@ -170,8 +170,91 @@ interface Props {
   adSource?: AdSourceLike | null;
 }
 
+// Persisted drag position, stored as the panel's top-left offset (px) inside the
+// player container. null means "never moved" so the default bottom-left anchor wins.
+const POS_KEY = 'sn-stats-overlay-pos';
+
+interface Pos {
+  x: number;
+  y: number;
+}
+
+function loadPos(): Pos | null {
+  try {
+    const raw = localStorage.getItem(POS_KEY);
+    if (!raw) return null;
+    const p = JSON.parse(raw) as Partial<Pos>;
+    if (typeof p?.x === 'number' && typeof p?.y === 'number') return { x: p.x, y: p.y };
+  } catch {
+    /* corrupt value falls back to the default anchor */
+  }
+  return null;
+}
+
 const PlayerStatsOverlay = ({ hlsRef, videoRef, open, onToggle, onGoLive, adSource }: Props) => {
   const [metrics, setMetrics] = useState<Metrics>(EMPTY);
+  const [pos, setPos] = useState<Pos | null>(loadPos);
+
+  const panelRef = useRef<HTMLDivElement>(null);
+  const posRef = useRef<Pos | null>(pos);
+  // Drag origin: the panel's top-left at grab time plus the pointer's start point,
+  // so movement is applied as a delta rather than snapping the corner to the cursor.
+  const dragRef = useRef<{ startX: number; startY: number; originX: number; originY: number } | null>(null);
+
+  const clampToParent = (x: number, y: number): Pos => {
+    const panel = panelRef.current;
+    const parent = panel?.offsetParent as HTMLElement | null;
+    if (!panel || !parent) return { x, y };
+    const maxX = Math.max(0, parent.clientWidth - panel.offsetWidth);
+    const maxY = Math.max(0, parent.clientHeight - panel.offsetHeight);
+    return { x: Math.max(0, Math.min(x, maxX)), y: Math.max(0, Math.min(y, maxY)) };
+  };
+
+  const persistPos = (p: Pos) => {
+    try {
+      localStorage.setItem(POS_KEY, JSON.stringify(p));
+    } catch {
+      /* private mode / quota: position just won't persist */
+    }
+  };
+
+  const commitPos = (p: Pos) => {
+    posRef.current = p;
+    setPos(p);
+  };
+
+  const onDragStart = (e: React.PointerEvent) => {
+    const panel = panelRef.current;
+    if (!panel) return;
+    const parent = panel.offsetParent as HTMLElement | null;
+    const parentRect = parent?.getBoundingClientRect();
+    const rect = panel.getBoundingClientRect();
+    dragRef.current = {
+      startX: e.clientX,
+      startY: e.clientY,
+      originX: parentRect ? rect.left - parentRect.left : rect.left,
+      originY: parentRect ? rect.top - parentRect.top : rect.top,
+    };
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    e.preventDefault();
+  };
+
+  const onDragMove = (e: React.PointerEvent) => {
+    const d = dragRef.current;
+    if (!d) return;
+    commitPos(clampToParent(d.originX + (e.clientX - d.startX), d.originY + (e.clientY - d.startY)));
+  };
+
+  const onDragEnd = (e: React.PointerEvent) => {
+    if (!dragRef.current) return;
+    dragRef.current = null;
+    try {
+      (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+    } catch {
+      /* capture may already be gone */
+    }
+    if (posRef.current) persistPos(posRef.current);
+  };
 
   useEffect(() => {
     if (!open) return;
@@ -180,6 +263,21 @@ const PlayerStatsOverlay = ({ hlsRef, videoRef, open, onToggle, onGoLive, adSour
     const id = window.setInterval(tick, 1000);
     return () => window.clearInterval(id);
   }, [open, hlsRef, videoRef]);
+
+  // Pull the panel back inside the player whenever it opens or the container
+  // resizes (fullscreen toggle, window resize), so a saved spot can't strand it offscreen.
+  useEffect(() => {
+    if (!open || !posRef.current) return;
+    const reclamp = () => {
+      if (!posRef.current) return;
+      const clamped = clampToParent(posRef.current.x, posRef.current.y);
+      commitPos(clamped);
+      persistPos(clamped);
+    };
+    reclamp();
+    window.addEventListener('resize', reclamp);
+    return () => window.removeEventListener('resize', reclamp);
+  }, [open]);
 
   // Opened from the Plyr settings menu ("Stats"); closed via the panel's X.
   if (!open) return null;
@@ -202,10 +300,20 @@ const PlayerStatsOverlay = ({ hlsRef, videoRef, open, onToggle, onGoLive, adSour
   const showGoLive = metrics.latency != null && metrics.latency > goLiveFloor;
 
   return (
-    <div className="absolute bottom-16 left-4 z-50 w-56 pointer-events-auto">
+    <div
+      ref={panelRef}
+      className={`absolute z-50 w-56 pointer-events-auto ${pos ? '' : 'bottom-16 left-4'}`}
+      style={pos ? { left: pos.x, top: pos.y } : undefined}
+    >
       <div className="stats-hud px-3.5 py-3 text-xs text-textPrimary">
         <div className="flex items-center justify-between mb-3">
-          <div className="flex items-center gap-1.5">
+          <div
+            onPointerDown={onDragStart}
+            onPointerMove={onDragMove}
+            onPointerUp={onDragEnd}
+            onPointerCancel={onDragEnd}
+            className="flex items-center gap-1.5 flex-1 cursor-grab active:cursor-grabbing select-none touch-none"
+          >
             <Activity size={13} className="text-accent" />
             <span className="text-textPrimary font-semibold tracking-wide">Stream Stats</span>
           </div>
