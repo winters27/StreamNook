@@ -9,11 +9,9 @@ src-tauri/target/
 src-tauri/gen/schemas/
 scripts/*
 
-# Documentation: scratch docs stay untracked, but the modular-architecture
-# plan and the frozen plugin-system spec are versioned with the code that
-# implements them.
+# Documentation: scratch docs stay untracked, but the frozen plugin-system spec
+# is versioned with the code that implements it.
 docs/*
-!docs/MODULAR_AUDIT.md
 !docs/plugins/
 
 # Drops folder (local mining tool) - only root level, not src/components/drops
