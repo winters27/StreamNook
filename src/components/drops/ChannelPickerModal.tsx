@@ -20,6 +20,9 @@ export interface PickableChannel {
   userId: string;
   viewerCount: number;
   isLive: boolean;
+  /** The category the channel is currently streaming (live only). For ACL drops a
+   *  channel only earns while it's in the campaign's game, so this gates "earnable". */
+  currentGame?: string;
   avatarUrl?: string;
   /** The live stream object (carries game_name etc.) so the caller can hand it
    *  straight to startStream — same as clicking a stream card, which is what makes
@@ -52,6 +55,7 @@ function streamToChannel(s: TwitchStream): PickableChannel {
     userId: s.user_id,
     viewerCount: s.viewer_count || 0,
     isLive: true,
+    currentGame: s.game_name,
     avatarUrl: s.profile_image_url,
     stream: s,
   };
@@ -77,20 +81,20 @@ export default function ChannelPickerModal({
     try {
       let result: PickableChannel[];
       if (isAclBased && allowedChannels.length > 0) {
-        // Allow-listed campaign: show exactly the permitted channels, each tagged
-        // with whether it's live (the only ones that can be earned on right now).
+        // Allow-listed campaign: only the permitted channels that are LIVE right now
+        // (offline ones can't be watched/mined, so we don't list them at all).
         const checked = await Promise.all(
-          allowedChannels.map(async (ch): Promise<PickableChannel> => {
+          allowedChannels.map(async (ch): Promise<PickableChannel | null> => {
             try {
               const stream = await invoke<TwitchStream | null>('check_stream_online', { userLogin: ch.name });
               if (stream) return streamToChannel(stream);
             } catch (err) {
               Logger.warn('[ChannelPicker] live check failed for', ch.name, err);
             }
-            return { login: ch.name, displayName: ch.name, userId: ch.id, viewerCount: 0, isLive: false };
+            return null;
           })
         );
-        result = checked;
+        result = checked.filter((c): c is PickableChannel => c !== null);
       } else {
         // Open campaign: list whoever is live in the game right now.
         const [streams] = await invoke<[TwitchStream[], string | null]>('get_streams_by_game_name', {
@@ -101,8 +105,8 @@ export default function ChannelPickerModal({
         });
         result = (streams || []).map(streamToChannel);
       }
-      // Live first, then most viewers.
-      result.sort((a, b) => (Number(b.isLive) - Number(a.isLive)) || (b.viewerCount - a.viewerCount));
+      // Most viewers first.
+      result.sort((a, b) => b.viewerCount - a.viewerCount);
       setChannels(result);
 
       // The stream/live endpoints don't carry avatars, so fill them in from the
@@ -136,8 +140,12 @@ export default function ChannelPickerModal({
 
   if (!isOpen) return null;
 
-  const liveChannels = channels.filter(c => c.isLive);
-  const offlineChannels = channels.filter(c => !c.isLive);
+  // Only live channels that can earn this drop right now. For ACL drops that means
+  // the channel must be streaming the campaign's game; offline / wrong-game channels
+  // are excluded entirely.
+  const matchesGame = (c: PickableChannel) =>
+    !isAclBased || (c.currentGame ?? '').toLowerCase() === gameName.toLowerCase();
+  const earnable = channels.filter(c => c.isLive && matchesGame(c));
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 sm:p-6">
@@ -169,34 +177,19 @@ export default function ChannelPickerModal({
               <p className="text-sm text-textSecondary mb-3">Couldn't load channels.</p>
               <button onClick={load} className="glass-button px-3 py-1.5 text-xs font-semibold text-accent">Retry</button>
             </div>
-          ) : liveChannels.length === 0 ? (
+          ) : earnable.length === 0 ? (
             <div className="py-8 text-center">
               <Radio className="w-10 h-10 text-textMuted opacity-40 mx-auto mb-3" />
-              <p className="text-sm font-medium text-textPrimary mb-1">No channels are live right now</p>
+              <p className="text-sm font-medium text-textPrimary mb-1">Nothing to earn this on right now</p>
               <p className="text-xs text-textSecondary max-w-[18rem] mx-auto leading-snug">
                 {isAclBased
-                  ? 'This reward only drops on its participating channels. None are live at the moment, so check back when one goes online.'
+                  ? `This reward only drops on its participating channels while they're streaming ${gameName}. None are right now, so check back later.`
                   : `No one is streaming ${gameName} right now. Check back later.`}
               </p>
-              {/* For ACL, still show the participating channels so the user knows where to look. */}
-              {isAclBased && offlineChannels.length > 0 && (
-                <div className="mt-4 text-left">
-                  <p className="text-[10px] font-semibold uppercase tracking-wide text-textMuted mb-2">Participating channels</p>
-                  <div className="space-y-1.5">
-                    {offlineChannels.map(c => (
-                      <div key={c.login} className="flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg bg-backgroundSecondary opacity-70">
-                        <ChannelAvatar channel={c} />
-                        <span className="text-xs text-textSecondary truncate flex-1">{c.displayName}</span>
-                        <span className="text-[10px] text-textMuted">Offline</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
             </div>
           ) : (
             <div className="space-y-1.5">
-              {liveChannels.map(c => (
+              {earnable.map(c => (
                 <button
                   key={c.login}
                   onClick={() => onPick(c)}
@@ -219,18 +212,6 @@ export default function ChannelPickerModal({
                   <span className="glass-button px-2.5 py-1 text-xs font-semibold text-accent shrink-0">{actionLabel}</span>
                 </button>
               ))}
-              {/* Offline ACL channels listed below the live ones for context. */}
-              {isAclBased && offlineChannels.length > 0 && (
-                <div className="pt-2 mt-2 border-t border-borderLight">
-                  {offlineChannels.map(c => (
-                    <div key={c.login} className="flex items-center gap-3 px-2.5 py-1.5 rounded-lg opacity-60">
-                      <ChannelAvatar channel={c} />
-                      <span className="text-xs text-textSecondary truncate flex-1">{c.displayName}</span>
-                      <span className="text-[10px] text-textMuted">Offline</span>
-                    </div>
-                  ))}
-                </div>
-              )}
             </div>
           )}
         </div>
