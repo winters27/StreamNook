@@ -9,7 +9,7 @@ import { usePluginUiRegistry, selectSlot } from '../plugins-ui/registry';
 import { Dropdown } from './ui/Dropdown';
 import {
     UnifiedGame, DropCampaign, DropProgress, DropsStatistics,
-    DropProgressStatus, DropsDeviceCodeInfo, InventoryResponse, InventoryItem, CompletedDrop
+    DropProgressStatus, DropsDeviceCodeInfo, InventoryResponse, InventoryItem, CompletedDrop, TwitchStream
 } from '../types';
 
 import LoadingWidget from './LoadingWidget';
@@ -58,6 +58,10 @@ export default function DropsCenter() {
     const [progress, setProgress] = useState<DropProgress[]>([]);
     const [, setEarnedBadgeIds] = useState<Set<string>>(new Set());
     const [earnedBadgeTitles, setEarnedBadgeTitles] = useState<Set<string>>(new Set());
+    // Earned badge titles plus Twitch's global badge catalog. Used to tell a global
+    // badge reward (e.g. "YOU GOT THIS") apart from an in-game item, since both can carry
+    // a null distribution_type and the same generic quests asset URL.
+    const [knownBadgeTitles, setKnownBadgeTitles] = useState<Set<string>>(new Set());
     const [isLoading, setIsLoading] = useState(true);
     const [, setError] = useState<string | null>(null);
 
@@ -207,6 +211,27 @@ export default function DropsCenter() {
                 Logger.debug('[DropsCenter] Loaded earned badge IDs:', earnedIds.size);
                 Logger.debug('[DropsCenter] Loaded earned badge titles:', badgeTitles.size);
                 Logger.debug('[DropsCenter] Sample badge titles:', Array.from(badgeTitles).slice(0, 5));
+
+                // Add the global badge catalog so the rewards list can label an unearned
+                // global badge correctly (in-game items aren't in the catalog).
+                try {
+                    const { invoke } = await import('@tauri-apps/api/core');
+                    let globalBadges = await invoke<{ data?: Array<{ versions?: Array<{ title?: string }> }> } | null>('get_cached_global_badges');
+                    if (!globalBadges) {
+                        await invoke('prefetch_global_badges').catch(() => {});
+                        globalBadges = await invoke<{ data?: Array<{ versions?: Array<{ title?: string }> }> } | null>('get_cached_global_badges');
+                    }
+                    const known = new Set<string>(badgeTitles);
+                    globalBadges?.data?.forEach(set => set.versions?.forEach(v => {
+                        const t = v.title?.toLowerCase().trim();
+                        if (t) known.add(t);
+                    }));
+                    setKnownBadgeTitles(known);
+                    Logger.debug('[DropsCenter] Known badge titles (earned + global):', known.size);
+                } catch (e) {
+                    setKnownBadgeTitles(new Set(badgeTitles));
+                    Logger.warn('[DropsCenter] Failed to load global badge catalog for reward labeling:', e);
+                }
             } catch (err) {
                 Logger.error('[DropsCenter] Failed to fetch earned badges:', err);
             }
@@ -499,9 +524,13 @@ export default function DropsCenter() {
         }
     };
 
-    const handleStreamClick = (channelName: string) => {
+    const handleStreamClick = (channelName: string, streamInfo?: TwitchStream) => {
         setShowDropsOverlay(false);
-        window.dispatchEvent(new CustomEvent('start-stream', { detail: { channel: channelName } }));
+        setSelectedGame(null);
+        // Pass the live stream object (carries game_name) just like a stream card
+        // click does, so the drop-progress badge lights up; without it the controller
+        // can start with an empty category and never match the campaign.
+        void useAppStore.getState().startStream(channelName, streamInfo);
     };
 
     // Toggle favorite (add/remove from favorite_games - visual only, doesn't affect mining)
@@ -1499,8 +1528,10 @@ export default function DropsCenter() {
                                 completedDrops={completedDrops}
                                 progress={progress}
                                 earnedBadgeTitles={earnedBadgeTitles}
+                                knownBadgeTitles={knownBadgeTitles}
                                 dropProgress={dropProgress}
                                 onClaimDrop={handleClaimDrop}
+                                onWatchChannel={handleStreamClick}
 
                                 isOpen={!!selectedGame}
                                 onClose={() => setSelectedGame(null)}

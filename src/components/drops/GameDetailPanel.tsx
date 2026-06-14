@@ -1,9 +1,11 @@
+import { useState, useRef } from 'react';
 import { X, Gift, Package, Check, Pause, Clock, Star, Ban, ExternalLink, Tv } from 'lucide-react';
 import { useAppStore } from '../../stores/AppStore';
-import type { UnifiedGame, DropProgress, DropProgressStatus, DropCampaign, TimeBasedDrop, InventoryItem, CompletedDrop } from '../../types';
+import type { UnifiedGame, DropProgress, DropProgressStatus, DropCampaign, TimeBasedDrop, InventoryItem, CompletedDrop, DropBenefit, TwitchStream } from '../../types';
 import { Tooltip } from '../ui/Tooltip';
 import { usePluginUiRegistry, selectSlot } from '../../plugins-ui/registry';
-import { DROPS_CARD_ACTION_SLOT, type DropCardActionContext } from '../../plugins-ui/types';
+import { DROPS_CARD_ACTION_SLOT, type DropCardActionContext, type PickedDropChannel } from '../../plugins-ui/types';
+import ChannelPickerModal, { type PickableChannel } from './ChannelPickerModal';
 
 import { Logger } from '../../utils/logger';
 // Helper to check if a drop is mineable
@@ -114,18 +116,70 @@ function unlockRequirementText(rewardName?: string, description?: string): strin
     return "Can't be earned by watching. This reward unlocks through a subscription, gift, or special action for its campaign.";
 }
 
+// Match a reward's benefit name against the user's earned badge titles. Badge drops
+// rarely land in the permanent gameEventDrops list, so a held badge title is the most
+// reliable "you already have this" signal for them. Exact match first; then a fuzzy
+// prefix match on all-but-last word, to catch reissues where the badge title carries an
+// extra trailing word (benefit "Bungie Foundation Sub" vs badge "Bungie Foundation Supporter").
+// Single source of truth: the rewards tally, Active Campaigns, and Your Collection all
+// call this, so they can't disagree about whether a badge reward is owned.
+function matchesEarnedBadge(benefitName: string | undefined, earnedBadgeTitles: Set<string>): boolean {
+    const bn = (benefitName || '').toLowerCase().trim();
+    if (!bn) return false;
+    if (earnedBadgeTitles.has(bn)) return true;
+    const benefitWords = bn.split(/\s+/).filter(w => w.length > 0);
+    if (benefitWords.length < 2) return false;
+    const wordsToCheck = benefitWords.slice(0, -1); // all but the last word
+    for (const title of earnedBadgeTitles) {
+        const titleWords = title.split(/\s+/).filter(w => w.length > 0);
+        if (titleWords.length < 2) continue;
+        const prefix = titleWords.slice(0, wordsToCheck.length);
+        if (wordsToCheck.every((w, i) => prefix[i] === w)) return true;
+    }
+    return false;
+}
+
+type RewardKind = 'badge' | 'emote' | 'item';
+
+// Classify a reward for display. The signals, in order of reliability:
+//  - The art's CDN path: '/emoticons/' = emote, '/badges/' = badge.
+//  - Twitch flags chat badges via distribution_type ('BADGE'). Game drops are
+//    'DIRECT_ENTITLEMENT' whether emote or in-game item, so that can't split those two.
+//  - The name ("...Emote" / "...Badge").
+//  - The decider for the hard case: whether the reward name is in Twitch's badge catalog
+//    (knownBadgeTitles = earned + global badges). A global badge like "YOU GOT THIS" and a
+//    real in-game item can BOTH carry a null type and the same generic quests asset URL,
+//    so the catalog is the only thing that tells them apart.
+// Genuine in-game items (not in the badge catalog, no cosmetic signal) fall through to 'item'.
+function getRewardKind(benefit: DropBenefit | undefined, knownBadgeTitles: Set<string>): RewardKind {
+    const name = (benefit?.name || '').toLowerCase().trim();
+    const img = (benefit?.image_url || '').toLowerCase();
+    // Emote first: quest emotes share the generic quests asset bucket with badges.
+    if (img.includes('/emoticons/') || name.includes('emote')) return 'emote';
+    if (benefit?.distribution_type === 'BADGE') return 'badge';
+    if (img.includes('/badges/') || name.includes('badge')) return 'badge';
+    if (name && knownBadgeTitles.has(name)) return 'badge';
+    return 'item';
+}
+
+function rewardKindLabel(kind: RewardKind): string {
+    return kind === 'badge' ? 'Badge' : kind === 'emote' ? 'Emote' : 'Item';
+}
+
 interface GameDetailPanelProps {
     game: UnifiedGame;
     allGames: UnifiedGame[]; // All games for global drop metadata lookup
     progress: DropProgress[];
     completedDrops: CompletedDrop[]; // List of all completed drops from inventory
-    earnedBadgeTitles: Set<string>; // Set of earned badge titles (lowercase) for name-based matching
+    earnedBadgeTitles: Set<string>; // Set of earned badge titles (lowercase) for name-based ownership matching
+    knownBadgeTitles: Set<string>; // Earned + global badge catalog titles (lowercase) for reward-kind labeling
     dropProgress: DropProgressStatus | null;
 
     isOpen: boolean;
     onClose: () => void;
     onStopMining: () => void;
     onClaimDrop: (dropId: string, dropInstanceId?: string) => void;
+    onWatchChannel: (channelLogin: string, streamInfo?: TwitchStream) => void; // open a channel in the player to watch (native earn)
 }
 
 // Helper to merge progress from inventory into campaigns
@@ -182,28 +236,65 @@ export default function GameDetailPanel({
     progress,
     completedDrops,
     earnedBadgeTitles,
+    knownBadgeTitles,
     dropProgress,
 
     isOpen,
     onClose,
     onStopMining,
     onClaimDrop,
+    onWatchChannel,
 }: GameDetailPanelProps) {
     // A provider (opt-in plugin) is present: only then is there anything to
     // "stop". Native watch-to-earn is stopped simply by not watching.
     const externalDropsProvider = useAppStore((s) => s.externalDropsProvider);
+
+    // Channel picker shared by core and the farming plugin. Core picks a channel to
+    // WATCH; the plugin (via pickChannel) picks one to mine. A pending resolver lets
+    // the plugin's pickChannel() await the user's choice.
+    const [picker, setPicker] = useState<{ campaign: DropCampaign; actionLabel: string; onPick: (c: PickableChannel) => void } | null>(null);
+    const pickResolverRef = useRef<((c: PickedDropChannel | null) => void) | null>(null);
+
+    const openWatchPicker = (campaign: DropCampaign) => {
+        setPicker({
+            campaign,
+            actionLabel: 'Watch',
+            onPick: (c) => { setPicker(null); onWatchChannel(c.login, c.stream); },
+        });
+    };
+
+    const requestPickChannel = (campaign: DropCampaign): Promise<PickedDropChannel | null> => {
+        return new Promise((resolve) => {
+            pickResolverRef.current = resolve;
+            setPicker({
+                campaign,
+                actionLabel: 'Mine',
+                onPick: (c) => {
+                    setPicker(null);
+                    const r = pickResolverRef.current; pickResolverRef.current = null;
+                    r?.({ login: c.login, displayName: c.displayName, userId: c.userId });
+                },
+            });
+        });
+    };
+
+    const closePicker = () => {
+        setPicker(null);
+        const r = pickResolverRef.current; pickResolverRef.current = null;
+        r?.(null);
+    };
     // Merge inventory progress into active campaigns for accurate display
     const campaignsWithMergedProgress = game.active_campaigns.map(campaign =>
         mergeProgressFromInventory(campaign, game.inventory_items, progress)
     );
 
     // Rewards/drops the user has genuinely EARNED, used to mark a reward as already
-    // owned when the active campaign instance hasn't synced the claim. Built ONLY from
+    // owned when the active campaign instance hasn't synced the claim. Built from
     // unambiguous sources: the permanent gameEventDrops list (completedDrops) and any
     // inventory drop explicitly flagged is_claimed. The SAME reward is reissued under
     // new campaign instances with new drop/benefit ids, so we also key on the benefit
-    // NAME (stable). We deliberately do NOT use claimed-by-index or "100% watched" here:
-    // those over-matched and falsely marked in-progress drops as earned.
+    // NAME (stable). Badge rewards rarely appear in completedDrops at all, so
+    // isRewardOwned additionally matches against the user's earned badge titles.
     const ownedBenefitIds = new Set<string>(completedDrops.map(d => d.id));
     const ownedBenefitNames = new Set<string>(
         completedDrops.map(d => (d.name || '').toLowerCase().trim()).filter(Boolean)
@@ -222,19 +313,25 @@ export default function GameDetailPanel({
     });
     // A reward counts as already-owned ONLY when this drop isn't being actively mined
     // here. If it has its own claim, that wins. Otherwise cross-instance matching (by
-    // drop id / benefit id / benefit name) applies ONLY when the drop has no current
-    // progress: a drop you have watch-time on is a fresh in-progress drop and must
-    // never be treated as owned just because a same-named reward was earned elsewhere.
+    // drop id / benefit id / benefit name / earned badge title) applies ONLY when the
+    // drop has no current progress: a drop you have watch-time on is a fresh in-progress
+    // drop and must never be treated as owned just because a same-named reward was earned
+    // elsewhere.
     const isRewardOwned = (drop: TimeBasedDrop, dp?: DropProgress | null): boolean => {
         if (dp?.is_claimed === true) return true;
         // is_claimed handled above; only watch-time counts as "in progress" here.
         const hasCurrentProgress = !!dp && (dp.current_minutes_watched || 0) > 0;
         if (hasCurrentProgress) return false;
         if (ownedDropIds.has(drop.id)) return true;
-        return drop.benefit_edges?.some(b =>
+        if (drop.benefit_edges?.some(b =>
             ownedBenefitIds.has(b.id) ||
             (!!b.name && ownedBenefitNames.has(b.name.toLowerCase().trim()))
-        ) ?? false;
+        )) return true;
+        // Badge rewards earned earlier rarely appear in completedDrops, but they show up
+        // in the user's earned badge titles. Match them the same way Active Campaigns and
+        // Your Collection do, so the "earned" tally agrees with those sections instead of
+        // reading 0 while the badge sits claimed in the collection.
+        return matchesEarnedBadge(drop.benefit_edges?.[0]?.name, earnedBadgeTitles);
     };
     // Check if mining this game
     // Use current_drop.game_name OR current_channel.game_name as fallback (current_drop may not be set immediately)
@@ -302,6 +399,7 @@ export default function GameDetailPanel({
     if (!isOpen) return null;
 
     return (
+        <>
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6">
             {/* Backdrop */}
             <div
@@ -392,6 +490,7 @@ export default function GameDetailPanel({
                                     isReady: !isClaimed && percent >= 100,
                                     isInProgress: !isClaimed && percent > 0 && percent < 100,
                                     isMineable,
+                                    kind: getRewardKind(benefit, knownBadgeTitles),
                                     // Only locked, unearned rewards need a "how to unlock" hint.
                                     // The reward name is the strongest signal (e.g. "Gifted Sub Drop"),
                                     // with the campaign description as the fallback source.
@@ -416,7 +515,7 @@ export default function GameDetailPanel({
                                         {earnedCount}/{rewards.length} earned
                                     </span>
                                 </div>
-                                <div className="grid grid-cols-4 sm:grid-cols-5 gap-2.5">
+                                <div className="grid grid-cols-4 sm:grid-cols-5 gap-x-2.5 gap-y-5">
                                     {rewards.map(r => (
                                         <Tooltip
                                             key={r.dropId}
@@ -431,48 +530,59 @@ export default function GameDetailPanel({
                                                             <div className="mt-0.5 font-normal text-textSecondary leading-snug">{r.requirement}</div>
                                                         </div>
                                                     )
-                                                    : (r.requiredMinutes > 0 ? `${r.name} · ${r.requiredMinutes}m` : r.name)
+                                                    : `${r.name} · ${rewardKindLabel(r.kind)}${r.requiredMinutes > 0 ? ` · ${r.requiredMinutes}m` : ''}`
                                             }
                                             delay={200}
                                             side="top"
                                         >
-                                            <div className="relative aspect-square rounded-lg border border-borderLight bg-background overflow-hidden">
-                                                {r.image ? (
-                                                    <img
-                                                        src={r.image}
-                                                        alt={r.name}
-                                                        loading="lazy"
-                                                        className={`w-full h-full object-contain p-1.5 ${r.isClaimed ? 'opacity-40' : ''}`}
-                                                    />
-                                                ) : (
-                                                    <div className="w-full h-full flex items-center justify-center">
-                                                        <Gift size={20} className="text-textMuted" />
-                                                    </div>
-                                                )}
+                                            <div className="relative aspect-square">
+                                                {/* Clipped art box. overflow-hidden lives here so the kind
+                                                    plate below can hang off the bottom border unclipped. */}
+                                                <div className="absolute inset-0 rounded-lg border border-borderLight bg-background overflow-hidden">
+                                                    {r.image ? (
+                                                        <img
+                                                            src={r.image}
+                                                            alt={r.name}
+                                                            loading="lazy"
+                                                            className={`w-full h-full object-contain p-1.5 ${r.isClaimed ? 'opacity-40' : ''}`}
+                                                        />
+                                                    ) : (
+                                                        <div className="w-full h-full flex items-center justify-center">
+                                                            <Gift size={20} className="text-textMuted" />
+                                                        </div>
+                                                    )}
 
-                                                {r.isClaimed && (
-                                                    <div className="absolute top-1 right-1 w-4 h-4 rounded-full bg-green-500 flex items-center justify-center border border-background">
-                                                        <Check size={9} className="text-white" />
-                                                    </div>
-                                                )}
+                                                    {r.isClaimed && (
+                                                        <div className="absolute top-1 right-1 w-4 h-4 rounded-full bg-green-500 flex items-center justify-center border border-background">
+                                                            <Check size={9} className="text-white" />
+                                                        </div>
+                                                    )}
 
-                                                {r.isReady && (
-                                                    <div className="absolute top-1 right-1 w-4 h-4 rounded-full bg-yellow-500 flex items-center justify-center border border-background">
-                                                        <span className="text-[8px] font-bold text-black">!</span>
-                                                    </div>
-                                                )}
+                                                    {r.isReady && (
+                                                        <div className="absolute top-1 right-1 w-4 h-4 rounded-full bg-yellow-500 flex items-center justify-center border border-background">
+                                                            <span className="text-[8px] font-bold text-black">!</span>
+                                                        </div>
+                                                    )}
 
-                                                {!r.isMineable && !r.isClaimed && (
-                                                    <div className="absolute top-1 left-1 text-yellow-500">
-                                                        <Ban size={11} />
-                                                    </div>
-                                                )}
+                                                    {!r.isMineable && !r.isClaimed && (
+                                                        <div className="absolute top-1 left-1 text-yellow-500">
+                                                            <Ban size={11} />
+                                                        </div>
+                                                    )}
 
-                                                {(r.isInProgress || r.isReady) && (
-                                                    <div className="absolute inset-x-0 bottom-0 h-1 bg-background/70">
-                                                        <div className="h-full bg-accent" style={{ width: `${r.percent}%` }} />
-                                                    </div>
-                                                )}
+                                                    {(r.isInProgress || r.isReady) && (
+                                                        <div className="absolute inset-x-0 bottom-0 h-1 bg-background/70">
+                                                            <div className="h-full bg-accent" style={{ width: `${r.percent}%` }} />
+                                                        </div>
+                                                    )}
+                                                </div>
+
+                                                {/* Reward kind plate, straddling the bottom border like a name tag */}
+                                                <div className="absolute bottom-0 left-1/2 -translate-x-1/2 translate-y-1/2 z-10">
+                                                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide bg-background border border-borderLight shadow-sm ${r.kind === 'badge' ? 'text-accent' : r.kind === 'emote' ? 'text-textSecondary' : 'text-textMuted'}`}>
+                                                        {rewardKindLabel(r.kind)}
+                                                    </span>
+                                                </div>
                                             </div>
                                         </Tooltip>
                                     ))}
@@ -885,43 +995,11 @@ export default function GameDetailPanel({
                                     Logger.debug(`[Active Campaigns] Badge drop "${drop.name}": is_claimed=${dropProgress?.is_claimed}, has_progress=${!!dropProgress}, progress=`, dropProgress);
                                 }
                                 
-                                // PRIORITY 4: Badge name matching fallback
-                                // Check if this drop has a benefit name that matches an earned badge title
-                                if (drop.benefit_edges && drop.benefit_edges.length > 0) {
-                                    const benefitName = drop.benefit_edges[0]?.name.toLowerCase().trim() || '';
-                                    
-                                    if (benefitName) {
-                                        // Try exact match first
-                                        let hasBadgeNameMatch = earnedBadgeTitles.has(benefitName);
-                                        
-                                        // If no exact match, try fuzzy word-based matching
-                                        if (!hasBadgeNameMatch) {
-                                            const benefitWords = benefitName.split(/\s+/).filter(w => w.length > 0);
-                                            
-                                            for (const badgeTitle of earnedBadgeTitles) {
-                                                const badgeTitleWords = badgeTitle.split(/\s+/).filter(w => w.length > 0);
-                                                
-                                                if (benefitWords.length >= 2 && badgeTitleWords.length >= 2) {
-                                                    const wordsToCheck = benefitWords.slice(0, -1);
-                                                    const badgeTitlePrefix = badgeTitleWords.slice(0, wordsToCheck.length);
-                                                    
-                                                    const allWordsMatch = wordsToCheck.every((word, idx) => 
-                                                        badgeTitlePrefix[idx] === word
-                                                    );
-                                                    
-                                                    if (allWordsMatch && wordsToCheck.length > 0) {
-                                                        hasBadgeNameMatch = true;
-                                                        break;
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        
-                                        if (hasBadgeNameMatch) {
-                                            Logger.debug(`[Active Campaigns] Badge drop "${drop.name}" - owned via badge name match`);
-                                            return false; // This badge is owned
-                                        }
-                                    }
+                                // PRIORITY 4: Badge name matching fallback. A badge reward
+                                // the user already holds is "owned" even with no progress data.
+                                if (matchesEarnedBadge(drop.benefit_edges?.[0]?.name, earnedBadgeTitles)) {
+                                    Logger.debug(`[Active Campaigns] Badge drop "${drop.name}" - owned via badge name match`);
+                                    return false; // This badge is owned
                                 }
                                 
                                 
@@ -967,7 +1045,10 @@ export default function GameDetailPanel({
                                             progress={progress}
                                             completedDropIds={completedDropIds}
                                             completedBenefitIds={completedBenefitIds}
-                                            dropProgress={dropProgress}                                            onClaimDrop={onClaimDrop}
+                                            dropProgress={dropProgress}
+                                            onClaimDrop={onClaimDrop}
+                                            onWatch={() => openWatchPicker(campaign)}
+                                            pickChannel={() => requestPickChannel(campaign)}
                                         />
                                     ))}
                                 </div>
@@ -1028,7 +1109,10 @@ export default function GameDetailPanel({
                                             inventoryItems={game.inventory_items}
                                             progress={progress}
                                             completedBenefitIds={completedBenefitIds}
-                                            dropProgress={dropProgress}                                            onClaimDrop={onClaimDrop}
+                                            dropProgress={dropProgress}
+                                            onClaimDrop={onClaimDrop}
+                                            onWatch={() => openWatchPicker(campaign)}
+                                            pickChannel={() => requestPickChannel(campaign)}
                                         />
                                     ))}
                                 </div>
@@ -1192,53 +1276,11 @@ export default function GameDetailPanel({
                                     benefit => completedBenefitIds.has(benefit.id)
                                 );
                                 
-                                // ALSO check if this is a badge drop with a matching earned badge via NAME matching
-                                // We can't rely on distribution_type (it's null in the frontend data)
-                                // So we check if the benefit name matches any earned badge title
-                                
-                                let hasBadgeNameMatch = false;
-                                if (drop.benefit_edges && drop.benefit_edges.length > 0) {
-                                    // Use benefit.name directly - it matches the exact badge title
-                                    const benefitName = drop.benefit_edges[0]?.name.toLowerCase().trim() || '';
-                                    
-                                    if (benefitName) {
-                                        // First try exact match (case-insensitive)
-                                        hasBadgeNameMatch = earnedBadgeTitles.has(benefitName);
-                                        
-                                        // If no exact match, try fuzzy matching with word-based comparison
-                                        // This handles cases like "Bungie Foundation Sub" matching "Bungie Foundation Supporter"
-                                        if (!hasBadgeNameMatch) {
+                                // ALSO treat a badge drop as owned when its benefit name
+                                // matches an earned badge title (distribution_type is null in
+                                // the frontend data, so we can't rely on it).
+                                const hasBadgeNameMatch = matchesEarnedBadge(drop.benefit_edges?.[0]?.name, earnedBadgeTitles);
 
-                                            
-                                            // Split benefit name into words
-                                            const benefitWords = benefitName.split(/\s+/).filter(w => w.length > 0);
-                                            
-                                            for (const badgeTitle of earnedBadgeTitles) {
-                                                const badgeTitleWords = badgeTitle.split(/\s+/).filter(w => w.length > 0);
-                                                
-                                                // Check if the badge title starts with the same words as the benefit name
-                                                // For "Bungie Foundation Sub" → check if badge starts with "Bungie Foundation"
-                                                // This will match "Bungie Foundation Supporter"
-                                                if (benefitWords.length >= 2 && badgeTitleWords.length >= 2) {
-                                                    // Compare the first N-1 words (or all words if only 2 words total)
-                                                    const wordsToCheck = benefitWords.slice(0, -1); // All but last word
-                                                    const badgeTitlePrefix = badgeTitleWords.slice(0, wordsToCheck.length);
-                                                    
-                                                    const allWordsMatch = wordsToCheck.every((word, idx) => 
-                                                        badgeTitlePrefix[idx] === word
-                                                    );
-                                                    
-                                                    if (allWordsMatch && wordsToCheck.length > 0) {
-                                                        hasBadgeNameMatch = true;
-
-                                                        break;
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                
                                 if (hasBenefitMatch || hasBadgeNameMatch) {
                                     // This drop is owned via benefit ID (e.g., badge drop or item drop from expired campaign)
                                     addedDropIds.add(drop.id);
@@ -1400,6 +1442,20 @@ export default function GameDetailPanel({
                 </div>
             </div>
         </div>
+
+        {picker && (
+            <ChannelPickerModal
+                isOpen
+                onClose={closePicker}
+                campaignName={picker.campaign.name}
+                gameName={picker.campaign.game_name}
+                allowedChannels={picker.campaign.allowed_channels}
+                isAclBased={picker.campaign.is_acl_based}
+                actionLabel={picker.actionLabel}
+                onPick={picker.onPick}
+            />
+        )}
+        </>
     );
 }
 
@@ -1412,6 +1468,8 @@ interface CampaignCardProps {
     completedBenefitIds?: Set<string>; // IDs of completed benefits (from gameEventDrops)
     dropProgress: DropProgressStatus | null;
     onClaimDrop: (dropId: string, dropInstanceId?: string) => void;
+    onWatch: () => void; // native: open the channel picker to watch this campaign
+    pickChannel: () => Promise<PickedDropChannel | null>; // plugin: open the picker, resolve the choice
 }
 
 function CampaignCard({
@@ -1422,6 +1480,8 @@ function CampaignCard({
     completedBenefitIds,
     dropProgress,
     onClaimDrop,
+    onWatch,
+    pickChannel,
 }: CampaignCardProps) {
     // Per-campaign controls are contributed by a provider (an opt-in plugin)
     // into a generic slot; core renders whatever is hung there and passes the
@@ -1540,15 +1600,18 @@ function CampaignCard({
                                     gameName={campaign.game_name}
                                     earnable={isMineable}
                                     progressing={false}
+                                    isAclBased={campaign.is_acl_based}
+                                    allowedChannels={campaign.allowed_channels}
+                                    pickChannel={pickChannel}
                                 />
                             );
                         })
                         : (
-                            <Tooltip content={`Watch ${campaign.game_name} to earn this drop`} side="top">
+                            <Tooltip content={campaign.is_acl_based ? 'Pick a participating channel to watch' : `Watch ${campaign.game_name} to earn this drop`} side="top">
                                 <button
                                     onClick={(e) => {
                                         e.stopPropagation();
-                                        useAppStore.getState().navigateToCategoryByName(campaign.game_name);
+                                        onWatch();
                                     }}
                                     className="glass-button px-3 py-1.5 text-xs font-semibold text-accent flex items-center gap-1.5"
                                 >

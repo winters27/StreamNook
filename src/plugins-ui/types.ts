@@ -48,6 +48,13 @@ export interface SlotContribution {
  * campaign it belongs to. The component does its work through its own actions —
  * the host neither knows nor names them.
  */
+/** A channel returned by the host's drops channel picker. */
+export interface PickedDropChannel {
+  login: string;
+  displayName: string;
+  userId: string;
+}
+
 export const DROPS_CARD_ACTION_SLOT = 'drops.card-action';
 export interface DropCardActionContext {
   campaignId: string;
@@ -57,6 +64,14 @@ export interface DropCardActionContext {
   earnable: boolean;
   /** True when this campaign is the one currently progressing. */
   progressing: boolean;
+  /** True when this campaign only drops on specific allow-listed channels. */
+  isAclBased: boolean;
+  /** The allow-listed channels (id + login) when isAclBased; empty otherwise. */
+  allowedChannels: { id: string; name: string }[];
+  /** Open the host's ACL-aware channel picker (same one core uses) and resolve
+   *  with the chosen live channel, or null if dismissed. Lets a provider offer
+   *  the "pick a specific channel" flow without reimplementing ACL/live logic. */
+  pickChannel: () => Promise<PickedDropChannel | null>;
 }
 
 /** A command palette row supplied by a plugin provider. */
