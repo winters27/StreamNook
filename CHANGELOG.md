@@ -1,3 +1,8 @@
+## [8.0.3] - 2026-06-14
+### 🐛 Bug Fixes
+- Fixed drops progress showing the wrong reward: watching a channel on a drop's allow-list while it streamed a different game would display and count that drop's progress even though you weren't earning it.
+- Fixed the drops channel picker offering channels you can't earn on. It was listing offline channels, and for channel-restricted drops it listed participating channels that weren't currently streaming the campaign's game.
+
 ## [8.0.2] - 2026-06-14
 ### 🐛 Bug Fixes
 - Drops campaigns that only run on specific channels now offer a channel picker, so you can choose a participating live channel straight from the campaign and start watching.
