@@ -314,20 +314,13 @@ export default function DropProgressController() {
                 if (disposed) return;
                 if (!campaigns || campaigns.length === 0) { if (gameChanged) clearNative(); return; }
 
+                // Match the campaign by the category being watched: you earn the drop
+                // for the game the channel is actually streaming. Do NOT match an ACL
+                // campaign by channel alone — an allow-listed streamer playing a
+                // different game (e.g. on the list for a Marvel Rivals drop but live in
+                // Counter-Strike) is not earning it, so showing it would be wrong.
                 const game = gameName.toLowerCase();
-                // Prefer a campaign for the streamer's category. Failing that, match an
-                // ACL campaign by the channel being watched: event/ACL drops (e.g. a
-                // "Special Events" campaign) rarely share the streamer's category name,
-                // so without this their progress would never light up even though the
-                // watched channel is one of the campaign's participating channels.
-                const watchedLogin = userLogin?.toLowerCase();
-                const rawMatched =
-                    campaigns.find((c) => c.game_name?.toLowerCase() === game) ??
-                    campaigns.find((c) =>
-                        c.is_acl_based &&
-                        c.allowed_channels?.some((ch) => ch.id === userId || ch.name?.toLowerCase() === watchedLogin)
-                    ) ??
-                    null;
+                const rawMatched = campaigns.find((c) => c.game_name?.toLowerCase() === game) ?? null;
                 if (!rawMatched) { if (gameChanged) clearNative(); return; }
 
                 // The campaign's own embedded progress reads 0; the real per-tier
