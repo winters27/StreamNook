@@ -66,11 +66,18 @@ const isHardFailExpired = (userId: string): boolean => {
 
 const hasHardFailMark = (userId: string): boolean => hardFailTimestamps.has(userId);
 
+// Public read so callers can distinguish "we got a real answer from 7TV"
+// (paint, or a genuine no-paint) from "the last fetch hard-failed." Chat's
+// addUser uses it to avoid stamping a null paint after a transient failure —
+// a null would trip the addUser fast-path and strand the user paint-less for
+// the whole session, defeating the 30s self-heal above.
+export const isUserCosmeticsHardFailed = (userId: string): boolean => hasHardFailMark(userId);
+
 // Reactive subscription so anything that depends on a user's cosmetics
 // (chatUserStore, future surfaces) gets a push when the cache is updated.
 // Without this, a paint that arrived via a profile-card fetch was invisible
 // to the chat row that had already cached a "no paint" answer earlier.
-type CosmeticsListener = (userId: string, cosmetics: CachedCosmetics) => void;
+type CosmeticsListener = (userId: string, cosmetics: CachedCosmetics, hardFail: boolean) => void;
 const cosmeticsListeners = new Set<CosmeticsListener>();
 
 export function subscribeToCosmetics(listener: CosmeticsListener): () => void {
@@ -94,7 +101,7 @@ function publishCosmetics(userId: string, cosmetics: CachedCosmetics, hardFail =
     if (ownCosmeticAccounts.has(userId)) persistOwnCosmetics(userId);
   }
   for (const listener of cosmeticsListeners) {
-    try { listener(userId, cosmetics); } catch (e) { Logger.warn('[cosmeticsCache] listener threw:', e); }
+    try { listener(userId, cosmetics, hardFail); } catch (e) { Logger.warn('[cosmeticsCache] listener threw:', e); }
   }
 }
 

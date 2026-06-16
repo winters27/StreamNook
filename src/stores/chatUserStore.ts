@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import {
   getCosmeticsFromMemoryCache,
   getCosmeticsWithFallback,
+  isUserCosmeticsHardFailed,
   subscribeToCosmetics,
 } from '../services/cosmeticsCache';
 import { isStreamNookUser, getProfilePrefs, whenAtmospheresReady, subscribeAtmospheresVersion, subscribeStreamNookRegistryVersion } from '../services/supabaseService';
@@ -471,10 +472,18 @@ export const useChatUserStore = create<ChatUserStore>((set, get) => ({
       return { users: newUsers, usernameToId: newUsernameToId };
     });
 
-    // Apply resolved 7TV cosmetics. Always sets paint and seventvBadge
-    // (possibly to null) so the cosmeticsResolved sentinel flips true.
-    // Routes through the module-level coalescer so a burst of resolutions
-    // from the batched GraphQL response collapses into one store update.
+    // Apply resolved 7TV cosmetics. A genuine answer (the user has a paint, or
+    // genuinely has none) sets paint and seventvBadge (possibly to null) so the
+    // cosmeticsResolved sentinel flips true. Routes through the module-level
+    // coalescer so a burst of resolutions from the batched GraphQL response
+    // collapses into one store update.
+    //
+    // A HARD FAILURE (network / 5xx / "query too complex" batch rejection) is
+    // NOT a real answer. We must leave the user unresolved — paint/badge stay
+    // undefined — so their next message re-fetches and the cache's 30s self-heal
+    // recovers them. Stamping null here would flip the cosmeticsResolved sentinel,
+    // sending every later message down the addUser fast-path that never re-fetches,
+    // stranding the user paint-less for the whole session.
     const applyCosmetics = (cosmetics: { paints?: any[]; badges?: any[] } | null) => {
       const selectedPaint = cosmetics?.paints?.find((p: any) => p.selected) ?? null;
       const selectedBadge = cosmetics?.badges?.find((b: any) => b.selected) ?? null;
@@ -482,11 +491,18 @@ export const useChatUserStore = create<ChatUserStore>((set, get) => ({
     };
 
     const cachedCosmetics = getCosmeticsFromMemoryCache(user.userId);
-    if (cachedCosmetics) {
+    if (cachedCosmetics && !isUserCosmeticsHardFailed(user.userId)) {
       applyCosmetics(cachedCosmetics);
     } else {
+      // The fetch records (or clears) the hard-fail mark before it resolves, so
+      // re-read it here. On a hard failure, skip the apply and leave the user
+      // unresolved so the next message retries once the 30s window elapses.
       getCosmeticsWithFallback(user.userId)
-        .then(applyCosmetics)
+        .then(() => {
+          if (isUserCosmeticsHardFailed(user.userId)) return;
+          const resolved = getCosmeticsFromMemoryCache(user.userId);
+          if (resolved) applyCosmetics(resolved);
+        })
         .catch(() => {});
     }
 
@@ -562,10 +578,15 @@ subscribeAtmospheresVersion(() => {
 // we refresh the matching user's paint/badge in the store so their chat
 // row repaints. Without this bridge a transient empty result earlier in
 // the session stays stuck on screen even after a later fetch succeeded.
-subscribeToCosmetics((userId, cosmetics) => {
+subscribeToCosmetics((userId, cosmetics, hardFail) => {
   const state = useChatUserStore.getState();
   const existing = state.users.get(userId);
   if (!existing) return;
+
+  // A hard failure isn't a real answer. Don't stamp a null paint (which would
+  // flip the addUser fast-path's cosmeticsResolved sentinel and stop retries);
+  // leave whatever's already on the row so a later success can repaint it.
+  if (hardFail) return;
 
   const nextPaint = cosmetics?.paints?.find((p: any) => p.selected) ?? null;
   const nextBadge = cosmetics?.badges?.find((b: any) => b.selected) ?? null;
