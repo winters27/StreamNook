@@ -17,11 +17,11 @@ export const SettingsSection = ({
 }: SettingsSectionProps) => (
   <section id={id}>
     <div className="px-1 pb-2.5">
-      <h3 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-textMuted">
+      <h3 className="text-[12px] font-semibold uppercase tracking-[0.14em] text-textPrimary">
         {label}
       </h3>
       {description && (
-        <p className="mt-1 text-[12px] leading-relaxed text-textSecondary">
+        <p className="mt-1 text-[12px] leading-relaxed text-textMuted">
           {description}
         </p>
       )}

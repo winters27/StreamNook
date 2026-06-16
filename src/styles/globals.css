@@ -296,6 +296,12 @@ html[data-motion="off"] .update-pill { animation: none; }
   --color-error: #ef4444;
   --color-info: #6b9dff;
 
+  /* LIVE indicator red. Pinned here and intentionally NOT remapped by
+     applyTheme(), so the live signal stays the exact same red in every theme
+     instead of inheriting --color-error's per-theme shift toward pink/orange
+     or a duller muted red. */
+  --color-live: #ef4444;
+
   /* Scrollbar colors */
   --color-scrollbar-thumb: rgba(151, 177, 185, 0.3);
   --color-scrollbar-track: transparent;
@@ -493,15 +499,13 @@ body {
     linear-gradient(var(--color-background-secondary), var(--color-background-secondary));
 }
 
-/* Settings card — AuraKey steps-container background, glass-panel bevel preserved. */
+/* Settings card — a flat grouped slab, not a raised panel. Dropping the bevel,
+   drop shadow, border, and gradient stops a tab full of sections from reading as
+   a stack of competing floating boxes. The faint fill alone keeps each section
+   legible as its own group; spacing between sections does the rest. */
 .settings-card {
-  background: linear-gradient(137deg, #111214 4.87%, #0c0d0f 75.88%);
-  border-radius: 8px;
-  border: 1px solid transparent;
-  box-shadow:
-    inset 1px 1px 0 0 rgba(255, 255, 255, 0.08),
-    inset -1px -1px 0 0 rgba(0, 0, 0, 0.15),
-    0 4px 10px rgba(0, 0, 0, 0.15);
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: 10px;
   overflow: hidden;
 }
 
@@ -510,8 +514,24 @@ body {
   transition: background-color 100ms;
 }
 
+/* Bright enough to register against the slab fill above. */
 .settings-row:hover {
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+/* A faint 1px hairline between adjacent settings within a card. Only BETWEEN rows
+   (the adjacent-sibling selector skips the first row), so a setting and its own
+   enable-dependent sub-controls — rendered as children inside the same row — stay
+   grouped with no internal line. */
+.settings-card .settings-row + .settings-row {
+  border-top: 1px solid color-mix(in srgb, var(--color-border-subtle) 55%, transparent);
+}
+
+/* Settings sliders read as a control, not a full-width band: cap them to a tidy
+   width instead of stretching across the whole panel (they're authored with
+   `w-full`, which this overrides). */
+.settings-row input[type="range"] {
+  max-width: 15rem;
 }
 
 /* Zebra striping for chat rows, opt-in via the `alternating_backgrounds` setting
@@ -1470,13 +1490,13 @@ html[data-motion="reduced"] .animate-shimmer {
   padding: 2px 8px;
   background: linear-gradient(
     135deg,
-    color-mix(in srgb, var(--color-error) 45%, transparent) 0%,
-    color-mix(in srgb, var(--color-error) 30%, transparent) 50%,
-    color-mix(in srgb, var(--color-error) 45%, transparent) 100%
+    color-mix(in srgb, var(--color-live) 45%, transparent) 0%,
+    color-mix(in srgb, var(--color-live) 30%, transparent) 50%,
+    color-mix(in srgb, var(--color-live) 45%, transparent) 100%
   );
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
-  border: 1px solid color-mix(in srgb, var(--color-error) 60%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-live) 60%, transparent);
   border-radius: 4px;
   font-size: 10px;
   font-weight: 700;
@@ -1494,7 +1514,7 @@ html[data-motion="reduced"] .animate-shimmer {
    * or sandwiched between them. */
   isolation: isolate;
   box-shadow:
-    0 2px 10px color-mix(in srgb, var(--color-error) 35%, transparent),
+    0 2px 10px color-mix(in srgb, var(--color-live) 35%, transparent),
     inset 0 1px 0 rgba(255, 255, 255, 0.25),
     inset 0 -1px 0 rgba(0, 0, 0, 0.15);
   overflow: hidden;
@@ -1504,7 +1524,7 @@ html[data-motion="reduced"] .animate-shimmer {
   content: "";
   width: 6px;
   height: 6px;
-  background-color: var(--color-error);
+  background-color: var(--color-live);
   border-radius: 50%;
   /* Static red dot + static glow. The pulse animation only runs when the
    * containing card is hovered (see below) — see the flame-graph analysis
@@ -1513,7 +1533,7 @@ html[data-motion="reduced"] .animate-shimmer {
    * style / Commit, with effectively zero JS work. Pre-rendered + static
    * glow gives the "live" feel; pulse activates on the card the user is
    * actually interacting with. */
-  box-shadow: 0 0 3px 1px color-mix(in srgb, var(--color-error) 60%, transparent);
+  box-shadow: 0 0 3px 1px color-mix(in srgb, var(--color-live) 60%, transparent);
 }
 
 /* Animate the pulse only on the hovered card. The stream-card grid uses
@@ -1721,7 +1741,7 @@ html[data-motion="reduced"] .animate-shimmer {
 /* Live indicator in Plyr */
 /* Live indicator in Plyr */
 .plyr__time--live {
-  color: #ff1a1a !important;
+  color: var(--color-live) !important;
   font-weight: 800;
   letter-spacing: 0.5px;
   animation: plyr-live-pulse 2s ease-in-out infinite;
@@ -1735,11 +1755,11 @@ html[data-motion="reduced"] .animate-shimmer {
   0%,
   100% {
     opacity: 1;
-    text-shadow: 0 0 10px rgba(255, 26, 26, 0.5);
+    text-shadow: 0 0 10px color-mix(in srgb, var(--color-live) 50%, transparent);
   }
   50% {
     opacity: 0.8;
-    text-shadow: 0 0 20px rgba(255, 26, 26, 0.8);
+    text-shadow: 0 0 20px color-mix(in srgb, var(--color-live) 80%, transparent);
   }
 }
 

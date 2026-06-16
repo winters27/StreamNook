@@ -785,11 +785,14 @@ const Sidebar = () => {
                     ${isOverlay
                         // Overlay panels are position:fixed, so a percentage height
                         // resolves against the viewport. Anchoring top (below the
-                        // 32px title bar) AND bottom makes the panel exactly as tall
-                        // as the content area — the old `top-0 mt-8 h-full` resolved
-                        // to a full 100vh shoved down 32px, hiding the bottom 32px of
-                        // the scroll list off-screen at every non-fullscreen height.
-                        ? 'fixed left-0 top-8 bottom-0 z-50'
+                        // 40px title bar) AND bottom makes the panel exactly as tall
+                        // as the content area — a full `h-full` shoved down would
+                        // resolve to 100vh and hide the bottom of the scroll list
+                        // off-screen at every non-fullscreen height. The top offset
+                        // MUST track the title bar height (h-[40px] in TitleBar.tsx);
+                        // when it lagged at top-8 the panel rode up under the bar and
+                        // its frosted backing clipped the title-bar action icons.
+                        ? 'fixed left-0 top-10 bottom-0 z-50'
                         : 'relative h-full'
                     }
                 `}
@@ -878,26 +881,31 @@ const Sidebar = () => {
                     </Tooltip>
                 )}
 
-                {/* Header */}
-                <div className={`
-                    relative z-10 flex items-center p-2 border-b border-borderSubtle
-                    ${showExpanded ? 'justify-between' : 'justify-center'}
-                `}>
-                    {showExpanded && (
-                        <span className="text-sm font-semibold text-textPrimary">Streams</span>
-                    )}
-                    {/* Show toggle button in compact mode when expand-on-hover is disabled */}
-                    {sidebarMode === 'compact' && !expandOnHover && (
-                        <Tooltip content={isManuallyExpanded ? 'Collapse sidebar' : 'Expand sidebar'} delay={200} side="right">
-                            <button
-                                onClick={() => setIsManuallyExpanded(!isManuallyExpanded)}
-                                className="p-1.5 rounded hover:bg-surface-hover text-textSecondary hover:text-textPrimary transition-all"
-                            >
-                                {isManuallyExpanded ? <ChevronLeft size={16} /> : <ChevronRight size={16} />}
-                            </button>
-                        </Tooltip>
-                    )}
-                </div>
+                {/* Header — only rendered when it actually carries something: the
+                    "Streams" label (expanded) or the manual collapse/expand toggle
+                    (compact with expand-on-hover OFF). In the collapsed
+                    expand-on-hover state it would hold neither, so rendering it then
+                    just leaves an empty padded, bordered bar below the title bar. */}
+                {(showExpanded || (sidebarMode === 'compact' && !expandOnHover)) && (
+                    <div className={`
+                        relative z-10 flex items-center p-2 border-b border-borderSubtle
+                        ${showExpanded ? 'justify-between' : 'justify-center'}
+                    `}>
+                        {showExpanded && (
+                            <span className="text-sm font-semibold text-textPrimary">Streams</span>
+                        )}
+                        {sidebarMode === 'compact' && !expandOnHover && (
+                            <Tooltip content={isManuallyExpanded ? 'Collapse sidebar' : 'Expand sidebar'} delay={200} side="right">
+                                <button
+                                    onClick={() => setIsManuallyExpanded(!isManuallyExpanded)}
+                                    className="p-1.5 rounded hover:bg-surface-hover text-textSecondary hover:text-textPrimary transition-all"
+                                >
+                                    {isManuallyExpanded ? <ChevronLeft size={16} /> : <ChevronRight size={16} />}
+                                </button>
+                            </Tooltip>
+                        )}
+                    </div>
+                )}
 
                 {/* Scrollable stream list */}
                 <div

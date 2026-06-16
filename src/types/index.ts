@@ -22,7 +22,6 @@ export const DEFAULT_AUDIO_BOOST: AudioBoostSettings = {
 };
 
 export interface VideoPlayerSettings {
-  low_latency_mode: boolean;
   max_buffer_length: number;
   autoplay: boolean;
   muted: boolean;
@@ -30,6 +29,8 @@ export interface VideoPlayerSettings {
   start_quality: number;
   lock_aspect_ratio: boolean;
   audio_boost?: AudioBoostSettings;
+  experimental_low_latency?: boolean;
+  ll_target_latency?: number;
 }
 
 export interface CacheSettings {
@@ -590,7 +591,7 @@ export interface Settings {
   font?: string; // Interface font id (see FONT_OPTIONS in themes). Default 'satoshi'.
   error_reporting_enabled?: boolean; // Local diagnostic log verbosity; nothing is sent off-device (default: true)
   setup_complete?: boolean; // Whether the first-time setup wizard has been completed
-  auto_claim_points_watching?: boolean; // Auto-claim the bonus chest on the channel you're actively watching. Off by default; when off, a clickable chest appears on the points button. Scoped to the watched channel only (background farming is a separate opt-in plugin).
+  auto_claim_points_watching?: boolean; // Auto-claim the bonus chest on the channel you're actively watching. On by default; when off, a clickable chest appears on the points button. Scoped to the watched channel only (background farming is a separate opt-in plugin).
   compact_view?: CompactViewSettings; // Compact view preset settings
   custom_themes?: CustomTheme[]; // User-created custom themes
   glass_transparency?: number; // Global glassiness, 0-100 (100 = full frosted glass, 0 = solid panels). Default 100.

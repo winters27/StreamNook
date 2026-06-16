@@ -2,13 +2,13 @@ use crate::models::chat_layout::{
     Badge, ChatMessage, EmotePos, LayoutResult, MessageMetadata, MessageSegment, ReplyInfo,
 };
 use crate::models::settings::AppState;
+use crate::plugin_host::PluginHost;
+use crate::services::chat_logger_service::ChatLoggerService;
 use crate::services::emoji_service;
 use crate::services::emote_service::{Emote, EmoteService, EmoteSet};
 use crate::services::layout_service::LayoutService;
 use crate::services::twitch_service::TwitchService;
 use crate::services::user_message_history_service::UserMessageHistoryService;
-use crate::plugin_host::PluginHost;
-use crate::services::chat_logger_service::ChatLoggerService;
 use anyhow::Result;
 use futures_util::{SinkExt, StreamExt};
 use log::{debug, error};
@@ -282,10 +282,7 @@ impl IrcService {
             let mut consumers = get_channel_consumers().lock().await;
             consumers.clear();
             if claim {
-                consumers.insert(
-                    channel.to_lowercase(),
-                    HashSet::from([window.to_string()]),
-                );
+                consumers.insert(channel.to_lowercase(), HashSet::from([window.to_string()]));
             }
         }
 
@@ -303,8 +300,7 @@ impl IrcService {
 
         debug!("[IRC Chat] User: {} ({})", user_info.login, user_info.id);
 
-        *get_own_identity().lock().await =
-            Some((user_info.login.clone(), user_info.id.clone()));
+        *get_own_identity().lock().await = Some((user_info.login.clone(), user_info.id.clone()));
 
         // Create broadcast channel for messages with larger buffer
         let (tx, _rx) = broadcast::channel::<String>(1000);
@@ -1233,11 +1229,8 @@ impl IrcService {
         if !is_command {
             if let Some(host) = PLUGIN_HOST.get() {
                 if host.wants_chat_messages().await {
-                    let (login, user_id) = get_own_identity()
-                        .lock()
-                        .await
-                        .clone()
-                        .unwrap_or_default();
+                    let (login, user_id) =
+                        get_own_identity().lock().await.clone().unwrap_or_default();
                     let (text, is_action) = match message.strip_prefix("/me ") {
                         Some(rest) => (rest, true),
                         None => (message, false),
@@ -1465,7 +1458,7 @@ impl IrcService {
             let consumers = get_channel_consumers().lock().await;
             joined
                 .into_iter()
-                .filter(|c| c != keep && consumers.get(c).map_or(true, |s| s.is_empty()))
+                .filter(|c| c != keep && consumers.get(c).is_none_or(|s| s.is_empty()))
                 .collect()
         };
         for channel in orphans {

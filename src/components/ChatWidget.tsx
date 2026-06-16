@@ -872,7 +872,7 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
   // whether the user clicked it or auto-claim grabbed it.
   const [claimCelebration, setClaimCelebration] = useState<number | null>(null);
   const claimCelebrationTimer = useRef<number | null>(null);
-  const autoClaimWatching = useAppStore((s) => s.settings.auto_claim_points_watching ?? false);
+  const autoClaimWatching = useAppStore((s) => s.settings.auto_claim_points_watching ?? true);
   const [showChannelPointsMenu, setShowChannelPointsMenu] = useState(false);
   const [isLoadingChannelPoints, setIsLoadingChannelPoints] = useState(false);
   const [customPointsName, setCustomPointsName] = useState<string | null>(null);

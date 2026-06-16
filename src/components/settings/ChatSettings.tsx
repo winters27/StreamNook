@@ -338,11 +338,11 @@ const ChatSettings = () => {
           description="Automatically collect the bonus chest on the stream you're watching. When off, a claim button appears on the points icon so you can grab it yourself. Background farming of channels you're not watching is a separate opt-in plugin."
           control={
             <Toggle
-              enabled={settings.auto_claim_points_watching ?? false}
+              enabled={settings.auto_claim_points_watching ?? true}
               onChange={() =>
                 updateSettings({
                   ...settings,
-                  auto_claim_points_watching: !(settings.auto_claim_points_watching ?? false),
+                  auto_claim_points_watching: !(settings.auto_claim_points_watching ?? true),
                 })
               }
             />
