@@ -168,7 +168,11 @@ impl Chunker {
     /// the repeat-and-drift boomerang). Real durations make the parts tile the segment.
     fn push(&mut self, data: &[u8]) -> Vec<(Vec<u8>, f64)> {
         match self {
-            Chunker::Cmaf(c) => c.push(data).into_iter().map(|b| (b, NOMINAL_PART_DUR)).collect(),
+            Chunker::Cmaf(c) => c
+                .push(data)
+                .into_iter()
+                .map(|b| (b, NOMINAL_PART_DUR))
+                .collect(),
             Chunker::Ts(c) => c.push(data),
         }
     }
@@ -263,9 +267,16 @@ pub struct LlOrigin {
 }
 
 /// Hard kill switch: when true, no origin activates and the relays fall back to the
-/// stable whole-segment path. Flip to disable LL-HLS without removing it. Global on
-/// purpose: it exists to turn the feature off everywhere at once.
-static DISABLED: AtomicBool = AtomicBool::new(false);
+/// stable whole-segment path (plain playlist to hls.js with the relay's target-duration
+/// rewrite + prefetch promotion). Global on purpose: it turns the feature off everywhere
+/// at once.
+///
+/// Default ON (disabled), so the shipped default is the stable whole-segment path that
+/// plays cleanly on every channel and hardware. The synthesized parts path (true
+/// Twitch-like low latency) is opt-in at runtime via `set_disabled(false)`, driven by the
+/// "experimental low latency" setting, so it can be tested and proven per machine before
+/// it ever becomes the default.
+static DISABLED: AtomicBool = AtomicBool::new(true);
 
 fn http_client() -> Client {
     Client::builder()
@@ -290,7 +301,10 @@ struct BoxChunker {
 
 impl BoxChunker {
     fn new() -> Self {
-        Self { buf: Vec::new(), current: Vec::new() }
+        Self {
+            buf: Vec::new(),
+            current: Vec::new(),
+        }
     }
 
     fn push(&mut self, data: &[u8]) -> Vec<Vec<u8>> {
@@ -381,8 +395,12 @@ fn parse_cmaf_video_track(init: &[u8]) -> Option<(u32, u32)> {
         if kind != b"trak" {
             continue;
         }
-        let Some(mdia) = find_box(trak, b"mdia") else { continue };
-        let Some(hdlr) = find_box(mdia, b"hdlr") else { continue };
+        let Some(mdia) = find_box(trak, b"mdia") else {
+            continue;
+        };
+        let Some(hdlr) = find_box(mdia, b"hdlr") else {
+            continue;
+        };
         if hdlr.len() < 12 || &hdlr[8..12] != b"vide" {
             continue;
         }
@@ -394,7 +412,8 @@ fn parse_cmaf_video_track(init: &[u8]) -> Option<(u32, u32)> {
             continue;
         }
         let track_id = u32::from_be_bytes(tkhd[track_id_off..track_id_off + 4].try_into().unwrap());
-        let timescale = u32::from_be_bytes(mdhd[timescale_off..timescale_off + 4].try_into().unwrap());
+        let timescale =
+            u32::from_be_bytes(mdhd[timescale_off..timescale_off + 4].try_into().unwrap());
         if timescale > 0 {
             return Some((track_id, timescale));
         }
@@ -415,7 +434,9 @@ fn cmaf_part_duration(part: &[u8], track_id: u32, timescale: u32) -> Option<f64>
             if k2 != b"traf" {
                 continue;
             }
-            let Some(tfhd) = find_box(traf, b"tfhd") else { continue };
+            let Some(tfhd) = find_box(traf, b"tfhd") else {
+                continue;
+            };
             if tfhd.len() < 8 {
                 continue;
             }
@@ -508,7 +529,12 @@ const TS_CLOCK: f64 = 90_000.0;
 
 impl TsChunker {
     fn new() -> Self {
-        Self { buf: Vec::new(), current: Vec::new(), part_start_pts: None, last_pts: None }
+        Self {
+            buf: Vec::new(),
+            current: Vec::new(),
+            part_start_pts: None,
+            last_pts: None,
+        }
     }
 
     fn push(&mut self, data: &[u8]) -> Vec<(Vec<u8>, f64)> {
@@ -694,7 +720,8 @@ fn parse_upstream(text: &str, base: &str) -> Upstream {
             expect_uri = true;
         } else if expect_uri && !t.is_empty() && !t.starts_with('#') {
             expect_uri = false;
-            up.published.push((sn, pending_pdt.take(), absolutize(t, base)));
+            up.published
+                .push((sn, pending_pdt.take(), absolutize(t, base)));
             sn += 1;
         }
     }
@@ -775,7 +802,9 @@ impl LlOrigin {
     /// playlist while `edge_version` never advanced (a silent permanent freeze).
     fn deactivate_offline(&self, reason: &str) {
         warn!("[LLOrigin] deactivating origin (upstream gone): {reason}");
-        crate::services::ll_diagnostics::event(&format!("\"ev\":\"o_offline\",\"reason\":{reason:?}"));
+        crate::services::ll_diagnostics::event(&format!(
+            "\"ev\":\"o_offline\",\"reason\":{reason:?}"
+        ));
         *self.live_edge.lock().unwrap() = None;
         *self.transmux.lock().unwrap() = None;
         *self.cmaf_video.lock().unwrap() = None;
@@ -810,7 +839,12 @@ impl LlOrigin {
         let gen = self.generation.load(Ordering::SeqCst);
         let client = http_client();
 
-        let text = match client.get(&upstream_playlist_url).timeout(FETCH_TIMEOUT).send().await {
+        let text = match client
+            .get(&upstream_playlist_url)
+            .timeout(FETCH_TIMEOUT)
+            .send()
+            .await
+        {
             Ok(r) => r.text().await.unwrap_or_default(),
             Err(e) => {
                 warn!("[LLOrigin] initial playlist fetch failed: {e}");
@@ -820,7 +854,10 @@ impl LlOrigin {
         let base = base_of(&upstream_playlist_url);
         let up = parse_upstream(&text, &base);
         let has_prefetch = !up.prefetch.is_empty();
-        let inactive = StartOutcome { active: false, has_prefetch };
+        let inactive = StartOutcome {
+            active: false,
+            has_prefetch,
+        };
 
         // Not a low-latency broadcast (no prefetch hints): leave the origin inactive so
         // the relay uses the stable whole-segment path.
@@ -835,7 +872,9 @@ impl LlOrigin {
             Some(u) => (Container::Cmaf, u),
             None => {
                 if !ENABLE_TS_LL_ORIGIN {
-                    debug!("[LLOrigin] low-latency MPEG-TS stream; TS origin disabled, using fallback");
+                    debug!(
+                        "[LLOrigin] low-latency MPEG-TS stream; TS origin disabled, using fallback"
+                    );
                     return inactive;
                 }
                 (Container::Ts, String::new())
@@ -927,19 +966,32 @@ impl LlOrigin {
             part_target: PART_TARGET,
             segments,
         });
-        info!("[LLOrigin] activated ({container:?} low-latency origin) for {upstream_playlist_url}");
+        info!(
+            "[LLOrigin] activated ({container:?} low-latency origin) for {upstream_playlist_url}"
+        );
 
         let handle = tokio::spawn(run_reader(self.clone(), upstream_playlist_url, client, gen));
         *self.reader_task.lock().unwrap() = Some(handle);
-        StartOutcome { active: true, has_prefetch: true }
+        StartOutcome {
+            active: true,
+            has_prefetch: true,
+        }
     }
 }
 
-fn make_segment(sn: u64, pdt: Option<String>, complete: bool, part_list: Vec<(Vec<u8>, f64)>) -> Segment {
+fn make_segment(
+    sn: u64,
+    pdt: Option<String>,
+    complete: bool,
+    part_list: Vec<(Vec<u8>, f64)>,
+) -> Segment {
     let total: f64 = part_list.iter().map(|(_, d)| d).sum();
     let parts = part_list
         .into_iter()
-        .map(|(b, duration)| Part { duration, bytes: Arc::new(b) })
+        .map(|(b, duration)| Part {
+            duration,
+            bytes: Arc::new(b),
+        })
         .collect();
     Segment {
         sn,
@@ -947,7 +999,11 @@ fn make_segment(sn: u64, pdt: Option<String>, complete: bool, part_list: Vec<(Ve
         complete,
         // Sample-measured parts sum to the real span; the raw path's even split
         // sums to exactly TARGET_DURATION (same value as before).
-        duration: if total > 0.0 { total } else { TARGET_DURATION as f64 },
+        duration: if total > 0.0 {
+            total
+        } else {
+            TARGET_DURATION as f64
+        },
         parts,
     }
 }
@@ -968,7 +1024,12 @@ fn split_complete(bytes: &[u8], container: Container) -> Vec<Vec<u8>> {
 
 // ──────────────────────────── the streaming reader ────────────────────────────
 
-async fn run_reader(origin: Arc<LlOrigin>, upstream_playlist_url: String, client: Client, gen: u64) {
+async fn run_reader(
+    origin: Arc<LlOrigin>,
+    upstream_playlist_url: String,
+    client: Client,
+    gen: u64,
+) {
     let base = base_of(&upstream_playlist_url);
     // Connection to the NEXT in-progress segment, opened by `preopen_next` while
     // the current one was still streaming. Consumed by the fast path below;
@@ -998,33 +1059,43 @@ async fn run_reader(origin: Arc<LlOrigin>, upstream_playlist_url: String, client
             };
             if contiguous {
                 match tokio::time::timeout(PREOPEN_WAIT, &mut handle).await {
-                    Ok(Ok(Some((resp, pdt, seg_url)))) => match origin.push_shell(sn, pdt.clone()) {
-                        Some(true) => {
-                            crate::services::ll_diagnostics::event(&format!(
-                                "\"ev\":\"o_shell\",\"path\":\"fast\",\"sn\":{sn},\"pdt\":{}",
-                                pdt.as_deref().map(|p| format!("\"{p}\"")).unwrap_or_else(|| "null".into())
-                            ));
-                            origin.wake_serves();
-                            let next = tokio::spawn(preopen_next(
-                                client.clone(),
-                                upstream_playlist_url.clone(),
-                                sn + 1,
-                            ));
-                            stream_response(&origin, resp, sn, gen, Some((&client, seg_url.as_str())))
+                    Ok(Ok(Some((resp, pdt, seg_url)))) => {
+                        match origin.push_shell(sn, pdt.clone()) {
+                            Some(true) => {
+                                crate::services::ll_diagnostics::event(&format!(
+                                    "\"ev\":\"o_shell\",\"path\":\"fast\",\"sn\":{sn},\"pdt\":{}",
+                                    pdt.as_deref()
+                                        .map(|p| format!("\"{p}\""))
+                                        .unwrap_or_else(|| "null".into())
+                                ));
+                                origin.wake_serves();
+                                let next = tokio::spawn(preopen_next(
+                                    client.clone(),
+                                    upstream_playlist_url.clone(),
+                                    sn + 1,
+                                ));
+                                stream_response(
+                                    &origin,
+                                    resp,
+                                    sn,
+                                    gen,
+                                    Some((&client, seg_url.as_str())),
+                                )
                                 .await;
-                            if !origin.finish_segment(sn) {
-                                return;
+                                if !origin.finish_segment(sn) {
+                                    return;
+                                }
+                                crate::services::ll_diagnostics::event(&format!(
+                                    "\"ev\":\"o_finish\",\"path\":\"fast\",\"sn\":{sn}"
+                                ));
+                                origin.wake_serves();
+                                preopened = Some((sn + 1, next));
+                                continue;
                             }
-                            crate::services::ll_diagnostics::event(&format!(
-                                "\"ev\":\"o_finish\",\"path\":\"fast\",\"sn\":{sn}"
-                            ));
-                            origin.wake_serves();
-                            preopened = Some((sn + 1, next));
-                            continue;
+                            Some(false) => {} // refused: the poll path re-syncs
+                            None => return,
                         }
-                        Some(false) => {} // refused: the poll path re-syncs
-                        None => return,
-                    },
+                    }
                     Ok(_) => {} // preopen failed (no hint / ad window): poll path
                     Err(_) => handle.abort(), // not ready in time: poll path
                 }
@@ -1035,7 +1106,12 @@ async fn run_reader(origin: Arc<LlOrigin>, upstream_playlist_url: String, client
         // returns Ok for any HTTP status, so a 403/404 (stream offline, or an
         // expired usher-signed URL) would otherwise parse to an empty playlist and
         // loop forever; inspect the status and count failures toward deactivation.
-        let text = match client.get(&upstream_playlist_url).timeout(FETCH_TIMEOUT).send().await {
+        let text = match client
+            .get(&upstream_playlist_url)
+            .timeout(FETCH_TIMEOUT)
+            .send()
+            .await
+        {
             Ok(r) => {
                 let status = r.status();
                 if !status.is_success() {
@@ -1242,7 +1318,9 @@ async fn run_reader(origin: Arc<LlOrigin>, upstream_playlist_url: String, client
         }
         crate::services::ll_diagnostics::event(&format!(
             "\"ev\":\"o_shell\",\"path\":\"poll\",\"sn\":{inprogress_sn},\"pdt\":{}",
-            pdt.as_deref().map(|p| format!("\"{p}\"")).unwrap_or_else(|| "null".into())
+            pdt.as_deref()
+                .map(|p| format!("\"{p}\""))
+                .unwrap_or_else(|| "null".into())
         ));
         origin.wake_serves();
 
@@ -1278,7 +1356,12 @@ async fn preopen_next(
 ) -> Option<(Response, Option<String>, String)> {
     let base = base_of(&playlist_url);
     for _ in 0..6 {
-        if let Ok(r) = client.get(&playlist_url).timeout(FETCH_TIMEOUT).send().await {
+        if let Ok(r) = client
+            .get(&playlist_url)
+            .timeout(FETCH_TIMEOUT)
+            .send()
+            .await
+        {
             let text = r.text().await.unwrap_or_default();
             let up = parse_upstream(&text, &base);
             if let Some((last_sn, last_pdt, _)) = up.published.last() {
@@ -1310,8 +1393,10 @@ fn advance_pdt(pdt: &str) -> Option<String> {
 /// Advance an RFC3339 PROGRAM-DATE-TIME by `steps` nominal segment durations.
 fn advance_pdt_by(pdt: &str, steps: i64) -> Option<String> {
     let t = chrono::DateTime::parse_from_rfc3339(pdt).ok()?;
-    Some((t + chrono::Duration::seconds(TARGET_DURATION as i64 * steps))
-        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+    Some(
+        (t + chrono::Duration::seconds(TARGET_DURATION as i64 * steps))
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+    )
 }
 
 /// Decide how the reader brings a stale window up to date before the next
@@ -1368,7 +1453,9 @@ fn plan_catch_up(
     if first_missing < oldest_published || gap > CATCH_UP_MAX_SEGMENTS {
         // The hole predates the upstream window, or is too deep to fill while
         // gaining ground: rebuild from the live edge with a minimal backfill.
-        let start = inprogress_sn.saturating_sub(REBUILD_BACKFILL).max(oldest_published);
+        let start = inprogress_sn
+            .saturating_sub(REBUILD_BACKFILL)
+            .max(oldest_published);
         (true, start..inprogress_sn)
     } else {
         (false, first_missing..inprogress_sn)
@@ -1407,13 +1494,7 @@ async fn fetch_published(
 }
 
 /// Stream one in-progress segment, publishing each completed moof+mdat as a part.
-async fn stream_segment(
-    origin: &LlOrigin,
-    client: &Client,
-    url: &str,
-    sn: u64,
-    gen: u64,
-) {
+async fn stream_segment(origin: &LlOrigin, client: &Client, url: &str, sn: u64, gen: u64) {
     let resp = match client.get(url).send().await {
         Ok(r) => r,
         Err(e) => {
@@ -1473,7 +1554,9 @@ async fn stream_response(
                 first_chunk_at.get_or_insert_with(tokio::time::Instant::now);
                 received += bytes.len() as u64;
                 for (part, dur) in chunker.push(&bytes) {
-                    let Some((part, dur)) = origin.convert_part(part, dur) else { continue };
+                    let Some((part, dur)) = origin.convert_part(part, dur) else {
+                        continue;
+                    };
                     if !origin.append_part(sn, part, dur) {
                         return; // edge gone
                     }
@@ -1547,7 +1630,10 @@ async fn range_resume(
         ));
         Some(resp)
     } else {
-        warn!("[LLOrigin] sn {sn}: range resume refused ({})", resp.status());
+        warn!(
+            "[LLOrigin] sn {sn}: range resume refused ({})",
+            resp.status()
+        );
         None
     }
 }
@@ -1646,7 +1732,10 @@ impl LlOrigin {
     /// backfill durations are normalized so they sum to the segment exactly).
     fn convert_parts(&self, parts: Vec<Vec<u8>>) -> Vec<(Vec<u8>, f64)> {
         let even = TARGET_DURATION as f64 / parts.len().max(1) as f64;
-        parts.into_iter().filter_map(|p| self.convert_part(p, even)).collect()
+        parts
+            .into_iter()
+            .filter_map(|p| self.convert_part(p, even))
+            .collect()
     }
 
     /// Origin-generated init segment bytes (TS transmux path only).
@@ -1660,7 +1749,13 @@ impl LlOrigin {
     fn expected_segment_secs(&self) -> f64 {
         let g = self.live_edge.lock().unwrap();
         g.as_ref()
-            .and_then(|e| e.segments.iter().rev().find(|s| s.complete).map(|s| s.duration))
+            .and_then(|e| {
+                e.segments
+                    .iter()
+                    .rev()
+                    .find(|s| s.complete)
+                    .map(|s| s.duration)
+            })
             .filter(|d| d.is_finite() && *d > 0.5)
             .unwrap_or(TARGET_DURATION as f64)
     }
@@ -1734,7 +1829,10 @@ impl LlOrigin {
                 if now >= deadline {
                     break;
                 }
-                if tokio::time::timeout(deadline - now, notified).await.is_err() {
+                if tokio::time::timeout(deadline - now, notified)
+                    .await
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -1763,7 +1861,10 @@ impl LlOrigin {
                 if now >= deadline {
                     break;
                 }
-                if tokio::time::timeout(deadline - now, notified).await.is_err() {
+                if tokio::time::timeout(deadline - now, notified)
+                    .await
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -1777,7 +1878,10 @@ fn render_locked(edge: &LiveEdge) -> String {
     let mut s = String::with_capacity(2048);
     s.push_str("#EXTM3U\n#EXT-X-VERSION:9\n");
     s.push_str(&format!("#EXT-X-TARGETDURATION:{}\n", edge.target_duration));
-    s.push_str(&format!("#EXT-X-PART-INF:PART-TARGET={:.3}\n", edge.part_target));
+    s.push_str(&format!(
+        "#EXT-X-PART-INF:PART-TARGET={:.3}\n",
+        edge.part_target
+    ));
     s.push_str("#EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES,PART-HOLD-BACK=1.500\n");
     let media_seq = edge.segments.front().map(|s| s.sn).unwrap_or(0);
     s.push_str(&format!("#EXT-X-MEDIA-SEQUENCE:{media_seq}\n"));
@@ -1826,7 +1930,10 @@ fn render_locked(edge: &LiveEdge) -> String {
         // part is visible on a still-in-progress segment. The lone-segment
         // exception keeps a minimal window startable.
         if seg.complete && (i + 1 < n || n == 1) {
-            s.push_str(&format!("#EXTINF:{:.3},live\nseg/{}.ts\n", seg.duration, seg.sn));
+            s.push_str(&format!(
+                "#EXTINF:{:.3},live\nseg/{}.ts\n",
+                seg.duration, seg.sn
+            ));
         }
     }
     s
@@ -1968,7 +2075,10 @@ pub(crate) fn media_response(bytes: Vec<u8>) -> warp::http::Response<Vec<u8>> {
         .header("Access-Control-Allow-Origin", "*")
         .header("Access-Control-Allow-Methods", "GET, OPTIONS")
         .header("Access-Control-Allow-Headers", "*")
-        .header("Cache-Control", "no-cache, no-store, must-revalidate, max-age=0")
+        .header(
+            "Cache-Control",
+            "no-cache, no-store, must-revalidate, max-age=0",
+        )
         .body(bytes)
         .unwrap()
 }
@@ -1980,7 +2090,10 @@ pub(crate) fn playlist_response(bytes: Vec<u8>) -> warp::http::Response<Vec<u8>>
         .header("Access-Control-Allow-Origin", "*")
         .header("Access-Control-Allow-Methods", "GET, OPTIONS")
         .header("Access-Control-Allow-Headers", "*")
-        .header("Cache-Control", "no-cache, no-store, must-revalidate, max-age=0")
+        .header(
+            "Cache-Control",
+            "no-cache, no-store, must-revalidate, max-age=0",
+        )
         // Fresh connection per playlist request. Playlist responses are the
         // only HELD responses the relay serves, and captures show the webview
         // queueing the NEXT playlist request invisibly for seconds during
@@ -2175,7 +2288,10 @@ mod tests {
         assert_eq!(raw.len(), 4);
         // Each cut part spans 3 access units × 0.1s = 0.3s of real PTS time.
         for (_, dur) in &raw[..3] {
-            assert!((*dur - 0.3).abs() < 0.001, "cut part duration is the real PTS span");
+            assert!(
+                (*dur - 0.3).abs() < 0.001,
+                "cut part duration is the real PTS span"
+            );
         }
         let parts: Vec<Vec<u8>> = raw.into_iter().map(|(b, _)| b).collect();
         for part in &parts {
@@ -2204,7 +2320,10 @@ mod tests {
         let total: f64 = raw.iter().map(|(_, d)| d).sum();
         // 3 cut parts of 0.3s + the single-frame flush tail's nominal estimate ≈ 1.0s
         // (the point: ~the 0.9s real span, NOT the ~0.4s a fixed-nominal would give).
-        assert!(total > 0.85 && total < 1.15, "parts tile the segment span (got {total})");
+        assert!(
+            total > 0.85 && total < 1.15,
+            "parts tile the segment span (got {total})"
+        );
     }
 
     #[test]
@@ -2311,8 +2430,14 @@ mod tests {
         assert_eq!(up.published.len(), 2);
         assert_eq!(up.published[0].0, 100);
         assert_eq!(up.published[1].0, 101);
-        assert_eq!(up.published[0].1.as_deref(), Some("2026-06-09T03:02:33.166Z"));
-        assert_eq!(up.prefetch, vec!["https://cdn/a102.mp4", "https://cdn/a103.mp4"]);
+        assert_eq!(
+            up.published[0].1.as_deref(),
+            Some("2026-06-09T03:02:33.166Z")
+        );
+        assert_eq!(
+            up.prefetch,
+            vec!["https://cdn/a102.mp4", "https://cdn/a103.mp4"]
+        );
     }
 
     #[test]
@@ -2350,8 +2475,18 @@ mod tests {
         // still-in-progress (parts only), so a client never learns "complete" in
         // the same refresh that first shows the final part.
         let mut segs = VecDeque::new();
-        segs.push_back(make_segment(100, None, true, even_parts(vec![vec![1], vec![2]])));
-        segs.push_back(make_segment(101, None, true, even_parts(vec![vec![3], vec![4]])));
+        segs.push_back(make_segment(
+            100,
+            None,
+            true,
+            even_parts(vec![vec![1], vec![2]]),
+        ));
+        segs.push_back(make_segment(
+            101,
+            None,
+            true,
+            even_parts(vec![vec![3], vec![4]]),
+        ));
         let edge = LiveEdge {
             init_url: "https://cdn/init.mp4".into(),
             init_bytes: None,
@@ -2383,13 +2518,21 @@ mod tests {
     #[test]
     fn boundary_blocking_request_rolls_to_next_segment() {
         let mut segs = VecDeque::new();
-        segs.push_back(make_segment(100, None, true, even_parts(vec![vec![1], vec![2]])));
+        segs.push_back(make_segment(
+            100,
+            None,
+            true,
+            even_parts(vec![vec![1], vec![2]]),
+        ));
         segs.push_back(Segment {
             sn: 101,
             pdt: None,
             complete: false,
             duration: 2.0,
-            parts: vec![Part { duration: 0.1, bytes: Arc::new(vec![3]) }],
+            parts: vec![Part {
+                duration: 0.1,
+                bytes: Arc::new(vec![3]),
+            }],
         });
         let edge = LiveEdge {
             init_url: "https://cdn/init.mp4".into(),
@@ -2411,9 +2554,24 @@ mod tests {
     #[test]
     fn render_always_has_extinf_and_lists_edge_parts() {
         let mut segs = VecDeque::new();
-        segs.push_back(make_segment(99, Some("PDT9".into()), true, even_parts(vec![vec![0], vec![9]])));
-        segs.push_back(make_segment(100, Some("PDT0".into()), true, even_parts(vec![vec![1], vec![2]])));
-        segs.push_back(make_segment(101, Some("PDT1".into()), true, even_parts(vec![vec![3], vec![4]])));
+        segs.push_back(make_segment(
+            99,
+            Some("PDT9".into()),
+            true,
+            even_parts(vec![vec![0], vec![9]]),
+        ));
+        segs.push_back(make_segment(
+            100,
+            Some("PDT0".into()),
+            true,
+            even_parts(vec![vec![1], vec![2]]),
+        ));
+        segs.push_back(make_segment(
+            101,
+            Some("PDT1".into()),
+            true,
+            even_parts(vec![vec![3], vec![4]]),
+        ));
         // in-progress segment with 3 parts, not complete
         segs.push_back(Segment {
             sn: 102,
@@ -2421,9 +2579,18 @@ mod tests {
             complete: false,
             duration: 2.0,
             parts: vec![
-                Part { duration: 0.1, bytes: Arc::new(vec![5]) },
-                Part { duration: 0.1, bytes: Arc::new(vec![6]) },
-                Part { duration: 0.1, bytes: Arc::new(vec![7]) },
+                Part {
+                    duration: 0.1,
+                    bytes: Arc::new(vec![5]),
+                },
+                Part {
+                    duration: 0.1,
+                    bytes: Arc::new(vec![6]),
+                },
+                Part {
+                    duration: 0.1,
+                    bytes: Arc::new(vec![7]),
+                },
             ],
         });
         let edge = LiveEdge {
@@ -2458,13 +2625,21 @@ mod tests {
     #[test]
     fn render_omits_map_and_uses_ts_parts_for_mpeg_ts() {
         let mut segs = VecDeque::new();
-        segs.push_back(make_segment(50, Some("PDT0".into()), true, even_parts(vec![vec![1], vec![2]])));
+        segs.push_back(make_segment(
+            50,
+            Some("PDT0".into()),
+            true,
+            even_parts(vec![vec![1], vec![2]]),
+        ));
         segs.push_back(Segment {
             sn: 51,
             pdt: Some("PDT1".into()),
             complete: false,
             duration: 2.0,
-            parts: vec![Part { duration: 0.3, bytes: Arc::new(vec![3]) }],
+            parts: vec![Part {
+                duration: 0.3,
+                bytes: Arc::new(vec![3]),
+            }],
         });
         let edge = LiveEdge {
             init_url: String::new(),
@@ -2492,7 +2667,12 @@ mod tests {
         // advertise the relay-served init and .mp4 parts: the player consumes
         // fMP4 even though the upstream container is TS.
         let mut segs = VecDeque::new();
-        segs.push_back(make_segment(50, None, true, even_parts(vec![vec![1], vec![2]])));
+        segs.push_back(make_segment(
+            50,
+            None,
+            true,
+            even_parts(vec![vec![1], vec![2]]),
+        ));
         segs.push_back(make_segment(51, None, true, even_parts(vec![vec![3]])));
         let edge = LiveEdge {
             init_url: String::new(),
@@ -2572,6 +2752,9 @@ mod tests {
             part_target: PART_TARGET,
             segments: VecDeque::new(),
         };
-        assert_eq!(init_url_update(&transmux, Some("https://cdn/whatever.mp4")), None);
+        assert_eq!(
+            init_url_update(&transmux, Some("https://cdn/whatever.mp4")),
+            None
+        );
     }
 }

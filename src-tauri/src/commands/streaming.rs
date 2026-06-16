@@ -279,14 +279,17 @@ pub fn get_stream_low_latency() -> bool {
     crate::services::stream_server::is_low_latency()
 }
 
-/// Whether the upstream is a low-latency broadcast (PREFETCH hints present), even
-/// when the LL-HLS origin didn't take over (e.g. an H.264/TS channel). The relay
-/// promotes the hints on that path, so the player rides a tighter cushion than a
-/// normal-latency channel WITHOUT entering hls.js low-latency mode. Cheaper than
-/// re-downloading the manifest to look for the hints itself.
+/// Enable or disable the experimental parts-based low-latency origin at runtime.
+/// Default is DISABLED: the stable whole-segment path serves every stream, which plays
+/// cleanly on all channels and hardware. Turning this on lets the synthesized spec
+/// LL-HLS origin (`#EXT-X-PART` + blocking reload, ~Twitch latency) take over on
+/// low-latency channels. Takes effect on the next stream start (the origin is probed at
+/// start), so the caller should restart the active stream after toggling. Kept as a
+/// runtime switch (not a compile flag) so it can be A/B tested and proven per machine
+/// before it is ever made the default.
 #[tauri::command]
-pub fn get_stream_prefetch_present() -> bool {
-    crate::services::stream_server::prefetch_present()
+pub fn set_experimental_low_latency(enabled: bool) {
+    crate::services::ll_origin::set_disabled(!enabled);
 }
 
 /// Report which video codecs this machine can decode and the user allows (families:

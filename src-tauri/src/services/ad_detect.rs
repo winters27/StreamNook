@@ -168,13 +168,49 @@ pub fn promote_prefetch(playlist: &str) -> Option<String> {
         .next_back()
         .unwrap_or(2.0);
 
-    let mut out = String::with_capacity(playlist.len() + 96);
+    let mut out = String::with_capacity(playlist.len() + 160);
     let mut promoted = false;
     // Held when we've seen a `#EXT-X-PREFETCH-DISCONTINUITY` and are waiting to emit
     // the real `#EXT-X-DISCONTINUITY` immediately before the next promoted segment.
     let mut pending_discontinuity = false;
+
+    // PROGRAM-DATE-TIME extrapolation for the promoted segments. Twitch stamps every
+    // PUBLISHED segment with a PDT (capture wall-clock) but the PREFETCH hints carry
+    // none. Without a PDT on the promoted segments, the player can't map the frame it's
+    // showing back to a real time when the playhead is riding in that fresh region, so
+    // the "behind live" readout falls back to the last published segment's PDT and reads
+    // ~one prefetch-span (2-3s) too high. We extrapolate each promoted segment's capture
+    // time from the last published segment's PDT plus the running duration, so the
+    // readout is the same metric Twitch's "Latency To Broadcaster" shows, accurate at any
+    // playhead position. If the upstream carries no PDT, stamping is skipped (graceful).
+    let mut pending_pdt: Option<chrono::DateTime<chrono::Utc>> = None;
+    let mut last_dur: f64 = dur;
+    // Capture time of the end of the last published segment = the start of the first
+    // promoted segment.
+    let mut frontier: Option<chrono::DateTime<chrono::Utc>> = None;
+    let mut promoted_idx: i64 = 0;
+
     for line in playlist.lines() {
         let trimmed = line.trim();
+        // Track the published segments' PDT/duration so we can extrapolate forward.
+        if let Some(v) = trimmed.strip_prefix("#EXT-X-PROGRAM-DATE-TIME:") {
+            pending_pdt = chrono::DateTime::parse_from_rfc3339(v.trim())
+                .ok()
+                .map(|d| d.with_timezone(&chrono::Utc));
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("#EXTINF:") {
+            if let Some(n) = rest.split(',').next() {
+                if let Ok(d) = n.trim().parse::<f64>() {
+                    last_dur = d;
+                }
+            }
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
         // Match the prefetch-discontinuity marker BEFORE the prefetch hint check.
         // It carries no value; convert it to a real discontinuity in front of the
         // hint it precedes, never pass the proprietary tag through (hls.js drops it).
@@ -187,8 +223,28 @@ pub fn promote_prefetch(playlist: &str) -> Option<String> {
                 out.push_str("#EXT-X-DISCONTINUITY\n");
                 pending_discontinuity = false;
             }
+            // Stamp the extrapolated capture time: first promoted segment starts at the
+            // frontier (end of last published), each subsequent one a duration later.
+            if let Some(f) = frontier {
+                let ts =
+                    f + chrono::Duration::milliseconds((promoted_idx as f64 * dur * 1000.0) as i64);
+                out.push_str(&format!(
+                    "#EXT-X-PROGRAM-DATE-TIME:{}\n",
+                    ts.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+                ));
+            }
             out.push_str(&format!("#EXTINF:{:.3},live\n{}\n", dur, url.trim()));
             promoted = true;
+            promoted_idx += 1;
+        } else if !trimmed.is_empty() && !trimmed.starts_with('#') {
+            // A published segment's URI line: its capture time was `pending_pdt`, so the
+            // frontier (end of produced content) advances to that PDT plus the segment's
+            // duration. This becomes the start of the first promoted segment.
+            if let Some(p) = pending_pdt.take() {
+                frontier = Some(p + chrono::Duration::milliseconds((last_dur * 1000.0) as i64));
+            }
+            out.push_str(line);
+            out.push('\n');
         } else {
             out.push_str(line);
             out.push('\n');
@@ -296,6 +352,39 @@ https://cdn/seg1.ts\n\
     }
 
     #[test]
+    fn promote_stamps_extrapolated_pdt_on_hints() {
+        // A published segment captured at 00:00:00 with a 2s duration; the two prefetch
+        // hints that follow are the in-progress content. Each promoted segment must get a
+        // PROGRAM-DATE-TIME extrapolated forward (00:00:02, then 00:00:04) so the player's
+        // frame-to-time mapping stays accurate in the promoted region.
+        let pl = "#EXTM3U\n\
+#EXT-X-TARGETDURATION:2\n\
+#EXT-X-MEDIA-SEQUENCE:100\n\
+#EXT-X-PROGRAM-DATE-TIME:2026-06-15T00:00:00.000Z\n\
+#EXTINF:2.000,live\nhttps://cdn/seg100.ts\n\
+#EXT-X-TWITCH-PREFETCH:https://cdn/seg101.ts\n\
+#EXT-X-TWITCH-PREFETCH:https://cdn/seg102.ts\n";
+        let out = promote_prefetch(pl).expect("promotes");
+        assert!(out.contains(
+            "#EXT-X-PROGRAM-DATE-TIME:2026-06-15T00:00:02.000Z\n#EXTINF:2.000,live\nhttps://cdn/seg101.ts"
+        ));
+        assert!(out.contains(
+            "#EXT-X-PROGRAM-DATE-TIME:2026-06-15T00:00:04.000Z\n#EXTINF:2.000,live\nhttps://cdn/seg102.ts"
+        ));
+    }
+
+    #[test]
+    fn promote_without_pdt_skips_stamping() {
+        // No PROGRAM-DATE-TIME upstream: promote, but never invent a timestamp.
+        let pl = "#EXTM3U\n\
+#EXTINF:2.000,live\nhttps://cdn/seg1.ts\n\
+#EXT-X-TWITCH-PREFETCH:https://cdn/seg2.ts\n";
+        let out = promote_prefetch(pl).expect("promotes");
+        assert!(!out.contains("#EXT-X-PROGRAM-DATE-TIME"));
+        assert!(out.contains("#EXTINF:2.000,live\nhttps://cdn/seg2.ts"));
+    }
+
+    #[test]
     fn promote_prefetch_noop_without_hints() {
         let pl = "#EXTM3U\n#EXTINF:2.000,live\nhttps://cdn/seg1.ts\n";
         assert!(promote_prefetch(pl).is_none());
@@ -326,7 +415,9 @@ https://cdn/seg1.ts\n\
             } else if t.starts_with("#EXTINF:") {
                 // The URI is the next non-tag line; skip forward to it.
                 let mut j = i + 1;
-                while j < lines.len() && (lines[j].trim().is_empty() || lines[j].trim().starts_with('#')) {
+                while j < lines.len()
+                    && (lines[j].trim().is_empty() || lines[j].trim().starts_with('#'))
+                {
                     j += 1;
                 }
                 if j < lines.len() {
@@ -415,8 +506,14 @@ https://cdn/seg100.ts\n\
         assert_refresh_consistent(&pn, &pn1);
         // Spot-check the headline segment: cc must be 1 in both (one discontinuity
         // before it), proving the marker→discontinuity translation lined them up.
-        let seg104_n = parse_segments(&pn).into_iter().find(|(sn, _, _)| *sn == 104).unwrap();
-        let seg104_n1 = parse_segments(&pn1).into_iter().find(|(sn, _, _)| *sn == 104).unwrap();
+        let seg104_n = parse_segments(&pn)
+            .into_iter()
+            .find(|(sn, _, _)| *sn == 104)
+            .unwrap();
+        let seg104_n1 = parse_segments(&pn1)
+            .into_iter()
+            .find(|(sn, _, _)| *sn == 104)
+            .unwrap();
         assert_eq!(seg104_n.2, 1);
         assert_eq!(seg104_n1.2, 1);
     }

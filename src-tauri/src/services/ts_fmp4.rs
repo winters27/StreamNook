@@ -213,9 +213,12 @@ fn unwrap33(prev: Option<u64>, raw: u64) -> u64 {
     let Some(prev) = prev else { return raw };
     let base = (prev / WRAP) * WRAP;
     let mut best = base + raw;
-    for cand in [base.checked_sub(WRAP).map(|b| b + raw), Some(base + WRAP + raw)]
-        .into_iter()
-        .flatten()
+    for cand in [
+        base.checked_sub(WRAP).map(|b| b + raw),
+        Some(base + WRAP + raw),
+    ]
+    .into_iter()
+    .flatten()
     {
         if cand.abs_diff(prev) < best.abs_diff(prev) {
             best = cand;
@@ -441,7 +444,9 @@ impl Transmuxer {
 
     /// PSI sections here (PAT/PMT) are tiny and always fit one packet.
     fn parse_pat(&mut self, payload: &[u8]) {
-        let Some(section) = psi_section(payload) else { return };
+        let Some(section) = psi_section(payload) else {
+            return;
+        };
         // Entries: program_number (2) + PID (2), first non-zero program wins.
         let mut i = 8;
         while i + 4 <= section.len() {
@@ -456,7 +461,9 @@ impl Transmuxer {
     }
 
     fn parse_pmt(&mut self, payload: &[u8]) {
-        let Some(section) = psi_section(payload) else { return };
+        let Some(section) = psi_section(payload) else {
+            return;
+        };
         if section.len() < 12 {
             return;
         }
@@ -564,7 +571,12 @@ impl Transmuxer {
             }
         }
         if !bytes.is_empty() {
-            self.pending_video.push(VideoSample { dts, pts, keyframe, bytes });
+            self.pending_video.push(VideoSample {
+                dts,
+                pts,
+                keyframe,
+                bytes,
+            });
         }
     }
 
@@ -593,7 +605,9 @@ impl Transmuxer {
             if frame_len < header_len || frame_len > data.len() {
                 return; // malformed or truncated frame
             }
-            let Some(&rate) = ADTS_SAMPLE_RATES.get(sampling_index as usize) else { return };
+            let Some(&rate) = ADTS_SAMPLE_RATES.get(sampling_index as usize) else {
+                return;
+            };
             let parsed = AacConfig {
                 object_type: profile + 1,
                 sampling_index,
@@ -658,12 +672,19 @@ impl Transmuxer {
         for (i, s) in video.iter().enumerate() {
             let dur = match video.get(i + 1) {
                 Some(next) => next.dts.saturating_sub(s.dts),
-                None => vruns.last().map(|r| r.duration as u64).unwrap_or(DEFAULT_VIDEO_DUR),
+                None => vruns
+                    .last()
+                    .map(|r| r.duration as u64)
+                    .unwrap_or(DEFAULT_VIDEO_DUR),
             };
             vruns.push(TrunSample {
                 duration: dur.min(u32::MAX as u64) as u32,
                 size: s.bytes.len() as u32,
-                flags: if s.keyframe { SAMPLE_FLAGS_SYNC } else { SAMPLE_FLAGS_NON_SYNC },
+                flags: if s.keyframe {
+                    SAMPLE_FLAGS_SYNC
+                } else {
+                    SAMPLE_FLAGS_NON_SYNC
+                },
                 cts: (s.pts as i64 - s.dts as i64).clamp(i32::MIN as i64, i32::MAX as i64) as i32,
             });
         }
@@ -866,7 +887,11 @@ impl BitReader {
 
     fn se(&mut self) -> Option<i32> {
         let v = self.ue()?;
-        Some(if v % 2 == 0 { -((v / 2) as i32) } else { ((v + 1) / 2) as i32 })
+        Some(if v % 2 == 0 {
+            -((v / 2) as i32)
+        } else {
+            ((v + 1) / 2) as i32
+        })
     }
 }
 
@@ -881,7 +906,10 @@ fn parse_sps_dimensions(sps: &[u8]) -> Option<(u16, u16)> {
 
     let mut chroma_format_idc = 1;
     let mut separate_colour_plane = false;
-    if matches!(profile_idc, 100 | 110 | 122 | 244 | 44 | 83 | 86 | 118 | 128 | 138 | 139 | 134 | 135) {
+    if matches!(
+        profile_idc,
+        100 | 110 | 122 | 244 | 44 | 83 | 86 | 118 | 128 | 138 | 139 | 134 | 135
+    ) {
         chroma_format_idc = r.ue()?;
         if chroma_format_idc == 3 {
             separate_colour_plane = r.bit()? == 1;
@@ -931,7 +959,11 @@ fn parse_sps_dimensions(sps: &[u8]) -> Option<(u16, u16)> {
         crop_b = r.ue()?;
     }
 
-    let chroma_array_type = if separate_colour_plane { 0 } else { chroma_format_idc };
+    let chroma_array_type = if separate_colour_plane {
+        0
+    } else {
+        chroma_format_idc
+    };
     let (sub_w, sub_h) = match chroma_array_type {
         1 => (2, 2),
         2 => (2, 1),
@@ -1289,7 +1321,11 @@ fn build_mp4a(cfg: AacConfig) -> Vec<u8> {
     esds_payload.extend_from_slice(&es);
     let esds = full_box(b"esds", 0, 0, &esds_payload);
 
-    let channels = if cfg.channel_config == 7 { 8 } else { cfg.channel_config as u16 };
+    let channels = if cfg.channel_config == 7 {
+        8
+    } else {
+        cfg.channel_config as u16
+    };
     let mut p = Vec::new();
     p.extend_from_slice(&[0u8; 6]); // reserved
     p.extend_from_slice(&1u16.to_be_bytes()); // data_reference_index
@@ -1431,7 +1467,11 @@ mod tests {
 
     impl BitWriter {
         fn new(prefix: Vec<u8>) -> Self {
-            Self { out: prefix, acc: 0, n: 0 }
+            Self {
+                out: prefix,
+                acc: 0,
+                n: 0,
+            }
         }
         fn bit(&mut self, b: u8) {
             self.acc = (self.acc << 1) | (b & 1);
@@ -1476,14 +1516,14 @@ mod tests {
         let frame_len = 7 + payload_len;
         let mut f = vec![
             0xFF,
-            0xF1, // MPEG-4, no CRC
-            (1 << 6) | (3 << 2), // AAC-LC (profile 1), 48 kHz (index 3)
+            0xF1,                                       // MPEG-4, no CRC
+            (1 << 6) | (3 << 2),                        // AAC-LC (profile 1), 48 kHz (index 3)
             (2 << 6) | ((frame_len >> 11) as u8 & 0x3), // stereo
             (frame_len >> 3) as u8,
             ((frame_len as u8 & 0x7) << 5) | 0x1F,
             0xFC,
         ];
-        f.extend(std::iter::repeat(0xABu8).take(payload_len));
+        f.extend(std::iter::repeat_n(0xABu8, payload_len));
         f
     }
 
@@ -1513,7 +1553,13 @@ mod tests {
         let mut acc = 0u8;
         for i in 0..4u64 {
             let es = if i == 0 {
-                annexb(&[&[9, 0xF0][..], &sps, &pps, &[5, 0x88, 0x80, 0x10], &[6, 1, 2, 3]])
+                annexb(&[
+                    &[9, 0xF0][..],
+                    &sps,
+                    &pps,
+                    &[5, 0x88, 0x80, 0x10],
+                    &[6, 1, 2, 3],
+                ])
             } else {
                 annexb(&[&[9, 0xF0][..], &[1, 0x9A, 0x40 + i as u8, 0x22]])
             };
@@ -1536,7 +1582,10 @@ mod tests {
         while i + 8 <= data.len() {
             let size = u32::from_be_bytes(data[i..i + 4].try_into().unwrap()) as usize;
             let kind = String::from_utf8_lossy(&data[i + 4..i + 8]).to_string();
-            assert!(size >= 8 && i + size <= data.len(), "bad box {kind} size {size}");
+            assert!(
+                size >= 8 && i + size <= data.len(),
+                "bad box {kind} size {size}"
+            );
             out.push((kind, data[i + 8..i + size].to_vec()));
             i += size;
         }
@@ -1545,7 +1594,11 @@ mod tests {
     }
 
     fn find<'a>(boxes: &'a [(String, Vec<u8>)], kind: &str) -> &'a [u8] {
-        &boxes.iter().find(|(k, _)| k == kind).unwrap_or_else(|| panic!("missing {kind}")).1
+        &boxes
+            .iter()
+            .find(|(k, _)| k == kind)
+            .unwrap_or_else(|| panic!("missing {kind}"))
+            .1
     }
 
     // ──── the tests ────
@@ -1559,8 +1612,12 @@ mod tests {
     fn transmux_produces_valid_init_and_fragment() {
         let mut t = Transmuxer::new();
         // Two segments so the dangling final PES of segment 1 completes.
-        let (frag1, _) = t.push_part(&test_segment(90_000, 1500)).expect("samples in push 1");
-        let (frag2, _) = t.push_part(&test_segment(96_000, 1500)).expect("samples in push 2");
+        let (frag1, _) = t
+            .push_part(&test_segment(90_000, 1500))
+            .expect("samples in push 1");
+        let (frag2, _) = t
+            .push_part(&test_segment(96_000, 1500))
+            .expect("samples in push 2");
         let init = t.init_segment().expect("init after SPS/PPS seen");
 
         // Init: ftyp + moov with two traks and two trexes.
@@ -1575,7 +1632,10 @@ mod tests {
         let init_str = init.windows(test_sps().len()).any(|w| w == test_sps());
         assert!(init_str, "SPS embedded in avcC");
         assert!(init.windows(4).any(|w| w == b"avc3"), "avc3 sample entry");
-        assert!(!init.windows(4).any(|w| w == b"avc1"), "no avc1 sample entry");
+        assert!(
+            !init.windows(4).any(|w| w == b"avc1"),
+            "no avc1 sample entry"
+        );
 
         // Fragment 1: moof + mdat, video traf has 3 complete AUs. The 4th video
         // PES and the lone audio PES of segment 1 only complete when segment 2
@@ -1586,11 +1646,18 @@ mod tests {
         assert_eq!(frag[1].0, "mdat");
         let moof = walk(&frag[0].1);
         let trafs: Vec<_> = moof.iter().filter(|(k, _)| k == "traf").collect();
-        assert_eq!(trafs.len(), 1, "video only: the single audio PES is still open");
+        assert_eq!(
+            trafs.len(),
+            1,
+            "video only: the single audio PES is still open"
+        );
         let v_traf = walk(&trafs[0].1);
         let v_tfdt = find(&v_traf, "tfdt");
         assert_eq!(v_tfdt[0], 1, "64-bit tfdt");
-        assert_eq!(u64::from_be_bytes(v_tfdt[4..12].try_into().unwrap()), 90_000);
+        assert_eq!(
+            u64::from_be_bytes(v_tfdt[4..12].try_into().unwrap()),
+            90_000
+        );
         let v_trun = find(&v_traf, "trun");
         assert_eq!(u32::from_be_bytes(v_trun[4..8].try_into().unwrap()), 3);
 
@@ -1607,7 +1674,10 @@ mod tests {
         let a_trun = find(&a_traf, "trun");
         assert_eq!(u32::from_be_bytes(a_trun[4..8].try_into().unwrap()), 2);
         let a_tfdt = find(&a_traf, "tfdt");
-        assert_eq!(u64::from_be_bytes(a_tfdt[4..12].try_into().unwrap()), 48_000);
+        assert_eq!(
+            u64::from_be_bytes(a_tfdt[4..12].try_into().unwrap()),
+            48_000
+        );
     }
 
     #[test]
@@ -1642,7 +1712,9 @@ mod tests {
         const WRAP: u64 = 1 << 33;
         let mut t = Transmuxer::new();
         let _ = t.push_part(&test_segment(WRAP - 3000, 1500)); // last AU wraps past 2^33
-        let (frag, _) = t.push_part(&test_segment(1500, 1500)).expect("post-wrap samples");
+        let (frag, _) = t
+            .push_part(&test_segment(1500, 1500))
+            .expect("post-wrap samples");
         let moof = walk(&walk(&frag)[0].1);
         let trafs: Vec<_> = moof.iter().filter(|(k, _)| k == "traf").collect();
         let v = walk(&trafs[0].1);
@@ -1678,7 +1750,9 @@ mod tests {
         // onto the new stream: the first fragment after reset starts at the new
         // segment's own first COMPLETED AU (its first PES terminates when the
         // second arrives, so 3 of its 4 AUs complete within the push).
-        let (frag, _) = t.push_part(&test_segment(900_000, 1500)).expect("post-reset samples");
+        let (frag, _) = t
+            .push_part(&test_segment(900_000, 1500))
+            .expect("post-reset samples");
         let moof = walk(&walk(&frag)[0].1);
         let trafs: Vec<_> = moof.iter().filter(|(k, _)| k == "traf").collect();
         let v = walk(&trafs[0].1);
@@ -1712,7 +1786,7 @@ mod tests {
             ((frame_len as u8 & 0x7) << 5) | 0x1F,
             0xFC,
         ];
-        f.extend(std::iter::repeat(0xABu8).take(payload_len));
+        f.extend(std::iter::repeat_n(0xABu8, payload_len));
         f
     }
 
@@ -1736,7 +1810,11 @@ mod tests {
         assert!(t.push_part(&audio_segment_cfg(90_000, 3, 2)).is_none()); // open PES
         let (a, _) = t.push_part(&audio_segment_cfg(93_840, 3, 2)).unwrap(); // matching -> emitted
         let moof = walk(&walk(&a)[0].1);
-        assert_eq!(moof.iter().filter(|(k, _)| k == "traf").count(), 1, "matching audio emitted");
+        assert_eq!(
+            moof.iter().filter(|(k, _)| k == "traf").count(),
+            1,
+            "matching audio emitted"
+        );
 
         // Now a mismatched-config PES arrives. It completes the prior matching
         // PES (still 48k stereo, fine), but the NEW 44.1k-mono frames must not
@@ -1745,7 +1823,10 @@ mod tests {
         let after = t.push_part(&audio_segment_cfg(101_520, 4, 1));
         // The mismatched frames were dropped: the completing PES yields no audio
         // samples, so the fragment is empty (None) rather than garbled audio.
-        assert!(after.is_none(), "mismatched-config audio dropped, not emitted");
+        assert!(
+            after.is_none(),
+            "mismatched-config audio dropped, not emitted"
+        );
     }
 
     fn audio_tfdt(frag: &[u8]) -> u64 {
@@ -1766,13 +1847,29 @@ mod tests {
         let mut t = Transmuxer::new();
         assert!(t.push_part(&audio_segment(90_000)).is_none());
         let (a, _) = t.push_part(&audio_segment(93_870)).unwrap(); // +3840 +30 jitter
-        assert_eq!(audio_tfdt(&a), 48_000, "first fragment anchors at the measurement");
+        assert_eq!(
+            audio_tfdt(&a),
+            48_000,
+            "first fragment anchors at the measurement"
+        );
         let (b, _) = t.push_part(&audio_segment(97_655)).unwrap(); // +3840 -55 jitter
-        assert_eq!(audio_tfdt(&b), 50_048, "16-tick early measurement coalesced");
+        assert_eq!(
+            audio_tfdt(&b),
+            50_048,
+            "16-tick early measurement coalesced"
+        );
         let (c, _) = t.push_part(&audio_segment(9_000_000)).unwrap(); // a real splice
-        assert_eq!(audio_tfdt(&c), 52_096, "expectation chains, not measured 52082");
+        assert_eq!(
+            audio_tfdt(&c),
+            52_096,
+            "expectation chains, not measured 52082"
+        );
         let (d, _) = t.push_part(&audio_segment(9_003_840)).unwrap();
-        assert_eq!(audio_tfdt(&d), 4_800_000, "a splice re-anchors at the measurement");
+        assert_eq!(
+            audio_tfdt(&d),
+            4_800_000,
+            "a splice re-anchors at the measurement"
+        );
     }
 
     /// PAT/PMT plus four video AUs whose PES arrive in DECODE order with
@@ -1808,9 +1905,13 @@ mod tests {
         // duration inflation that desynced hls.js's fragment lookup from the
         // buffer on B-frame channels.
         let mut t = Transmuxer::new();
-        let (_, d1) = t.push_part(&bframe_segment(90_000)).expect("3 AUs complete");
+        let (_, d1) = t
+            .push_part(&bframe_segment(90_000))
+            .expect("3 AUs complete");
         assert!((d1 - 4500.0 / 90_000.0).abs() < 1e-9, "3 frames, got {d1}");
-        let (_, d2) = t.push_part(&bframe_segment(96_000)).expect("4 AUs complete");
+        let (_, d2) = t
+            .push_part(&bframe_segment(96_000))
+            .expect("4 AUs complete");
         // The dangling 4th AU of segment 1 plus 3 of segment 2.
         assert!((d2 - 6000.0 / 90_000.0).abs() < 1e-9, "4 frames, got {d2}");
     }
@@ -1829,14 +1930,23 @@ mod tests {
         // SPLICE_FWD and any backward restart bridge onto the working cadence.
         let mut t = Transmuxer::new();
         let _ = t.push_part(&test_segment(90_000, 1500)); // output dts 90000..93000
-        let (frag2, d2) = t.push_part(&test_segment(9_000_000, 1500)).expect("samples");
+        let (frag2, d2) = t
+            .push_part(&test_segment(9_000_000, 1500))
+            .expect("samples");
         // Fragment 2 leads with the dangling pre-splice AU (94500); the new
         // program's clock (9_000_000) bridges to the next cadence slot (96000).
         assert_eq!(video_tfdt(&frag2), 94_500);
-        assert!((d2 - 6000.0 / 90_000.0).abs() < 1e-9, "4 frames despite the jump, got {d2}");
+        assert!(
+            (d2 - 6000.0 / 90_000.0).abs() < 1e-9,
+            "4 frames despite the jump, got {d2}"
+        );
         // A later BACKWARD restart bridges the same way.
         let (frag3, _) = t.push_part(&test_segment(1_500, 1500)).expect("samples");
-        assert_eq!(video_tfdt(&frag3), 100_500, "output timeline continues unbroken");
+        assert_eq!(
+            video_tfdt(&frag3),
+            100_500,
+            "output timeline continues unbroken"
+        );
     }
 
     #[test]
@@ -1853,7 +1963,11 @@ mod tests {
         assert_eq!(audio_tfdt(&b), 50_048);
         // PES3 (pts 107280) measures 5 frames past the expectation: filled.
         let (c, _) = t.push_part(&audio_segment(111_120)).unwrap();
-        assert_eq!(audio_tfdt(&c), 52_096, "gap start stays on the running clock");
+        assert_eq!(
+            audio_tfdt(&c),
+            52_096,
+            "gap start stays on the running clock"
+        );
         let moof = walk(&walk(&c)[0].1);
         let trafs: Vec<_> = moof.iter().filter(|(k, _)| k == "traf").collect();
         let a_traf = walk(&trafs[0].1);
@@ -1872,8 +1986,8 @@ mod tests {
         let mut t = Transmuxer::new();
         let _ = t.push_part(&test_segment(90_000, 1500)); // out dts 90000..93000
         t.drop_partial_input(); // dangling 4th AU lost (the abandoned tail)
-        // Next segment starts 12000 ticks (133ms) past the cadence slot —
-        // well under the 0.25s tolerance, bridged only because of the abandon.
+                                // Next segment starts 12000 ticks (133ms) past the cadence slot —
+                                // well under the 0.25s tolerance, bridged only because of the abandon.
         let (frag2, _) = t.push_part(&test_segment(106_500, 1500)).expect("samples");
         assert_eq!(video_tfdt(&frag2), 94_500, "lands exactly on the cadence");
     }
@@ -1890,6 +2004,9 @@ mod tests {
         let (frag2, d2) = t.push_part(&test_segment(141_000, 1500)).expect("samples");
         // Dangler at 94500, then 141000 bridges onto 96000.
         assert_eq!(video_tfdt(&frag2), 94_500);
-        assert!((d2 - 6000.0 / 90_000.0).abs() < 1e-9, "gapless 4 frames, got {d2}");
+        assert!(
+            (d2 - 6000.0 / 90_000.0).abs() < 1e-9,
+            "gapless 4 frames, got {d2}"
+        );
     }
 }

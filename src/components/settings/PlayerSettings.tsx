@@ -5,6 +5,8 @@ import { DEFAULT_AUDIO_BOOST } from '../../types';
 import { Fader } from '../AudioBoostFaders';
 import { audioBoostFaderDefs, audioBoostResetPatch } from '../../utils/audioBoost';
 import { reportCodecPreference } from '../../utils/codecPreference';
+import { invoke } from '@tauri-apps/api/core';
+import { LL_TARGET_DEFAULT } from '../../utils/latency';
 
 const Toggle = ({ enabled, onChange }: { enabled: boolean; onChange: () => void }) => (
   <button
@@ -266,17 +268,44 @@ const PlayerSettings = () => {
         />
 
         <SettingsRow
-          title="Low Latency Mode"
-          description="Reduce stream delay for live content (may affect stability)"
-          control={
-            <Toggle
-              enabled={videoPlayer?.low_latency_mode ?? true}
-              onChange={() =>
+          title="Live Edge Gap"
+          description="How far behind the live edge to ride. Lower is closer to live; the lowest gaps need Low Latency on (and a capable connection) to stay smooth. Reopen the stream to apply."
+        >
+          <div className="flex items-center gap-3">
+            <input
+              type="range"
+              min="2"
+              max="10"
+              step="0.1"
+              value={videoPlayer?.ll_target_latency ?? LL_TARGET_DEFAULT}
+              onChange={(e) =>
                 updateSettings({
                   ...settings,
-                  video_player: { ...videoPlayer, low_latency_mode: !(videoPlayer?.low_latency_mode ?? true) },
+                  video_player: { ...videoPlayer, ll_target_latency: parseFloat(e.target.value) },
                 })
               }
+              className="w-full accent-accent cursor-pointer"
+            />
+            <span className="text-[12px] font-medium text-textPrimary tabular-nums flex-shrink-0">
+              {(videoPlayer?.ll_target_latency ?? LL_TARGET_DEFAULT).toFixed(1)}s
+            </span>
+          </div>
+        </SettingsRow>
+
+        <SettingsRow
+          title="Low Latency"
+          description="Use the low-latency engine to hold a tight Live Edge Gap smoothly on channels that support it. Off keeps the stable path; if a stream stutters or won't play, turn this off."
+          control={
+            <Toggle
+              enabled={videoPlayer?.experimental_low_latency ?? false}
+              onChange={() => {
+                const next = !(videoPlayer?.experimental_low_latency ?? false);
+                updateSettings({
+                  ...settings,
+                  video_player: { ...videoPlayer, experimental_low_latency: next },
+                });
+                invoke('set_experimental_low_latency', { enabled: next }).catch(() => {});
+              }}
             />
           }
         />
@@ -331,11 +360,11 @@ const PlayerSettings = () => {
           description="Prevent letterboxing by constraining window resize to maintain video aspect ratio"
           control={
             <Toggle
-              enabled={videoPlayer?.lock_aspect_ratio ?? false}
+              enabled={videoPlayer?.lock_aspect_ratio ?? true}
               onChange={() =>
                 updateSettings({
                   ...settings,
-                  video_player: { ...videoPlayer, lock_aspect_ratio: !(videoPlayer?.lock_aspect_ratio ?? false) },
+                  video_player: { ...videoPlayer, lock_aspect_ratio: !(videoPlayer?.lock_aspect_ratio ?? true) },
                 })
               }
             />

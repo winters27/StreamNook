@@ -319,15 +319,18 @@ impl MultiNookServer {
             }
         };
 
-        // Detect ad markers for the per-tile state — same shared logic as the
-        // solo player, and read-only the same way: the tile relay is ad-neutral
-        // and serves the upstream's segments untouched. The detected state
-        // gates the tile's low-latency prefetch promotion (`ads_now`) so it
-        // never fast-forwards into an ad. For playback only; the core never
-        // reports ads to a plugin. This server only relays the media playlist
-        // (not .ts), so every body is a playlist worth scanning; free.
+        // Detect ad markers for the per-tile state — same shared logic as the solo
+        // player, read-only: the tile relay is ad-neutral and serves the upstream's
+        // segments untouched. For playback only; the core never reports ads to a plugin.
+        // This server only relays the media playlist (not .ts), so every body is a
+        // playlist worth scanning; free. The one rewrite is lowering Twitch's
+        // over-declared #EXT-X-TARGETDURATION (6s for ~2s segments) to the real segment
+        // size: hls.js derives its live-playlist RELOAD cadence from targetduration, so
+        // the inflated 6 makes it re-poll too slowly to keep a small per-tile buffer fed
+        // and the tile stalls shortly after starting. Tile low latency, when enabled, is
+        // served by the per-tile parts origin above and never reaches here.
         if let Ok(text) = std::str::from_utf8(&bytes) {
-            let ads_now = {
+            {
                 let mut st = ad_state.lock().unwrap();
                 if let Some(n) = ad_detect::update(&mut st, text) {
                     info!(
@@ -335,39 +338,10 @@ impl MultiNookServer {
                         stream_id, n, st.matched_markers
                     );
                 }
-                st.ads_present
-            };
-
-            // Build the served playlist exactly like the solo relay
-            // (stream_server): lower Twitch's over-declared
-            // #EXT-X-TARGETDURATION (it declares 6s for ~2s segments) to the real
-            // segment size. hls.js derives its live-playlist RELOAD cadence from
-            // targetduration, so the inflated 6 makes it re-poll too slowly to keep a
-            // small per-tile buffer fed: the tile plays through its buffer and stalls
-            // shortly after starting. The solo player only avoids this because its
-            // relay already does this rewrite; without it here, MultiNook tiles stall
-            // right after load. Finally promote low-latency PREFETCH hints (ad-gated,
-            // refresh-stable) so tiles on a low-latency channel ride near the live edge
-            // like the solo player; normal-latency channels have no hints (no-op).
-            let mut work: String = text.to_string();
-            if let Some(rt) = ad_detect::retarget_playlist(&work) {
-                work = rt;
             }
-            // Prefetch promotion stays DISABLED on this fallback path. Low-latency
-            // channels are normally served by the per-tile LL origin above and never
-            // reach here; a playlist reaches this point with prefetch hints only when
-            // the origin probe failed (network hiccup, kill switch). Promoting without
-            // a stable-URL scheme freezes hls.js on its cross-refresh URL check
-            // ("media sequence mismatch": Twitch re-signs PREFETCH URLs when the
-            // segment finalizes), and this relay has no SEGMENT_MAP, so the safe
-            // fallback is retarget-only.
-            let enable_prefetch_promotion = false;
-            if enable_prefetch_promotion && !ads_now {
-                if let Some(pp) = ad_detect::promote_prefetch(&work) {
-                    work = pp;
-                }
+            if let Some(rt) = ad_detect::retarget_playlist(text) {
+                bytes = rt.into_bytes();
             }
-            bytes = work.into_bytes();
         }
 
         Ok(warp::http::Response::builder()

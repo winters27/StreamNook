@@ -18,6 +18,7 @@ import { qualitiesEquivalent } from '../utils/quality';
 import { Logger } from '../utils/logger';
 import { syncTauriWindowFullscreen } from '../utils/windowFullscreen';
 import { startLatencyGovernor } from '../utils/liveLatencyGovernor';
+import { LL_DISPLAY_CALIBRATION, LL_TARGET_DEFAULT } from '../utils/latency';
 import { startLLDiagnostics, stopLLDiagnostics, llDiagNote, isLLDiagEnabled } from '../utils/llDiagnostics';
 import {
   applyAudioBoost,
@@ -40,33 +41,27 @@ function paintAudioBoostButton(btn: Element | null, on: boolean): void {
   if (tip) tip.textContent = on ? 'Audio Boost: On' : 'Audio Boost: Off';
 }
 
-// Per-channel learned cushion (LL path). The stall-adaptive cushion proves a
-// channel's delivery wobbliness during a session; remembering it means a wobbly
-// channel pays its stalls ONCE ever instead of once per session, while clean
-// channels keep the tight default. The learned value relaxes by 0.5s per day
-// since it was set, so one bad night doesn't tax a channel forever.
-// 2.0 by owner decision 2026-06-12: at 1.5 every upstream famine over ~1.5s
-// cost one visible blip per channel until its cushion learned; 2.0 absorbs the
-// common sub-2s famine class silently for ~0.5s more latency (~2.5-3s from
-// live, Twitch's own neighborhood). Origin-side ABR is the eventual no-trade
-// answer; revisit this default when it ships.
-const LL_CUSHION_DEFAULT = 2.0;
-// Version the learned-cushion store: every time a stall-causing pipeline bug
-// is fixed, cushions learned from those stalls are poisoned lessons that pin
-// channels above the intended ~2-2.5s settle. v1 = CMAF nominal-duration era;
-// v2 = truncated-flush/404-spiral era. Bump to orphan and re-learn.
-const llCushionKey = (channel: string) => `streamnook.ll-cushion.v3.${channel.toLowerCase()}`;
-function learnedLLCushion(channel: string | undefined): number {
-  if (!channel) return LL_CUSHION_DEFAULT;
+// Per-channel learned cushion (LL path), relative to the viewer's chosen target. The
+// `base` is the user's target latency converted to the real (raw) cushion. The
+// stall-adaptive cushion proves a channel's delivery wobbliness during a session;
+// remembering it means a wobbly channel pays its stalls ONCE ever instead of once per
+// session, while clean channels keep the user's tight target. The learned value relaxes
+// by 0.5s per day, so one bad night doesn't tax a channel forever, and it is clamped to
+// [base, base + 2] so it never drops below the user's target nor runs away above it.
+// Version the store: when a stall-causing pipeline bug is fixed, cushions learned from
+// those stalls are poisoned lessons; bump to orphan and re-learn.
+const llCushionKey = (channel: string) => `streamnook.ll-cushion.v4.${channel.toLowerCase()}`;
+function learnedLLCushion(channel: string | undefined, base: number): number {
+  if (!channel) return base;
   try {
     const raw = localStorage.getItem(llCushionKey(channel));
-    if (!raw) return LL_CUSHION_DEFAULT;
+    if (!raw) return base;
     const { c, t } = JSON.parse(raw) as { c: number; t: number };
-    if (!Number.isFinite(c) || !Number.isFinite(t)) return LL_CUSHION_DEFAULT;
+    if (!Number.isFinite(c) || !Number.isFinite(t)) return base;
     const days = Math.max(0, (Date.now() - t) / 86_400_000);
-    return Math.max(LL_CUSHION_DEFAULT, Math.min(3.0, c - 0.5 * days));
+    return Math.max(base, Math.min(base + 2, c - 0.5 * days));
   } catch {
-    return LL_CUSHION_DEFAULT;
+    return base;
   }
 }
 function rememberLLCushion(channel: string | undefined, cushion: number) {
@@ -673,39 +668,36 @@ const VideoPlayer = () => {
     } else if (Hls.isSupported()) {
       Logger.debug('[HLS] HLS.js is supported, creating player...');
 
-      // Is the relay's LL-HLS origin active for this channel? It is brought up at
-      // stream start (before this runs), and `lowLatencyMode` can only be chosen at
-      // construction, so resolve it now. When active, the relay serves a real LL-HLS
-      // playlist (parts + blocking reload) and hls.js's native low-latency controller
-      // rides ~2s from live; when not (normal-latency channel or kill-switch
-      // fallback), we keep the stable non-LL path (cushion + governor).
-      // Two distinct signals, NOT one:
-      //  - originActive: the relay's LL-HLS origin is serving real parts (#EXT-X-PART
-      //    + blocking reload). ONLY then may hls.js run lowLatencyMode — its native LL
-      //    controller needs parts to consume. (CMAF channels today; H.264/TS once the
-      //    TS origin is enabled.)
-      //  - prefetchPresent: the channel is low-latency (PREFETCH hints) but the origin
-      //    didn't take over (e.g. H.264/TS with the TS origin off). The relay promotes
-      //    the hints on the stable non-LL path, so the player rides a tighter cushion
-      //    than a normal-latency channel WITHOUT entering hls.js LL mode.
-      // Conflating the two was the regression: a TS channel reported "low latency",
-      // hls.js went lowLatencyMode against a no-parts playlist, mistimed its blocking
-      // reloads, and stalled then drifted 15-20s behind.
+      // Is the relay's parts-based LL-HLS origin active for this channel? It is brought
+      // up at stream start (before this runs), and `lowLatencyMode` can only be chosen at
+      // construction, so resolve it now. The experimental-low-latency setting drives the
+      // backend origin kill switch, so this single signal already reflects it: when the
+      // setting is off (or the channel isn't low-latency) the origin is inactive and this
+      // is false, and we use the stable whole-segment path (cushion + governor).
       let isLowLatencyChannel = false;
-      let prefetchPresent = false;
-      if (currentSettings.low_latency_mode) {
-        try {
-          isLowLatencyChannel = await invoke<boolean>('get_stream_low_latency');
-          prefetchPresent = await invoke<boolean>('get_stream_prefetch_present');
-        } catch { /* command unavailable / stream gone */ }
-      }
-      // Superseded while awaiting the probes: a newer invocation (or teardown)
+      try {
+        isLowLatencyChannel = await invoke<boolean>('get_stream_low_latency');
+      } catch { /* command unavailable / stream gone */ }
+      // Superseded while awaiting the probe: a newer invocation (or teardown)
       // owns the element now. Constructing would create the zombie player.
       if (seq !== createSeqRef.current) {
         Logger.debug('[HLS] Player init superseded mid-probe; aborting this invocation');
         return;
       }
-      Logger.debug(`[HLS] LL-HLS origin active=${isLowLatencyChannel}, low-latency channel (prefetch)=${prefetchPresent}`);
+      Logger.debug(`[HLS] LL-HLS origin active=${isLowLatencyChannel}`);
+
+      // The viewer's preferred behind-live target (displayed seconds), converted to the
+      // real cushion/governor value PER PATH so the displayed number tracks the setting
+      // either way: the parts path's overlay subtracts the display calibration (so target
+      // a calibration higher), while the plain whole-segment path shows hls.latency
+      // directly (so target the number as-is). This applies on EVERY channel — a
+      // normal-latency broadcast just can't always sustain the tightest values (whole
+      // segments arrive with delivery jitter), so the per-channel stall-adaptive cushion
+      // settles it where that channel stays smooth.
+      const llTargetDisplayed = currentSettings.ll_target_latency ?? LL_TARGET_DEFAULT;
+      const llTargetRaw = isLowLatencyChannel
+        ? llTargetDisplayed + LL_DISPLAY_CALIBRATION
+        : llTargetDisplayed;
 
       // Create HLS.js instance with optimized settings
       const hls = new Hls({
@@ -769,18 +761,13 @@ const VideoPlayer = () => {
         nudgeOffset: 0.2, // Restored closer to default — buffer gate fixes the real issue
         nudgeMaxRetry: 3, // Restored to default
         maxFragLookUpTolerance: 0.5, // More tolerant fragment lookup
-        liveSyncDuration: isLowLatencyChannel
-          // LL-HLS origin active: parts are consumed progressively, so the
-          // playhead rides near-live without the whole-segment wait. True
-          // latency settles at roughly cushion + governor band + origin
-          // pipeline (~0.5-1s), so the 2.0 default lands ~2.5-3s from live
-          // (Twitch's own player rides ~2.5s). Starts from the channel's
-          // LEARNED cushion when this channel's delivery proved wobbly before
-          // (see learnedLLCushion; relaxes back over days).
-          ? learnedLLCushion(currentStream?.user_login)
-          : (prefetchPresent
-              ? 4 // Low-latency channel via promotion (no origin, e.g. H.264/TS): the relay freshens the edge, so a 4s cushion is the proven-stable ~3-3.5s-true floor (smooth LL delivery, no jitter to absorb).
-              : (currentSettings.low_latency_mode ? 6 : 8)), // Normal-latency channel: 6 absorbs ~3s segment jitter; 8 when low latency is off.
+        // The viewer's Live Edge Gap drives the cushion on EVERY path (the slider isn't
+        // gated under the Low Latency toggle). The per-channel learned cushion only
+        // raises it above the chosen gap where that channel stalled before (normal-channel
+        // delivery jitter), so a capable channel/system holds the gap and a jittery one
+        // settles where it's smooth. The Low Latency engine (when on) is what lets the
+        // lowest gaps stay smooth on supported channels; without it, low gaps self-limit.
+        liveSyncDuration: learnedLLCushion(currentStream?.user_login, llTargetRaw),
         liveMaxLatencyDuration: 60, // Capped to 60s to allow GC. Prevents holding massive 10min TS buffers in RAM. Must stay > liveSyncDuration.
         // 1 = hls.js's latency controller is fully inert on EVERY path (its rate is
         // quantized to 0.05 steps — dist ~32618 — and each abrupt step is audible
@@ -807,15 +794,13 @@ const VideoPlayer = () => {
         abrBandWidthUpFactor: 0.7, // Cautious when upgrading quality
       });
 
-      // Which delivery path this instance rides, for the stats overlay's
-      // latency-metric choice (each path has a different honest ruler:
-      // ll/plain -> hls.latency; promotion -> PDT, because the promoted
-      // prefetch hints inflate hls.js's edge with phantom future).
+      // Which delivery path this instance rides, for the stats overlay's latency
+      // metric. 'll' = the parts-based LL-HLS origin (hls.latency is honest there, and
+      // the overlay subtracts a fixed calibration so the number is Twitch-comparable);
+      // 'plain' = the stable whole-segment path (hls.latency shown directly).
       (hls as unknown as { __snPathHint?: string }).__snPathHint = isLowLatencyChannel
         ? 'll'
-        : prefetchPresent
-          ? 'promotion'
-          : 'plain';
+        : 'plain';
 
       hlsRef.current = hls;
 
@@ -846,35 +831,26 @@ const VideoPlayer = () => {
       latencyGovernorStopRef.current = isLowLatencyChannel
         ? startLatencyGovernor(hls, video, {
             label: 'solo-ll',
-            // Drive BEHIND-LIVE (the playhead's distance from the live edge) to
-            // ~2.6s by speeding up — NOT by shrinking the buffer. The origin
-            // refills the buffer from the edge as fast as we consume it, so the
-            // buffer stays full while the playhead moves closer to live.
-            // hls.latency is honest here (LL-origin lists only real parts). The
-            // `floor` below still protects the buffer, so catch-up never stalls.
-            latencyTarget: 2.6,
+            // Drive BEHIND-LIVE (the playhead's distance from the live edge) toward the
+            // viewer's chosen target by speeding up — NOT by shrinking the buffer.
+            // hls.latency is honest here (the LL origin lists only real parts). The stats
+            // overlay subtracts a fixed calibration so the DISPLAYED number matches the
+            // viewer's setting. The `floor` below protects the buffer, so catch-up never
+            // stalls; if the chosen target is too tight for a system the stall-adaptive
+            // bump raises it for that channel.
+            latencyTarget: llTargetRaw,
             getLatency: () =>
               typeof hls.latency === 'number' && hls.latency > 0 ? hls.latency : null,
-            // Steeper gain than the legacy 0.03: latency targeting needs real
-            // catch-up a few hundred ms over target. 0.12/s reaches the 1.08
-            // ceiling by ~3.4s behind and gives ~1.02x at 2.9s (the old 0.03
-            // gave 1.003x there — invisible and below the apply threshold, the
-            // "stuck at 1.00x" report). Ramp + buffer floor keep it smooth/safe.
             gain: 0.12,
             ceiling: 1.08,
-            // Tight band: engage just 0.1s past the 2.6s target, so the playhead
-            // is actively pulled toward ~2.6-2.7 rather than allowed to sit at 2.9.
+            // Engage just past the target so the playhead is held near ~3.5 rather than
+            // drifting further back.
             band: 0.1,
-            // Low-buffer protection: on the LL path the forward buffer CANNOT
-            // exceed the distance behind live, so the margin is inherently
-            // ~1.5s; when delivery wobbles and the buffer dips under the
-            // floor, ease down to 0.97x instead of running it dry (a 3%
-            // slowdown is imperceptible; the stalls it prevents missed by
-            // milliseconds).
+            // Low-buffer protection: when delivery wobbles and the forward buffer dips
+            // under the floor, ease down to 0.97x instead of running it dry (a 3%
+            // slowdown is imperceptible; it prevents stalls by milliseconds).
             floor: 0.8,
             slowRate: 0.97,
-            // 500ms ticks so the slow side reacts inside a draining window;
-            // with rampStep 0.01 transitions still glide (0.02/s).
             tickMs: 500,
             rampStep: 0.01,
             log: Logger.debug,
@@ -1008,19 +984,6 @@ const VideoPlayer = () => {
         // re-download). On a low-latency stream with Low Latency on, tighten the
         // cushion to ~2s.
         //
-        // SUPERSEDED by the LL-HLS origin. This block was the whole-segment promotion
-        // era's cushion tightening (~3-4s). Real low latency now comes from the relay
-        // origin + hls.js lowLatencyMode (set at construction above), which targets ~2s
-        // directly. Leaving it off avoids overriding that liveSyncDuration mid-stream.
-        const ENABLE_LL_CUSHION_TIGHTEN: boolean = false;
-        if (ENABLE_LL_CUSHION_TIGHTEN && currentSettings.low_latency_mode) {
-          invoke<boolean>('get_stream_low_latency').then((lowLatency) => {
-            if (lowLatency && hlsRef.current === hls) {
-              hls.config.liveSyncDuration = 3;
-              Logger.debug('[HLS] Low-latency channel — cushion tightened to 3s');
-            }
-          }).catch(() => { /* command unavailable / stream gone */ });
-        }
 
         // Initialize Plyr AFTER we have the video loaded
         if (!playerRef.current) {
@@ -1193,9 +1156,11 @@ const VideoPlayer = () => {
                 typeof hls.config.liveSyncDuration === 'number' &&
                 Number.isFinite(hls.config.liveSyncDuration)
                   ? hls.config.liveSyncDuration
-                  : LL_CUSHION_DEFAULT;
-              if (cur < 3.0) {
-                hls.config.liveSyncDuration = Math.min(3.0, cur + 0.5);
+                  : llTargetRaw;
+              // Never raise more than ~2s above the viewer's chosen target.
+              const cap = llTargetRaw + 2;
+              if (cur < cap) {
+                hls.config.liveSyncDuration = Math.min(cap, cur + 0.5);
                 Logger.debug(
                   `[HLS] LL stall: cushion ${cur.toFixed(1)}s -> ${hls.config.liveSyncDuration.toFixed(1)}s`,
                 );
@@ -1739,15 +1704,23 @@ const VideoPlayer = () => {
   // nor a remount (which restartStream itself causes) is mistaken for a toggle — only
   // a genuine flip restarts. A first-run flag would let StrictMode's second invoke
   // fire a restart on mount, which then remounts and loops (the toast spam).
-  const prevLowLatencyRef = useRef(playerSettings.low_latency_mode);
+  const prevLowLatencyRef = useRef(playerSettings.experimental_low_latency);
   useEffect(() => {
-    if (prevLowLatencyRef.current === playerSettings.low_latency_mode) return;
-    prevLowLatencyRef.current = playerSettings.low_latency_mode;
-    if (currentStream && currentMediaType === 'live') {
-      Logger.debug('[HLS] Low Latency toggled — restarting stream to apply the new cushion');
-      restartStream();
-    }
-  }, [playerSettings.low_latency_mode]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (prevLowLatencyRef.current === playerSettings.experimental_low_latency) return;
+    prevLowLatencyRef.current = playerSettings.experimental_low_latency;
+    // Apply the new mode to the backend origin kill switch FIRST, then restart so the
+    // origin probe at stream start honors it (the parts path is gated by this).
+    invoke('set_experimental_low_latency', {
+      enabled: playerSettings.experimental_low_latency ?? false,
+    })
+      .catch(() => {})
+      .finally(() => {
+        if (currentStream && currentMediaType === 'live') {
+          Logger.debug('[HLS] Low Latency toggled — restarting stream to apply');
+          restartStream();
+        }
+      });
+  }, [playerSettings.experimental_low_latency]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Expose an imperative control adapter to the keybinding engine. Methods read
   // playerRef.current at call time so they survive player recreation; isActive()

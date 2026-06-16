@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { RefObject } from 'react';
 import type Hls from 'hls.js';
 import { Activity, Radio, X } from 'lucide-react';
+import { LL_DISPLAY_CALIBRATION } from '../utils/latency';
 
 // Live playback telemetry overlay (the "behind live" + FPS readout). Reads hls.js
 // and the <video> element directly each second while open, so it costs nothing
@@ -97,31 +98,20 @@ function readMetrics(hls: Hls | null, video: HTMLVideoElement | null): Metrics {
     }
     // "Behind live" = distance from the playhead to the live edge.
     //
-    // On the LL-HLS-origin path (lowLatencyMode), `hls.latency` is the honest metric:
-    // it's the gap from the playhead to the newest REAL part the origin serves (the
-    // origin only lists parts whose bytes exist, so there's no phantom-future
-    // over-read). We deliberately do NOT use PROGRAM-DATE-TIME here: Twitch's PDT is
-    // not guaranteed real wall-clock and its base varies per stream (observed reading
-    // anywhere from a correct ~2s to 90s+), and when it runs slightly ahead of the
-    // local clock the old `max(0, now - PDT)` clamped to 0 — the "shows 0s when really
-    // ~2s" bug. PDT/edge stay as fallbacks for non-LL streams that have no usable
-    // hls.latency.
+    // On the parts-based LL path ('ll'), `hls.latency` is honest (the origin lists only
+    // real parts, no phantom-future edge), but it measures playhead-to-edge, which sits
+    // ~1s above the glass-to-glass "latency to broadcaster" figure Twitch reports. We
+    // subtract a fixed calibration so the displayed number is comparable to Twitch's
+    // (the real ride is ~1s more; the governor drives the true value to ~3.5s). The
+    // stable path shows hls.latency directly, with PDT then the playlist edge as
+    // fallbacks when hls.latency is unavailable.
     let lat: number | null = null;
     const hlsLat = typeof hls.latency === 'number' && hls.latency > 0 ? hls.latency : null;
-    const isLowLatency = hls.config?.lowLatencyMode === true;
     const playingDate = hls.playingDate;
     const pdtLat = playingDate ? (Date.now() - playingDate.getTime()) / 1000 : null;
-    // Per-path honest ruler (set by the player at construction). PDT is ONLY
-    // trustworthy enough as the promotion path's lesser evil: its base is
-    // per-channel arbitrary (observed reading 7.5s while the content sat ~0.5s
-    // behind Twitch's player), so a PLAIN non-LL channel prefers hls.latency —
-    // its playlist is truthful, unlike promotion's phantom-future hints.
     const pathHint = (hls as unknown as { __snPathHint?: string }).__snPathHint;
-    const preferPdt = pathHint === 'promotion' || (pathHint == null && !isLowLatency);
-    if ((isLowLatency || pathHint === 'plain' || pathHint === 'll') && hlsLat != null) {
-      lat = hlsLat;
-    } else if (preferPdt && pdtLat != null && pdtLat > 0.2 && pdtLat < 60) {
-      lat = pdtLat;
+    if (pathHint === 'll' && hlsLat != null) {
+      lat = Math.max(0, hlsLat - LL_DISPLAY_CALIBRATION);
     } else if (hlsLat != null) {
       lat = hlsLat;
     } else if (pdtLat != null && pdtLat > 0.2 && pdtLat < 60) {

@@ -67,7 +67,6 @@ impl Default for AudioBoostSettings {
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct VideoPlayerSettings {
-    pub low_latency_mode: bool,
     pub max_buffer_length: u32,
     pub autoplay: bool,
     pub muted: bool,
@@ -76,24 +75,36 @@ pub struct VideoPlayerSettings {
     pub lock_aspect_ratio: bool,
     #[serde(default)]
     pub audio_boost: AudioBoostSettings,
+    /// Opt-in: drive playback through the parts-based LL-HLS origin (true Twitch-like
+    /// low latency) instead of the stable whole-segment path. Off by default; the
+    /// frontend syncs it to the runtime kill switch at startup. Beta while it's proven
+    /// stable per channel/hardware.
+    #[serde(default)]
+    pub experimental_low_latency: bool,
+    /// Displayed "behind live" the viewer wants to ride at on the low-latency path
+    /// (seconds). Lower rides closer to live but needs a capable system/connection;
+    /// higher is safer. The player adds the display calibration to get the real cushion
+    /// and governor target. Default 2.5.
+    #[serde(default = "default_ll_target_latency")]
+    pub ll_target_latency: f32,
+}
+
+fn default_ll_target_latency() -> f32 {
+    6.0
 }
 
 impl Default for VideoPlayerSettings {
     fn default() -> Self {
         Self {
-            // Off by default. On this stack a tighter live-sync can't actually beat
-            // ~6-8s: hls.js won't hold closer than Twitch's declared targetduration
-            // (~6s, even though segments are ~2s) without stalling. Real low latency
-            // is a relay-side change (rewrite the targetduration + promote PREFETCH
-            // segments), not this toggle, so leaving the toggle on just risks stalls.
-            low_latency_mode: false,
             max_buffer_length: 120,
             autoplay: true,
             muted: false,
             volume: 1.0,
             start_quality: -1,
-            lock_aspect_ratio: false,
+            lock_aspect_ratio: true,
             audio_boost: AudioBoostSettings::default(),
+            experimental_low_latency: false,
+            ll_target_latency: 6.0,
         }
     }
 }
