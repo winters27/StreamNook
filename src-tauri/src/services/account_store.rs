@@ -478,6 +478,10 @@ impl AccountStore {
         // Clear the primary token stores (file + cookies + keyring).
         let _ = TwitchService::logout().await;
 
+        // The drops/points credential is a separate device login; clear it too
+        // so a forced re-auth doesn't keep crediting a now-invalid account.
+        let _ = crate::services::drops_auth_service::DropsAuthService::logout().await;
+
         // Drop every account's own token + isolated web profile so nothing
         // lingers to re-hydrate a stale, scope-deficient session.
         for a in &accounts {

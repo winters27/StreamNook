@@ -79,6 +79,22 @@ pub(crate) fn twitch_pending_web_profile_dir() -> Result<PathBuf> {
     Ok(path)
 }
 
+/// The WebView2 profile directory holding the ACTIVE account's twitch.tv web
+/// session. This is the single source of truth for the signed-in web session:
+/// the login window, the subscribe window, and the stream resolver's token read
+/// all bind to it, so they can never disagree about which account is signed in.
+/// When an account is linked it is that account's own profile (adopting a
+/// freshly-staged first login if one is waiting); before any account is recorded
+/// it is the staging profile the login window writes to.
+pub(crate) fn active_twitch_web_profile_dir() -> Result<PathBuf> {
+    if let Some(primary) = crate::services::account_store::AccountStore::primary() {
+        adopt_pending_web_profile(&primary.user_id);
+        twitch_web_profile_dir(&primary.user_id)
+    } else {
+        twitch_pending_web_profile_dir()
+    }
+}
+
 /// True when a WebView2 profile folder holds a twitch.tv session (its cookie
 /// store has been written at least once).
 fn web_profile_has_session(dir: &PathBuf) -> bool {
@@ -377,12 +393,24 @@ impl TwitchService {
         Ok(())
     }
 
-    // Device Code Flow - the main login method
-    pub async fn login(_state: &AppState, app_handle: tauri::AppHandle) -> Result<String> {
+    // Device Code Flow - the main login method.
+    //
+    // Returns `(verification_uri, user_code)` from a SINGLE device flow and
+    // spawns the poller against that same flow's device_code. The caller shows
+    // this user_code and opens this verification_uri, so the code the user
+    // authorizes is always the one the poller is waiting on. (A previous version
+    // started a second, separate device flow just to fetch a code to display,
+    // which could leave the poller waiting on a code the user never authorized,
+    // hanging the login and leaving the app unauthenticated.)
+    pub async fn login(
+        _state: &AppState,
+        app_handle: tauri::AppHandle,
+    ) -> Result<(String, String)> {
         let client = crate::services::http::client().clone();
 
         // Start device flow
         let device_response = Self::start_device_flow(&client).await?;
+        let user_code = device_response.user_code.clone();
 
         debug!(
             "Device code flow started. User code: {}",
@@ -437,6 +465,22 @@ impl TwitchService {
                     // Store to cookies (new persistent storage)
                     let cookie_result = Self::store_token_to_cookies(&storable_token).await;
 
+                    // The web-session reads (stream resolver, follow/unfollow,
+                    // entitlement checks) gate on a logged_out flag that
+                    // twitch_logout sets. A fresh login has to clear it and drop
+                    // the stale cache, otherwise the next get_token() short-
+                    // circuits to "not logged in" and every web-session feature
+                    // stays dead until restart. This poller is the only place the
+                    // primary login actually completes, so it owns the reset.
+                    {
+                        use tauri::Manager;
+                        app_handle
+                            .state::<crate::models::settings::AppState>()
+                            .twitch_auth
+                            .on_account_changed()
+                            .await;
+                    }
+
                     match (file_result, cookie_result) {
                         (Ok(_), Ok(_)) => {
                             debug!("[LOGIN] Token stored successfully to file and cookies!");
@@ -486,8 +530,9 @@ impl TwitchService {
             }
         });
 
-        // Return the verification URI for the frontend to open
-        Ok(verification_uri)
+        // Return the verification URI and the matching user code for the frontend
+        // to open/display. Both come from the single device flow polled above.
+        Ok((verification_uri, user_code))
     }
 
     // Device code flow methods (kept for backward compatibility if needed)
@@ -1984,18 +2029,21 @@ impl TwitchService {
         }
     }
 
-    /// Follow a channel via Twitch GQL persisted mutation (FollowButton_FollowUser)
-    /// Hash captured live from Twitch web client on 2025-03-25
-    pub async fn follow_channel(target_user_id: &str) -> Result<()> {
-        use crate::services::drops_auth_service::DropsAuthService;
-
-        // GQL mutations require token + Client-Id to match.
-        // DropsAuthService provides a token issued for the Android client ID.
-        let token = DropsAuthService::get_token().await?;
+    /// Follow a channel via Twitch GQL persisted mutation (FollowButton_FollowUser).
+    /// Hash captured live from Twitch web client on 2025-03-25.
+    ///
+    /// Web-client mutations require a Client-Integrity token; the caller supplies
+    /// one (minted in a browser context and cached — see commands::integrity)
+    /// along with the `Client-Session-Id` it was bound to, plus the harvested web
+    /// session token + device id. No Android device login is involved.
+    pub async fn follow_channel(
+        oauth_token: &str,
+        device_id: Option<&str>,
+        integrity_token: &str,
+        session_id: &str,
+        target_user_id: &str,
+    ) -> Result<()> {
         let client = crate::services::http::client().clone();
-
-        // Twitch Android app client ID — matches the DropsAuthService token
-        const GQL_CLIENT_ID: &str = env!("TWITCH_ANDROID_CLIENT_ID");
 
         let payload = serde_json::json!({
             "operationName": "FollowButton_FollowUser",
@@ -2018,14 +2066,22 @@ impl TwitchService {
             target_user_id
         );
 
-        let response = client
+        let mut req = client
             .post("https://gql.twitch.tv/gql")
-            .header("Client-Id", GQL_CLIENT_ID)
-            .header(AUTHORIZATION, format!("OAuth {}", token))
+            .header(
+                "Client-Id",
+                crate::services::auth_proxy::TWITCH_WEB_CLIENT_ID,
+            )
+            .header(AUTHORIZATION, format!("OAuth {}", oauth_token))
+            .header("Client-Integrity", integrity_token)
+            .header("Client-Session-Id", session_id)
             .header(ACCEPT, "*/*")
-            .json(&payload)
-            .send()
-            .await?;
+            .header("Origin", "https://www.twitch.tv")
+            .header("Referer", "https://www.twitch.tv/");
+        if let Some(did) = device_id {
+            req = req.header("X-Device-Id", did);
+        }
+        let response = req.json(&payload).send().await?;
 
         let status = response.status();
         if !status.is_success() {
@@ -2051,15 +2107,20 @@ impl TwitchService {
         Ok(())
     }
 
-    /// Unfollow a channel via Twitch GQL persisted mutation (FollowButton_UnfollowUser)
-    /// Hash captured live from Twitch web client on 2025-03-25
-    pub async fn unfollow_channel(target_user_id: &str) -> Result<()> {
-        use crate::services::drops_auth_service::DropsAuthService;
-
-        let token = DropsAuthService::get_token().await?;
+    /// Unfollow a channel via Twitch GQL persisted mutation (FollowButton_UnfollowUser).
+    /// Hash captured live from Twitch web client on 2025-03-25.
+    ///
+    /// Same web-session credential as `follow_channel`: the active account's
+    /// harvested twitch.tv token plus the web Client-Id, so the unfollow targets
+    /// the signed-in account without any separate device login.
+    pub async fn unfollow_channel(
+        oauth_token: &str,
+        device_id: Option<&str>,
+        integrity_token: &str,
+        session_id: &str,
+        target_user_id: &str,
+    ) -> Result<()> {
         let client = crate::services::http::client().clone();
-
-        const GQL_CLIENT_ID: &str = env!("TWITCH_ANDROID_CLIENT_ID");
 
         let payload = serde_json::json!({
             "operationName": "FollowButton_UnfollowUser",
@@ -2081,14 +2142,22 @@ impl TwitchService {
             target_user_id
         );
 
-        let response = client
+        let mut req = client
             .post("https://gql.twitch.tv/gql")
-            .header("Client-Id", GQL_CLIENT_ID)
-            .header(AUTHORIZATION, format!("OAuth {}", token))
+            .header(
+                "Client-Id",
+                crate::services::auth_proxy::TWITCH_WEB_CLIENT_ID,
+            )
+            .header(AUTHORIZATION, format!("OAuth {}", oauth_token))
+            .header("Client-Integrity", integrity_token)
+            .header("Client-Session-Id", session_id)
             .header(ACCEPT, "*/*")
-            .json(&payload)
-            .send()
-            .await?;
+            .header("Origin", "https://www.twitch.tv")
+            .header("Referer", "https://www.twitch.tv/");
+        if let Some(did) = device_id {
+            req = req.header("X-Device-Id", did);
+        }
+        let response = req.json(&payload).send().await?;
 
         let status = response.status();
         if !status.is_success() {
@@ -2697,18 +2766,31 @@ impl TwitchService {
     /// Get streams by game name (convenience method that resolves game name to ID)
     /// Returns streams sorted by viewer count (highest first)
     pub async fn get_streams_by_game_name(
-        _state: &AppState,
+        state: &AppState,
         game_name: &str,
         exclude_user_login: Option<&str>,
         cursor: Option<&str>,
         limit: u32,
     ) -> Result<(Vec<TwitchStream>, Option<String>)> {
-        // First, get the game ID from the game name
+        // Resolve the display name to a category id, then reuse the id-based path.
         let game_id = match Self::get_game_id_by_name(game_name).await? {
             Some(id) => id,
             None => return Ok((Vec::new(), None)), // Game not found
         };
 
+        Self::get_streams_by_game_id(state, &game_id, exclude_user_login, cursor, limit).await
+    }
+
+    /// Fetch live streams in a category by its id, skipping the name→id lookup.
+    /// Prefer this when the caller already holds the category id (e.g. the live
+    /// `game_id` carried on the stream being watched).
+    pub async fn get_streams_by_game_id(
+        _state: &AppState,
+        game_id: &str,
+        exclude_user_login: Option<&str>,
+        cursor: Option<&str>,
+        limit: u32,
+    ) -> Result<(Vec<TwitchStream>, Option<String>)> {
         let token = Self::get_token().await.ok();
         let client = crate::services::http::client().clone();
 

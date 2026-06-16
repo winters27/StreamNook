@@ -31,8 +31,27 @@ pub(crate) const USER_AGENT: &str =
 const TURBO_TTL: Duration = Duration::from_secs(1800); // 30 min; Turbo rarely changes
 const SUB_TTL: Duration = Duration::from_secs(600); // 10 min per channel
 
-static TURBO_CACHE: OnceCell<Mutex<Option<(bool, Instant)>>> = OnceCell::new();
-static SUB_CACHE: OnceCell<Mutex<HashMap<String, (bool, Instant)>>> = OnceCell::new();
+// Both caches key by the viewer's OAuth token, so switching accounts (a
+// different token) or a token refresh re-checks entitlement instead of serving
+// the previous account's status. A Turbo main account would otherwise keep an
+// alternate account flagged ad-free until the TTL expired.
+static TURBO_CACHE: OnceCell<Mutex<HashMap<String, (bool, Instant)>>> = OnceCell::new();
+static SUB_CACHE: OnceCell<Mutex<HashMap<(String, String), (bool, Instant)>>> = OnceCell::new();
+
+/// Drop every cached Turbo/sub verdict. Called on account switch and logout so
+/// the next resolution re-checks entitlement for the now-active account rather
+/// than serving a verdict cached against the previous account's token. The
+/// caches key by token, so a genuinely different token would re-check on its own
+/// once the TTL lapsed; this just collapses that window to zero on a known
+/// account transition.
+pub(crate) fn clear_entitlement_caches() {
+    if let Some(cache) = TURBO_CACHE.get() {
+        cache.lock().unwrap().clear();
+    }
+    if let Some(cache) = SUB_CACHE.get() {
+        cache.lock().unwrap().clear();
+    }
+}
 
 /// POST an inline GQL query with the viewer's web cookie; return the JSON body.
 async fn gql_query(oauth_token: &str, body: serde_json::Value) -> Result<serde_json::Value> {
@@ -54,12 +73,13 @@ async fn gql_query(oauth_token: &str, body: serde_json::Value) -> Result<serde_j
     Ok(resp)
 }
 
-/// Account-wide Turbo status (`currentUser.hasTurbo`). Cached for `TURBO_TTL`.
-/// A Turbo account is ad-free on EVERY channel via the authenticated stream.
+/// Account-wide Turbo status (`currentUser.hasTurbo`). Cached per OAuth token
+/// for `TURBO_TTL`. A Turbo account is ad-free on EVERY channel via the
+/// authenticated stream.
 pub(crate) async fn account_has_turbo(oauth_token: &str) -> bool {
     {
-        let lock = TURBO_CACHE.get_or_init(|| Mutex::new(None));
-        if let Some((val, at)) = *lock.lock().unwrap() {
+        let lock = TURBO_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+        if let Some((val, at)) = lock.lock().unwrap().get(oauth_token).copied() {
             if at.elapsed() < TURBO_TTL {
                 return val;
             }
@@ -77,10 +97,10 @@ pub(crate) async fn account_has_turbo(oauth_token: &str) -> bool {
         }
     };
     TURBO_CACHE
-        .get_or_init(|| Mutex::new(None))
+        .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
         .unwrap()
-        .replace((turbo, Instant::now()));
+        .insert(oauth_token.to_string(), (turbo, Instant::now()));
     turbo
 }
 
@@ -89,9 +109,10 @@ pub(crate) async fn account_has_turbo(oauth_token: &str) -> bool {
 /// A subbed channel is ad-free via the authenticated stream — same usher
 /// mechanism as Turbo, scoped to that channel.
 pub(crate) async fn is_subscribed(channel: &str, oauth_token: &str) -> bool {
+    let key = (oauth_token.to_string(), channel.to_string());
     {
         let lock = SUB_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-        if let Some((val, at)) = lock.lock().unwrap().get(channel).copied() {
+        if let Some((val, at)) = lock.lock().unwrap().get(&key).copied() {
             if at.elapsed() < SUB_TTL {
                 return val;
             }
@@ -115,7 +136,7 @@ pub(crate) async fn is_subscribed(channel: &str, oauth_token: &str) -> bool {
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
         .unwrap()
-        .insert(channel.to_string(), (subbed, Instant::now()));
+        .insert(key, (subbed, Instant::now()));
     subbed
 }
 

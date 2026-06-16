@@ -758,6 +758,10 @@ pub async fn fetch_chat_identity_badges(
     .maximizable(false)
     .skip_taskbar(true)
     .initialization_script(&scraper_script)
+    .data_directory(
+        crate::services::twitch_service::active_twitch_web_profile_dir()
+            .map_err(|e| format!("Invalid web profile: {}", e))?,
+    )
     .build()
     .map_err(|e| format!("Failed to create window: {}", e))?;
 
@@ -863,6 +867,10 @@ pub async fn update_chat_identity(
     .maximizable(false)
     .skip_taskbar(true)
     .initialization_script(&update_script)
+    .data_directory(
+        crate::services::twitch_service::active_twitch_web_profile_dir()
+            .map_err(|e| format!("Invalid web profile: {}", e))?,
+    )
     .build()
     .map_err(|e| format!("Failed to create window: {}", e))?;
 

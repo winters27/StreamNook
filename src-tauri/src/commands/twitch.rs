@@ -1,12 +1,8 @@
 use crate::models::settings::AppState;
 use crate::models::stream::{TwitchClip, TwitchStream, TwitchVideo};
 use crate::models::user::{ChannelInfo, UserInfo};
-use crate::services::account_store::AccountStore;
 use crate::services::drops_auth_service::DropsAuthService;
-use crate::services::twitch_service::{
-    adopt_pending_web_profile, twitch_pending_web_profile_dir, twitch_web_profile_dir,
-    DeviceCodeInfo, TokenHealthStatus, TwitchService,
-};
+use crate::services::twitch_service::{DeviceCodeInfo, TokenHealthStatus, TwitchService};
 use crate::services::whisper_history_service::{
     WhisperHistoryService, WhisperMessage, WhisperThread,
 };
@@ -15,7 +11,7 @@ use anyhow::Result;
 use log::{debug, error};
 use std::path::PathBuf;
 use std::sync::Arc;
-use tauri::{AppHandle, State, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use tokio::sync::Mutex as TokioMutex;
 
 // Device Code Flow - the main login command
@@ -24,17 +20,14 @@ pub async fn twitch_login(
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<(String, String), String> {
-    let verification_uri = TwitchService::login(&state, app)
+    // Single device flow: the poller spawned inside login() waits on the same
+    // code we hand back to the UI, so authorizing the displayed code completes
+    // the login (no orphaned second device code that hangs the poller).
+    let (verification_uri, user_code) = TwitchService::login(&state, app)
         .await
         .map_err(|e| e.to_string())?;
 
-    // Also get the device info to return the user code
-    let device_info = TwitchService::start_device_login(&state)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    // Return both the verification URI and the user code
-    Ok((verification_uri, device_info.user_code))
+    Ok((verification_uri, user_code))
 }
 
 #[derive(serde::Serialize)]
@@ -601,14 +594,30 @@ pub async fn twitch_complete_device_login(
     device_code: String,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
-    TwitchService::complete_device_login(&device_code, &state)
+    let result = TwitchService::complete_device_login(&device_code, &state)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string());
+    if result.is_ok() {
+        // A fresh login: clear any logged-out state and re-harvest the session
+        // for the newly signed-in account on the next resolve.
+        state.twitch_auth.on_account_changed().await;
+        crate::services::auth_proxy::clear_entitlement_caches();
+    }
+    result
 }
 
 #[tauri::command]
-pub async fn twitch_logout() -> Result<(), String> {
-    TwitchService::logout().await.map_err(|e| e.to_string())
+pub async fn twitch_logout(state: State<'_, AppState>) -> Result<(), String> {
+    let result = TwitchService::logout().await.map_err(|e| e.to_string());
+    // Reads stay logged-out (no fallback to the default store's lingering
+    // cookie) until the next login, and cached entitlement is dropped.
+    state.twitch_auth.on_logged_out().await;
+    crate::services::auth_proxy::clear_entitlement_caches();
+    // Channel points and drops run off a SEPARATE credential (its own device
+    // login); clear it too so the watch heartbeat stops crediting the account
+    // that just signed out.
+    let _ = crate::services::drops_auth_service::DropsAuthService::logout().await;
+    result
 }
 
 #[tauri::command]
@@ -692,12 +701,7 @@ pub async fn clear_webview_data(app: AppHandle) -> Result<(), String> {
 /// one is waiting); before any account is recorded it's the staging profile the
 /// login window writes to, which the first per-account window later adopts.
 fn active_twitch_web_profile_dir() -> Result<PathBuf, String> {
-    if let Some(primary) = AccountStore::primary() {
-        adopt_pending_web_profile(&primary.user_id);
-        twitch_web_profile_dir(&primary.user_id).map_err(|e| e.to_string())
-    } else {
-        twitch_pending_web_profile_dir().map_err(|e| e.to_string())
-    }
+    crate::services::twitch_service::active_twitch_web_profile_dir().map_err(|e| e.to_string())
 }
 
 /// Open the device-code activation page in the embedded login window, isolated
@@ -725,6 +729,38 @@ pub async fn open_twitch_login_window(app: AppHandle, url: String) -> Result<(),
     builder
         .build()
         .map_err(|e| format!("Failed to open login window: {}", e))?;
+    Ok(())
+}
+
+/// Open the drops/points device-code activation page, bound to the ACTIVE
+/// account's Twitch web profile. Because that profile already holds the main
+/// login's twitch.tv session, the user is shown as signed in and only has to
+/// authorize the device — no re-entering username/password. Same profile the
+/// main login and subscribe windows use, so it's always the right account.
+#[tauri::command]
+pub async fn open_drops_login_window(app: AppHandle, url: String) -> Result<(), String> {
+    let parsed = url
+        .parse()
+        .map_err(|e| format!("Invalid drops login URL: {}", e))?;
+
+    // Free the fixed label and rebind it to the current profile if a stale one
+    // is lingering from a prior attempt.
+    if let Some(existing) = app.get_webview_window("drops-login") {
+        let _ = existing.close();
+    }
+
+    let builder = WebviewWindowBuilder::new(&app, "drops-login", WebviewUrl::External(parsed))
+        .title("Sign in for Drops & Points - Twitch")
+        .inner_size(500.0, 700.0)
+        .center()
+        .resizable(true)
+        .minimizable(true)
+        .maximizable(false)
+        .data_directory(active_twitch_web_profile_dir()?);
+
+    builder
+        .build()
+        .map_err(|e| format!("Failed to open drops login window: {}", e))?;
     Ok(())
 }
 
@@ -903,17 +939,51 @@ pub async fn get_user_by_login(login: String) -> Result<UserInfo, String> {
 }
 
 #[tauri::command]
-pub async fn follow_channel(target_user_id: String) -> Result<(), String> {
-    TwitchService::follow_channel(&target_user_id)
+pub async fn follow_channel(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    target_user_id: String,
+) -> Result<(), String> {
+    let token = state
+        .twitch_auth
+        .get_token()
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|_| "You must be logged in to Twitch to follow channels.".to_string())?;
+    let device_id = state.twitch_auth.get_device_id().await;
+    let integ = crate::commands::integrity::get_integrity(&app).await?;
+    TwitchService::follow_channel(
+        &token,
+        device_id.as_deref(),
+        &integ.token,
+        &integ.session_id,
+        &target_user_id,
+    )
+    .await
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub async fn unfollow_channel(target_user_id: String) -> Result<(), String> {
-    TwitchService::unfollow_channel(&target_user_id)
+pub async fn unfollow_channel(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    target_user_id: String,
+) -> Result<(), String> {
+    let token = state
+        .twitch_auth
+        .get_token()
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|_| "You must be logged in to Twitch to unfollow channels.".to_string())?;
+    let device_id = state.twitch_auth.get_device_id().await;
+    let integ = crate::commands::integrity::get_integrity(&app).await?;
+    TwitchService::unfollow_channel(
+        &token,
+        device_id.as_deref(),
+        &integ.token,
+        &integ.session_id,
+        &target_user_id,
+    )
+    .await
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -997,6 +1067,27 @@ pub async fn get_streams_by_game_name(
     TwitchService::get_streams_by_game_name(
         &state,
         &game_name,
+        exclude_user_login.as_deref(),
+        cursor.as_deref(),
+        limit,
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Get streams by category id directly (no name→id resolution)
+/// Returns streams sorted by viewer count (highest first)
+#[tauri::command]
+pub async fn get_streams_by_game_id(
+    state: State<'_, AppState>,
+    game_id: String,
+    exclude_user_login: Option<String>,
+    cursor: Option<String>,
+    limit: u32,
+) -> Result<(Vec<TwitchStream>, Option<String>), String> {
+    TwitchService::get_streams_by_game_id(
+        &state,
+        &game_id,
         exclude_user_login.as_deref(),
         cursor.as_deref(),
         limit,
@@ -1102,6 +1193,43 @@ pub async fn import_all_whisper_history(
         WhisperHistoryService::import_full_history(&token, &user_info.id, user_ids).await?;
 
     Ok(result.messages_by_user)
+}
+
+/// Refresh recent whispers for the given conversations. Fetches only the most
+/// recent page per conversation (cheap), so messages sent from other clients
+/// since the last sync show up; the frontend merges them into history by
+/// timestamp. Authenticates with the active account's harvested web session
+/// token, which matches the web Client-Id the whisper GQL requires (the main
+/// app token does not, which is why the old GQL path failed). It's a read, so
+/// no integrity token is needed.
+#[tauri::command]
+pub async fn refresh_whisper_history(
+    state: State<'_, AppState>,
+    user_ids: Vec<String>,
+) -> Result<std::collections::HashMap<String, Vec<WhisperMessage>>, String> {
+    let token = state
+        .twitch_auth
+        .get_token()
+        .await
+        .map_err(|_| "You must be logged in to Twitch to refresh whispers.".to_string())?;
+
+    let user_info = TwitchService::get_user_info()
+        .await
+        .map_err(|e| format!("Failed to get user info: {}", e))?;
+
+    let mut out: std::collections::HashMap<String, Vec<WhisperMessage>> =
+        std::collections::HashMap::new();
+    for uid in user_ids {
+        match WhisperHistoryService::get_whisper_messages(&token, &user_info.id, &uid, None).await {
+            Ok((messages, _cursor)) => {
+                if !messages.is_empty() {
+                    out.insert(uid, messages);
+                }
+            }
+            Err(e) => log::debug!("[WhisperRefresh] thread {} failed: {}", uid, e),
+        }
+    }
+    Ok(out)
 }
 
 /// Search for categories by name (uses Twitch search API for fuzzy matching)

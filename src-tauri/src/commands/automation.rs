@@ -61,6 +61,13 @@ pub async fn scrape_whispers(app: AppHandle) -> Result<WhisperScrapeResult, Stri
     .maximizable(false)
     .skip_taskbar(true) // Don't show in taskbar
     .initialization_script(&scraper_script) // Inject script on load!
+    // Bind to the active account's web profile so the scraper runs against the
+    // signed-in session (the same one the main login established) rather than a
+    // fresh/empty default profile.
+    .data_directory(
+        crate::services::twitch_service::active_twitch_web_profile_dir()
+            .map_err(|e| format!("Invalid web profile: {}", e))?,
+    )
     .build();
 
     let webview = match webview_result {
