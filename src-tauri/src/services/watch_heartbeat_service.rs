@@ -58,7 +58,9 @@ pub struct WatchHeartbeatService {
     client: Client,
     target: RwLock<Option<WatchTarget>>,
     playing: AtomicBool,
-    cached_user_id: RwLock<Option<String>>,
+    /// (drops token, resolved user id). Keyed by the token so a drops re-login
+    /// as a different account re-derives the id instead of serving a stale one.
+    cached_user_id: RwLock<Option<(String, String)>>,
     loop_started: AtomicBool,
 }
 
@@ -118,11 +120,7 @@ impl WatchHeartbeatService {
     /// was being watched, if any.
     pub async fn clear_target(&self) -> Option<String> {
         self.playing.store(false, Ordering::SeqCst);
-        self.target
-            .write()
-            .await
-            .take()
-            .map(|t| t.channel_id)
+        self.target.write().await.take().map(|t| t.channel_id)
     }
 
     /// Player playback state: true on playing, false on pause. Heartbeats
@@ -178,12 +176,18 @@ impl WatchHeartbeatService {
             return;
         };
 
-        match self.send_minute_watched(&target, &broadcast_id, &token).await {
+        match self
+            .send_minute_watched(&target, &broadcast_id, &token)
+            .await
+        {
             Ok(true) => debug!(
                 "[Heartbeat] minute-watched credited for {} ({})",
                 target.login, target.channel_id
             ),
-            Ok(false) => debug!("[Heartbeat] minute-watched not credited for {}", target.login),
+            Ok(false) => debug!(
+                "[Heartbeat] minute-watched not credited for {}",
+                target.login
+            ),
             Err(e) => warn!("[Heartbeat] send failed for {}: {e}", target.login),
         }
 
@@ -236,14 +240,22 @@ impl WatchHeartbeatService {
         };
         Ok(Some((
             id.to_string(),
-            stream["game"]["id"].as_str().unwrap_or_default().to_string(),
-            stream["game"]["name"].as_str().unwrap_or_default().to_string(),
+            stream["game"]["id"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+            stream["game"]["name"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
         )))
     }
 
     async fn user_id(&self, token: &str) -> Result<String> {
-        if let Some(id) = self.cached_user_id.read().await.as_ref() {
-            return Ok(id.clone());
+        if let Some((cached_token, id)) = self.cached_user_id.read().await.as_ref() {
+            if cached_token == token {
+                return Ok(id.clone());
+            }
         }
         let response = self
             .client
@@ -257,8 +269,28 @@ impl WatchHeartbeatService {
             .as_str()
             .ok_or_else(|| anyhow!("token validation returned no user id"))?
             .to_string();
-        *self.cached_user_id.write().await = Some(id.clone());
+        *self.cached_user_id.write().await = Some((token.to_string(), id.clone()));
         Ok(id)
+    }
+
+    /// Send a request, retrying once on a transport error. The heartbeat fires
+    /// only once every 60s, so any keep-alive connection in the pool has usually
+    /// been closed by the host in between; the first reuse then fails with
+    /// "error sending request for url" and a retry on a fresh connection goes
+    /// through. Only transport errors are retried (a real HTTP status comes back
+    /// as Ok and is handled by the caller); the request is non-idempotent but a
+    /// duplicate minute-watched is harmless (Twitch dedupes by client_time).
+    async fn send_once_retrying<F>(make: F) -> reqwest::Result<reqwest::Response>
+    where
+        F: Fn() -> reqwest::RequestBuilder,
+    {
+        match make().send().await {
+            Ok(resp) => Ok(resp),
+            Err(_) => {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+                make().send().await
+            }
+        }
     }
 
     /// The documented working watch report: a single minute-watched event,
@@ -300,18 +332,18 @@ impl WatchHeartbeatService {
                 "input": { "data": g64, "repository": "twilight", "encoding": "GZIP_B64" }
             }
         });
-        let response = self
-            .client
-            .post("https://gql.twitch.tv/gql")
-            .header("Client-ID", CLIENT_ID)
-            .header("Authorization", format!("OAuth {token}"))
-            .header("Origin", "https://www.twitch.tv")
-            .header("Referer", "https://www.twitch.tv")
-            .header("Accept-Language", "en-US")
-            .json(&mutation)
-            .timeout(Duration::from_secs(15))
-            .send()
-            .await?;
+        let response = Self::send_once_retrying(|| {
+            self.client
+                .post("https://gql.twitch.tv/gql")
+                .header("Client-ID", CLIENT_ID)
+                .header("Authorization", format!("OAuth {token}"))
+                .header("Origin", "https://www.twitch.tv")
+                .header("Referer", "https://www.twitch.tv")
+                .header("Accept-Language", "en-US")
+                .json(&mutation)
+                .timeout(Duration::from_secs(15))
+        })
+        .await?;
         if !response.status().is_success() {
             return Ok(false);
         }
@@ -347,13 +379,13 @@ impl WatchHeartbeatService {
             }
         }]);
         let encoded = general_purpose::STANDARD.encode(serde_json::to_string(&payload)?.as_bytes());
-        let response = self
-            .client
-            .post(SPADE_URL)
-            .form(&[("data", encoded)])
-            .timeout(Duration::from_secs(15))
-            .send()
-            .await?;
+        let response = Self::send_once_retrying(|| {
+            self.client
+                .post(SPADE_URL)
+                .form(&[("data", encoded.as_str())])
+                .timeout(Duration::from_secs(15))
+        })
+        .await?;
         Ok(response.status().as_u16() == 204)
     }
 }

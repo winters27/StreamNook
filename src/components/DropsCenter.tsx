@@ -260,13 +260,9 @@ export default function DropsCenter() {
             const deviceInfo = await invoke<DropsDeviceCodeInfo>('start_drops_device_flow');
             setDeviceCodeInfo(deviceInfo);
 
-            new WebviewWindow('drops-login', {
-                url: deviceInfo.verification_uri,
-                title: 'Drops Login - Twitch',
-                width: 500,
-                height: 700,
-                center: true,
-            });
+            // Bound to the active account's web profile (Rust), so it reuses the
+            // main login's twitch.tv session — authorize only, no re-login.
+            await invoke('open_drops_login_window', { url: deviceInfo.verification_uri });
 
             pollForToken(deviceInfo);
         } catch (err) {

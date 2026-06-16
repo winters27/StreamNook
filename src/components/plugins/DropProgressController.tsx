@@ -10,6 +10,7 @@ import type {
     DropProgress,
     TimeBasedDrop,
     InventoryItem,
+    CompletedDrop,
 } from '../../types';
 import { Logger } from '../../utils/logger';
 
@@ -234,6 +235,7 @@ export default function DropProgressController() {
             campaign: DropCampaign,
             progressArray: DropProgress[],
             inventoryItems: InventoryItem[],
+            completedDrops: CompletedDrop[],
         ): { drop: CurrentDropInfo; cumulative: number; sourceDrops: TimeBasedDrop[] } | null => {
             // A fresh campaigns fetch carries instance drop ids that match nothing
             // in the progress map / inventory, so its tiers all resolve to 0. The
@@ -254,14 +256,51 @@ export default function DropProgressController() {
             // value — prefer the inventory's embedded progress.
             const progressOf = (d: TimeBasedDrop): DropProgress | null =>
                 d.progress || progressArray.find((p) => p.drop_id === d.id) || null;
+
+            // A tier you ALREADY OWN must be excluded, or the badge parks at 0% on a
+            // stream with nothing left to earn. The active fetch only sets is_claimed
+            // on the live instance, but Twitch reissues a campaign under a new instance
+            // (fresh drop/benefit ids, is_claimed=false, 0 minutes) while the reward
+            // still sits in your permanent collection. So mirror the Drops overlay's
+            // ownership rule: claimed here, OR the reward is in completed_drops / a
+            // claimed inventory drop — matched by benefit id AND by benefit NAME, since
+            // reissues mint new ids. A tier with live watch-time is a genuine fresh
+            // in-progress drop and is never treated as owned.
+            const ownedBenefitIds = new Set<string>(completedDrops.map((d) => d.id));
+            const ownedBenefitNames = new Set<string>(
+                completedDrops.map((d) => (d.name || '').toLowerCase().trim()).filter(Boolean),
+            );
+            const ownedDropIds = new Set<string>();
+            for (const item of inventoryItems) {
+                for (const d of item.campaign.time_based_drops) {
+                    if (d.progress?.is_claimed !== true) continue;
+                    ownedDropIds.add(d.id);
+                    d.benefit_edges?.forEach((b) => {
+                        ownedBenefitIds.add(b.id);
+                        if (b.name) ownedBenefitNames.add(b.name.toLowerCase().trim());
+                    });
+                }
+            }
+            const isOwned = (d: TimeBasedDrop): boolean => {
+                const p = progressOf(d);
+                if (p?.is_claimed === true) return true;
+                if ((p?.current_minutes_watched ?? 0) > 0) return false;
+                if (ownedDropIds.has(d.id)) return true;
+                return !!d.benefit_edges?.some(
+                    (b) =>
+                        ownedBenefitIds.has(b.id) ||
+                        (!!b.name && ownedBenefitNames.has(b.name.toLowerCase().trim())),
+                );
+            };
+
             let cumulative = 0;
             for (const d of drops) {
                 const p = progressOf(d);
                 cumulative = Math.max(cumulative, p?.current_minutes_watched ?? 0);
-                if (p?.is_claimed) cumulative = Math.max(cumulative, d.required_minutes_watched ?? 0);
+                if (isOwned(d)) cumulative = Math.max(cumulative, d.required_minutes_watched ?? 0);
             }
             const tier = drops
-                .filter((d) => (d.required_minutes_watched ?? 0) > 0 && !progressOf(d)?.is_claimed)
+                .filter((d) => (d.required_minutes_watched ?? 0) > 0 && !isOwned(d))
                 .sort((a, b) => (a.required_minutes_watched ?? 0) - (b.required_minutes_watched ?? 0))
                 .find((d) => (d.required_minutes_watched ?? 0) > cumulative);
             if (!tier) return null;
@@ -327,10 +366,10 @@ export default function DropProgressController() {
                 // minutes live in the progress map + inventory. Merge them in the
                 // exact same way the Drops overlay does so the badge matches it.
                 const progress = await invoke<DropProgress[]>('get_drop_progress').catch(() => [] as DropProgress[]);
-                const inventory = await invoke<{ items?: InventoryItem[] }>('get_drops_inventory').catch(() => null);
+                const inventory = await invoke<{ items?: InventoryItem[]; completed_drops?: CompletedDrop[] }>('get_drops_inventory').catch(() => null);
                 if (disposed) return;
                 const matched = rawMatched;
-                const picked = pickCurrentDrop(matched, progress, inventory?.items ?? []);
+                const picked = pickCurrentDrop(matched, progress, inventory?.items ?? [], inventory?.completed_drops ?? []);
                 // Campaign present but every tier is reached/claimed — nothing to show.
                 if (!picked) { clearNative(); return; }
                 const drop = picked.drop;
