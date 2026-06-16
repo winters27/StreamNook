@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { motion } from 'framer-motion';
-import { X, MessageCircle, Send, Search, Plus, ArrowLeft, Loader2, Users, ChevronDown, Smile, SortAsc, User, Trash2, Clock, Download } from 'lucide-react';
+import { X, MessageCircle, Send, Search, Plus, ArrowLeft, Loader2, Users, ChevronDown, Smile, SortAsc, User, Trash2, Clock, Download, RefreshCw } from 'lucide-react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../stores/AppStore';
@@ -111,21 +111,21 @@ const objectToMap = (obj: Record<string, WhisperConversation>): Map<string, Whis
     return map;
 };
 
-// Save conversations to disk via Tauri backend
-const saveConversationsToDisk = async (conversations: Map<string, WhisperConversation>) => {
+// Save conversations to disk via Tauri backend (scoped to the owning account)
+const saveConversationsToDisk = async (conversations: Map<string, WhisperConversation>, ownerId: string) => {
     try {
         const conversationsObj = mapToObject(conversations);
-        await invoke('save_whisper_storage', { conversations: conversationsObj });
+        await invoke('save_whisper_storage', { ownerId, conversations: conversationsObj });
         Logger.debug('[Whispers] Saved to disk:', conversations.size, 'conversations');
     } catch (error) {
         Logger.warn('[Whispers] Failed to save to disk:', error);
     }
 };
 
-// Load conversations from disk via Tauri backend
-const loadConversationsFromDisk = async (): Promise<Map<string, WhisperConversation>> => {
+// Load conversations from disk via Tauri backend (scoped to the owning account)
+const loadConversationsFromDisk = async (ownerId: string): Promise<Map<string, WhisperConversation>> => {
     try {
-        const storage = await invoke<{ conversations: Record<string, WhisperConversation>; version: number }>('load_whisper_storage');
+        const storage = await invoke<{ conversations: Record<string, WhisperConversation>; version: number }>('load_whisper_storage', { ownerId });
         if (storage && storage.conversations) {
             const map = objectToMap(storage.conversations);
             Logger.debug('[Whispers] Loaded from disk:', map.size, 'conversations');
@@ -163,12 +163,13 @@ const loadConversationsFromLocalStorage = (): Map<string, WhisperConversation> |
     return null;
 };
 
-// Migrate from localStorage to disk storage (one-time migration)
-const migrateFromLocalStorage = async (): Promise<Map<string, WhisperConversation>> => {
+// Migrate from localStorage to disk storage (one-time migration), into the
+// owning account's scoped storage.
+const migrateFromLocalStorage = async (ownerId: string): Promise<Map<string, WhisperConversation>> => {
     // Check if already migrated
     if (localStorage.getItem(WHISPERS_MIGRATED_KEY)) {
         Logger.debug('[Whispers] Already migrated, loading from disk');
-        return loadConversationsFromDisk();
+        return loadConversationsFromDisk(ownerId);
     }
 
     // Check if there's localStorage data to migrate
@@ -177,7 +178,7 @@ const migrateFromLocalStorage = async (): Promise<Map<string, WhisperConversatio
         Logger.debug('[Whispers] Migrating', localStorageData.size, 'conversations from localStorage to disk...');
         try {
             const conversationsObj = mapToObject(localStorageData);
-            await invoke('migrate_whispers_from_localstorage', { conversations: conversationsObj });
+            await invoke('migrate_whispers_from_localstorage', { ownerId, conversations: conversationsObj });
             // Mark as migrated
             localStorage.setItem(WHISPERS_MIGRATED_KEY, 'true');
             // Clear localStorage data (optional - keep for safety)
@@ -193,7 +194,7 @@ const migrateFromLocalStorage = async (): Promise<Map<string, WhisperConversatio
 
     // No localStorage data, mark as migrated and load from disk
     localStorage.setItem(WHISPERS_MIGRATED_KEY, 'true');
-    return loadConversationsFromDisk();
+    return loadConversationsFromDisk(ownerId);
 };
 
 const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
@@ -210,6 +211,7 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
     const [searchResults, setSearchResults] = useState<UserInfo[]>([]);
     const [showNewConversation, setShowNewConversation] = useState(false);
     const [isImportingAll, setIsImportingAll] = useState(false);
+    const [isRefreshing, setIsRefreshing] = useState(false);
     const [importProgress, setImportProgress] = useState<string>('');
     const [sortOption, setSortOption] = useState<SortOption>('recent');
     const [showSortMenu, setShowSortMenu] = useState(false);
@@ -394,29 +396,112 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
     // Get current conversation
     const currentConversation = activeConversation ? conversations.get(activeConversation) : null;
 
-    // Load conversations from disk on mount (with migration from localStorage)
+    // Load conversations for the signed-in account (with one-time localStorage
+    // migration). Whispers are per-account: signed out shows nothing, and
+    // switching accounts loads that account's own whispers, never the previous
+    // account's. Re-runs whenever the active account changes.
     useEffect(() => {
+        const ownerId = currentUser?.user_id;
+        // Account changed (or signed out): drop the previous account's selection
+        // so we never show a thread that isn't this account's.
+        setActiveConversation(null);
+        if (!ownerId) {
+            setConversations(new Map());
+            setIsLoading(false);
+            return;
+        }
+        let cancelled = false;
         const loadConversations = async () => {
             setIsLoading(true);
             try {
-                const loaded = await migrateFromLocalStorage();
-                setConversations(loaded);
+                const loaded = await migrateFromLocalStorage(ownerId);
+                if (!cancelled) setConversations(loaded);
             } catch (error) {
                 Logger.error('[Whispers] Failed to load conversations:', error);
             } finally {
-                setIsLoading(false);
+                if (!cancelled) setIsLoading(false);
             }
         };
         loadConversations();
-    }, []);
+        return () => { cancelled = true; };
+    }, [currentUser?.user_id]);
 
-    // Save conversations to disk whenever they change (debounced)
+    // Save conversations to disk whenever they change (debounced), under the
+    // signed-in account. Never writes while signed out.
     useEffect(() => {
         if (isLoading) return; // Don't save during initial load
+        const ownerId = currentUser?.user_id;
+        if (!ownerId) return;
         if (conversations.size > 0) {
-            saveConversationsToDisk(conversations);
+            saveConversationsToDisk(conversations, ownerId);
         }
-    }, [conversations, isLoading]);
+    }, [conversations, isLoading, currentUser?.user_id]);
+
+    // Pull the latest messages for existing conversations straight from Twitch
+    // (web session token + whisper GQL) and merge anything new into history by
+    // timestamp — e.g. replies you sent from the Twitch site or your phone that
+    // StreamNook never saw. Cheap: one recent page per conversation.
+    const handleRefresh = async () => {
+        const myUserId = currentUser?.user_id;
+        if (!myUserId || isRefreshing) return;
+        const userIds = Array.from(conversations.keys()).filter((id) => /^\d+$/.test(id));
+        if (userIds.length === 0) {
+            setImportProgress('No conversations to refresh');
+            setTimeout(() => setImportProgress(''), 2500);
+            return;
+        }
+        setIsRefreshing(true);
+        setImportProgress('Refreshing messages…');
+        try {
+            const byUser = await invoke<Record<string, Array<{ id: string; from_user_id: string; from_user_name: string; content: string; sent_at: string }>>>(
+                'refresh_whisper_history',
+                { userIds }
+            );
+            const myLogin = currentUser?.login || currentUser?.username || '';
+            const myName = currentUser?.display_name || currentUser?.username || '';
+            const merged = new Map(conversations);
+            let added = 0;
+            for (const [otherId, msgs] of Object.entries(byUser)) {
+                const conv = merged.get(otherId);
+                if (!conv) continue;
+                const existingIds = new Set(conv.messages.map((m) => m.id));
+                const fresh: Whisper[] = [];
+                for (const m of msgs) {
+                    if (existingIds.has(m.id)) continue;
+                    const isSent = m.from_user_id === myUserId;
+                    fresh.push({
+                        id: m.id,
+                        from_user_id: m.from_user_id,
+                        from_user_login: isSent ? myLogin : conv.user_login,
+                        from_user_name: m.from_user_name || (isSent ? myName : conv.user_name),
+                        to_user_id: isSent ? otherId : myUserId,
+                        to_user_login: isSent ? conv.user_login : myLogin,
+                        to_user_name: isSent ? conv.user_name : myName,
+                        message: m.content,
+                        timestamp: parseWhisperDate(m.sent_at),
+                        is_sent: isSent,
+                    });
+                }
+                if (fresh.length === 0) continue;
+                const newMessages = [...conv.messages, ...fresh].sort((a, b) => a.timestamp - b.timestamp);
+                merged.set(otherId, {
+                    ...conv,
+                    messages: newMessages,
+                    last_message_timestamp: newMessages[newMessages.length - 1].timestamp,
+                });
+                added += fresh.length;
+            }
+            if (added > 0) setConversations(merged); // scoped save effect persists it
+            setImportProgress(added > 0 ? `✓ Added ${added} new message${added === 1 ? '' : 's'}` : '✓ Up to date');
+            setTimeout(() => setImportProgress(''), 3000);
+        } catch (e) {
+            Logger.error('[Whispers] Refresh failed:', e);
+            setImportProgress('Refresh failed');
+            setTimeout(() => setImportProgress(''), 3000);
+        } finally {
+            setIsRefreshing(false);
+        }
+    };
 
     // Close menus when clicking outside
     useEffect(() => {
@@ -1030,6 +1115,18 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
                                             ? `${whisperImportState.exportProgress.current + 1}/${whisperImportState.exportProgress.total}`
                                             : 'Importing...'}
                                     </span>
+                                </button>
+                                </Tooltip>
+                            )}
+                            {/* Refresh: pull the latest messages from Twitch and merge them in */}
+                            {!whisperImportState.isImporting && (
+                                <Tooltip content="Refresh messages from Twitch" side="bottom">
+                                <button
+                                    onClick={handleRefresh}
+                                    disabled={isRefreshing || isImportingAll}
+                                    className="p-2 text-textSecondary hover:text-accent hover:bg-surface-hover rounded-lg transition-colors disabled:opacity-50"
+                                >
+                                    <RefreshCw size={18} className={isRefreshing ? 'animate-spin' : ''} />
                                 </button>
                                 </Tooltip>
                             )}
