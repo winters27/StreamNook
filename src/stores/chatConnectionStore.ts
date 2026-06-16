@@ -277,22 +277,48 @@ function bumpRevision() {
 // only the array append and the render are deferred. In-place paths call
 // scheduleFlush() (mark the frame dirty); new messages call queueMessage().
 const pendingByChannel = new Map<string, any[]>();
-let flushScheduled = false;
+// Two independent schedulers race to drain the queue, and the gate is "is any
+// timer armed" — never a sticky boolean. rAF is the fast path: while the window
+// is visible it fires at frame rate (~16ms), giving the render-coalescing that
+// keeps the shared video buffer from starving under fast chat. The timeout is
+// the liveness guarantee: rAF callbacks are suspended — and can be dropped
+// outright, not merely deferred — while a WebView2 window is occluded,
+// minimized, or mid-fullscreen-transition. A lone rAF gate whose callback was
+// dropped would wedge this (the only live-render path) permanently, with no
+// recovery short of releasing the channel — which is why a stream refresh, that
+// repopulates history through a separate synchronous path, appeared to "fix"
+// the backlog while new messages stayed frozen. Arming a timeout alongside rAF
+// caps a dropped flush at FLUSH_MAX_LATENCY_MS, never forever. Whichever fires
+// first drains the queue and cancels the other.
+let rafHandle: number | null = null;
+let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+
+const FLUSH_MAX_LATENCY_MS = 250;
+
+function runFlush(): void {
+  // Disarm both schedulers and null the handles BEFORE flushing, so the next
+  // queueMessage re-arms cleanly and a throw inside flushPending can never strand
+  // a handle that would block every future flush.
+  if (rafHandle !== null) {
+    if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(rafHandle);
+    rafHandle = null;
+  }
+  if (timeoutHandle !== null) {
+    clearTimeout(timeoutHandle);
+    timeoutHandle = null;
+  }
+  flushPending();
+}
 
 function scheduleFlush(): void {
-  if (flushScheduled) return;
-  flushScheduled = true;
-  const run = () => {
-    flushScheduled = false;
-    flushPending();
-  };
-  // rAF yields to the compositor and media pipeline between batches. rAF is
-  // throttled to a crawl while the window is hidden, so fall back to a timer
-  // there (pending stays bounded by the per-flush cap regardless).
+  // Already armed — whichever timer wins drains everything queued since.
+  if (rafHandle !== null || timeoutHandle !== null) return;
+  // Always arm the timeout (liveness). Add the rAF fast path when visible; when
+  // hidden, the timeout alone drains the queue (throttled by the platform, but
+  // it always fires, so chat is current the moment the window is shown again).
+  timeoutHandle = setTimeout(runFlush, FLUSH_MAX_LATENCY_MS);
   if (typeof requestAnimationFrame === 'function' && !(typeof document !== 'undefined' && document.hidden)) {
-    requestAnimationFrame(run);
-  } else {
-    setTimeout(run, 150);
+    rafHandle = requestAnimationFrame(runFlush);
   }
 }
 
@@ -325,7 +351,7 @@ function flushPending(): void {
 // frame. Used by paths that scan slice.messages and must see just-arrived
 // messages (e.g. a CLEARCHAT computing which messages a ban affects).
 function flushPendingNow(): void {
-  flushPending();
+  runFlush();
 }
 
 // Queue a brand-new message for the next coalesced flush instead of rendering it
