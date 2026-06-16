@@ -50,6 +50,7 @@
     "deep-link:default",
     "dialog:default",
     "clipboard-manager:default",
+    "window-state:default",
     {
       "identifier": "http:default",
       "scope": [

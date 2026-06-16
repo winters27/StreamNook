@@ -1,10 +1,16 @@
 import { Plug } from 'lucide-react';
 import { useAppStore } from '../../stores/AppStore';
+import { usePluginUiRegistry, selectSlot } from '../../plugins-ui/registry';
 import { DiscordGlyph } from '../ui/DiscordGlyph';
 import streamnookLogo from '../../assets/streamnook-logo.png';
 
 const IntegrationsSettings = () => {
   const { settings, updateSettings } = useAppStore();
+  // Plugins contribute their own integration panels here, the same way a drops
+  // plugin contributes into the Drops center's settings slot. The tab renders
+  // whatever is contributed and names none of it; with no such plugin installed
+  // the slot is empty and only the built-in integrations show.
+  const pluginPanels = usePluginUiRegistry(selectSlot('integrations.settings'));
 
   const Toggle = ({ enabled, onChange }: { enabled: boolean; onChange: () => void }) => (
     <button
@@ -26,7 +32,7 @@ const IntegrationsSettings = () => {
       {/* my-auto centers the group vertically when there's room and degrades to
           top-aligned + scrollable when the content outgrows the pane — unlike
           justify-center, which clips the top out of reach. */}
-      <div className="my-auto flex w-full max-w-[400px] flex-col items-center">
+      <div className="my-auto flex w-full max-w-[640px] flex-col items-center">
         {/* Intro — anchors the tab so a single integration reads as a deliberate,
             centered screen rather than one stray row across a wide empty page. */}
         <div className="mb-5 flex max-w-[340px] flex-col items-center text-center">
@@ -68,6 +74,23 @@ const IntegrationsSettings = () => {
             />
           </div>
         </div>
+        {pluginPanels.map((c) => {
+          const Icon = c.Icon;
+          return (
+            <div
+              key={`${c.pluginId}:${c.id}`}
+              className="space-y-2 border-t border-white/[0.06] pt-3"
+            >
+              <div className="flex items-center gap-2 px-1">
+                <Icon size={14} className="text-accent" />
+                <span className="text-[11px] uppercase tracking-[0.12em] text-textMuted">
+                  {c.label}
+                </span>
+              </div>
+              <c.Component />
+            </div>
+          );
+        })}
         </div>
       </div>
     </div>

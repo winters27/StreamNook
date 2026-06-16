@@ -53,7 +53,7 @@ const TABS: TabMeta[] = [
   { id: 'Moderation',      label: 'Moderation',      icon: Shield,        tint: 'rgba(210, 140, 140, 0.22)', description: 'Mod logs, visibility, and mass actions' },
   { id: 'Interface',       label: 'Interface',       icon: Layout,        tint: 'rgba(140, 195, 170, 0.22)', description: 'Sidebar, compact mode, and chrome' },
   { id: 'Theme',           label: 'Theme',           icon: Palette,       tint: 'rgba(220, 145, 175, 0.20)', description: 'Color theme and theme editor' },
-  { id: 'Integrations',    label: 'Integrations',    icon: Plug,          tint: 'rgba(180, 150, 210, 0.22)', description: 'Twitch ad blocker and third-party services' },
+  { id: 'Integrations',    label: 'Integrations',    icon: Plug,          tint: 'rgba(180, 150, 210, 0.22)', description: 'Connected apps and services' },
   { id: 'Notifications',   label: 'Notifications',   icon: Bell,          tint: 'rgba(220, 180, 120, 0.20)', description: 'Toasts, sounds, and update prompts' },
   { id: 'Cache',           label: 'Cache',           icon: Database,      tint: 'rgba(150, 170, 185, 0.22)', description: 'Emote, badge, and metadata caches' },
   { id: 'Command Palette', label: 'Command Palette', icon: Command,       tint: 'rgba(140, 200, 180, 0.22)', description: 'The Ctrl+K palette and snippets' },
@@ -169,7 +169,7 @@ const SettingsDialog = () => {
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
           transition={{ duration: 0.18 }}
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-2xl"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-[52px]"
           onClick={closeSettings}
         >
           <motion.div

@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { useAppStore, type WhisperImportProgress } from './stores/AppStore';
+import { useAppStore, type WhisperImportProgress, type SettingsTab } from './stores/AppStore';
 import { useContextMenuStore } from './stores/contextMenuStore';
 import { listenForSettingsUpdates } from './utils/settingsBroadcast';
 import { trackPresence, isSupabaseConfigured, incrementStat, incrementChannelWatch, subscribeToStreamNookRegistry, subscribeToCosmeticsRegistry, subscribeToAtmospheresRegistry, refreshEntitlementRegistries } from './services/supabaseService';
@@ -99,7 +99,7 @@ function App() {
       unlistenSnippets?.();
     };
   }, []);
-  const { loadSettings, chatPlacement, isLoading, streamUrl, currentMediaType, checkAuthStatus, addToast, showBadgesOverlay, setShowBadgesOverlay, badgesOverlayInitialPaintId, badgesOverlayInitialBadgeId, badgesOverlayInitialStreamNook, badgesOverlayInitialTarget, showWhispersOverlay, setShowWhispersOverlay, settings, updateSettings, isTheaterMode, isHomeActive, loadActiveDropsCache, profileModalUser, setProfileModalUser, openSettings } = useAppStore();
+  const { loadSettings, chatPlacement, isLoading, isBooting, streamUrl, currentMediaType, checkAuthStatus, addToast, showBadgesOverlay, setShowBadgesOverlay, badgesOverlayInitialPaintId, badgesOverlayInitialBadgeId, badgesOverlayInitialStreamNook, badgesOverlayInitialTarget, showWhispersOverlay, setShowWhispersOverlay, settings, updateSettings, isTheaterMode, isHomeActive, loadActiveDropsCache, profileModalUser, setProfileModalUser, openSettings } = useAppStore();
   // Channels owned by StreamNook MultiChat popouts. When the currently-watched
   // channel is in here, the in-app chat panel collapses so the popout becomes
   // the sole chat surface — no duplicate chat across windows.
@@ -308,6 +308,21 @@ function App() {
     };
   }, []);
 
+  // A plugin can deep-link into a settings tab — e.g. its plugins-page card
+  // pointing at the Integrations tab where its real panel renders — by emitting
+  // this event. The host owns the navigation; the plugin only asks.
+  useEffect(() => {
+    const unlistenPromise = listen<{ tab?: SettingsTab; section?: string }>(
+      'streamnook:open-settings',
+      (event) => {
+        useAppStore.getState().openSettings(event.payload.tab ?? undefined, event.payload.section);
+      }
+    );
+    return () => {
+      unlistenPromise.then((unlisten) => unlisten());
+    };
+  }, []);
+
   // Global Context Menu Blocker (exempting inputs)
   useEffect(() => {
     const handleContextMenu = (e: MouseEvent) => {
@@ -428,8 +443,16 @@ function App() {
     cleanupFunctions.push(() => unlistenSettingsSync?.());
 
     const initializeApp = async () => {
-      await loadSettings();
-      await checkAuthStatus();
+      try {
+        await loadSettings();
+        await checkAuthStatus();
+      } finally {
+        // Auth is now resolved (logged in or confirmed logged out), or a boot
+        // step failed — either way drop the boot overlay so the home screen
+        // eases in instead of either flashing its logged-out state mid-check
+        // or hanging on the loader forever.
+        useAppStore.setState({ isBooting: false });
+      }
 
       // Resume the stream (and mining) the user was on before an update restart.
       // Consume-once and best-effort; runs after auth so startStream has a token.
@@ -455,20 +478,48 @@ function App() {
       const { currentUser, isAuthenticated } = useAppStore.getState();
       if (isAuthenticated && currentUser?.user_id) {
         Logger.debug('[App] Pre-fetching cosmetics for current user...');
-        const { forceRefreshCosmetics, getFullProfileWithFallback } = await import('./services/cosmeticsCache');
-        // Resolve YOUR cosmetics cleanly first (deep refresh clears anything cached
-        // empty while 7TV was still warming at launch), THEN assemble + cache your
-        // FULL profile — Twitch badges + 7TV paint/badges + third-party badges — so
-        // opening Profile Settings paints instantly from a warm cache instead of
-        // re-fetching every cosmetic and every badge provider on open.
+        const { registerOwnCosmeticAccounts, revalidateOwnCosmetics, getFullProfileWithFallback } =
+          await import('./services/cosmeticsCache');
+        const { seedOwnIdentitiesFromCache, getResolvedIdentity, getIdentityWithCache } =
+          await import('./services/identityService');
+        const { registerOwnAtmospheres } = await import('./stores/chatUserStore');
+        const { listAccounts } = await import('./services/accountService');
+        const selfId = currentUser.user_id;
         const selfLogin = currentUser.login || currentUser.username;
-        forceRefreshCosmetics(currentUser.user_id)
-          .then(() =>
-            getFullProfileWithFallback(currentUser.user_id, selfLogin, currentUser.user_id, selfLogin),
-          )
+
+        // Every account we've added (primary + linked), so each one paints its OWN
+        // cosmetics/badges/atmosphere instantly — not just the active account.
+        let accountIds = [selfId];
+        try {
+          const ids = (await listAccounts()).map((a) => a.user_id).filter(Boolean);
+          if (ids.length) accountIds = ids.includes(selfId) ? ids : [...ids, selfId];
+        } catch {
+          /* account registry not ready yet — fall back to the active account */
+        }
+
+        // Seed every account's paint/badge, curated third-party badges + loadout,
+        // and Atmosphere from disk so chat + the profile card paint on frame one,
+        // and register them so later edits write through, per account.
+        registerOwnCosmeticAccounts(accountIds);
+        seedOwnIdentitiesFromCache(accountIds);
+        registerOwnAtmospheres(accountIds);
+
+        // Revalidate in place (no blank window — unlike a deep clear-then-refetch).
+        // The active account also warms the FULL profile cache so opening Profile
+        // Settings is instant; others warm on demand when switched to.
+        revalidateOwnCosmetics(selfId)
+          .then(() => getFullProfileWithFallback(selfId, selfLogin, selfId, selfLogin))
           .catch((err: Error) =>
             Logger.error('[App] Failed to pre-fetch user profile:', err),
           );
+        getResolvedIdentity(selfId).catch(() => {});
+        getIdentityWithCache(selfId).catch(() => {});
+        for (const id of accountIds) {
+          if (id === selfId) continue;
+          revalidateOwnCosmetics(id).catch(() => {});
+          getResolvedIdentity(id).catch(() => {});
+          getIdentityWithCache(id).catch(() => {});
+        }
       }
 
       // Set up event listeners for drops and channel points
@@ -929,7 +980,7 @@ function App() {
 
   // Keep refs in sync with current values for use in resize listener
   useEffect(() => {
-    aspectRatioLockEnabledRef.current = settings.video_player?.lock_aspect_ratio ?? false;
+    aspectRatioLockEnabledRef.current = settings.video_player?.lock_aspect_ratio ?? true;
   }, [settings.video_player?.lock_aspect_ratio]);
 
   useEffect(() => {
@@ -1348,7 +1399,7 @@ function App() {
       <ErrorBoundary
         componentName="TitleBar"
         fallback={
-          <div className="h-8 bg-secondary backdrop-blur-md border-b border-borderSubtle flex items-center justify-center">
+          <div className="h-[40px] bg-secondary backdrop-blur-md border-b border-borderSubtle flex items-center justify-center">
             <span className="text-textSecondary text-xs">Title bar error - restart app</span>
           </div>
         }
@@ -1605,6 +1656,24 @@ function App() {
         </div>
       </div>
       </ErrorBoundary>
+      {/* Boot overlay — sits above the home screen from launch until the initial
+          auth check resolves, then fades out so home eases in. Without it the
+          logged-out nav and empty state flash for a beat before stored
+          credentials are verified. Starts below the 40px title bar so window
+          controls stay live while booting. */}
+      <AnimatePresence>
+        {isBooting && (
+          <motion.div
+            initial={{ opacity: 1 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.45, ease: 'easeInOut' }}
+            className="fixed inset-x-0 bottom-0 top-[40px] z-[55] flex items-center justify-center bg-background/90 backdrop-blur-2xl"
+          >
+            <LoadingWidget fullScreen={false} message="Loading StreamNook" />
+          </motion.div>
+        )}
+      </AnimatePresence>
       <SettingsDialog />
       <PublicProfileOverlay />
       <DropsOverlay />

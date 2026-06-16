@@ -30,12 +30,11 @@ use commands::{
     accounts::*, announcements::*, app::*, automation::*, badge_metadata::*, badge_service::*,
     badges::*, cache::*, channel_panels::*, chat::*, chat_identity::*, components::*,
     cosmetics_cache::*, diagnostic_logging::*, discord::*, drops::*, emoji::*, emote_prefetch::*,
-    emotes::*, eventsub::*, hype_train::*, identity::*, justlog::*, layout::*, link_preview::*,
-    logs::*, mod_log_storage::*, multi_nook::*, plugins::*, profile_cache::*, resub::*,
-    screen_capture::*, session::*, settings::*, seventv::*, seventv_cosmetics::*,
-    seventv_cosmetics_fetch::*,
-    streaming::*, subscriptions::*, twitch::*, universal_cache::*, user_profile::*,
-    watch_streak::*, whisper_storage::*,
+    emotes::*, eventsub::*, hype_train::*, identity::*, integrity::*, justlog::*, layout::*,
+    link_preview::*, logs::*, mod_log_storage::*, multi_nook::*, plugins::*, profile_cache::*,
+    resub::*, screen_capture::*, session::*, settings::*, seventv::*, seventv_cosmetics::*,
+    seventv_cosmetics_fetch::*, streaming::*, subscriptions::*, twitch::*, universal_cache::*,
+    user_profile::*, watch_streak::*, whisper_storage::*,
 };
 use log::{debug, error};
 use models::settings::{AppState, Settings};
@@ -250,6 +249,19 @@ fn main() {
     Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
+        // Remember each window's size/position/maximized state across restarts.
+        // VISIBLE is excluded so closing main to the tray can't relaunch hidden;
+        // FULLSCREEN/DECORATIONS are excluded because the custom borderless
+        // fullscreen bridge owns those.
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(
+                    tauri_plugin_window_state::StateFlags::SIZE
+                        | tauri_plugin_window_state::StateFlags::POSITION
+                        | tauri_plugin_window_state::StateFlags::MAXIMIZED,
+                )
+                .build(),
+        )
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_clipboard_manager::init())
@@ -419,6 +431,16 @@ fn main() {
                 }
             });
 
+            // Keep a Client-Integrity token pre-minted in the background so the
+            // first follow never waits on a mint: seeds from disk, mints ahead
+            // when stale (once signed in), and re-mints just before expiry.
+            {
+                let app_handle = app_handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    commands::integrity::warm_integrity(app_handle).await;
+                });
+            }
+
             // Initialize unified badge service
             tauri::async_runtime::spawn(async move {
                 use commands::badge_service::initialize_badge_service;
@@ -514,6 +536,7 @@ fn main() {
             twitch_logout,
             clear_webview_data,
             open_twitch_login_window,
+            open_drops_login_window,
             open_subscribe_window,
             has_stored_credentials,
             list_twitch_accounts,
@@ -541,6 +564,7 @@ fn main() {
             get_channel_vips,
             follow_channel,
             unfollow_channel,
+            receive_integrity_token,
             check_following_status,
             get_all_followed_channels,
             get_offline_last_broadcasts,
@@ -549,6 +573,7 @@ fn main() {
             get_twitch_token,
             check_stream_online,
             get_streams_by_game_name,
+            get_streams_by_game_id,
             get_clips_by_game,
             get_clips_by_broadcaster,
             get_clip_reactions,
@@ -560,13 +585,14 @@ fn main() {
             get_whisper_history,
             search_whisper_user,
             import_all_whisper_history,
+            refresh_whisper_history,
             // Streaming commands
             start_stream,
             resolve_clip_media,
             stop_stream,
             get_ad_detection,
             get_stream_low_latency,
-            get_stream_prefetch_present,
+            set_experimental_low_latency,
             set_codec_preference,
             start_ll_diag,
             append_ll_diag,

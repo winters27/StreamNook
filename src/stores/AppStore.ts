@@ -261,6 +261,10 @@ interface AppState {
   whisperImportState: WhisperImportState;
   isHomeActive: boolean;
   isAuthenticated: boolean;
+  // True from launch until the initial credential check resolves. The boot
+  // overlay covers the UI while this is set, so the logged-out Home never
+  // flashes before stored credentials have been verified.
+  isBooting: boolean;
   currentUser: TwitchUser | null;
   dropProgressActive: boolean;
   setDropProgressActive: (active: boolean) => void;
@@ -494,6 +498,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   whisperTargetUser: null,
   isHomeActive: true,
   isAuthenticated: false,
+  isBooting: true,
   currentUser: null,
   dropProgressActive: false,
   setDropProgressActive: (active: boolean) => set({ dropProgressActive: active }),
@@ -711,6 +716,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
 
     const gameName = currentStream.game_name;
+    const gameId = currentStream.game_id;
     const currentUserLogin = currentStream.user_login;
 
     Logger.debug(`[AutoSwitch] Stream ${currentUserLogin} appears offline, verifying...`);
@@ -802,8 +808,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       let streams: TwitchStream[] = [];
 
       if (switchMode === 'same_category') {
-        // Switch to same category - find streams in the same game
-        if (!gameName) {
+        // Switch to same category - find streams in the same game.
+        // Prefer the category id carried on the current stream (kept fresh by the
+        // channel-update listener); only fall back to a name→id lookup if it's absent.
+        if (!gameId && !gameName) {
           Logger.debug('[AutoSwitch] No game category for current stream');
           if (settings.auto_switch?.show_notification ?? true) {
             state.addToast(`${currentUserLogin} went offline. Unable to find similar streams.`, 'info');
@@ -812,14 +820,23 @@ export const useAppStore = create<AppState>((set, get) => ({
           return;
         }
 
-        Logger.debug(`[AutoSwitch] Looking for streams in category: ${gameName}`);
+        let streamsResponse: [TwitchStream[], string | null];
+        if (gameId) {
+          Logger.debug(`[AutoSwitch] Looking for streams in category id: ${gameId} (${gameName})`);
+          streamsResponse = await invoke('get_streams_by_game_id', {
+            gameId: gameId,
+            excludeUserLogin: currentUserLogin,
+            limit: 10
+          }) as [TwitchStream[], string | null];
+        } else {
+          Logger.debug(`[AutoSwitch] Looking for streams in category: ${gameName}`);
+          streamsResponse = await invoke('get_streams_by_game_name', {
+            gameName: gameName,
+            excludeUserLogin: currentUserLogin,
+            limit: 10
+          }) as [TwitchStream[], string | null];
+        }
 
-        const streamsResponse = await invoke('get_streams_by_game_name', {
-          gameName: gameName,
-          excludeUserLogin: currentUserLogin,
-          limit: 10
-        }) as [TwitchStream[], string | null];
-        
         streams = streamsResponse[0] || [];
 
         if (!streams || streams.length === 0) {
@@ -990,6 +1007,15 @@ export const useAppStore = create<AppState>((set, get) => ({
     // here in the webview), gated by the enhanced-codecs setting. Must run before any
     // stream resolves, so the resolver can prefer AV1/HEVC where decodable.
     reportCodecPreference(settings.streamlink?.enhanced_codecs ?? true);
+
+    // Sync the experimental parts-based low-latency switch to the backend runtime
+    // kill switch. Off by default = the stable whole-segment path. Must run before a
+    // stream resolves so the origin probe honors it at the next start.
+    invoke('set_experimental_low_latency', {
+      enabled: settings.video_player?.experimental_low_latency ?? false,
+    }).catch((e) => {
+      Logger.warn('[Playback] Failed to sync experimental low latency:', e);
+    });
 
     // Connect to Discord if enabled
     if (settings.discord_rpc_enabled) {
@@ -2080,6 +2106,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       isSettingsOpen: true,
       settingsInitialTab: initialTab || null,
       settingsInitialSection: initialSection || null,
+      // A deep-link into Settings (e.g. a plugin card pointing at the tab where
+      // its real panel lives) must land visibly, so close the Marketplace
+      // overlay that would otherwise stay on top covering the dialog.
+      showMarketplaceOverlay: false,
     });
   },
   closeSettings: () => {
