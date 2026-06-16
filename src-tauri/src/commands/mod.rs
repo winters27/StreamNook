@@ -21,7 +21,6 @@ pub mod emotes;
 pub mod eventsub;
 pub mod hype_train;
 pub mod identity;
-pub mod integrity;
 pub mod justlog;
 pub mod layout;
 pub mod link_preview;

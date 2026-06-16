@@ -2032,18 +2032,18 @@ impl TwitchService {
     /// Follow a channel via Twitch GQL persisted mutation (FollowButton_FollowUser).
     /// Hash captured live from Twitch web client on 2025-03-25.
     ///
-    /// Web-client mutations require a Client-Integrity token; the caller supplies
-    /// one (minted in a browser context and cached — see commands::integrity)
-    /// along with the `Client-Session-Id` it was bound to, plus the harvested web
-    /// session token + device id. No Android device login is involved.
-    pub async fn follow_channel(
-        oauth_token: &str,
-        device_id: Option<&str>,
-        integrity_token: &str,
-        session_id: &str,
-        target_user_id: &str,
-    ) -> Result<()> {
+    /// Uses the Android-app client id paired with the device-login OAuth token from
+    /// DropsAuthService. Twitch does not gate Android-client mutations behind
+    /// Client-Integrity, so no browser-minted integrity token (and no hidden
+    /// webview) is involved. The OAuth token and the Client-Id must be issued for
+    /// the same app, which is why both come from the Android pair here.
+    pub async fn follow_channel(target_user_id: &str) -> Result<()> {
+        use crate::services::drops_auth_service::DropsAuthService;
+
+        let token = DropsAuthService::get_token().await?;
         let client = crate::services::http::client().clone();
+
+        const GQL_CLIENT_ID: &str = env!("TWITCH_ANDROID_CLIENT_ID");
 
         let payload = serde_json::json!({
             "operationName": "FollowButton_FollowUser",
@@ -2066,22 +2066,14 @@ impl TwitchService {
             target_user_id
         );
 
-        let mut req = client
+        let response = client
             .post("https://gql.twitch.tv/gql")
-            .header(
-                "Client-Id",
-                crate::services::auth_proxy::TWITCH_WEB_CLIENT_ID,
-            )
-            .header(AUTHORIZATION, format!("OAuth {}", oauth_token))
-            .header("Client-Integrity", integrity_token)
-            .header("Client-Session-Id", session_id)
+            .header("Client-Id", GQL_CLIENT_ID)
+            .header(AUTHORIZATION, format!("OAuth {}", token))
             .header(ACCEPT, "*/*")
-            .header("Origin", "https://www.twitch.tv")
-            .header("Referer", "https://www.twitch.tv/");
-        if let Some(did) = device_id {
-            req = req.header("X-Device-Id", did);
-        }
-        let response = req.json(&payload).send().await?;
+            .json(&payload)
+            .send()
+            .await?;
 
         let status = response.status();
         if !status.is_success() {
@@ -2110,17 +2102,15 @@ impl TwitchService {
     /// Unfollow a channel via Twitch GQL persisted mutation (FollowButton_UnfollowUser).
     /// Hash captured live from Twitch web client on 2025-03-25.
     ///
-    /// Same web-session credential as `follow_channel`: the active account's
-    /// harvested twitch.tv token plus the web Client-Id, so the unfollow targets
-    /// the signed-in account without any separate device login.
-    pub async fn unfollow_channel(
-        oauth_token: &str,
-        device_id: Option<&str>,
-        integrity_token: &str,
-        session_id: &str,
-        target_user_id: &str,
-    ) -> Result<()> {
+    /// Same Android-client credential as `follow_channel`: the DropsAuthService
+    /// device-login token plus the Android Client-Id, integrity-free.
+    pub async fn unfollow_channel(target_user_id: &str) -> Result<()> {
+        use crate::services::drops_auth_service::DropsAuthService;
+
+        let token = DropsAuthService::get_token().await?;
         let client = crate::services::http::client().clone();
+
+        const GQL_CLIENT_ID: &str = env!("TWITCH_ANDROID_CLIENT_ID");
 
         let payload = serde_json::json!({
             "operationName": "FollowButton_UnfollowUser",
@@ -2142,22 +2132,14 @@ impl TwitchService {
             target_user_id
         );
 
-        let mut req = client
+        let response = client
             .post("https://gql.twitch.tv/gql")
-            .header(
-                "Client-Id",
-                crate::services::auth_proxy::TWITCH_WEB_CLIENT_ID,
-            )
-            .header(AUTHORIZATION, format!("OAuth {}", oauth_token))
-            .header("Client-Integrity", integrity_token)
-            .header("Client-Session-Id", session_id)
+            .header("Client-Id", GQL_CLIENT_ID)
+            .header(AUTHORIZATION, format!("OAuth {}", token))
             .header(ACCEPT, "*/*")
-            .header("Origin", "https://www.twitch.tv")
-            .header("Referer", "https://www.twitch.tv/");
-        if let Some(did) = device_id {
-            req = req.header("X-Device-Id", did);
-        }
-        let response = req.json(&payload).send().await?;
+            .json(&payload)
+            .send()
+            .await?;
 
         let status = response.status();
         if !status.is_success() {

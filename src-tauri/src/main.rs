@@ -30,7 +30,7 @@ use commands::{
     accounts::*, announcements::*, app::*, automation::*, badge_metadata::*, badge_service::*,
     badges::*, cache::*, channel_panels::*, chat::*, chat_identity::*, components::*,
     cosmetics_cache::*, diagnostic_logging::*, discord::*, drops::*, emoji::*, emote_prefetch::*,
-    emotes::*, eventsub::*, hype_train::*, identity::*, integrity::*, justlog::*, layout::*,
+    emotes::*, eventsub::*, hype_train::*, identity::*, justlog::*, layout::*,
     link_preview::*, logs::*, mod_log_storage::*, multi_nook::*, plugins::*, profile_cache::*,
     resub::*, screen_capture::*, session::*, settings::*, seventv::*, seventv_cosmetics::*,
     seventv_cosmetics_fetch::*, streaming::*, subscriptions::*, twitch::*, universal_cache::*,
@@ -431,15 +431,6 @@ fn main() {
                 }
             });
 
-            // Keep a Client-Integrity token pre-minted in the background so the
-            // first follow never waits on a mint: seeds from disk, mints ahead
-            // when stale (once signed in), and re-mints just before expiry.
-            {
-                let app_handle = app_handle.clone();
-                tauri::async_runtime::spawn(async move {
-                    commands::integrity::warm_integrity(app_handle).await;
-                });
-            }
 
             // Initialize unified badge service
             tauri::async_runtime::spawn(async move {
@@ -564,7 +555,6 @@ fn main() {
             get_channel_vips,
             follow_channel,
             unfollow_channel,
-            receive_integrity_token,
             check_following_status,
             get_all_followed_channels,
             get_offline_last_broadcasts,

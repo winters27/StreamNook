@@ -939,51 +939,17 @@ pub async fn get_user_by_login(login: String) -> Result<UserInfo, String> {
 }
 
 #[tauri::command]
-pub async fn follow_channel(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    target_user_id: String,
-) -> Result<(), String> {
-    let token = state
-        .twitch_auth
-        .get_token()
+pub async fn follow_channel(target_user_id: String) -> Result<(), String> {
+    TwitchService::follow_channel(&target_user_id)
         .await
-        .map_err(|_| "You must be logged in to Twitch to follow channels.".to_string())?;
-    let device_id = state.twitch_auth.get_device_id().await;
-    let integ = crate::commands::integrity::get_integrity(&app).await?;
-    TwitchService::follow_channel(
-        &token,
-        device_id.as_deref(),
-        &integ.token,
-        &integ.session_id,
-        &target_user_id,
-    )
-    .await
-    .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub async fn unfollow_channel(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    target_user_id: String,
-) -> Result<(), String> {
-    let token = state
-        .twitch_auth
-        .get_token()
+pub async fn unfollow_channel(target_user_id: String) -> Result<(), String> {
+    TwitchService::unfollow_channel(&target_user_id)
         .await
-        .map_err(|_| "You must be logged in to Twitch to unfollow channels.".to_string())?;
-    let device_id = state.twitch_auth.get_device_id().await;
-    let integ = crate::commands::integrity::get_integrity(&app).await?;
-    TwitchService::unfollow_channel(
-        &token,
-        device_id.as_deref(),
-        &integ.token,
-        &integ.session_id,
-        &target_user_id,
-    )
-    .await
-    .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
