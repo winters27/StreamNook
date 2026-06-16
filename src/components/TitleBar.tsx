@@ -1,5 +1,5 @@
 import { Window } from '@tauri-apps/api/window';
-import { Gift, User, Settings, Store, Proportions, MessageCircle, Pickaxe, Clock, Tv, Download } from 'lucide-react';
+import { Gift, User, Settings, Store, Proportions, MessageCircle, Pickaxe, Clock, Tv, Download, LogIn } from 'lucide-react';
 import { Minus, X, CornersOut, CornersIn, Medal } from 'phosphor-react';
 import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
@@ -11,6 +11,7 @@ import UpdateOverlay, { type UpdatePhase } from './UpdateOverlay';
 import { captureResumeSnapshot } from '../services/sessionResume';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { getSelectedCompactViewPreset } from '../constants/compactViewPresets';
 import type { DropProgressStatus, DropsSettings, DropProgress } from '../types';
 import { deriveDropProgressDisplay } from '../utils/dropProgressDisplay';
@@ -42,7 +43,7 @@ const getUpdateStageProgress = (stage: string | null): number => {
 const TitleBar = () => {
   const store = useAppStore();
 
-  const { openSettings, setShowDropsOverlay, setShowMarketplaceOverlay, setShowBadgesOverlay, setShowWhispersOverlay, isAuthenticated, currentUser, dropProgressActive, isTheaterMode, toggleTheaterMode, streamUrl, settings, whisperImportState, updateInfo } = store;
+  const { openSettings, setShowDropsOverlay, setShowMarketplaceOverlay, setShowBadgesOverlay, setShowWhispersOverlay, isAuthenticated, currentUser, dropProgressActive, isTheaterMode, toggleTheaterMode, streamUrl, settings, whisperImportState, updateInfo, addToast } = store;
   // Count of installed plugins with an update available, for the Marketplace badge.
   const pluginUpdateCount = usePluginUpdates((s) => s.ids.length);
   // Update flow: 'idle' → 'installing' (download/extract) → 'installed' (staged;
@@ -53,6 +54,10 @@ const TitleBar = () => {
   const [showAbout, setShowAbout] = useState(false);
   const [, setShowSplash] = useState(false);
   const [dropsSettings, setDropsSettings] = useState<DropsSettings | null>(null);
+  // Whether the separate drops/points credential (its own Twitch sign-in) is
+  // present. null = not yet checked. Drives the drops button's "needs sign-in"
+  // cue, since logging out clears this credential while the main account stays.
+  const [dropsAuthed, setDropsAuthed] = useState<boolean | null>(null);
   const [isMaximized, setIsMaximized] = useState(false);
   const prevDropProgressActive = useRef(dropProgressActive);
   
@@ -112,6 +117,58 @@ const TitleBar = () => {
     loadDropsSettings();
   }, [loadDropsSettings]);
   useVisibleInterval(loadDropsSettings, 60 * 60 * 1000);
+
+  // Track the drops/points sign-in so the drops button can flag when it's gone.
+  // Re-checks on login changes, on a slow interval, and on window focus (which
+  // fires right after the drops-login window closes, clearing the cue promptly).
+  const checkDropsAuth = useCallback(async () => {
+    try {
+      setDropsAuthed(await invoke<boolean>('is_drops_authenticated'));
+    } catch {
+      setDropsAuthed(null);
+    }
+  }, []);
+  useEffect(() => {
+    checkDropsAuth();
+  }, [checkDropsAuth, isAuthenticated]);
+  useVisibleInterval(checkDropsAuth, 60 * 1000);
+  useEffect(() => {
+    const onFocus = () => checkDropsAuth();
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [checkDropsAuth]);
+
+  // Start the drops/points (separate Twitch) sign-in directly from the title bar
+  // login button: open Twitch's device-code page, poll for the token, then clear
+  // the prompt. Mirrors the flow the Drops panel and setup wizard use.
+  const [isDropsLoggingIn, setIsDropsLoggingIn] = useState(false);
+  const handleDropsLogin = useCallback(async () => {
+    if (isDropsLoggingIn) return;
+    setIsDropsLoggingIn(true);
+    try {
+      const info = await invoke<{ user_code: string; verification_uri: string; device_code: string; interval: number; expires_in: number }>('start_drops_device_flow');
+      addToast(`Enter code ${info.user_code} to enable drops & channel points`, 'info');
+      // Opened from Rust bound to the active account's web profile, so it reuses
+      // the main login's twitch.tv session — just authorize, no re-login.
+      await invoke('open_drops_login_window', { url: info.verification_uri });
+      await invoke('poll_drops_token', {
+        deviceCode: info.device_code,
+        interval: info.interval,
+        expiresIn: info.expires_in,
+      });
+      try {
+        const win = await WebviewWindow.getByLabel('drops-login');
+        if (win) await win.close();
+      } catch { /* already closed */ }
+      addToast('Signed in — drops & channel points enabled', 'success');
+      await checkDropsAuth();
+    } catch (e) {
+      Logger.error('[TitleBar] Drops login failed:', e);
+      addToast('Drops sign-in failed. Please try again.', 'error');
+    } finally {
+      setIsDropsLoggingIn(false);
+    }
+  }, [isDropsLoggingIn, addToast, checkDropsAuth]);
 
   // Seed the progress badge from the bridge-cached mining status (a plugin
   // powering mining reports through it). Live updates arrive on the
@@ -427,12 +484,20 @@ const TitleBar = () => {
               // placeholder gift. The gift shimmer is only for points-only.
               const showProgressBadge = dropProgressActive;
 
+              // Drops and channel points run off a separate Twitch sign-in that
+              // logout clears. When the main account is in but that credential is
+              // missing, flag the button so the user knows to re-authorize —
+              // clicking it opens the drops panel where the sign-in lives.
+              const needsDropsAuth = isAuthenticated && dropsAuthed === false;
+
               // Determine gift box color/shimmer class
               // Silver = channel points only, Gold = drops only, Iridescent = both
               let giftClass = '';
               let title = 'Drops & Points';
 
-              if (isBothActive) {
+              if (needsDropsAuth) {
+                title = 'Sign in to enable drops & channel points';
+              } else if (isBothActive) {
                 giftClass = 'gift-shimmer-iridescent';
                 title = 'Drops & Points (Both Active)';
               } else if (dropProgressActive) {
@@ -444,6 +509,23 @@ const TitleBar = () => {
               }
 
               const isAnyMiningActive = dropProgressActive || channelPointsActive;
+
+              // Credential missing: the drops slot becomes a direct "Login"
+              // button rather than the gift, so the action is unmistakable.
+              if (needsDropsAuth) {
+                return (
+                  <Tooltip content={title} delay={200}>
+                    <button
+                      onClick={handleDropsLogin}
+                      disabled={isDropsLoggingIn}
+                      className="flex items-center gap-1 px-1.5 py-1 text-[11px] font-medium text-textSecondary hover:text-accent transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                    >
+                      <LogIn size={12} />
+                      {isDropsLoggingIn ? 'Signing in…' : 'Login'}
+                    </button>
+                  </Tooltip>
+                );
+              }
 
               return (
                 <Tooltip content={title} delay={200}>

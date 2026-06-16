@@ -8,6 +8,7 @@ import { ToastPosition, DEFAULT_TOAST_POSITION, DEFAULT_TOAST_EDGE_OFFSET } from
 
 import { Logger } from '../utils/logger';
 import { playSound, type SoundId } from '../utils/notificationSound';
+import { liveActivityText } from '../utils/liveActivity';
 interface LiveNotification {
   streamer_name: string;
   streamer_login: string;
@@ -216,8 +217,8 @@ const ToastManager = () => {
             {/* Text Content */}
             <div className="flex-1 min-w-0 overflow-hidden max-w-full space-y-1">
               <div className="text-base font-semibold truncate max-w-full text-textPrimary">{notification.streamer_name} is now live!</div>
-              {notification.game_name && (
-                <div className="text-xs font-normal text-textSecondary truncate max-w-full">Playing {notification.game_name}</div>
+              {liveActivityText(notification.game_name) && (
+                <div className="text-xs font-normal text-textSecondary truncate max-w-full">{liveActivityText(notification.game_name)}</div>
               )}
               {notification.stream_title && (
                 <div className="text-[11px] text-textSecondary/60 truncate max-w-full">

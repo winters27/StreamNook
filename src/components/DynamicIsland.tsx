@@ -7,6 +7,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../stores/AppStore';
 import { Logger } from '../utils/logger';
 import { playSound, type SoundId } from '../utils/notificationSound';
+import { liveActivityText } from '../utils/liveActivity';
 import { Tooltip } from './ui/Tooltip';
 import type {
     DynamicIslandNotification,
@@ -515,7 +516,7 @@ const DynamicIsland = () => {
             // Send native notification (note: backend also sends one, but this ensures frontend settings are respected)
             sendNativeNotification(
                 `${data.streamer_name} is now live!`,
-                data.game_name ? `Playing ${data.game_name}` : data.stream_title || 'Streaming now'
+                liveActivityText(data.game_name) || data.stream_title || 'Streaming now'
             );
         });
 
