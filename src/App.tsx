@@ -75,6 +75,12 @@ const WEBVIEW_RELOGIN_MIGRATION_KEY = 'streamnook-webview-relogin-v4.9.1';
 // One-time migration flag for v2.2.0 - force re-login with full webview data clear
 const V220_RELOGIN_MIGRATION_KEY = 'streamnook-relogin-v2.2.0';
 
+// One-time forced fresh sign-in for the release that moves follows back to the
+// Android device-login path and removes the hidden integrity webview. Clears every
+// credential (web session, drops/Android token) plus the WebView2 session so the
+// user re-authenticates cleanly across the board.
+const FRESH_AUTH_MIGRATION_KEY = 'streamnook-relogin-android-follows';
+
 // Default sizes for different placements (outside component to avoid recreating on each render)
 const DEFAULT_CHAT_WIDTH = 402; // For 'right' placement
 const DEFAULT_CHAT_HEIGHT = 200; // For 'bottom' placement
@@ -843,6 +849,40 @@ function App() {
         // Mark migration as complete for users who weren't logged in (no action needed)
         if (!hasCompletedV220Migration) {
           localStorage.setItem(V220_RELOGIN_MIGRATION_KEY, 'true');
+        }
+
+        // One-time forced fresh sign-in: follows moved back to the Android
+        // device-login path and the hidden integrity webview was removed, so wipe
+        // every credential and the WebView2 session and have the user sign in again.
+        const hasCompletedFreshAuthMigration = localStorage.getItem(FRESH_AUTH_MIGRATION_KEY);
+        if (!hasCompletedFreshAuthMigration) {
+          // Mark complete BEFORE the logout so it only runs once.
+          localStorage.setItem(FRESH_AUTH_MIGRATION_KEY, 'true');
+          if (isAuthenticated) {
+            Logger.debug('[App] One-time forced fresh sign-in (Android-follows update)');
+
+            // Web session + app tokens.
+            await logoutFromTwitch();
+
+            // Drops/Android device login (follows now depend on this credential).
+            try {
+              await invoke('drops_logout');
+            } catch (e) {
+              Logger.warn('[App] drops_logout during fresh-auth migration failed:', e);
+            }
+
+            // WebView2 cookies/cache so the Twitch session is fully cleared.
+            try {
+              await invoke('clear_webview_data');
+            } catch (e) {
+              Logger.warn('[App] clear_webview_data during fresh-auth migration failed:', e);
+            }
+
+            addToast('Please sign in again to finish updating StreamNook', 'info');
+            await updateSettings({ ...settings, last_seen_version: currentVersion });
+            setShowSetupWizard(true);
+            return;
+          }
         }
 
         // If there's no last seen version (first run) or the version has changed
