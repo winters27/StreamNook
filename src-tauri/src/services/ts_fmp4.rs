@@ -130,6 +130,20 @@ struct PesAssembler {
     pts: Option<u64>,
     dts: Option<u64>,
     started: bool,
+    /// True for the video PES, whose elementary stream is NAL-framed. Twitch's
+    /// TS does not align PES packet boundaries to access-unit boundaries: a new
+    /// video PES can open with the tail of the previous access unit (raw slice
+    /// bytes, no start code) before the next AU's first NAL. When set, `start`
+    /// carries that prefix back onto the PES being completed so the previous
+    /// frame keeps its tail. Off for audio, whose ADTS framing self-syncs.
+    nal_framed: bool,
+    /// New-PES bytes accumulated while locating the next access unit's first
+    /// NAL start code, when it did not fall in the PES's opening packet. Until
+    /// the start code is found these bytes are still the previous AU's tail.
+    carry: Vec<u8>,
+    carry_pts: Option<u64>,
+    carry_dts: Option<u64>,
+    carrying: bool,
 }
 
 struct PesPacket {
@@ -140,12 +154,14 @@ struct PesPacket {
 
 impl PesAssembler {
     /// Start a new PES from a payload-unit-start packet's payload. Returns the
-    /// previously accumulating PES, now complete.
+    /// previous access unit, now complete — though for video that completion may
+    /// instead happen later in `continuation`, when the next AU's start code
+    /// lands in a continuation packet (see `carry`).
     fn start(&mut self, payload: &[u8]) -> Option<PesPacket> {
-        let done = self.take();
         // PES header: start code (3) + stream_id (1) + packet_length (2) +
         // flags (2) + header_data_length (1), then optional fields.
         if payload.len() < 9 || payload[0] != 0 || payload[1] != 0 || payload[2] != 1 {
+            let done = self.take();
             self.started = false;
             return done;
         }
@@ -160,23 +176,107 @@ impl PesAssembler {
                 dts = Some(read_ts33(&payload[14..19]));
             }
         }
-        self.buf.clear();
-        if payload.len() > body {
-            self.buf.extend_from_slice(&payload[body..]);
+        let es: &[u8] = payload.get(body..).unwrap_or(&[]);
+
+        if !self.nal_framed {
+            // Audio: ADTS self-syncs, so one PES is one self-contained run.
+            let done = self.take();
+            self.buf.clear();
+            self.buf.extend_from_slice(es);
+            self.pts = pts;
+            self.dts = dts;
+            self.started = true;
+            return done;
         }
-        self.pts = pts;
-        self.dts = dts;
-        self.started = true;
-        done
+
+        // A new PES opened while still mid-carry (the prior boundary never
+        // resolved): fold the carry back as tail and continue.
+        if self.carrying {
+            let carry = std::mem::take(&mut self.carry);
+            self.buf.extend_from_slice(&carry);
+            self.carrying = false;
+            self.carry_pts = None;
+            self.carry_dts = None;
+        }
+
+        if !self.started {
+            // No AU in progress: begin at the first start code, dropping any
+            // leading partial bytes from a mid-stream join.
+            let split = first_nal_start_code(es).unwrap_or(0);
+            self.buf.clear();
+            self.buf.extend_from_slice(&es[split..]);
+            self.pts = pts;
+            self.dts = dts;
+            self.started = true;
+            return None;
+        }
+
+        // Twitch's TS splits PES packets without regard to access-unit
+        // boundaries, so the new PES can open with the previous frame's slice
+        // tail (raw NAL bytes, no start code) before the next AU's first NAL.
+        match first_nal_start_code(es) {
+            Some(split) => {
+                // Boundary visible in the opening packet: carry the tail back,
+                // complete the previous AU, open the next one here.
+                self.buf.extend_from_slice(&es[..split]);
+                let done = self.take();
+                self.buf.clear();
+                self.buf.extend_from_slice(&es[split..]);
+                self.pts = pts;
+                self.dts = dts;
+                self.started = true;
+                done
+            }
+            None => {
+                // Boundary not yet visible: stash the new PES timing and keep
+                // searching across continuation packets. The previous AU stays
+                // open until `continuation` finds the start code.
+                self.carry.clear();
+                self.carry.extend_from_slice(es);
+                self.carry_pts = pts;
+                self.carry_dts = dts;
+                self.carrying = true;
+                None
+            }
+        }
     }
 
-    fn continuation(&mut self, payload: &[u8]) {
-        if self.started {
-            self.buf.extend_from_slice(payload);
+    /// Append a continuation packet. Returns a completed AU when a deferred
+    /// boundary (see `start`) resolves in this packet.
+    fn continuation(&mut self, payload: &[u8]) -> Option<PesPacket> {
+        if !self.started {
+            return None;
         }
+        if !self.carrying {
+            self.buf.extend_from_slice(payload);
+            return None;
+        }
+        // Still locating the next AU's first start code inside the carried
+        // bytes. The carry is the previous AU's tail (mid-NAL, emulation-
+        // prevented, so it holds no spurious start code) up to where the next
+        // AU begins. Search from just before the prior end so a start code
+        // straddling the packet seam is still caught.
+        let from = self.carry.len().saturating_sub(3);
+        self.carry.extend_from_slice(payload);
+        let split = from + first_nal_start_code(&self.carry[from..])?;
+        let next_au = self.carry.split_off(split); // carry now = previous AU tail
+        self.buf.extend_from_slice(&self.carry);
+        let done = PesPacket {
+            pts: self.pts.take(),
+            dts: self.dts.take(),
+            payload: std::mem::take(&mut self.buf),
+        };
+        self.buf.extend_from_slice(&next_au);
+        self.pts = self.carry_pts.take();
+        self.dts = self.carry_dts.take();
+        self.carry.clear();
+        self.carrying = false;
+        Some(done)
     }
 
     fn take(&mut self) -> Option<PesPacket> {
+        self.carrying = false;
+        self.carry.clear();
         if !self.started || self.buf.is_empty() {
             return None;
         }
@@ -193,6 +293,10 @@ impl PesAssembler {
         self.pts = None;
         self.dts = None;
         self.started = false;
+        self.carry.clear();
+        self.carry_pts = None;
+        self.carry_dts = None;
+        self.carrying = false;
     }
 }
 
@@ -280,7 +384,10 @@ impl Transmuxer {
             pmt_pid: None,
             video_pid: None,
             audio_pid: None,
-            video_pes: PesAssembler::default(),
+            video_pes: PesAssembler {
+                nal_framed: true,
+                ..Default::default()
+            },
             audio_pes: PesAssembler::default(),
             sps: None,
             pps: None,
@@ -428,16 +535,16 @@ impl Transmuxer {
                 if let Some(pes) = self.video_pes.start(payload) {
                     self.video_sample(pes);
                 }
-            } else {
-                self.video_pes.continuation(payload);
+            } else if let Some(pes) = self.video_pes.continuation(payload) {
+                self.video_sample(pes);
             }
         } else if Some(pid) == self.audio_pid {
             if pusi {
                 if let Some(pes) = self.audio_pes.start(payload) {
                     self.audio_frames(pes);
                 }
-            } else {
-                self.audio_pes.continuation(payload);
+            } else if let Some(pes) = self.audio_pes.continuation(payload) {
+                self.audio_frames(pes);
             }
         }
     }
@@ -800,6 +907,21 @@ fn psi_section(payload: &[u8]) -> Option<&[u8]> {
     }
     // Trim the 4-byte CRC so entry loops can run to the slice end.
     Some(&s[..total.saturating_sub(4)])
+}
+
+/// Byte offset of the first Annex B start code (`00 00 01`) in `data`, or None.
+/// A 4-byte start code (`00 00 00 01`) matches at its trailing three bytes, so
+/// the returned offset may leave one leading zero in the carried-back prefix;
+/// that zero is a harmless trailing_zero_8bits on the previous NAL.
+fn first_nal_start_code(data: &[u8]) -> Option<usize> {
+    let mut i = 0;
+    while i + 3 <= data.len() {
+        if data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1 {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
 }
 
 /// Iterate Annex B NAL units (00 00 01 / 00 00 00 01 start codes).
@@ -1343,6 +1465,63 @@ fn build_mp4a(cfg: AacConfig) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One PES payload (header + elementary bytes), as `start`/`continuation`
+    /// receive it after the TS layer is stripped.
+    fn pes_payload(es: &[u8], pts: u64, dts: Option<u64>) -> Vec<u8> {
+        let mut p = pes_header(0xE0, pts, dts);
+        p.extend_from_slice(es);
+        p
+    }
+
+    // Twitch's TS splits PES packets without regard to access-unit boundaries,
+    // so a new video PES can open with the previous frame's slice tail (raw NAL
+    // bytes, no start code) before the next AU's first NAL. The previous frame
+    // must keep that tail, with its own timing, or the decoder runs short and
+    // corrupts the bottom of the picture.
+
+    #[test]
+    fn cross_pes_tail_in_opening_packet_is_carried_back() {
+        let mut a = PesAssembler {
+            nal_framed: true,
+            ..Default::default()
+        };
+        // AU A: AUD + IDR slice.
+        let au_a = annexb(&[&[9, 0xF0][..], &[5, 0xAA, 0xBB]]);
+        assert!(a.start(&pes_payload(&au_a, 100, Some(100))).is_none());
+        // AU B's PES opens with AU A's slice tail (CC DD EE), then AU B.
+        let mut es2 = vec![0xCC, 0xDD, 0xEE];
+        es2.extend_from_slice(&annexb(&[&[9, 0xF0][..], &[1, 0x40]]));
+        let done = a
+            .start(&pes_payload(&es2, 200, Some(200)))
+            .expect("AU A completes");
+        assert_eq!(done.pts, Some(100), "tail keeps AU A's timing, not AU B's");
+        assert!(
+            done.payload.windows(3).any(|w| w == [0xCC, 0xDD, 0xEE]),
+            "AU A kept its spilled slice tail"
+        );
+    }
+
+    #[test]
+    fn cross_pes_tail_resolves_across_continuation_packet() {
+        let mut a = PesAssembler {
+            nal_framed: true,
+            ..Default::default()
+        };
+        let au_a = annexb(&[&[9, 0xF0][..], &[5, 0xAA, 0xBB]]);
+        assert!(a.start(&pes_payload(&au_a, 100, Some(100))).is_none());
+        // AU B's PES opens with ONLY the tail; its AUD lands in a continuation.
+        assert!(
+            a.start(&pes_payload(&[0xCC, 0xDD, 0xEE], 200, Some(200)))
+                .is_none(),
+            "boundary deferred until the start code arrives"
+        );
+        let done = a
+            .continuation(&annexb(&[&[9, 0xF0][..], &[1, 0x40]]))
+            .expect("AU A completes on the continuation packet");
+        assert_eq!(done.pts, Some(100));
+        assert!(done.payload.windows(3).any(|w| w == [0xCC, 0xDD, 0xEE]));
+    }
 
     // ──── synthetic TS construction ────
 
