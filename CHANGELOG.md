@@ -1,3 +1,30 @@
+## [8.0.4] - 2026-06-15
+### ✨ Features
+- **First-run setup, expanded**: The setup wizard now walks you through picking a theme, choosing your sidebar style, and setting how you get notified, each with a live preview, so the app feels like yours before you start watching.
+- **Remembers where you left it**: StreamNook now reopens at the same size and position on screen, so you no longer have to resize or move the window every launch.
+- **Whisper history that stays in sync**: A new refresh button pulls your latest whisper messages straight from Twitch, so replies you sent from the website or your phone show up in StreamNook without losing anything you already had.
+- **A live edge gap you control**: A new slider lets you dial exactly how close to live you want to ride, from a near-live feel to rock-solid playback, replacing the old all-or-nothing toggle. An opt-in Low Latency engine is there too for the tightest experience on channels that support it.
+- **Drops and Channel Points sign-in, made obvious**: When drops and points need their own Twitch sign-in, the gift button in the title bar now clearly shows a Login prompt, and signing in reuses your existing Twitch session so you just approve instead of logging in all over again.
+- **Natural live notifications**: Go-live alerts now read naturally for non-gaming streams, saying things like "Just chatting" or "Making music" instead of "Playing Just Chatting".
+- **Plugin settings, all in one place**: Plugins can now add their own panels to the Integrations settings and link you straight to them, so connected apps and services live together in a consistent spot.
+
+### 🐛 Bug Fixes
+- **Account switching respects the account you picked**: Switching between linked accounts now correctly uses the one you selected, for your session, ad-free status (Turbo or a channel sub), badges, and following channels, so an alt no longer inherits another account's perks or leaks the previous session. Signing out fully resets the old account and stops it from earning drops or points.
+- **Whispers stay private to each account**: Your whisper history is now tied to the account you are signed in with, so switching accounts or signing out no longer surfaces another account's messages.
+- **Your look loads instantly**: Your paint, badges, atmosphere, and profile card now appear the moment chat or your profile opens after a restart, instead of popping in a beat later, and a brief hiccup talking to the cosmetics service no longer strips them away.
+- **No more signed-out flash on launch**: Opening the app now shows a clean loading screen while it confirms your saved login, instead of briefly flashing a signed-out home.
+- **Chat keeps flowing when the window is hidden**: Chat now keeps updating reliably even when the window is minimized, occluded, or moving in and out of fullscreen, instead of freezing until you refresh.
+- **Signing in is more reliable**: The Twitch login code you approve is now always the one the app is waiting on, so logins no longer get stuck, and everything that needs your account works right after you sign in without a restart.
+- **Drop progress you can trust**: The drops progress badge no longer sticks at 0% on streams where you already own the reward, and drop watch time keeps crediting reliably even after the connection sits idle.
+- **An honest behind-live readout**: The "behind live" number in the stream stats overlay now lines up with what Twitch itself reports, instead of overstating how far behind you are.
+- **Steadier standard playback**: Streams on the standard path now play on a single stable connection, removing a class of stalls and drift some channels saw over a long session.
+- **More reliable auto-switch**: When a stream you are watching goes offline, StreamNook now finds another stream in the same category more accurately.
+
+### 🔧 Maintenance
+- **Default-on conveniences**: The bonus chest is now auto-claimed on the stream you are watching, and the video keeps its aspect ratio out of the box, so these work without you turning them on.
+- **Interface polish**: A roomier title bar, a cleaner collapsed sidebar, tidier settings groupings, and a consistent live-red that stays the same across every theme.
+- **Consistent badge order**: Your badges now appear in the same order everywhere, with your StreamNook badge leading, so chat and profile cards always match.
+
 ## [8.0.3] - 2026-06-14
 ### 🐛 Bug Fixes
 - Fixed drops progress showing the wrong reward: watching a channel on a drop's allow-list while it streamed a different game would display and count that drop's progress even though you weren't earning it.
