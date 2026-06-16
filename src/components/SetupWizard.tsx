@@ -11,23 +11,76 @@ import {
     MessageCircle,
     Wand2,
     CheckCircle2,
+    Palette,
+    Bell,
+    PanelTop,
+    MessageSquare,
+    Layers,
+    Columns,
+    Eye,
+    EyeOff,
+    X,
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { useAppStore } from '../stores/AppStore';
 import streamnookLogo from '../assets/streamnook-logo.png';
+import {
+    themes,
+    applyTheme,
+    getThemeById,
+    getOledTheme,
+    OLED_THEME_ID,
+    DEFAULT_THEME_ID,
+    type Theme,
+} from '../themes';
+import { getSidebarSettings, saveSidebarSettings, type SidebarMode } from './settings/InterfaceSettings';
 
 import { Logger } from '../utils/logger';
 
 const STEP_EASE: [number, number, number, number] = [0.16, 1, 0.3, 1];
 const STEP_DURATION = 0.4;
-const STEP_COUNT = 6;
+const STEP_COUNT = 9;
+
+// Notification delivery surfaces offered on the notification-style step. "Both"
+// is just the two booleans on together; the wizard maps each choice onto the
+// use_dynamic_island / use_toast pair the rest of the app already reads.
+type NotifMode = 'island' | 'toast' | 'both';
 
 interface SetupWizardProps {
     isOpen: boolean;
     onClose: () => void;
 }
+
+// Compact theme swatch for the setup grid: the five palette dots plus the name,
+// painted on the theme's own background so each card previews itself. Selecting
+// one applies it live, so the whole wizard repaints as a full preview.
+const WizardThemeCard = ({ theme, selected, onSelect }: { theme: Theme; selected: boolean; onSelect: () => void }) => {
+    const { palette } = theme;
+    const dots = [palette.accent, palette.highlight.pink, palette.highlight.purple, palette.highlight.blue, palette.highlight.green];
+    return (
+        <button
+            onClick={onSelect}
+            className={`relative p-3 rounded-lg border-2 text-left transition-all duration-200 ${selected ? 'border-accent ring-2 ring-accent/30' : 'border-borderSubtle hover:border-borderLight'}`}
+            style={{ backgroundColor: palette.background }}
+        >
+            <div className="flex gap-1.5 mb-2">
+                {dots.map((c, i) => (
+                    <div key={i} className="w-3.5 h-3.5 rounded-full" style={{ backgroundColor: c }} />
+                ))}
+            </div>
+            <div className="text-sm font-semibold truncate" style={{ color: palette.textPrimary }}>
+                {theme.name}
+            </div>
+            {selected && (
+                <div className="absolute top-2 right-2 w-5 h-5 rounded-full bg-accent flex items-center justify-center">
+                    <Check size={12} className="text-background" strokeWidth={3} />
+                </div>
+            )}
+        </button>
+    );
+};
 
 interface StepStatus {
     componentsInstalled: boolean | null;
@@ -138,29 +191,14 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
     }, [currentStep, status.componentsInstalled, isExtracting, status.extractionError, extractComponents]);
 
     const openDropsVerificationWindow = useCallback(async (verificationUri: string) => {
+        // Opened from Rust bound to the active account's web profile, so it
+        // reuses the main login's twitch.tv session (authorize only, no re-login)
+        // and the Rust side clears any stale window on the fixed label first.
         try {
-            const existingWindow = await WebviewWindow.getByLabel('drops-login');
-            if (existingWindow) {
-                await existingWindow.close();
-            }
-        } catch {
-            // Window doesn't exist, continue
-        }
-
-        const loginWindow = new WebviewWindow('drops-login', {
-            url: verificationUri,
-            title: 'Drops Login - Twitch',
-            width: 500,
-            height: 700,
-            center: true,
-            resizable: true,
-            minimizable: true,
-            maximizable: false,
-        });
-
-        loginWindow.once('tauri://error', (e) => {
+            await invoke('open_drops_login_window', { url: verificationUri });
+        } catch (e) {
             Logger.error('Failed to open drops login window:', e);
-        });
+        }
     }, []);
 
     const handleDropsLogin = useCallback(async () => {
@@ -199,7 +237,7 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                     Logger.error('Failed to focus window:', focusError);
                 }
 
-                setTimeout(() => setCurrentStep(3), 500);
+                setTimeout(() => setCurrentStep(4), 500);
             } catch (pollError) {
                 Logger.error('Failed to complete drops login:', pollError);
                 setError(`Login failed: ${pollError}`);
@@ -233,7 +271,7 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                     Logger.error('Failed to focus window:', focusError);
                 }
 
-                setTimeout(() => setCurrentStep(4), 500);
+                setTimeout(() => setCurrentStep(3), 500);
 
                 unlistenRefs.current.forEach(fn => fn());
                 unlistenRefs.current = [];
@@ -266,6 +304,59 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
         }
     }, [settings, updateSettings, onClose, addToast]);
 
+    // ── Theme step ──────────────────────────────────────────────────────────
+    const currentThemeId = settings.theme || DEFAULT_THEME_ID;
+    const handleSelectTheme = useCallback((themeId: string) => {
+        // OLED resolves through its chosen accent like it does in Theme settings;
+        // every other theme is a static entry.
+        const theme = themeId === OLED_THEME_ID ? getOledTheme(settings.oled_accent) : getThemeById(themeId);
+        if (!theme) return;
+        applyTheme(theme);
+        updateSettings({ ...settings, theme: themeId });
+    }, [settings, updateSettings]);
+
+    // ── Sidebar step ────────────────────────────────────────────────────────
+    // Sidebar prefs live in localStorage, not the settings store. Seed from there
+    // and write through the shared helper so picking applies live (the Sidebar
+    // listens for its change event) and persists.
+    const [sidebarMode, setSidebarMode] = useState<SidebarMode>(() => getSidebarSettings().mode);
+    const handleSelectSidebar = useCallback((mode: SidebarMode) => {
+        const current = getSidebarSettings();
+        saveSidebarSettings(mode, current.expandOnHover, current.showRecommended);
+        setSidebarMode(mode);
+    }, []);
+
+    const sidebarOptions: { id: SidebarMode; icon: typeof Columns; label: string; desc: string }[] = [
+        { id: 'expanded', icon: Columns, label: 'Expanded', desc: 'Full list with names, games, and viewers.' },
+        { id: 'compact', icon: Eye, label: 'Compact', desc: 'Just avatars, expanding on hover.' },
+        { id: 'hidden', icon: EyeOff, label: 'Hidden', desc: 'Tucked away until you reach the left edge.' },
+        { id: 'disabled', icon: X, label: 'Off', desc: 'No sidebar at all.' },
+    ];
+
+    // ── Notification-style step ────────────────────────────────────────────
+    const liveNotifications = settings.live_notifications;
+    const islandOn = liveNotifications?.use_dynamic_island ?? true;
+    const toastOn = liveNotifications?.use_toast ?? true;
+    const notifMode: NotifMode = islandOn && toastOn ? 'both' : islandOn ? 'island' : toastOn ? 'toast' : 'both';
+    const handleSelectNotif = useCallback((mode: NotifMode) => {
+        updateSettings({
+            ...settings,
+            live_notifications: {
+                enabled: true,
+                play_sound: true,
+                ...liveNotifications,
+                use_dynamic_island: mode !== 'toast',
+                use_toast: mode !== 'island',
+            },
+        });
+    }, [settings, liveNotifications, updateSettings]);
+
+    const notifOptions: { id: NotifMode; icon: typeof Bell; label: string; desc: string }[] = [
+        { id: 'island', icon: PanelTop, label: 'Dynamic Island', desc: 'A pill at the top that expands with the details.' },
+        { id: 'toast', icon: MessageSquare, label: 'Toast popups', desc: 'Cards that slide in at a screen corner you pick.' },
+        { id: 'both', icon: Layers, label: 'Both', desc: 'Every alert in the island and as a toast.' },
+    ];
+
     // Per-step primary CTA that lives bottom-right. null hides it entirely.
     const primaryAction: { label: string; onClick: () => void; disabled?: boolean } | null = (() => {
         switch (currentStep) {
@@ -276,15 +367,18 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
             case 2:
             case 3:
             case 4:
-                return { label: 'Continue', onClick: () => setCurrentStep(currentStep + 1) };
             case 5:
+            case 6:
+            case 7:
+                return { label: 'Continue', onClick: () => setCurrentStep(currentStep + 1) };
+            case 8:
                 return { label: 'Start watching', onClick: handleCompleteSetup };
             default:
                 return null;
         }
     })();
 
-    const canGoBack = currentStep > 1 && currentStep < 5;
+    const canGoBack = currentStep > 1 && currentStep < 8;
 
     const renderStepContent = () => {
         switch (currentStep) {
@@ -301,7 +395,7 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                             Welcome to<br />StreamNook
                         </h1>
                         <p className="text-textSecondary text-base max-w-md mb-8">
-                            Yeah yeah, another setup wizard. Five clicks and we'll get out of your way, promise.
+                            Yeah yeah, another setup wizard. A few clicks and we'll get out of your way, promise.
                         </p>
                         <img
                             src="https://cdn.7tv.app/emote/01F6NMMEER00015NVG2J8ZH77N/4x.avif"
@@ -350,7 +444,7 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                 );
             }
 
-            case 2:
+            case 3:
                 return (
                     <>
                         {status.dropsAuthenticated ? (
@@ -406,7 +500,7 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                     </>
                 );
 
-            case 3:
+            case 2:
                 return (
                     <>
                         {status.mainAuthenticated ? (
@@ -539,7 +633,101 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                     </>
                 );
 
-            case 5: {
+            case 5:
+                return (
+                    <>
+                        <Palette size={56} strokeWidth={1.4} className="text-accent mb-8" />
+                        <h1 className="text-4xl font-medium text-textPrimary tracking-tight mb-4">
+                            Pick your look
+                        </h1>
+                        <p className="text-textSecondary text-base max-w-md mb-8">
+                            Choose a theme to start with. Tap one to try it on. There are more options, fonts, and a theme builder in Settings later.
+                        </p>
+                        <div className="w-full max-w-2xl max-h-[42vh] overflow-y-auto pr-1">
+                            <div className="grid grid-cols-3 gap-3">
+                                {themes.map((t) => {
+                                    const display = t.id === OLED_THEME_ID ? getOledTheme(settings.oled_accent) : t;
+                                    return (
+                                        <WizardThemeCard
+                                            key={t.id}
+                                            theme={display}
+                                            selected={currentThemeId === t.id}
+                                            onSelect={() => handleSelectTheme(t.id)}
+                                        />
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    </>
+                );
+
+            case 6:
+                return (
+                    <>
+                        <PanelTop size={56} strokeWidth={1.4} className="text-accent mb-8" />
+                        <h1 className="text-4xl font-medium text-textPrimary tracking-tight mb-4">
+                            Set up your sidebar
+                        </h1>
+                        <p className="text-textSecondary text-base max-w-md mb-8">
+                            This is where your followed channels live. Pick how much of it you want on screen.
+                        </p>
+                        <div className="grid grid-cols-2 gap-3 w-full max-w-md">
+                            {sidebarOptions.map((opt) => {
+                                const Icon = opt.icon;
+                                const active = sidebarMode === opt.id;
+                                return (
+                                    <button
+                                        key={opt.id}
+                                        onClick={() => handleSelectSidebar(opt.id)}
+                                        className={`flex flex-col items-start gap-2 px-4 py-3.5 rounded-xl border-2 text-left transition-all duration-200 ${active ? 'border-accent bg-accent/10' : 'border-borderSubtle hover:border-borderLight'}`}
+                                    >
+                                        <div className="flex items-center gap-2 w-full">
+                                            <Icon size={20} className={active ? 'text-accent' : 'text-textSecondary'} />
+                                            <span className="text-sm font-semibold text-textPrimary flex-1">{opt.label}</span>
+                                            {active && <Check size={16} className="text-accent flex-shrink-0" strokeWidth={3} />}
+                                        </div>
+                                        <span className="text-xs text-textSecondary">{opt.desc}</span>
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    </>
+                );
+
+            case 7:
+                return (
+                    <>
+                        <Bell size={56} strokeWidth={1.4} className="text-accent mb-8" />
+                        <h1 className="text-4xl font-medium text-textPrimary tracking-tight mb-4">
+                            How should we reach you?
+                        </h1>
+                        <p className="text-textSecondary text-base max-w-md mb-8">
+                            When a followed streamer goes live, a whisper lands, or a drop is claimed. You can fine-tune each type in Settings.
+                        </p>
+                        <div className="flex flex-col gap-3 w-full max-w-md">
+                            {notifOptions.map((opt) => {
+                                const Icon = opt.icon;
+                                const active = notifMode === opt.id;
+                                return (
+                                    <button
+                                        key={opt.id}
+                                        onClick={() => handleSelectNotif(opt.id)}
+                                        className={`flex items-center gap-4 px-4 py-3.5 rounded-xl border-2 text-left transition-all duration-200 ${active ? 'border-accent bg-accent/10' : 'border-borderSubtle hover:border-borderLight'}`}
+                                    >
+                                        <Icon size={22} className={active ? 'text-accent' : 'text-textSecondary'} />
+                                        <div className="flex-1 min-w-0">
+                                            <div className="text-sm font-semibold text-textPrimary">{opt.label}</div>
+                                            <div className="text-xs text-textSecondary">{opt.desc}</div>
+                                        </div>
+                                        {active && <Check size={18} className="text-accent flex-shrink-0" strokeWidth={3} />}
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    </>
+                );
+
+            case 8: {
                 const rows: Array<{ ok: boolean; pending?: boolean; label: string }> = [
                     { ok: !!status.componentsInstalled, label: 'Streamlink and ad blocker' },
                     { ok: status.dropsAuthenticated, label: 'Drops sign-in' },
