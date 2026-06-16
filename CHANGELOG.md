@@ -1,3 +1,12 @@
+## [8.0.5] - 2026-06-15
+### 🐛 Bug Fixes
+- **Experimental Low Latency plays cleanly on every channel**: On some streams, turning on experimental Low Latency could badly corrupt the picture and freeze playback. Video frames were being clipped short as the stream was repackaged for the low-latency path, so the decoder ran out of data partway down the frame. Frames now stay whole, and Low Latency holds up everywhere.
+- **Following channels is more reliable**: Following and unfollowing now goes through your signed-in session directly, with no hidden background window needed to make it work.
+- **Chat colors and badges fill in reliably**: When someone's name color or badges briefly failed to load, they could stay blank for the rest of the session. They now fill in on that person's next message instead.
+
+### 🔧 Maintenance
+- **One more sign-in after this update**: To finish moving following onto the more reliable path, this update signs you out once so everything reconnects cleanly. Just sign back in when prompted.
+
 ## [8.0.4] - 2026-06-15
 ### ✨ Features
 - **First-run setup, expanded**: The setup wizard now walks you through picking a theme, choosing your sidebar style, and setting how you get notified, each with a live preview, so the app feels like yours before you start watching.
