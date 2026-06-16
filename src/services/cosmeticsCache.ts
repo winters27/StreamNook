@@ -89,9 +89,60 @@ function publishCosmetics(userId: string, cosmetics: CachedCosmetics, hardFail =
     hardFailTimestamps.set(userId, Date.now());
   } else {
     hardFailTimestamps.delete(userId);
+    // Persist OUR OWN accounts' cosmetics (never a hard-fail empty) so chat paints
+    // the right paint/badge on frame one next launch, per account we've added.
+    if (ownCosmeticAccounts.has(userId)) persistOwnCosmetics(userId);
   }
   for (const listener of cosmeticsListeners) {
     try { listener(userId, cosmetics); } catch (e) { Logger.warn('[cosmeticsCache] listener threw:', e); }
+  }
+}
+
+// Disk persistence of OUR OWN accounts' cosmetics (primary + every linked
+// account). Keyed by account id so each account paints its own paint/badge
+// instantly; other chatters are never persisted (they resolve from the network).
+const OWN_COSMETICS_KEY = 'streamnook_own_cosmetics_v1';
+const ownCosmeticAccounts = new Set<string>();
+
+function readPersistedCosmetics(): Record<string, CachedCosmetics> {
+  try {
+    const raw = localStorage.getItem(OWN_COSMETICS_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? (parsed as Record<string, CachedCosmetics>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function persistOwnCosmetics(userId: string): void {
+  try {
+    const cosmetics = inMemoryCosmeticsCache.get(userId);
+    if (!cosmetics) return;
+    const store = readPersistedCosmetics();
+    store[userId] = cosmetics;
+    localStorage.setItem(OWN_COSMETICS_KEY, JSON.stringify(store));
+  } catch (e) {
+    Logger.warn('[cosmeticsCache] persistOwnCosmetics failed:', e);
+  }
+}
+
+/**
+ * Register all of OUR account ids (primary + linked) and hydrate each one's
+ * cosmetics from disk, so a cold launch paints every account's paint/badge on
+ * frame one instead of after the fetch returns. Marks them as own so subsequent
+ * publishes (the boot revalidate, a paint/badge change) write through. Seeds only
+ * accounts not already resolved this session (an in-session value is fresher).
+ */
+export function registerOwnCosmeticAccounts(userIds: string[]): void {
+  const store = readPersistedCosmetics();
+  for (const userId of userIds) {
+    if (!userId) continue;
+    ownCosmeticAccounts.add(userId);
+    const persisted = store[userId];
+    if (persisted && !inMemoryCosmeticsCache.has(userId)) {
+      publishCosmetics(userId, persisted, false);
+    }
   }
 }
 
@@ -178,6 +229,27 @@ export async function forceRefreshCosmetics(userId: string): Promise<CachedCosme
     Logger.warn('[cosmeticsCache] forceRefresh: failed to clear 7TV cache:', e);
   }
   return getCosmeticsWithFallback(userId);
+}
+
+/**
+ * Revalidate one of OUR accounts' cosmetics WITHOUT first blanking the cached
+ * value. forceRefreshCosmetics clears the in-memory entry before re-fetching,
+ * which opens a window where chat/profile read an empty cache and paint barebones.
+ * For our own cosmetics at launch we keep the seeded (last-known) value on screen,
+ * drop only the lower-level 7TV cache so the fetch is genuinely fresh, and publish
+ * the result — overwriting in place — UNLESS it's a hard failure, so a transient
+ * 7TV blip at launch can't strip our paint down to nothing.
+ */
+export async function revalidateOwnCosmetics(userId: string): Promise<void> {
+  if (!userId) return;
+  try {
+    const { getUserCosmetics, invalidateUserCosmeticsCache } = await import('./seventvService');
+    invalidateUserCosmeticsCache(userId);
+    const { data, hardFail } = await getUserCosmetics(userId);
+    if (!hardFail) publishCosmetics(userId, data, false);
+  } catch (e) {
+    Logger.warn('[cosmeticsCache] revalidateOwnCosmetics failed:', e);
+  }
 }
 
 // Caps sized for a heavy viewing session. Profile entries are the largest

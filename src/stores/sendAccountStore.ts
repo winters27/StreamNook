@@ -47,9 +47,20 @@ export const useSendAccountStore = create<SendAccountState>((set, get) => ({
       const stillValid = sendAsId !== null && accounts.some((a) => a.user_id === sendAsId);
       if (!stillValid && sendAsId !== null) persistSendAsId(null);
       set({ accounts, sendAsId: stillValid ? sendAsId : null });
+      const ids = accounts.map((a) => a.user_id);
       // Feed chat reconciliation so messages we send (incl. from secondaries) are
       // recognized as our own and don't double-render.
-      setOwnAccountIds(accounts.map((a) => a.user_id));
+      setOwnAccountIds(ids);
+      // Mark every added account as "ours" in the persistence layers so each one's
+      // cosmetics, curated badges, and Atmosphere are cached + write through. This
+      // is the canonical account-list refresh, so it also covers accounts added
+      // mid-session (the launch prefetch only sees those present at startup).
+      // Dynamic imports avoid a static import cycle; registration is idempotent.
+      void Promise.all([
+        import('../services/cosmeticsCache').then((m) => m.registerOwnCosmeticAccounts(ids)),
+        import('../services/identityService').then((m) => m.seedOwnIdentitiesFromCache(ids)),
+        import('./chatUserStore').then((m) => m.registerOwnAtmospheres(ids)),
+      ]).catch(() => {});
     } catch {
       // Registry not readable yet (e.g. before the startup reconcile); leave as-is.
     }

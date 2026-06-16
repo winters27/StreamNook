@@ -24,6 +24,7 @@ import { matchHighlightPhrase, matchHighlightUser, matchHighlightBadge, type Hig
 import { flashTitle } from '../utils/titleFlasher';
 import { playSoundThrottled } from '../utils/notificationSound';
 import { getDisplayedName, getColorOverride } from '../utils/userChatOverrides';
+import { CHANNEL_SPECIFIC_TWITCH_BADGES, orderTwitchBadges } from '../utils/badgeOrder';
 import { LinkPreviewCard } from './chat/LinkPreviewCard';
 import { extractPreviewUrls, prettyUrlLabel } from '../services/linkPreviewService';
 
@@ -53,13 +54,6 @@ interface EmoteSegment {
 const channelNameCache = new Map<string, string>();
 const channelProfileImageCache = new Map<string, string>();
 
-// Badge sets that are channel-specific (different images per channel)
-// These are NOT cached locally to avoid cross-channel pollution
-const CHANNEL_SPECIFIC_BADGE_SETS = new Set([
-  'subscriber', 'bits', 'sub-gifter', 'sub-gift-leader',
-  'founder', 'hype-train', 'predictions'
-]);
-
 /**
  * Get the best URL for a Twitch badge, with reactive caching.
  * - Channel-specific badges (subscriber, bits, etc.) are never cached to avoid cross-channel pollution
@@ -76,7 +70,7 @@ function getTwitchBadgeUrl(badgeKey: string, badgeInfo: { localUrl?: string; url
   
   // Channel-specific badges are never cached - always use remote URL
   // This prevents cross-channel pollution where one streamer's sub badge appears in another's chat
-  if (CHANNEL_SPECIFIC_BADGE_SETS.has(setId)) {
+  if (CHANNEL_SPECIFIC_TWITCH_BADGES.has(setId)) {
     return badgeInfo.image_url_4x || badgeInfo.image_url_1x || '';
   }
 
@@ -2441,7 +2435,10 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
                   />
                 </Tooltip>
               )}
-              {parsed.badges.map((badge, idx) => {
+              {/* StreamNook identity badge leads the row (see utils/badgeOrder). */}
+              {isSN && <StreamNookBadge userId={senderUserId} userNumber={getStreamNookUserNumber(senderUserId)} />}
+              {/* Twitch badges, channel-contextual (subscriber, poll, …) before global. */}
+              {orderTwitchBadges(parsed.badges).map((badge, idx) => {
                 if (!badge.info) return null;
                 return (
                   <Tooltip key={`${badge.key}-${idx}`} content={badge.info.title} side="top">
@@ -2487,9 +2484,6 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
                   />
                 </Tooltip>
               ))}
-              {/* StreamNook identity badge — rendered LAST so it sits closest
-                  to the username, matching the profile card's badge order. */}
-              {isSN && <StreamNookBadge userId={senderUserId} userNumber={getStreamNookUserNumber(senderUserId)} />}
             </span>
           ) : null}
 

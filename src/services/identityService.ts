@@ -23,6 +23,70 @@ const TTL = 5 * 60 * 1000; // 5 minutes
 const cache = new Map<string, { data: IdentityLoadout; ts: number }>();
 const pending = new Map<string, Promise<IdentityLoadout>>();
 
+// Persist OUR OWN accounts' loadout + resolved badge bundle to disk so their
+// curated third-party badges paint in chat on frame one of the next launch,
+// instead of after the resolve round-trip. Per account we've added (primary +
+// linked) — the set is populated at boot via seedOwnIdentitiesFromCache; only
+// those rows are persisted (every other chatter resolves from the network).
+const OWN_IDENTITY_KEY = 'streamnook_own_identity_v1';
+const ownIdentityAccounts = new Set<string>();
+
+type PersistedIdentityStore = Record<
+  string,
+  { loadout?: IdentityLoadout; resolved?: ResolvedIdentity }
+>;
+
+function readPersistedIdentities(): PersistedIdentityStore {
+  try {
+    const raw = localStorage.getItem(OWN_IDENTITY_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? (parsed as PersistedIdentityStore) : {};
+  } catch {
+    return {};
+  }
+}
+
+function persistOwnIdentity(userId: string): void {
+  try {
+    const loadout = cache.get(userId)?.data;
+    const resolved = resolvedCache.get(userId)?.data;
+    const store = readPersistedIdentities();
+    if (!loadout && !resolved) delete store[userId];
+    else store[userId] = { loadout, resolved };
+    localStorage.setItem(OWN_IDENTITY_KEY, JSON.stringify(store));
+  } catch (e) {
+    Logger.warn('[identityService] persistOwnIdentity failed:', e);
+  }
+}
+
+/**
+ * At launch, register all of OUR account ids (primary + linked) so their
+ * loadout/resolved writes persist, and hydrate each from disk so chat paints every
+ * account's curated third-party badges instantly. Seeded with a stale timestamp:
+ * synchronous peeks (getResolvedIdentityFromCache, which chat uses) return it
+ * immediately, while getResolvedIdentity / getIdentityWithCache still revalidate on
+ * their next call and overwrite if anything changed. No-op for ids with nothing stored.
+ */
+export function seedOwnIdentitiesFromCache(userIds: string[]): void {
+  const store = readPersistedIdentities();
+  for (const userId of userIds) {
+    if (!userId) continue;
+    ownIdentityAccounts.add(userId);
+    const entry = store[userId];
+    if (!entry) continue;
+    if (entry.loadout && !cache.has(userId)) {
+      cache.set(userId, { data: entry.loadout, ts: 0 });
+      version++;
+      listeners.forEach((l) => l());
+    }
+    if (entry.resolved && !resolvedCache.has(userId)) {
+      resolvedCache.set(userId, { data: entry.resolved, ts: 0 });
+      notifyResolved(userId);
+    }
+  }
+}
+
 // Listeners notified when any loadout in the cache changes (own-row edits or
 // background refreshes), so chat rows re-read synchronously.
 const listeners = new Set<() => void>();
@@ -31,6 +95,7 @@ const publish = (userId: string, data: IdentityLoadout) => {
   cache.set(userId, { data, ts: Date.now() });
   version++;
   listeners.forEach((l) => l());
+  if (ownIdentityAccounts.has(userId)) persistOwnIdentity(userId);
 };
 
 export const subscribeIdentityVersion = (cb: () => void): (() => void) => {
@@ -131,7 +196,13 @@ const defaultResolved = (userId: string): ResolvedIdentity => ({
 // fetched or cleared, so a surface holding a copy (chat) can re-resolve and
 // repaint. The resolved analogue of the loadout listeners near the top.
 const resolvedListeners = new Set<(userId: string) => void>();
-const notifyResolved = (userId: string) => resolvedListeners.forEach((l) => l(userId));
+const notifyResolved = (userId: string) => {
+  resolvedListeners.forEach((l) => l(userId));
+  // A resolved-bundle change for one of our accounts (a badge toggle re-resolves
+  // here) is exactly when the persisted copy must update, so the next launch
+  // reflects the edit — per account.
+  if (ownIdentityAccounts.has(userId)) persistOwnIdentity(userId);
+};
 export const subscribeResolvedIdentity = (cb: (userId: string) => void): (() => void) => {
   resolvedListeners.add(cb);
   return () => resolvedListeners.delete(cb);

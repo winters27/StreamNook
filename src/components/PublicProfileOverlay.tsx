@@ -562,10 +562,17 @@ const PublicProfileOverlay = () => {
                       // stopPropagation so a badge click opens the nested profile
                       // instead of starting a drag.
                       return (
+                        // Canonical badge order (see utils/badgeOrder): StreamNook
+                        // leads, then Twitch global, then 7TV, then third-party
+                        // (BTTV Pro among them). No channel context here, so the
+                        // channel-contextual tier (sub/poll) never appears.
                         <div
                           className="flex flex-wrap items-center gap-1.5"
                           onPointerDown={(e) => e.stopPropagation()}
                         >
+                          {memberNumber !== null && userId && (
+                            <StreamNookBadge userId={userId} userNumber={memberNumber} side="bottom" />
+                          )}
                           {twitch && imgBadge(twitch.src, `Twitch: ${twitch.title}`, 'tw')}
                           {seventv && (() => {
                             const urls = getBadgeImageUrls(seventv as any);
@@ -580,9 +587,6 @@ const PublicProfileOverlay = () => {
                               </Tooltip>
                             ) : null;
                           })()}
-                          {memberNumber !== null && userId && (
-                            <StreamNookBadge userId={userId} userNumber={memberNumber} side="bottom" />
-                          )}
                           {thirdParty.map((b: any) =>
                             imgBadge(b.src, `${b.title} (${b.provider.toUpperCase()})`, b.key || b.title),
                           )}

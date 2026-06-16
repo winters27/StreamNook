@@ -45,6 +45,7 @@ import {
 } from '../../services/supabaseService';
 import type { CosmeticCatalogEntry } from '../../services/supabaseService';
 import { getIdentityWithCache, setIdentity } from '../../services/identityService';
+import { readOwnProfileCache, writeOwnProfileCache } from '../../services/ownProfileCache';
 import { isSubscriber } from '../../services/subscriberService';
 import { listAtmospheres, getAtmosphere, type Atmosphere } from '../../services/atmospheres';
 import { getTier, getTierAccent, StreamNookBadge } from '../StreamNookBadge';
@@ -125,6 +126,11 @@ const CheckChip = ({ tone = 'accent' }: { tone?: 'accent' | 'seventv' }) => (
 
 const ProfileSettings = () => {
   const { isAuthenticated, currentUser, loginToTwitch, currentStream, addToast, openProfilePreview, updateProfilePreview } = useAppStore();
+  // Last-rendered loadout persisted from a prior open. Read ONCE, synchronously,
+  // before the cosmetic state below is initialized, so the card paints
+  // fully-dressed on the very first frame instead of flashing barebones while the
+  // network catches up. The background fetches further down revalidate it.
+  const [seededProfile] = useState(() => readOwnProfileCache(currentUser?.user_id));
   const profileCardRef = useRef<HTMLDivElement>(null);
   const [isSharing, setIsSharing] = useState(false);
   // Inner Profile sub-tab. Overview (stats showcase) is the default landing
@@ -170,46 +176,59 @@ const ProfileSettings = () => {
     ? getActiveCosmeticSlug(currentUser.user_id)
     : null;
 
-  const [twitchBadges, setTwitchBadges] = useState<TwitchBadge[]>([]);
+  const [twitchBadges, setTwitchBadges] = useState<TwitchBadge[]>(
+    () => (seededProfile?.twitchBadges as TwitchBadge[] | undefined) ?? [],
+  );
   void twitchBadges;
-  const [thirdPartyBadges, setThirdPartyBadges] = useState<ThirdPartyBadge[]>([]);
+  const [thirdPartyBadges, setThirdPartyBadges] = useState<ThirdPartyBadge[]>(
+    () => (seededProfile?.thirdPartyBadges as ThirdPartyBadge[] | undefined) ?? [],
+  );
   // Your own BTTV Pro badge, resolved client-side (it's WebSocket-only, so it
   // can't ride the server-resolved picker list). Null when you don't have Pro,
   // so the toggle only appears for Pro members.
-  const [selfBttvProBadge, setSelfBttvProBadge] = useState<ReturnType<typeof buildBttvProBadge> | null>(null);
-  const [seventvBadges, setSeventvBadges] = useState<SevenTVBadge[]>([]);
-  const [seventvPaint, setSeventvPaint] = useState<SevenTVPaint | null>(null);
-  const [profileTheme, setProfileThemeState] = useState('tier');
+  const [selfBttvProBadge, setSelfBttvProBadge] = useState<ReturnType<typeof buildBttvProBadge> | null>(
+    () => (seededProfile?.selfBttvProBadge as ReturnType<typeof buildBttvProBadge> | undefined) ?? null,
+  );
+  const [seventvBadges, setSeventvBadges] = useState<SevenTVBadge[]>(
+    () => (seededProfile?.seventvBadges as SevenTVBadge[] | undefined) ?? [],
+  );
+  const [seventvPaint, setSeventvPaint] = useState<SevenTVPaint | null>(
+    () => (seededProfile?.seventvPaint as SevenTVPaint | null | undefined) ?? null,
+  );
+  const [profileTheme, setProfileThemeState] = useState(() => seededProfile?.profileTheme ?? 'tier');
   // The cosmetic currently hovered in the picker, for the live preview card.
   const [previewThemeId, setPreviewThemeId] = useState<string | null>(null);
   // Live 7TV global emotes for the mock chat message (fetched once, cached).
   const [previewEmotes, setPreviewEmotes] = useState<PreviewEmote[]>([]);
   useEffect(() => { getPreviewEmotes().then(setPreviewEmotes).catch(() => {}); }, []);
   // Sections the member has hidden from their public profile.
-  const [hiddenSecs, setHiddenSecs] = useState<string[]>([]);
+  const [hiddenSecs, setHiddenSecs] = useState<string[]>(() => seededProfile?.hiddenSections ?? []);
   const [loadoutLoaded, setLoadoutLoaded] = useState(false);
   const [subscribed, setSubscribed] = useState(false);
   // Accolades the member has earned (persisted in user_accolades). Used to
   // unlock achievement-gated Atmospheres like Midnight, which appear in the
   // picker only once earned (a free unlock, no subscription required).
   const [earnedAccolades, setEarnedAccolades] = useState<Set<string>>(new Set());
-  const [allSeventvPaints, setAllSeventvPaints] = useState<SevenTVPaint[]>([]);
-  const [seventvUserId, setSeventvUserId] = useState<string | null>(null);
+  const [allSeventvPaints, setAllSeventvPaints] = useState<SevenTVPaint[]>(
+    () => (seededProfile?.allSeventvPaints as SevenTVPaint[] | undefined) ?? [],
+  );
+  const [seventvUserId, setSeventvUserId] = useState<string | null>(() => seededProfile?.seventvUserId ?? null);
   const [, setHas7TVAccountChecked] = useState(false);
   const [, setIsLoadingBadges] = useState(false);
   const [seventvAuthConnected, setSeventvAuthConnected] = useState(false);
   const [updatingSeventvPaintId, setUpdatingSeventvPaintId] = useState<string | null>(null);
   const [updatingSeventvBadgeId, setUpdatingSeventvBadgeId] = useState<string | null>(null);
   const [isConnecting7TV, setIsConnecting7TV] = useState(false);
-  const [chatIdentityBadges, setChatIdentityBadges] = useState<ChatIdentityBadge[]>([]);
+  const [chatIdentityBadges, setChatIdentityBadges] = useState<ChatIdentityBadge[]>(
+    () => (seededProfile?.chatIdentityBadges as ChatIdentityBadge[] | undefined) ?? [],
+  );
   const [isFetchingIdentity, setIsFetchingIdentity] = useState(false);
   const [updatingBadgeId, setUpdatingBadgeId] = useState<string | null>(null);
   // Shared cross-client loadout: which third-party badges to promote into chat
   // and the profile card. `customized:false` ⇒ show everything (the default).
-  const [loadout, setLoadout] = useState<{ customized: boolean; badges: string[] }>({
-    customized: false,
-    badges: [],
-  });
+  const [loadout, setLoadout] = useState<{ customized: boolean; badges: string[] }>(
+    () => seededProfile?.loadout ?? { customized: false, badges: [] },
+  );
 
   // Mounted gate so async resolvers don't setState on a dead component when
   // the user navigates away from the Profile tab mid-fetch. Important: set
@@ -458,16 +477,72 @@ const ProfileSettings = () => {
   const applyProfileData = (profile: CachedProfile) => {
     setTwitchBadges(profile.twitchBadges);
     setThirdPartyBadges(profile.thirdPartyBadges);
-    setSeventvBadges(profile.seventvCosmetics.badges);
     setSeventvUserId(profile.seventvCosmetics.seventvUserId || null);
     setHas7TVAccountChecked(true);
-    setAllSeventvPaints(profile.seventvCosmetics.paints as SevenTVPaint[]);
 
-    const selectedPaint = profile.seventvCosmetics.paints.find((p: any) => p.selected);
-    if (selectedPaint) {
-      setSeventvPaint(selectedPaint as SevenTVPaint);
+    // A 7TV hard failure (network / 5xx) surfaces here as an empty cosmetics set.
+    // Don't let that strip a paint/badge we're already showing (from the seed
+    // cache or an earlier success) down to nothing — keep the last good set until
+    // 7TV answers cleanly again. A fresh non-empty set IS authoritative: apply it,
+    // and clear the paint when nothing in it is selected (an unequip elsewhere).
+    const paints = profile.seventvCosmetics.paints as SevenTVPaint[];
+    const badges = profile.seventvCosmetics.badges;
+    const hasFreshCosmetics = paints.length > 0 || badges.length > 0;
+    if (hasFreshCosmetics) {
+      setSeventvBadges(badges);
+      setAllSeventvPaints(paints);
+      const selectedPaint = paints.find((p: any) => p.selected);
+      setSeventvPaint((selectedPaint as SevenTVPaint) ?? null);
     }
   };
+
+  // Write-through: keep the local snapshot in lockstep with whatever the card is
+  // rendering, so the next cold open paints this exact loadout instantly. Fires on
+  // every cosmetic edit (paint / badge / theme / loadout) AND on the background
+  // revalidation results, since both flow through these states. Gated so the empty
+  // defaults during the pre-load window can't overwrite a good cached snapshot.
+  useEffect(() => {
+    const uid = currentUser?.user_id;
+    if (!uid) return;
+    const hasContent =
+      seededProfile != null ||
+      loadoutLoaded ||
+      twitchBadges.length > 0 ||
+      seventvPaint != null ||
+      seventvBadges.length > 0 ||
+      thirdPartyBadges.length > 0 ||
+      chatIdentityBadges.length > 0 ||
+      allSeventvPaints.length > 0;
+    if (!hasContent) return;
+    writeOwnProfileCache(uid, {
+      seventvPaint,
+      seventvBadges,
+      allSeventvPaints,
+      seventvUserId,
+      twitchBadges,
+      thirdPartyBadges,
+      chatIdentityBadges,
+      selfBttvProBadge,
+      loadout,
+      profileTheme,
+      hiddenSections: hiddenSecs,
+    });
+  }, [
+    currentUser?.user_id,
+    seededProfile,
+    loadoutLoaded,
+    seventvPaint,
+    seventvBadges,
+    allSeventvPaints,
+    seventvUserId,
+    twitchBadges,
+    thirdPartyBadges,
+    chatIdentityBadges,
+    selfBttvProBadge,
+    loadout,
+    profileTheme,
+    hiddenSecs,
+  ]);
 
   // Re-evaluate whether the card has anything worth animating. Runs
   // after each render that updates the card's content (paint, badges,
@@ -1021,6 +1096,12 @@ const ProfileSettings = () => {
 
         <div className="relative flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-2 flex-wrap">
+            {/* Canonical badge order (see utils/badgeOrder): StreamNook leads, then
+                Twitch global, then 7TV, then third-party. The card has no channel
+                context, so the channel-contextual tier (sub/poll) never shows here. */}
+            {streamNookUserNumber !== null && currentUser?.user_id && (
+              <StreamNookBadge userId={currentUser.user_id} userNumber={streamNookUserNumber} side="bottom" />
+            )}
             {selectedGlobalBadge && (
               <Tooltip content={`Twitch: ${selectedGlobalBadge.title}`} side="top">
                 <img src={selectedGlobalBadge.image_url} alt={selectedGlobalBadge.title} className="w-6 h-6" />
@@ -1039,9 +1120,6 @@ const ProfileSettings = () => {
                 </Tooltip>
               ) : null;
             })()}
-            {streamNookUserNumber !== null && currentUser?.user_id && (
-              <StreamNookBadge userId={currentUser.user_id} userNumber={streamNookUserNumber} side="bottom" />
-            )}
             {/* Selected third-party badges — the card is the screenshot preview,
                 so it shows exactly the loadout other StreamNook users will see. */}
             {shownThirdParty.map((badge: any) => (

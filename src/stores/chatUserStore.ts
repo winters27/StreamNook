@@ -311,6 +311,51 @@ function pushAtmosphere(userId: string, id: string | null) {
   atmosphereCache.set(userId, id);
   pendingAtmosphereUpdates.set(userId, id);
   scheduleAtmosphereFlush();
+  if (ownAtmosphereAccounts.has(userId)) persistOwnAtmosphere(userId);
+}
+
+// Disk persistence of OUR OWN accounts' resolved Atmosphere id (primary + every
+// linked account), so the wash behind our messages paints on frame one of a cold
+// launch instead of after the per-sighting prefs fetch. Keyed by account id.
+const OWN_ATMOSPHERE_KEY = 'streamnook_own_atmosphere_v1';
+const ownAtmosphereAccounts = new Set<string>();
+
+function readPersistedAtmospheres(): Record<string, string | null> {
+  try {
+    const raw = localStorage.getItem(OWN_ATMOSPHERE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? (parsed as Record<string, string | null>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function persistOwnAtmosphere(userId: string): void {
+  try {
+    const store = readPersistedAtmospheres();
+    store[userId] = atmosphereCache.get(userId) ?? null;
+    localStorage.setItem(OWN_ATMOSPHERE_KEY, JSON.stringify(store));
+  } catch {
+    /* ignore (private mode / unavailable storage) */
+  }
+}
+
+/**
+ * Register all of OUR account ids (primary + linked) and seed each one's
+ * Atmosphere wash from the id persisted last session, so a cold launch paints it
+ * on frame one for every account. The stored value is the already-resolved id, so
+ * no catalog wait is needed. Marks them own so a later theme change persists. An
+ * explicit change still overwrites live via refreshAtmosphere; the per-sighting
+ * resolve still backfills any account with nothing stored yet.
+ */
+export function registerOwnAtmospheres(userIds: string[]): void {
+  const store = readPersistedAtmospheres();
+  for (const userId of userIds) {
+    if (!userId || ownAtmosphereAccounts.has(userId)) continue; // already registered/seeded
+    ownAtmosphereAccounts.add(userId);
+    if (userId in store) pushAtmosphere(userId, store[userId]);
+  }
 }
 
 function ensureAtmosphereResolved(userId: string) {
@@ -348,6 +393,7 @@ function ensureAtmosphereResolved(userId: string) {
 export function refreshAtmosphere(userId: string, atmosphereId: string | null) {
   pushAtmosphere(userId, atmosphereId);
 }
+
 
 // The tracked-user map is a session-long singleton shared by every chat surface
 // (main app + each MultiChat pane), and clearUsers only fires on channel switch.
