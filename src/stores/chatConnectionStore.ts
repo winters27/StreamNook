@@ -108,6 +108,10 @@ interface ChannelSlice {
   /** IRC USERSTATE badges string, used to repaint optimistic messages with the
    *  caller's tenure-correct badges for the channel. */
   userBadgesFromIrc: string | null;
+  /** The connected user's own chat color from USERSTATE. Lets own optimistic
+   *  messages paint in the real color from the first frame instead of flashing
+   *  a default until the IRC echo round-trips. */
+  userColorFromIrc: string | null;
 }
 
 interface ChatConnectionState {
@@ -154,6 +158,29 @@ export function setOwnAccountIds(ids: string[]): void {
 function isOwnUserId(userId: string | null | undefined): boolean {
   if (!userId) return false;
   return userId === currentUserId || ownAccountIds.has(userId);
+}
+
+// The last own chat color USERSTATE reported, persisted so a cold launch can
+// seed new channel slices and paint the first optimistic message correctly
+// before this session's USERSTATE has arrived. USERSTATE refreshes it on every
+// JOIN and after every send, so a color change propagates on its own.
+const OWN_COLOR_KEY = 'streamnook:lastOwnChatColor';
+
+function lastOwnChatColor(): string | null {
+  try {
+    return localStorage.getItem(OWN_COLOR_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function persistOwnChatColor(color: string): void {
+  try {
+    localStorage.setItem(OWN_COLOR_KEY, color);
+  } catch {
+    // Storage unavailable (private mode / quota); the in-memory slice cache
+    // still removes the flash for this session.
+  }
 }
 
 // Shared per-channel emote cache. Replaces the prior `const [emotes] = useState`
@@ -393,6 +420,7 @@ function emptySlice(channel: string, channelId: string | null): ChannelSlice {
     liveMessageCount: 0,
     seenMessageIds: new Set(),
     userBadgesFromIrc: null,
+    userColorFromIrc: lastOwnChatColor(),
   };
 }
 
@@ -459,6 +487,29 @@ function repaintOwnBadges(slice: ChannelSlice, badges: string): boolean {
     const current = m.match(/(?:^|;)badges=([^;]*)/)?.[1] ?? '';
     if (current === badges) continue;
     slice.messages[i] = m.replace(/(^|;)badges=[^;]*/, (_full, sep) => `${sep}badges=${badges}`);
+    changed = true;
+  }
+  return changed;
+}
+
+/**
+ * Retroactively repaint the PRIMARY account's own optimistic messages with the
+ * real chat color from USERSTATE. Same rationale as repaintOwnBadges: Twitch
+ * doesn't echo your own PRIVMSG back over your own read connection, so an own
+ * message's `color=` tag is frozen at build time. If it was built before
+ * USERSTATE landed (or with the default fallback), this rewrites it the moment
+ * the real color arrives so the username never stays a wrong color.
+ */
+function repaintOwnColor(slice: ChannelSlice, color: string): boolean {
+  if (!currentUserId) return false;
+  const ownTag = `user-id=${currentUserId}`;
+  let changed = false;
+  for (let i = 0; i < slice.messages.length; i++) {
+    const m = slice.messages[i];
+    if (typeof m !== 'string' || !m.includes(ownTag)) continue;
+    const current = m.match(/(?:^|;)color=([^;]*)/)?.[1] ?? '';
+    if (current === color) continue;
+    slice.messages[i] = m.replace(/(^|;)color=[^;]*/, (_full, sep) => `${sep}color=${color}`);
     changed = true;
   }
   return changed;
@@ -927,6 +978,44 @@ function handleWsMessage(raw: string) {
         slice.userBadges = badges;
         repaintOwnBadges(slice, badges);
         bumpRevision();
+      }
+    }
+    return;
+  }
+
+  // USER_COLOR:#<channel>:<color>  (legacy: USER_COLOR:<color>)
+  // The connected user's own chat color from USERSTATE. Cache it and repaint
+  // any own messages already sent with the build-time default.
+  if (raw.startsWith('USER_COLOR:')) {
+    const payload = raw.slice('USER_COLOR:'.length);
+    let channel: string | null = null;
+    let color: string;
+    if (payload.startsWith('#')) {
+      const colonIdx = payload.indexOf(':');
+      if (colonIdx > 1) {
+        channel = payload.slice(1, colonIdx).toLowerCase();
+        color = payload.slice(colonIdx + 1);
+      } else {
+        color = payload;
+      }
+    } else {
+      color = payload;
+    }
+    if (color) {
+      persistOwnChatColor(color);
+      if (channel) {
+        withSlice(channel, (slice) => {
+          slice.userColorFromIrc = color;
+          repaintOwnColor(slice, color);
+        });
+      } else {
+        const channels = useChatConnectionStore.getState().channels;
+        if (channels.size === 1) {
+          const slice = channels.values().next().value as ChannelSlice;
+          slice.userColorFromIrc = color;
+          repaintOwnColor(slice, color);
+          bumpRevision();
+        }
       }
     }
     return;
@@ -1554,7 +1643,13 @@ export async function sendChannelMessage(
 
   const tempId = `local-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   const timestamp = Date.now();
-  const color = (sendingAsSecondary ? senderAccount!.color : userInfo.color) || '#8A2BE2';
+  // For the primary, prefer the real USERSTATE color (live, refreshes on /color)
+  // over the build-time default so the username doesn't flash a wrong color until
+  // the IRC echo lands. A secondary carries its own resolved color.
+  const color =
+    (sendingAsSecondary
+      ? senderAccount!.color
+      : userInfo.color || slice.userColorFromIrc) || '#9147FF';
   // USERSTATE-cached badges win because they're tenure-correct for this channel;
   // caller-provided badges are the fallback while USERSTATE hasn't landed. A
   // secondary isn't the IRC-connected user, so it has no cached badges; the real

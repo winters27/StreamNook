@@ -46,6 +46,10 @@ static WS_PORT: OnceLock<Mutex<Option<u16>>> = OnceLock::new();
 // room state, and emote set so split-mode rendering and late-mount tab opens
 // don't get cross-channel state.
 static USER_BADGES_CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+// The connected user's own chat color from USERSTATE, keyed per channel. Lets the
+// frontend paint its own optimistic messages in the real color from the first
+// frame instead of flashing a default until the IRC echo round-trips.
+static USER_COLOR_CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
 static ROOM_STATE_CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
 static CHANNEL_EMOTES: OnceLock<Mutex<HashMap<String, EmoteSet>>> = OnceLock::new();
 // Per-channel consumer claims, keyed by window label (lowercase channel ->
@@ -103,6 +107,10 @@ fn get_shared_chat_rooms() -> &'static Mutex<HashMap<String, Vec<String>>> {
 
 fn get_user_badges_cache() -> &'static Mutex<HashMap<String, String>> {
     USER_BADGES_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn get_user_color_cache() -> &'static Mutex<HashMap<String, String>> {
+    USER_COLOR_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn get_room_state_cache() -> &'static Mutex<HashMap<String, String>> {
@@ -836,6 +844,25 @@ impl IrcService {
                 let _ = tx.send(badges_message);
             }
 
+            // Cache and forward the user's own chat color. An empty tag means the
+            // user never set one (Twitch leaves the client to pick a default), so
+            // only propagate a real value and let the frontend default stand.
+            if let Some(color) = Self::extract_tag_value(trimmed, "color") {
+                if !color.is_empty() {
+                    if let Some(ref ch) = channel_name {
+                        get_user_color_cache()
+                            .lock()
+                            .await
+                            .insert(ch.clone(), color.clone());
+                    }
+                    let color_message = match &channel_name {
+                        Some(ch) => format!("USER_COLOR:#{}:{}", ch, color),
+                        None => format!("USER_COLOR:{}", color),
+                    };
+                    let _ = tx.send(color_message);
+                }
+            }
+
             // Extract emote-sets to fetch user's subscribed emotes
             if let Some(emote_sets) = Self::extract_tag_value(trimmed, "emote-sets") {
                 debug!(
@@ -1088,6 +1115,18 @@ impl IrcService {
         for (channel, badges) in badge_entries {
             let badges_message = format!("USER_BADGES:#{}:{}", channel, badges);
             let _ = local_tx.send(warp::ws::Message::text(badges_message)).await;
+        }
+
+        let color_entries: Vec<(String, String)> = {
+            let cache = get_user_color_cache().lock().await;
+            cache
+                .iter()
+                .map(|(ch, color)| (ch.clone(), color.clone()))
+                .collect()
+        };
+        for (channel, color) in color_entries {
+            let color_message = format!("USER_COLOR:#{}:{}", channel, color);
+            let _ = local_tx.send(warp::ws::Message::text(color_message)).await;
         }
 
         // Send any queued messages first
@@ -1491,6 +1530,7 @@ impl IrcService {
         // USERSTATE/ROOMSTATE refill from the next IRC frames.
         get_channel_emotes().lock().await.remove(key);
         get_user_badges_cache().lock().await.remove(key);
+        get_user_color_cache().lock().await.remove(key);
         get_room_state_cache().lock().await.remove(key);
 
         // Stop receiving 7TV EventAPI updates for this channel.
