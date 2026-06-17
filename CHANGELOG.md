@@ -1,3 +1,10 @@
+## [8.0.6] - 2026-06-16
+### 🐛 Bug Fixes
+- **Your chat color shows correctly right away**: Your own messages no longer flash a default color before snapping to your real one, and they no longer occasionally get stuck on the wrong color.
+- **Low Latency is steadier under load**: Fixed the playback reload timeouts and refused connections that could cause stalls or buffering on the low-latency path.
+- **Your live edge gap holds where you set it**: Low Latency now keeps your chosen delay more consistently instead of drifting too close to live, and moving the gap slider takes effect immediately while you watch instead of only after reloading the stream.
+- **No more duplicate cards while browsing**: Loading more streams, clips, videos, or games in a category or the games grid no longer shows the same item twice.
+
 ## [8.0.5] - 2026-06-15
 ### 🐛 Bug Fixes
 - **Experimental Low Latency plays cleanly on every channel**: On some streams, turning on experimental Low Latency could badly corrupt the picture and freeze playback. Video frames were being clipped short as the stream was repackaged for the low-latency path, so the decoder ran out of data partway down the frame. Frames now stay whole, and Low Latency holds up everywhere.
