@@ -393,7 +393,8 @@ function GlobalAddControl({
     setLoadingSets(true);
     setSets(null);
     setSetId(null);
-    getChannelSets(channelId)
+    const isSelf = channels.find((c) => c.seventvUserId === channelId)?.isSelf ?? false;
+    getChannelSets(channelId, undefined, isSelf)
       .then((list) => {
         if (cancelled) return;
         const usable = list.filter((s) => s.kind === 'NORMAL' || s.kind === 'PERSONAL');
@@ -410,7 +411,7 @@ function GlobalAddControl({
     return () => {
       cancelled = true;
     };
-  }, [channelId, addToast]);
+  }, [channelId, channels, addToast]);
 
   const set = (sets ?? []).find((s) => s.id === setId) || null;
   const key = `${channelId}:${setId}`;

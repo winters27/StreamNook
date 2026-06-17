@@ -142,6 +142,9 @@ function SetRow({
   const [editingCap, setEditingCap] = useState(false);
   const [cap, setCap] = useState(String(set.capacity ?? ''));
   const [confirmDelete, setConfirmDelete] = useState(false);
+  // The personal set is owned by 7TV's subscription machinery: it can't be made
+  // a channel's active set, renamed, resized, or deleted (only its emotes change).
+  const isManageable = canAdmin && set.kind !== 'PERSONAL';
 
   return (
     <div className="glass-panel rounded-lg p-3 flex items-center gap-3">
@@ -197,7 +200,7 @@ function SetRow({
             <Star size={12} className="fill-emerald-400" /> active
           </span>
         ) : (
-          canAdmin && (
+          isManageable && (
             <Tooltip content="Set as active set for this channel" side="top" delay={200}>
               <button
                 onClick={onSetActive}
@@ -209,7 +212,7 @@ function SetRow({
             </Tooltip>
           )
         )}
-        {canAdmin && (
+        {isManageable && (
           <>
             <Tooltip content="Edit capacity" side="top" delay={200}>
               <button onClick={() => setEditingCap(true)} className="p-1.5 rounded text-textSecondary hover:text-textPrimary hover:bg-glass">

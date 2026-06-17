@@ -277,13 +277,24 @@ export function invalidateEditableChannels(): void {
   editableChannelsCache = null;
 }
 
-/** All emote sets belonging to a channel, with the active one flagged. */
-export async function getChannelSets(seventvUserId: string, accountId?: string): Promise<ChannelSet[]> {
+/**
+ * All emote sets belonging to a channel, with the active one flagged. When
+ * `includePersonal` is set, the user's personal emote set is appended too: it is
+ * a SEPARATE field in the v4 schema (`user.personalEmoteSet`), not part of
+ * `emoteSets`, and only the owner can edit it, so callers pass it only for the
+ * signed-in user's own channel. Its emotes work in any channel, not just here.
+ */
+export async function getChannelSets(
+  seventvUserId: string,
+  accountId?: string,
+  includePersonal = false,
+): Promise<ChannelSet[]> {
   const query = /* GraphQL */ `
     query ChannelSets($id: Id!) {
       users { user(id: $id) {
         style { activeEmoteSetId }
         emoteSets { id name capacity kind }
+        ${includePersonal ? 'personalEmoteSet { id name capacity }' : ''}
       } }
     }
   `;
@@ -291,13 +302,24 @@ export async function getChannelSets(seventvUserId: string, accountId?: string):
   const u = data?.users?.user;
   if (!u) return [];
   const activeId = u.style?.activeEmoteSetId;
-  return (u.emoteSets ?? []).map((s: any): ChannelSet => ({
+  const sets: ChannelSet[] = (u.emoteSets ?? []).map((s: any): ChannelSet => ({
     id: s.id,
     name: s.name,
     capacity: s.capacity ?? undefined,
     kind: (s.kind as EmoteSetKind) || 'NORMAL',
     isActive: s.id === activeId,
   }));
+  const personal = includePersonal ? u.personalEmoteSet : null;
+  if (personal?.id && !sets.some((s) => s.id === personal.id)) {
+    sets.push({
+      id: personal.id,
+      name: personal.name || 'Personal Emotes',
+      capacity: personal.capacity ?? undefined,
+      kind: 'PERSONAL',
+      isActive: false,
+    });
+  }
+  return sets;
 }
 
 /** A page of a set's emotes, optionally filtered by an in-set name query. */

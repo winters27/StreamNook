@@ -47,7 +47,8 @@ export default function ChannelWorkspace({ channel, initialTab, onChannelsChange
   const loadSets = useCallback(async () => {
     setSetsError(null);
     try {
-      const list = await getChannelSets(channel.seventvUserId);
+      // Personal set is editable only on your own channel.
+      const list = await getChannelSets(channel.seventvUserId, undefined, channel.isSelf);
       setSets(list);
       setWorkingSetId((prev) => {
         if (prev && list.some((s) => s.id === prev)) return prev;
@@ -61,7 +62,7 @@ export default function ChannelWorkspace({ channel, initialTab, onChannelsChange
       setSetsError(e instanceof Error ? e.message : String(e));
       setSets([]);
     }
-  }, [channel.seventvUserId, addToast]);
+  }, [channel.seventvUserId, channel.isSelf, addToast]);
 
   useEffect(() => {
     setSets(null);
