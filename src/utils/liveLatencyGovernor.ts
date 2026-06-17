@@ -62,15 +62,20 @@ export interface LatencyGovernorOptions {
    *  options (<= 0.75) so user selections are still recognized as manual. */
   slowRate?: number;
   /**
-   * Behind-live target in seconds. When set (with `getLatency`), CATCH-UP is
-   * driven by behind-live distance, not forward-buffer excess: the governor
-   * speeds up to pull the PLAYHEAD closer to live (down to ~this value), while
-   * the buffer stays full because the origin refills it from the edge as fast
-   * as it's consumed. The low-buffer `floor` still governs the SLOW side, so
-   * catching up can never drain the buffer into a stall. Only valid on the
-   * LL-origin path, where `hls.latency` is honest (only real parts are listed).
+   * Behind-live target in seconds. When set (with `getLatency`), rate control is
+   * driven by behind-live distance, not forward-buffer excess, and works in BOTH
+   * directions: the governor speeds up to pull the PLAYHEAD closer to live when
+   * it falls behind the target, and slows down (toward `slowRate`) to let the gap
+   * grow back when it drifts ahead of the target — holding the playhead near
+   * ~this value. The buffer stays full because the origin refills it from the edge
+   * as fast as it's consumed, and easing back only grows it; the low-buffer
+   * `floor` still takes precedence on the SLOW side, so neither direction can
+   * drain the buffer into a stall. Only valid on the LL-origin path, where
+   * `hls.latency` is honest (only real parts are listed). Pass a getter (not a
+   * fixed number) so a mid-stream change to the viewer's chosen gap takes effect
+   * immediately, without rebuilding the player.
    */
-  latencyTarget?: number;
+  latencyTarget?: number | (() => number);
   /** Current behind-live seconds (e.g. `() => hls.latency`). Paired with `latencyTarget`. */
   getLatency?: () => number | null;
   /**
@@ -121,8 +126,10 @@ export function startLatencyGovernor(
   const floor = options.floor;
   const slowRate = options.slowRate ?? 0.97;
   // The lowest rate this governor will ever set itself; anything below it is
-  // a manual user speed selection and must not be fought.
-  const lowestOwned = floor != null ? slowRate : 1.0;
+  // a manual user speed selection and must not be fought. Both the low-buffer
+  // floor and the latency-target slow side (below) can ease the rate down to
+  // slowRate, so either one makes slowRate the governor-owned minimum.
+  const lowestOwned = floor != null || options.latencyTarget != null ? slowRate : 1.0;
   const getTarget =
     options.getTarget ??
     (() => {
@@ -158,18 +165,33 @@ export function startLatencyGovernor(
     // the PLAYHEAD toward live), else forward-buffer excess (legacy). The
     // floor below always governs the slow side on forward buffer, so neither
     // mode can drain the buffer into a stall.
-    const latency = options.latencyTarget != null ? (options.getLatency?.() ?? null) : null;
-    const usingLatency = options.latencyTarget != null && latency != null;
+    // Resolve the latency target each tick so a getter reflects the viewer's
+    // current setting (a mid-stream gap change applies without a player rebuild).
+    const latencyTargetVal =
+      typeof options.latencyTarget === 'function'
+        ? options.latencyTarget()
+        : options.latencyTarget;
+    const latencyTargeting = latencyTargetVal != null && Number.isFinite(latencyTargetVal);
+    const latency = latencyTargeting ? (options.getLatency?.() ?? null) : null;
+    const usingLatency = latencyTargeting && latency != null;
     const excess = usingLatency
-      ? (latency as number) - (options.latencyTarget as number)
+      ? (latency as number) - (latencyTargetVal as number)
       : fb - target;
 
-    // Three regimes, ramped between so transitions are inaudible:
+    // Regimes, ramped between so transitions are inaudible:
     //  - below the floor: low-buffer protection — drain slower than delivery so
     //    a wobble is ridden out as a slight slowdown instead of a stall. This is
     //    checked FIRST so catch-up never overrides buffer safety;
     //  - excess above band: speed up proportionally toward the target, capped at
     //    the ceiling;
+    //  - excess below -band (latency-targeting only): too close to the edge, so
+    //    slow down proportionally to let the gap grow back toward the target,
+    //    floored at slowRate. Symmetric with the speed-up side. Safe because
+    //    easing the playhead back only ever GROWS the buffer (the origin keeps
+    //    refilling from the edge), so it cannot stall — the low-buffer floor
+    //    above still takes precedence if delivery is actually thin. Gated to the
+    //    latency path: on the forward-buffer path a negative excess just means
+    //    the buffer is at/below target, which the floor already handles;
     //  - otherwise: real time.
     const gain = options.gain ?? 0.03;
     const desired =
@@ -177,7 +199,9 @@ export function startLatencyGovernor(
         ? slowRate
         : excess > band
           ? Math.max(1.0, Math.min(ceiling, 1 + gain * (excess - band)))
-          : 1.0;
+          : usingLatency && excess < -band
+            ? Math.min(1.0, Math.max(slowRate, 1 + gain * (excess + band)))
+            : 1.0;
     const next = options.rampStep
       ? rate + Math.max(-options.rampStep, Math.min(options.rampStep, desired - rate))
       : desired;
@@ -185,7 +209,7 @@ export function startLatencyGovernor(
       // Round away float dust so repeated ramp arithmetic stays on clean values.
       video.playbackRate = Math.round(next * 1000) / 1000;
       const detail = usingLatency
-        ? `behind-live ${(latency as number).toFixed(1)}s (target ${options.latencyTarget}s, buffer ${fb.toFixed(1)}s)`
+        ? `behind-live ${(latency as number).toFixed(1)}s (target ${latencyTargetVal}s, buffer ${fb.toFixed(1)}s)`
         : `forward buffer ${fb.toFixed(1)}s (settles ${target.toFixed(1)}-${(target + band).toFixed(1)}s)`;
       options.log?.(
         `[Latency${options.label ? ` ${options.label}` : ''}] ${detail} -> rate ${video.playbackRate.toFixed(3)}`,

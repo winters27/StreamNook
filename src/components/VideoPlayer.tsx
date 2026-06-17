@@ -837,8 +837,11 @@ const VideoPlayer = () => {
             // overlay subtracts a fixed calibration so the DISPLAYED number matches the
             // viewer's setting. The `floor` below protects the buffer, so catch-up never
             // stalls; if the chosen target is too tight for a system the stall-adaptive
-            // bump raises it for that channel.
-            latencyTarget: llTargetRaw,
+            // bump raises it for that channel. Read live (not the construction-time
+            // llTargetRaw) so moving the gap slider mid-stream takes effect at once.
+            latencyTarget: () =>
+              (playerSettingsRef.current.ll_target_latency ?? LL_TARGET_DEFAULT) +
+              LL_DISPLAY_CALIBRATION,
             getLatency: () =>
               typeof hls.latency === 'number' && hls.latency > 0 ? hls.latency : null,
             gain: 0.12,
