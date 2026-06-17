@@ -5,7 +5,7 @@ import ChatMessageList from './ChatMessageList';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
-import { Pickaxe, Gift } from 'lucide-react';
+import { Pickaxe, Gift, Settings } from 'lucide-react';
 
 // Channel Points Icon (Twitch style)
 const ChannelPointsIcon = ({ className = "", size = 14 }: { className?: string; size?: number }) => (
@@ -501,6 +501,7 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
   // only when these specific fields change, not on every unrelated store tick.
   const rawCurrentStream = useAppStore((s) => s.currentStream);
   const currentUser = useAppStore((s) => s.currentUser);
+  const openEmoteSets = useAppStore((s) => s.openEmoteSets);
   const externalDropsProvider = useAppStore((s) => s.externalDropsProvider);
   const currentHypeTrain = useAppStore((s) => s.currentHypeTrain);
   const currentMediaType = useAppStore((s) => s.currentMediaType);
@@ -3849,8 +3850,18 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
                   className="absolute bottom-full left-0 right-0 mb-2 h-[520px] max-h-[calc(100vh-120px)] border border-borderSubtle rounded-lg shadow-lg flex flex-col overflow-hidden origin-bottom"
                   style={{ backgroundColor: 'rgba(12, 12, 13, 0.95)', display: (!showEmotePicker && pickerFullyClosed) ? 'none' : undefined, pointerEvents: showEmotePicker ? 'auto' : 'none' }}>
                   <div className="p-2 border-b border-borderSubtle">
-                    <input type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="Search emotes..."
-                      className="w-full glass-input text-xs px-3 py-1.5 placeholder-textSecondary" />
+                    <div className="flex items-center gap-1.5">
+                      <input type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="Search emotes..."
+                        className="flex-1 min-w-0 glass-input text-xs px-3 py-1.5 placeholder-textSecondary" />
+                      <Tooltip content="Manage 7TV emotes" side="top">
+                        <button
+                          onClick={() => { setShowEmotePicker(false); openEmoteSets({ twitchId: currentStream?.user_id, tab: 'emotes' }); }}
+                          className="shrink-0 glass-button p-1.5 text-textSecondary hover:text-white transition-colors"
+                          style={{ borderRadius: '8px' }}>
+                          <Settings size={15} />
+                        </button>
+                      </Tooltip>
+                    </div>
                     <div className="flex gap-1 mt-2">
                       <Tooltip content={`Favorites (${favoriteEmotes.length})`} side="top">
                       <button onClick={() => setSelectedProvider('favorites')} className={`flex-1 py-1.5 text-xs transition-all flex items-center justify-center gap-1 ${selectedProvider === 'favorites' ? 'glass-input text-emerald-400 font-extrabold' : 'glass-button text-textSecondary hover:text-white'}`} style={{ borderRadius: '8px' }}>
