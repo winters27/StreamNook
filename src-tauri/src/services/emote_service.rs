@@ -31,6 +31,74 @@ pub fn seventv_circuit_open() -> bool {
     unix_now_secs() < SEVENTV_CIRCUIT_OPEN_UNTIL.load(Ordering::Relaxed)
 }
 
+/// Fetch a 7TV personal emote set by id and return only the emotes a 7TV
+/// subscriber is approved to use in any channel. The 7TV EventAPI binds a user
+/// to one of these sets via an EMOTE_SET entitlement; an emote counts as
+/// personal-use only when its `data.state` carries "PERSONAL" (others are still
+/// pending approval), so we filter on that exactly as the official client does.
+/// One direct REST read by set id, parsed once into ready-to-render emotes.
+pub async fn fetch_personal_emote_set(set_id: &str) -> Vec<Emote> {
+    let mut out = Vec::new();
+    let url = format!("https://7tv.io/v3/emote-sets/{}", set_id);
+    let resp = match crate::services::http::client().get(&url).send().await {
+        Ok(r) if r.status().is_success() => r,
+        _ => return out,
+    };
+    let json: serde_json::Value = match resp.json().await {
+        Ok(j) => j,
+        Err(_) => return out,
+    };
+    let Some(arr) = json.get("emotes").and_then(|v| v.as_array()) else {
+        return out;
+    };
+    for active in arr {
+        let data = active.get("data").unwrap_or(active);
+
+        let is_personal = data
+            .get("state")
+            .and_then(|v| v.as_array())
+            .map(|st| st.iter().any(|s| s.as_str() == Some("PERSONAL")))
+            .unwrap_or(false);
+        if !is_personal {
+            continue;
+        }
+
+        let id = data
+            .get("id")
+            .or_else(|| active.get("id"))
+            .and_then(|v| v.as_str());
+        let name = active.get("name").and_then(|v| v.as_str());
+        if let (Some(id), Some(name)) = (id, name) {
+            let flags = data
+                .get("flags")
+                .or_else(|| active.get("flags"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            let width = data
+                .pointer("/host/files/0/width")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as u32);
+            let owner_name = data
+                .pointer("/owner/display_name")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            out.push(Emote {
+                id: id.to_string(),
+                name: name.to_string(),
+                url: format!("https://cdn.7tv.app/emote/{}/1x.avif", id),
+                provider: EmoteProvider::SevenTV,
+                is_zero_width: Some((flags & 256) == 256),
+                local_url: None,
+                emote_type: None,
+                owner_id: None,
+                width,
+                owner_name,
+            });
+        }
+    }
+    out
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Emote {
     pub id: String,

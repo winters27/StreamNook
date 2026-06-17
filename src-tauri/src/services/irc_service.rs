@@ -73,6 +73,16 @@ static PLUGIN_HOST: OnceLock<Arc<PluginHost>> = OnceLock::new();
 // The logged-in user's (login, user id), for attributing locally sent
 // messages: Twitch IRC does not echo your own PRIVMSG back.
 static OWN_IDENTITY: OnceLock<Mutex<Option<(String, String)>>> = OnceLock::new();
+// A 7TV subscriber's personal-use emotes, keyed by the sender's Twitch user id
+// (not by channel): these render in ANY channel, even ones the streamer never
+// added them to. Value is (personal set id, name -> emote). The 7TV EventAPI
+// service fills this from EMOTE_SET entitlements; parse_text_segment overlays
+// the sender's entry with priority over channel emotes. PERSONAL_EMOTES_PRESENT
+// lets the per-message hot path skip the lock entirely while no user has any.
+static PERSONAL_EMOTES: OnceLock<Mutex<HashMap<String, (String, HashMap<String, Emote>)>>> =
+    OnceLock::new();
+static PERSONAL_EMOTES_PRESENT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 const IRC_SERVER: &str = "irc.chat.twitch.tv";
 const IRC_PORT: u16 = 6667;
@@ -131,6 +141,11 @@ fn get_channel_consumers() -> &'static Mutex<HashMap<String, HashSet<String>>> {
 
 fn get_own_identity() -> &'static Mutex<Option<(String, String)>> {
     OWN_IDENTITY.get_or_init(|| Mutex::new(None))
+}
+
+#[allow(clippy::type_complexity)]
+fn get_personal_emotes() -> &'static Mutex<HashMap<String, (String, HashMap<String, Emote>)>> {
+    PERSONAL_EMOTES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 /// The lean wire shape of the on_chat_message plugin event (PROTOCOL.md):
@@ -1643,10 +1658,61 @@ impl IrcService {
     /// `channel` selects which channel's 7TV/FFZ/BTTV emote set to use. Empty string
     /// (or a channel with no cached emotes) yields no third-party emote matches but
     /// still parses Twitch native emotes and URLs.
+    /// True if this user's personal set is already loaded for the same set id,
+    /// so the 7TV EventAPI can skip a redundant re-fetch on presence rebootstrap
+    /// or reconnect (the same entitlement is re-delivered every time).
+    pub async fn has_personal_set(twitch_id: &str, set_id: &str) -> bool {
+        get_personal_emotes()
+            .lock()
+            .await
+            .get(twitch_id)
+            .map(|(s, _)| s == set_id)
+            .unwrap_or(false)
+    }
+
+    /// Store a user's personal-use emotes (already filtered to the personal set).
+    /// Stored even when empty so the set id is recorded for dedup; the presence
+    /// flag only flips when there is at least one emote to overlay.
+    pub async fn set_personal_emotes(twitch_id: String, set_id: String, emotes: Vec<Emote>) {
+        let has_any = !emotes.is_empty();
+        let map: HashMap<String, Emote> = emotes.into_iter().map(|e| (e.name.clone(), e)).collect();
+        get_personal_emotes()
+            .lock()
+            .await
+            .insert(twitch_id, (set_id, map));
+        if has_any {
+            PERSONAL_EMOTES_PRESENT.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// Drop a user's personal emotes when their EMOTE_SET entitlement is revoked.
+    /// Only clears when the revoked set matches what we hold (a stale delete for
+    /// a set they no longer have must not wipe a newer one).
+    pub async fn clear_personal_emotes(twitch_id: &str, set_id: Option<&str>) {
+        let mut g = get_personal_emotes().lock().await;
+        match set_id {
+            Some(sid) => {
+                if g.get(twitch_id).map(|(s, _)| s == sid).unwrap_or(false) {
+                    g.remove(twitch_id);
+                }
+            }
+            None => {
+                g.remove(twitch_id);
+            }
+        }
+    }
+
+    /// Wipe all personal emotes (full chat teardown).
+    pub async fn clear_all_personal_emotes() {
+        get_personal_emotes().lock().await.clear();
+        PERSONAL_EMOTES_PRESENT.store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+
     async fn parse_message_segments(
         content: &str,
         twitch_emotes: &[EmotePos],
         channel: &str,
+        sender_id: &str,
     ) -> Vec<MessageSegment> {
         let mut segments = Vec::new();
 
@@ -1717,7 +1783,7 @@ impl IrcService {
                 let text = &content[last_byte..start_byte];
                 if !text.is_empty() {
                     // Parse text for third-party emotes, emojis, and links
-                    segments.extend(Self::parse_text_segment(text, channel).await);
+                    segments.extend(Self::parse_text_segment(text, channel, sender_id).await);
                 }
             }
 
@@ -1756,7 +1822,7 @@ impl IrcService {
             if let Some(last_byte) = char_to_byte_idx(last_char_index) {
                 let text = &content[last_byte..];
                 if !text.is_empty() {
-                    segments.extend(Self::parse_text_segment(text, channel).await);
+                    segments.extend(Self::parse_text_segment(text, channel, sender_id).await);
                 }
             }
         }
@@ -1772,12 +1838,31 @@ impl IrcService {
     }
 
     /// Parse a text segment for third-party emotes, emojis, and links.
-    /// `channel` selects which JOINed channel's emote set to use.
-    async fn parse_text_segment(text: &str, channel: &str) -> Vec<MessageSegment> {
+    /// `channel` selects which JOINed channel's emote set to use; `sender_id` is
+    /// the message author's Twitch user id, used to overlay their 7TV personal
+    /// emotes (which work in any channel).
+    async fn parse_text_segment(text: &str, channel: &str, sender_id: &str) -> Vec<MessageSegment> {
         let mut segments = Vec::new();
 
         // URL regex pattern - matches http://, https://, and www. URLs
         let url_regex = regex::Regex::new(r"(https?://[^\s]+|www\.[^\s]+)").unwrap();
+
+        // The sender's 7TV personal emotes (usable in any channel). Cloned out
+        // of its own lock up front (a handful of emotes at most) so the lookup
+        // map can borrow them alongside the channel set. Skipped entirely via an
+        // atomic while no user has any personal emotes loaded, which is the norm.
+        let personal_emotes: Vec<Emote> = if sender_id.is_empty()
+            || !PERSONAL_EMOTES_PRESENT.load(std::sync::atomic::Ordering::Relaxed)
+        {
+            Vec::new()
+        } else {
+            get_personal_emotes()
+                .lock()
+                .await
+                .get(sender_id)
+                .map(|(_, m)| m.values().cloned().collect())
+                .unwrap_or_default()
+        };
 
         // Get this channel's emotes (returns None if the channel hasn't been
         // fetched, e.g. just-JOINed; first messages may then render without
@@ -1785,7 +1870,7 @@ impl IrcService {
         let emote_set_lock = get_channel_emotes().lock().await;
         let emote_set = emote_set_lock.get(channel);
 
-        // Build emote lookup maps with priority: 7TV > FFZ > BTTV
+        // Build emote lookup maps with priority: personal > 7TV > FFZ > BTTV
         let mut emote_map: HashMap<&str, &Emote> = HashMap::new();
         if let Some(emotes) = emote_set {
             // Add in reverse priority order so higher priority overwrites
@@ -1798,6 +1883,11 @@ impl IrcService {
             for emote in &emotes.seven_tv {
                 emote_map.insert(&emote.name, emote);
             }
+        }
+        // Personal emotes win over channel emotes for this sender, matching the
+        // official client (its per-user emote map is consulted before the room's).
+        for emote in &personal_emotes {
+            emote_map.insert(&emote.name, emote);
         }
 
         // Split by spaces to check each word
@@ -2182,6 +2272,7 @@ impl IrcService {
                 &content_for_segments,
                 &emotes_adjusted,
                 &privmsg_channel,
+                &user_id,
             ))
         });
 
@@ -2404,6 +2495,7 @@ impl IrcService {
                     &content,
                     &emotes,
                     &usernotice_channel,
+                    &user_id,
                 ))
             })
         } else {

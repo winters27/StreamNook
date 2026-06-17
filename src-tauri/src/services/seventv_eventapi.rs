@@ -23,7 +23,7 @@ use tokio::sync::{mpsc, RwLock};
 use tokio::time::{sleep, timeout, Duration};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
-use crate::services::emote_service::EmoteService;
+use crate::services::emote_service::{self, EmoteService};
 use crate::services::irc_service::IrcService;
 
 const EVENTAPI_URL: &str = "wss://events.7tv.io/v3";
@@ -154,6 +154,8 @@ pub async fn clear_all() {
     for sub in drained {
         let _ = svc.cmd_tx.send(Cmd::Unsubscribe(sub));
     }
+    // Personal emotes are keyed by user, not channel; a full teardown clears them.
+    IrcService::clear_all_personal_emotes().await;
 }
 
 /// Resolve (emote_set_id, seventv_user_id) from the public 7TV user endpoint.
@@ -516,15 +518,25 @@ async fn handle_emote_set_update(
     );
 }
 
-// A user's cosmetics entitlement changed in a subscribed channel (they became
-// present, changed, or removed a paint/badge). We extract their Twitch id and
-// let the frontend re-resolve the authoritative cosmetics via the existing v4
-// GQL path (correct render shape, cheap, cached, coalesced). The WS is the
-// trigger; GQL is the resolver. We do NOT parse the v3 cosmetic payload here.
+// A user's entitlement changed in a subscribed channel. Two kinds matter:
+//
+// EMOTE_SET: the user was granted (or lost) a 7TV personal emote set, usable in
+// any channel. We resolve the set body and cache the personal-use emotes keyed
+// by their Twitch id so message parsing can overlay them. This is what makes a
+// user's personal emotes render even in streams that never added them.
+//
+// BADGE / PAINT: cosmetics. We extract the Twitch id and let the frontend
+// re-resolve the authoritative render shape via the existing v4 GQL path (cheap,
+// cached, coalesced). The WS is the trigger; GQL is the resolver.
 fn handle_entitlement(d: &Value, dispatch_type: &str, app_handle: &AppHandle) {
     let Some(body) = d.get("body") else {
         return;
     };
+
+    let kind = body
+        .pointer("/object/kind")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     let twitch_id = body
         .pointer("/object/user/connections")
         .and_then(|c| c.as_array())
@@ -534,14 +546,45 @@ fn handle_entitlement(d: &Value, dispatch_type: &str, app_handle: &AppHandle) {
         })
         .and_then(|c| c.get("id"))
         .and_then(|i| i.as_str());
+    let action = dispatch_type
+        .strip_prefix("entitlement.")
+        .unwrap_or("update");
+
+    if kind == "EMOTE_SET" {
+        let set_id = body
+            .pointer("/object/ref_id")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let twitch_id = twitch_id.map(String::from);
+        match action {
+            "create" | "update" => {
+                if let (Some(tid), Some(set_id)) = (twitch_id, set_id) {
+                    tokio::spawn(async move {
+                        // Same entitlement is re-delivered on every reconnect /
+                        // presence rebootstrap; resolve the set only once.
+                        if IrcService::has_personal_set(&tid, &set_id).await {
+                            return;
+                        }
+                        let emotes = emote_service::fetch_personal_emote_set(&set_id).await;
+                        IrcService::set_personal_emotes(tid, set_id, emotes).await;
+                    });
+                }
+            }
+            "delete" => {
+                if let Some(tid) = twitch_id {
+                    tokio::spawn(async move {
+                        IrcService::clear_personal_emotes(&tid, set_id.as_deref()).await;
+                    });
+                }
+            }
+            _ => {}
+        }
+        return;
+    }
 
     let Some(twitch_id) = twitch_id else {
         return; // delete events without a user object, or non-twitch users
     };
-
-    let action = dispatch_type
-        .strip_prefix("entitlement.")
-        .unwrap_or("update");
 
     let _ = app_handle.emit(
         "7tv://cosmetic-update",
