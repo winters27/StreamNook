@@ -2653,12 +2653,18 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   appendCachedTopGames: (games: TwitchCategory[], cursor: string | null, hasMore: boolean) => {
-    set((state) => ({
-      cachedTopGames: [...state.cachedTopGames, ...games],
-      cachedGamesCursor: cursor,
-      cachedHasMoreGames: hasMore,
-      cachedTopGamesTimestamp: Date.now()
-    }));
+    set((state) => {
+      // Top games are viewer-count ordered and shift between page fetches, so a
+      // game near a page boundary can return on the next page. Drop duplicates to
+      // avoid repeated React keys (and duplicate cards) in the games grid.
+      const seen = new Set(state.cachedTopGames.map(g => g.id));
+      return {
+        cachedTopGames: [...state.cachedTopGames, ...games.filter(g => !seen.has(g.id))],
+        cachedGamesCursor: cursor,
+        cachedHasMoreGames: hasMore,
+        cachedTopGamesTimestamp: Date.now()
+      };
+    });
   },
 
   setDropsSearchTerm: (term: string) => {

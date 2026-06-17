@@ -1022,7 +1022,14 @@ const Home = () => {
                 }) as [TwitchStream[], string | null];
                 const [newStreams, newCursor] = res;
                 if (newStreams.length > 0) {
-                    setCategoryStreams(prev => [...prev, ...newStreams]);
+                    setCategoryStreams(prev => {
+                        // Twitch's category stream list is ordered by viewer count and
+                        // shifts between page fetches, so a stream near a page boundary
+                        // can come back on the next page. Drop already-present streams
+                        // to avoid duplicate React keys (and duplicate cards).
+                        const seen = new Set(prev.map(s => s.id));
+                        return [...prev, ...newStreams.filter(s => !seen.has(s.id))];
+                    });
                     setCategoryStreamsCursor(newCursor);
                     setHasMoreCategoryStreams(!!newCursor);
                 } else {
@@ -1037,7 +1044,14 @@ const Home = () => {
                 }) as [TwitchStream[], string | null];
                 const [newStreams, newCursor] = res;
                 if (newStreams.length > 0) {
-                    setCategoryStreams(prev => [...prev, ...newStreams]);
+                    setCategoryStreams(prev => {
+                        // Twitch's category stream list is ordered by viewer count and
+                        // shifts between page fetches, so a stream near a page boundary
+                        // can come back on the next page. Drop already-present streams
+                        // to avoid duplicate React keys (and duplicate cards).
+                        const seen = new Set(prev.map(s => s.id));
+                        return [...prev, ...newStreams.filter(s => !seen.has(s.id))];
+                    });
                     setCategoryStreamsCursor(newCursor);
                     setHasMoreCategoryStreams(!!newCursor);
                 } else {
@@ -1078,7 +1092,10 @@ const Home = () => {
         try {
             const res = await invoke('get_clips_by_game', { gameId: selectedCategory.id, limit: 40, cursor: categoryClipsCursor, period: clipsPeriod }) as [TwitchClip[], string | null];
             if (res[0].length > 0) {
-                setCategoryClips(prev => [...prev, ...res[0]]);
+                setCategoryClips(prev => {
+                    const seen = new Set(prev.map(c => c.id));
+                    return [...prev, ...res[0].filter(c => !seen.has(c.id))];
+                });
                 setCategoryClipsCursor(res[1]);
                 setHasMoreCategoryClips(!!res[1] && res[0].length >= 40);
             } else {
@@ -1117,7 +1134,10 @@ const Home = () => {
         try {
             const res = await invoke('get_videos_by_game', { gameId: selectedCategory.id, sort: videosSort, period: videosPeriod, limit: 40, cursor: categoryVideosCursor }) as [TwitchVideo[], string | null];
             if (res[0].length > 0) {
-                setCategoryVideos(prev => [...prev, ...res[0]]);
+                setCategoryVideos(prev => {
+                    const seen = new Set(prev.map(v => v.id));
+                    return [...prev, ...res[0].filter(v => !seen.has(v.id))];
+                });
                 setCategoryVideosCursor(res[1]);
                 setHasMoreCategoryVideos(!!res[1] && res[0].length >= 40);
             } else {
