@@ -1,3 +1,9 @@
+## [8.0.7] - 2026-06-17
+### ✨ Features
+- **Your 7TV personal emotes work everywhere**: The personal emotes you set on 7TV now show up in every channel you watch, not just channels that happen to have added them. Like the 7TV browser extension, your personal set follows you from stream to stream.
+- **Manage your personal emote set in the app**: The built-in 7TV emote manager now shows your personal emote set next to your channel sets, so you can add, remove, and rename your personal emotes without leaving StreamNook.
+- **Three ways to open your emote manager**: Edit your emote sets from whichever spot is closest. A new gear in the emote picker opens it in one click, the command palette has "Open 7TV Emotes" (Ctrl+K), and the moderator menu opens it for any channel you moderate.
+
 ## [8.0.6] - 2026-06-16
 ### 🐛 Bug Fixes
 - **Your chat color shows correctly right away**: Your own messages no longer flash a default color before snapping to your real one, and they no longer occasionally get stuck on the wrong color.
