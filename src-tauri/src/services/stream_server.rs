@@ -196,8 +196,20 @@ impl StreamServer {
             .and_then(Self::dynamic_proxy_handler)
             .boxed();
 
+        // Bind with a deep listen backlog. The relay shares the app's async
+        // runtime with the CPU-bound TS->fMP4 transmux, so a transmux burst can
+        // briefly keep the acceptor task off a worker thread. With the default
+        // (small) backlog the OS then refuses the next connection (an RST, which
+        // hls.js reports as ERR_CONNECTION_REFUSED, dropping a part and setting
+        // off a fragGap cascade). A deep backlog turns that momentary stall into
+        // a sub-second queue wait instead of a hard refusal.
+        let socket = tokio::net::TcpSocket::new_v4()?;
+        socket.set_reuseaddr(true)?;
+        socket.bind(addr)?;
+        let listener = socket.listen(1024)?;
+
         let handle = tokio::spawn(async move {
-            warp::serve(proxy).run(addr).await;
+            warp::serve(proxy).incoming(listener).run().await;
         });
 
         *SERVER_HANDLE.lock().await = Some(handle);
