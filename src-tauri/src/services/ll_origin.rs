@@ -46,8 +46,13 @@ const MAX_SEGMENTS: usize = 6;
 pub(crate) const TILE_MAX_SEGMENTS: usize = 4;
 /// Declared `PART-TARGET` (max part duration). Generously above Twitch's ~0.105s
 /// chunks so every real part is comfortably under it (spec requires that), and so
-/// hls.js's edge clamp (`edge - partTarget`) leaves headroom.
-const PART_TARGET: f64 = 0.5;
+/// hls.js's edge clamp (`edge - partTarget`) leaves headroom. It also sets hls.js's
+/// low-latency playlist-reload timeout cap (`PART-TARGET * 3`): 0.667 puts that at
+/// 2.0s so a held blocking reload plus transit and queueing stays under it. Was
+/// 0.5 (a 1.6s cap), which `levelLoadTimeOut` still tripped when a playlist
+/// response queued behind a part fetch on a shared keep-alive connection. Costs
+/// ~0.167s of edge latency over 0.5.
+const PART_TARGET: f64 = 0.667;
 /// Fallback per-part duration for CMAF parts whose real span could not be
 /// measured (init unavailable / parse failure). NOT merely advisory: hls.js
 /// SUMS declared playlist durations to place fragments, and a systematic
@@ -61,16 +66,19 @@ const TARGET_DURATION: u64 = 2;
 /// How long a blocking reload waits for the requested part before returning the
 /// current playlist anyway (hls.js then retries; never hang indefinitely). MUST
 /// stay under hls.js's low-latency reload timeout, which it caps at
-/// `max(PART-TARGET * 3, TARGETDURATION * 0.8)` = 1.6s for this origin (hls.js
-/// dist ~36182, "the default of 10000ms is counter productive to blocking
-/// playlist reload requests"); a 4s hold tripped `levelLoadTimeOut` on every
-/// part drought. 1.4s tripped it about once per session, and 1.2s still
-/// occasionally (two in a row drained the 1.5s cushion to a stall once on
-/// 2026-06-12): the 1.6s budget also covers transit AND any queueing behind a
-/// part fetch on a shared keep-alive connection, so the hold itself gets 1.0s.
+/// `max(PART-TARGET * 3, TARGETDURATION * 0.8)` = 2.0s for this origin with
+/// PART-TARGET 0.667 (hls.js dist ~36182, "the default of 10000ms is counter
+/// productive to blocking playlist reload requests"); a 4s hold tripped
+/// `levelLoadTimeOut` on every part drought. 1.4s tripped it about once per
+/// session, and 1.2s still occasionally (two in a row drained the 1.5s cushion
+/// to a stall once on 2026-06-12). At a 1.6s cap (PART-TARGET 0.5) a 1.0s hold
+/// still timed out when a playlist response queued behind a part fetch on a
+/// shared keep-alive connection, so PART-TARGET was raised to 0.667 for a 2.0s
+/// cap: that budget now covers the 1.0s hold plus ~1.0s of transit and queueing.
 /// During a real part drought the shorter hold just means hls.js re-polls
-/// sooner; nothing is lost. If timeouts still appear, the next lever is the
-/// declared PART-TARGET (0.5 -> 0.667 raises hls.js's cap to 2.0s), not this.
+/// sooner; nothing is lost. If timeouts persist, the next lever is removing the
+/// shared-connection head-of-line blocking (a dedicated playlist connection or
+/// HTTP/2 multiplexing), not this.
 const BLOCK_TIMEOUT: Duration = Duration::from_millis(1000);
 /// How long the reader waits for a preopened next-segment connection before
 /// abandoning it for the poll path. Normally ready instantly (the previous
