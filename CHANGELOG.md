@@ -1,3 +1,7 @@
+## [8.0.8] - 2026-06-18
+### 🔧 Maintenance
+- **One-time sign-out after this update**: We did some behind-the-scenes maintenance on the login flow, cookie storage, and how your accounts are streamlined across all the activities you do. All you have to do is log back in, then sign in to Drops again.
+
 ## [8.0.7] - 2026-06-17
 ### ✨ Features
 - **Your 7TV personal emotes work everywhere**: The personal emotes you set on 7TV now show up in every channel you watch, not just channels that happen to have added them. Like the 7TV browser extension, your personal set follows you from stream to stream.
