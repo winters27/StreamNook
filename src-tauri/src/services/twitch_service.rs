@@ -431,6 +431,11 @@ impl TwitchService {
             match result {
                 Ok(token_response) => {
                     debug!("[LOGIN] Token received from Twitch!");
+                    // Dismiss the in-app login overlay the instant we have the
+                    // token, so the loading screen behind it shows without waiting
+                    // on a frontend round-trip. The frontend dismisses it too as a
+                    // backup.
+                    crate::commands::twitch::dismiss_login_overlay(&app_handle, "twitch-login");
                     debug!(
                         "[LOGIN] Access token (first 10 chars): {}...",
                         &token_response.access_token[..10.min(token_response.access_token.len())]

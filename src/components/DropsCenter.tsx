@@ -1,7 +1,6 @@
 import { useEffect, useState, useMemo, useRef } from 'react';
 import { motion, LayoutGroup } from 'framer-motion';
 import { invoke } from '@tauri-apps/api/core';
-import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { useAppStore } from '../stores/AppStore';
 import { listen, emit } from '@tauri-apps/api/event';
 import { Search, Gift, MonitorPlay, BarChart3, Package, ArrowDownUp, SlidersHorizontal } from 'lucide-react';
@@ -280,18 +279,11 @@ export default function DropsCenter() {
                 expiresIn: deviceInfo.expires_in,
             });
 
-            // Close the login webview window
+            // Dismiss the in-app drops login overlay
             try {
-                const loginWindow = await WebviewWindow.getByLabel('drops-login');
-                if (loginWindow) {
-                    Logger.debug('[DropsCenter] Closing drops-login webview window');
-                    await loginWindow.close();
-                    Logger.debug('[DropsCenter] Successfully closed drops-login window');
-                } else {
-                    Logger.debug('[DropsCenter] No drops-login window found to close');
-                }
+                await invoke('close_login_overlay', { label: 'drops-login' });
             } catch (closeErr) {
-                Logger.warn('[DropsCenter] Failed to close drops-login window:', closeErr);
+                Logger.warn('[DropsCenter] Failed to close drops login overlay:', closeErr);
             }
 
             setIsAuthenticated(true);
@@ -304,11 +296,10 @@ export default function DropsCenter() {
             setError(err instanceof Error ? err.message : String(err));
             setIsAuthenticating(false);
             
-            // Also try to close the login window on error
+            // Also dismiss the drops login overlay on error
             try {
-                const loginWindow = await WebviewWindow.getByLabel('drops-login');
-                if (loginWindow) await loginWindow.close();
-            } catch { /* Window may not exist */ }
+                await invoke('close_login_overlay', { label: 'drops-login' });
+            } catch { /* overlay may not exist */ }
         }
     };
 

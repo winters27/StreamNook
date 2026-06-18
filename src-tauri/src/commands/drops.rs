@@ -261,13 +261,18 @@ pub async fn start_drops_device_flow() -> Result<DropsDeviceCodeInfo, String> {
 
 #[tauri::command]
 pub async fn poll_drops_token(
+    app: AppHandle,
     device_code: String,
     interval: u64,
     expires_in: u64,
 ) -> Result<String, String> {
-    DropsAuthService::poll_for_token(&device_code, interval, expires_in)
+    let token = DropsAuthService::poll_for_token(&device_code, interval, expires_in)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    // Dismiss the in-app drops login overlay the instant we have the token, so it
+    // doesn't linger after the user authorizes.
+    crate::commands::twitch::dismiss_login_overlay(&app, "drops-login");
+    Ok(token)
 }
 
 #[tauri::command]

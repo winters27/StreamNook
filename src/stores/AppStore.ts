@@ -2295,19 +2295,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       const unlisten = await listen('twitch-login-complete', async () => {
         Logger.debug('Login complete event received');
 
-        // Close the login window
+        // Dismiss the in-app login overlay
         try {
-          const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
-          const loginWindow = await WebviewWindow.getByLabel('twitch-login');
-          if (loginWindow) {
-            Logger.debug('[TwitchLogin] Closing twitch-login webview window');
-            await loginWindow.close();
-            Logger.debug('[TwitchLogin] Successfully closed twitch-login window');
-          } else {
-            Logger.debug('[TwitchLogin] No twitch-login window found to close');
-          }
+          await invoke('close_login_overlay', { label: 'twitch-login' });
         } catch (e) {
-          Logger.warn('[TwitchLogin] Failed to close twitch-login window:', e);
+          Logger.warn('[TwitchLogin] Failed to close login overlay:', e);
         }
 
         // After successful login, check auth status FIRST
@@ -2337,16 +2329,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         get().addToast(`Login failed: ${errorMessage}`, 'error');
         set({ isLoading: false });
 
-        // Also close the login window on error
+        // Also dismiss the login overlay on error
         try {
-          const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
-          const loginWindow = await WebviewWindow.getByLabel('twitch-login');
-          if (loginWindow) {
-            Logger.debug('[TwitchLogin] Closing twitch-login window after error');
-            await loginWindow.close();
-          }
+          await invoke('close_login_overlay', { label: 'twitch-login' });
         } catch (e) {
-          Logger.warn('[TwitchLogin] Failed to close twitch-login window on error:', e);
+          Logger.warn('[TwitchLogin] Failed to close login overlay on error:', e);
         }
 
         unlistenError();

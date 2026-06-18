@@ -11,7 +11,7 @@ use anyhow::Result;
 use log::{debug, error};
 use std::path::PathBuf;
 use std::sync::Arc;
-use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Manager, State, WebviewUrl};
 use tokio::sync::Mutex as TokioMutex;
 
 // Device Code Flow - the main login command
@@ -704,71 +704,337 @@ fn active_twitch_web_profile_dir() -> Result<PathBuf, String> {
     crate::services::twitch_service::active_twitch_web_profile_dir().map_err(|e| e.to_string())
 }
 
-/// Open the device-code activation page in the embedded login window, isolated
-/// to the active account's Twitch web profile. A per-account profile means a
-/// re-login lands on the same account (its web session persists) and can never
-/// silently authorize whichever account a shared browser session happened to be
-/// holding. Before the first account is linked the session is captured in a
-/// staging profile, which the first per-account window adopts once Twitch
-/// reports who signed in.
-#[tauri::command]
-pub async fn open_twitch_login_window(app: AppHandle, url: String) -> Result<(), String> {
-    let parsed = url
-        .parse()
-        .map_err(|e| format!("Invalid login URL: {}", e))?;
+/// Logical height of the read-only URL bar shown above the in-app Twitch popups
+/// (login, drops sign-in, subscribe).
+const URL_BAR_HEIGHT: f64 = 38.0;
 
-    let builder = WebviewWindowBuilder::new(&app, "twitch-login", WebviewUrl::External(parsed))
-        .title("Log in to Twitch")
-        .inner_size(500.0, 700.0)
-        .center()
+/// Size used only if the main window can't be measured to size the popup to it.
+const POPUP_FALLBACK_W: f64 = 980.0;
+const POPUP_FALLBACK_H: f64 = 820.0;
+
+/// JS injected into the Twitch webview so the URL bar tracks where the page
+/// actually is. Twitch is a single-page app: after the first load most route
+/// changes are `history.pushState`/`replaceState`/`popstate` with no document
+/// load, so a top-level navigation hook alone would miss them. This reports
+/// `location.href` on load and on each in-page navigation, deduped, to the
+/// `report_login_popup_url` command, which pushes it into this window's bar.
+fn spa_url_report_script(window_label: &str, is_overlay: bool) -> String {
+    let label = serde_json::to_string(window_label).unwrap_or_else(|_| "\"\"".to_string());
+    // For the in-app overlay there's no close button, so Esc dismisses it even while
+    // focus is in the Twitch page. A separate window (subscribe) has its own close.
+    let escape = if is_overlay {
+        "\n  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') { try { window.__TAURI_INTERNALS__.invoke('close_login_overlay', { label: label }); } catch (e) {} } });"
+    } else {
+        ""
+    };
+    format!(
+        r#"(function() {{
+  var label = {label};
+  var last = "";
+  function report() {{
+    try {{
+      var u = location.href;
+      if (u === last) return;
+      last = u;
+      window.__TAURI_INTERNALS__.invoke('report_login_popup_url', {{ windowLabel: label, url: u }});
+    }} catch (e) {{}}
+  }}
+  var _push = history.pushState;
+  history.pushState = function() {{ var r = _push.apply(this, arguments); report(); return r; }};
+  var _replace = history.replaceState;
+  history.replaceState = function() {{ var r = _replace.apply(this, arguments); report(); return r; }};
+  window.addEventListener('popstate', report);
+  window.addEventListener('hashchange', report);
+  report();
+  setTimeout(report, 800);{escape}
+}})();"#
+    )
+}
+
+/// Push a URL into a login popup's read-only bar. Called by the injected reporter
+/// in the Twitch webview when it loads or navigates in-page. No-op if the popup or
+/// its bar webview is gone.
+#[tauri::command]
+pub fn report_login_popup_url(app: AppHandle, window_label: String, url: String) {
+    if let Some(bar) = app.get_webview(&format!("{}-urlbar", window_label)) {
+        let js = format!(
+            "window.__setUrl && window.__setUrl({})",
+            serde_json::to_string(&url).unwrap_or_else(|_| "\"\"".to_string())
+        );
+        let _ = bar.eval(js);
+    }
+}
+
+/// Open an in-app Twitch popup with a read-only URL bar across the top so the user
+/// can see the real destination (e.g. `id.twitch.tv`) rather than trusting an
+/// unlabeled webview. The popup is sized to fill the main app window and sits over
+/// it, so it reads as a full page rather than a small box.
+///
+/// Built as a bare window with two child webviews (the bar plus the Twitch page)
+/// because Twitch refuses to load inside an iframe, so the bar can't simply sit
+/// above it in one document. The bar seeds its first URL from `__INITIAL_URL` and
+/// then tracks navigation (full loads and SPA route changes) via the injected
+/// reporter.
+///
+/// `fixed_size` of `Some((width, content_height))` opens a centered window at that
+/// size; `None` fills the main app window (used for the login flows, which feel
+/// safer full-page). The bar height is added on top of `content_height`.
+fn open_verified_twitch_popup(
+    app: &AppHandle,
+    label: &str,
+    title: &str,
+    url: &str,
+    maximizable: bool,
+    fixed_size: Option<(f64, f64)>,
+) -> Result<(), String> {
+    use tauri::{webview::WebviewBuilder, LogicalPosition, LogicalSize, WindowBuilder, WindowEvent};
+
+    let profile = active_twitch_web_profile_dir()?;
+    let parsed = url.parse().map_err(|e| format!("Invalid URL: {}", e))?;
+    let initial = serde_json::to_string(url).unwrap_or_else(|_| "\"\"".to_string());
+
+    // A fixed size centers (subscribe keeps its small box, since the user already
+    // trusts the app by then); otherwise fill the main app window and sit over it,
+    // so the login reads as a full-size page. Falls back to a roomy fixed size if
+    // the main window can't be measured.
+    let (win_w, win_h, origin) = match fixed_size {
+        Some((w, h)) => (w, h + URL_BAR_HEIGHT, None),
+        None => match app.get_webview_window("main") {
+            Some(main) => {
+                let scale = main.scale_factor().unwrap_or(1.0);
+                match (main.inner_size(), main.outer_position()) {
+                    (Ok(size), Ok(pos)) => {
+                        let s = size.to_logical::<f64>(scale);
+                        let p = pos.to_logical::<f64>(scale);
+                        (s.width, s.height, Some((p.x, p.y)))
+                    }
+                    _ => (POPUP_FALLBACK_W, POPUP_FALLBACK_H, None),
+                }
+            }
+            None => (POPUP_FALLBACK_W, POPUP_FALLBACK_H, None),
+        },
+    };
+    let content_h = (win_h - URL_BAR_HEIGHT).max(0.0);
+
+    let mut builder = WindowBuilder::new(app, label)
+        .title(title)
+        .inner_size(win_w, win_h)
         .resizable(true)
         .minimizable(true)
-        .maximizable(false)
-        .data_directory(active_twitch_web_profile_dir()?);
-
-    builder
+        .maximizable(maximizable);
+    builder = match origin {
+        Some((x, y)) => builder.position(x, y),
+        None => builder.center(),
+    };
+    let window = builder
         .build()
-        .map_err(|e| format!("Failed to open login window: {}", e))?;
+        .map_err(|e| format!("Failed to open window: {}", e))?;
+
+    // Both child webviews share the active account's profile so the window uses a
+    // single WebView2 environment. The bar is a static local page that reads no
+    // Twitch session.
+    let bar = window
+        .add_child(
+            WebviewBuilder::new(
+                format!("{}-urlbar", label),
+                WebviewUrl::App("twitch-login-bar.html".into()),
+            )
+            .data_directory(profile.clone())
+            .initialization_script(format!("window.__INITIAL_URL = {};", initial)),
+            LogicalPosition::new(0.0, 0.0),
+            LogicalSize::new(win_w, URL_BAR_HEIGHT),
+        )
+        .map_err(|e| format!("Failed to add URL bar: {}", e))?;
+
+    // The Twitch page, below the bar, with the reporter that keeps the bar in sync
+    // through both full loads and in-page SPA navigation.
+    let content = window
+        .add_child(
+            WebviewBuilder::new(format!("{}-content", label), WebviewUrl::External(parsed))
+                .data_directory(profile)
+                .initialization_script(spa_url_report_script(label, false)),
+            LogicalPosition::new(0.0, URL_BAR_HEIGHT),
+            LogicalSize::new(win_w, content_h),
+        )
+        .map_err(|e| format!("Failed to add content webview: {}", e))?;
+
+    // Size the children to the window's ACTUAL current size right now, not only on
+    // a later Resized event. The window can be resized during creation (e.g. by the
+    // window-state plugin) before the handler below is attached; without this the
+    // content webview keeps its build-time size and Twitch renders off-screen
+    // (looks blank) in a mismatched window.
+    if let (Ok(scale), Ok(sz)) = (window.scale_factor(), window.inner_size()) {
+        let lg = sz.to_logical::<f64>(scale);
+        let _ = bar.set_size(LogicalSize::new(lg.width, URL_BAR_HEIGHT));
+        let _ = content.set_position(LogicalPosition::new(0.0, URL_BAR_HEIGHT));
+        let _ = content.set_size(LogicalSize::new(
+            lg.width,
+            (lg.height - URL_BAR_HEIGHT).max(0.0),
+        ));
+    }
+
+    // Child webviews have fixed bounds, so retile them on resize: the bar spans
+    // the top, the Twitch page fills the rest.
+    let win = window.clone();
+    window.on_window_event(move |event| {
+        if let WindowEvent::Resized(size) = event {
+            let scale = win.scale_factor().unwrap_or(1.0);
+            let logical = size.to_logical::<f64>(scale);
+            let _ = bar.set_size(LogicalSize::new(logical.width, URL_BAR_HEIGHT));
+            let _ = content.set_position(LogicalPosition::new(0.0, URL_BAR_HEIGHT));
+            let _ = content.set_size(LogicalSize::new(
+                logical.width,
+                (logical.height - URL_BAR_HEIGHT).max(0.0),
+            ));
+        }
+    });
+
     Ok(())
 }
 
-/// Open the drops/points device-code activation page, bound to the ACTIVE
-/// account's Twitch web profile. Because that profile already holds the main
-/// login's twitch.tv session, the user is shown as signed in and only has to
-/// authorize the device — no re-entering username/password. Same profile the
-/// main login and subscribe windows use, so it's always the right account.
-#[tauri::command]
-pub async fn open_drops_login_window(app: AppHandle, url: String) -> Result<(), String> {
-    let parsed = url
-        .parse()
-        .map_err(|e| format!("Invalid drops login URL: {}", e))?;
+/// Height of StreamNook's custom title bar (the React `TitleBar`, h-[40px]). The
+/// login overlay sits just below it so the app frame (window controls, drag) stays
+/// usable while the login takes over the body.
+const TITLE_BAR_HEIGHT: f64 = 40.0;
 
-    // Free the fixed label and rebind it to the current profile if a stale one
-    // is lingering from a prior attempt.
-    if let Some(existing) = app.get_webview_window("drops-login") {
-        let _ = existing.close();
+/// Attached once: keeps the login overlay tiled to the main window's body as it
+/// resizes. Child webviews have fixed bounds, so without this they wouldn't follow.
+static OVERLAY_RESIZE_HOOKED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Position whichever login overlay is open (URL bar + Twitch page) to fill the
+/// main window below the title bar. A no-op for the overlay that isn't open.
+fn layout_login_overlay(app: &AppHandle) {
+    use tauri::{LogicalPosition, LogicalSize};
+    let Some(main) = app.get_window("main") else {
+        return;
+    };
+    let scale = main.scale_factor().unwrap_or(1.0);
+    let Ok(size) = main.inner_size() else {
+        return;
+    };
+    let s = size.to_logical::<f64>(scale);
+    let content_h = (s.height - TITLE_BAR_HEIGHT - URL_BAR_HEIGHT).max(0.0);
+    for base in ["twitch-login", "drops-login"] {
+        if let Some(bar) = app.get_webview(&format!("{}-urlbar", base)) {
+            let _ = bar.set_position(LogicalPosition::new(0.0, TITLE_BAR_HEIGHT));
+            let _ = bar.set_size(LogicalSize::new(s.width, URL_BAR_HEIGHT));
+        }
+        if let Some(content) = app.get_webview(&format!("{}-content", base)) {
+            let _ = content.set_position(LogicalPosition::new(0.0, TITLE_BAR_HEIGHT + URL_BAR_HEIGHT));
+            let _ = content.set_size(LogicalSize::new(s.width, content_h));
+        }
+    }
+}
+
+/// Lay the login (URL bar + Twitch page) over the main window's body instead of a
+/// separate window, so it takes over the app: the StreamNook title bar stays and
+/// the login fills everything below it. The children are `<label>-urlbar` and
+/// `<label>-content`; the bar carries a close (X) wired to `close_login_overlay`.
+/// The frontend also removes it when login completes or errors.
+fn open_login_overlay(app: &AppHandle, label: &str, url: &str) -> Result<(), String> {
+    use tauri::{webview::WebviewBuilder, LogicalPosition, LogicalSize, WindowEvent};
+
+    // Clear any prior overlay under this label so a reopen is clean.
+    for suffix in ["-urlbar", "-content"] {
+        if let Some(wv) = app.get_webview(&format!("{}{}", label, suffix)) {
+            let _ = wv.close();
+        }
     }
 
-    let builder = WebviewWindowBuilder::new(&app, "drops-login", WebviewUrl::External(parsed))
-        .title("Sign in for Drops & Points - Twitch")
-        .inner_size(500.0, 700.0)
-        .center()
-        .resizable(true)
-        .minimizable(true)
-        .maximizable(false)
-        .data_directory(active_twitch_web_profile_dir()?);
+    let main = app
+        .get_window("main")
+        .ok_or_else(|| "main window not found".to_string())?;
+    let profile = active_twitch_web_profile_dir()?;
+    let parsed = url.parse().map_err(|e| format!("Invalid URL: {}", e))?;
+    let label_json = serde_json::to_string(label).unwrap_or_else(|_| "\"\"".to_string());
+    let url_json = serde_json::to_string(url).unwrap_or_else(|_| "\"\"".to_string());
 
-    builder
-        .build()
-        .map_err(|e| format!("Failed to open drops login window: {}", e))?;
+    let scale = main.scale_factor().unwrap_or(1.0);
+    let s = main
+        .inner_size()
+        .map(|sz| sz.to_logical::<f64>(scale))
+        .unwrap_or_else(|_| LogicalSize::new(POPUP_FALLBACK_W, POPUP_FALLBACK_H));
+    let content_h = (s.height - TITLE_BAR_HEIGHT - URL_BAR_HEIGHT).max(0.0);
+
+    main.add_child(
+        WebviewBuilder::new(
+            format!("{}-urlbar", label),
+            WebviewUrl::App("twitch-login-bar.html".into()),
+        )
+        .data_directory(profile.clone())
+        .initialization_script(format!(
+            "window.__LABEL={};window.__INITIAL_URL={};",
+            label_json, url_json
+        )),
+        LogicalPosition::new(0.0, TITLE_BAR_HEIGHT),
+        LogicalSize::new(s.width, URL_BAR_HEIGHT),
+    )
+    .map_err(|e| format!("Failed to add URL bar: {}", e))?;
+
+    main.add_child(
+        WebviewBuilder::new(format!("{}-content", label), WebviewUrl::External(parsed))
+            .data_directory(profile)
+            .initialization_script(spa_url_report_script(label, true)),
+        LogicalPosition::new(0.0, TITLE_BAR_HEIGHT + URL_BAR_HEIGHT),
+        LogicalSize::new(s.width, content_h),
+    )
+    .map_err(|e| format!("Failed to add content webview: {}", e))?;
+
+    // Keep the overlay tiled to the window as it resizes (attached once).
+    if !OVERLAY_RESIZE_HOOKED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        let app2 = app.clone();
+        main.on_window_event(move |event| {
+            if let WindowEvent::Resized(_) = event {
+                layout_login_overlay(&app2);
+            }
+        });
+    }
+
     Ok(())
+}
+
+/// Remove a login overlay's child webviews (`<label>-urlbar` / `<label>-content`)
+/// from the main window, returning the app to view. Safe to call when the overlay
+/// isn't present (no-op). Driven from the backend on login success AND from the
+/// frontend / the bar's close button, so dismissal never hangs on frontend timing.
+pub fn dismiss_login_overlay(app: &AppHandle, label: &str) {
+    for suffix in ["-urlbar", "-content"] {
+        if let Some(wv) = app.get_webview(&format!("{}{}", label, suffix)) {
+            let _ = wv.close();
+        }
+    }
+}
+
+/// Command form for the bar's close button and the frontend completion handlers.
+#[tauri::command]
+pub fn close_login_overlay(app: AppHandle, label: String) {
+    dismiss_login_overlay(&app, &label);
+}
+
+/// Take over the app body with the Twitch device-code login, isolated to the
+/// active account's web profile. A per-account profile means a re-login lands on
+/// the same account and can never silently authorize whichever account a shared
+/// browser session happened to be holding. The overlay shows the live URL in a bar
+/// at the top.
+#[tauri::command]
+pub async fn open_twitch_login_window(app: AppHandle, url: String) -> Result<(), String> {
+    open_login_overlay(&app, "twitch-login", &url)
+}
+
+/// Take over the app body with the drops/points device-code login. The active
+/// account's profile already holds its twitch.tv session, so the user is shown as
+/// signed in and only authorizes the device. Shows the live URL in a bar at the top.
+#[tauri::command]
+pub async fn open_drops_login_window(app: AppHandle, url: String) -> Result<(), String> {
+    open_login_overlay(&app, "drops-login", &url)
 }
 
 /// Open the Twitch subscribe page for a channel, isolated to the active (main)
 /// account's Twitch web profile, so you subscribe as the account you watch and
-/// stream as rather than whichever account a shared browser session held.
-/// Returns the window label so the caller can auto-close it when a subscription
-/// is detected.
+/// stream as rather than whichever account a shared browser session held. Returns
+/// the window label so the caller can auto-close it when a subscription is
+/// detected. Shows the live URL in a bar at the top.
 #[tauri::command]
 pub async fn open_subscribe_window(
     app: AppHandle,
@@ -781,22 +1047,8 @@ pub async fn open_subscribe_window(
         chrono::Utc::now().timestamp_millis()
     );
     let url = format!("https://www.twitch.tv/subs/{}", channel_login);
-    let parsed = url
-        .parse()
-        .map_err(|e| format!("Invalid subscribe URL: {}", e))?;
-
-    let builder = WebviewWindowBuilder::new(&app, &label, WebviewUrl::External(parsed))
-        .title(title.unwrap_or_else(|| format!("Subscribe to {}", channel_login)))
-        .inner_size(800.0, 900.0)
-        .center()
-        .resizable(true)
-        .minimizable(true)
-        .maximizable(true)
-        .data_directory(active_twitch_web_profile_dir()?);
-
-    builder
-        .build()
-        .map_err(|e| format!("Failed to open subscribe window: {}", e))?;
+    let win_title = title.unwrap_or_else(|| format!("Subscribe to {}", channel_login));
+    open_verified_twitch_popup(&app, &label, &win_title, &url, true, Some((800.0, 900.0)))?;
     Ok(label)
 }
 

@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Address</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; overflow: hidden; }
+  body {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 100%;
+    padding: 0 14px;
+    box-sizing: border-box;
+    background: #0e0e10;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    font: 13px/1.2 -apple-system, "Segoe UI", system-ui, sans-serif;
+    color: #adadb8;
+    user-select: none;
+    cursor: default;
+  }
+  .lock {
+    flex: 0 0 auto;
+    width: 13px;
+    height: 14px;
+    /* The familiar "secure" green padlock. Twitch is always https here. */
+    color: #3fb950;
+  }
+  .url {
+    flex: 1 1 auto;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    letter-spacing: 0.1px;
+    /* Selectable so the URL can be highlighted and copied to verify it, while the
+       window stays a login window (no navigation from the bar). */
+    -webkit-user-select: text;
+    user-select: text;
+    cursor: text;
+  }
+  .scheme { color: #7c7c86; }
+  .host { color: #efeff1; font-weight: 600; }
+  .rest { color: #7c7c86; }
+</style>
+</head>
+<body>
+  <svg class="lock" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+    <path fill-rule="evenodd" clip-rule="evenodd" d="M12 1.5a5.25 5.25 0 0 0-5.25 5.25v3a3 3 0 0 0-3 3v6.75a3 3 0 0 0 3 3h10.5a3 3 0 0 0 3-3v-6.75a3 3 0 0 0-3-3v-3c0-2.9-2.35-5.25-5.25-5.25Zm3.75 8.25v-3a3.75 3.75 0 1 0-7.5 0v3h7.5Z" />
+  </svg>
+  <div class="url" id="u"></div>
+  <script>
+    // The Rust side injects window.__INITIAL_URL before this page loads and then
+    // calls window.__setUrl(...) on every subsequent navigation, so the bar always
+    // shows the page the content webview is actually on.
+    function render(raw) {
+      var el = document.getElementById('u');
+      var str = String(raw || '');
+      el.title = str;
+      try {
+        var u = new URL(str);
+        var rest = (u.pathname === '/' ? '' : u.pathname) + u.search + u.hash;
+        el.textContent = '';
+        // Scheme shown dimmed so selecting the whole bar copies the full real URL.
+        var scheme = document.createElement('span');
+        scheme.className = 'scheme';
+        scheme.textContent = u.protocol + '//';
+        el.appendChild(scheme);
+        var host = document.createElement('span');
+        host.className = 'host';
+        host.textContent = u.host;
+        el.appendChild(host);
+        if (rest) {
+          var tail = document.createElement('span');
+          tail.className = 'rest';
+          tail.textContent = rest;
+          el.appendChild(tail);
+        }
+      } catch (e) {
+        el.textContent = str;
+      }
+    }
+    window.__setUrl = render;
+    if (window.__INITIAL_URL) render(window.__INITIAL_URL);
+
+    // Overlay only (window.__LABEL is set): Esc dismisses the in-app login takeover,
+    // since the address bar deliberately has no close button.
+    if (window.__LABEL) {
+      document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') {
+          try {
+            window.__TAURI_INTERNALS__.invoke('close_login_overlay', { label: window.__LABEL });
+          } catch (e) {}
+        }
+      });
+    }
+  </script>
+</body>
+</html>

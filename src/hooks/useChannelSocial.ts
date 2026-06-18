@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
+import { Window } from '@tauri-apps/api/window';
 import { useAppStore } from '../stores/AppStore';
 import { Logger } from '../utils/logger';
 
@@ -184,7 +184,7 @@ export function useChannelSocial({ userId, userLogin, userName, enabled = true }
         );
 
         try {
-          const subscribeWindow = await WebviewWindow.getByLabel(subscribeWindowLabelRef.current);
+          const subscribeWindow = await Window.getByLabel(subscribeWindowLabelRef.current);
           if (subscribeWindow) {
             await subscribeWindow.close();
           }
