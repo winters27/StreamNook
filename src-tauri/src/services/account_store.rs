@@ -44,6 +44,22 @@ const ACCOUNT_KEYRING_SERVICE: &str = "streamnook_twitch_account";
 /// so secondary token files are stored with the same (light) at-rest scheme.
 const TOKEN_OBFUSCATION_KEY: &[u8] = b"StreamNookTokenKey2024";
 
+/// The forced-logout switch. Bump this string to sign EVERY user out and back in
+/// on their next launch. Changing it is the only action required to ship a forced
+/// re-auth: on startup the value is compared against the marker file on disk and,
+/// if they differ, every credential and web session is wiped exactly once, then
+/// the new value is recorded so it never repeats for that value.
+///
+/// Reach for it when a change to how auth is stored means existing sessions can't
+/// satisfy the new layout (a new scope, a new profile scheme, a credential moving
+/// stores). A date-plus-tag value keeps successive forced re-auths self-documenting.
+const FORCE_REAUTH_TOKEN: &str = "2026-06-18-clean-auth";
+
+/// Records the last `FORCE_REAUTH_TOKEN` already applied. Lives in the app data
+/// dir next to the token files, NOT in WebView localStorage, so the session wipe
+/// it triggers can never erase its own "already done" record.
+const FORCE_REAUTH_MARKER_FILE: &str = ".force_reauth";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredAccount {
     pub user_id: String,
@@ -497,5 +513,91 @@ impl AccountStore {
             "[accounts] reset_all: cleared {} account(s) for forced re-auth",
             accounts.len()
         );
+    }
+
+    fn force_reauth_marker_path() -> Result<PathBuf> {
+        let mut path = get_app_data_dir()?;
+        if !path.exists() {
+            fs::create_dir_all(&path)?;
+        }
+        path.push(FORCE_REAUTH_MARKER_FILE);
+        Ok(path)
+    }
+
+    /// Run the one-time forced re-auth, gated on `FORCE_REAUTH_TOKEN`. Returns
+    /// true when a wipe was performed this launch.
+    ///
+    /// MUST be called before any twitch webview is created (from `main()`, before
+    /// the Tauri builder builds the windows) so the per-account profiles and the
+    /// default WebView2 store are unlocked and the deletes actually land. A prior
+    /// attempt ran from the live frontend, where the running session held those
+    /// files locked, so the wipe silently no-opped and users stayed signed in.
+    ///
+    /// Best-effort and self-healing: the marker is written ONLY after the wipe, so
+    /// a failed or interrupted run just repeats on the next launch instead of
+    /// marking itself done.
+    pub async fn run_force_reauth_if_needed() -> bool {
+        let marker = match Self::force_reauth_marker_path() {
+            Ok(p) => p,
+            Err(e) => {
+                warn!("[accounts] force-reauth: could not resolve marker path: {e}");
+                return false;
+            }
+        };
+
+        if fs::read_to_string(&marker).unwrap_or_default().trim() == FORCE_REAUTH_TOKEN {
+            return false;
+        }
+
+        debug!("[accounts] force-reauth '{FORCE_REAUTH_TOKEN}': clearing every session");
+
+        // App + drops tokens, every per-account web profile, and the registry.
+        Self::reset_all().await;
+
+        // Legacy single-profile sessions and the main window's own web store are
+        // not owned by reset_all/logout, so wipe them too while nothing holds
+        // them open.
+        wipe_default_webview_store();
+
+        match fs::write(&marker, FORCE_REAUTH_TOKEN) {
+            Ok(_) => debug!("[accounts] force-reauth applied; marker written"),
+            Err(e) => warn!(
+                "[accounts] force-reauth: marker write failed; will retry next launch: {e}"
+            ),
+        }
+        true
+    }
+}
+
+/// Remove the WebView2 stores that `AccountStore::reset_all` does not own: the
+/// whole `twitch_web_profiles` tree (every per-account profile plus the pending
+/// stage, in case one outlived the registry) and the main window's default
+/// `EBWebView` store under each known app-data location. Best-effort; a path
+/// that's absent or briefly locked is logged and skipped.
+fn wipe_default_webview_store() {
+    let mut targets: Vec<PathBuf> = Vec::new();
+
+    if let Ok(base) = get_app_data_dir() {
+        // Belt-and-suspenders over reset_all's per-account deletes: drop the whole
+        // profiles tree so an orphaned profile can't rehydrate a session.
+        targets.push(base.join("twitch_web_profiles"));
+    }
+
+    // The main window's own web store. Tauri places it under the bundle id or the
+    // product name depending on build, so cover both under every app-data root.
+    for root in [dirs::config_dir(), dirs::data_dir(), dirs::data_local_dir()]
+        .into_iter()
+        .flatten()
+    {
+        targets.push(root.join("StreamNook").join("EBWebView"));
+        targets.push(root.join("com.streamnook.dev").join("EBWebView"));
+    }
+
+    for path in targets {
+        if path.exists() {
+            if let Err(e) = fs::remove_dir_all(&path) {
+                warn!("[accounts] force-reauth: could not remove {path:?}: {e}");
+            }
+        }
     }
 }

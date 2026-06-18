@@ -207,6 +207,18 @@ fn main() {
         }
     }
 
+    // Forced-logout switch. Bumping FORCE_REAUTH_TOKEN in account_store signs every
+    // user out on their next launch so they re-login into the current auth-storage
+    // layout. It runs HERE, before the Tauri builder creates any window, so the
+    // per-account profiles and the default WebView2 store are unlocked and the wipe
+    // actually lands (a prior frontend attempt failed because the live session held
+    // those files locked).
+    if tauri::async_runtime::block_on(
+        services::account_store::AccountStore::run_force_reauth_if_needed(),
+    ) {
+        debug!("[Main] Forced one-time re-auth: all sessions cleared");
+    }
+
     // Load settings from our custom location in the same directory as cache
     let settings = load_settings_from_file().unwrap_or_else(|_| Settings::default());
 
@@ -260,6 +272,15 @@ fn main() {
                         | tauri_plugin_window_state::StateFlags::POSITION
                         | tauri_plugin_window_state::StateFlags::MAXIMIZED,
                 )
+                // The Twitch login/drops/subscribe popups size themselves to the
+                // app window every time, so saved geometry must not restore (and
+                // shrink) them. Excluding them also stops a stale small size from
+                // leaving their content webview mismatched and blank.
+                .with_filter(|label| {
+                    !(label == "twitch-login"
+                        || label == "drops-login"
+                        || label.starts_with("subscribe-"))
+                })
                 .build(),
         )
         .plugin(tauri_plugin_dialog::init())
@@ -529,6 +550,8 @@ fn main() {
             open_twitch_login_window,
             open_drops_login_window,
             open_subscribe_window,
+            report_login_popup_url,
+            close_login_overlay,
             has_stored_credentials,
             list_twitch_accounts,
             get_twitch_account_count,
