@@ -178,7 +178,12 @@ export default function StreamerMedia({
           cursor,
           period,
         });
-        setClips((prev) => [...prev, ...items]);
+        // A top-viewed clip near a page boundary can come back on the next page;
+        // drop already-present slugs to avoid duplicate React keys and cards.
+        setClips((prev) => {
+          const seen = new Set(prev.map((c) => c.id));
+          return [...prev, ...items.filter((c) => !seen.has(c.id))];
+        });
         setCursor(next);
       } else {
         const [items, next] = await invoke<[TwitchVideo[], string | null]>('get_user_videos', {
@@ -188,7 +193,11 @@ export default function StreamerMedia({
           limit: 40,
           cursor,
         });
-        setVideos((prev) => [...prev, ...items]);
+        // Same page-boundary overlap guard as clips: drop already-present ids.
+        setVideos((prev) => {
+          const seen = new Set(prev.map((v) => v.id));
+          return [...prev, ...items.filter((v) => !seen.has(v.id))];
+        });
         setCursor(next);
       }
     } catch (e) {
