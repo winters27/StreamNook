@@ -2974,14 +2974,15 @@ impl TwitchService {
         }
     }
 
-    /// A single broadcaster's clips (Helix Get Clips by broadcaster_id) — the
-    /// per-streamer analogue of get_clips_by_game. Same period→started_at mapping
-    /// and cursor pagination.
-    /// POST an inline GQL read query to Twitch's public GraphQL endpoint using
-    /// the web client id (kimne78) with per-call device + session ids and no
-    /// OAuth. These are public channel reads (clips/videos lists), same pattern
-    /// as `channel_panels::get_channel_about_data`. The device/session headers
-    /// keep us out of the harsh anonymous rate-limit bucket.
+    /// POST an inline GQL read query for public channel lists (clips, videos)
+    /// with per-call device + session ids and no OAuth. Sends the Android client
+    /// id, not the web client id: Twitch now fails the integrity check on
+    /// paginated anonymous web-client reads, so the first page loads but "load
+    /// more" comes back with "failed integrity check". The Android client id is
+    /// exempt from that challenge (the same reason follows and reactions route
+    /// through it), so pagination works without minting a Client-Integrity token.
+    /// The device/session ids keep us out of the harsh anonymous rate-limit
+    /// bucket.
     async fn gql_public_read(body: serde_json::Value) -> Result<serde_json::Value> {
         let client = crate::services::http::client().clone();
         let device_id = uuid::Uuid::new_v4().to_string().replace('-', "");
@@ -2989,7 +2990,7 @@ impl TwitchService {
 
         let resp = client
             .post("https://gql.twitch.tv/gql")
-            .header("Client-ID", TWITCH_GQL_CLIENT_ID)
+            .header("Client-ID", env!("TWITCH_ANDROID_CLIENT_ID"))
             .header(ACCEPT, "*/*")
             .header("X-Device-Id", device_id)
             .header("Client-Session-Id", session_id)
