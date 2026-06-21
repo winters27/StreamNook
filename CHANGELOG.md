@@ -1,3 +1,18 @@
+## [8.0.9] - 2026-06-21
+### ✨ Features
+- **CS2 Major Cologne 2026**: Watch any Counter-Strike stream in StreamNook within 24 hours of the Cologne grand finals to unlock a limited Cologne look for your chat and profile. Supporters can add the gold coin, subscribers can add the gold border too, and everyone in chat sees what you have applied.
+- **Song recognition**: Tap the new music button on the player or type /song in chat, and StreamNook names the track playing in the stream, with cover art, artist, and one-tap links to Spotify, Apple Music, YouTube Music, and more. No sign-in needed.
+- **Reminders**: Have StreamNook auto-post a chat message on a repeating timer, after a delay, at a set time of day, once the stream hits a chosen uptime, or when a keyword appears in chat. Configure them in the new Reminders settings, or set one on the fly with a guided /remind.
+
+### 🐛 Bug Fixes
+- **Smoother playback during ads**: Fixed a live-playback glitch where the stream could replay or stutter the same moment during ad breaks, especially with the ad-bypass plugin.
+- **No more freeze during login**: Fixed the app freezing or showing "Not Responding" when you alt-tab or minimize during Twitch login. Login, drops, and subscribe now open in a clean in-app window with a green padlock address bar.
+- **Load more works on clips and videos**: Restored "Load more" on channel clip and video lists, and it no longer shows duplicate entries.
+- **Accurate drop ownership**: Drop rewards are no longer wrongly marked as already earned when another reward in the same campaign shares its name.
+
+### 🔧 Maintenance
+- **Quieter, more findable**: Added a background watchdog that catches rare UI freezes so they can be diagnosed, and made the new settings searchable from settings search and the command palette.
+
 ## [8.0.8] - 2026-06-18
 ### 🔧 Maintenance
 - **One-time sign-out after this update**: We did some behind-the-scenes maintenance on the login flow, cookie storage, and how your accounts are streamlined across all the activities you do. All you have to do is log back in, then sign in to Drops again.
