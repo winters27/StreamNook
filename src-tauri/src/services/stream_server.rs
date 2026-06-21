@@ -56,6 +56,9 @@ fn reset_ad_state() {
     *AD_STATE.lock().unwrap() = AdDetectionState::default();
     // Tear down the LL-HLS origin (background reader + live edge) for the old stream.
     crate::services::ll_origin::stop();
+    // Drop the stable-projection segment map for the old stream so a synthetic
+    // `vseg/<sn>.ts` can never resolve to a previous stream's segment.
+    crate::services::hls_projection::reset(SOLO_STREAM_ID);
 }
 
 /// Fold a relayed media playlist into the solo stream's ad-detection state.
@@ -333,6 +336,27 @@ impl StreamServer {
             }
         }
 
+        // Stable whole-segment projection: a synthetic `vseg/<sid>/<sn>.ts` is
+        // 302-redirected to the freshest real CDN URL recorded when the playlist
+        // was stabilized, so the player-visible path never changes even as Twitch
+        // re-signs the real URL. Handled before any upstream fetch. The LL origin
+        // owns `seg/` when active; this scheme uses a distinct `vseg/` prefix.
+        if let Some((sid, sn)) = crate::services::hls_projection::parse_vseg_path(request_path) {
+            return Ok(match crate::services::hls_projection::redirect_target(&sid, sn) {
+                Some(url) => warp::http::Response::builder()
+                    .status(302)
+                    .header("Location", url)
+                    .header("Access-Control-Allow-Origin", "*")
+                    .header(
+                        "Cache-Control",
+                        "no-cache, no-store, must-revalidate, max-age=0",
+                    )
+                    .body(vec![])
+                    .unwrap(),
+                None => empty_cors(404),
+            });
+        }
+
         // Map the local path to the upstream Twitch CDN
         let fetch_url = if request_path == "stream.m3u8" || request_path.is_empty() {
             manifest_url.clone()
@@ -391,9 +415,27 @@ impl StreamServer {
         if !request_path.ends_with(".ts") {
             if let Ok(text) = std::str::from_utf8(&bytes) {
                 detect_ads_in_playlist(text);
-                if let Some(rt) = crate::services::ad_detect::retarget_playlist(text) {
-                    bytes = rt.into_bytes();
-                }
+                // Lower the over-declared TARGETDURATION, then (LIVE only) pin every
+                // segment URL stable across refreshes so Twitch re-signing a path
+                // can't trip hls.js into replaying a segment. Gated two ways: a
+                // VOD/ended playlist (#EXT-X-ENDLIST) is static and fully seekable so
+                // rewriting+pruning it would break seeking; and the experimental
+                // low-latency engine, when ON, owns the playlist with its own `seg/`
+                // scheme (served from memory) — our `vseg/` rewrite alongside it
+                // would hand the player two URLs for one media sequence and trip the
+                // exact refresh-mismatch we fix, so we only stabilize when the engine
+                // is off (the whole-segment path).
+                let is_live = !text.contains("#EXT-X-ENDLIST");
+                let stabilize_ok = is_live && crate::services::ll_origin::engine_disabled();
+                let work: String = crate::services::ad_detect::retarget_playlist(text)
+                    .unwrap_or_else(|| text.to_string());
+                bytes = if stabilize_ok {
+                    let base = crate::services::hls_projection::base_url_of(&manifest_url);
+                    crate::services::hls_projection::stabilize(SOLO_STREAM_ID, &work, &base)
+                        .into_bytes()
+                } else {
+                    work.into_bytes()
+                };
             }
         }
 

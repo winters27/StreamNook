@@ -135,6 +135,7 @@ impl MultiNookServer {
             instance.ll_origin.stop();
             instance.handle.abort();
             *instance.proxy_url.lock().await = None;
+            crate::services::hls_projection::reset(stream_id);
         } else {
             debug!(
                 "[MultiNook] No proxy found for stream '{}', nothing to stop",
@@ -158,6 +159,7 @@ impl MultiNookServer {
             instance.ll_origin.stop();
             instance.handle.abort();
             *instance.proxy_url.lock().await = None;
+            crate::services::hls_projection::reset(&id);
         }
 
         debug!("[MultiNook] Stopped {} proxy servers", count);
@@ -201,6 +203,9 @@ impl MultiNookServer {
         if !exists {
             return Err(anyhow::anyhow!("no relay session for tile '{stream_id}'"));
         }
+        // A pivot points the tile at a new region with its own segment numbering;
+        // drop the old region's projection map so no synthetic URL survives it.
+        crate::services::hls_projection::reset(stream_id);
         Self::start_proxy(stream_id, playlist_url).await?;
         info!(
             "[MultiNook] '{}' upstream swapped by a playback plugin",
@@ -280,8 +285,31 @@ impl MultiNookServer {
             }
         }
 
-        // Tiles only relay the media playlist on the non-LL path; segment URLs in it
-        // are absolute CDN URLs the player fetches directly.
+        // Stable whole-segment projection: a synthetic `vseg/<tile>/<sn>.ts`
+        // 302-redirects to the freshest real CDN URL (see stream_server). A
+        // distinct `vseg/` prefix, so it never collides with the LL origin's
+        // `seg/`; the per-tile session id keeps two tiles' equal sequence numbers
+        // from resolving to each other.
+        if let Some((sid, sn)) = crate::services::hls_projection::parse_vseg_path(request_path) {
+            return Ok(
+                match crate::services::hls_projection::redirect_target(&sid, sn) {
+                    Some(u) => warp::http::Response::builder()
+                        .status(302)
+                        .header("Location", u)
+                        .header("Access-Control-Allow-Origin", "*")
+                        .header(
+                            "Cache-Control",
+                            "no-cache, no-store, must-revalidate, max-age=0",
+                        )
+                        .body(vec![])
+                        .unwrap(),
+                    None => empty_cors(404),
+                },
+            );
+        }
+
+        // Tiles only relay the media playlist on the non-LL path; stabilized
+        // segment URLs in it 302 back here via the `vseg/` route above.
         if request_path != "stream.m3u8" && !request_path.is_empty() {
             return Ok(empty_cors(404));
         }
@@ -339,9 +367,20 @@ impl MultiNookServer {
                     );
                 }
             }
-            if let Some(rt) = ad_detect::retarget_playlist(text) {
-                bytes = rt.into_bytes();
-            }
+            // Retarget, then pin segment URLs stable across refreshes. Gated like the
+            // solo path: only on a live playlist (not VOD/#EXT-X-ENDLIST) and only when
+            // the experimental low-latency engine is off, so our `vseg/` rewrite never
+            // races the per-tile origin's `seg/` scheme for the same media sequence.
+            let is_live = !text.contains("#EXT-X-ENDLIST");
+            let stabilize_ok = is_live && crate::services::ll_origin::engine_disabled();
+            let work: String =
+                ad_detect::retarget_playlist(text).unwrap_or_else(|| text.to_string());
+            bytes = if stabilize_ok {
+                let base = crate::services::hls_projection::base_url_of(&url);
+                crate::services::hls_projection::stabilize(&stream_id, &work, &base).into_bytes()
+            } else {
+                work.into_bytes()
+            };
         }
 
         Ok(warp::http::Response::builder()

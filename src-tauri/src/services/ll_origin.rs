@@ -2006,6 +2006,16 @@ pub fn is_active() -> bool {
     SOLO.is_active()
 }
 
+/// True when the experimental low-latency engine is OFF (the hard kill switch is
+/// engaged), so no origin will ever serve a parts/`seg/` playlist this session.
+/// The whole-segment stable projection keys on this: it must run ONLY when the
+/// engine is off, never alongside an active (or about-to-activate) origin, or the
+/// player gets two URL schemes for the same media sequence and the refresh check
+/// fails. Stable for the session, unlike the per-poll `is_active()`.
+pub fn engine_disabled() -> bool {
+    DISABLED.load(Ordering::Relaxed)
+}
+
 pub fn stop() {
     SOLO.stop()
 }
