@@ -118,25 +118,17 @@ function unlockRequirementText(rewardName?: string, description?: string): strin
 
 // Match a reward's benefit name against the user's earned badge titles. Badge drops
 // rarely land in the permanent gameEventDrops list, so a held badge title is the most
-// reliable "you already have this" signal for them. Exact match first; then a fuzzy
-// prefix match on all-but-last word, to catch reissues where the badge title carries an
-// extra trailing word (benefit "Bungie Foundation Sub" vs badge "Bungie Foundation Supporter").
-// Single source of truth: the rewards tally, Active Campaigns, and Your Collection all
-// call this, so they can't disagree about whether a badge reward is owned.
+// reliable "you already have this" signal for them. Matched EXACTLY: a looser prefix
+// match conflated distinct rewards from the same campaign, because every reward in a
+// campaign shares the game-name prefix (e.g. a watch-earned "Two Point Museum" badge
+// would mark an unearned "Two Point Museum" subscriber badge as owned). Reissues that
+// carry the same name are still caught here; renamed reissues fall to benefit-id/name
+// matching at the call sites. Single source of truth: the rewards tally, Active
+// Campaigns, and Your Collection all call this, so they agree on ownership.
 function matchesEarnedBadge(benefitName: string | undefined, earnedBadgeTitles: Set<string>): boolean {
     const bn = (benefitName || '').toLowerCase().trim();
     if (!bn) return false;
-    if (earnedBadgeTitles.has(bn)) return true;
-    const benefitWords = bn.split(/\s+/).filter(w => w.length > 0);
-    if (benefitWords.length < 2) return false;
-    const wordsToCheck = benefitWords.slice(0, -1); // all but the last word
-    for (const title of earnedBadgeTitles) {
-        const titleWords = title.split(/\s+/).filter(w => w.length > 0);
-        if (titleWords.length < 2) continue;
-        const prefix = titleWords.slice(0, wordsToCheck.length);
-        if (wordsToCheck.every((w, i) => prefix[i] === w)) return true;
-    }
-    return false;
+    return earnedBadgeTitles.has(bn);
 }
 
 type RewardKind = 'badge' | 'emote' | 'item';
