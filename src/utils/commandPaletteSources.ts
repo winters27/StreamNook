@@ -718,77 +718,110 @@ function buildQuickActions(): PaletteItem[] {
 interface SettingsEntry {
   tab: SettingsTab;
   section?: string;
+  /** DOM id of the matching <SettingsSection> (or its wrapper), when one exists.
+   *  Passed to openSettings so the palette scrolls to the section, not just the
+   *  tab. Mirrors `sectionId` in src/components/settings/searchIndex.ts. */
+  sectionId?: string;
   keywords?: string;
 }
 
+// Manual catalog for the Ctrl+K palette. One entry per Settings tab + per
+// real <SettingsSection>; `section` must match the section's label and
+// `sectionId` its DOM id (so the palette scrolls to it, not just the tab).
+// `keywords` is the only match surface here, so pack synonyms in. Keep in sync
+// with SETTINGS_INDEX in src/components/settings/searchIndex.ts.
+// Profile and Plugins are intentionally absent: Profile uses no <SettingsSection>
+// primitives, and Plugins is not rendered by SettingsDialog (it lives in the
+// Marketplace overlay), so openSettings('Plugins') would show a blank tab.
 const SETTINGS_CATALOG: SettingsEntry[] = [
-  // Interface
-  { tab: 'Interface' },
-  { tab: 'Interface', section: 'Sidebar', keywords: 'sidebar nav navigation rail' },
-  { tab: 'Interface', section: 'Compact Mode', keywords: 'compact mini small dense' },
-
   // Player
-  { tab: 'Player' },
-  { tab: 'Player', section: 'Player Overlay Buttons', keywords: 'player overlay buttons follow subscribe clip clips vods multinook refresh close hide show customize which buttons top right' },
-  { tab: 'Player', section: 'Auto-Switch', keywords: 'auto switch fallback offline next stream raid' },
-  { tab: 'Player', section: 'Streamlink Location', keywords: 'streamlink path location binary install' },
-  { tab: 'Player', section: 'Streamlink Optimization', keywords: 'streamlink optimization buffer latency tuning' },
-  { tab: 'Player', section: 'Video Player', keywords: 'video player plyr fullscreen quality controls' },
-
-  // Chat
-  { tab: 'Chat', keywords: 'chat placement design fonts dividers timestamps mentions emotes' },
-  { tab: 'Chat', section: 'Chat Design', keywords: 'chat design font size weight spacing dividers timestamps mention colors name separator style prefix colon chip bracket dot pinned message collapse bar' },
-  { tab: 'Chat', section: 'Collapsed Pinned Message', keywords: 'pinned message pin collapse collapsed bar hidden shrink truncated minimize' },
-  { tab: 'Chat', section: 'Link Previews', keywords: 'link preview previews load card url unfurl embed trusted sources shorten links domains' },
-  { tab: 'Chat', section: 'Name Separator', keywords: 'name separator colon dot arrow pipe dash prefix username after name' },
-  { tab: 'Chat', section: 'Name Style', keywords: 'name style prefix username chip tag bracket brackets accent bar color dot stand out' },
-  { tab: 'Chat', section: 'Prefix Color', keywords: 'prefix color name separator accent user color theme paint' },
-  { tab: 'Chat', section: 'Highlight Phrases', keywords: 'highlights phrases keywords alerts' },
-  { tab: 'Chat', section: 'User Overrides', keywords: 'user overrides nicknames colors per-user' },
-  { tab: 'Chat', section: 'Custom Commands', keywords: 'custom commands slash macros' },
-  { tab: 'Chat', section: 'Emote Tab Completion', keywords: 'emote tab completion autocomplete carousel kappa cycle shift starts contains match' },
-
-  // Moderation
-  { tab: 'Moderation', keywords: 'moderation mod ban timeout delete chat actions logs nuke purge mass' },
-  { tab: 'Moderation', section: 'Moderation Actions', keywords: 'moderation actions action style mod drag moderate grab buttons both ban timeout delete whisper profile buckets pick up gesture menu layout style column bar above beside chat position egg timer pin pinned message inline' },
-  { tab: 'Moderation', section: 'Pin Action', keywords: 'pin pinned message moderator inline drag both placement where pin lives stick top' },
-  { tab: 'Moderation', section: 'Mod Logs', keywords: 'mod logs panel recent moderation actions timeouts bans deletions sidebar' },
-  { tab: 'Moderation', section: 'Mass Actions', keywords: 'mass actions nuke undo regex phrase bulk' },
+  { tab: 'Player', keywords: 'player video stream playback overlay buttons auto switch streaming codecs audio boost song id' },
+  { tab: 'Player', section: 'Player Overlay Buttons', keywords: 'player overlay buttons follow subscribe clip identify song clips vods multinook refresh close hide show customize which buttons top right' },
+  { tab: 'Player', section: 'Auto-Switch', sectionId: 'settings-section-auto-switch', keywords: 'auto switch fallback offline next stream raid redirect followed category notification stay offline chat' },
+  { tab: 'Player', section: 'Streaming', sectionId: 'settings-section-streaming', keywords: 'streaming codecs h265 hevc av1 h264 connection timeout auto retry delay resolve' },
+  { tab: 'Player', section: 'Video Player', sectionId: 'settings-section-video-player', keywords: 'video player autoplay live edge gap low latency buffer quality volume aspect ratio lock start muted fullscreen controls' },
+  { tab: 'Player', section: 'Audio Boost', sectionId: 'settings-section-audio-boost', keywords: 'audio boost compressor makeup gain louder volume normalize even out loud quiet clipping threshold ratio knee attack release' },
+  { tab: 'Player', section: 'Song Identification', sectionId: 'settings-section-song-id', keywords: 'song identification identify music what song is this shazam recognize now playing track name spotify apple music song.link listen time retries capture detection' },
 
   // Theme
-  { tab: 'Theme', keywords: 'theme color accent skin dark light' },
-  { tab: 'Theme', section: 'Font', keywords: 'font typeface interface satoshi inter geist manrope outfit space grotesk serif system family text' },
+  { tab: 'Theme', keywords: 'theme color accent skin dark light palette glassiness font' },
   { tab: 'Theme', section: 'Glassiness', keywords: 'glassiness glass transparency frosted opacity panels see-through blur solid flat opaque disable turn off no glass' },
+  { tab: 'Theme', section: 'Font', keywords: 'font typeface interface satoshi inter geist manrope outfit space grotesk serif system family text' },
+
+  // Chat
+  { tab: 'Chat', keywords: 'chat placement design fonts dividers timestamps mentions emotes logging channel points highlights commands reminders' },
+  { tab: 'Chat', section: 'Chat Placement', keywords: 'chat placement position right bottom hidden where show hide' },
+  { tab: 'Chat', section: 'Channel Points', keywords: 'channel points auto claim bonus chest reward farm points' },
+  { tab: 'Chat', section: 'Chat Logging', keywords: 'chat logging save logs text files folder per channel timestamps events moderation record history' },
+  { tab: 'Chat', section: 'Chat Design', keywords: 'chat design font size weight spacing dividers timestamps seconds mention colors reply name separator style prefix colon dot arrow pipe dash chip bracket accent bar pinned message collapse bar alternating backgrounds' },
+  { tab: 'Chat', section: 'Link Previews', keywords: 'link preview previews load card url unfurl embed trusted sources shorten links domains clean' },
+  { tab: 'Chat', section: 'Emotes', keywords: 'emotes emote size hover preview spacing inline scale 7tv bttv ffz' },
+  { tab: 'Chat', section: 'Chat Input', keywords: 'chat input composer bypass duplicate message quick send ctrl enter keep message repeat' },
+  { tab: 'Chat', section: 'Emote Tab Completion', sectionId: 'settings-section-emote-tab-completion', keywords: 'emote tab completion autocomplete carousel kappa cycle shift starts contains match include chat users' },
+  { tab: 'Chat', section: 'Render Style', keywords: 'render style deleted messages strikethrough dimmed hidden shared chat paint mentions inline compact emote tooltips 7tv update notices smooth scroll resume message buffer scrollback' },
+  { tab: 'Chat', section: '7TV Cosmetics', keywords: '7tv cosmetics paint drop shadows username paints shadow readability' },
+  { tab: 'Chat', section: 'Highlight Appearance', keywords: 'highlight appearance display style tint opacity flash window title unfocused look' },
+  { tab: 'Chat', section: 'Highlight Phrases', keywords: 'highlights phrases keywords alerts words names patterns flash match' },
+  { tab: 'Chat', section: 'Built-in Event Highlights', keywords: 'built-in event highlights first-time chatters returning your own messages raid announcements auto highlight' },
+  { tab: 'Chat', section: 'Username Highlights', keywords: 'username highlights highlight user login by name case-insensitive' },
+  { tab: 'Chat', section: 'Badge Highlights', keywords: 'badge highlights highlight by badge moderator vip subscriber name version' },
+  { tab: 'Chat', section: 'Custom Commands', keywords: 'custom commands slash macros expansions auto-fill' },
+  { tab: 'Chat', section: 'Reminders', sectionId: 'reminders', keywords: 'reminder reminders remind auto message timer schedule recurring interval keyword nudge streamer repeat post chat uptime delay' },
+  { tab: 'Chat', section: 'User Overrides', keywords: 'user overrides nicknames per-user nickname rename chatter' },
+
+  // Moderation
+  { tab: 'Moderation', keywords: 'moderation mod ban timeout delete chat actions logs nuke purge mass visibility highlights' },
+  { tab: 'Moderation', section: 'Moderation Actions', keywords: 'moderation actions action style mod drag moderate grab buttons both ban timeout delete whisper profile buckets pin pinned message inline column bar above beside chat layout' },
+  { tab: 'Moderation', section: 'Mod Logs', keywords: 'mod logs panel recent moderation actions timeouts bans deletions sidebar' },
+  { tab: 'Moderation', section: 'Message Visibility', keywords: 'message visibility announce mod actions inline hide strikethrough removed banned timed out deleted' },
+  { tab: 'Moderation', section: 'Log Highlights', keywords: 'log highlights color code mod log severity highlight style category colors' },
+  { tab: 'Moderation', section: 'Mass Actions', keywords: 'mass actions nuke undo regex phrase bulk purge sweep' },
+
+  // Interface
+  { tab: 'Interface', keywords: 'interface sidebar motion animations settings window compact view chrome layout' },
+  { tab: 'Interface', section: 'Sidebar', sectionId: 'settings-section-sidebar', keywords: 'sidebar nav navigation rail display mode expanded compact hidden disabled expand on hover recommended streams' },
+  { tab: 'Interface', section: 'Motion', sectionId: 'settings-section-motion', keywords: 'motion animations reduce motion accessibility performance disable transitions full reduced off snappy' },
+  { tab: 'Interface', section: 'Settings Window', sectionId: 'settings-section-settings-window', keywords: 'settings window compact centered full page layout fills app' },
+  { tab: 'Interface', section: 'Compact View', sectionId: 'settings-section-compact', keywords: 'compact view mini small window size second monitor preset' },
 
   // Integrations
-  { tab: 'Integrations', keywords: 'integrations discord rpc ttv lol ad block' },
-  { tab: 'Integrations', section: 'Discord Rich Presence', keywords: 'discord rpc rich presence activity' },
-  { tab: 'Integrations', section: 'TTV LOL Ad Blocker Plugin', keywords: 'ttv lol ad block proxy splice' },
+  { tab: 'Integrations', keywords: 'integrations discord rpc rich presence ttv lol ad block ad-free connected apps services' },
+  { tab: 'Integrations', section: 'Discord Rich Presence', keywords: 'discord rpc rich presence activity status what watching' },
+  { tab: 'Integrations', section: 'Ad Blocking', keywords: 'ad block ad-free ads ttv lol proxy splice block twitch ads plugin' },
 
   // Notifications
-  { tab: 'Notifications', keywords: 'notifications toast dynamic island sound alerts live whisper drops' },
-  { tab: 'Notifications', section: 'Dynamic Island', keywords: 'dynamic island top notification' },
-  { tab: 'Notifications', section: 'Toast Notifications', keywords: 'toasts corner notifications' },
-  { tab: 'Notifications', section: 'Live Stream Notifications', keywords: 'live going live followed alert' },
-  { tab: 'Notifications', section: 'Whisper Notifications', keywords: 'whisper dm message notification' },
-  { tab: 'Notifications', section: 'Update Notifications', keywords: 'update available cog download' },
-  { tab: 'Notifications', section: 'Drops Notifications', keywords: 'drops claim notification' },
-  { tab: 'Notifications', section: 'Channel Points Notifications', keywords: 'channel points redemption notification' },
-  { tab: 'Notifications', section: 'Badge Notifications', keywords: 'badge new available' },
-  { tab: 'Notifications', section: 'Notification Sound', keywords: 'sound style audio ping' },
+  { tab: 'Notifications', keywords: 'notifications toast dynamic island sound alerts live whisper drops update channel points badge' },
+  { tab: 'Notifications', section: 'Notification Methods', keywords: 'notification methods dynamic island toast position edge spacing corner' },
+  { tab: 'Notifications', section: 'Notification Types', keywords: 'notification types live going live whisper dm update available drops channel points badge favorite category' },
+  { tab: 'Notifications', section: 'Sound', keywords: 'sound notification sound style test ping audio' },
 
   // Cache
-  { tab: 'Cache', keywords: 'cache clear storage expiry emote badge size' },
+  { tab: 'Cache', keywords: 'cache clear storage expiry emote badge size maintenance prefetch' },
+  { tab: 'Cache', section: 'Emote Prefetch', keywords: 'emote prefetch preload warm cache download all follows scan instant menu' },
 
   // Command Palette
   { tab: 'Command Palette', keywords: 'command palette ctrl k guide wiki snippets favorites alias manager docs' },
-  { tab: 'Command Palette', section: 'Snippet Manager', keywords: 'snippets manager copypasta favorites aliases custom add' },
-  { tab: 'Command Palette', section: 'Keyboard Shortcuts', keywords: 'keyboard shortcuts hotkeys ctrl k arrow keys enter esc' },
+  { tab: 'Command Palette', section: 'Snippet Manager', sectionId: 'settings-section-snippets', keywords: 'snippets manager copypasta favorites aliases custom add star' },
+  { tab: 'Command Palette', section: 'Keyboard Shortcuts', sectionId: 'settings-section-keyboard', keywords: 'keyboard shortcuts hotkeys ctrl k arrow keys enter esc home end' },
+  { tab: 'Command Palette', section: 'What lives in the palette', keywords: 'what lives palette guide overview sections quick actions current stream share categories snippets' },
+
+  // Keybindings
+  { tab: 'Keybindings', keywords: 'keybindings keyboard shortcuts hotkeys binds combos rebind customize reset chord' },
+  { tab: 'Keybindings', section: 'Application', keywords: 'application app-wide shortcuts everywhere global hotkeys' },
+  { tab: 'Keybindings', section: 'Navigation', keywords: 'navigation jump surfaces shortcuts hotkeys' },
+  { tab: 'Keybindings', section: 'Player', keywords: 'player shortcuts play pause mute fullscreen volume hotkeys while playing' },
+  { tab: 'Keybindings', section: 'Moderation', keywords: 'moderation shortcuts focus message j k act ban timeout hotkeys' },
+  { tab: 'Keybindings', section: 'Chat', keywords: 'chat shortcuts compose field hotkeys' },
+  { tab: 'Keybindings', section: 'Multi-view', keywords: 'multi-view multichat windows shortcuts hotkeys' },
+
+  // Backup
+  { tab: 'Backup', keywords: 'backup restore export import settings file save preferences move new pc reinstall' },
+  { tab: 'Backup', section: 'Backup and restore', keywords: 'backup restore export import settings file save load preferences' },
+  { tab: 'Backup', section: 'Settings file', keywords: 'settings file folder open settings.json location on disk' },
 
   // Support
-  { tab: 'Support', keywords: 'support help logs diagnostics report bug' },
-  { tab: 'Support', section: 'Session Statistics', keywords: 'session stats memory uptime' },
-  { tab: 'Support', section: 'Recent Errors', keywords: 'recent errors warnings logs diagnostics' },
+  { tab: 'Support', keywords: 'support help community discord join invite feature request updates' },
+  { tab: 'Support', section: 'Community Discord', keywords: 'community discord join invite server help feature request' },
 
   // What's New
   { tab: "What's New", keywords: 'whats new changelog release notes updates' },
@@ -808,7 +841,7 @@ function buildSettingsItems(): PaletteItem[] {
       subtitle,
       keywords: `${entry.tab.toLowerCase()} ${entry.keywords ?? ''}`.trim(),
       initial: title.slice(0, 1).toUpperCase(),
-      run: () => useAppStore.getState().openSettings(entry.tab),
+      run: () => useAppStore.getState().openSettings(entry.tab, entry.sectionId),
     };
   });
 }
