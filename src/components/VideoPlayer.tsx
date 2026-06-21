@@ -4,7 +4,7 @@ import Hls from 'hls.js';
 import Plyr from 'plyr';
 import 'plyr/dist/plyr.css';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Loader2, RefreshCcw, Home, LayoutGrid, Shield, ShieldCheck, ShieldAlert, Clapperboard } from 'lucide-react';
+import { Loader2, RefreshCcw, Home, LayoutGrid, Shield, ShieldCheck, ShieldAlert, Clapperboard, Music } from 'lucide-react';
 import { Heart, HeartBreak, ArrowLeft, X as XIcon } from 'phosphor-react';
 import { useAppStore } from '../stores/AppStore';
 import { usemultiNookStore } from '../stores/multiNookStore';
@@ -28,6 +28,9 @@ import {
 } from '../utils/audioBoost';
 import type { AudioBoostSettings } from '../types';
 import { Fader, Toggle } from './AudioBoostFaders';
+import { open as openExternalUrl } from '@tauri-apps/plugin-shell';
+import { setActiveVideo } from '../utils/activeVideo';
+import { recognizeNowPlaying, announceSong } from '../utils/songId';
 
 // Paint the Audio Boost toggle that gets injected into Plyr's control bar so it
 // reflects on/off. The `is-active` class lights it up as an accent chip (fill +
@@ -155,6 +158,13 @@ const VideoPlayer = () => {
   useEffect(() => {
     applyAudioBoost(videoRef.current, resolveAudioBoost(audioBoostSettings));
   }, [audioBoostSettings, streamUrl, playerReady]);
+
+  // Expose the player element so the "/song" chat command (which runs outside
+  // this component) can capture from the stream that's actually playing.
+  useEffect(() => {
+    setActiveVideo(videoRef.current);
+    return () => setActiveVideo(null);
+  }, [streamUrl, playerReady]);
 
   // Resolved current settings (defaults filled in) drive both the control-bar
   // toggle's appearance and the in-player popover below. The ref lets the
@@ -316,6 +326,44 @@ const VideoPlayer = () => {
 
   // Restart stream state
   const [isRestarting, setIsRestarting] = useState(false);
+
+  // Song identification: capture a few seconds of player audio and name the
+  // track. The button surfaces the result as a toast (it isn't tied to chat);
+  // the /song chat command posts the same result into chat instead.
+  const [isIdentifyingSong, setIsIdentifyingSong] = useState(false);
+  const handleIdentifySong = useCallback(async () => {
+    const addToast = useAppStore.getState().addToast;
+    setIsIdentifyingSong(true);
+    try {
+      const result = await recognizeNowPlaying(videoRef.current);
+      // Also drop the clickable card into chat (where the links live); the toast
+      // below is just the quick on-player confirmation.
+      announceSong(result);
+      if (result.status === 'match') {
+        const s = result.song;
+        const provider = s.providers[0];
+        const link = provider?.url || s.song_link || s.shazam_url || undefined;
+        addToast(
+          `♪ ${s.title} by ${s.artist}${s.album ? ` (${s.album})` : ''}`,
+          'success',
+          link
+            ? {
+                label: provider ? `Open in ${provider.name}` : 'Open',
+                onClick: () => {
+                  void openExternalUrl(link);
+                },
+              }
+            : undefined,
+        );
+      } else if (result.status === 'no-match') {
+        addToast("Couldn't identify the song. Try again when the music is clearer.", 'info');
+      } else {
+        addToast(result.message, 'error');
+      }
+    } finally {
+      setIsIdentifyingSong(false);
+    }
+  }, []);
 
   // Which overlay action buttons the user keeps (undefined = all). Each button
   // still respects its own context gate below (clippable, live-only, etc.).
@@ -2344,6 +2392,27 @@ const VideoPlayer = () => {
                 <Loader2 className="w-4 h-4 text-accent animate-spin" />
               ) : (
                 <Clapperboard className="w-4 h-4 text-white hover:text-accent transition-colors duration-200" />
+              )}
+            </button>
+            </Tooltip>
+          )}
+
+          {/* Identify Song Button — fingerprints a few seconds of player audio
+              and names the track (the /song chat command does the same). */}
+          {overlayButtonOn('song') && (
+            <Tooltip content="Identify song" side="bottom">
+            <button
+              onClick={() => handleIdentifySong()}
+              disabled={isIdentifyingSong}
+              className={`flex items-center justify-center p-2 glass-button rounded-lg ${
+                isIdentifyingSong ? 'cursor-wait opacity-70' : ''
+              }`}
+              style={{ backdropFilter: 'blur(16px)' }}
+            >
+              {isIdentifyingSong ? (
+                <Loader2 className="w-4 h-4 text-accent animate-spin" />
+              ) : (
+                <Music className="w-4 h-4 text-white hover:text-accent transition-colors duration-200" />
               )}
             </button>
             </Tooltip>

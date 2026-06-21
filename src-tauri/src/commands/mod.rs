@@ -34,6 +34,7 @@ pub mod screen_capture;
 pub mod session;
 pub mod settings;
 pub mod seventv;
+pub mod song_id;
 pub mod seventv_cosmetics;
 pub mod seventv_cosmetics_fetch;
 pub mod streaming;

@@ -1,7 +1,7 @@
 import { Dropdown } from '../ui/Dropdown';
 import { useAppStore } from '../../stores/AppStore';
 import { SettingsSection, SettingsRow, SegmentedSelect } from './_primitives';
-import { DEFAULT_AUDIO_BOOST } from '../../types';
+import { DEFAULT_AUDIO_BOOST, DEFAULT_SONG_ID } from '../../types';
 import { Fader } from '../AudioBoostFaders';
 import { audioBoostFaderDefs, audioBoostResetPatch } from '../../utils/audioBoost';
 import { reportCodecPreference } from '../../utils/codecPreference';
@@ -27,6 +27,7 @@ const OVERLAY_BUTTONS: { id: string; label: string }[] = [
   { id: 'follow', label: 'Follow / Unfollow' },
   { id: 'subscribe', label: 'Subscribe / Gift' },
   { id: 'clip', label: 'Create Clip' },
+  { id: 'song', label: 'Identify Song' },
   { id: 'clipsvods', label: 'Clips & VODs' },
   { id: 'multinook', label: 'Add to MultiNook' },
   { id: 'refresh', label: 'Refresh' },
@@ -64,6 +65,16 @@ const PlayerSettings = () => {
   };
   // Shared fader descriptors (Boost first, then the five compressor params).
   const boostFaders = audioBoostFaderDefs(audioBoost);
+
+  // Song identification: capture length + retry count. Merge persisted over
+  // defaults and write the whole nested object back, mirroring audio boost.
+  const songId = { ...DEFAULT_SONG_ID, ...(videoPlayer?.song_id ?? {}) };
+  const setSongId = (patch: Partial<typeof songId>) => {
+    updateSettings({
+      ...settings,
+      video_player: { ...videoPlayer, song_id: { ...songId, ...patch } },
+    });
+  };
 
   const setAutoSwitch = (patch: Partial<NonNullable<typeof autoSwitch>>) => {
     updateSettings({
@@ -478,6 +489,42 @@ const PlayerSettings = () => {
               </button>
             </div>
           </details>
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection
+        id="settings-section-song-id"
+        label="Song Identification"
+        description="The /song command and the player's music button listen to a few seconds of the stream and name the track. Longer captures match more reliably, especially over talking or noise."
+      >
+        <SettingsRow
+          title={`Listen Time: ${songId.capture_seconds}s`}
+          description="How many seconds of audio to fingerprint. Longer is more accurate but takes a bit longer before the result appears."
+        >
+          <input
+            type="range"
+            min="3"
+            max="20"
+            step="1"
+            value={songId.capture_seconds}
+            onChange={(e) => setSongId({ capture_seconds: parseInt(e.target.value, 10) })}
+            className="w-full accent-accent cursor-pointer"
+          />
+        </SettingsRow>
+
+        <SettingsRow
+          title={`Retries on No Match: ${songId.retries}`}
+          description="If the first listen finds nothing, try again this many times. Each retry listens to a fresh window, so an ad break or quiet moment gets another shot."
+        >
+          <input
+            type="range"
+            min="0"
+            max="3"
+            step="1"
+            value={songId.retries}
+            onChange={(e) => setSongId({ retries: parseInt(e.target.value, 10) })}
+            className="w-full accent-accent cursor-pointer"
+          />
         </SettingsRow>
       </SettingsSection>
     </div>

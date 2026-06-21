@@ -21,6 +21,22 @@ export const DEFAULT_AUDIO_BOOST: AudioBoostSettings = {
   release: 0.25,
 };
 
+export interface SongIdSettings {
+  // Seconds of audio to fingerprint. Longer is more robust (especially over
+  // talking or noise) at the cost of a longer wait before the result.
+  capture_seconds: number;
+  // Extra capture + lookup attempts when the first finds nothing. Each retry
+  // listens again, so a missed window (ad break, quiet moment) gets another shot.
+  retries: number;
+}
+
+// 10s captures comfortably beat the ~5s minimum for a confident match; one retry
+// rescues the occasional miss without a long wait.
+export const DEFAULT_SONG_ID: SongIdSettings = {
+  capture_seconds: 10,
+  retries: 1,
+};
+
 export interface VideoPlayerSettings {
   max_buffer_length: number;
   autoplay: boolean;
@@ -29,6 +45,7 @@ export interface VideoPlayerSettings {
   start_quality: number;
   lock_aspect_ratio: boolean;
   audio_boost?: AudioBoostSettings;
+  song_id?: SongIdSettings;
   experimental_low_latency?: boolean;
   ll_target_latency?: number;
 }
@@ -340,6 +357,67 @@ export interface ChatCommandsSettings {
   user_commands: UserSlashCommand[];
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// Reminders — messages StreamNook auto-posts into a streamer's chat to nudge
+// the broadcaster (or chat) about something. Each reminder pairs one trigger
+// with the text to post. The firing engine lives in utils/reminderEngine.ts.
+// ─────────────────────────────────────────────────────────────────────────
+
+// The "avenue" that makes a reminder fire.
+export type ReminderTriggerType =
+  | 'interval' // repeat every N minutes while you're connected to the channel
+  | 'delay'    // once, N minutes after you join the channel's chat
+  | 'clock'    // once per day, at a local HH:MM time
+  | 'uptime'   // once, when the watched stream has been live N minutes
+  | 'keyword'; // when an incoming chat message matches a word or phrase
+
+export type ReminderKeywordMatch = 'contains' | 'word' | 'exact';
+export type ReminderKeywordFrom = 'anyone' | 'broadcaster' | 'mods';
+// Whether a reminder follows whatever channel you're watching, or is pinned to
+// one specific channel.
+export type ReminderChannelScope = 'current' | 'specific';
+
+export interface Reminder {
+  id: string;
+  enabled: boolean;
+  // Friendly name shown in the list. Falls back to the message when empty.
+  label?: string;
+  // Text posted to chat. Supports the same {placeholder} grammar as custom
+  // commands ({channel}, {stream.title}, {stream.uptime}, etc.) so it can, for
+  // example, @mention the streamer.
+  message: string;
+  trigger: ReminderTriggerType;
+  // How many copies to post per fire (1-5). Copies past the first carry the
+  // invisible duplicate-bypass suffix so Twitch accepts the repeats.
+  repeat_count?: number;
+  // Which chat it posts in.
+  channel_scope?: ReminderChannelScope;
+  channel_login?: string;
+  channel_id?: string;
+  // Trigger parameters. Only the field matching `trigger` is read. Durations are
+  // stored in SECONDS so any amount can be set; the older *_minutes fields are
+  // still read as a fallback for reminders made before seconds support.
+  interval_seconds?: number;
+  delay_seconds?: number;
+  clock_time?: string; // "HH:MM", 24-hour local time
+  uptime_seconds?: number;
+  /** @deprecated read-only fallback — new code writes interval_seconds */
+  interval_minutes?: number;
+  /** @deprecated read-only fallback — new code writes delay_seconds */
+  delay_minutes?: number;
+  /** @deprecated read-only fallback — new code writes uptime_seconds */
+  uptime_minutes?: number;
+  keyword?: string;
+  keyword_match?: ReminderKeywordMatch;
+  keyword_from?: ReminderKeywordFrom;
+  // Smallest gap between keyword fires, so a busy chat can't spam it. Default 5.
+  keyword_cooldown_minutes?: number;
+}
+
+export interface RemindersSettings {
+  reminders: Reminder[];
+}
+
 // Chat input QoL options. Both default off — preserve prior behavior.
 // 7TV / cosmetic visual controls. Today: paint drop-shadow render mode.
 // Default 'all' preserves the prior behavior (whatever shadows the paint
@@ -581,6 +659,7 @@ export interface Settings {
   chat_highlights?: ChatHighlightSettings;
   chat_customization?: ChatCustomizationSettings;
   chat_commands?: ChatCommandsSettings;
+  reminders?: RemindersSettings;
   chat_input?: ChatInputSettings;
   chat_render?: ChatRenderSettings;
   cosmetics?: CosmeticsSettings;

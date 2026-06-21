@@ -149,6 +149,153 @@ export function applyAudioBoost(
 }
 
 // ---------------------------------------------------------------------------
+// On-demand audio capture for song identification. It branches a short
+// recording tap off the SAME source node the boost graph uses (rule 1: an
+// element can only be tapped once), so it works whether or not boost is on and
+// never disturbs playback. The tap runs on the audio thread (AudioWorklet), not
+// the main thread, so a capture never competes with the player's video work.
+// Output is mono 16 kHz signed-16-bit PCM, the format the recognizer expects.
+// ---------------------------------------------------------------------------
+
+const CAPTURE_PROCESSOR_SOURCE = `
+class SnCaptureProcessor extends AudioWorkletProcessor {
+  process(inputs) {
+    const input = inputs[0];
+    if (input && input.length) {
+      const channels = input.length;
+      const frames = input[0].length;
+      const mono = new Float32Array(frames);
+      for (let c = 0; c < channels; c++) {
+        const ch = input[c];
+        for (let i = 0; i < frames; i++) mono[i] += ch[i];
+      }
+      if (channels > 1) for (let i = 0; i < frames; i++) mono[i] /= channels;
+      this.port.postMessage(mono, [mono.buffer]);
+    }
+    return true;
+  }
+}
+registerProcessor('sn-capture', SnCaptureProcessor);
+`;
+
+let captureWorkletReady: Promise<void> | null = null;
+function ensureCaptureWorklet(ctx: AudioContext): Promise<void> {
+  if (captureWorkletReady) return captureWorkletReady;
+  const blob = new Blob([CAPTURE_PROCESSOR_SOURCE], { type: 'application/javascript' });
+  const url = URL.createObjectURL(blob);
+  captureWorkletReady = ctx.audioWorklet
+    .addModule(url)
+    .finally(() => URL.revokeObjectURL(url));
+  return captureWorkletReady;
+}
+
+// Linear-resample a mono Float32 buffer to `outRate` and convert to signed 16
+// bit. Linear interpolation is plenty here: the fingerprint tolerates it.
+function toMono16kPcm(input: Float32Array, inRate: number, outRate: number): Int16Array {
+  const clampToI16 = (sample: number) => {
+    const s = Math.max(-1, Math.min(1, sample));
+    return s < 0 ? s * 0x8000 : s * 0x7fff;
+  };
+  if (inRate === outRate) {
+    const out = new Int16Array(input.length);
+    for (let i = 0; i < input.length; i++) out[i] = clampToI16(input[i]);
+    return out;
+  }
+  const ratio = inRate / outRate;
+  const outLen = Math.floor(input.length / ratio);
+  const out = new Int16Array(outLen);
+  for (let i = 0; i < outLen; i++) {
+    const pos = i * ratio;
+    const i0 = Math.floor(pos);
+    const i1 = Math.min(i0 + 1, input.length - 1);
+    const frac = pos - i0;
+    out[i] = clampToI16(input[i0] * (1 - frac) + input[i1] * frac);
+  }
+  return out;
+}
+
+/**
+ * Record `seconds` of the player's audio and return it as mono 16 kHz PCM, or
+ * null if capture isn't possible. Safe to call regardless of the boost feature
+ * state; it leaves playback untouched.
+ */
+export async function captureStreamSamples(
+  video: HTMLMediaElement | null,
+  seconds: number,
+): Promise<Int16Array | null> {
+  if (!video) return null;
+  const ctx = getCtx();
+  if (!ctx) return null;
+
+  // This may be the first time the element is ever tapped (boost never enabled).
+  // If so, nothing routes the source to the speakers yet, so add the passthrough
+  // or the stream would go silent the moment we tap it.
+  const firstTap = !graphs.has(video);
+  const graph = getOrCreateGraph(video);
+  if (!graph) return null;
+  if (firstTap) {
+    try {
+      graph.source.connect(ctx.destination);
+    } catch {
+      /* already routed */
+    }
+  }
+
+  if (ctx.state === 'suspended') {
+    try {
+      await ctx.resume();
+    } catch {
+      /* best effort; a muted/paused element is handled by the caller */
+    }
+  }
+
+  try {
+    await ensureCaptureWorklet(ctx);
+  } catch (e) {
+    Logger.warn('[AudioBoost] capture worklet load failed:', e);
+    return null;
+  }
+
+  const node = new AudioWorkletNode(ctx, 'sn-capture');
+  const chunks: Float32Array[] = [];
+  node.port.onmessage = (e) => {
+    chunks.push(e.data as Float32Array);
+  };
+
+  // The node must reach the destination to be pulled by the graph; it writes no
+  // output, so this branch is silent and doesn't double the audio.
+  graph.source.connect(node);
+  node.connect(ctx.destination);
+
+  await new Promise((resolve) => setTimeout(resolve, Math.round(seconds * 1000)));
+
+  try {
+    graph.source.disconnect(node);
+  } catch {
+    /* ignore */
+  }
+  try {
+    node.disconnect();
+  } catch {
+    /* ignore */
+  }
+  node.port.onmessage = null;
+
+  if (chunks.length === 0) return null;
+
+  let total = 0;
+  for (const c of chunks) total += c.length;
+  const merged = new Float32Array(total);
+  let offset = 0;
+  for (const c of chunks) {
+    merged.set(c, offset);
+    offset += c.length;
+  }
+
+  return toMono16kPcm(merged, ctx.sampleRate, 16000);
+}
+
+// ---------------------------------------------------------------------------
 // UI descriptors. Kept here (not in the .tsx that renders them) so the shared
 // fader component file only exports components. One descriptor per adjustable
 // parameter, in display order: Boost (makeup gain) first, then the five

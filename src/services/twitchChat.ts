@@ -1,4 +1,5 @@
 import { parseBadges } from './twitchBadges';
+import type { SongMatch } from '../utils/songId';
 
 // Message segment types - matches Rust MessageSegment enum
 export type MessageSegment =
@@ -70,6 +71,8 @@ export interface BackendChatMessage {
   // Pre-computed metadata - THE ENDGAME
   // All message analysis done in Rust, frontend just renders
   metadata?: MessageMetadata;
+  // Local-only: the "/song" result card (album art + clickable service links).
+  songCard?: SongMatch;
 }
 
 // Frontend-facing reply info (camelCase for consistency)
