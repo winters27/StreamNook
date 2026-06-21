@@ -704,13 +704,6 @@ fn active_twitch_web_profile_dir() -> Result<PathBuf, String> {
     crate::services::twitch_service::active_twitch_web_profile_dir().map_err(|e| e.to_string())
 }
 
-/// Logical height of the read-only URL bar shown above the in-app Twitch popups
-/// (login, drops sign-in, subscribe).
-const URL_BAR_HEIGHT: f64 = 38.0;
-
-/// Size used only if the main window can't be measured to size the popup to it.
-const POPUP_FALLBACK_W: f64 = 980.0;
-const POPUP_FALLBACK_H: f64 = 820.0;
 
 /// JS injected into the Twitch webview so the URL bar tracks where the page
 /// actually is. Twitch is a single-page app: after the first load most route
@@ -733,7 +726,9 @@ fn spa_url_report_script(window_label: &str, is_overlay: bool) -> String {
   var last = "";
   function report() {{
     try {{
+      if (window.top !== window.self) return;
       var u = location.href;
+      if (!u || u === "about:blank") return;
       if (u === last) return;
       last = u;
       window.__TAURI_INTERNALS__.invoke('report_login_popup_url', {{ windowLabel: label, url: u }});
@@ -751,304 +746,202 @@ fn spa_url_report_script(window_label: &str, is_overlay: bool) -> String {
     )
 }
 
-/// Push a URL into a login popup's read-only bar. Called by the injected reporter
-/// in the Twitch webview when it loads or navigates in-page. No-op if the popup or
-/// its bar webview is gone.
+/// Forward the live page URL to the React address bar. Called by the injected
+/// reporter in the Twitch webview on load and on each in-page navigation. The bar
+/// is now part of the React app, so this emits an event keyed by overlay label
+/// instead of poking a second webview.
 #[tauri::command]
 pub fn report_login_popup_url(app: AppHandle, window_label: String, url: String) {
-    if let Some(bar) = app.get_webview(&format!("{}-urlbar", window_label)) {
-        let js = format!(
-            "window.__setUrl && window.__setUrl({})",
-            serde_json::to_string(&url).unwrap_or_else(|_| "\"\"".to_string())
-        );
-        let _ = bar.eval(js);
-    }
+    use tauri::Emitter;
+    let _ = app.emit(
+        "twitch-overlay-url",
+        serde_json::json!({ "label": window_label, "url": url }),
+    );
 }
 
-/// Open an in-app Twitch popup with a read-only URL bar across the top so the user
-/// can see the real destination (e.g. `id.twitch.tv`) rather than trusting an
-/// unlabeled webview. The popup is sized to fill the main app window and sits over
-/// it, so it reads as a full page rather than a small box.
+/// Open the Twitch page for an in-app overlay (login, drops sign-in, or subscribe) as
+/// a SEPARATE borderless window owned by the main window, positioned at the screen
+/// rect the React overlay measured. React draws all the chrome (the read-only URL
+/// bar, and for subscribe the centered panel frame); this window is only the Twitch
+/// page, which can't be an iframe.
 ///
-/// Built as a bare window with two child webviews (the bar plus the Twitch page)
-/// because Twitch refuses to load inside an iframe, so the bar can't simply sit
-/// above it in one document. The bar seeds its first URL from `__INITIAL_URL` and
-/// then tracks navigation (full loads and SPA route changes) via the injected
-/// reporter.
-///
-/// `fixed_size` of `Some((width, content_height))` opens a centered window at that
-/// size; `None` fills the main app window (used for the login flows, which feel
-/// safer full-page). The bar height is added on top of `content_height`.
-fn open_verified_twitch_popup(
-    app: &AppHandle,
-    label: &str,
-    title: &str,
-    url: &str,
-    maximizable: bool,
-    fixed_size: Option<(f64, f64)>,
+/// It is a top-level *owned* window, NOT a child composited onto the main window via
+/// `add_child`. A composited child wedges the main window's UI thread when the
+/// Alt+Tab switcher (a fullscreen overlay) occludes it: that was the 8.0.8 login
+/// "Not Responding". An owned top-level window has its own windowed WebView2
+/// controller (the same hosting that never froze pre-8.0.8), stays above the main
+/// window, and is hidden/destroyed with it. `x`/`y` are screen coords (the React
+/// chrome lives on the main window, so the frontend adds the main window's client
+/// origin to the body rect before calling here).
+#[tauri::command]
+pub async fn mount_twitch_overlay(
+    app: AppHandle,
+    label: String,
+    url: String,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
 ) -> Result<(), String> {
-    use tauri::{webview::WebviewBuilder, LogicalPosition, LogicalSize, WindowBuilder, WindowEvent};
+    use tauri::WebviewWindowBuilder;
 
-    let profile = active_twitch_web_profile_dir()?;
-    let parsed = url.parse().map_err(|e| format!("Invalid URL: {}", e))?;
-    let initial = serde_json::to_string(url).unwrap_or_else(|_| "\"\"".to_string());
+    debug!(
+        "[overlay] open '{}' at screen ({}, {}) {}x{} -> {}",
+        label, x, y, width, height, url
+    );
 
-    // A fixed size centers (subscribe keeps its small box, since the user already
-    // trusts the app by then); otherwise fill the main app window and sit over it,
-    // so the login reads as a full-size page. Falls back to a roomy fixed size if
-    // the main window can't be measured.
-    let (win_w, win_h, origin) = match fixed_size {
-        Some((w, h)) => (w, h + URL_BAR_HEIGHT, None),
-        None => match app.get_webview_window("main") {
-            Some(main) => {
-                let scale = main.scale_factor().unwrap_or(1.0);
-                match (main.inner_size(), main.outer_position()) {
-                    (Ok(size), Ok(pos)) => {
-                        let s = size.to_logical::<f64>(scale);
-                        let p = pos.to_logical::<f64>(scale);
-                        (s.width, s.height, Some((p.x, p.y)))
-                    }
-                    _ => (POPUP_FALLBACK_W, POPUP_FALLBACK_H, None),
-                }
-            }
-            None => (POPUP_FALLBACK_W, POPUP_FALLBACK_H, None),
-        },
-    };
-    let content_h = (win_h - URL_BAR_HEIGHT).max(0.0);
-
-    let mut builder = WindowBuilder::new(app, label)
-        .title(title)
-        .inner_size(win_w, win_h)
-        .resizable(true)
-        .minimizable(true)
-        .maximizable(maximizable);
-    builder = match origin {
-        Some((x, y)) => builder.position(x, y),
-        None => builder.center(),
-    };
-    let window = builder
-        .build()
-        .map_err(|e| format!("Failed to open window: {}", e))?;
-
-    // Both child webviews share the active account's profile so the window uses a
-    // single WebView2 environment. The bar is a static local page that reads no
-    // Twitch session.
-    let bar = window
-        .add_child(
-            WebviewBuilder::new(
-                format!("{}-urlbar", label),
-                WebviewUrl::App("twitch-login-bar.html".into()),
-            )
-            .data_directory(profile.clone())
-            .initialization_script(format!("window.__INITIAL_URL = {};", initial)),
-            LogicalPosition::new(0.0, 0.0),
-            LogicalSize::new(win_w, URL_BAR_HEIGHT),
-        )
-        .map_err(|e| format!("Failed to add URL bar: {}", e))?;
-
-    // The Twitch page, below the bar, with the reporter that keeps the bar in sync
-    // through both full loads and in-page SPA navigation.
-    let content = window
-        .add_child(
-            WebviewBuilder::new(format!("{}-content", label), WebviewUrl::External(parsed))
-                .data_directory(profile)
-                .initialization_script(spa_url_report_script(label, false)),
-            LogicalPosition::new(0.0, URL_BAR_HEIGHT),
-            LogicalSize::new(win_w, content_h),
-        )
-        .map_err(|e| format!("Failed to add content webview: {}", e))?;
-
-    // Size the children to the window's ACTUAL current size right now, not only on
-    // a later Resized event. The window can be resized during creation (e.g. by the
-    // window-state plugin) before the handler below is attached; without this the
-    // content webview keeps its build-time size and Twitch renders off-screen
-    // (looks blank) in a mismatched window.
-    if let (Ok(scale), Ok(sz)) = (window.scale_factor(), window.inner_size()) {
-        let lg = sz.to_logical::<f64>(scale);
-        let _ = bar.set_size(LogicalSize::new(lg.width, URL_BAR_HEIGHT));
-        let _ = content.set_position(LogicalPosition::new(0.0, URL_BAR_HEIGHT));
-        let _ = content.set_size(LogicalSize::new(
-            lg.width,
-            (lg.height - URL_BAR_HEIGHT).max(0.0),
-        ));
-    }
-
-    // Child webviews have fixed bounds, so retile them on resize: the bar spans
-    // the top, the Twitch page fills the rest.
-    let win = window.clone();
-    window.on_window_event(move |event| {
-        if let WindowEvent::Resized(size) = event {
-            let scale = win.scale_factor().unwrap_or(1.0);
-            let logical = size.to_logical::<f64>(scale);
-            let _ = bar.set_size(LogicalSize::new(logical.width, URL_BAR_HEIGHT));
-            let _ = content.set_position(LogicalPosition::new(0.0, URL_BAR_HEIGHT));
-            let _ = content.set_size(LogicalSize::new(
-                logical.width,
-                (logical.height - URL_BAR_HEIGHT).max(0.0),
-            ));
-        }
-    });
-
-    Ok(())
-}
-
-/// Height of StreamNook's custom title bar (the React `TitleBar`, h-[40px]). The
-/// login overlay sits just below it so the app frame (window controls, drag) stays
-/// usable while the login takes over the body.
-const TITLE_BAR_HEIGHT: f64 = 40.0;
-
-/// Attached once: keeps the login overlay tiled to the main window's body as it
-/// resizes. Child webviews have fixed bounds, so without this they wouldn't follow.
-static OVERLAY_RESIZE_HOOKED: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-
-/// Position whichever login overlay is open (URL bar + Twitch page) to fill the
-/// main window below the title bar. A no-op for the overlay that isn't open.
-fn layout_login_overlay(app: &AppHandle) {
-    use tauri::{LogicalPosition, LogicalSize};
-    let Some(main) = app.get_window("main") else {
-        return;
-    };
-    let scale = main.scale_factor().unwrap_or(1.0);
-    let Ok(size) = main.inner_size() else {
-        return;
-    };
-    let s = size.to_logical::<f64>(scale);
-    let content_h = (s.height - TITLE_BAR_HEIGHT - URL_BAR_HEIGHT).max(0.0);
-    for base in ["twitch-login", "drops-login"] {
-        if let Some(bar) = app.get_webview(&format!("{}-urlbar", base)) {
-            let _ = bar.set_position(LogicalPosition::new(0.0, TITLE_BAR_HEIGHT));
-            let _ = bar.set_size(LogicalSize::new(s.width, URL_BAR_HEIGHT));
-        }
-        if let Some(content) = app.get_webview(&format!("{}-content", base)) {
-            let _ = content.set_position(LogicalPosition::new(0.0, TITLE_BAR_HEIGHT + URL_BAR_HEIGHT));
-            let _ = content.set_size(LogicalSize::new(s.width, content_h));
-        }
-    }
-}
-
-/// Lay the login (URL bar + Twitch page) over the main window's body instead of a
-/// separate window, so it takes over the app: the StreamNook title bar stays and
-/// the login fills everything below it. The children are `<label>-urlbar` and
-/// `<label>-content`; the bar carries a close (X) wired to `close_login_overlay`.
-/// The frontend also removes it when login completes or errors.
-fn open_login_overlay(app: &AppHandle, label: &str, url: &str) -> Result<(), String> {
-    use tauri::{webview::WebviewBuilder, LogicalPosition, LogicalSize, WindowEvent};
-
-    // Clear any prior overlay under this label so a reopen is clean.
-    for suffix in ["-urlbar", "-content"] {
-        if let Some(wv) = app.get_webview(&format!("{}{}", label, suffix)) {
-            let _ = wv.close();
-        }
+    // Replace any stale window under this label so a reopen is clean.
+    if let Some(existing) = app.get_webview_window(&label) {
+        let _ = existing.close();
     }
 
     let main = app
-        .get_window("main")
+        .get_webview_window("main")
         .ok_or_else(|| "main window not found".to_string())?;
     let profile = active_twitch_web_profile_dir()?;
     let parsed = url.parse().map_err(|e| format!("Invalid URL: {}", e))?;
-    let label_json = serde_json::to_string(label).unwrap_or_else(|_| "\"\"".to_string());
-    let url_json = serde_json::to_string(url).unwrap_or_else(|_| "\"\"".to_string());
 
-    let scale = main.scale_factor().unwrap_or(1.0);
-    let s = main
-        .inner_size()
-        .map(|sz| sz.to_logical::<f64>(scale))
-        .unwrap_or_else(|_| LogicalSize::new(POPUP_FALLBACK_W, POPUP_FALLBACK_H));
-    let content_h = (s.height - TITLE_BAR_HEIGHT - URL_BAR_HEIGHT).max(0.0);
+    let win = WebviewWindowBuilder::new(&app, label.clone(), WebviewUrl::External(parsed))
+        .data_directory(profile)
+        .initialization_script(spa_url_report_script(&label, true))
+        .decorations(false)
+        .shadow(false)
+        .skip_taskbar(true)
+        .position(x, y)
+        .inner_size(width.max(1.0), height.max(1.0))
+        .focused(true)
+        .parent(&main)
+        .map_err(|e| format!("Failed to own overlay to main window: {}", e))?
+        .build()
+        .map_err(|e| {
+            let msg = format!("Failed to open Twitch overlay window: {}", e);
+            error!("[overlay] {}", msg);
+            msg
+        })?;
 
-    main.add_child(
-        WebviewBuilder::new(
-            format!("{}-urlbar", label),
-            WebviewUrl::App("twitch-login-bar.html".into()),
-        )
-        .data_directory(profile.clone())
-        .initialization_script(format!(
-            "window.__LABEL={};window.__INITIAL_URL={};",
-            label_json, url_json
-        )),
-        LogicalPosition::new(0.0, TITLE_BAR_HEIGHT),
-        LogicalSize::new(s.width, URL_BAR_HEIGHT),
-    )
-    .map_err(|e| format!("Failed to add URL bar: {}", e))?;
+    // The content sits inside React's rounded panel frame, so it must be a crisp
+    // rectangle; suppress the DWM rounded corners Win11 gives borderless windows.
+    #[cfg(windows)]
+    square_window_corners(&win);
 
-    main.add_child(
-        WebviewBuilder::new(format!("{}-content", label), WebviewUrl::External(parsed))
-            .data_directory(profile)
-            .initialization_script(spa_url_report_script(label, true)),
-        LogicalPosition::new(0.0, TITLE_BAR_HEIGHT + URL_BAR_HEIGHT),
-        LogicalSize::new(s.width, content_h),
-    )
-    .map_err(|e| format!("Failed to add content webview: {}", e))?;
-
-    // Keep the overlay tiled to the window as it resizes (attached once).
-    if !OVERLAY_RESIZE_HOOKED.swap(true, std::sync::atomic::Ordering::SeqCst) {
-        let app2 = app.clone();
-        main.on_window_event(move |event| {
-            if let WindowEvent::Resized(_) = event {
-                layout_login_overlay(&app2);
-            }
-        });
-    }
-
+    debug!("[overlay] open '{}' ok", label);
+    // Tag the hang watchdog with what's on screen, so a "Not Responding" report names
+    // the overlay and URL that were up when the UI thread wedged.
+    crate::services::ui_hang_watchdog::set_active_overlay(Some(format!("{label} @ {url}")));
     Ok(())
 }
 
-/// Remove a login overlay's child webviews (`<label>-urlbar` / `<label>-content`)
-/// from the main window, returning the app to view. Safe to call when the overlay
-/// isn't present (no-op). Driven from the backend on login success AND from the
-/// frontend / the bar's close button, so dismissal never hangs on frontend timing.
-pub fn dismiss_login_overlay(app: &AppHandle, label: &str) {
-    for suffix in ["-urlbar", "-content"] {
-        if let Some(wv) = app.get_webview(&format!("{}{}", label, suffix)) {
-            let _ = wv.close();
+/// Suppress the rounded corners DWM applies to borderless windows on Windows 11, so
+/// the overlay content reads as a crisp rectangle inside React's rounded panel frame.
+#[cfg(windows)]
+fn square_window_corners(win: &tauri::WebviewWindow) {
+    use std::ffi::c_void;
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::Graphics::Dwm::{
+        DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND,
+    };
+    if let Ok(h) = win.hwnd() {
+        let pref = DWMWCP_DONOTROUND;
+        unsafe {
+            let _ = DwmSetWindowAttribute(
+                HWND(h.0),
+                DWMWA_WINDOW_CORNER_PREFERENCE,
+                &pref as *const _ as *const c_void,
+                std::mem::size_of_val(&pref) as u32,
+            );
         }
     }
 }
 
-/// Command form for the bar's close button and the frontend completion handlers.
+/// Reposition/resize the overlay window to the screen rect React measured. Called when
+/// the main window moves or resizes so the content keeps tracking the chrome.
+#[tauri::command]
+pub async fn set_twitch_overlay_bounds(app: AppHandle, label: String, x: f64, y: f64, width: f64, height: f64) {
+    use tauri::{LogicalPosition, LogicalSize};
+    if let Some(win) = app.get_webview_window(&label) {
+        let _ = win.set_position(LogicalPosition::new(x, y));
+        let _ = win.set_size(LogicalSize::new(width.max(1.0), height.max(1.0)));
+    }
+}
+
+/// Show/hide the overlay window. The owned window already hides with the main window
+/// on minimize; this stays as a belt-and-suspenders driven from React on
+/// `visibilitychange`, and toggles the whole window (no per-webview controller call
+/// that could touch native state from a window-event path).
+#[tauri::command]
+pub async fn set_twitch_overlay_visible(app: AppHandle, label: String, visible: bool) {
+    if let Some(win) = app.get_webview_window(&label) {
+        let _ = if visible { win.show() } else { win.hide() };
+    }
+}
+
+/// Close the overlay's Twitch window and tell the React overlay to clear its chrome.
+/// Safe to call when nothing is open (no-op). Driven from the backend on login success
+/// AND from the frontend (Esc, close, completion), so dismissal never hangs on
+/// frontend timing.
+pub fn dismiss_login_overlay(app: &AppHandle, label: &str) {
+    use tauri::Emitter;
+    if let Some(win) = app.get_webview_window(label) {
+        let _ = win.close();
+    }
+    crate::services::ui_hang_watchdog::set_active_overlay(None);
+    let _ = app.emit("twitch-overlay-close", serde_json::json!({ "label": label }));
+}
+
+/// Command form for the frontend completion / Esc handlers.
 #[tauri::command]
 pub fn close_login_overlay(app: AppHandle, label: String) {
     dismiss_login_overlay(&app, &label);
 }
 
-/// Take over the app body with the Twitch device-code login, isolated to the
-/// active account's web profile. A per-account profile means a re-login lands on
-/// the same account and can never silently authorize whichever account a shared
-/// browser session happened to be holding. The overlay shows the live URL in a bar
-/// at the top.
+/// Tell the React overlay to take over the app body (or, for subscribe, a centered
+/// panel) with a Twitch page. React renders the chrome and mounts the single Twitch
+/// webview at the rect it measures. `mode` is "fullbody" (login, drops) or "panel"
+/// (subscribe).
+fn emit_overlay_open(app: &AppHandle, label: &str, url: &str, mode: &str) -> Result<(), String> {
+    use tauri::Emitter;
+    app.emit(
+        "twitch-overlay-open",
+        serde_json::json!({ "label": label, "url": url, "mode": mode }),
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// Take over the app body with the Twitch device-code login, isolated to the active
+/// account's web profile. A per-account profile means a re-login lands on the same
+/// account and can't silently inherit a different account's web session. The React
+/// overlay shows the live URL in a bar at the top.
 #[tauri::command]
-pub async fn open_twitch_login_window(app: AppHandle, url: String) -> Result<(), String> {
-    open_login_overlay(&app, "twitch-login", &url)
+pub fn open_twitch_login_window(app: AppHandle, url: String) -> Result<(), String> {
+    emit_overlay_open(&app, "twitch-login", &url, "fullbody")
 }
 
 /// Take over the app body with the drops/points device-code login. The active
 /// account's profile already holds its twitch.tv session, so the user is shown as
 /// signed in and only authorizes the device. Shows the live URL in a bar at the top.
 #[tauri::command]
-pub async fn open_drops_login_window(app: AppHandle, url: String) -> Result<(), String> {
-    open_login_overlay(&app, "drops-login", &url)
+pub fn open_drops_login_window(app: AppHandle, url: String) -> Result<(), String> {
+    emit_overlay_open(&app, "drops-login", &url, "fullbody")
 }
 
-/// Open the Twitch subscribe page for a channel, isolated to the active (main)
-/// account's Twitch web profile, so you subscribe as the account you watch and
-/// stream as rather than whichever account a shared browser session held. Returns
-/// the window label so the caller can auto-close it when a subscription is
-/// detected. Shows the live URL in a bar at the top.
+/// Open the Twitch subscribe page for a channel as a centered in-app panel, isolated
+/// to the active (main) account's web profile so you subscribe as the account you
+/// watch and stream as. Returns the overlay label so the caller can dismiss it when a
+/// subscription is detected. The panel header shows the live URL.
 #[tauri::command]
-pub async fn open_subscribe_window(
+pub fn open_subscribe_window(
     app: AppHandle,
     channel_login: String,
     title: Option<String>,
 ) -> Result<String, String> {
+    let _ = title; // the panel header shows the live URL, not a window title
     let label = format!(
         "subscribe-{}-{}",
         channel_login,
         chrono::Utc::now().timestamp_millis()
     );
     let url = format!("https://www.twitch.tv/subs/{}", channel_login);
-    let win_title = title.unwrap_or_else(|| format!("Subscribe to {}", channel_login));
-    open_verified_twitch_popup(&app, &label, &win_title, &url, true, Some((800.0, 900.0)))?;
+    emit_overlay_open(&app, &label, &url, "panel")?;
     Ok(label)
 }
 

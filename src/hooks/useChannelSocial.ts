@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { Window } from '@tauri-apps/api/window';
 import { useAppStore } from '../stores/AppStore';
 import { Logger } from '../utils/logger';
 
@@ -184,12 +183,9 @@ export function useChannelSocial({ userId, userLogin, userName, enabled = true }
         );
 
         try {
-          const subscribeWindow = await Window.getByLabel(subscribeWindowLabelRef.current);
-          if (subscribeWindow) {
-            await subscribeWindow.close();
-          }
+          await invoke('close_login_overlay', { label: subscribeWindowLabelRef.current });
         } catch (e) {
-          Logger.warn('[useChannelSocial] Failed to close subscribe window:', e);
+          Logger.warn('[useChannelSocial] Failed to close subscribe overlay:', e);
         }
 
         subscribeWindowLabelRef.current = null;

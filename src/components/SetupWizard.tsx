@@ -23,7 +23,6 @@ import {
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { useAppStore } from '../stores/AppStore';
 import streamnookLogo from '../assets/streamnook-logo.png';
 import {
@@ -218,13 +217,9 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                 });
 
                 try {
-                    const dropsWindow = await WebviewWindow.getByLabel('drops-login');
-                    if (dropsWindow) {
-                        await dropsWindow.close();
-                        Logger.debug('Drops login window closed');
-                    }
+                    await invoke('close_login_overlay', { label: 'drops-login' });
                 } catch {
-                    // Window doesn't exist, continue
+                    // Overlay already dismissed by the backend on token receipt.
                 }
 
                 setStatus(prev => ({ ...prev, dropsAuthenticated: true }));

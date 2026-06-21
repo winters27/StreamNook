@@ -11,7 +11,6 @@ import UpdateOverlay, { type UpdatePhase } from './UpdateOverlay';
 import { captureResumeSnapshot } from '../services/sessionResume';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { getSelectedCompactViewPreset } from '../constants/compactViewPresets';
 import type { DropProgressStatus, DropsSettings, DropProgress } from '../types';
 import { deriveDropProgressDisplay } from '../utils/dropProgressDisplay';
@@ -157,9 +156,8 @@ const TitleBar = () => {
         expiresIn: info.expires_in,
       });
       try {
-        const win = await WebviewWindow.getByLabel('drops-login');
-        if (win) await win.close();
-      } catch { /* already closed */ }
+        await invoke('close_login_overlay', { label: 'drops-login' });
+      } catch { /* already dismissed by the backend */ }
       addToast('Signed in — drops & channel points enabled', 'success');
       await checkDropsAuth();
     } catch (e) {

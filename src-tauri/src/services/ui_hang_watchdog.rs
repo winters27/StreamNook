@@ -1,0 +1,402 @@
+//! UI-thread "Not Responding" detector.
+//!
+//! "Not Responding" is the Win32 UI thread (the window's message pump) failing to
+//! pump messages, NOT a CPU/tokio stall. `runtime_watchdog` measures tokio and
+//! whole-process scheduling lag; it cannot see a pump that is wedged while every
+//! other thread keeps running, which is the classic shape of a blocking WebView2 /
+//! COM call (e.g. native window-occlusion handling when another window covers ours
+//! during the Twitch login overlay).
+//!
+//! This watchdog probes the pump directly, the same way the OS decides whether to
+//! paint "(Not Responding)", and records onset/recovery with enough context to name
+//! the real cause: what window took the foreground, whether ours was minimized, which
+//! Twitch overlay was mounted, and whether process scheduling was still healthy at
+//! the time (small self-lag + hung pump == pump wedge, not CPU).
+//!
+//! The capture path is allocation-free on purpose. A wedged UI thread can be stuck
+//! inside an allocation or a COM call that holds the process heap lock; anything on
+//! this thread that allocates (format!, String, the log crate, std::fs path joins)
+//! would then block on the same lock and the hang would go unrecorded. So a hang is
+//! formatted into a fixed stack buffer and written with raw CreateFileW/WriteFile
+//! (kernel calls that use kernel pools, not the process heap). The log path is
+//! pre-encoded to UTF-16 once at startup, the only heap work this module does.
+//!
+//! Reports land in the same `logs/errors.log` the crash logger uses, so its presence
+//! after a freeze (or its absence) is a signal in itself. A separate `logs/
+//! ui_hang_watchdog.armed` marker is written once at startup so an absent errors.log
+//! can be read as "started, never hung" rather than "never started / old build".
+
+/// Master switch. On by default: the probe is one message per second and costs
+/// nothing until something hangs. Flip to `false` + rebuild to disable.
+const ENABLED: bool = true;
+
+#[cfg(windows)]
+mod imp {
+    use std::ffi::c_void;
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{Duration, Instant};
+
+    use windows::core::{PCWSTR, PWSTR};
+    use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, WPARAM};
+    use windows::Win32::Storage::FileSystem::{
+        CreateFileW, WriteFile, FILE_APPEND_DATA, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ,
+        FILE_SHARE_WRITE, OPEN_ALWAYS,
+    };
+    use windows::Win32::System::SystemInformation::GetSystemTime;
+    use windows::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId, IsIconic,
+        SendMessageTimeoutW, SMTO_ABORTIFHUNG, SMTO_BLOCK, WM_NULL,
+    };
+
+    // Probe cadence when healthy, and the blocking timeout that defines "the pump
+    // didn't answer". A genuine "Not Responding" is multi-second; ordinary work
+    // never blocks WM_NULL for two seconds.
+    const HEALTHY_INTERVAL: Duration = Duration::from_millis(1000);
+    const PROBE_TIMEOUT_MS: u32 = 2000;
+    // Don't log brief 2-4s blips; only sustained hangs the user actually sees as
+    // "(Not Responding)" (Windows ghosts a window at ~5s).
+    const REPORT_AFTER: Duration = Duration::from_millis(4000);
+    // Below this, the watchdog thread itself was scheduled on time, so a hung pump
+    // means the UI thread is wedged rather than the whole process starving.
+    const SELF_LAG_OK_MS: u128 = 500;
+
+    static ACTIVE_OVERLAY: Mutex<Option<String>> = Mutex::new(None);
+    /// `logs/errors.log` pre-encoded as a NUL-terminated UTF-16 string. Resolved once
+    /// at startup so the hang path never allocates or joins paths.
+    static LOG_PATH_W: OnceLock<Vec<u16>> = OnceLock::new();
+
+    pub fn set_active_overlay(ctx: Option<String>) {
+        if let Ok(mut g) = ACTIVE_OVERLAY.lock() {
+            *g = ctx;
+        }
+    }
+
+    /// A small fixed-size buffer formatted into on the stack. Writes past capacity are
+    /// dropped (truncated), never reallocated, so a report can never allocate.
+    struct StackBuf {
+        buf: [u8; 2048],
+        len: usize,
+    }
+
+    impl StackBuf {
+        const fn new() -> Self {
+            Self {
+                buf: [0u8; 2048],
+                len: 0,
+            }
+        }
+
+        fn bytes(&self) -> &[u8] {
+            &self.buf[..self.len]
+        }
+
+        fn push(&mut self, b: &[u8]) {
+            let avail = self.buf.len() - self.len;
+            let n = if b.len() < avail { b.len() } else { avail };
+            self.buf[self.len..self.len + n].copy_from_slice(&b[..n]);
+            self.len += n;
+        }
+
+        /// Append a UTF-16 slice as UTF-8 without allocating (one char at a time into
+        /// a 4-byte stack scratch).
+        fn push_u16_lossy(&mut self, w: &[u16]) {
+            let mut tmp = [0u8; 4];
+            for ch in core::char::decode_utf16(w.iter().copied()) {
+                let c = ch.unwrap_or('\u{FFFD}');
+                self.push(c.encode_utf8(&mut tmp).as_bytes());
+            }
+        }
+    }
+
+    // write!(...) into the buffer formats integers/strings directly into write_str,
+    // which never allocates.
+    impl core::fmt::Write for StackBuf {
+        fn write_str(&mut self, s: &str) -> core::fmt::Result {
+            self.push(s.as_bytes());
+            Ok(())
+        }
+    }
+
+    /// UTC `YYYY-MM-DD HH:MM:SSZ` from GetSystemTime (no chrono, no allocation).
+    fn push_timestamp(b: &mut StackBuf) {
+        use core::fmt::Write as _;
+        let t = unsafe { GetSystemTime() };
+        let _ = write!(
+            b,
+            "{:04}-{:02}-{:02} {:02}:{:02}:{:02}Z",
+            t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond
+        );
+    }
+
+    /// Title + executable of whatever window currently holds the foreground, appended
+    /// in place. During a reported hang this is almost always what the user alt-tabbed
+    /// to. Safe to call: the foreground window is by definition the responsive one, so
+    /// its pump answers immediately (we never query our own wedged window here).
+    fn push_foreground(b: &mut StackBuf) {
+        let before = b.len;
+        unsafe {
+            let fg = GetForegroundWindow();
+            if fg.0.is_null() {
+                b.push(b"unknown");
+                return;
+            }
+            let mut title = [0u16; 256];
+            let n = GetWindowTextW(fg, &mut title);
+            if n > 0 {
+                b.push(b"\"");
+                b.push_u16_lossy(&title[..n as usize]);
+                b.push(b"\" ");
+            }
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(fg, Some(&mut pid));
+            push_process_exe(b, pid);
+        }
+        if b.len == before {
+            b.push(b"unknown");
+        }
+    }
+
+    fn push_process_exe(b: &mut StackBuf, pid: u32) {
+        if pid == 0 {
+            return;
+        }
+        unsafe {
+            let Ok(handle) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
+                return;
+            };
+            let mut buf = [0u16; 260];
+            let mut len = buf.len() as u32;
+            let res =
+                QueryFullProcessImageNameW(handle, PROCESS_NAME_WIN32, PWSTR(buf.as_mut_ptr()), &mut len);
+            let _ = CloseHandle(handle);
+            if res.is_err() {
+                return;
+            }
+            let full = &buf[..len as usize];
+            // Last path component (the bare exe name).
+            let start = full
+                .iter()
+                .rposition(|&c| c == b'\\' as u16 || c == b'/' as u16)
+                .map(|i| i + 1)
+                .unwrap_or(0);
+            b.push(b"(");
+            b.push_u16_lossy(&full[start..]);
+            b.push(b")");
+        }
+    }
+
+    /// Read the mounted-overlay context with try_lock so a (theoretically) stuck lock
+    /// can never wedge the watchdog, and without cloning the String.
+    fn push_overlay_ctx(b: &mut StackBuf) {
+        match ACTIVE_OVERLAY.try_lock() {
+            Ok(g) => match g.as_deref() {
+                Some(s) => b.push(s.as_bytes()),
+                None => b.push(b"none"),
+            },
+            Err(_) => b.push(b"locked"),
+        }
+    }
+
+    fn pump_responsive(hwnd: HWND) -> bool {
+        unsafe {
+            // WM_NULL does nothing but must be dispatched by the pump, so a reply
+            // means the UI thread is pumping. SMTO_ABORTIFHUNG returns at once if the
+            // window is already ghosted; SMTO_BLOCK keeps the probe self-contained.
+            let r = SendMessageTimeoutW(
+                hwnd,
+                WM_NULL,
+                WPARAM(0),
+                LPARAM(0),
+                SMTO_ABORTIFHUNG | SMTO_BLOCK,
+                PROBE_TIMEOUT_MS,
+                None,
+            );
+            r.0 != 0
+        }
+    }
+
+    fn window_state(hwnd: HWND) -> (bool, bool) {
+        unsafe {
+            let minimized = IsIconic(hwnd).as_bool();
+            let focused = GetForegroundWindow() == hwnd;
+            (minimized, focused)
+        }
+    }
+
+    /// Resolve and cache the errors.log path (UTF-16), create the logs dir, and drop a
+    /// one-shot "armed" marker. The only heap work in this module, done at startup so
+    /// the hang path stays allocation-free. Idempotent.
+    fn init_paths() {
+        if LOG_PATH_W.get().is_some() {
+            return;
+        }
+        let Ok(dir) = crate::services::cache_service::get_app_data_dir() else {
+            return;
+        };
+        let logs = dir.join("logs");
+        let _ = std::fs::create_dir_all(&logs);
+        write_armed_marker(&logs);
+
+        use std::os::windows::ffi::OsStrExt;
+        let path = logs.join("errors.log");
+        let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+        wide.push(0);
+        let _ = LOG_PATH_W.set(wide);
+    }
+
+    /// Overwritten each launch in its own file (not errors.log, which stays a pure
+    /// hang signal). Its presence proves the watchdog reached startup with a valid
+    /// HWND; an absent errors.log alongside a present marker means "ran, never hung".
+    fn write_armed_marker(logs: &std::path::Path) {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::File::create(logs.join("ui_hang_watchdog.armed")) {
+            let _ = writeln!(
+                f,
+                "ui-hang-watchdog armed: app {} pid {}",
+                env!("CARGO_PKG_VERSION"),
+                std::process::id()
+            );
+        }
+    }
+
+    /// Append `bytes` to errors.log with raw Win32 calls only (no Rust-heap
+    /// allocation), so a report survives even a process-heap-locked freeze. No-op if
+    /// the path wasn't resolved at startup.
+    fn write_block(bytes: &[u8]) {
+        let Some(path) = LOG_PATH_W.get() else {
+            return;
+        };
+        unsafe {
+            // FILE_APPEND_DATA (without FILE_WRITE_DATA) makes every write land at EOF,
+            // so no seek is needed and concurrent writers (the crash logger) interleave
+            // cleanly. OPEN_ALWAYS creates the file on first hang.
+            let handle = match CreateFileW(
+                PCWSTR(path.as_ptr()),
+                FILE_APPEND_DATA.0,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                None,
+                OPEN_ALWAYS,
+                FILE_ATTRIBUTE_NORMAL,
+                None,
+            ) {
+                Ok(h) => h,
+                Err(_) => return,
+            };
+            let mut written = 0u32;
+            let _ = WriteFile(handle, Some(bytes), Some(&mut written), None);
+            let _ = CloseHandle(handle);
+        }
+    }
+
+    pub fn start(hwnd_raw: isize) {
+        init_paths();
+        std::thread::Builder::new()
+            .name("ui-hang-watchdog".into())
+            .spawn(move || {
+                let hwnd = HWND(hwnd_raw as *mut c_void);
+                let mut hang_start: Option<Instant> = None;
+                let mut reported = false;
+                let mut self_lag_ms: u128 = 0;
+                loop {
+                    if pump_responsive(hwnd) {
+                        if let Some(start) = hang_start.take() {
+                            if reported {
+                                report_recovery(start.elapsed().as_millis());
+                            }
+                            reported = false;
+                        }
+                        // Healthy: sleep, and measure our own scheduling lag so a
+                        // hang report can say whether the process was also starving.
+                        let t0 = Instant::now();
+                        std::thread::sleep(HEALTHY_INTERVAL);
+                        self_lag_ms = t0.elapsed().saturating_sub(HEALTHY_INTERVAL).as_millis();
+                        continue;
+                    }
+                    // Pump did not answer within PROBE_TIMEOUT_MS.
+                    let start = *hang_start.get_or_insert_with(Instant::now);
+                    if !reported && start.elapsed() >= REPORT_AFTER {
+                        report_onset(hwnd, start.elapsed().as_millis(), self_lag_ms);
+                        reported = true;
+                    }
+                    // While hung the probe itself blocks ~PROBE_TIMEOUT_MS, so don't
+                    // add a sleep; just keep re-probing to catch the recovery edge.
+                }
+            })
+            .expect("spawn ui-hang-watchdog thread");
+    }
+
+    fn report_onset(hwnd: HWND, elapsed_ms: u128, self_lag_ms: u128) {
+        use core::fmt::Write as _;
+        let (minimized, focused) = window_state(hwnd);
+        let verdict = if self_lag_ms < SELF_LAG_OK_MS {
+            "process scheduling normal -> UI-thread / message-pump wedge (blocking native or COM call), not CPU saturation"
+        } else {
+            "process scheduling also lagging -> whole-process stall (CPU / swap); see runtime_watchdog"
+        };
+        let mut b = StackBuf::new();
+        b.push(b"\n========== ");
+        push_timestamp(&mut b);
+        let _ = writeln!(
+            b,
+            " | app {} {} ==========",
+            env!("CARGO_PKG_VERSION"),
+            std::env::consts::OS
+        );
+        let _ = writeln!(
+            b,
+            "ERROR [UIHang] UI thread unresponsive (Not Responding), ongoing ~{elapsed_ms}ms"
+        );
+        b.push(b"foreground: ");
+        push_foreground(&mut b);
+        let _ = write!(
+            b,
+            "\nour window: minimized={minimized} focused={focused}\noverlay mounted: "
+        );
+        push_overlay_ctx(&mut b);
+        let _ = writeln!(
+            b,
+            "\nprobe: SendMessageTimeout(WM_NULL) exceeded {PROBE_TIMEOUT_MS}ms\n\
+             process scheduling lag (watchdog self): {self_lag_ms}ms\n\
+             verdict: {verdict}"
+        );
+        write_block(b.bytes());
+    }
+
+    fn report_recovery(total_ms: u128) {
+        use core::fmt::Write as _;
+        let mut b = StackBuf::new();
+        b.push(b"\n========== ");
+        push_timestamp(&mut b);
+        let _ = writeln!(
+            b,
+            " | app {} {} ==========",
+            env!("CARGO_PKG_VERSION"),
+            std::env::consts::OS
+        );
+        let _ = writeln!(b, "ERROR [UIHang] UI thread recovered after ~{total_ms}ms");
+        write_block(b.bytes());
+    }
+}
+
+/// Record which Twitch overlay webview is mounted, so a hang report names what was
+/// on screen. Set when the overlay's native child webview mounts, cleared on dismiss.
+#[cfg(windows)]
+pub use imp::set_active_overlay;
+
+/// Spawn the watchdog for the main window's HWND (passed as a raw value so nothing
+/// `!Send` crosses the thread boundary). Call once from Tauri `setup`.
+#[cfg(windows)]
+pub fn start_for_hwnd(hwnd_raw: isize) {
+    if ENABLED {
+        imp::start(hwnd_raw);
+    }
+}
+
+#[cfg(not(windows))]
+pub fn set_active_overlay(_ctx: Option<String>) {}
+#[cfg(not(windows))]
+pub fn start_for_hwnd(_hwnd_raw: isize) {}

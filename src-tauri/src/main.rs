@@ -33,7 +33,8 @@ use commands::{
     emotes::*, eventsub::*, hype_train::*, identity::*, justlog::*, layout::*,
     link_preview::*, logs::*, mod_log_storage::*, multi_nook::*, plugins::*, profile_cache::*,
     resub::*, screen_capture::*, session::*, settings::*, seventv::*, seventv_cosmetics::*,
-    seventv_cosmetics_fetch::*, streaming::*, subscriptions::*, twitch::*, universal_cache::*,
+    seventv_cosmetics_fetch::*, song_id::*, streaming::*, subscriptions::*, twitch::*,
+    universal_cache::*,
     user_profile::*, watch_streak::*, whisper_storage::*,
 };
 use log::{debug, error};
@@ -149,9 +150,15 @@ fn main() {
     // Rust-created window on the default profile (7TV login/refresh, automation,
     // chat-identity). One uniform set keeps the main-window tweaks (audio in-process,
     // SmartScreen off) while letting those popups open again.
+    //
+    // CalculateNativeWinOcclusion is disabled because it hangs the UI thread when the
+    // window is occluded by another window (e.g. alt-tabbing to a password manager
+    // during the Twitch login overlay) while layered child webviews are mounted. The
+    // visibility hide on `document.hidden` only covers minimize, not occlusion, so the
+    // occlusion calculation has to be off to keep the login flow from "Not Responding".
     std::env::set_var(
         "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
-        "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,AudioServiceOutOfProcess",
+        "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,AudioServiceOutOfProcess,CalculateNativeWinOcclusion",
     );
 
     // Initialize the logging system FIRST so all debug!/error! macros work
@@ -298,6 +305,18 @@ fn main() {
             // whole-process) and records them to the capture file. Started here,
             // inside the tokio runtime Tauri set up.
             services::runtime_watchdog::start();
+            // UI-thread "Not Responding" detector: probes the main window's message
+            // pump (the same signal Windows uses for "(Not Responding)") and records
+            // hangs the runtime_watchdog can't see, like a wedged WebView2/COM call
+            // while the login overlay is up. Needs the HWND, so it starts here.
+            #[cfg(windows)]
+            {
+                if let Some(main) = app.get_webview_window("main") {
+                    if let Ok(hwnd) = main.hwnd() {
+                        services::ui_hang_watchdog::start_for_hwnd(hwnd.0 as isize);
+                    }
+                }
+            }
             // Hand the stream server an app handle so the ad auto-pivot can emit
             // its `ad-pivot` reload event to the player.
             services::stream_server::set_app_handle(app_handle.clone());
@@ -552,6 +571,9 @@ fn main() {
             open_subscribe_window,
             report_login_popup_url,
             close_login_overlay,
+            mount_twitch_overlay,
+            set_twitch_overlay_bounds,
+            set_twitch_overlay_visible,
             has_stored_credentials,
             list_twitch_accounts,
             get_twitch_account_count,
@@ -612,6 +634,8 @@ fn main() {
             stop_ll_diag,
             get_stream_qualities,
             change_stream_quality,
+            // Song recognition
+            identify_song,
             // Multi-stream commands
             start_multi_nook,
             stop_multi_nook,
