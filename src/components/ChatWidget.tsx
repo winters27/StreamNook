@@ -65,6 +65,7 @@ import {
   expandUserCommand,
 } from '../utils/chatCommands';
 import { buildTemplateContext, handleSlashCommand } from '../utils/commandHandler';
+import { getRemindFlowSuggestions, tokenizeRemindOverlay } from '../utils/reminderEngine';
 
 import { BackendChatMessage } from '../services/twitchChat';
 import { registerChatModController, type ChatModController } from '../keybindings';
@@ -786,6 +787,10 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
   const [commandQuery, setCommandQuery] = useState('');
   const [commandSelectedIndex, setCommandSelectedIndex] = useState(0);
   const [matchingCommands, setMatchingCommands] = useState<CommandDefinition[]>([]);
+  // When the command popup is walking the user through the multi-step /remind
+  // flow, this holds the start index of the token Tab/Enter should replace.
+  // null means we're completing a top-level command name (the normal path).
+  const flowReplaceFromRef = useRef<number | null>(null);
 
   // Emote tab completion state. The currently-inserted match is matches[index];
   // the carousel shows N back / current / N forward as preview.
@@ -833,12 +838,38 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
     // Parse how many arguments the user has provided
     const providedArgsCount = parts.slice(1).filter(p => p.trim() !== '').length;
     
-    return { 
-      isCommand: true, 
+    return {
+      isCommand: true,
       isValid: providedArgsCount >= requiredArgsCount,
       definition
     };
   }, [messageInput]);
+
+  // In-field chip overlay for an in-progress /remind command. Active once the
+  // command word is solidified (a space follows it); the backdrop below renders
+  // the text with each option boxed, aligned over the (transparent-text) textarea.
+  const remindOverlay = useMemo(
+    () => (/^\/remind\s/i.test(messageInput) ? tokenizeRemindOverlay(messageInput) : null),
+    [messageInput],
+  );
+  const remindOverlayActive = !!remindOverlay;
+  const remindBackdropRef = useRef<HTMLDivElement>(null);
+  // Box styling for a solidified /remind token. Horizontal padding is cancelled
+  // by an equal negative margin so the chip keeps the plain text's advance width
+  // (the caret underneath stays aligned); the gap BETWEEN chips comes from the
+  // shared word-spacing applied to both the textarea and this backdrop. Flat
+  // filled pill — no border, no bevel.
+  const remindChipStyle = (kind: string) => {
+    const accent = kind === 'verb' || kind === 'repeat';
+    const cmd = kind === 'cmd';
+    return {
+      borderRadius: '5px',
+      padding: '1.5px 0.2em',
+      margin: '0 -0.2em',
+      background: accent ? 'rgba(200, 224, 232, 0.18)' : cmd ? 'rgba(255, 255, 255, 0.06)' : 'rgba(255, 255, 255, 0.10)',
+      color: accent ? 'var(--color-accent)' : cmd ? 'var(--color-text-secondary)' : 'var(--color-text-primary)',
+    };
+  };
 
   // Resub notification state
   const [resubNotification, setResubNotification] = useState<ResubNotification | null>(null);
@@ -2672,20 +2703,43 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
 
         const matches = allCommands.filter(cmd => cmd.name.toLowerCase().startsWith(query));
         setMatchingCommands(matches);
+        flowReplaceFromRef.current = null; // completing a command name, not a /remind arg
         setShowCommandAutocomplete(matches.length > 0);
         setCommandSelectedIndex(0);
-        
+
         // don't show mention autocomplete
         setShowMentionAutocomplete(false);
         return;
       } else {
-        // We've typed a space, hide command autocomplete
-        setShowCommandAutocomplete(false);
-        
-        // Detect if we are typing a command parameter that expects a username
+        // We've typed past the command name (there's a space).
         const cmdName = value.substring(1, firstSpaceIndex).toLowerCase();
+
+        // Guided /remind flow: keep the command popup open and walk the user
+        // through each step (subcommand → when → message, or which reminder to
+        // manage). Each accepted step stays in the input and the next appears.
+        if (cmdName === 'remind') {
+          const flow = getRemindFlowSuggestions(value, settings.reminders?.reminders ?? []);
+          if (flow && flow.suggestions.length > 0) {
+            setMatchingCommands(flow.suggestions);
+            flowReplaceFromRef.current = flow.replaceFrom;
+            setShowCommandAutocomplete(true);
+            setCommandSelectedIndex(0);
+            setShowMentionAutocomplete(false);
+            return;
+          }
+          // No suggestions for this step (e.g. typing the message body): drop the
+          // popup and let the normal mention/emote autocomplete run below.
+          setShowCommandAutocomplete(false);
+          flowReplaceFromRef.current = null;
+        } else {
+          // Other commands: hide the command popup.
+          setShowCommandAutocomplete(false);
+          flowReplaceFromRef.current = null;
+        }
+
+        // Detect if we are typing a command parameter that expects a username
         const cmdDef = COMMAND_DEFINITIONS.find(c => c.name.toLowerCase() === cmdName);
-        
+
         if (cmdDef && (cmdDef.usage.includes('<username>') || cmdDef.usage.includes('[username]'))) {
           const afterCommand = value.substring(firstSpaceIndex + 1);
           const secondSpaceIndex = afterCommand.indexOf(' ');
@@ -2736,7 +2790,7 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
     setShowMentionAutocomplete(false);
     setMentionQuery('');
     setMentionStartPosition(null);
-  }, [getMatchingUsers, isModerator, isBroadcaster, settings.chat_commands?.user_commands, emoteTabState]);
+  }, [getMatchingUsers, isModerator, isBroadcaster, settings.chat_commands?.user_commands, settings.reminders?.reminders, emoteTabState]);
 
   // Insert a command string directly from other UI elements (like UserProfileCard)
   const preFillCommand = useCallback((cmdText: string) => {
@@ -2754,21 +2808,59 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
   }, []);
 
   // Insert a command at the current slash position
+  // Roll the input into the /remind flow's next step (or close the popup when
+  // there's nothing left to suggest). Shared by the two insert paths below.
+  const advanceRemindFlow = useCallback((newValue: string) => {
+    const next = getRemindFlowSuggestions(newValue, useAppStore.getState().settings.reminders?.reminders ?? []);
+    if (next && next.suggestions.length > 0) {
+      setMatchingCommands(next.suggestions);
+      flowReplaceFromRef.current = next.replaceFrom;
+      setShowCommandAutocomplete(true);
+      setCommandSelectedIndex(0);
+    } else {
+      setShowCommandAutocomplete(false);
+      flowReplaceFromRef.current = null;
+    }
+  }, []);
+
   const insertCommand = useCallback((cmd: CommandDefinition) => {
-    // Insert /command with a trailing space
+    const replaceFrom = flowReplaceFromRef.current;
+    setCommandQuery('');
+
+    // Guided /remind flow: replace the current token and advance to the next
+    // step. A hint row has nothing to insert — keep focus and let the user type.
+    if (replaceFrom !== null) {
+      if (cmd.hint) {
+        inputRef.current?.focus({ preventScroll: true });
+        return;
+      }
+      const newValue = `${messageInput.slice(0, replaceFrom)}${cmd.insertText ?? cmd.name} `;
+      setMessageInput(newValue);
+      advanceRemindFlow(newValue);
+      inputRef.current?.focus({ preventScroll: true });
+      setTimeout(() => {
+        inputRef.current?.setSelectionRange(newValue.length, newValue.length);
+      }, 0);
+      return;
+    }
+
+    // Normal path: complete a top-level command name with a trailing space.
     const newValue = `/${cmd.name} `;
     setMessageInput(newValue);
-    
-    // Hide autocomplete
-    setShowCommandAutocomplete(false);
-    setCommandQuery('');
-    
-    // Focus and set cursor position after the inserted command
+
+    // For /remind, step straight into its guided flow instead of closing.
+    if (cmd.name.toLowerCase() === 'remind') {
+      advanceRemindFlow(newValue);
+    } else {
+      setShowCommandAutocomplete(false);
+      flowReplaceFromRef.current = null;
+    }
+
     inputRef.current?.focus({ preventScroll: true });
     setTimeout(() => {
       inputRef.current?.setSelectionRange(newValue.length, newValue.length);
     }, 0);
-  }, []);
+  }, [messageInput, advanceRemindFlow]);
 
   // Insert a mention at the current trigger position
   const insertMention = useCallback((user: { username: string; displayName: string }) => {
@@ -4300,17 +4392,46 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
                       />
                     )}
                   </AnimatePresence>
+                  {remindOverlayActive && (
+                    <div
+                      ref={remindBackdropRef}
+                      aria-hidden="true"
+                      className="glass-input pointer-events-none absolute inset-0 overflow-hidden whitespace-pre-wrap break-words text-sm leading-[1.4]"
+                      style={{
+                        paddingTop: '8px',
+                        paddingBottom: '8px',
+                        paddingLeft: showSendAsPicker ? '74px' : '36px',
+                        paddingRight: '12px',
+                        color: 'var(--color-text-primary)',
+                        wordSpacing: '0.4em',
+                      }}
+                    >
+                      {remindOverlay!.map((s, i) =>
+                        s.chip ? (
+                          <span key={i} style={remindChipStyle(s.kind)}>{s.text}</span>
+                        ) : (
+                          <span key={i}>{s.text}</span>
+                        ),
+                      )}
+                    </div>
+                  )}
                   <textarea
                     id="chat-compose-input"
                     ref={inputRef}
                     value={messageInput}
                     onChange={handleInputChange}
                     onKeyDown={handleKeyPress}
+                    onScroll={(e) => {
+                      if (remindBackdropRef.current) {
+                        remindBackdropRef.current.scrollTop = e.currentTarget.scrollTop;
+                        remindBackdropRef.current.scrollLeft = e.currentTarget.scrollLeft;
+                      }
+                    }}
                     placeholder={chatPlaceholder}
-                    className={`w-full glass-input text-sm placeholder-textSecondary resize-none overflow-hidden scrollbar-thin leading-[1.4] self-center transition-all duration-300 ${
+                    className={`relative w-full text-sm placeholder-textSecondary resize-none overflow-hidden scrollbar-thin leading-[1.4] self-center transition-all duration-300 ${remindOverlayActive ? '' : 'glass-input'} ${
                       isWatchStreakMode 
                         ? 'ring-2 ring-amber-500/50 bg-amber-500/5 shadow-[0_0_15px_rgba(245,158,11,0.15)] placeholder-amber-500/60 text-textPrimary' 
-                        : commandState.isValid
+                        : (commandState.isValid && !remindOverlayActive)
                         ? 'font-bold tracking-wide'
                         : ''
                     }`}
@@ -4321,7 +4442,25 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
                       paddingBottom: '8px',
                       paddingLeft: showSendAsPicker ? '74px' : '36px',
                       paddingRight: '12px',
-                      ...(commandState.isValid && !isWatchStreakMode ? {
+                      ...(remindOverlayActive ? {
+                        // The backdrop above renders the surface + chipped text;
+                        // the textarea goes transparent and only carries the caret
+                        // + editing. Keep a 1px transparent border so its box model
+                        // matches the backdrop's bordered box and the text aligns.
+                        color: 'transparent',
+                        caretColor: 'var(--color-text-primary)',
+                        background: 'transparent',
+                        border: '1px solid transparent',
+                        boxShadow: 'none',
+                        backdropFilter: 'none',
+                        WebkitBackdropFilter: 'none',
+                        // Match the backdrop's gap so the caret stays aligned with
+                        // the boxed text above it.
+                        wordSpacing: '0.4em',
+                        // No fade: go transparent instantly so the text doesn't
+                        // ghost over the chip backdrop during the transition.
+                        transition: 'none',
+                      } : commandState.isValid && !isWatchStreakMode ? {
                         backgroundColor: 'rgba(200, 224, 232, 0.1)',
                         borderColor: 'var(--color-accent)',
                         boxShadow: '0 0 16px rgba(200, 224, 232, 0.25), inset 4px 4px 10px -3px rgba(0, 0, 0, 0.6)',

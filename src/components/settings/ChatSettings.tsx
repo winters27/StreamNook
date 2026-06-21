@@ -14,6 +14,7 @@ import BadgeHighlightsSettings from './BadgeHighlightsSettings';
 import HighlightAppearanceSettings from './HighlightAppearanceSettings';
 import UserOverridesSettings from './UserOverridesSettings';
 import UserCommandsSettings from './UserCommandsSettings';
+import RemindersSettings from './RemindersSettings';
 import { SettingsSection, SettingsRow, SegmentedSelect } from './_primitives';
 import { useChatUserStore } from '../../stores/chatUserStore';
 import { getUserCosmetics, computePaintStyle } from '../../services/seventvService';
@@ -947,6 +948,8 @@ const ChatSettings = () => {
       <BadgeHighlightsSettings />
 
       <UserCommandsSettings />
+
+      <RemindersSettings />
 
       <UserOverridesSettings />
     </div>

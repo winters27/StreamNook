@@ -25,6 +25,7 @@ import { fetchRecentMessagesAsIRC } from '../services/ivrService';
 import { fetchAllEmotes, type EmoteSet } from '../services/emoteService';
 import { Logger } from '../utils/logger';
 import { useAppStore } from './AppStore';
+import type { SongMatch } from '../utils/songId';
 
 // Hard caps borrowed from the prior single-channel hook. Keeping them as
 // per-channel limits means a 5-channel MultiChat caps memory at 5x the
@@ -1401,6 +1402,13 @@ function appendStructuredMessage(slice: ChannelSlice, parsed: any) {
       void mod.checkActiveNukesForMessage(slice.channel, parsed);
     });
   }
+
+  // Keyword reminders. No-op unless a keyword reminder is scoped to this channel.
+  if (slice.channel) {
+    void import('../utils/reminderEngine').then((mod) => {
+      mod.checkRemindersForMessage(slice.channel, parsed);
+    });
+  }
 }
 
 function handleRawIrcString(raw: string) {
@@ -1759,7 +1767,7 @@ export async function sendChannelMessage(
 /** Inject a system message into the channel (mirrors the `twitch-system-message`
  *  custom event the old hook listened for). Used by `/mods` and similar local
  *  command results. */
-export function injectSystemMessage(channel: string, message: string): void {
+export function injectSystemMessage(channel: string, message: string, songCard?: SongMatch): void {
   const sysMsgId = `sys-cmd-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   withSlice(channel, (slice) => {
     pushMessage(slice, {
@@ -1774,6 +1782,7 @@ export function injectSystemMessage(channel: string, message: string): void {
       is_first_message: false,
       is_mentioned: false,
       is_from_shared_chat: false,
+      songCard,
       tags: new Map([
         ['user-id', 'tw-system'],
         ['id', sysMsgId],
@@ -1934,6 +1943,7 @@ if (typeof window !== 'undefined') {
   window.addEventListener('twitch-system-message', ((e: CustomEvent) => {
     const message = e.detail?.message;
     if (!message) return;
+    const songCard = e.detail?.songCard as SongMatch | undefined;
     const channels = useChatConnectionStore.getState().channels;
     if (channels.size === 0) return;
     // System messages from `/mods` etc. apply to the channel that issued the
@@ -1942,7 +1952,7 @@ if (typeof window !== 'undefined') {
     // `injectSystemMessage(channel, message)` directly.
     if (channels.size === 1) {
       const ch = channels.keys().next().value as string;
-      injectSystemMessage(ch, message);
+      injectSystemMessage(ch, message, songCard);
     }
   }) as EventListener);
 }

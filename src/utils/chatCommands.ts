@@ -5,6 +5,10 @@ export interface CommandDefinition {
   description: string;
   category: 'Everyone' | 'Moderator' | 'Chat Flow' | 'Engagement' | 'Broadcaster' | 'Custom';
   usage: string;
+  // Optional fields used by the guided multi-step /remind flow autocomplete.
+  insertText?: string; // text inserted on Tab/Enter (defaults to `name`)
+  hint?: boolean; // a non-completing guidance row (Tab/Enter does nothing)
+  badgeLabel?: string; // overrides the category text shown in the badge
 }
 
 export const COMMAND_DEFINITIONS: CommandDefinition[] = [
@@ -61,6 +65,8 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
   { name: 'popout', usage: '/popout [channel]', description: "Open this (or another) channel's popout chat in your browser", category: 'Everyone' },
   { name: 'popup', usage: '/popup [channel]', description: 'Open this (or another) channel in a new StreamNook MultiChat window', category: 'Everyone' },
   { name: 'uptime', usage: '/uptime', description: "Show this channel's current stream uptime", category: 'Everyone' },
+  { name: 'song', usage: '/song', description: 'Identify the music currently playing in the stream', category: 'Everyone' },
+  { name: 'remind', usage: '/remind every 20m <message>', description: 'Auto-post reminders to chat: every N min, after a delay, at a time, at uptime, or on a keyword. Manage with /remind list, remove, enable, disable, clear. Add x3 to repeat.', category: 'Everyone' },
   { name: 'usercard', usage: '/usercard <user>', description: "Open a user's StreamNook profile card", category: 'Everyone' },
   { name: 'user', usage: '/user <user>', description: "Open a user's StreamNook profile card", category: 'Everyone' },
   { name: 'banid', usage: '/banid <userID> [reason]', description: 'Ban by Twitch user ID (works on suspended accounts that /ban no longer reaches)', category: 'Moderator' },

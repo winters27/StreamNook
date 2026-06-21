@@ -10,6 +10,8 @@ import {
   type TemplateContext,
 } from './chatCommands';
 import { parseNukeArgs, executeNuke, executeUndo, isUserModeratorOf } from './nukeEngine';
+import { parseRemindCommand, fireReminderNow, formatReminderList, remindHelpLines } from './reminderEngine';
+import { recognizeNowPlaying, announceSong } from './songId';
 
 // Build a TemplateContext from the current AppStore + supplied args. Centralized
 // so plain-text expansions (ChatWidget) and slash-command expansions (this
@@ -108,6 +110,14 @@ export const handleSlashCommand = async (
 
   try {
     switch (command) {
+      // ────────────────────────────────────────────────────────
+      // StreamNook-native: identify the music playing in the stream
+      // ────────────────────────────────────────────────────────
+      case 'song': {
+        emitSystemMessage('Listening to identify the song...');
+        announceSong(await recognizeNowPlaying());
+        return true;
+      }
       // ────────────────────────────────────────────────────────
       // Moderator / Broadcaster commands (handled via Helix API)
       // ────────────────────────────────────────────────────────
@@ -683,6 +693,73 @@ export const handleSlashCommand = async (
         }
         addToast('Reloading stream and chat...', 'info');
         void app.reloadStreamAndChat();
+        return true;
+      }
+      case 'remind': {
+        const state = useAppStore.getState();
+        const reminders = state.settings.reminders?.reminders ?? [];
+        const result = parseRemindCommand(argsWithoutCommand, broadcasterLogin, broadcasterId);
+
+        // Input-correction feedback stays a toast (matches /color, /w usage);
+        // everything else prints into chat as a local system message so the
+        // whole flow lives where you're typing.
+        if (result.error) {
+          addToast(result.error, 'info');
+          return true;
+        }
+        if (result.help) {
+          remindHelpLines().forEach(emitSystemMessage);
+          return true;
+        }
+        if (result.list) {
+          formatReminderList(reminders).forEach(emitSystemMessage);
+          return true;
+        }
+        if (result.clear) {
+          if (reminders.length === 0) {
+            emitSystemMessage('You have no reminders to clear.');
+            return true;
+          }
+          state.updateSettings({ ...state.settings, reminders: { reminders: [] } });
+          emitSystemMessage(`Cleared ${reminders.length} reminder${reminders.length === 1 ? '' : 's'}.`);
+          return true;
+        }
+        if (result.manage) {
+          const { op, index } = result.manage;
+          const i = index - 1;
+          if (i < 0 || i >= reminders.length) {
+            emitSystemMessage(`There's no reminder #${index}. Run /remind list to see them.`);
+            return true;
+          }
+          if (op === 'remove') {
+            state.updateSettings({
+              ...state.settings,
+              reminders: { reminders: reminders.filter((_, idx) => idx !== i) },
+            });
+            emitSystemMessage(`Removed reminder #${index}.`);
+            return true;
+          }
+          const enabled = op === 'toggle' ? !reminders[i].enabled : op === 'enable';
+          state.updateSettings({
+            ...state.settings,
+            reminders: { reminders: reminders.map((r, idx) => (idx === i ? { ...r, enabled } : r)) },
+          });
+          emitSystemMessage(`Reminder #${index} ${enabled ? 'enabled' : 'disabled'}.`);
+          return true;
+        }
+        if (result.sendNow) {
+          const sent = await fireReminderNow(result.sendNow.message, result.sendNow.repeat);
+          if (!sent) addToast('/remind now: no active channel to post in', 'error');
+          return true;
+        }
+        if (result.reminder) {
+          state.updateSettings({
+            ...state.settings,
+            reminders: { reminders: [...reminders, result.reminder] },
+          });
+          emitSystemMessage(`${result.summary || 'Reminder set'} (now #${reminders.length + 1}). /remind list to manage.`);
+          return true;
+        }
         return true;
       }
       case 'nuke': {
