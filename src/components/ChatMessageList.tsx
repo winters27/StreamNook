@@ -34,9 +34,13 @@ const MessageRow = function MessageRow({
   intrinsicSizeCSS: string;
   children: React.ReactNode;
 }) {
-  const hasAtmosphere = useChatUserStore((s) =>
-    userId ? !!s.users.get(userId)?.atmosphereId : false,
-  );
+  const hasAtmosphere = useChatUserStore((s) => {
+    if (!userId) return false;
+    const u = s.users.get(userId);
+    // Cologne rows carry the same animated composited wash as an Atmosphere, so
+    // they need the same always-paint treatment to dodge the ghost bug.
+    return !!(u?.atmosphereId || u?.cologne);
+  });
   return (
     <div
       data-message-id={messageId || undefined}

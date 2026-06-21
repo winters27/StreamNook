@@ -47,7 +47,8 @@ import type { CosmeticCatalogEntry } from '../../services/supabaseService';
 import { getIdentityWithCache, setIdentity } from '../../services/identityService';
 import { readOwnProfileCache, writeOwnProfileCache } from '../../services/ownProfileCache';
 import { isSubscriber } from '../../services/subscriberService';
-import { listAtmospheres, getAtmosphere, type Atmosphere } from '../../services/atmospheres';
+import { listAtmospheres, getAtmosphere, MAJOR_COLOGNE_SWATCH, type Atmosphere } from '../../services/atmospheres';
+import { MAJOR_COLOGNE_THEME_ID, MAJOR_COLOGNE_ACCOLADE_ID, parseCologneTheme, buildCologneTheme, isCologneTheme } from '../../services/cologneEvent';
 import { getTier, getTierAccent, StreamNookBadge } from '../StreamNookBadge';
 import { COSMETIC_ASSET_BY_SLUG } from '../cosmeticAssets';
 import {
@@ -1492,6 +1493,8 @@ const ProfileSettings = () => {
         </p>
         <div className="mt-3 space-y-2">
           {listAtmospheres()
+            // Cologne renders as its own card with add-on toggles, below.
+            .filter((a) => !isCologneTheme(a.id))
             // Achievement-gated Atmospheres stay hidden until earned, so the
             // unlock is a surprise (like the "???" secret accolade) instead of a
             // spoiler sitting in the cosmetics panel. Once earned, one shows up
@@ -1523,6 +1526,76 @@ const ProfileSettings = () => {
               </button>
             );
           })}
+          {/* CS2 Major Cologne: one earned look whose coin + border are opt-in
+              add-ons gated by support tier (supporter = coin, subscriber = both). */}
+          {earnedAccolades.has(MAJOR_COLOGNE_ACCOLADE_ID) && (() => {
+            const applied = parseCologneTheme(profileTheme);
+            const active = !!applied;
+            const coinOn = applied?.coin ?? false;
+            const frameOn = applied?.frame ?? false;
+            return (
+              <div className="overflow-hidden rounded-lg border border-white/[0.06]">
+                <button
+                  type="button"
+                  onClick={() => (active ? selectProfileTheme('tier', 'free') : selectProfileTheme(MAJOR_COLOGNE_THEME_ID, 'free', true))}
+                  onMouseEnter={() => setPreviewThemeId(active ? profileTheme : MAJOR_COLOGNE_THEME_ID)}
+                  onMouseLeave={() => setPreviewThemeId(null)}
+                  className={`flex w-full items-center gap-3 p-2.5 text-left transition-colors ${
+                    active ? 'bg-accent/[0.06]' : 'hover:bg-white/[0.03]'
+                  }`}
+                >
+                  <span
+                    className="h-9 w-14 flex-shrink-0 rounded-md ring-1 ring-inset ring-white/10"
+                    style={{ background: MAJOR_COLOGNE_SWATCH }}
+                  />
+                  <span className="flex-1 text-sm font-medium text-textPrimary">CS2 Major Cologne 2026</span>
+                  {active && <span className="text-[10px] font-medium text-textMuted">Active</span>}
+                  {active && <Check size={16} className="text-accent" />}
+                </button>
+                {active && (
+                  <div className="space-y-0.5 border-t border-white/[0.06] bg-black/20 px-3 py-1.5">
+                    {([
+                      // tierMet('supporter') is true for subscribers too (they're
+                      // the higher tier), so a subscriber always gets the coin.
+                      { label: 'Coin', on: coinOn, can: tierMet('supporter'), tier: 'supporter' as const, next: { coin: !coinOn, frame: frameOn } },
+                      { label: 'Border', on: frameOn, can: tierMet('subscriber'), tier: 'subscriber' as const, next: { coin: coinOn, frame: !frameOn } },
+                    ]).map((opt) => (
+                      <div key={opt.label} className="flex items-center justify-between gap-3 py-1">
+                        <span className="text-[13px] text-textPrimary">{opt.label}</span>
+                        {opt.can ? (
+                          <button
+                            type="button"
+                            role="switch"
+                            aria-checked={opt.on}
+                            aria-label={`${opt.on ? 'Disable' : 'Enable'} ${opt.label.toLowerCase()}`}
+                            onClick={() => selectProfileTheme(buildCologneTheme(opt.next), 'free', true)}
+                            className={`relative inline-flex h-5 w-9 flex-shrink-0 items-center rounded-full transition-colors ${
+                              opt.on ? 'bg-accent' : 'bg-white/[0.12]'
+                            }`}
+                          >
+                            <span
+                              className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${
+                                opt.on ? 'translate-x-4' : 'translate-x-1'
+                              }`}
+                            />
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => openSupportFor(opt.tier)}
+                            className="inline-flex items-center gap-1 text-[11px] font-medium text-textSecondary transition-colors hover:text-accent"
+                          >
+                            {opt.tier === 'subscriber' ? 'Subscriber' : 'Supporter'}
+                            <ExternalLink size={9} className="opacity-70" />
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
         </div>
       </div>
 

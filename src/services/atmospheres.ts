@@ -12,6 +12,8 @@
 // read that registry. This file owns only the shared `Atmosphere` shape.
 
 import { getAtmosphereEntry, listAtmosphereEntries } from './supabaseService';
+import majorCologneTexture from '../assets/major-cologne-2026-texture.png';
+import { MAJOR_COLOGNE_THEME_ID, MAJOR_COLOGNE_ACCOLADE_ID, isCologneTheme } from './cologneEvent';
 
 export interface Atmosphere {
   id: string;
@@ -59,7 +61,28 @@ export interface Atmosphere {
 
 // Sync reads of the fetched catalog. Return null / empty until the registry has
 // loaded (consumers re-render via the version subscription); see supabaseService.
-export const getAtmosphere = (id: string | null | undefined): Atmosphere | null =>
-  getAtmosphereEntry(id);
+// The CS2 Major Cologne look is one client-side Atmosphere entry (its render is
+// custom chrome, not a gradient, so it isn't a server catalog row). The
+// background (animated glass texture) is free for anyone who earned the accolade;
+// the coin and border are opt-in add-ons gated by support tier, encoded as suffix
+// flags on the theme id (see cologneEvent). The swatch is the real glass texture,
+// and the profile + live preview render the actual animated chrome (see
+// AtmosphereBackground's Cologne branch); chat renders it via MajorCologneChrome.
+export const MAJOR_COLOGNE_SWATCH = `url(${majorCologneTexture}) center / cover`;
+const COLOGNE_ATMOSPHERE: Atmosphere = {
+  id: MAJOR_COLOGNE_THEME_ID,
+  name: 'CS2 Major Cologne 2026',
+  accent: '214, 177, 92',
+  swatch: MAJOR_COLOGNE_SWATCH,
+  baseColor: '#0a1322',
+  motion: 'drift',
+  chatEdge: 'linear-gradient(180deg, #f6e3a0, #9c7528)',
+  unlock: { kind: 'accolade', accoladeId: MAJOR_COLOGNE_ACCOLADE_ID },
+};
 
-export const listAtmospheres = (): Atmosphere[] => listAtmosphereEntries();
+// Return the Cologne atmosphere for ANY Cologne theme (incl. the add-on suffixes),
+// carrying the full id through so consumers can read the add-on flags from atm.id.
+export const getAtmosphere = (id: string | null | undefined): Atmosphere | null =>
+  isCologneTheme(id) ? { ...COLOGNE_ATMOSPHERE, id: id! } : getAtmosphereEntry(id);
+
+export const listAtmospheres = (): Atmosphere[] => [...listAtmosphereEntries(), COLOGNE_ATMOSPHERE];

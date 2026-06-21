@@ -7,6 +7,7 @@ import {
 } from '../services/cosmeticsCache';
 import { isStreamNookUser, getProfilePrefs, whenAtmospheresReady, subscribeAtmospheresVersion, subscribeStreamNookRegistryVersion } from '../services/supabaseService';
 import { getAtmosphere } from '../services/atmospheres';
+import { parseCologneTheme, type CologneCosmetics } from '../services/cologneEvent';
 import {
   getResolvedIdentity,
   getResolvedIdentityFromCache,
@@ -57,6 +58,9 @@ export interface ChatUser {
    *  chat can render the matching animated wash. Undefined until resolved; null =
    *  resolved, none. */
   atmosphereId?: string | null;
+  /** CS2 Major Cologne event cosmetics this member has APPLIED (the background
+   *  plus which add-ons). Undefined until resolved; null = resolved, none. */
+  cologne?: CologneCosmetics | null;
 }
 
 interface ChatUserStore {
@@ -71,7 +75,7 @@ interface ChatUserStore {
    * resolved by twitch_user_id through the Identity API, not by channel).
    */
   addUser: (
-    user: Omit<ChatUser, 'lastSeen' | 'paint' | 'seventvBadge' | 'thirdPartyBadges' | 'atmosphereId'>,
+    user: Omit<ChatUser, 'lastSeen' | 'paint' | 'seventvBadge' | 'thirdPartyBadges' | 'atmosphereId' | 'cologne'>,
     channelContext?: { channelId: string; channelName: string },
   ) => void;
   
@@ -362,10 +366,13 @@ export function registerOwnAtmospheres(userIds: string[]): void {
 function ensureAtmosphereResolved(userId: string) {
   if (!userId || !isStreamNookUser(userId)) return;
   // Cached/known value (incl. one set by an explicit change before the user was
-  // in the store): push it to the store for this (re)sighting.
+  // in the store): push it to the store for this (re)sighting. The Cologne tier
+  // is cached alongside the atmosphere (both come from the same selected theme).
   if (atmosphereCache.has(userId)) {
     pendingAtmosphereUpdates.set(userId, atmosphereCache.get(userId)!);
     scheduleAtmosphereFlush();
+    pendingCologneUpdates.set(userId, cologneCache.get(userId) ?? null);
+    scheduleCologneFlush();
     return;
   }
   if (atmosphereInFlight.has(userId)) return;
@@ -373,13 +380,23 @@ function ensureAtmosphereResolved(userId: string) {
   void (async () => {
     try {
       // Visibility reads the world-readable profile_theme (not gated on subscriber
-      // status), so a member's Atmosphere shows for every viewer like a badge.
+      // status), so a member's selection shows for every viewer like a badge.
       const prefs = await getProfilePrefs(userId);
       // Wait for the atmosphere catalog so we never resolve a real theme to null
       // just because the catalog had not loaded yet.
       await whenAtmospheresReady();
-      const atm = getAtmosphere(prefs.profileTheme);
-      pushAtmosphere(userId, atm ? atm.id : null);
+      const cologne = parseCologneTheme(prefs.profileTheme);
+      if (cologne) {
+        // Cologne is its own custom chrome, not a gradient Atmosphere. Which
+        // add-ons (coin / frame) show is read from the selected theme; the tier
+        // gate that decides what they could pick lives in the picker, not here.
+        pushAtmosphere(userId, null);
+        pushCologne(userId, cologne);
+      } else {
+        const atm = getAtmosphere(prefs.profileTheme);
+        pushAtmosphere(userId, atm ? atm.id : null);
+        pushCologne(userId, null);
+      }
     } catch {
       /* leave uncached so a later sighting retries */
     } finally {
@@ -388,11 +405,53 @@ function ensureAtmosphereResolved(userId: string) {
   })();
 }
 
-// Set a member's Atmosphere to a KNOWN value now (they just changed their theme),
-// so their messages update in real time with no Supabase read (and switching away
-// from an Atmosphere clears it).
+// Set a member's theme to a KNOWN value now (they just changed it), so their
+// messages update in real time with no Supabase read (and switching away clears
+// it). Cologne is its own chrome, resolved with a quick subscriber check.
 export function refreshAtmosphere(userId: string, atmosphereId: string | null) {
-  pushAtmosphere(userId, atmosphereId);
+  const cologne = parseCologneTheme(atmosphereId);
+  if (cologne) {
+    pushAtmosphere(userId, null);
+    pushCologne(userId, cologne);
+  } else {
+    pushAtmosphere(userId, atmosphereId);
+    pushCologne(userId, null);
+  }
+}
+
+// ── CS2 Major Cologne event chrome ───────────────────────────────────────────
+// The Cologne chrome is an OPT-IN selectable Atmosphere (theme id
+// MAJOR_COLOGNE_THEME_ID), unlocked by the Major accolade. It is NOT auto-applied
+// from merely holding the accolade. The tier (base = coin + wash, full = adds the
+// frame for subscribers) is resolved from the member's SELECTED theme in
+// ensureAtmosphereResolved above; this block just owns the store write-through.
+const pendingCologneUpdates = new Map<string, CologneCosmetics | null>();
+let pendingCologneFlushScheduled = false;
+const cologneCache = new Map<string, CologneCosmetics | null>();
+
+function scheduleCologneFlush() {
+  if (pendingCologneFlushScheduled) return;
+  pendingCologneFlushScheduled = true;
+  queueMicrotask(() => {
+    pendingCologneFlushScheduled = false;
+    if (pendingCologneUpdates.size === 0) return;
+    const updates = new Map(pendingCologneUpdates);
+    pendingCologneUpdates.clear();
+    useChatUserStore.setState((state) => {
+      const newUsers = new Map(state.users);
+      for (const [uid, cosmetics] of updates) {
+        const current = newUsers.get(uid);
+        if (current) newUsers.set(uid, { ...current, cologne: cosmetics });
+      }
+      return { users: newUsers };
+    });
+  });
+}
+
+function pushCologne(userId: string, cosmetics: CologneCosmetics | null) {
+  cologneCache.set(userId, cosmetics);
+  pendingCologneUpdates.set(userId, cosmetics);
+  scheduleCologneFlush();
 }
 
 
@@ -465,6 +524,7 @@ export const useChatUserStore = create<ChatUserStore>((set, get) => ({
         seventvBadge: existingUser?.seventvBadge,
         thirdPartyBadges: existingUser?.thirdPartyBadges,
         atmosphereId: existingUser?.atmosphereId,
+        cologne: existingUser?.cologne,
       });
       newUsernameToId.set(user.username.toLowerCase(), user.userId);
       // First-sight is the only path that grows the map, so cap it here.
@@ -508,7 +568,7 @@ export const useChatUserStore = create<ChatUserStore>((set, get) => ({
 
     // Resolve this member's curated third-party badges once (no-op for non-members).
     ensureThirdPartyResolved(user.userId);
-    // Resolve this member's subscriber Atmosphere chat wash once (no-op for non-members).
+    // Resolve this member's selected Atmosphere / Cologne chrome once (no-op for non-members).
     ensureAtmosphereResolved(user.userId);
   },
   
@@ -619,6 +679,9 @@ subscribeResolvedIdentity((userId) => {
 subscribeStreamNookRegistryVersion(() => {
   const users = useChatUserStore.getState().users;
   for (const uid of users.keys()) {
-    if (isStreamNookUser(uid)) ensureThirdPartyResolved(uid);
+    if (isStreamNookUser(uid)) {
+      ensureThirdPartyResolved(uid);
+      ensureAtmosphereResolved(uid);
+    }
   }
 });

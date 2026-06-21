@@ -1,0 +1,93 @@
+/* CS2 Major Cologne 2026 event chrome behind a chat message row.
+   Two tiers, both driven from the same assets:
+     base = animated glass wash + gold edge + coin (any watcher)
+     full = the above + the gold nine-slice frame (subscriber watcher)
+   All tunables are CSS variables on .cologne-chrome so the slice, coin
+   offset, tile size, and drift speed can be dialed without code changes. */
+.cologne-chrome {
+  position: absolute;
+  inset: 0;
+  z-index: -10;
+  pointer-events: none;
+  /* Coin sits INSIDE the row on the right as a faded background watermark
+     (never overflows, full circle visible, chat text reads on top). Size is
+     capped but scales down on short rows so it always fits. */
+  --coin-right: 14px;
+  --coin-size: min(44px, 80%);
+  --coin-opacity: 0.3;
+  --tile: 230px;
+  --drift: 32s;
+  --wash-brightness: 1.18;
+  /* Border thickness, kept in the corner block's 159:199 (h:v) proportion so
+     the gothic corners render without squashing. */
+  --frame-bw-v: 18px;
+  --frame-bw-h: 14px;
+  /* Corner block measured from the asset: 159 wide x 199 tall. */
+  --frame-slice: 199 159 199 159;
+}
+
+/* Clips the wash + frame to the row; the coin lives OUTSIDE this so it can
+   hang off the left edge. */
+.cologne-clip {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+/* Seamless diagonal scroll: a tiled layer translated by exactly one tile, so
+   the loop is invisible. Oversized by one tile on every side so no edge shows
+   mid-travel. Pure transform = compositor, same approach as the aurora wash. */
+.cologne-wash {
+  position: absolute;
+  inset: calc(-1 * var(--tile));
+  background-repeat: repeat;
+  background-size: var(--tile) var(--tile);
+  filter: brightness(var(--wash-brightness));
+  animation: cologne-drift var(--drift) linear infinite;
+  will-change: transform;
+}
+@keyframes cologne-drift {
+  from { transform: translate3d(0, 0, 0); }
+  to   { transform: translate3d(calc(-1 * var(--tile)), calc(-1 * var(--tile)), 0); }
+}
+
+/* Readability veil, weighted toward the left where the name and text sit. */
+.cologne-veil {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, rgba(8, 12, 22, 0.62), rgba(8, 12, 22, 0.30) 55%, rgba(8, 12, 22, 0.12));
+}
+
+/* Base-tier gold edge (full tier gets the whole frame instead). */
+.cologne-edge {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: linear-gradient(180deg, #f6e3a0, #9c7528);
+}
+
+/* Full-tier nine-slice frame. Center is dropped (no fill keyword) so the wash
+   and text show through. Edges stretch; corners stay fixed. */
+.cologne-frame {
+  position: absolute;
+  inset: 0;
+  border-style: solid;
+  border-width: var(--frame-bw-v) var(--frame-bw-h);
+  border-image-slice: var(--frame-slice);
+  border-image-width: var(--frame-bw-v) var(--frame-bw-h);
+  border-image-repeat: stretch;
+}
+
+/* The Cologne coin, hanging off the left, vertically centered. */
+.cologne-coin {
+  position: absolute;
+  right: var(--coin-right);
+  top: 50%;
+  transform: translateY(-50%);
+  height: var(--coin-size);
+  width: auto;
+  opacity: var(--coin-opacity);
+  pointer-events: none;
+}

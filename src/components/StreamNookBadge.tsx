@@ -14,6 +14,7 @@ import { COSMETIC_ASSET_BY_SLUG } from './cosmeticAssets';
 import { openProfileViewerInMain } from '../utils/openBadgesInMain';
 import { useChatUserStore } from '../stores/chatUserStore';
 import { AtmosphereBackground } from './AtmosphereBackground';
+import { MajorCologneChrome } from './MajorCologneChrome';
 import { getAtmosphere } from '../services/atmospheres';
 
 interface StreamNookBadgeProps {
@@ -410,6 +411,8 @@ export const StreamNookBadge = memo(function StreamNookBadge({
   useSyncExternalStore(subscribeAtmospheresVersion, getAtmospheresVersion, getAtmospheresVersion);
   const atmosphereId = useChatUserStore((s) => (userId ? s.users.get(userId)?.atmosphereId ?? null : null));
   const atmosphere = atmosphereId ? getAtmosphere(atmosphereId) : null;
+  // CS2 Major Cologne cosmetics this member applied (themes the hover card too).
+  const cologne = useChatUserStore((s) => (userId ? s.users.get(userId)?.cologne ?? null : null));
 
   // If the registry lookup somehow missed (shouldn't happen given isSN was true),
   // fall back to the plain label so we never render a broken animation.
@@ -419,13 +422,20 @@ export const StreamNookBadge = memo(function StreamNookBadge({
     const tier = getTier(userNumber);
     tooltipContent = (
       <>
-        {atmosphere && (
+        {cologne ? (
+          <div className="absolute inset-0 overflow-hidden rounded-2xl">
+            {/* Cologne theme: the background wash (+ coin if they enabled it). The
+                gold frame is a chat-row border and is omitted here so it doesn't
+                fight the card's own rounded chassis. */}
+            <MajorCologneChrome coin={cologne.coin} />
+          </div>
+        ) : atmosphere ? (
           <div className="absolute inset-0 overflow-hidden rounded-2xl">
             {/* Frosted so the badge card's number + label stay readable over a
                 busy image atmosphere (the big profile stays sharp). */}
             <AtmosphereBackground atm={atmosphere} variant="profile" blur />
           </div>
-        )}
+        ) : null}
         {tier.auraClassName && <div className={tier.auraClassName} />}
         <MatrixDecode numberText={String(userNumber)} tier={tier} cosmeticName={cosmeticName} />
         <div className="relative mt-3 text-[8px] font-medium uppercase tracking-[0.3em] text-white/35">

@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Atmosphere } from '../services/atmospheres';
+import { MajorCologneChrome } from './MajorCologneChrome';
+import { isCologneTheme, parseCologneTheme } from '../services/cologneEvent';
 
 // Renders a StreamNook Atmosphere. The motion is pure CSS (the `.sn-aurora-*`
 // classes in globals.css), so it runs on the compositor off the main thread and
@@ -21,6 +23,15 @@ export const AtmosphereBackground = ({
   // since text sits directly on the wash.)
   blur?: boolean;
 }) => {
+  // The Cologne look is custom chrome (animated glass texture + coin + frame),
+  // not a gradient, so render it directly wherever an atmosphere would paint
+  // (profile backdrop, picker preview). Chat goes through MajorCologneChrome
+  // on its own via the resolved cologne cosmetics, so this branch is only hit by
+  // profile surfaces.
+  if (isCologneTheme(atm.id)) {
+    const c = parseCologneTheme(atm.id);
+    return <MajorCologneChrome coin={!!c?.coin} frame={!!c?.frame} />;
+  }
   if (variant === 'chat') {
     return <ChatAtmosphere atm={atm} />;
   }

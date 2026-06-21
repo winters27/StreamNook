@@ -4,6 +4,7 @@ import { useAppStore, type WhisperImportProgress, type SettingsTab } from './sto
 import { useContextMenuStore } from './stores/contextMenuStore';
 import { listenForSettingsUpdates } from './utils/settingsBroadcast';
 import { trackPresence, isSupabaseConfigured, incrementStat, incrementChannelWatch, subscribeToStreamNookRegistry, subscribeToCosmeticsRegistry, subscribeToAtmospheresRegistry, refreshEntitlementRegistries } from './services/supabaseService';
+import { maybeGrantCologneFromWatch } from './services/cologneGrant';
 import TitleBar from './components/TitleBar';
 import DynamicIsland from './components/DynamicIsland';
 import VideoPlayer from './components/VideoPlayer';
@@ -33,6 +34,7 @@ import { SearchProfileModal } from './components/SearchProfileModal';
 import DropsOverlay from './components/DropsOverlay';
 import MarketplaceOverlay from './components/MarketplaceOverlay';
 import DropProgressController from './components/plugins/DropProgressController';
+import ReminderEngine from './components/ReminderEngine';
 import BadgesOverlay from './components/BadgesOverlay';
 import EmoteSetsOverlay from './components/EmoteSetsOverlay';
 import EmoteSpotlight from './components/EmoteSpotlight';
@@ -44,6 +46,7 @@ import SetupWizard from './components/SetupWizard';
 import Sidebar from './components/Sidebar';
 import ClipModal from './components/ClipModal';
 import ClipEditor from './components/ClipEditor';
+import TwitchOverlay from './components/TwitchOverlay';
 import ErrorBoundary from './components/ErrorBoundary';
 import { StreamContextMenu } from './components/StreamContextMenu';
 import ModerationDragLayer from './components/chat/ModerationDragLayer';
@@ -1035,6 +1038,14 @@ function App() {
     Logger.debug('[Stats] Stream session started, incrementing streams_watched');
     incrementStat(currentUser.user_id, 'streams_watched', 1);
 
+    // CS2 Major Cologne event: watching the Counter-Strike category during the
+    // window earns the accolade. Check on stream start, then every minute below.
+    void maybeGrantCologneFromWatch(
+      currentUser.user_id,
+      useAppStore.getState().currentStream?.user_login,
+      useAppStore.getState().currentStream?.game_name,
+    );
+
     // Accrue watch time every minute. Reads fresh state each tick so it follows
     // the live user/channel even as other store fields churn.
     const watchTimeInterval = setInterval(() => {
@@ -1050,6 +1061,7 @@ function App() {
             name: cs.user_name || cs.user_login,
           });
         }
+        void maybeGrantCologneFromWatch(user.user_id, cs?.user_login, cs?.game_name);
       }
     }, 60000); // Every minute
 
@@ -1679,6 +1691,7 @@ function App() {
       <DropsOverlay />
       <MarketplaceOverlay />
       <DropProgressController />
+      <ReminderEngine />
       <EmoteSetsOverlay />
       <EmoteSpotlight />
 
@@ -1742,6 +1755,7 @@ function App() {
       <ModerationDragLayer />
       <ClipModal />
       <ClipEditor />
+      <TwitchOverlay />
     </div>
   );
 }

@@ -19,6 +19,7 @@ import { queueBadgeForCaching, getCachedBadgeUrl } from '../services/badgeImageC
 import { isStreamNookUser, getStreamNookUserNumber, subscribeStreamNookRegistryVersion, getStreamNookRegistryVersion } from '../services/supabaseService';
 import { StreamNookBadge } from './StreamNookBadge';
 import { AtmosphereBackground } from './AtmosphereBackground';
+import { MajorCologneChrome } from './MajorCologneChrome';
 import { getAtmosphere } from '../services/atmospheres';
 import { matchHighlightPhrase, matchHighlightUser, matchHighlightBadge, type HighlightMatch } from '../utils/chatHighlightMatcher';
 import { flashTitle } from '../utils/titleFlasher';
@@ -26,6 +27,7 @@ import { playSoundThrottled } from '../utils/notificationSound';
 import { getDisplayedName, getColorOverride } from '../utils/userChatOverrides';
 import { CHANNEL_SPECIFIC_TWITCH_BADGES, orderTwitchBadges } from '../utils/badgeOrder';
 import { LinkPreviewCard } from './chat/LinkPreviewCard';
+import { SongCard } from './chat/SongCard';
 import { extractPreviewUrls, prettyUrlLabel } from '../services/linkPreviewService';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -533,6 +535,9 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
   // Frost behind the text only when the atmosphere declares it needs it (busy
   // washes); subtle ones render the text bare.
   const atmosphereFrost = !!atmosphere?.chatFrost;
+  // CS2 Major Cologne event cosmetics this member applied (null = none). Takes
+  // precedence over the Atmosphere wash when present.
+  const cologne = useChatUserStore((s) => (userId ? s.users.get(userId)?.cologne ?? null : null));
   const [broadcasterType] = useState<string | null>(null);
   const [isMentioned, setIsMentioned] = useState(false);
   const [isReplyToMe, setIsReplyToMe] = useState(false);
@@ -2193,6 +2198,11 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
             </p>
           </div>
         </div>
+        {typeof message !== 'string' && message.songCard && (
+          <div className="mt-1.5 ml-6">
+            <SongCard card={message.songCard} />
+          </div>
+        )}
       </div>
     );
   }
@@ -2316,12 +2326,22 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
         ...(phraseMatch
           ? ({ '--phrase-flash-color': phraseMatch.color } as React.CSSProperties)
           : {}),
+        // The Cologne frame needs horizontal room + a minimum height so the gold
+        // border is never cut off on a single-line message; the background-only
+        // and coin variants need no special padding.
+        ...(cologne?.frame
+          ? { paddingLeft: 18, paddingRight: 18, paddingTop: 7, paddingBottom: 7, minHeight: 36 }
+          : {}),
       }}
       onPointerDown={handleBodyPickup}
     >
       {/* Atmosphere wash: the same animated aurora as the member's profile
           backdrop, masked to fade out before the text so it stays readable. */}
-      {atmosphere && <AtmosphereBackground atm={atmosphere} variant="chat" />}
+      {cologne ? (
+        <MajorCologneChrome coin={cologne.coin} frame={cologne.frame} />
+      ) : atmosphere ? (
+        <AtmosphereBackground atm={atmosphere} variant="chat" />
+      ) : null}
 
       {/* Held-in-drag marker: a faint accent wash + a repeating light sweep so
           you're sure which message is in your cursor. */}

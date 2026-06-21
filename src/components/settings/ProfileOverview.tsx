@@ -69,6 +69,7 @@ import type { InventoryResponse, ChannelPointsBalance } from '../../types';
 import { pickHoursRoast, type PickedRoast } from '../../utils/hoursWatchedRoasts';
 import { SEASONAL_ACCOLADES, getActiveSeasonalAccoladeIds, isCakeDay, CAKE_DAY_ID } from '../../utils/seasonalAccolades';
 import { RESTLESS_ACCOLADE_ID } from '../../utils/notifAchievement';
+import { MAJOR_COLOGNE_ACCOLADE_ID } from '../../services/cologneEvent';
 import SubscriptionsSection from './SubscriptionsSection';
 import MembershipSection from './MembershipSection';
 import TopEmotesSection from './TopEmotesSection';
@@ -522,7 +523,20 @@ const ProfileOverview = ({
       hint: earnedAccolades.has(CAKE_DAY_ID) ? 'Collected' : 'Open StreamNook on your Twitch cake day',
     },
   ];
-  const allAccolades: Accolade[] = [...baseAccolades, ...secretAccolades, ...seasonalAccolades];
+  // Limited event accolades (earned via a special event, not a stat threshold).
+  const eventAccolades: Accolade[] = [
+    {
+      id: MAJOR_COLOGNE_ACCOLADE_ID,
+      label: 'CS2 Major Cologne 2026',
+      icon: Trophy,
+      grad: 'linear-gradient(140deg, #f6e3a0, #9c7528)',
+      earned: earnedAccolades.has(MAJOR_COLOGNE_ACCOLADE_ID),
+      hint: earnedAccolades.has(MAJOR_COLOGNE_ACCOLADE_ID)
+        ? 'Tuned in during the CS2 Major'
+        : 'Watch Counter-Strike in StreamNook during the CS2 Major',
+    },
+  ];
+  const allAccolades: Accolade[] = [...baseAccolades, ...secretAccolades, ...seasonalAccolades, ...eventAccolades];
   // On someone else's PUBLIC profile, hide locked SECRET accolades entirely: a
   // viewer shouldn't see placeholders for hidden achievements the member hasn't
   // earned, and must never be able to read a how-to off them. Your own profile
