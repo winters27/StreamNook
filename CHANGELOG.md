@@ -1,3 +1,17 @@
+## [8.0.10] - 2026-06-21
+### ✨ Features
+- **Chat on the left, plus reveal on hover**: Dock chat on the left of the player, not just right or bottom. Side-docked chat can also tuck against its edge and slide out when you move toward it, with the player shrinking to make room.
+- **Cinema Mode**: Choose how the letterbox bars around the video look. Cinema Mode keeps them classic black; off matches them to your theme background so the video appears to float.
+- **Profile atmospheres update live**: When someone changes the atmosphere they're wearing while you're already in chat with them, it now updates for you on their next message instead of staying stuck on what they had before.
+
+### 🐛 Bug Fixes
+- **No more freeze when you minimize or alt-tab**: Fixed the app going "Not Responding" after you minimize or alt-tab on Windows. Playback and the interface now pause and resume cleanly.
+- **Dropdowns stay put**: Open settings dropdowns no longer close when you scroll or resize the window. They follow their button instead.
+
+### 🔧 Maintenance
+- **Cleaner mention highlights**: The mention and reply flash now uses a consistent accent color and drops the extra glow.
+- **Sharper profile customization preview**: The chat preview now matches a real chat row's size, wrapping, and readability.
+
 ## [8.0.9] - 2026-06-21
 ### ✨ Features
 - **CS2 Major Cologne 2026**: Watch any Counter-Strike stream in StreamNook within 24 hours of the Cologne grand finals to unlock a limited Cologne look for your chat and profile. Supporters can add the gold coin, subscribers can add the gold border too, and everyone in chat sees what you have applied.
