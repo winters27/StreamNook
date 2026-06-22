@@ -12,8 +12,7 @@
 // read that registry. This file owns only the shared `Atmosphere` shape.
 
 import { getAtmosphereEntry, listAtmosphereEntries } from './supabaseService';
-import majorCologneTexture from '../assets/major-cologne-2026-texture.png';
-import { MAJOR_COLOGNE_THEME_ID, MAJOR_COLOGNE_ACCOLADE_ID, isCologneTheme } from './cologneEvent';
+import { MAJOR_COLOGNE_THEME_ID, isCologneTheme } from './cologneEvent';
 
 export interface Atmosphere {
   id: string;
@@ -57,32 +56,35 @@ export interface Atmosphere {
   // specific accolade, available to ANY member regardless of subscription.
   // Absent is treated as 'subscriber' by the gate, for safety.
   unlock?: { kind: 'subscriber' } | { kind: 'accolade'; accoladeId: string };
+  // Custom render kind. Absent = the standard gradient / image backdrop described
+  // above. 'cologne-chrome' = the CS2 Major Cologne decoration (animated glass
+  // wash + optional coin watermark + optional nine-slice gold frame), drawn by
+  // MajorCologneChrome from the chrome* URLs below instead of `layers` / `image`.
+  // One system extended for a richer render type, not a second system.
+  kind?: 'cologne-chrome';
+  // R2 asset URLs for the 'cologne-chrome' kind (ignored by other kinds): the
+  // seamless glass tile that scrolls, the medallion watermark, and the nine-slice
+  // border. The coin / frame only paint when the viewer's add-on flags (parsed off
+  // the theme id, see cologneEvent) enable them; the texture always paints.
+  chromeTexture?: string;
+  chromeCoin?: string;
+  chromeFrame?: string;
 }
 
 // Sync reads of the fetched catalog. Return null / empty until the registry has
 // loaded (consumers re-render via the version subscription); see supabaseService.
-// The CS2 Major Cologne look is one client-side Atmosphere entry (its render is
-// custom chrome, not a gradient, so it isn't a server catalog row). The
-// background (animated glass texture) is free for anyone who earned the accolade;
-// the coin and border are opt-in add-ons gated by support tier, encoded as suffix
-// flags on the theme id (see cologneEvent). The swatch is the real glass texture,
-// and the profile + live preview render the actual animated chrome (see
-// AtmosphereBackground's Cologne branch); chat renders it via MajorCologneChrome.
-export const MAJOR_COLOGNE_SWATCH = `url(${majorCologneTexture}) center / cover`;
-const COLOGNE_ATMOSPHERE: Atmosphere = {
-  id: MAJOR_COLOGNE_THEME_ID,
-  name: 'CS2 Major Cologne 2026',
-  accent: '214, 177, 92',
-  swatch: MAJOR_COLOGNE_SWATCH,
-  baseColor: '#0a1322',
-  motion: 'drift',
-  chatEdge: 'linear-gradient(180deg, #f6e3a0, #9c7528)',
-  unlock: { kind: 'accolade', accoladeId: MAJOR_COLOGNE_ACCOLADE_ID },
+//
+// The CS2 Major Cologne look is a catalog row like any other (kind:'cologne-chrome'
+// with R2 assets). Its APPLIED theme id can carry add-on suffix flags ('+coin' /
+// '+border', see cologneEvent), but the registry keys the row by its base id, so
+// strip the suffix to find the row and carry the FULL id through, so consumers
+// (AtmosphereBackground) can read the add-on flags back off atm.id.
+export const getAtmosphere = (id: string | null | undefined): Atmosphere | null => {
+  if (isCologneTheme(id)) {
+    const base = getAtmosphereEntry(MAJOR_COLOGNE_THEME_ID);
+    return base ? { ...base, id: id! } : null;
+  }
+  return getAtmosphereEntry(id);
 };
 
-// Return the Cologne atmosphere for ANY Cologne theme (incl. the add-on suffixes),
-// carrying the full id through so consumers can read the add-on flags from atm.id.
-export const getAtmosphere = (id: string | null | undefined): Atmosphere | null =>
-  isCologneTheme(id) ? { ...COLOGNE_ATMOSPHERE, id: id! } : getAtmosphereEntry(id);
-
-export const listAtmospheres = (): Atmosphere[] => [...listAtmosphereEntries(), COLOGNE_ATMOSPHERE];
+export const listAtmospheres = (): Atmosphere[] => listAtmosphereEntries();

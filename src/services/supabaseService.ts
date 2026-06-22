@@ -1464,6 +1464,10 @@ interface AtmosphereRow {
     unlock_kind: string;
     unlock_accolade_id: string | null;
     sort_order: number;
+    kind: string | null;
+    chrome_texture: string | null;
+    chrome_coin: string | null;
+    chrome_frame: string | null;
 }
 
 const rowToAtmosphere = (row: AtmosphereRow): Atmosphere => ({
@@ -1483,6 +1487,10 @@ const rowToAtmosphere = (row: AtmosphereRow): Atmosphere => ({
     unlock: row.unlock_kind === 'accolade' && row.unlock_accolade_id
         ? { kind: 'accolade', accoladeId: row.unlock_accolade_id }
         : { kind: 'subscriber' },
+    kind: row.kind === 'cologne-chrome' ? 'cologne-chrome' : undefined,
+    chromeTexture: row.chrome_texture ?? undefined,
+    chromeCoin: row.chrome_coin ?? undefined,
+    chromeFrame: row.chrome_frame ?? undefined,
 });
 
 const loadAtmospheres = async (): Promise<void> => {
@@ -1564,6 +1572,49 @@ export const subscribeToAtmospheresRegistry = (
         if (atmospheresVersionSubscribers.size === 0 && atmospheresChannel) {
             atmospheresChannel.unsubscribe();
             atmospheresChannel = null;
+        }
+    };
+};
+
+// ─── Live profile-theme changes (cross-user) ────────────────────────────────
+// A realtime bridge on the world-readable user_profile_prefs table so that when
+// ANY member changes the atmosphere / Cologne look they wear, viewers already in
+// chat with them get the new value PUSHED, instead of only picking it up on a
+// later re-sighting. Theme changes are rare, so one global subscription is cheap;
+// the consumer filters to members it actually tracks. Requires the table to be in
+// the `supabase_realtime` publication (see the migration).
+const profileThemeSubscribers = new Set<(userId: string, profileTheme: string | null) => void>();
+let profilePrefsChannel: RealtimeChannel | null = null;
+
+export const subscribeToProfileThemeChanges = (
+    callback: (userId: string, profileTheme: string | null) => void,
+): (() => void) | null => {
+    if (!supabase) return null;
+    profileThemeSubscribers.add(callback);
+
+    if (!profilePrefsChannel) {
+        profilePrefsChannel = supabase
+            .channel('profile-prefs-themes')
+            .on('postgres_changes', {
+                event: '*',
+                schema: 'public',
+                table: 'user_profile_prefs',
+            }, (payload) => {
+                const row = (payload.new ?? null) as { twitch_user_id?: string; profile_theme?: string | null } | null;
+                if (!row?.twitch_user_id) return; // DELETE / malformed: nothing to apply
+                for (const fn of profileThemeSubscribers) {
+                    try { fn(row.twitch_user_id, row.profile_theme ?? null); }
+                    catch (e) { Logger.error('[Supabase] profile theme subscriber error:', e); }
+                }
+            })
+            .subscribe();
+    }
+
+    return () => {
+        profileThemeSubscribers.delete(callback);
+        if (profileThemeSubscribers.size === 0 && profilePrefsChannel) {
+            profilePrefsChannel.unsubscribe();
+            profilePrefsChannel = null;
         }
     };
 };
