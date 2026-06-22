@@ -2,8 +2,9 @@
 // Counter-Strike category in-app during the event window. Called from the
 // watch-time tracker (App.tsx) on stream start and once a minute while watching.
 import { invoke } from '@tauri-apps/api/core';
-import { grantAccolade } from './supabaseService';
+import { grantAccolade, getAccolades } from './supabaseService';
 import { MAJOR_COLOGNE_ACCOLADE_ID } from './cologneEvent';
+import { useAppStore } from '../stores/AppStore';
 import { Logger } from '../utils/logger';
 
 // Universal cutoff: one absolute UTC instant ~24 hours from when this shipped, so
@@ -53,9 +54,26 @@ export async function maybeGrantCologneFromWatch(
 
   grantedThisSession.add(userId);
   try {
-    // Granting only UNLOCKS the Cologne look in the Atmosphere picker; it does
-    // not auto-apply. The member chooses to wear it from profile customization.
+    // Only ANNOUNCE a genuinely new earn. The grant is idempotent and a fresh
+    // session re-runs this check, so re-watching after already holding it must
+    // not re-toast "unlocked"; skip the write entirely when already held.
+    const alreadyEarned = (await getAccolades(userId)).includes(MAJOR_COLOGNE_ACCOLADE_ID);
+    if (alreadyEarned) {
+      Logger.info('[Cologne] accolade already held for ' + userId);
+      return;
+    }
+    // Granting only UNLOCKS the look in the picker; it does not auto-apply. The
+    // member chooses to wear it from profile customization.
     await grantAccolade(userId, MAJOR_COLOGNE_ACCOLADE_ID);
+    // Celebrate the unlock so they know they earned it, and point them at where
+    // to wear it (the look is opt-in). alwaysShow so it lands even when routine
+    // toasts are muted, matching the other achievement unlocks.
+    useAppStore.getState().addToast(
+      'Achievement unlocked: CS2 Major Cologne. Apply your new event look from profile customization.',
+      'success',
+      undefined,
+      { alwaysShow: true },
+    );
     Logger.info('[Cologne] accolade granted to ' + userId);
   } catch (e) {
     // Let a later watch-minute retry if the write failed.
