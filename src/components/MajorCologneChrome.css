@@ -26,6 +26,15 @@
   --frame-slice: 199 159 199 159;
 }
 
+/* Bare thumbnail (the picker swatch): fill the parent box and sit in normal flow
+   (not z -10, which would hide it behind a sibling background), with a smaller
+   tile so the glass lattice reads at thumbnail size. */
+.cologne-chrome.cologne-chrome--bare {
+  z-index: 0;
+  --tile: 48px;
+  --drift: 12s;
+}
+
 /* Clips the wash + frame to the row; the coin lives OUTSIDE this so it can
    hang off the left edge. */
 .cologne-clip {

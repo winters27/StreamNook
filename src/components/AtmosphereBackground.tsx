@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Atmosphere } from '../services/atmospheres';
 import { MajorCologneChrome } from './MajorCologneChrome';
-import { isCologneTheme, parseCologneTheme } from '../services/cologneEvent';
+import { parseCologneTheme } from '../services/cologneEvent';
 
 // Renders a StreamNook Atmosphere. The motion is pure CSS (the `.sn-aurora-*`
 // classes in globals.css), so it runs on the compositor off the main thread and
@@ -23,14 +23,25 @@ export const AtmosphereBackground = ({
   // since text sits directly on the wash.)
   blur?: boolean;
 }) => {
-  // The Cologne look is custom chrome (animated glass texture + coin + frame),
-  // not a gradient, so render it directly wherever an atmosphere would paint
-  // (profile backdrop, picker preview). Chat goes through MajorCologneChrome
-  // on its own via the resolved cologne cosmetics, so this branch is only hit by
-  // profile surfaces.
-  if (isCologneTheme(atm.id)) {
+  // The 'cologne-chrome' render kind is custom chrome (animated glass texture +
+  // coin + frame) drawn from the def's R2 asset URLs, not a gradient, so render it
+  // directly wherever an atmosphere would paint. Which add-ons show is parsed off
+  // the carried theme id. Live chat rows go through MajorCologneChrome on their
+  // own; this branch serves the profile backdrop and the picker's chat preview.
+  if (atm.kind === 'cologne-chrome') {
     const c = parseCologneTheme(atm.id);
-    return <MajorCologneChrome coin={!!c?.coin} frame={!!c?.frame} />;
+    return (
+      <MajorCologneChrome
+        textureUrl={atm.chromeTexture ?? ''}
+        coinUrl={atm.chromeCoin}
+        frameUrl={atm.chromeFrame}
+        coin={!!c?.coin}
+        // The frame is a square chat-row border; the rounded profile panel would
+        // clash with it, so it shows only on the chat wash. Background + coin
+        // still theme the profile.
+        frame={variant === 'chat' && !!c?.frame}
+      />
+    );
   }
   if (variant === 'chat') {
     return <ChatAtmosphere atm={atm} />;

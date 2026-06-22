@@ -21,6 +21,7 @@ import { StreamNookBadge } from './StreamNookBadge';
 import { AtmosphereBackground } from './AtmosphereBackground';
 import { MajorCologneChrome } from './MajorCologneChrome';
 import { getAtmosphere } from '../services/atmospheres';
+import { MAJOR_COLOGNE_THEME_ID } from '../services/cologneEvent';
 import { matchHighlightPhrase, matchHighlightUser, matchHighlightBadge, type HighlightMatch } from '../utils/chatHighlightMatcher';
 import { flashTitle } from '../utils/titleFlasher';
 import { playSoundThrottled } from '../utils/notificationSound';
@@ -536,8 +537,10 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
   // washes); subtle ones render the text bare.
   const atmosphereFrost = !!atmosphere?.chatFrost;
   // CS2 Major Cologne event cosmetics this member applied (null = none). Takes
-  // precedence over the Atmosphere wash when present.
+  // precedence over the Atmosphere wash when present. The chrome asset URLs live
+  // on the Cologne atmosphere row (R2), shared by every wearer.
   const cologne = useChatUserStore((s) => (userId ? s.users.get(userId)?.cologne ?? null : null));
+  const cologneAtm = cologne ? getAtmosphere(MAJOR_COLOGNE_THEME_ID) : null;
   const [broadcasterType] = useState<string | null>(null);
   const [isMentioned, setIsMentioned] = useState(false);
   const [isReplyToMe, setIsReplyToMe] = useState(false);
@@ -2216,16 +2219,20 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
     paddingBottom: `${Math.max(4, messageSpacing / 2)}px`,
   };
 
-  // Determine animation class and border color
+  // Determine animation class and border color. Mentions/replies to you take
+  // precedence over phrase/built-in highlights. The flash is gated on the
+  // mention_animation toggle, but the chosen color always paints the left
+  // border so it still shows when the flash is off.
   let animationClass = '';
   let borderLeftColor = '';
+  const flashOn = chatDesign?.mention_animation !== false;
 
-  if (isMentioned && chatDesign?.mention_animation !== false) {
-    animationClass = 'animate-mention-flash';
+  if (isMentioned) {
     borderLeftColor = chatDesign?.mention_color ?? '#ff4444';
-  } else if (isReplyToMe && chatDesign?.mention_animation !== false) {
-    animationClass = 'animate-reply-flash';
+    if (flashOn) animationClass = 'animate-mention-flash';
+  } else if (isReplyToMe) {
     borderLeftColor = chatDesign?.reply_color ?? '#ff6b6b';
+    if (flashOn) animationClass = 'animate-reply-flash';
   } else if (phraseMatch) {
     animationClass = 'animate-phrase-highlight';
     borderLeftColor = phraseMatch.color;
@@ -2326,6 +2333,9 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
         ...(phraseMatch
           ? ({ '--phrase-flash-color': phraseMatch.color } as React.CSSProperties)
           : {}),
+        ...((isMentioned || isReplyToMe) && borderLeftColor
+          ? ({ '--flash-accent-color': borderLeftColor } as React.CSSProperties)
+          : {}),
         // The Cologne frame needs horizontal room + a minimum height so the gold
         // border is never cut off on a single-line message; the background-only
         // and coin variants need no special padding.
@@ -2337,8 +2347,14 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
     >
       {/* Atmosphere wash: the same animated aurora as the member's profile
           backdrop, masked to fade out before the text so it stays readable. */}
-      {cologne ? (
-        <MajorCologneChrome coin={cologne.coin} frame={cologne.frame} />
+      {cologne && cologneAtm ? (
+        <MajorCologneChrome
+          textureUrl={cologneAtm.chromeTexture ?? ''}
+          coinUrl={cologneAtm.chromeCoin}
+          frameUrl={cologneAtm.chromeFrame}
+          coin={cologne.coin}
+          frame={cologne.frame}
+        />
       ) : atmosphere ? (
         <AtmosphereBackground atm={atmosphere} variant="chat" />
       ) : null}

@@ -16,6 +16,7 @@ import { useChatUserStore } from '../stores/chatUserStore';
 import { AtmosphereBackground } from './AtmosphereBackground';
 import { MajorCologneChrome } from './MajorCologneChrome';
 import { getAtmosphere } from '../services/atmospheres';
+import { MAJOR_COLOGNE_THEME_ID } from '../services/cologneEvent';
 
 interface StreamNookBadgeProps {
   userId: string | undefined;
@@ -412,7 +413,9 @@ export const StreamNookBadge = memo(function StreamNookBadge({
   const atmosphereId = useChatUserStore((s) => (userId ? s.users.get(userId)?.atmosphereId ?? null : null));
   const atmosphere = atmosphereId ? getAtmosphere(atmosphereId) : null;
   // CS2 Major Cologne cosmetics this member applied (themes the hover card too).
+  // The chrome asset URLs come from the Cologne atmosphere row (R2).
   const cologne = useChatUserStore((s) => (userId ? s.users.get(userId)?.cologne ?? null : null));
+  const cologneAtm = cologne ? getAtmosphere(MAJOR_COLOGNE_THEME_ID) : null;
 
   // If the registry lookup somehow missed (shouldn't happen given isSN was true),
   // fall back to the plain label so we never render a broken animation.
@@ -422,12 +425,16 @@ export const StreamNookBadge = memo(function StreamNookBadge({
     const tier = getTier(userNumber);
     tooltipContent = (
       <>
-        {cologne ? (
+        {cologne && cologneAtm ? (
           <div className="absolute inset-0 overflow-hidden rounded-2xl">
             {/* Cologne theme: the background wash (+ coin if they enabled it). The
                 gold frame is a chat-row border and is omitted here so it doesn't
                 fight the card's own rounded chassis. */}
-            <MajorCologneChrome coin={cologne.coin} />
+            <MajorCologneChrome
+              textureUrl={cologneAtm.chromeTexture ?? ''}
+              coinUrl={cologneAtm.chromeCoin}
+              coin={cologne.coin}
+            />
           </div>
         ) : atmosphere ? (
           <div className="absolute inset-0 overflow-hidden rounded-2xl">
