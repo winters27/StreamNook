@@ -5,7 +5,7 @@ import {
   isUserCosmeticsHardFailed,
   subscribeToCosmetics,
 } from '../services/cosmeticsCache';
-import { isStreamNookUser, getProfilePrefs, whenAtmospheresReady, subscribeAtmospheresVersion, subscribeStreamNookRegistryVersion } from '../services/supabaseService';
+import { isStreamNookUser, getProfilePrefs, whenAtmospheresReady, subscribeAtmospheresVersion, subscribeStreamNookRegistryVersion, subscribeToProfileThemeChanges } from '../services/supabaseService';
 import { getAtmosphere } from '../services/atmospheres';
 import { parseCologneTheme, type CologneCosmetics } from '../services/cologneEvent';
 import {
@@ -292,6 +292,14 @@ let pendingAtmosphereFlushScheduled = false;
 // read can't race the just-fired write.
 const atmosphereCache = new Map<string, string | null>();
 const atmosphereInFlight = new Set<string>();
+// Last time we resolved each member's live theme. Cross-user theme changes are
+// PUSHED live by the realtime bridge at the bottom of this file, so the cache
+// stays fresh without re-fetching. This TTL is only a backstop: if a viewer
+// missed a live event (e.g. disconnected when the member changed it), a cache hit
+// still paints the old value instantly, then re-fetches in the background so it
+// self-heals on the member's next message, with no channel switch needed.
+const lastResolvedAt = new Map<string, number>();
+const RESOLVE_TTL_MS = 120_000;
 
 function scheduleAtmosphereFlush() {
   if (pendingAtmosphereFlushScheduled) return;
@@ -363,17 +371,38 @@ export function registerOwnAtmospheres(userIds: string[]): void {
   }
 }
 
+// Resolve a profile_theme into the store's atmosphere / Cologne fields and cache
+// it. Shared by the per-sighting resolver, the explicit self-change path, and the
+// live cross-user theme bridge, so all three stay consistent. Cologne is its own
+// custom chrome (its add-ons are read from the theme id), not a gradient
+// Atmosphere, so it clears atmosphereId and vice-versa.
+function applyResolvedTheme(userId: string, profileTheme: string | null | undefined) {
+  const cologne = parseCologneTheme(profileTheme);
+  if (cologne) {
+    pushAtmosphere(userId, null);
+    pushCologne(userId, cologne);
+  } else {
+    const atm = getAtmosphere(profileTheme);
+    pushAtmosphere(userId, atm ? atm.id : null);
+    pushCologne(userId, null);
+  }
+  lastResolvedAt.set(userId, Date.now());
+}
+
 function ensureAtmosphereResolved(userId: string) {
   if (!userId || !isStreamNookUser(userId)) return;
   // Cached/known value (incl. one set by an explicit change before the user was
-  // in the store): push it to the store for this (re)sighting. The Cologne tier
-  // is cached alongside the atmosphere (both come from the same selected theme).
+  // in the store): push it to the store for this (re)sighting. The Cologne add-ons
+  // are cached alongside the atmosphere (both come from the same selected theme).
   if (atmosphereCache.has(userId)) {
+    // Serve the cached value now for an instant, flicker-free paint.
     pendingAtmosphereUpdates.set(userId, atmosphereCache.get(userId)!);
     scheduleAtmosphereFlush();
     pendingCologneUpdates.set(userId, cologneCache.get(userId) ?? null);
     scheduleCologneFlush();
-    return;
+    // Within the TTL, trust the cache (the live bridge keeps it fresh). Past it,
+    // fall through to a background re-fetch as a backstop for a missed live event.
+    if (Date.now() - (lastResolvedAt.get(userId) ?? 0) < RESOLVE_TTL_MS) return;
   }
   if (atmosphereInFlight.has(userId)) return;
   atmosphereInFlight.add(userId);
@@ -385,20 +414,9 @@ function ensureAtmosphereResolved(userId: string) {
       // Wait for the atmosphere catalog so we never resolve a real theme to null
       // just because the catalog had not loaded yet.
       await whenAtmospheresReady();
-      const cologne = parseCologneTheme(prefs.profileTheme);
-      if (cologne) {
-        // Cologne is its own custom chrome, not a gradient Atmosphere. Which
-        // add-ons (coin / frame) show is read from the selected theme; the tier
-        // gate that decides what they could pick lives in the picker, not here.
-        pushAtmosphere(userId, null);
-        pushCologne(userId, cologne);
-      } else {
-        const atm = getAtmosphere(prefs.profileTheme);
-        pushAtmosphere(userId, atm ? atm.id : null);
-        pushCologne(userId, null);
-      }
+      applyResolvedTheme(userId, prefs.profileTheme);
     } catch {
-      /* leave uncached so a later sighting retries */
+      /* leave cached so a later sighting retries */
     } finally {
       atmosphereInFlight.delete(userId);
     }
@@ -406,17 +424,10 @@ function ensureAtmosphereResolved(userId: string) {
 }
 
 // Set a member's theme to a KNOWN value now (they just changed it), so their
-// messages update in real time with no Supabase read (and switching away clears
-// it). Cologne is its own chrome, resolved with a quick subscriber check.
+// messages update in real time with no Supabase read. Used for our own accounts
+// on an explicit pick (the value is already resolved by the caller).
 export function refreshAtmosphere(userId: string, atmosphereId: string | null) {
-  const cologne = parseCologneTheme(atmosphereId);
-  if (cologne) {
-    pushAtmosphere(userId, null);
-    pushCologne(userId, cologne);
-  } else {
-    pushAtmosphere(userId, atmosphereId);
-    pushCologne(userId, null);
-  }
+  applyResolvedTheme(userId, atmosphereId);
 }
 
 // ── CS2 Major Cologne event chrome ───────────────────────────────────────────
@@ -612,6 +623,10 @@ export const useChatUserStore = create<ChatUserStore>((set, get) => ({
     // so drop the resolved-guard too: a chatter reappearing in the next channel
     // re-resolves cleanly instead of being skipped with no badges.
     thirdPartyNonMemberResolved.clear();
+    // The atmosphere / Cologne theme cache deliberately PERSISTS across channels:
+    // a member's wash paints instantly when they reappear instead of re-fetching
+    // every switch. It is kept fresh by the live theme bridge below (a push on any
+    // change) plus the TTL backstop, so it does not go stale.
     set({ users: new Map(), usernameToId: new Map() });
   },
 }));
@@ -630,6 +645,19 @@ subscribeAtmospheresVersion(() => {
       ensureAtmosphereResolved(uid);
     }
   }
+});
+
+// Live cross-user theme updates: when any member changes the atmosphere / Cologne
+// look they wear, the new value is pushed here so their rows repaint for everyone
+// already in chat with them, instead of waiting for a re-sighting or channel
+// switch. Only members we track (or have cached this session) are touched; the
+// rest of the change stream is ignored. Wait for the catalog so a real theme
+// never resolves to null.
+subscribeToProfileThemeChanges((userId, profileTheme) => {
+  if (!userId || !isStreamNookUser(userId)) return;
+  const state = useChatUserStore.getState();
+  if (!state.users.has(userId) && !atmosphereCache.has(userId)) return;
+  void whenAtmospheresReady().then(() => applyResolvedTheme(userId, profileTheme));
 });
 
 // Reactive bridge from the shared cosmetics cache into the per-user chat
