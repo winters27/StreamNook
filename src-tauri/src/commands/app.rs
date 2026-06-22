@@ -66,7 +66,7 @@ pub async fn calculate_aspect_ratio_size(
     // which caused the window to shrink unexpectedly.
 
     let (new_width, new_height) = match chat_placement.as_str() {
-        "right" => {
+        "right" | "left" => {
             // Keep window width strictly locked, recalculate height to match.
             // Video width = total width - chat size - extra width
             let video_width = current_width
@@ -131,7 +131,7 @@ pub async fn calculate_aspect_ratio_size_preserve_video(
 
     // First, calculate the current video dimensions based on old layout
     let (video_width, video_height) = match old_chat_placement.as_str() {
-        "right" => {
+        "right" | "left" => {
             let vw = current_width
                 .saturating_sub(old_chat_size)
                 .saturating_sub(extra_w);
@@ -165,7 +165,7 @@ pub async fn calculate_aspect_ratio_size_preserve_video(
 
     // Now calculate the new window size to preserve these video dimensions
     let (new_width, new_height) = match new_chat_placement.as_str() {
-        "right" => {
+        "right" | "left" => {
             // Video on left, chat on right
             // Window width = video width + chat width
             // Window height = video height + title bar

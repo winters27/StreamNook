@@ -243,7 +243,11 @@ const StreamItem = memo(({
     );
 });
 
-const Sidebar = () => {
+const Sidebar = ({ side = 'left' }: { side?: 'left' | 'right' }) => {
+    // Mirror the sidebar to the right edge (used when chat is docked left with
+    // reveal-on-hover, so the left edge belongs to the chat and the two don't fight
+    // over the same hover zone).
+    const onRight = side === 'right';
     const {
         followedStreams,
         recommendedStreams,
@@ -765,7 +769,7 @@ const Sidebar = () => {
             {sidebarMode === 'hidden' && !visible && (
                 <div
                     ref={edgeTriggerRef}
-                    className="fixed left-0 top-0 h-full z-50"
+                    className={`fixed ${onRight ? 'right-0' : 'left-0'} top-0 h-full z-50`}
                     style={{ width: HIDDEN_TRIGGER_ZONE }}
                     onMouseEnter={() => setIsEdgeHovered(true)}
                 />
@@ -773,14 +777,14 @@ const Sidebar = () => {
 
             {/* Spacer for compact overlay mode to maintain layout - only when in overlay mode */}
             {sidebarMode === 'compact' && expandOnHover && isOverlay && (
-                <div style={{ width: COMPACT_WIDTH, minWidth: COMPACT_WIDTH, flexShrink: 0 }} />
+                <div style={{ width: COMPACT_WIDTH, minWidth: COMPACT_WIDTH, flexShrink: 0, order: onRight ? 1 : 0 }} />
             )}
 
             {/* Main sidebar */}
             <div
                 ref={sidebarRef}
                 className={`
-                    border-r border-borderSubtle flex flex-col flex-shrink-0
+                    ${onRight ? 'border-l' : 'border-r'} border-borderSubtle flex flex-col flex-shrink-0
                     transition-[width,min-width,opacity,transform] duration-200 ease-[cubic-bezier(0.4,0,0.2,1)]
                     ${isOverlay
                         // Overlay panels are position:fixed, so a percentage height
@@ -792,7 +796,7 @@ const Sidebar = () => {
                         // MUST track the title bar height (h-[40px] in TitleBar.tsx);
                         // when it lagged at top-8 the panel rode up under the bar and
                         // its frosted backing clipped the title-bar action icons.
-                        ? 'fixed left-0 top-10 bottom-0 z-50'
+                        ? `fixed ${onRight ? 'right-0' : 'left-0'} top-10 bottom-0 z-50`
                         : 'relative h-full'
                     }
                 `}
@@ -801,7 +805,8 @@ const Sidebar = () => {
                     minWidth: isOverlay ? 0 : width,
                     opacity: visible ? 1 : 0,
                     pointerEvents: visible ? 'auto' : 'none',
-                    transform: visible ? 'translateX(0)' : 'translateX(-10px)',
+                    transform: visible ? 'translateX(0)' : `translateX(${onRight ? '10px' : '-10px'})`,
+                    order: onRight ? 1 : 0,
                 }}
                 onMouseEnter={() => {
                     // Cancel any pending close timeout
@@ -872,7 +877,7 @@ const Sidebar = () => {
                     <Tooltip content="Drag to resize sidebar" delay={500} side="right">
                         <div
                             className={`
-                                absolute right-0 top-0 w-1 h-full cursor-ew-resize z-10
+                                absolute ${onRight ? 'left-0' : 'right-0'} top-0 w-1 h-full cursor-ew-resize z-10
                                 hover:bg-accent/50 active:bg-accent transition-colors
                                 ${isResizing ? 'bg-accent' : 'bg-transparent'}
                             `}

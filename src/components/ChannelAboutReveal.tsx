@@ -34,6 +34,10 @@ export default function ChannelAboutReveal({ enabled, channelLogin, children }: 
   const [showAbout, setShowAbout] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const aboutScrollRef = useRef<HTMLDivElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  // True when the player area is taller than the ~16:9 video, so there's a black
+  // letterbox bar below it big enough to hold the About hint clear of the stream.
+  const [hasBottomBar, setHasBottomBar] = useState(false);
   const currentStream = useAppStore((s) => s.currentStream);
   const openStreamerMedia = useAppStore((s) => s.openStreamerMedia);
 
@@ -103,6 +107,25 @@ export default function ChannelAboutReveal({ enabled, channelLogin, children }: 
     if (open && aboutScrollRef.current) aboutScrollRef.current.scrollTop = 0;
   }, [open]);
 
+  // Track whether a bottom letterbox bar exists (player area taller than the
+  // ~16:9 video). The hint only shows when the bar can hold it clear of the
+  // stream, so it never sits over the actual video content.
+  useEffect(() => {
+    const el = rootRef.current;
+    if (!el) return;
+    const measure = () => {
+      const w = el.clientWidth;
+      const h = el.clientHeight;
+      if (!w || !h) return;
+      const bottomBar = (h - (w * 9) / 16) / 2;
+      setHasBottomBar(bottomBar >= 30);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
   const onWheel = (e: React.WheelEvent) => {
     if (!active) return;
     if (!open) {
@@ -117,7 +140,7 @@ export default function ChannelAboutReveal({ enabled, channelLogin, children }: 
   };
 
   return (
-    <div className="group/reveal flex-1 relative overflow-hidden bg-background" onWheel={active ? onWheel : undefined}>
+    <div ref={rootRef} className="group/reveal flex-1 relative overflow-hidden bg-background" onWheel={active ? onWheel : undefined}>
       {/* Video layer — pushed fully up and out when the About is revealed. The
           stream keeps playing; this is only a transform. */}
       <motion.div className="absolute inset-0" animate={{ y: open ? '-100%' : '0%' }} transition={SNAP}>
@@ -190,19 +213,22 @@ export default function ChannelAboutReveal({ enabled, channelLogin, children }: 
             {channelLogin && <StreamerAboutPanel channelLogin={channelLogin} />}
           </motion.div>
 
-          {/* Scroll affordance, pinned to the bottom edge. Always mounted so it
-              FADES (not pops) with the swap — opacity-0 while the About is open,
-              and on hover so it never collides with the player's bottom controls
-              (which only appear on hover). */}
-          <button
-            type="button"
-            onClick={() => setShowAbout(true)}
-            aria-hidden={open}
-            className={`absolute bottom-2 left-1/2 z-20 flex -translate-x-1/2 items-center gap-1 rounded-full border border-white/10 bg-black/40 px-2.5 py-0.5 text-[11px] font-medium text-white/60 backdrop-blur-sm transition-all duration-300 hover:bg-black/60 hover:text-white group-hover/reveal:pointer-events-none group-hover/reveal:opacity-0 ${open ? 'pointer-events-none opacity-0' : 'pointer-events-auto opacity-80'}`}
-          >
-            About
-            <ChevronDown className="h-3 w-3" />
-          </button>
+          {/* Scroll affordance, pinned to the bottom edge. Only shown when a bottom
+              letterbox bar can hold it (so it never sits over the video). Mounted
+              while the bar exists so it FADES (not pops) with the open/hover swap —
+              opacity-0 while the About is open, and on hover so it never collides
+              with the player's bottom controls (which only appear on hover). */}
+          {hasBottomBar && (
+            <button
+              type="button"
+              onClick={() => setShowAbout(true)}
+              aria-hidden={open}
+              className={`absolute bottom-2 left-1/2 z-20 flex -translate-x-1/2 items-center gap-1 rounded-full border border-white/10 bg-black/40 px-2.5 py-0.5 text-[11px] font-medium text-white/60 backdrop-blur-sm transition-all duration-300 hover:bg-black/60 hover:text-white group-hover/reveal:pointer-events-none group-hover/reveal:opacity-0 ${open ? 'pointer-events-none opacity-0' : 'pointer-events-auto opacity-80'}`}
+            >
+              About
+              <ChevronDown className="h-3 w-3" />
+            </button>
+          )}
         </>
       )}
     </div>

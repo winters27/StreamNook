@@ -1,4 +1,5 @@
 import { useEffect, useState, useRef } from 'react';
+import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useAppStore, type WhisperImportProgress, type SettingsTab } from './stores/AppStore';
 import { useContextMenuStore } from './stores/contextMenuStore';
@@ -115,6 +116,28 @@ function App() {
 
   const [chatSize, setChatSize] = useState(chatPlacement === 'bottom' ? DEFAULT_CHAT_HEIGHT : DEFAULT_CHAT_WIDTH);
   const [modLogsSize, setModLogsSize] = useState(300); // Default Mod Logs size
+  // Chat "reveal on hover" (auto-hide). Only the side docks (left/right) support
+  // it: the chat tucks to a thin edge handle and slides out on hover, with the
+  // player flexing to make room (no window resize, the reveal lives inside the
+  // existing video area).
+  const chatAutoHide = settings.chat_auto_hide ?? false;
+  const isSideChat = chatPlacement === 'right' || chatPlacement === 'left';
+  const autoHideActive = chatAutoHide && isSideChat;
+  const [chatRevealed, setChatRevealed] = useState(false);
+  const chatRevealTimer = useRef<number | null>(null);
+  const revealChat = () => {
+    if (chatRevealTimer.current) { window.clearTimeout(chatRevealTimer.current); chatRevealTimer.current = null; }
+    setChatRevealed(true);
+  };
+  const hideChatSoon = () => {
+    if (chatRevealTimer.current) window.clearTimeout(chatRevealTimer.current);
+    chatRevealTimer.current = window.setTimeout(() => setChatRevealed(false), 150);
+  };
+  // Collapse + drop any pending timer whenever auto-hide stops applying.
+  useEffect(() => {
+    if (!autoHideActive) setChatRevealed(false);
+    return () => { if (chatRevealTimer.current) window.clearTimeout(chatRevealTimer.current); };
+  }, [autoHideActive]);
   const { isMultiNookActive, isChatHidden, slots } = usemultiNookStore();
   const visibleSlotsLength = slots.filter((s) => !s.isMinimized).length;
   const [isResizing, setIsResizing] = useState(false);
@@ -179,6 +202,14 @@ function App() {
       const newSize = chatPlacement === 'bottom' ? DEFAULT_CHAT_HEIGHT : DEFAULT_CHAT_WIDTH;
       Logger.debug('[ChatSize] Setting chat size to', newSize);
       setChatSize(newSize);
+
+      // Auto-hide reveals into the existing video area, so a placement change must
+      // NOT resize the window (the chat takes no docked space until you hover it).
+      if (autoHideActive) {
+        prevChatPlacementRef.current = chatPlacement;
+        prevChatSizeRef.current = newSize;
+        return;
+      }
       chatSizeRef.current = newSize;
 
       // Only resize window if aspect ratio lock is enabled and stream is playing
@@ -231,7 +262,7 @@ function App() {
           let uiHeightOffset = 0;
 
           // Account for the chat resize separator
-          if (chatPlacement === 'right') uiWidthOffset += 4;
+          if (chatPlacement === 'right' || chatPlacement === 'left') uiWidthOffset += 4;
           if (chatPlacement === 'bottom') uiHeightOffset += 4;
 
           if (currentIsMultiNookActive) {
@@ -280,7 +311,9 @@ function App() {
     };
 
     handlePlacementChange();
-  }, [chatPlacement, isTheaterMode]); // Added isTheaterMode to deps so the check is always current
+    // autoHideActive: re-read the skip-resize branch when auto-hide toggles (the
+    // early return on unchanged placement keeps a bare toggle a no-op here).
+  }, [chatPlacement, isTheaterMode, autoHideActive]);
 
   // Listen for badge detail events from chat
   useEffect(() => {
@@ -1350,8 +1383,12 @@ function App() {
         const container = containerRef.current;
         const containerRect = container.getBoundingClientRect();
 
-        if (chatPlacement === 'right') {
-          const newWidth = containerRect.right - e.clientX;
+        if (chatPlacement === 'right' || chatPlacement === 'left') {
+          // Left dock grows rightward from the left edge; right dock grows
+          // leftward from the right edge.
+          const newWidth = chatPlacement === 'left'
+            ? e.clientX - containerRect.left
+            : containerRect.right - e.clientX;
           const maxWidth = containerRect.width - 200;
           const clampedWidth = Math.max(250, Math.min(maxWidth, newWidth));
           setChatSize(clampedWidth);
@@ -1367,7 +1404,7 @@ function App() {
         // Mod Logs are always on the opposite side of chat.
         // If chat is Right, Mod Logs is bottom.
         // If chat is Bottom, Mod Logs is right.
-        if (chatPlacement === 'right') {
+        if (chatPlacement === 'right' || chatPlacement === 'left') {
           // Mod logs is at the bottom
           const newHeight = window.innerHeight - e.clientY;
           const clampedHeight = Math.max(150, Math.min(window.innerHeight - 200, newHeight));
@@ -1392,7 +1429,7 @@ function App() {
       document.body.style.userSelect = 'none';
       
       if (isResizing) {
-        document.body.style.cursor = chatPlacement === 'right' ? 'ew-resize' : 'ns-resize';
+        document.body.style.cursor = (chatPlacement === 'right' || chatPlacement === 'left') ? 'ew-resize' : 'ns-resize';
       } else {
         document.body.style.cursor = chatPlacement === 'bottom' ? 'ew-resize' : 'ns-resize';
       }
@@ -1452,9 +1489,11 @@ function App() {
         )}
       >
       <div className="flex flex-1 overflow-hidden">
-        {/* Sidebar - only visible when stream is playing */}
+        {/* Sidebar - only visible when stream is playing. Flips to the right edge
+            when chat is docked left with reveal-on-hover, so the left edge belongs
+            to the chat hover and the two don't fight over the same zone. */}
         <ErrorBoundary componentName="Sidebar">
-          <Sidebar />
+          <Sidebar side={chatPlacement === 'left' && autoHideActive ? 'right' : 'left'} />
         </ErrorBoundary>
 
         {/* Main content area with Home/PIP support */}
@@ -1501,7 +1540,7 @@ function App() {
                 transition={{ duration: 0.2, ease: "easeInOut" }}
                 className={`flex flex-1 h-full overflow-hidden ${
                   settings.show_mod_logs && chatPlacement !== 'hidden'
-                    ? (chatPlacement === 'right' ? 'flex-col' : 'flex-row') 
+                    ? (isSideChat ? 'flex-col' : 'flex-row')
                     : (chatPlacement === 'bottom' ? 'flex-col' : 'flex-row')
                 } ${isHomeActive ? 'pointer-events-none' : ''}`}
               >
@@ -1563,37 +1602,95 @@ function App() {
                       becomes the sole chat surface and we collapse the in-app
                       chat panel entirely (no duplicate chat across windows). */}
                   {chatPlacement !== 'hidden' && (currentMediaType === 'live' || currentMediaType === 'offline_chat' || isMultiNookActive) && !activeChatChannelInPopout && (
+                    autoHideActive ? (
+                      // Reveal-on-hover (side docks only): a thin edge handle is
+                      // always visible; hovering the wrapper slides the chat out
+                      // (width 0 -> chatSize) and the flex-1 video shrinks to make
+                      // room in real time. For the LEFT dock, order-first + reverse
+                      // put the wrapper on the left with the handle on the video side.
+                      <div
+                        className={`relative flex h-full flex-shrink-0 ${chatPlacement === 'left' ? 'order-first flex-row-reverse' : 'flex-row'}`}
+                        onMouseEnter={revealChat}
+                        onMouseLeave={hideChatSoon}
+                      >
+                        {/* Wider INVISIBLE hover-catch so the chat reveals before
+                            you reach the very edge. Absolute (no reserved flex
+                            space) and only while collapsed; it overlays the video
+                            edge. Tune the width to taste. */}
+                        {!chatRevealed && (
+                          <div
+                            aria-hidden="true"
+                            onMouseEnter={revealChat}
+                            className={`absolute top-0 bottom-0 z-20 ${chatPlacement === 'left' ? 'left-0' : 'right-0'}`}
+                            style={{ width: 24 }}
+                          />
+                        )}
+                        <div
+                          aria-hidden="true"
+                          className={`h-full w-1.5 flex-shrink-0 cursor-pointer transition-colors ${chatRevealed ? 'bg-borderLight' : 'bg-borderLight/50 hover:bg-accent/70'}`}
+                        />
+                        {/* "Hover here for chat" cue, pinned to the docked edge and
+                            shown only while collapsed (mirrors the About reveal hint).
+                            pointer-events-none so the wider catch zone behind it still
+                            gets the hover. */}
+                        {!chatRevealed && (
+                          <div
+                            aria-hidden="true"
+                            className={`pointer-events-none absolute top-1/2 z-20 flex -translate-y-1/2 items-center justify-center rounded-full border border-white/10 bg-black/40 p-1 text-white/70 backdrop-blur-sm ${chatPlacement === 'left' ? 'left-1.5' : 'right-1.5'}`}
+                          >
+                            {chatPlacement === 'left' ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
+                          </div>
+                        )}
+                        <motion.div
+                          animate={{ width: chatRevealed ? chatSize : 0 }}
+                          transition={{ type: 'spring', stiffness: 350, damping: 30 }}
+                          className="h-full flex-shrink-0 overflow-hidden bg-background"
+                        >
+                          <div className="h-full flex flex-col" style={{ width: `${chatSize}px` }}>
+                            {isMultiNookActive && <MultiNookChatSwitcher />}
+                            <div className="flex-1 overflow-hidden relative">
+                              <ErrorBoundary componentName="Chat" reportToLogService resetKeys={[streamUrl, currentMediaType]}>
+                                <ChatWidget />
+                              </ErrorBoundary>
+                            </div>
+                          </div>
+                        </motion.div>
+                      </div>
+                    ) : (
                     <motion.div
-                      // The panel opens along ONE axis (width when docked right,
+                      // The panel opens along ONE axis (width when docked left/right,
                       // height when docked bottom) and must fill the other. Drive
                       // BOTH axes: if the fill axis is left undefined, Framer keeps
                       // the inline size it wrote while the panel was on the other
                       // edge, so after a bottom→right switch the panel stays stuck
                       // at its old height and never refills the column. Pinning the
                       // fill axis to '100%' forces it back to the container size.
-                      initial={{ opacity: 0, width: chatPlacement === 'right' ? 0 : '100%', height: chatPlacement === 'bottom' ? 0 : '100%' }}
+                      initial={{ opacity: 0, width: isSideChat ? 0 : '100%', height: chatPlacement === 'bottom' ? 0 : '100%' }}
                       animate={{
                         opacity: (isMultiNookActive && isChatHidden) ? 0 : 1,
-                        width: chatPlacement === 'right' ? ((isMultiNookActive && isChatHidden) ? 0 : 'auto') : '100%',
+                        width: isSideChat ? ((isMultiNookActive && isChatHidden) ? 0 : 'auto') : '100%',
                         height: chatPlacement === 'bottom' ? ((isMultiNookActive && isChatHidden) ? 0 : 'auto') : '100%'
                       }}
                       transition={{ type: "spring", stiffness: 350, damping: 25 }}
-                      className={`flex ${chatPlacement === 'bottom' ? 'flex-col' : 'flex-row'} flex-shrink-0`}
+                      // Left dock reverses the children so the resize separator sits
+                      // on the video-facing (right) side of the chat, and order-first
+                      // moves the whole panel ahead of the video.
+                      className={`flex flex-shrink-0 ${chatPlacement === 'bottom' ? 'flex-col' : chatPlacement === 'left' ? 'flex-row-reverse order-first' : 'flex-row'}`}
                       style={{ overflow: 'hidden' }}
                     >
-                      <Tooltip content={chatPlacement === 'right' ? 'Drag to resize chat width' : 'Drag to resize chat height'} delay={100}>
+                      <Tooltip content={isSideChat ? 'Drag to resize chat width' : 'Drag to resize chat height'} delay={100}>
                         {/* 4px invisible grab area keeps dragging easy; the
                             visible separator is a single 1px hairline. */}
                         <div
                           onMouseDown={handleMouseDown}
                           className={`
                             group flex items-center justify-center flex-shrink-0 z-10
-                            ${chatPlacement === 'right' ? 'w-1 cursor-ew-resize' : 'h-1 cursor-ns-resize'}
+                            ${isSideChat ? 'w-1 cursor-ew-resize' : 'h-1 cursor-ns-resize'}
                           `}
                         >
                           <div
                             className={`
-                              ${chatPlacement === 'right' ? 'w-px h-full' : 'h-px w-full'}
+                              ${isSideChat ? 'w-px h-full' : 'h-px w-full'}
                               bg-borderLight group-hover:bg-accent transition-colors
                               ${isResizing ? 'bg-accent' : ''}
                             `}
@@ -1604,7 +1701,7 @@ function App() {
                         data-chat-panel="true"
                         className="flex-shrink-0 flex flex-col h-full overflow-hidden bg-background"
                         style={{
-                          [chatPlacement === 'right' ? 'width' : 'height']: `${chatSize}px`
+                          [isSideChat ? 'width' : 'height']: `${chatSize}px`
                         }}
                       >
                         {isMultiNookActive && <MultiNookChatSwitcher />}
@@ -1615,6 +1712,7 @@ function App() {
                         </div>
                       </div>
                     </motion.div>
+                    )
                   )}
                 </div>
 
@@ -1622,36 +1720,36 @@ function App() {
                 <AnimatePresence>
                   {settings.show_mod_logs && (
                     <motion.div
-                      initial={{ opacity: 0, [chatPlacement === 'right' ? 'height' : 'width']: 0 }}
-                      animate={{ opacity: 1, [chatPlacement === 'right' ? 'height' : 'width']: modLogsSize + 4 }}
-                      exit={{ opacity: 0, [chatPlacement === 'right' ? 'height' : 'width']: 0 }}
+                      initial={{ opacity: 0, [isSideChat ? 'height' : 'width']: 0 }}
+                      animate={{ opacity: 1, [isSideChat ? 'height' : 'width']: modLogsSize + 4 }}
+                      exit={{ opacity: 0, [isSideChat ? 'height' : 'width']: 0 }}
                       transition={isResizingModLogs ? { duration: 0 } : { type: 'spring', stiffness: 350, damping: 30 }}
-                      className={`flex ${chatPlacement === 'right' ? 'flex-col' : 'flex-row'} flex-shrink-0 relative overflow-hidden`}
+                      className={`flex ${isSideChat ? 'flex-col' : 'flex-row'} flex-shrink-0 relative overflow-hidden`}
                     >
                       {/* Resizer */}
-                      <Tooltip content={chatPlacement === 'right' ? 'Drag to resize mod logs height' : 'Drag to resize mod logs width'} delay={100}>
+                      <Tooltip content={isSideChat ? 'Drag to resize mod logs height' : 'Drag to resize mod logs width'} delay={100}>
                         {/* 4px invisible grab area keeps dragging easy; the
                             visible separator is a single 1px hairline. */}
                         <div
                           onMouseDown={handleModLogsMouseDown}
                           className={`
                             group flex items-center justify-center flex-shrink-0 z-10
-                            ${chatPlacement === 'right' ? 'h-1 cursor-ns-resize w-full' : 'w-1 cursor-ew-resize h-full'}
+                            ${isSideChat ? 'h-1 cursor-ns-resize w-full' : 'w-1 cursor-ew-resize h-full'}
                           `}
                         >
                           <div
                             className={`
-                              ${chatPlacement === 'right' ? 'h-px w-full' : 'w-px h-full'}
+                              ${isSideChat ? 'h-px w-full' : 'w-px h-full'}
                               bg-borderLight group-hover:bg-accent transition-colors
                               ${isResizingModLogs ? 'bg-accent' : ''}
                             `}
                           />
                         </div>
                       </Tooltip>
-                      <div 
+                      <div
                         className="bg-background overflow-hidden relative"
                         style={{
-                          [chatPlacement === 'right' ? 'height' : 'width']: `${modLogsSize}px`
+                          [isSideChat ? 'height' : 'width']: `${modLogsSize}px`
                         }}
                       >
                          <ErrorBoundary componentName="Mod Logs" reportToLogService>

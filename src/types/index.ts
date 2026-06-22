@@ -44,6 +44,7 @@ export interface VideoPlayerSettings {
   volume: number;
   start_quality: number;
   lock_aspect_ratio: boolean;
+  cinema_mode?: boolean;
   audio_boost?: AudioBoostSettings;
   song_id?: SongIdSettings;
   experimental_low_latency?: boolean;
@@ -646,6 +647,9 @@ export type MotionMode = 'full' | 'reduced' | 'off';
 export interface Settings {
   quality: string;
   chat_placement: string;
+  // When chat_placement is 'left' or 'right', hide the docked chat and reveal it
+  // on hover toward that edge (it slides in and the player flexes to make room).
+  chat_auto_hide?: boolean;
   accounts: string[];
   current_account: string;
   hide_search_bar_on_startup: boolean;

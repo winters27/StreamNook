@@ -6,7 +6,6 @@ import PanelChannelList from '../plugins/PanelChannelList';
 import { trustableHost } from '../../services/linkPreviewService';
 import { Tooltip } from '../ui/Tooltip';
 import { Dropdown } from '../ui/Dropdown';
-import ColorWheelPicker from '../ColorWheelPicker';
 import HighlightPhrasesSettings from './HighlightPhrasesSettings';
 import BuiltInHighlightsSettings from './BuiltInHighlightsSettings';
 import UserHighlightsSettings from './UserHighlightsSettings';
@@ -31,6 +30,40 @@ const Toggle = ({ enabled, onChange }: { enabled: boolean; onChange: () => void 
         }`}
     />
   </button>
+);
+
+// Native color swatch matching the mod-log Log Highlights control: clicking it
+// opens the OS picker (always on top, unlike an in-app popover that can render
+// behind later settings rows). Reset appears once the value leaves its default.
+const ColorSwatch = ({
+  value,
+  defaultValue,
+  onChange,
+  tooltip,
+}: {
+  value: string;
+  defaultValue: string;
+  onChange: (color: string) => void;
+  tooltip: string;
+}) => (
+  <div className="flex items-center gap-2">
+    <Tooltip content={tooltip}>
+      <input
+        type="color"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="h-7 w-10 rounded cursor-pointer bg-transparent border border-borderSubtle"
+      />
+    </Tooltip>
+    {value.toLowerCase() !== defaultValue.toLowerCase() && (
+      <button
+        onClick={() => onChange(defaultValue)}
+        className="text-[11px] text-textSecondary hover:text-text"
+      >
+        Reset
+      </button>
+    )}
+  </div>
 );
 
 // Live preview of how the current user's own name will look in chat with the
@@ -321,16 +354,31 @@ const ChatSettings = () => {
           title="Placement"
           description="Choose where to display the chat window or hide it completely"
         >
-          <SegmentedSelect<'right' | 'bottom' | 'hidden'>
-            value={settings.chat_placement as 'right' | 'bottom' | 'hidden'}
+          <SegmentedSelect<'left' | 'right' | 'bottom' | 'hidden'>
+            value={settings.chat_placement as 'left' | 'right' | 'bottom' | 'hidden'}
             onChange={(placement) => updateSettings({ ...settings, chat_placement: placement })}
             options={[
               { value: 'hidden', label: 'Hidden' },
               { value: 'bottom', label: 'Bottom' },
+              { value: 'left', label: 'Left' },
               { value: 'right', label: 'Right' },
             ]}
           />
         </SettingsRow>
+        {(settings.chat_placement === 'left' || settings.chat_placement === 'right') && (
+          <SettingsRow
+            title="Reveal on hover"
+            description="Keep chat tucked against its edge and slide it out when you move toward that side. The player shrinks to make room, the same as dragging the chat open."
+            control={
+              <Toggle
+                enabled={settings.chat_auto_hide ?? false}
+                onChange={() =>
+                  updateSettings({ ...settings, chat_auto_hide: !(settings.chat_auto_hide ?? false) })
+                }
+              />
+            }
+          />
+        )}
       </SettingsSection>
 
       <SettingsSection label="Channel Points">
@@ -630,10 +678,11 @@ const ChatSettings = () => {
           title="@ Mention Color"
           description="Color used for messages that mention you"
         >
-          <ColorWheelPicker
-            label=""
-            color={cd.mention_color ?? '#ff4444'}
+          <ColorSwatch
+            value={cd.mention_color ?? '#ff4444'}
+            defaultValue="#ff4444"
             onChange={(color) => setDesign({ mention_color: color })}
+            tooltip="Mention color"
           />
         </SettingsRow>
 
@@ -641,10 +690,11 @@ const ChatSettings = () => {
           title="Reply Thread Color"
           description="Color used for replies in threads"
         >
-          <ColorWheelPicker
-            label=""
-            color={cd.reply_color ?? '#ff6b6b'}
+          <ColorSwatch
+            value={cd.reply_color ?? '#ff6b6b'}
+            defaultValue="#ff6b6b"
             onChange={(color) => setDesign({ reply_color: color })}
+            tooltip="Reply thread color"
           />
         </SettingsRow>
       </SettingsSection>
