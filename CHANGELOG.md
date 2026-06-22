@@ -5,7 +5,6 @@
 - **Profile atmospheres update live**: When someone changes the atmosphere they're wearing while you're already in chat with them, it now updates for you on their next message instead of staying stuck on what they had before.
 
 ### 🐛 Bug Fixes
-- **No more freeze when you minimize or alt-tab**: Fixed the app going "Not Responding" after you minimize or alt-tab on Windows. Playback and the interface now pause and resume cleanly.
 - **Dropdowns stay put**: Open settings dropdowns no longer close when you scroll or resize the window. They follow their button instead.
 
 ### 🔧 Maintenance
