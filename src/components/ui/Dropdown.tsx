@@ -83,17 +83,25 @@ export function Dropdown<T extends string | number>({
         const onKey = (e: KeyboardEvent) => {
             if (e.key === 'Escape') setOpen(false);
         };
-        const onReflow = () => setOpen(false);
+        // Keep the portalled menu glued to its trigger as the page scrolls or the
+        // window resizes, rather than closing it. A scroll inside the menu's own
+        // option list is ignored so flicking through a long list never collapses it.
+        const onResize = () => reposition();
+        const onScroll = (e: Event) => {
+            if (menuRef.current?.contains(e.target as Node)) return;
+            reposition();
+        };
         document.addEventListener('mousedown', onDown);
         document.addEventListener('keydown', onKey);
-        window.addEventListener('resize', onReflow);
-        window.addEventListener('scroll', onReflow, true);
+        window.addEventListener('resize', onResize);
+        window.addEventListener('scroll', onScroll, true);
         return () => {
             document.removeEventListener('mousedown', onDown);
             document.removeEventListener('keydown', onKey);
-            window.removeEventListener('resize', onReflow);
-            window.removeEventListener('scroll', onReflow, true);
+            window.removeEventListener('resize', onResize);
+            window.removeEventListener('scroll', onScroll, true);
         };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [open]);
 
     return (
