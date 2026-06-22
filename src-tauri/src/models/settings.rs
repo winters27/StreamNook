@@ -73,6 +73,10 @@ pub struct VideoPlayerSettings {
     pub volume: f32,
     pub start_quality: i32,
     pub lock_aspect_ratio: bool,
+    /// When true the letterbox bars stay solid black (cinema). Default false makes
+    /// them match the theme background so the video appears to float.
+    #[serde(default)]
+    pub cinema_mode: bool,
     #[serde(default)]
     pub audio_boost: AudioBoostSettings,
     /// Opt-in: drive playback through the parts-based LL-HLS origin (true Twitch-like
@@ -102,6 +106,7 @@ impl Default for VideoPlayerSettings {
             volume: 1.0,
             start_quality: -1,
             lock_aspect_ratio: true,
+            cinema_mode: false,
             audio_boost: AudioBoostSettings::default(),
             experimental_low_latency: false,
             ll_target_latency: 6.0,

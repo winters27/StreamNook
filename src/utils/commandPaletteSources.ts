@@ -739,7 +739,7 @@ const SETTINGS_CATALOG: SettingsEntry[] = [
   { tab: 'Player', section: 'Player Overlay Buttons', keywords: 'player overlay buttons follow subscribe clip identify song clips vods multinook refresh close hide show customize which buttons top right' },
   { tab: 'Player', section: 'Auto-Switch', sectionId: 'settings-section-auto-switch', keywords: 'auto switch fallback offline next stream raid redirect followed category notification stay offline chat' },
   { tab: 'Player', section: 'Streaming', sectionId: 'settings-section-streaming', keywords: 'streaming codecs h265 hevc av1 h264 connection timeout auto retry delay resolve' },
-  { tab: 'Player', section: 'Video Player', sectionId: 'settings-section-video-player', keywords: 'video player autoplay live edge gap low latency buffer quality volume aspect ratio lock start muted fullscreen controls' },
+  { tab: 'Player', section: 'Video Player', sectionId: 'settings-section-video-player', keywords: 'video player autoplay live edge gap low latency buffer quality volume aspect ratio lock start muted fullscreen controls cinema mode letterbox bars black color match theme floating pillarbox immersive' },
   { tab: 'Player', section: 'Audio Boost', sectionId: 'settings-section-audio-boost', keywords: 'audio boost compressor makeup gain louder volume normalize even out loud quiet clipping threshold ratio knee attack release' },
   { tab: 'Player', section: 'Song Identification', sectionId: 'settings-section-song-id', keywords: 'song identification identify music what song is this shazam recognize now playing track name spotify apple music song.link listen time retries capture detection' },
 

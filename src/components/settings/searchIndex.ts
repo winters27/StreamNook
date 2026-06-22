@@ -183,6 +183,13 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
     tab: 'Player',
     section: 'Video Player',
     sectionId: 'settings-section-video-player',
+    title: 'Cinema Mode',
+    description: 'Letterbox bar color. Cinema Mode uses classic black bars; off matches the bars to your theme background so the video floats. Black bars, color-matched, immersive, pillarbox.'
+  },
+  {
+    tab: 'Player',
+    section: 'Video Player',
+    sectionId: 'settings-section-video-player',
     title: 'Start Muted',
     description: 'Begin playback with audio muted.'
   },

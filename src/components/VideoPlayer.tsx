@@ -2042,13 +2042,25 @@ const VideoPlayer = () => {
     await exitStream({ preserveBackend: true });
   }, [currentStream, exitStream]);
 
+  // Letterbox fill behind the object-fit video. Cinema Mode keeps it solid black;
+  // otherwise it mirrors the title bar exactly (its secondary tint composited over
+  // the app base), so the bars and title bar read as one surface and track theme
+  // changes automatically since both tokens are theme-driven.
+  const letterboxStyle = playerSettings?.cinema_mode
+    ? { backgroundColor: '#000', backgroundImage: 'none' }
+    : {
+        backgroundColor: 'var(--color-background)',
+        backgroundImage: 'linear-gradient(var(--color-background-secondary), var(--color-background-secondary))',
+      };
+
   return (
     <div
       ref={containerRef}
-      className="w-full h-full bg-black flex items-center justify-center video-player-container group"
+      className="w-full h-full flex items-center justify-center video-player-container group"
       style={{
         minHeight: '300px',
         position: 'relative',
+        ...letterboxStyle,
       }}
     >
       <video
@@ -2058,7 +2070,7 @@ const VideoPlayer = () => {
           width: '100%',
           height: '100%',
           objectFit: 'contain',
-          backgroundColor: '#000',
+          ...letterboxStyle,
         }}
         playsInline
         onLoadedMetadata={(e) => {

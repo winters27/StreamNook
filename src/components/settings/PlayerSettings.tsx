@@ -383,6 +383,22 @@ const PlayerSettings = () => {
         />
 
         <SettingsRow
+          title="Cinema Mode"
+          description="Use solid black letterbox bars. When off, the bars match your theme color so the video appears to float."
+          control={
+            <Toggle
+              enabled={videoPlayer?.cinema_mode ?? false}
+              onChange={() =>
+                updateSettings({
+                  ...settings,
+                  video_player: { ...videoPlayer, cinema_mode: !(videoPlayer?.cinema_mode ?? false) },
+                })
+              }
+            />
+          }
+        />
+
+        <SettingsRow
           title="Start Muted"
           description="Begin playback with audio muted"
           control={
