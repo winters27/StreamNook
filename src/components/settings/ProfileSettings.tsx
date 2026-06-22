@@ -4,10 +4,11 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { useAppStore } from '../../stores/AppStore';
 import { refreshAtmosphere } from '../../stores/chatUserStore';
 import { AtmosphereBackground } from '../AtmosphereBackground';
+import { MajorCologneChrome } from '../MajorCologneChrome';
 import { getPreviewEmotes, previewEmoteUrl, rollPreviewChat, type PreviewEmote } from '../../utils/previewChat';
 import { openBadgesWithPaintInMain, openBadgesOnStreamNookInMain } from '../../utils/openBadgesInMain';
 import streamNookLogo from '../../assets/streamnook-logo.png';
-import { User, Link, Unlink, Image as ImageIcon, Film, Heart, Check, ExternalLink, Eye } from 'lucide-react';
+import { User, Link, Unlink, Image as ImageIcon, Film, Heart, Check, ExternalLink } from 'lucide-react';
 import {
   computePaintStyle,
   getBadgeImageUrls,
@@ -47,7 +48,7 @@ import type { CosmeticCatalogEntry } from '../../services/supabaseService';
 import { getIdentityWithCache, setIdentity } from '../../services/identityService';
 import { readOwnProfileCache, writeOwnProfileCache } from '../../services/ownProfileCache';
 import { isSubscriber } from '../../services/subscriberService';
-import { listAtmospheres, getAtmosphere, MAJOR_COLOGNE_SWATCH, type Atmosphere } from '../../services/atmospheres';
+import { listAtmospheres, getAtmosphere, type Atmosphere } from '../../services/atmospheres';
 import { MAJOR_COLOGNE_THEME_ID, MAJOR_COLOGNE_ACCOLADE_ID, parseCologneTheme, buildCologneTheme, isCologneTheme } from '../../services/cologneEvent';
 import { getTier, getTierAccent, StreamNookBadge } from '../StreamNookBadge';
 import { COSMETIC_ASSET_BY_SLUG } from '../cosmeticAssets';
@@ -973,6 +974,9 @@ const ProfileSettings = () => {
   // Live preview: the hovered cosmetic (or the active one when nothing hovered).
   const activePreviewId = previewThemeId ?? profileTheme;
   const previewAtm = getAtmosphere(activePreviewId);
+  // Frosted readability block behind the text for busy washes (e.g. Midnight),
+  // mirroring ChatMessage so the text stays legible over the image in the preview.
+  const previewFrost = !!previewAtm?.chatFrost;
   const previewLocked = previewAtm ? !atmUnlocked(previewAtm) : activePreviewId === 'paint' ? !canPaint : false;
   // Name the RIGHT tier on the lock pill: an Atmosphere needs Subscriber, but a
   // 7TV paint only needs Supporter. Telling a paint previewer to "subscribe"
@@ -1196,9 +1200,8 @@ const ProfileSettings = () => {
           <button
             type="button"
             onClick={showLivePreview}
-            className="flex-shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-accent/40 bg-accent/10 px-3 py-1.5 text-xs font-medium text-textPrimary transition-colors hover:bg-accent/20"
+            className="flex-shrink-0 inline-flex items-center rounded-md bg-emerald-500/15 px-3 py-1.5 text-xs font-semibold text-emerald-300 transition-colors hover:bg-emerald-500/25"
           >
-            <Eye size={13} className="opacity-80" />
             Show live preview
           </button>
         </div>
@@ -1277,9 +1280,8 @@ const ProfileSettings = () => {
             <button
               type="button"
               onClick={showLivePreview}
-              className="flex-shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-accent/40 bg-accent/10 px-3 py-1.5 text-xs font-medium text-textPrimary transition-colors hover:bg-accent/20"
+              className="flex-shrink-0 inline-flex items-center rounded-md bg-emerald-500/15 px-3 py-1.5 text-xs font-semibold text-emerald-300 transition-colors hover:bg-emerald-500/25"
             >
-              <Eye size={13} className="opacity-80" />
               Show live preview
             </button>
           </div>
@@ -1391,30 +1393,49 @@ const ProfileSettings = () => {
           )}
         </div>
 
-        {/* Mock chat message — real chat sizes (text-sm message, 20px badges),
-            capped near a real chat column width so it doesn't span the settings. */}
-        <div className="relative isolate max-w-[403px] overflow-hidden rounded-lg border border-white/[0.06] px-3 py-1.5">
+        {/* Mock chat message at real chat sizes (text-sm, 20px badges), capped at a
+            real chat column width (~402px). Inline flow (below) wraps a long
+            message to the left edge like real chat, and the min height keeps it at
+            least two lines tall so the atmosphere reads with real vertical presence
+            instead of a thin single line. */}
+        <div
+          className="relative isolate w-full max-w-[402px] overflow-hidden rounded-lg border border-white/[0.06]"
+          style={{ paddingLeft: 18, paddingRight: 18, paddingTop: 7, paddingBottom: 7, minHeight: 60 }}
+        >
           {previewAtm && <AtmosphereBackground atm={previewAtm} variant="chat" />}
-          <div className="relative flex items-center gap-1.5 text-sm leading-relaxed">
-            <span className="text-[11px] text-textMuted">3:45</span>
+          {/* Inline flow (not flex) so a long message wraps to the LEFT edge on the
+              next line like a real chat row, instead of indenting under the name or
+              stretching into one super-wide line. Busy washes (chatFrost, e.g.
+              Midnight) get the same frosted readability block real chat uses. */}
+          <div
+            className={`relative text-sm leading-relaxed ${
+              previewFrost
+                ? 'inline-block max-w-full rounded-md bg-[rgba(5,6,13,0.22)] px-1.5 py-0.5 backdrop-blur-[4px]'
+                : ''
+            }`}
+          >
+            <span className="mr-1.5 align-middle text-[11px] text-textMuted">3:45</span>
             {streamNookUserNumber !== null && currentUser?.user_id && (
-              <StreamNookBadge userId={currentUser.user_id} userNumber={streamNookUserNumber} side="top" />
+              <span className="mr-1 inline-flex align-middle">
+                <StreamNookBadge userId={currentUser.user_id} userNumber={streamNookUserNumber} side="top" />
+              </span>
             )}
             <span
-              className="flex-shrink-0 font-semibold"
+              className="align-middle font-semibold"
               style={seventvPaint ? computePaintStyle(seventvPaint as any, '#9146FF') : undefined}
             >
               {currentUser.display_name || currentUser.login}
             </span>
-            <span className="flex min-w-0 items-center gap-1 text-textSecondary">
-              <span className="truncate">{previewChat.text}</span>
+            <span className="align-middle text-textSecondary">
+              {' '}
+              {previewChat.text}
               {previewChat.emotes.map((e, i) => (
                 <img
                   key={`${e.id}-${i}`}
                   src={previewEmoteUrl(e.id)}
                   alt={e.name}
                   title={e.name}
-                  className="h-6 w-auto flex-shrink-0 object-contain"
+                  className="mx-0.5 inline-block h-6 w-auto align-middle object-contain"
                   onError={(ev) => {
                     (ev.currentTarget as HTMLImageElement).style.display = 'none';
                   }}
@@ -1533,6 +1554,9 @@ const ProfileSettings = () => {
             const active = !!applied;
             const coinOn = applied?.coin ?? false;
             const frameOn = applied?.frame ?? false;
+            // The Cologne def (R2 asset URLs); null until the catalog loads. The
+            // swatch renders the live animated glass wash, not a static image.
+            const cologneAtm = getAtmosphere(MAJOR_COLOGNE_THEME_ID);
             return (
               <div className="overflow-hidden rounded-lg border border-white/[0.06]">
                 <button
@@ -1545,9 +1569,13 @@ const ProfileSettings = () => {
                   }`}
                 >
                   <span
-                    className="h-9 w-14 flex-shrink-0 rounded-md ring-1 ring-inset ring-white/10"
-                    style={{ background: MAJOR_COLOGNE_SWATCH }}
-                  />
+                    className="relative h-9 w-14 flex-shrink-0 overflow-hidden rounded-md ring-1 ring-inset ring-white/10"
+                    style={{ background: cologneAtm?.baseColor }}
+                  >
+                    {cologneAtm?.chromeTexture && (
+                      <MajorCologneChrome textureUrl={cologneAtm.chromeTexture} bare />
+                    )}
+                  </span>
                   <span className="flex-1 text-sm font-medium text-textPrimary">CS2 Major Cologne 2026</span>
                   {active && <span className="text-[10px] font-medium text-textMuted">Active</span>}
                   {active && <Check size={16} className="text-accent" />}
@@ -1557,8 +1585,8 @@ const ProfileSettings = () => {
                     {([
                       // tierMet('supporter') is true for subscribers too (they're
                       // the higher tier), so a subscriber always gets the coin.
-                      { label: 'Coin', on: coinOn, can: tierMet('supporter'), tier: 'supporter' as const, next: { coin: !coinOn, frame: frameOn } },
-                      { label: 'Border', on: frameOn, can: tierMet('subscriber'), tier: 'subscriber' as const, next: { coin: coinOn, frame: !frameOn } },
+                      { label: 'Major Medallion', on: coinOn, can: tierMet('supporter'), tier: 'supporter' as const, next: { coin: !coinOn, frame: frameOn } },
+                      { label: 'Gilded Plaque', on: frameOn, can: tierMet('subscriber'), tier: 'subscriber' as const, next: { coin: coinOn, frame: !frameOn } },
                     ]).map((opt) => (
                       <div key={opt.label} className="flex items-center justify-between gap-3 py-1">
                         <span className="text-[13px] text-textPrimary">{opt.label}</span>

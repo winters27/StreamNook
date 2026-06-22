@@ -3,27 +3,24 @@
 // one canned line. Tones: sarcastic, trash-talk, and love for 7TV / Twitch (the
 // platforms StreamNook rides on, not competitors). Kept light and impersonal.
 
+// Lines run long on purpose so the preview wraps to about two lines at a real
+// chat column width, giving the atmosphere vertical presence instead of one thin
+// line.
 export const PREVIEW_MESSAGES: string[] = [
   // sarcastic
-  'oh wow, groundbreaking gameplay',
-  'truly never seen anything like it',
-  'sure buddy, whatever you say',
-  'incredible, someone write a book',
-  'wp i guess, if you squint',
+  'oh wow, groundbreaking gameplay, truly never seen anything like it before honestly',
+  'sure buddy, whatever you say, that was definitely the play of the entire year',
+  'incredible stuff, someone write a book about that one because i am speechless',
   // trash talk
-  'absolute dogwater, uninstall',
-  'hardstuck for a reason lol',
-  'you got carried so hard',
-  'diff, not even close',
-  'throw of the century right there',
+  'absolute dogwater out there, hardstuck for a reason and still typing the most in chat',
+  'that was a diff so hard it should honestly be studied, throw of the century right there',
+  'you got carried that whole game and somehow you are the one talking the loudest, wild',
   // 7TV love
-  '7TV carries this entire chat',
-  'chatting without 7TV could never be me',
-  '7TV emotes are elite ngl',
+  '7TV genuinely carries this entire chat, the emotes are elite and i could never go back',
+  'chatting without my 7TV emotes could never be me, this is peak internet culture honestly',
   // Twitch love
-  'best stream on twitch no cap',
-  'twitch chat never misses',
-  'this is why i love twitch fr',
+  'best stream on twitch no cap, the chat never misses and this is exactly why i love it here',
+  'twitch chat being unhinged as always and somehow it is still the best part of the stream',
 ];
 
 export interface PreviewEmote {
