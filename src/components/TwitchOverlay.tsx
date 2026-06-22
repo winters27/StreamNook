@@ -141,8 +141,10 @@ export default function TwitchOverlay() {
     return () => uns.forEach((u) => u());
   }, []);
 
-  // Hide the native webview while the window is minimized, show on restore. This is
-  // Microsoft's prescribed WebView2 minimize/restore fix (the Windows 10 freeze).
+  // Backup signal for the native minimize handler: ask the backend to park the
+  // overlay's WebView2 controller while the window is hidden, restore on show. The
+  // backend toggles the controller's IsVisible (Microsoft's minimize fix) AND the
+  // window; the primary, race-free path is the synchronous native handler in main.rs.
   useEffect(() => {
     if (!overlay) return;
     const label = overlay.label;

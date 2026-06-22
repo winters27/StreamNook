@@ -1002,6 +1002,24 @@ fn main() {
                         }
                     }
                 }
+
+                // Windows 10 minimizes the borderless main window on alt-tab (Windows
+                // 11 does not). With CalculateNativeWinOcclusion disabled, nothing tells
+                // the main window's WebView2 to stop rendering while minimized, so it
+                // keeps presenting against the hidden surface and wedges the UI-thread
+                // pump ("Not Responding"; the hang watchdog logged this as minimized=true
+                // with no overlay mounted). Park the WebView2 controller(s) in lockstep
+                // with the minimize state. tao dispatches this Resized synchronously
+                // inside WM_SIZE, so the park lands before the first post-minimize
+                // present — a JS `visibilitychange` reaction round-trips through IPC and
+                // can't unwedge a pump that has already stalled.
+                #[cfg(windows)]
+                {
+                    if let WindowEvent::Resized(_) = event {
+                        let minimized = window.is_minimized().unwrap_or(false);
+                        sync_app_webviews_to_minimize(&app_handle, minimized);
+                    }
+                }
             } else if label.starts_with("multichat-") {
                 if let WindowEvent::Destroyed = event {
                     // Tell the main window this popout is gone so it can

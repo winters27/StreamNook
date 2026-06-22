@@ -864,14 +864,72 @@ pub async fn set_twitch_overlay_bounds(app: AppHandle, label: String, x: f64, y:
     }
 }
 
-/// Show/hide the overlay window. The owned window already hides with the main window
-/// on minimize; this stays as a belt-and-suspenders driven from React on
-/// `visibilitychange`, and toggles the whole window (no per-webview controller call
-/// that could touch native state from a window-event path).
+/// Show/hide an overlay window AND its WebView2 controller. A window-level hide
+/// (ShowWindow) does NOT stop the WebView2 compositor; it keeps presenting against the
+/// hidden surface, which is what wedges the shared UI-thread pump. Toggling the
+/// controller's IsVisible is the half that actually parks rendering (Microsoft's
+/// prescribed minimize fix). Driven from React on `visibilitychange` as a backup; the
+/// synchronous native minimize handler in main.rs is the primary path.
 #[tauri::command]
 pub async fn set_twitch_overlay_visible(app: AppHandle, label: String, visible: bool) {
     if let Some(win) = app.get_webview_window(&label) {
+        #[cfg(windows)]
+        {
+            let _ = win.with_webview(move |pw| unsafe {
+                let _ = pw.controller().SetIsVisible(visible);
+            });
+        }
         let _ = if visible { win.show() } else { win.hide() };
+    }
+}
+
+/// True while the app's WebViews are parked for a minimize, so a plain resize-drag
+/// (also a `Resized`) doesn't re-toggle the controllers every tick.
+#[cfg(windows)]
+static WEBVIEWS_PARKED_FOR_MINIMIZE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Park (or un-park) the WebView2 controller of the MAIN window and any open Twitch
+/// overlay window.
+///
+/// Windows 10 minimizes the borderless main window on alt-tab (Windows 11 does not).
+/// `CalculateNativeWinOcclusion` is disabled process-wide (it wedged the UI thread when
+/// the window was merely occluded), but that disable also removes Chromium's automatic
+/// "stop rendering while minimized" behavior. With nothing parking it, the main
+/// window's WebView2 keeps presenting against the minimized (hidden) surface and spins
+/// the UI-thread message pump into "Not Responding" — captured by the hang watchdog as
+/// `minimized=true, overlay mounted: none`, i.e. the main window's WebView2, not the
+/// login overlay. Setting the controller's IsVisible to false parks that rendering;
+/// restoring sets it back to true. Script keeps running either way (IsVisible only
+/// gates the compositor), so chat/streams are unaffected while minimized.
+///
+/// `SetIsVisible` emits no window event, so calling it from inside the window-event
+/// dispatch is safe — unlike a bounds/resize call, which re-enters the dispatch and was
+/// the earlier composited-child freeze.
+#[cfg(windows)]
+pub fn set_app_webviews_visible(app: &AppHandle, visible: bool) {
+    for (label, win) in app.webview_windows() {
+        if label == "main"
+            || label.starts_with("twitch-login")
+            || label.starts_with("drops-login")
+            || label.starts_with("subscribe-")
+        {
+            let _ = win.with_webview(move |pw| unsafe {
+                let _ = pw.controller().SetIsVisible(visible);
+            });
+        }
+    }
+}
+
+/// Called from the main window's `Resized` handler (which tao dispatches synchronously
+/// inside `WM_SIZE`, so the park lands before the first post-minimize present). Acts
+/// only on an actual minimize <-> restore edge so an ordinary resize never churns the
+/// controllers.
+#[cfg(windows)]
+pub fn sync_app_webviews_to_minimize(app: &AppHandle, minimized: bool) {
+    use std::sync::atomic::Ordering;
+    if WEBVIEWS_PARKED_FOR_MINIMIZE.swap(minimized, Ordering::Relaxed) != minimized {
+        set_app_webviews_visible(app, !minimized);
     }
 }
 

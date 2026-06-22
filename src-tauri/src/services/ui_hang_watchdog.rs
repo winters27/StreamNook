@@ -36,8 +36,8 @@ mod imp {
     use std::sync::{Mutex, OnceLock};
     use std::time::{Duration, Instant};
 
-    use windows::core::{PCWSTR, PWSTR};
-    use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, WPARAM};
+    use windows::core::{BOOL, PCWSTR, PWSTR};
+    use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, RECT, WPARAM};
     use windows::Win32::Storage::FileSystem::{
         CreateFileW, WriteFile, FILE_APPEND_DATA, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ,
         FILE_SHARE_WRITE, OPEN_ALWAYS,
@@ -48,8 +48,10 @@ mod imp {
         PROCESS_QUERY_LIMITED_INFORMATION,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId, IsIconic,
-        SendMessageTimeoutW, SMTO_ABORTIFHUNG, SMTO_BLOCK, WM_NULL,
+        EnumChildWindows, EnumThreadWindows, GetClassNameW, GetForegroundWindow, GetGUIThreadInfo,
+        GetWindowRect, GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindowVisible,
+        SendMessageTimeoutW, GUITHREADINFO, GUI_INMENUMODE, GUI_INMOVESIZE, GUI_POPUPMENUMODE,
+        GUI_SYSTEMMENUMODE, SMTO_ABORTIFHUNG, SMTO_BLOCK, WM_NULL,
     };
 
     // Probe cadence when healthy, and the blocking timeout that defines "the pump
@@ -65,12 +67,26 @@ mod imp {
     const SELF_LAG_OK_MS: u128 = 500;
 
     static ACTIVE_OVERLAY: Mutex<Option<String>> = Mutex::new(None);
+    /// The overlay that was up last time `ACTIVE_OVERLAY` went to `None`, with when it
+    /// was cleared. Lets a hang that fires right after an overlay tears down still name
+    /// it ("none (last: twitch-login@..., 800ms ago)"), which the first captures could
+    /// not do — they only showed `none`.
+    static LAST_OVERLAY: Mutex<Option<(String, Instant)>> = Mutex::new(None);
     /// `logs/errors.log` pre-encoded as a NUL-terminated UTF-16 string. Resolved once
     /// at startup so the hang path never allocates or joins paths.
     static LOG_PATH_W: OnceLock<Vec<u16>> = OnceLock::new();
 
     pub fn set_active_overlay(ctx: Option<String>) {
         if let Ok(mut g) = ACTIVE_OVERLAY.lock() {
+            // On clear, remember what was showing and when, so a just-after-dismiss hang
+            // still has the context (the cloning + Instant are off the hang path).
+            if ctx.is_none() {
+                if let Some(prev) = g.as_ref() {
+                    if let Ok(mut last) = LAST_OVERLAY.lock() {
+                        *last = Some((prev.clone(), Instant::now()));
+                    }
+                }
+            }
             *g = ctx;
         }
     }
@@ -78,14 +94,14 @@ mod imp {
     /// A small fixed-size buffer formatted into on the stack. Writes past capacity are
     /// dropped (truncated), never reallocated, so a report can never allocate.
     struct StackBuf {
-        buf: [u8; 2048],
+        buf: [u8; 4096],
         len: usize,
     }
 
     impl StackBuf {
         const fn new() -> Self {
             Self {
-                buf: [0u8; 2048],
+                buf: [0u8; 4096],
                 len: 0,
             }
         }
@@ -192,13 +208,169 @@ mod imp {
     /// Read the mounted-overlay context with try_lock so a (theoretically) stuck lock
     /// can never wedge the watchdog, and without cloning the String.
     fn push_overlay_ctx(b: &mut StackBuf) {
+        use core::fmt::Write as _;
         match ACTIVE_OVERLAY.try_lock() {
             Ok(g) => match g.as_deref() {
                 Some(s) => b.push(s.as_bytes()),
-                None => b.push(b"none"),
+                None => {
+                    b.push(b"none");
+                    // Name the overlay that most recently closed, if any, so a hang right
+                    // after teardown is not mistaken for "no overlay involved".
+                    if let Ok(last) = LAST_OVERLAY.try_lock() {
+                        if let Some((label, when)) = last.as_ref() {
+                            b.push(b" (last: ");
+                            b.push(label.as_bytes());
+                            let _ = write!(b, ", {}ms ago)", when.elapsed().as_millis());
+                        }
+                    }
+                }
             },
             Err(_) => b.push(b"locked"),
         }
+    }
+
+    /// One window per line, for every top-level window the UI thread owns at hang time:
+    /// class name, minimized/visible, count of WebView2 child surfaces (`Chrome_*`), and
+    /// screen rect. This is the inventory the first captures lacked: it shows which
+    /// window (main vs an overlay vs a hidden scraper) and which WebView2 was actually
+    /// live when the pump wedged, independent of the `ACTIVE_OVERLAY` tracker. Every call
+    /// here reads cached window-manager state (no `WM_GETTEXT`/`SendMessage`), so it can
+    /// never block on the wedged thread.
+    const MAX_INV_WINDOWS: u32 = 16;
+
+    struct InvCtx {
+        buf: *mut StackBuf,
+        count: u32,
+    }
+
+    unsafe extern "system" fn inventory_cb(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        use core::fmt::Write as _;
+        let ctx = &mut *(lparam.0 as *mut InvCtx);
+        if ctx.count >= MAX_INV_WINDOWS {
+            return BOOL(0); // stop enumerating
+        }
+        ctx.count += 1;
+        let b = &mut *ctx.buf;
+
+        let mut cls = [0u16; 64];
+        let n = GetClassNameW(hwnd, &mut cls);
+        let iconic = IsIconic(hwnd).as_bool();
+        let visible = IsWindowVisible(hwnd).as_bool();
+        let mut rect = RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
+        let _ = GetWindowRect(hwnd, &mut rect);
+
+        let mut wv: u32 = 0;
+        let _ = EnumChildWindows(
+            Some(hwnd),
+            Some(webview_child_cb),
+            LPARAM(&mut wv as *mut u32 as isize),
+        );
+
+        b.push(b"\n  - ");
+        if n > 0 {
+            b.push_u16_lossy(&cls[..n as usize]);
+        } else {
+            b.push(b"?");
+        }
+        let _ = write!(
+            b,
+            " iconic={iconic} vis={visible} wv={wv} rect=({},{} {}x{})",
+            rect.left,
+            rect.top,
+            rect.right - rect.left,
+            rect.bottom - rect.top
+        );
+        BOOL(1)
+    }
+
+    /// Counts `Chrome_*` descendants (the WebView2 host/render surfaces) under a window.
+    unsafe extern "system" fn webview_child_cb(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let counter = &mut *(lparam.0 as *mut u32);
+        let mut cls = [0u16; 32];
+        let n = GetClassNameW(hwnd, &mut cls);
+        if n > 0 {
+            const PFX: [u16; 7] = [
+                b'C' as u16,
+                b'h' as u16,
+                b'r' as u16,
+                b'o' as u16,
+                b'm' as u16,
+                b'e' as u16,
+                b'_' as u16,
+            ];
+            if cls[..n as usize].starts_with(&PFX) {
+                *counter += 1;
+            }
+        }
+        BOOL(1)
+    }
+
+    fn push_window_inventory(b: &mut StackBuf, ui_tid: u32) {
+        b.push(b"\nwindows (UI-thread top-level):");
+        // Reborrow to a raw pointer so `b` is free again after the (synchronous) enum.
+        let buf_ptr: *mut StackBuf = &mut *b;
+        let mut ctx = InvCtx {
+            buf: buf_ptr,
+            count: 0,
+        };
+        unsafe {
+            let _ = EnumThreadWindows(
+                ui_tid,
+                Some(inventory_cb),
+                LPARAM(&mut ctx as *mut InvCtx as isize),
+            );
+        }
+        if ctx.count >= MAX_INV_WINDOWS {
+            b.push(b"\n  - (more, truncated)");
+        } else if ctx.count == 0 {
+            b.push(b" none");
+        }
+    }
+
+    /// Win32 input state of the wedged UI thread: whether it is sitting in a modal
+    /// move/size or menu message loop (a classic "blocking native call" shape), plus the
+    /// move/size and menu-owner windows if so. Reads kernel-side thread state, no message
+    /// sent, so it is safe against the hang.
+    fn push_gui_thread_info(b: &mut StackBuf, ui_tid: u32) {
+        use core::fmt::Write as _;
+        let mut gti: GUITHREADINFO = unsafe { core::mem::zeroed() };
+        gti.cbSize = core::mem::size_of::<GUITHREADINFO>() as u32;
+        b.push(b"\ngui-thread: ");
+        if unsafe { GetGUIThreadInfo(ui_tid, &mut gti) }.is_err() {
+            b.push(b"(unavailable)");
+            return;
+        }
+        let f = gti.flags;
+        let mut any = false;
+        if f.contains(GUI_INMOVESIZE) {
+            b.push(b"move/size-loop ");
+            any = true;
+        }
+        if f.contains(GUI_INMENUMODE) {
+            b.push(b"menu-mode ");
+            any = true;
+        }
+        if f.contains(GUI_POPUPMENUMODE) {
+            b.push(b"popup-menu ");
+            any = true;
+        }
+        if f.contains(GUI_SYSTEMMENUMODE) {
+            b.push(b"system-menu ");
+            any = true;
+        }
+        if !any {
+            b.push(b"no-modal-loop ");
+        }
+        let _ = write!(
+            b,
+            "moveSize_hwnd={:#x} menuOwner_hwnd={:#x}",
+            gti.hwndMoveSize.0 as usize, gti.hwndMenuOwner.0 as usize
+        );
     }
 
     fn pump_responsive(hwnd: HWND) -> bool {
@@ -363,6 +535,12 @@ mod imp {
              process scheduling lag (watchdog self): {self_lag_ms}ms\n\
              verdict: {verdict}"
         );
+        // Detail section appended AFTER the verdict, so if the inventory ever fills the
+        // buffer the truncation eats the detail, never the summary or verdict above.
+        let ui_tid = unsafe { GetWindowThreadProcessId(hwnd, None) };
+        push_gui_thread_info(&mut b, ui_tid);
+        push_window_inventory(&mut b, ui_tid);
+        b.push(b"\n");
         write_block(b.bytes());
     }
 
