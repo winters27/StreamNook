@@ -814,39 +814,24 @@ html[data-motion="reduced"] .animate-shimmer {
 /* Mention Flash Animation (Red-shift effect) */
 @keyframes mention-flash {
   0% {
-    background-color: color-mix(in srgb, var(--color-error) 50%, transparent);
-    border-left-color: var(--color-error);
-    box-shadow: 0 0 20px color-mix(in srgb, var(--color-error) 50%, transparent);
+    background-color: color-mix(in srgb, var(--flash-accent-color) 50%, transparent);
+    border-left-color: var(--flash-accent-color);
   }
   25% {
-    background-color: color-mix(
-      in srgb,
-      var(--color-highlight-red) 40%,
-      transparent
-    );
-    border-left-color: var(--color-highlight-red);
-    box-shadow: 0 0 15px
-      color-mix(in srgb, var(--color-highlight-red) 40%, transparent);
+    background-color: color-mix(in srgb, var(--flash-accent-color) 40%, transparent);
+    border-left-color: var(--flash-accent-color);
   }
   50% {
-    background-color: color-mix(in srgb, var(--color-error) 30%, transparent);
-    border-left-color: var(--color-error);
-    box-shadow: 0 0 10px color-mix(in srgb, var(--color-error) 30%, transparent);
+    background-color: color-mix(in srgb, var(--flash-accent-color) 30%, transparent);
+    border-left-color: var(--flash-accent-color);
   }
   75% {
-    background-color: color-mix(
-      in srgb,
-      var(--color-highlight-red) 20%,
-      transparent
-    );
-    border-left-color: var(--color-highlight-red);
-    box-shadow: 0 0 5px
-      color-mix(in srgb, var(--color-highlight-red) 20%, transparent);
+    background-color: color-mix(in srgb, var(--flash-accent-color) 20%, transparent);
+    border-left-color: var(--flash-accent-color);
   }
   100% {
     background-color: transparent;
     border-left-color: transparent;
-    box-shadow: none;
   }
 }
 
@@ -858,20 +843,12 @@ html[data-motion="reduced"] .animate-shimmer {
 /* Reply Flash Animation */
 @keyframes reply-flash {
   0% {
-    background-color: color-mix(
-      in srgb,
-      var(--color-highlight-red) 30%,
-      transparent
-    );
-    border-left-color: var(--color-highlight-red);
+    background-color: color-mix(in srgb, var(--flash-accent-color) 30%, transparent);
+    border-left-color: var(--flash-accent-color);
   }
   50% {
-    background-color: color-mix(
-      in srgb,
-      var(--color-highlight-red) 15%,
-      transparent
-    );
-    border-left-color: var(--color-highlight-red);
+    background-color: color-mix(in srgb, var(--flash-accent-color) 15%, transparent);
+    border-left-color: var(--flash-accent-color);
   }
   100% {
     background-color: transparent;
