@@ -1459,6 +1459,16 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
         if (typeof balance === 'number') {
           Logger.debug('[ChatWidget] Got channel points balance:', balance);
           setChannelPoints(balance);
+          // Mirror the live balance into the backend store so the leaderboard
+          // and the channel-points accolades reflect it immediately, not only
+          // after the realtime socket's next watch-time earn.
+          if (currentStream?.user_id) {
+            invoke('record_channel_points_balance', {
+              channelId: currentStream.user_id,
+              channelName: currentStream.user_login,
+              balance,
+            }).catch(() => {});
+          }
           // Bonus chest rides the same response: availableClaim is { id } when
           // a chest is ready, null/absent otherwise. Detection only; the
           // auto-claim effect collects it when the setting is on.

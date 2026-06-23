@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { Trophy, TrendingUp, ExternalLink } from 'lucide-react';
+import { Trophy, TrendingUp, ExternalLink, RefreshCw } from 'lucide-react';
 import { ChannelPointsBalance } from '../types';
 import { useAppStore } from '../stores/AppStore';
 
@@ -8,35 +8,60 @@ import { Logger } from '../utils/logger';
 import { Tooltip } from './ui/Tooltip';
 interface ChannelPointsLeaderboardProps {
   onStreamClick?: (channelName: string) => void;
+  // Reports the all-followed-channel totals whenever balances update, so a
+  // parent (e.g. the Drops stats cards) can show the account-wide figure.
+  onTotalsChange?: (totalPoints: number, channelCount: number) => void;
 }
 
-const ChannelPointsLeaderboard = ({ onStreamClick }: ChannelPointsLeaderboardProps) => {
+const ChannelPointsLeaderboard = ({ onStreamClick, onTotalsChange }: ChannelPointsLeaderboardProps) => {
   const [balances, setBalances] = useState<ChannelPointsBalance[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [profilePics, setProfilePics] = useState<Record<string, string>>({});
   const { followedStreams, startStream } = useAppStore();
 
   useEffect(() => {
-    fetchBalances();
-
-    // Refresh every 30 seconds
+    // On open, pull every followed channel's balance (throttled backend-side);
+    // the interval then just re-reads the warm store, which is cheap.
+    refreshAll(false);
     const interval = setInterval(fetchBalances, 30000);
 
     return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const applyBalances = async (data: ChannelPointsBalance[]) => {
+    // Sort by balance descending (highest first)
+    const sorted = [...data].sort((a, b) => b.balance - a.balance);
+    setBalances(sorted);
+    onTotalsChange?.(sorted.reduce((sum, b) => sum + b.balance, 0), sorted.length);
+    // Fetch profile pictures for all users
+    await fetchProfilePictures(sorted);
+  };
 
   const fetchBalances = async () => {
     try {
       const data = await invoke<ChannelPointsBalance[]>('get_all_channel_points_balances');
-      // Sort by balance descending (highest first)
-      const sorted = data.sort((a, b) => b.balance - a.balance);
-      setBalances(sorted);
-
-      // Fetch profile pictures for all users
-      await fetchProfilePictures(sorted);
+      await applyBalances(data);
     } catch (error) {
       Logger.error('Failed to fetch channel points balances:', error);
     } finally {
+      setLoading(false);
+    }
+  };
+
+  // Query every channel you follow (live or not) and refill the store, so the
+  // board reflects your whole account, not just channels watched this session.
+  const refreshAll = async (force: boolean) => {
+    setRefreshing(true);
+    try {
+      const data = await invoke<ChannelPointsBalance[]>('refresh_followed_channel_points', { force });
+      await applyBalances(data);
+    } catch (error) {
+      Logger.error('Failed to refresh followed channel points:', error);
+      await fetchBalances();
+    } finally {
+      setRefreshing(false);
       setLoading(false);
     }
   };
@@ -46,25 +71,38 @@ const ChannelPointsLeaderboard = ({ onStreamClick }: ChannelPointsLeaderboardPro
       // Get Twitch credentials
       const [clientId, token] = await invoke<[string, string]>('get_twitch_credentials');
 
-      // Batch fetch user data from Twitch API (max 100 at a time)
-      const usernames = balanceData.map(b => b.channel_name);
-      const queryParams = usernames.map(name => `login=${encodeURIComponent(name)}`).join('&');
-
-      const response = await fetch(
-        `https://api.twitch.tv/helix/users?${queryParams}`,
-        {
-          headers: {
-            'Client-ID': clientId,
-            'Authorization': `Bearer ${token}`
-          }
-        }
+      // Twitch's /users endpoint caps at 100 logins per request. The list now
+      // spans every followed channel, so chunk it: one oversized request 400s
+      // and drops every picture. Dedupe and skip blanks too.
+      const logins = Array.from(
+        new Set(
+          balanceData
+            .map((b) => b.channel_name?.toLowerCase())
+            .filter((name): name is string => !!name),
+        ),
       );
 
-      if (response.ok) {
-        const data = await response.json();
+      const pics: Record<string, string> = {};
+      for (let i = 0; i < logins.length; i += 100) {
+        const queryParams = logins
+          .slice(i, i + 100)
+          .map((name) => `login=${encodeURIComponent(name)}`)
+          .join('&');
 
-        // Create a map of username -> profile_image_url
-        const pics: Record<string, string> = {};
+        const response = await fetch(`https://api.twitch.tv/helix/users?${queryParams}`, {
+          headers: {
+            'Client-ID': clientId,
+            Authorization: `Bearer ${token}`,
+          },
+        });
+
+        if (!response.ok) {
+          // Keep the pictures the other chunks resolved rather than losing all.
+          Logger.error('Failed to fetch profile pictures chunk:', response.status);
+          continue;
+        }
+
+        const data = await response.json();
         if (data.data && Array.isArray(data.data)) {
           data.data.forEach((user: { profile_image_url?: string; login?: string }) => {
             if (user.profile_image_url && user.login) {
@@ -72,9 +110,9 @@ const ChannelPointsLeaderboard = ({ onStreamClick }: ChannelPointsLeaderboardPro
             }
           });
         }
-
-        setProfilePics(pics);
       }
+
+      setProfilePics(pics);
     } catch (error) {
       Logger.error('Failed to fetch profile pictures:', error);
     }
@@ -135,6 +173,15 @@ const ChannelPointsLeaderboard = ({ onStreamClick }: ChannelPointsLeaderboardPro
       <div className="flex items-center gap-2 mb-3">
         <Trophy className="w-4 h-4 text-accent" />
         <h3 className="text-textPrimary font-semibold text-sm">Channel Points Leaderboard</h3>
+        <Tooltip content="Refresh every followed channel" side="top">
+          <button
+            onClick={() => refreshAll(true)}
+            disabled={refreshing}
+            className="ml-auto p-1 text-textSecondary hover:text-accent transition-colors disabled:opacity-50"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
+          </button>
+        </Tooltip>
       </div>
 
       <div className="space-y-1.5 max-h-96 overflow-y-auto pr-1 custom-scrollbar">

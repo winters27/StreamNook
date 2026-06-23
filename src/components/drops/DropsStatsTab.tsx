@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { Pause, Pickaxe, Gift, TrendingUp, Clock, Award } from 'lucide-react';
 import type { DropsStatistics, DropProgressStatus } from '../../types';
 import ChannelPointsLeaderboard from '../ChannelPointsLeaderboard';
@@ -19,6 +20,10 @@ export default function DropsStatsTab({
     // Stop only applies when a provider is driving; native watch-to-earn stops
     // by not watching.
     const externalDropsProvider = useAppStore((s) => s.externalDropsProvider);
+    // Account-wide channel points (sum across every followed channel), reported
+    // by the leaderboard below once it pulls the full balance set. Falls back to
+    // the session/mined figure until that first load lands.
+    const [channelPointsTotal, setChannelPointsTotal] = useState<number | null>(null);
     if (!statistics) {
         return (
             <div className="flex items-center justify-center h-full">
@@ -46,8 +51,8 @@ export default function DropsStatsTab({
                     />
                     <StatCard
                         icon={<Award size={20} />}
-                        value={statistics.total_channel_points_earned.toLocaleString()}
-                        label="Points Earned"
+                        value={(channelPointsTotal ?? statistics.total_channel_points_earned).toLocaleString()}
+                        label="Channel Points"
                         color="purple"
                     />
                     <StatCard
@@ -160,7 +165,10 @@ export default function DropsStatsTab({
 
                 {/* Channel Points Leaderboard */}
                 <div className="glass-panel p-6">
-                    <ChannelPointsLeaderboard onStreamClick={onStreamClick} />
+                    <ChannelPointsLeaderboard
+                        onStreamClick={onStreamClick}
+                        onTotalsChange={(total) => setChannelPointsTotal(total)}
+                    />
                 </div>
             </div>
         </div>
