@@ -964,12 +964,15 @@ const ProfileSettings = () => {
       : []),
   ];
 
-  // Whether an Atmosphere is available to this member. Achievement-gated ones
+  // Whether an Atmosphere is available to this member. Accolade-gated ones
   // (e.g. Midnight via the Insomniac accolade) unlock for ANY member who earned
-  // the accolade, regardless of subscription; everything else is the subscriber
-  // perk.
+  // the accolade, regardless of subscription. Subscriber atmospheres are owned
+  // per-item: you keep every one you unlocked, and an active subscriber can
+  // apply (and thereby keep) new ones. Lapsing freezes you to what you own.
   const atmUnlocked = (a: Atmosphere): boolean =>
-    a.unlock?.kind === 'accolade' ? earnedAccolades.has(a.unlock.accoladeId) : canAtmosphere;
+    a.unlock?.kind === 'accolade'
+      ? earnedAccolades.has(a.unlock.accoladeId)
+      : ownedCosmeticSlugs.has(a.id) || subscribed;
 
   // Live preview: the hovered cosmetic (or the active one when nothing hovered).
   const activePreviewId = previewThemeId ?? profileTheme;

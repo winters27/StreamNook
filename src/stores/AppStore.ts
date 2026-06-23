@@ -8,7 +8,7 @@ import { Logger, setDiagnosticsEnabled } from '../utils/logger';
 import { getPlayerControls } from '../keybindings/playerControls';
 import { qualitiesEquivalent } from '../utils/quality';
 import { reportCodecPreference } from '../utils/codecPreference';
-import { upsertUser, grantActiveSeasonalAccolades, grantCakeDayAccolade } from '../services/supabaseService';
+import { upsertUser, grantActiveSeasonalAccolades, grantCakeDayAccolade, grantAtmosphereOwnership } from '../services/supabaseService';
 import { emitSettingsUpdated } from '../utils/settingsBroadcast';
 
 type StreamStartResult = {
@@ -2485,6 +2485,12 @@ export const useAppStore = create<AppState>((set, get) => ({
         });
         grantCakeDayAccolade(user.user_id, user.login || '').catch((e) => {
           Logger.warn('[Auth] Failed to grant cake day badge:', e);
+        });
+
+        // Keep an active subscriber's owned atmospheres current (server gates on
+        // active status, so a lapsed member accrues nothing new). Idempotent.
+        grantAtmosphereOwnership(user.user_id).catch((e) => {
+          Logger.warn('[Auth] Failed to sync atmosphere ownership:', e);
         });
       }
 

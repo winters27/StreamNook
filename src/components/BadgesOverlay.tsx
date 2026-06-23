@@ -255,7 +255,10 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
 
   // Cosmetics catalog + ownership for the StreamNook tab grid.
   useSyncExternalStore(subscribeCosmeticsVersion, getCosmeticsVersion, getCosmeticsVersion);
-  const cosmeticsCatalog = getAllCosmetics();
+  // Only wearable badges belong in this grid. Atmospheres also live in the
+  // cosmetics catalog (kind 'atmosphere') for ownership, but they are applied
+  // from the Atmospheres picker, not worn as the icon.
+  const cosmeticsCatalog = getAllCosmetics().filter((c) => c.kind === 'badge');
   const ownedCosmeticSlugs = currentUser?.user_id
     ? getOwnedCosmeticSlugs(currentUser.user_id)
     : new Set<string>();
