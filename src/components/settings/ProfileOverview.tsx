@@ -419,23 +419,39 @@ const ProfileOverview = ({
     // points balances). Skipped when viewing another member's public profile.
     if (isOwnProfile) {
       invoke<InventoryResponse>('get_drops_inventory')
-        .then((inv) => { if (alive) setDropsClaimed(inv?.completed_drops?.length ?? 0); })
+        .then((inv) => {
+          if (!alive) return;
+          // Drops claimed = total awards across the account's permanent
+          // earned-drops inventory (a drop can be awarded more than once), the
+          // same count the Drops center shows. completed_drops.length undercounts
+          // it by collapsing repeats into one.
+          const completed = inv?.completed_drops ?? [];
+          setDropsClaimed(completed.reduce((sum, d) => sum + (d.total_count || 1), 0));
+        })
         .catch(() => { if (alive) setDropsClaimed(null); });
 
-      invoke<ChannelPointsBalance[]>('get_all_channel_points_balances')
-        .then((balances) => {
-          if (!alive) return;
-          const list = Array.isArray(balances) ? balances : [];
-          setPointsHeld(list.reduce((sum, b) => sum + (b.balance || 0), 0));
-          setPointsChannels(list.length);
-          // Most-points channel ~ where you've banked the most channel points.
-          const top = list.reduce<ChannelPointsBalance | null>(
-            (best, b) => (b.balance > (best?.balance ?? -1) ? b : best),
-            null,
-          );
-          setTopPointsChannel(top?.channel_name ?? null);
-        })
-        .catch(() => { if (alive) setPointsHeld(null); });
+      const applyBalances = (balances: ChannelPointsBalance[]) => {
+        if (!alive) return;
+        const list = Array.isArray(balances) ? balances : [];
+        setPointsHeld(list.reduce((sum, b) => sum + (b.balance || 0), 0));
+        setPointsChannels(list.length);
+        // Most-points channel ~ where you've banked the most channel points.
+        const top = list.reduce<ChannelPointsBalance | null>(
+          (best, b) => (b.balance > (best?.balance ?? -1) ? b : best),
+          null,
+        );
+        setTopPointsChannel(top?.channel_name ?? null);
+      };
+      // Pull every followed channel's balance so held-points (and the Point
+      // Hoarder/Tycoon accolades) reflect the whole account, not just channels
+      // watched this session. Falls back to the warm store if the walk fails.
+      invoke<ChannelPointsBalance[]>('refresh_followed_channel_points')
+        .then(applyBalances)
+        .catch(() => {
+          invoke<ChannelPointsBalance[]>('get_all_channel_points_balances')
+            .then(applyBalances)
+            .catch(() => { if (alive) setPointsHeld(null); });
+        });
     }
 
     return () => { alive = false; };
@@ -496,8 +512,27 @@ const ProfileOverview = ({
     { id: 'veteran', label: 'Veteran', icon: Medal, grad: 'linear-gradient(140deg, #fb923c, #c2410c)', earned: years >= 5, hint: `Years on Twitch: ${years} / 5` },
     { id: 'ancient', label: 'Ancient One', icon: Hourglass, grad: 'linear-gradient(140deg, #a855f7, #7e22ce)', earned: years >= 10, hint: `Years on Twitch: ${years} / 10` },
     { id: 'og', label: 'OG', icon: Crown, grad: 'linear-gradient(140deg, #fbbf24, #d97706)', earned: streamNookUserNumber !== null && streamNookUserNumber <= 100, hint: 'Be one of the first 100 StreamNook members' },
-  ];
+  ].map((a) => ({ ...a, earned: a.earned || earnedAccolades.has(a.id) }));
   const allBaseEarned = baseAccolades.every((a) => a.earned);
+
+  // Stat-threshold accolades are achievements: once you cross the line they
+  // stay collected, even if the underlying number later dips or its live
+  // source is momentarily empty (channel-points balances, for one, only cover
+  // channels watched this session). Persist each the first time its threshold
+  // is met so reopening the profile keeps it earned.
+  useEffect(() => {
+    if (!isOwnProfile || !userId) return;
+    const toGrant = baseAccolades.filter((a) => a.earned && !earnedAccolades.has(a.id)).map((a) => a.id);
+    if (toGrant.length === 0) return;
+    setEarnedAccolades((prev) => {
+      const next = new Set(prev);
+      toGrant.forEach((id) => next.add(id));
+      return next;
+    });
+    toGrant.forEach((id) => grantAccolade(userId, id).catch(() => {}));
+    // baseAccolades is derived from these primitives + earnedAccolades.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOwnProfile, userId, earnedAccolades, messages, hours, streams, drops, pts, cosmeticsTotal, years, streamNookUserNumber]);
   const secretAccolades: Accolade[] = [
     { id: 'completionist', label: 'Completionist', icon: Star, grad: 'linear-gradient(140deg, #f472b6, #db2777)', secret: true, earned: allBaseEarned, hint: "When there's nothing else left to earn, this one shows up." },
     { id: 'triple', label: 'Triple Threat', icon: Layers, grad: 'linear-gradient(140deg, #34d399, #0f766e)', secret: true, earned: messages >= 1000 && hours >= 100 && drops >= 25, hint: 'Talk, watch, and collect until all three run deep.' },
