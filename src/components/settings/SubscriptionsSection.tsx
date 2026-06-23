@@ -30,7 +30,7 @@ interface Row {
   key: string;
   name: string;
   label: string;
-  months: number | undefined; // undefined while the active streak is still loading
+  months: number | undefined; // undefined while the tenure lookup is still loading
   status: 'active' | 'past';
   free: boolean; // active Prime/gift -> muted pill
 }
@@ -39,10 +39,10 @@ const SubscriptionsSection = ({ login }: { login: string }) => {
   // null = still loading active list; [] = loaded but none (or fetch failed).
   const [subs, setSubs] = useState<MySubscription[] | null>(null);
   const [past, setPast] = useState<PastSubscription[]>([]);
-  // Current-streak months per ACTIVE channel, from IVR. `null` value = the
-  // lookup ran but returned nothing; absent key = still loading.
-  const [streak, setStreak] = useState<Record<string, number>>({});
-  const [streakLoaded, setStreakLoaded] = useState(false);
+  // Total cumulative months subscribed per ACTIVE channel, from IVR (lifetime
+  // tenure, not the current unbroken streak). Absent key = still loading.
+  const [cumulativeMonths, setCumulativeMonths] = useState<Record<string, number>>({});
+  const [tenureLoaded, setTenureLoaded] = useState(false);
   const [expanded, setExpanded] = useState(false);
 
   const self = login.toLowerCase();
@@ -59,27 +59,29 @@ const SubscriptionsSection = ({ login }: { login: string }) => {
         setSubs(active);
         setPast(pastList);
 
-        // Current-streak months for the active subs (skip our own channel).
-        // Past subs already carry their own months, so IVR is only hit for the
-        // handful of active subs - no large fan-out / rate-limit risk.
+        // Total cumulative months for each active sub (skip our own channel).
+        // IVR is only hit for the handful of active subs, so no large fan-out /
+        // rate-limit risk.
         const entries = await Promise.all(
           active
             .filter((s) => s.channelLogin.toLowerCase() !== self)
             .map(async (s) => {
               const data = await fetchIVRSubage(login, s.channelLogin).catch(() => null);
-              const m = data?.streak?.months ?? data?.meta?.subStreak ?? 0;
+              // Lifetime months subscribed, not the current streak. meta.subMonths
+              // is the same figure; streak is only a last-resort fallback.
+              const m = data?.cumulative?.months ?? data?.meta?.subMonths ?? data?.streak?.months ?? 0;
               return [s.channelLogin.toLowerCase(), m] as const;
             }),
         );
         if (alive) {
-          setStreak(Object.fromEntries(entries));
-          setStreakLoaded(true);
+          setCumulativeMonths(Object.fromEntries(entries));
+          setTenureLoaded(true);
         }
       } catch (e) {
         Logger.error('[Subscriptions] Failed to load:', e);
         if (alive) {
           setSubs([]);
-          setStreakLoaded(true);
+          setTenureLoaded(true);
         }
       }
     })();
@@ -111,22 +113,23 @@ const SubscriptionsSection = ({ login }: { login: string }) => {
   const activeByChannel = new Map(active.map((s) => [s.channelLogin.toLowerCase(), s]));
 
   // ── Spend ──────────────────────────────────────────────────────────────
-  // Every past period (tier x months) + each active PAID sub's current period
-  // (tier x streak). Past periods and the current period never overlap, so
-  // nothing is double-counted and no past period is dropped.
+  // Count each channel's FULL tenure once. Active channels use IVR cumulative
+  // months (the lifetime total, which already includes any earlier lapsed
+  // periods) at the current tier. Past-only channels price each lapsed period
+  // at its own tier. Cumulative already covers a channel's past periods, so
+  // those past entries are skipped for channels that also have an active sub,
+  // and nothing is double-counted.
   let spend = 0;
   let totalMonths = 0;
-  // Price each past period at its OWN tier and months (a channel can have
-  // separate periods at different tiers, so never blend them by channel).
-  for (const p of pastAll) {
-    spend += TIER_PRICE[p.tier] * p.months;
-    totalMonths += p.months;
-  }
-  // Each active PAID sub's current period at its own tier.
   for (const s of active) {
-    const m = streak[s.channelLogin.toLowerCase()] || 0;
+    const m = cumulativeMonths[s.channelLogin.toLowerCase()] || 0;
     totalMonths += m;
     if (!s.isPrime && !s.isGift) spend += TIER_PRICE[s.tier] * Math.max(1, m);
+  }
+  for (const p of pastAll) {
+    if (activeByChannel.has(p.channelLogin.toLowerCase())) continue; // covered by cumulative
+    spend += TIER_PRICE[p.tier] * p.months;
+    totalMonths += p.months;
   }
 
   // ── Display rows: union of active + past channels ──────────────────────
@@ -135,14 +138,15 @@ const SubscriptionsSection = ({ login }: { login: string }) => {
     .map((k): Row => {
       const a = activeByChannel.get(k);
       const pst = pastByChannel.get(k);
-      const streakKnown = !a || streakLoaded;
-      const aStreak = a ? streak[k] || 0 : 0;
-      const months = a ? aStreak + (pst?.months || 0) : pst!.months;
+      const tenureKnown = !a || tenureLoaded;
+      // Active: cumulative tenure (already includes any past periods for this
+      // channel). Past-only: the summed lapsed months.
+      const months = a ? cumulativeMonths[k] || 0 : pst!.months;
       return {
         key: k,
         name: a?.channelDisplayName ?? pst!.name,
         label: a ? activeTierLabel(a) : `Tier ${pst!.tier}`,
-        months: streakKnown ? months : undefined,
+        months: tenureKnown ? months : undefined,
         status: a ? 'active' : 'past',
         free: a ? a.isPrime || a.isGift : false,
       };
@@ -186,9 +190,9 @@ const SubscriptionsSection = ({ login }: { login: string }) => {
               </span>
             </div>
             <p className="mt-1.5 text-[11px] leading-snug text-textSecondary">
-              Every past subscription plus your current streaks, tier price times months. Active
-              Prime and gifts are excluded; past subs are counted at tier price (their Prime/gift
-              status isn't exposed). US pricing assumed, so treat it as a ballpark.
+              Tier price times your total months subscribed to each channel. Active Prime and gifts
+              are excluded; past subs are counted at tier price (their Prime/gift status isn't
+              exposed). US pricing assumed, so treat it as a ballpark.
             </p>
           </div>
 
