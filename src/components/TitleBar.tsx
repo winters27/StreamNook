@@ -55,7 +55,8 @@ const TitleBar = () => {
   const [dropsSettings, setDropsSettings] = useState<DropsSettings | null>(null);
   // Whether the separate drops/points credential (its own Twitch sign-in) is
   // present. null = not yet checked. Drives the drops button's "needs sign-in"
-  // cue, since logging out clears this credential while the main account stays.
+  // cue — a logout (main or drops) clears this credential and swaps the gift for
+  // a sign-in button.
   const [dropsAuthed, setDropsAuthed] = useState<boolean | null>(null);
   const [isMaximized, setIsMaximized] = useState(false);
   const prevDropProgressActive = useRef(dropProgressActive);
@@ -483,10 +484,11 @@ const TitleBar = () => {
               const showProgressBadge = dropProgressActive;
 
               // Drops and channel points run off a separate Twitch sign-in that
-              // logout clears. When the main account is in but that credential is
-              // missing, flag the button so the user knows to re-authorize —
-              // clicking it opens the drops panel where the sign-in lives.
-              const needsDropsAuth = isAuthenticated && dropsAuthed === false;
+              // logout clears (signing out of the main account signs drops out
+              // too). Whenever that credential is missing, swap the gift for a
+              // sign-in button (clicking it starts the drops sign-in) — including
+              // after a full sign-out, not only while the main account is in.
+              const needsDropsAuth = dropsAuthed === false;
 
               // Determine gift box color/shimmer class
               // Silver = channel points only, Gold = drops only, Iridescent = both
