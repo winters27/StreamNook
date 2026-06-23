@@ -151,14 +151,15 @@ fn main() {
     // chat-identity). One uniform set keeps the main-window tweaks (audio in-process,
     // SmartScreen off) while letting those popups open again.
     //
-    // CalculateNativeWinOcclusion is disabled because it hangs the UI thread when the
-    // window is occluded by another window (e.g. alt-tabbing to a password manager
-    // during the Twitch login overlay) while layered child webviews are mounted. The
-    // visibility hide on `document.hidden` only covers minimize, not occlusion, so the
-    // occlusion calculation has to be off to keep the login flow from "Not Responding".
+    // NOTE: CalculateNativeWinOcclusion is intentionally NOT disabled here. The alt-tab
+    // "(Not Responding)" freeze was NOT an occlusion-calc problem; it was the `unstable`
+    // tauri feature hosting the main window's webview as a child HWND (build_as_child),
+    // the composited-child mode that wedges the UI thread when occluded. Removing
+    // `tauri/unstable` (now unused; add_child is gone) restores the window-filling webview
+    // hosting 8.0.7 used and never froze, so this matches 8.0.7's arg set exactly.
     std::env::set_var(
         "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
-        "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,AudioServiceOutOfProcess,CalculateNativeWinOcclusion",
+        "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,AudioServiceOutOfProcess",
     );
 
     // Initialize the logging system FIRST so all debug!/error! macros work
@@ -789,6 +790,8 @@ fn main() {
             get_channel_points_history,
             get_channel_points_balance,
             get_all_channel_points_balances,
+            record_channel_points_balance,
+            refresh_followed_channel_points,
             start_drops_monitoring,
             stop_drops_monitoring,
             update_monitoring_channel,
@@ -1003,23 +1006,6 @@ fn main() {
                     }
                 }
 
-                // Windows 10 minimizes the borderless main window on alt-tab (Windows
-                // 11 does not). With CalculateNativeWinOcclusion disabled, nothing tells
-                // the main window's WebView2 to stop rendering while minimized, so it
-                // keeps presenting against the hidden surface and wedges the UI-thread
-                // pump ("Not Responding"; the hang watchdog logged this as minimized=true
-                // with no overlay mounted). Park the WebView2 controller(s) in lockstep
-                // with the minimize state. tao dispatches this Resized synchronously
-                // inside WM_SIZE, so the park lands before the first post-minimize
-                // present — a JS `visibilitychange` reaction round-trips through IPC and
-                // can't unwedge a pump that has already stalled.
-                #[cfg(windows)]
-                {
-                    if let WindowEvent::Resized(_) = event {
-                        let minimized = window.is_minimized().unwrap_or(false);
-                        sync_app_webviews_to_minimize(&app_handle, minimized);
-                    }
-                }
             } else if label.starts_with("multichat-") {
                 if let WindowEvent::Destroyed = event {
                     // Tell the main window this popout is gone so it can
