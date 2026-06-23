@@ -709,6 +709,61 @@ export const grantAccolade = async (userId: string, accoladeId: string): Promise
 };
 
 /**
+ * Claim a reward (event or milestone). The server function (claim_reward,
+ * security definer) checks the gate against its own state: an event window
+ * against its own clock, or a milestone threshold against the real stored value
+ * (e.g. subscriber months, watch hours). A rolled-back clock or a faked client
+ * number cannot earn it. It then grants the accolade or cosmetic. `granted` is
+ * true only on a fresh earn (idempotent: re-claiming returns ok with
+ * granted:false). `reason` carries 'window_closed' / 'not_started' /
+ * 'below_threshold' / 'inactive' / 'unknown_reward' on a server reject, or the
+ * error code on a transport/RLS failure.
+ */
+export const claimReward = async (
+    userId: string,
+    rewardId: string,
+    context: Record<string, unknown> = {},
+): Promise<{ ok: boolean; granted?: boolean; reason?: string; rewardId?: string }> => {
+    if (!supabase || !userId || !rewardId) return { ok: false, reason: 'unconfigured' };
+    try {
+        const { data, error } = await supabase.rpc('claim_reward', {
+            p_twitch_user_id: userId,
+            p_reward_id: rewardId,
+            p_context: context,
+        });
+        if (error) {
+            // 42501 = RLS denial; 42883/PGRST202 = function not deployed yet.
+            Logger.error('[Supabase] claim_reward failed:', error.message, error.code);
+            return { ok: false, reason: error.code || 'error' };
+        }
+        const res = (data ?? {}) as { ok?: boolean; granted?: boolean; reason?: string; reward_id?: string };
+        return { ok: !!res.ok, granted: res.granted, reason: res.reason, rewardId: res.reward_id };
+    } catch (error) {
+        Logger.error('[Supabase] Exception claiming reward:', error);
+        return { ok: false, reason: 'exception' };
+    }
+};
+
+/**
+ * Sync the caller's owned subscriber atmospheres. The server function
+ * (grant_atmosphere_ownership, security definer) grants ownership of every
+ * current subscriber atmosphere ONLY if the user is an active subscriber, so a
+ * lapsed member keeps what they already own but stops accruing newly-added ones.
+ * Fire-and-forget at login; idempotent. Silent when the RPC is not yet deployed.
+ */
+export const grantAtmosphereOwnership = async (userId: string): Promise<void> => {
+    if (!supabase || !userId) return;
+    try {
+        const { error } = await supabase.rpc('grant_atmosphere_ownership', { p_twitch_user_id: userId });
+        if (error && error.code !== '42883' && error.code !== 'PGRST202') {
+            Logger.warn('[Supabase] grant_atmosphere_ownership failed:', error.message, error.code);
+        }
+    } catch (error) {
+        Logger.warn('[Supabase] Exception in grant_atmosphere_ownership:', error);
+    }
+};
+
+/**
  * If today falls within a seasonal badge window, grant that badge. Called once
  * per session on login so holidays are captured without opening the profile.
  */
