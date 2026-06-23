@@ -1,3 +1,15 @@
+## [8.0.11] - 2026-06-22
+
+### 🐛 Bug Fixes
+- Channel points now span every channel you follow, not just the ones you watched this session. The Drops tab summary, the points leaderboard, and your profile all show your full holdings, with a refresh button to pull the latest on demand.
+- Profile pictures show again across the channel points leaderboard, even when you follow a large number of channels.
+- Channel points update the instant they change instead of waiting for the next watch-time tick.
+- Drops claimed now matches the total Twitch shows, counting every award instead of collapsing repeats.
+- Achievement badges tied to a running total stay earned once you hit the milestone, even if the live number later dips.
+- Subscription tenure and estimated spend are now based on your full lifetime months subscribed to each channel rather than your current streak.
+- Atmospheres you unlock as a subscriber stay yours, available even if your subscription later lapses.
+- The drops button now offers a sign-in prompt after you fully sign out.
+
 ## [8.0.10] - 2026-06-21
 ### ✨ Features
 - **Chat on the left, plus reveal on hover**: Dock chat on the left of the player, not just right or bottom. Side-docked chat can also tuck against its edge and slide out when you move toward it, with the player shrinking to make room.
