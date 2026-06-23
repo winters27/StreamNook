@@ -55,13 +55,33 @@ impl BackgroundService {
                     let channel_id = payload["channel_id"].as_str().map(|s| s.to_string());
                     let points = payload["points"].as_i64().unwrap_or(0) as i32;
                     let reason = payload["reason"].as_str().unwrap_or("watch");
+                    let balance = payload["balance"].as_i64().unwrap_or(0) as i32;
+                    // Prefer the login (helix lookups + leaderboard key on it),
+                    // fall back to the display name.
+                    let channel_name = payload["channel_login"]
+                        .as_str()
+                        .or_else(|| payload["channel_display_name"].as_str())
+                        .unwrap_or("")
+                        .to_string();
+
+                    let ds = drops_service.lock().await;
+
+                    // Keep the per-channel balance current for the leaderboard
+                    // and the points accolades. The socket reports the new
+                    // balance with every earn; nothing else fills this store.
+                    if balance > 0 {
+                        if let Some(cid) = channel_id.as_deref() {
+                            ds.update_channel_points_balance(cid, &channel_name, balance)
+                                .await;
+                        }
+                    }
 
                     if points > 0 {
                         debug!("Channel points earned: +{} ({})", points, reason);
                         let claim = ChannelPointsClaim {
                             id: uuid::Uuid::new_v4().to_string(),
                             channel_id: channel_id.unwrap_or_default(),
-                            channel_name: String::new(),
+                            channel_name,
                             points_earned: points,
                             claimed_at: Utc::now(),
                             claim_type: match reason {
@@ -70,7 +90,7 @@ impl BackgroundService {
                                 _ => ChannelPointsClaimType::Watch,
                             },
                         };
-                        drops_service.lock().await.add_channel_points_claim(claim).await;
+                        ds.add_channel_points_claim(claim).await;
                     }
                 }
             });
@@ -123,13 +143,5 @@ impl BackgroundService {
             .ok()?;
         let json: serde_json::Value = resp.json().await.ok()?;
         json["user_id"].as_str().map(|s| s.to_string())
-    }
-
-    /// Multi-channel balances were populated by the removed farming loop. The
-    /// leaderboard that reads this is now empty pending a non-farming source.
-    pub async fn get_channel_points_balances(
-        &self,
-    ) -> Vec<crate::models::drops::ChannelPointsBalance> {
-        Vec::new()
     }
 }

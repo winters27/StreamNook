@@ -1449,6 +1449,38 @@ impl DropsService {
         balances.values().cloned().collect()
     }
 
+    /// Upsert a channel's current balance. Fed by the realtime points-earned
+    /// socket, which reports the new balance with every earn — the only thing
+    /// that keeps this store current now that the farming loop is gone. Powers
+    /// the channel-points leaderboard and the points accolades.
+    pub async fn update_channel_points_balance(
+        &self,
+        channel_id: &str,
+        channel_name: &str,
+        balance: i32,
+    ) {
+        let mut balances = self.channel_points_balances.write().await;
+        balances
+            .entry(channel_id.to_string())
+            .and_modify(|b| {
+                b.balance = balance;
+                b.last_updated = Utc::now();
+                // Keep the friendliest name we've seen; the socket may report
+                // an earn before any name has resolved.
+                if !channel_name.is_empty() {
+                    b.channel_name = channel_name.to_string();
+                }
+            })
+            .or_insert_with(|| ChannelPointsBalance {
+                channel_id: channel_id.to_string(),
+                channel_name: channel_name.to_string(),
+                balance,
+                last_updated: Utc::now(),
+                points_name: None,
+                points_icon_url: None,
+            });
+    }
+
     pub async fn start_monitoring(
         &self,
         channel_id: String,

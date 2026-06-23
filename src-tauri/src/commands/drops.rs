@@ -149,8 +149,173 @@ pub async fn get_channel_points_balance(
 pub async fn get_all_channel_points_balances(
     state: State<'_, AppState>,
 ) -> Result<Vec<ChannelPointsBalance>, String> {
-    let background_service = state.background_service.lock().await;
-    Ok(background_service.get_channel_points_balances().await)
+    let drops_service = state.drops_service.lock().await;
+    Ok(drops_service.get_all_channel_points_balances().await)
+}
+
+/// Record the live balance the chat widget reads when you open a channel, so
+/// the leaderboard and points accolades have an accurate figure immediately
+/// instead of waiting for the realtime socket's first watch-time earn.
+#[tauri::command]
+pub async fn record_channel_points_balance(
+    channel_id: String,
+    channel_name: String,
+    balance: i32,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let drops_service = state.drops_service.lock().await;
+    drops_service
+        .update_channel_points_balance(&channel_id, &channel_name, balance)
+        .await;
+    Ok(())
+}
+
+lazy_static::lazy_static! {
+    static ref LAST_BALANCES_REFRESH: std::sync::Mutex<Option<std::time::Instant>> =
+        std::sync::Mutex::new(None);
+}
+
+/// Query the channel-points balance of EVERY followed channel (live or not) and
+/// populate the shared store, so the leaderboard and the points accolades show
+/// your full holdings without opening each channel one by one. Balance is
+/// account state queried by login, so nothing has to be live. Throttled to once
+/// per 30s unless `force`, to absorb rapid remounts. Returns the full store.
+#[tauri::command]
+pub async fn refresh_followed_channel_points(
+    force: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<Vec<ChannelPointsBalance>, String> {
+    use crate::services::twitch_service::TwitchService;
+    use serde_json::json;
+
+    const REFRESH_THROTTLE: std::time::Duration = std::time::Duration::from_secs(30);
+    if !force.unwrap_or(false) {
+        let recent = LAST_BALANCES_REFRESH
+            .lock()
+            .ok()
+            .and_then(|g| *g)
+            .map(|last| last.elapsed() < REFRESH_THROTTLE)
+            .unwrap_or(false);
+        if recent {
+            let drops_service = state.drops_service.lock().await;
+            return Ok(drops_service.get_all_channel_points_balances().await);
+        }
+    }
+
+    const CLIENT_ID: &str = env!("TWITCH_WEB_CLIENT_ID");
+    let token = DropsAuthService::get_token()
+        .await
+        .map_err(|e| format!("Failed to get token: {}", e))?;
+    let client = HTTP_CLIENT.clone();
+
+    // Drain the full followed list (live or offline): (login, channel_id).
+    let mut channels: Vec<(String, String)> = Vec::new();
+    let mut cursor: Option<String> = None;
+    loop {
+        match TwitchService::get_all_followed_channels(100, cursor.clone()).await {
+            Ok((page, next)) => {
+                for s in page {
+                    if !s.user_login.is_empty() && !s.user_id.is_empty() {
+                        channels.push((s.user_login, s.user_id));
+                    }
+                }
+                match next {
+                    Some(c) => cursor = Some(c),
+                    None => break,
+                }
+            }
+            Err(e) => return Err(format!("Failed to list followed channels: {}", e)),
+        }
+    }
+
+    // The same direct ChannelPointsContext query get_channel_points_for_channel
+    // uses (inline, not the stale persisted hash), batched 35 ops per request
+    // (Twitch GQL's per-batch ceiling).
+    const QUERY: &str = r#"
+    query ChannelPointsContext($channelLogin: String!) {
+        user(login: $channelLogin) {
+            channel {
+                self {
+                    communityPoints {
+                        balance
+                    }
+                }
+            }
+        }
+    }
+    "#;
+
+    // Collect off-lock so the network walk never stalls chat/mining, which also
+    // hold the drops service mutex.
+    let mut found: Vec<(String, String, i32)> = Vec::new(); // (channel_id, login, balance)
+    for chunk in channels.chunks(35) {
+        let body: Vec<serde_json::Value> = chunk
+            .iter()
+            .map(|(login, _id)| {
+                json!({
+                    "operationName": "ChannelPointsContext",
+                    "query": QUERY,
+                    "variables": { "channelLogin": login.to_lowercase() }
+                })
+            })
+            .collect();
+
+        let resp = match client
+            .post("https://gql.twitch.tv/gql")
+            .header("Client-Id", CLIENT_ID)
+            .header("Authorization", format!("OAuth {}", token))
+            .json(&body)
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                debug!("[ChannelPoints] balance batch failed: {}", e);
+                continue;
+            }
+        };
+
+        let parsed: serde_json::Value = match resp.json().await {
+            Ok(v) => v,
+            Err(e) => {
+                debug!("[ChannelPoints] balance batch parse failed: {}", e);
+                continue;
+            }
+        };
+
+        // Batched responses come back in request order; zip by index.
+        if let Some(arr) = parsed.as_array() {
+            for (idx, item) in arr.iter().enumerate() {
+                let Some((login, channel_id)) = chunk.get(idx) else {
+                    continue;
+                };
+                if let Some(bal) = item
+                    .pointer("/data/user/channel/self/communityPoints/balance")
+                    .and_then(|v| v.as_i64())
+                {
+                    if bal > 0 {
+                        found.push((channel_id.clone(), login.clone(), bal as i32));
+                    }
+                }
+            }
+        }
+    }
+
+    {
+        let drops_service = state.drops_service.lock().await;
+        for (channel_id, login, balance) in &found {
+            drops_service
+                .update_channel_points_balance(channel_id, login, *balance)
+                .await;
+        }
+    }
+
+    if let Ok(mut g) = LAST_BALANCES_REFRESH.lock() {
+        *g = Some(std::time::Instant::now());
+    }
+
+    let drops_service = state.drops_service.lock().await;
+    Ok(drops_service.get_all_channel_points_balances().await)
 }
 
 /// Shared active-channel chokepoint: points the parity heartbeat at the
