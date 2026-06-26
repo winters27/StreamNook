@@ -839,6 +839,52 @@ export const usemultiNookStore = create<MultiNookState>((set, get) => ({
           activeChatChannelId: pickActiveChatChannel(cleanedSlots),
           activePresetId: appSettings.multi_nook_active_preset_id ?? null,
         });
+        // Restored avatars are whatever was persisted: they can be stale (Twitch
+        // CDN URLs expire / the streamer changed their pic) or were never captured
+        // (a network hiccup on the original add), so the offline overlay shows no
+        // picture. Refresh them from Helix in the background (one batched call,
+        // up to 100 logins) and persist the fresh values.
+        void (async () => {
+          const logins = Array.from(
+            new Set(cleanedSlots.map((s) => s.channelLogin.toLowerCase())),
+          ).filter(Boolean);
+          if (logins.length === 0) return;
+          try {
+            const [clientId, token] = await invoke<[string, string]>('get_twitch_credentials');
+            const qs = logins.slice(0, 100).map((l) => `login=${encodeURIComponent(l)}`).join('&');
+            const resp = await fetch(`https://api.twitch.tv/helix/users?${qs}`, {
+              headers: { 'Client-ID': clientId, Authorization: `Bearer ${token}` },
+            });
+            if (!resp.ok) return;
+            const data = await resp.json();
+            const byLogin = new Map<string, { id: string; display_name: string; profile_image_url: string }>();
+            for (const u of data.data || []) byLogin.set((u.login || '').toLowerCase(), u);
+            let changed = false;
+            const next = get().slots.map((s) => {
+              const u = byLogin.get(s.channelLogin.toLowerCase());
+              if (!u || !u.profile_image_url) return s;
+              if (
+                u.profile_image_url === s.profileImageUrl &&
+                s.channelId &&
+                s.channelName
+              )
+                return s;
+              changed = true;
+              return {
+                ...s,
+                profileImageUrl: u.profile_image_url,
+                channelId: s.channelId || u.id,
+                channelName: s.channelName || u.display_name,
+              };
+            });
+            if (changed) {
+              set({ slots: next });
+              void get().saveSlots();
+            }
+          } catch (e) {
+            Logger.warn('[multiNookStore] Failed to refresh restored slot avatars', e);
+          }
+        })();
       }
       if (appSettings.multi_nook_chat_hidden !== undefined) {
         set({ isChatHidden: appSettings.multi_nook_chat_hidden });

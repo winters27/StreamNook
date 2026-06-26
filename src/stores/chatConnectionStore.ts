@@ -20,9 +20,12 @@
 
 import { useEffect, useState } from 'react';
 import { create } from 'zustand';
+import type { ProviderId } from '../types/providers';
+import { makeKey, parseKey } from '../utils/providerKey';
+import { parseBadges } from '../services/twitchBadges';
 import { invoke } from '@tauri-apps/api/core';
 import { fetchRecentMessagesAsIRC } from '../services/ivrService';
-import { fetchAllEmotes, type EmoteSet } from '../services/emoteService';
+import { fetchAllEmotes, fetchKickChannelEmotes, type EmoteSet } from '../services/emoteService';
 import { Logger } from '../utils/logger';
 import { useAppStore } from './AppStore';
 import type { SongMatch } from '../utils/songId';
@@ -87,6 +90,9 @@ export interface SendAsAccount {
 
 interface ChannelSlice {
   channel: string;
+  /** Source platform. Twitch keeps bare-login keys; non-Twitch sources are
+   *  keyed "provider:channel". MultiChat only; the main app is always twitch. */
+  provider: ProviderId;
   channelId: string | null;
   messages: any[];
   isConnected: boolean;
@@ -95,6 +101,8 @@ interface ChannelSlice {
   userBadges: string | null;
   deletedMessageIds: Set<string>;
   clearedUserContexts: Map<string, ClearedUserEntry>;
+  /** Currently pinned message (provider-driven; e.g. Kick's pin event). */
+  pinnedMessage: any | null;
   refCount: number;
   isPausedForBuffer: boolean;
   /** Monotonic count of live messages appended to this channel since the slice
@@ -253,11 +261,20 @@ export async function refreshChannelEmotes(
   return ensureChannelEmotes(key, channelId);
 }
 
+// The emote-cache key namespaces non-Twitch providers so the SAME channel slug on
+// two platforms (e.g. xqc on Twitch and Kick) keeps separate emote sets. Twitch
+// stays a bare login so its path is byte-identical.
+export function emoteCacheKey(channel: string, provider: ProviderId = 'twitch'): string {
+  const c = channel.toLowerCase();
+  return provider === 'twitch' ? c : `${provider}:${c}`;
+}
+
 export async function ensureChannelEmotes(
   channel: string,
   channelId: string,
+  provider: ProviderId = 'twitch',
 ): Promise<EmoteSet | null> {
-  const key = channel.toLowerCase();
+  const key = emoteCacheKey(channel, provider);
   const cached = emoteCache.get(key);
   if (cached) return cached;
   const inflight = inflightEmoteFetches.get(key);
@@ -265,14 +282,23 @@ export async function ensureChannelEmotes(
 
   const promise = (async () => {
     try {
-      const set = await fetchAllEmotes(key, channelId);
+      // Kick has its own 7TV path (by Kick user id); Twitch keeps the full
+      // BTTV/FFZ/7TV/native fetch. YouTube + TikTok have no channel-emote fetch
+      // this pass — their messages are plain text / native emoji baked at parse
+      // time, so there's no picker set to fetch.
+      const set =
+        provider === 'kick'
+          ? await fetchKickChannelEmotes(channel.toLowerCase())
+          : provider === 'youtube' || provider === 'tiktok'
+            ? null
+            : await fetchAllEmotes(channel.toLowerCase(), channelId);
       if (set) {
         emoteCache.set(key, set);
         notifyEmoteSubscribers(key);
       }
       return set;
     } catch (err) {
-      Logger.warn(`[ChatStore] fetchAllEmotes failed for ${key}:`, err);
+      Logger.warn(`[ChatStore] ensureChannelEmotes failed for ${key}:`, err);
       return null;
     } finally {
       inflightEmoteFetches.delete(key);
@@ -405,9 +431,14 @@ function withSlice(channel: string, mutator: (slice: ChannelSlice) => void): voi
   bumpRevision();
 }
 
-function emptySlice(channel: string, channelId: string | null): ChannelSlice {
+function emptySlice(
+  channel: string,
+  channelId: string | null,
+  provider: ProviderId = 'twitch',
+): ChannelSlice {
   return {
     channel: channel.toLowerCase(),
+    provider,
     channelId,
     messages: [],
     isConnected: false,
@@ -416,6 +447,7 @@ function emptySlice(channel: string, channelId: string | null): ChannelSlice {
     userBadges: null,
     deletedMessageIds: new Set(),
     clearedUserContexts: new Map(),
+    pinnedMessage: null,
     refCount: 0,
     isPausedForBuffer: false,
     liveMessageCount: 0,
@@ -657,12 +689,23 @@ async function reconnectAll() {
   if (!firstSlice) return;
 
   try {
-    await connectBridgeForFirstChannel(first, firstSlice.channelId, true);
+    await connectBridgeForFirstChannel(
+      first,
+      firstSlice.channelId,
+      true,
+      firstSlice.provider,
+      parseKey(first).channel,
+    );
     for (const ch of channels.slice(1)) {
+      const provider = state.channels.get(ch)?.provider ?? 'twitch';
       try {
-        await invoke('join_chat_channel', { channel: ch });
+        if (provider === 'twitch') {
+          await invoke('join_chat_channel', { channel: ch });
+        } else {
+          await invoke('provider_chat_connect', { provider, channel: parseKey(ch).channel });
+        }
       } catch (err) {
-        Logger.error(`[ChatStore] Failed to re-JOIN ${ch} during reconnect:`, err);
+        Logger.error(`[ChatStore] Failed to re-join ${ch} during reconnect:`, err);
       }
     }
   } catch (err) {
@@ -736,6 +779,12 @@ async function connectBridgeForFirstChannel(
   // holds channels; it suppresses the Rust-side sweep of this window's stale
   // claims that a fresh first-acquire start performs (see reconnectAll).
   reattach = false,
+  // Source platform. Twitch uses start_chat (its dedicated IRC bridge); other
+  // providers bring up the SAME local-WS bridge via provider_chat_connect.
+  provider: ProviderId = 'twitch',
+  // Platform channel for non-Twitch provider_chat_connect (the bare slug, not
+  // the composite slice key). Defaults to the slice key for Twitch.
+  bareChannel?: string,
 ): Promise<void> {
   if (wsConnecting) {
     Logger.debug('[ChatStore] WS already connecting, skipping duplicate request');
@@ -743,11 +792,17 @@ async function connectBridgeForFirstChannel(
   }
   wsConnecting = true;
   try {
-    Logger.debug(`[ChatStore] Invoking start_chat for ${channel}`);
+    Logger.debug(`[ChatStore] Invoking bridge connect for ${channel} (${provider})`);
     chatConnectStartedAt = performance.now();
     chatFirstFrameLogged = false;
-    const port = await invoke<number>('start_chat', { channel, reattach });
-    Logger.info(`[ChatPerf] start_chat (Rust IRC connect + bridge spawn) took ${Math.round(performance.now() - chatConnectStartedAt)}ms`);
+    const port =
+      provider === 'twitch'
+        ? await invoke<number>('start_chat', { channel, reattach })
+        : await invoke<number>('provider_chat_connect', {
+            provider,
+            channel: bareChannel ?? channel,
+          });
+    Logger.info(`[ChatPerf] bridge connect took ${Math.round(performance.now() - chatConnectStartedAt)}ms`);
     useChatConnectionStore.setState({ wsPort: port });
 
     const tBeforeWs = performance.now();
@@ -790,8 +845,9 @@ async function connectBridgeForFirstChannel(
     setAllChannelsConnected(true);
     startHealthCheck();
 
-    // After first-channel connect, pre-load recent messages for that channel.
-    void preloadChannel(channel, channelId);
+    // After first-channel connect, pre-load recent messages (Twitch-only: the
+    // badge cache + history backfill don't apply to other providers).
+    if (provider === 'twitch') void preloadChannel(channel, channelId);
   } finally {
     wsConnecting = false;
   }
@@ -895,6 +951,22 @@ async function preloadChannel(channel: string, channelId: string | null): Promis
   } catch (err) {
     Logger.error('[ChatStore] Failed to fetch recent messages:', err);
   }
+}
+
+/** MultiChat: a Twitch pane resolves its channelId after the pane mounts (the
+ *  stream-info poll runs post-render). When a channel was acquired WITHOUT an id
+ *  (a Go Live seed, or a saved source stored without one), the acquire-time
+ *  preload bailed — so an OFFLINE channel, which has no live messages arriving,
+ *  shows an empty pane even though the core app shows its recent chat. Once the
+ *  pane has the id it calls this to run the one-time recent-history backfill.
+ *  preloadChannel dedups against what's already in the slice, so this is safe
+ *  even if a backfill already ran. */
+export async function ensureChannelHistory(
+  channel: string,
+  channelId: string | null,
+): Promise<void> {
+  if (!channelId) return;
+  await preloadChannel(channel.toLowerCase(), channelId);
 }
 
 // --- Incoming message routing ----------------------------------------------
@@ -1036,8 +1108,24 @@ function handleWsMessage(raw: string) {
         };
         if (ch) withSlice(ch, apply);
         else for (const s of useChatConnectionStore.getState().channels.values()) apply(s);
+        // The frame may not carry the author/text (Kick's delete event only gives
+        // the message id), so recover them from chat history by that id — the
+        // message is still in the slice (deletion only marks it, doesn't drop it).
+        // Twitch's IRC CLEARMSG already includes both, so this only fills the gaps.
+        let delLogin = (parsed.login as string | undefined) || undefined;
+        let delMessage = (parsed.message as string | undefined) || undefined;
+        if ((!delLogin || !delMessage) && ch) {
+          const hit = useChatConnectionStore
+            .getState()
+            .channels.get(ch)
+            ?.messages.find((m) => typeof m !== 'string' && m.id === parsed.target_msg_id);
+          if (hit && typeof hit !== 'string') {
+            delLogin = delLogin || hit.display_name || hit.username;
+            delMessage = delMessage || hit.content;
+          }
+        }
         if (showModMsgs && ch) {
-          const who = parsed.login ?? 'a user';
+          const who = delLogin ?? 'a user';
           injectSystemMessage(ch, `${who}'s message was deleted by a moderator.`);
         }
         // Moderator log: message deletions are broadcast to every viewer over IRC,
@@ -1047,10 +1135,11 @@ function handleWsMessage(raw: string) {
           id: `irc-${Date.now()}-${Math.random()}`,
           action: 'delete',
           timestamp: new Date().toISOString(),
-          moderator_name: 'A moderator',
-          target_user_name: (parsed.login as string) || undefined,
-          target_user_login: (parsed.login as string) || undefined,
-          message: (parsed.message as string) || undefined,
+          moderator_name: (parsed.moderator as string) || 'A moderator',
+          target_user_name: delLogin || undefined,
+          target_user_login: delLogin || undefined,
+          message: delMessage || undefined,
+          reason: (parsed.reason as string) || undefined,
           channel: ch,
           source: 'irc',
           details: parsed,
@@ -1126,7 +1215,12 @@ function handleWsMessage(raw: string) {
             // text. CLEARCHAT carries no message, so read it back from chat history:
             // the messages are still present (CLEARCHAT only marks them cleared, it
             // doesn't drop them). Chronological order means the last match wins.
+            // Recover what the action frame omits from chat history: the target's
+            // display name (YouTube/Kick frames give only an id), their last removed
+            // message, and how many of their messages were cleared.
             let lastMessage: string | undefined;
+            let recoveredName: string | undefined;
+            let removedCount = 0;
             const targetSlice = ch ? useChatConnectionStore.getState().channels.get(ch) : undefined;
             if (targetSlice) {
               for (const msg of targetSlice.messages) {
@@ -1135,6 +1229,10 @@ function handleWsMessage(raw: string) {
                     ? msg.user_id
                     : msg.match?.(/user-id=([^;]+)/)?.[1];
                 if (msgUserId !== parsed.target_user_id) continue;
+                removedCount += 1;
+                if (typeof msg !== 'string') {
+                  recoveredName = msg.display_name || msg.username || recoveredName;
+                }
                 const text =
                   typeof msg !== 'string'
                     ? (msg.content as string | undefined)
@@ -1144,13 +1242,17 @@ function handleWsMessage(raw: string) {
             }
             appState.addModLog({
               id: `irc-${Date.now()}-${Math.random()}`,
-              action: isTimeout ? 'timeout' : 'ban',
+              // YouTube's anonymous feed can't distinguish a timeout from a permanent
+              // ban (both are a duration-less "remove all by author"), so log those as
+              // a neutral "removed" rather than mislabeling them "banned".
+              action: isTimeout ? 'timeout' : parsed.provider === 'youtube' ? 'removed' : 'ban',
               timestamp: new Date().toISOString(),
-              moderator_name: 'A moderator',
-              target_user_name: (parsed.target_user as string) || undefined,
+              moderator_name: (parsed.moderator as string) || 'A moderator',
+              target_user_name: (parsed.target_user as string) || recoveredName || undefined,
               target_user_id: (parsed.target_user_id as string) || undefined,
               target_user_login: (parsed.target_user as string) || undefined,
               duration: isTimeout ? (parsed.ban_duration as number) : undefined,
+              removed_count: removedCount || undefined,
               message: lastMessage,
               channel: ch,
               source: 'irc',
@@ -1161,13 +1263,22 @@ function handleWsMessage(raw: string) {
               id: `irc-${Date.now()}-${Math.random()}`,
               action: 'clear',
               timestamp: new Date().toISOString(),
-              moderator_name: 'A moderator',
+              moderator_name: (parsed.moderator as string) || 'A moderator',
               channel: ch,
               source: 'irc',
               details: parsed,
             });
           }
         }
+        bumpRevision();
+        return;
+      }
+      if (parsed.type === 'PINNED' || parsed.type === 'UNPINNED') {
+        // Provider-driven pinned message (e.g. Kick's Pusher pin event). Stash it
+        // on the slice; ChatWidget feeds it into the same pinned banner as Twitch.
+        const ch = (parsed.channel as string | undefined)?.toLowerCase();
+        const pin = parsed.type === 'PINNED' ? parsed.pin : null;
+        if (ch) withSlice(ch, (slice) => { slice.pinnedMessage = pin; });
         bumpRevision();
         return;
       }
@@ -1393,21 +1504,145 @@ function appendStructuredMessage(slice: ChannelSlice, parsed: any) {
   if (slice.seenMessageIds.size > CHAT_MAX_WITH_BUFFER) {
     slice.seenMessageIds = new Set(Array.from(slice.seenMessageIds).slice(-CHAT_MAX_WITH_BUFFER));
   }
-  queueMessage(slice.channel, parsed);
+  // TikTok likes are high-frequency engagement, not conversation. Keep them OUT of
+  // the chat feed (they'd bury real chat) but still feed the activity panel below
+  // (the producer reads `parsed` directly, not the slice, so skipping the queue is
+  // safe). Follows / gifts stay inline like every other platform's events.
+  const activityOnly = parsed.provider === 'tiktok' && parsed.metadata?.msg_type === 'tiktok_like';
 
-  // Active /nuke future-window check. No-op if no nukes are armed for this
-  // channel. Fire-and-forget; nuke action errors are logged inside the engine.
-  if (slice.channel) {
-    void import('../utils/nukeEngine').then((mod) => {
-      void mod.checkActiveNukesForMessage(slice.channel, parsed);
-    });
+  if (!activityOnly) {
+    queueMessage(slice.channel, parsed);
+
+    // Active /nuke future-window check. No-op if no nukes are armed for this
+    // channel. Fire-and-forget; nuke action errors are logged inside the engine.
+    if (slice.channel) {
+      void import('../utils/nukeEngine').then((mod) => {
+        void mod.checkActiveNukesForMessage(slice.channel, parsed);
+      });
+    }
+
+    // Keyword reminders. No-op unless a keyword reminder is scoped to this channel.
+    if (slice.channel) {
+      void import('../utils/reminderEngine').then((mod) => {
+        mod.checkRemindersForMessage(slice.channel, parsed);
+      });
+    }
   }
 
-  // Keyword reminders. No-op unless a keyword reminder is scoped to this channel.
-  if (slice.channel) {
-    void import('../utils/reminderEngine').then((mod) => {
-      mod.checkRemindersForMessage(slice.channel, parsed);
-    });
+  // Mirror non-chat channel events (subs, gifts, ... and future follows/raids/
+  // hosts) into the MultiChat activity panel. Only synthesized event messages
+  // carry a `msg_type`, so normal chat skips this. Every provider (Twitch
+  // USERNOTICE included) is parsed to a structured ChatMessage and lands here, so
+  // this single path covers them all; the raw-IRC sub producer only fires on the
+  // rare parse-failure fallback, so the two never both fire for one message.
+  const pk = slice.channel ? parseKey(slice.channel) : null;
+  if (pk) {
+    const tags = (parsed.tags ?? {}) as Record<string, string>;
+    const channelKey = makeKey(pk.provider, pk.channel);
+    const eventMsgType = parsed.metadata?.msg_type;
+    if (eventMsgType) {
+      // Sub detail lives in the USERNOTICE msg-param tags (Twitch). Kick events
+      // don't carry these, so they come through undefined and the row just omits
+      // them. streak-months is "0" when the subber doesn't share it.
+      const num = (v: string | undefined) => {
+        const n = parseInt(v ?? '', 10);
+        return Number.isFinite(n) ? n : undefined;
+      };
+      const cumulative = num(tags['msg-param-cumulative-months']);
+      const streak = num(tags['msg-param-streak-months']);
+      // Community gift bombs: the `submysterygift` carries the batch size, and
+      // both it and its individual `subgift` follow-ups share an origin id, so
+      // the normalizer can collapse the bunch into one "gifted N subs".
+      const giftCount = num(tags['msg-param-mass-gift-count']);
+      const originId = tags['msg-param-origin-id'] || tags['msg-param-community-gift-id'] || undefined;
+      // YouTube Super Chat detail (stamped by the youtube adapter): amount + currency
+      // drive the value pill, the comment shows as the row message.
+      const scAmount = (() => {
+        const n = parseFloat(tags['sc-amount'] ?? '');
+        return Number.isFinite(n) ? n : undefined;
+      })();
+      // TikTok event detail (stamped by the tiktok adapter): gift name/count feed the
+      // gift row, like count feeds the hearts pill.
+      const ttGiftName = tags['tt-gift-name'] || undefined;
+      const ttGiftCount = num(tags['tt-gift-count']);
+      const ttGiftImage = tags['tt-gift-image'] || undefined;
+      const ttGiftDiamonds = num(tags['tt-gift-diamonds']);
+      const ttLikeCount = num(tags['tt-like-count']);
+      // The chatter's avatar rides every TikTok/YouTube event message; show it on
+      // the activity row (no per-row fetch).
+      const actorAvatar = tags['avatar'] || undefined;
+      // The stored message's badges are the RAW backend shape ({name, version},
+      // no urls). Resolve them like chat does: Twitch via the badge cache (needs
+      // the channel room-id), other providers via their baked image urls.
+      let badges: { key: string; info: unknown }[] | undefined;
+      if (Array.isArray(parsed.badges) && parsed.badges.length > 0) {
+        if (pk.provider === 'twitch') {
+          const badgeStr = parsed.badges
+            .map((b: { name: string; version: string }) => `${b.name}/${b.version}`)
+            .join(',');
+          badges = parseBadges(badgeStr, tags['source-room-id'] || tags['room-id']);
+        } else {
+          badges = parsed.badges
+            .filter((b: { image_url_1x?: string }) => b.image_url_1x)
+            .map((b: { name: string; version: string; image_url_1x?: string; title?: string }) => ({
+              key: `${b.name}/${b.version}`,
+              info: { image_url_1x: b.image_url_1x, image_url_2x: b.image_url_1x, title: b.title },
+            }));
+        }
+      }
+      window.dispatchEvent(
+        new CustomEvent('provider-activity-detected', {
+          detail: {
+            provider: pk.provider,
+            channelKey,
+            msgId: eventMsgType,
+            username: parsed.username,
+            displayName: parsed.display_name || parsed.username,
+            userId: parsed.user_id,
+            color: parsed.color,
+            months: cumulative ?? parsed.metadata?.months,
+            streak: streak && streak > 0 ? streak : undefined,
+            tier: tags['msg-param-sub-plan'],
+            giftCount: giftCount ?? ttGiftCount,
+            giftName: ttGiftName,
+            giftImage: ttGiftImage,
+            giftDiamonds: ttGiftDiamonds,
+            likeCount: ttLikeCount,
+            avatarUrl: actorAvatar,
+            originId,
+            badges,
+            systemText: parsed.metadata?.system_message,
+            amount: scAmount,
+            currency: tags['sc-currency'] || undefined,
+            message: tags['sc-message'] || undefined,
+          },
+        }),
+      );
+    }
+
+    // Channel-point redemptions that posted to chat (Twitch only): a highlighted
+    // message or a reward that required text. On channels you only watch these
+    // are the ONLY visible redemptions (the rest need broadcaster auth), and
+    // Twitch sends just the reward id (no name) so custom rewards stay generic.
+    if (pk.provider === 'twitch') {
+      const isHighlight = tags['msg-id'] === 'highlighted-message';
+      if (isHighlight || tags['custom-reward-id']) {
+        window.dispatchEvent(
+          new CustomEvent('provider-activity-detected', {
+            detail: {
+              provider: 'twitch',
+              channelKey,
+              msgId: 'channelpoints',
+              username: parsed.username,
+              displayName: parsed.display_name || parsed.username,
+              userId: parsed.user_id,
+              color: parsed.color,
+              systemText: isHighlight ? 'highlighted message' : undefined,
+            },
+          }),
+        );
+      }
+    }
   }
 }
 
@@ -1511,8 +1746,14 @@ function handleRawIrcString(raw: string) {
 
 /** Acquire a chat connection for `channel`. Idempotent — if the channel is
  *  already acquired, just increments the ref count. */
-export async function acquireChannel(channel: string, channelId: string | null): Promise<void> {
-  const key = channel.toLowerCase();
+export async function acquireChannel(
+  channel: string,
+  channelId: string | null,
+  provider: ProviderId = 'twitch',
+): Promise<void> {
+  // Twitch keeps bare-login keys (byte-identical to before); non-Twitch sources
+  // get a "provider:channel" composite key. MultiChat only.
+  const key = provider === 'twitch' ? channel.toLowerCase() : makeKey(provider, channel);
   const state = useChatConnectionStore.getState();
   const existing = state.channels.get(key);
 
@@ -1527,29 +1768,50 @@ export async function acquireChannel(channel: string, channelId: string | null):
       // channel. When the real channelId arrives a moment later and the caller
       // re-acquires to refresh it, kick off the badge init we deferred so
       // Twitch channel badges (subscriber/bits/etc.) start resolving.
-      void initializeBadgesForChannel(channelId);
+      if (provider === 'twitch') void initializeBadgesForChannel(channelId);
     }
     bumpRevision();
     Logger.debug(`[ChatStore] +1 ref on ${key} (now ${existing.refCount})`);
     return;
   }
 
-  const slice = emptySlice(key, channelId);
+  const slice = emptySlice(key, channelId, provider);
   slice.refCount = 1;
   setSlice(key, slice);
 
   // First channel ever: open the bridge + WS.
   if (state.channels.size === 0) {
-    await connectBridgeForFirstChannel(key, channelId);
-  } else {
-    // Bridge already running: JOIN the new channel and preload it.
+    await connectBridgeForFirstChannel(key, channelId, false, provider, channel);
+  } else if (provider === 'twitch') {
+    // Bridge already up. If a Twitch IRC connection is already running (another
+    // Twitch slice exists), JOIN onto it. If not - the bridge was opened by a
+    // non-Twitch provider first - START the Twitch IRC on the shared bridge,
+    // since join_chat_channel would have nothing to join. The WS is already open
+    // so it isn't reopened. (In an all-Twitch session another Twitch slice always
+    // exists here, so this stays join_chat_channel: byte-identical to before.)
+    const hasOtherTwitch = Array.from(
+      useChatConnectionStore.getState().channels.values(),
+    ).some((s) => s.channel !== key && s.provider === 'twitch');
     try {
-      await invoke('join_chat_channel', { channel: key });
+      await invoke(hasOtherTwitch ? 'join_chat_channel' : 'start_chat', { channel: key });
       slice.isConnected = true;
       bumpRevision();
       void preloadChannel(key, channelId);
     } catch (err) {
-      Logger.error(`[ChatStore] join_chat_channel failed for ${key}:`, err);
+      Logger.error(`[ChatStore] twitch join/start failed for ${key}:`, err);
+      slice.error = String(err);
+      bumpRevision();
+    }
+  } else {
+    // Non-Twitch source on the already-open bridge: connect its adapter (no
+    // Twitch badge/history preload). The shared local-WS delivers its frames
+    // once the adapter publishes, routed by the composite channel key.
+    try {
+      await invoke('provider_chat_connect', { provider, channel });
+      slice.isConnected = true;
+      bumpRevision();
+    } catch (err) {
+      Logger.error(`[ChatStore] provider_chat_connect failed for ${key}:`, err);
       slice.error = String(err);
       bumpRevision();
     }
@@ -1559,8 +1821,11 @@ export async function acquireChannel(channel: string, channelId: string | null):
 /** Release a chat connection for `channel`. When the last consumer releases,
  *  the channel is PARTed; when the last channel is released, the WebSocket
  *  and Rust IRC service are torn down. */
-export async function releaseChannel(channel: string): Promise<void> {
-  const key = channel.toLowerCase();
+export async function releaseChannel(
+  channel: string,
+  provider: ProviderId = 'twitch',
+): Promise<void> {
+  const key = provider === 'twitch' ? channel.toLowerCase() : makeKey(provider, channel);
   const slice = useChatConnectionStore.getState().channels.get(key);
   if (!slice) return;
   slice.refCount -= 1;
@@ -1584,9 +1849,13 @@ export async function releaseChannel(channel: string): Promise<void> {
   emoteCache.delete(key);
   inflightEmoteFetches.delete(key);
   try {
-    await invoke('leave_chat_channel', { channel: key });
+    if (provider === 'twitch') {
+      await invoke('leave_chat_channel', { channel: key });
+    } else {
+      await invoke('provider_chat_disconnect', { provider, channel });
+    }
   } catch (err) {
-    Logger.warn(`[ChatStore] leave_chat_channel failed for ${key}:`, err);
+    Logger.warn(`[ChatStore] leave failed for ${key}:`, err);
   }
 
   // If this window's local channel list is now empty, tear down only this
@@ -1815,6 +2084,9 @@ export interface ChannelChatSnapshot {
   clearedUserContexts: Map<string, ClearedUserEntry>;
   /** Monotonic count of live messages received (see ChannelSlice). */
   liveMessageCount: number;
+  /** Currently pinned message (provider-driven, e.g. Kick's pin event), or null.
+   *  Shaped like ChatWidget's PinnedMessage so it can feed the same banner. */
+  pinnedMessage: any | null;
 }
 
 const EMPTY_SNAPSHOT: ChannelChatSnapshot = {
@@ -1826,6 +2098,7 @@ const EMPTY_SNAPSHOT: ChannelChatSnapshot = {
   deletedMessageIds: new Set(),
   clearedUserContexts: new Map(),
   liveMessageCount: 0,
+  pinnedMessage: null,
 };
 
 /** React hook returning the live message count for a channel. */
@@ -1888,16 +2161,18 @@ export function useChannelMentionCount(
 export function useChannelEmotes(
   channel: string | null | undefined,
   channelId: string | null | undefined,
+  provider: ProviderId = 'twitch',
 ): EmoteSet | null {
-  const key = channel ? channel.toLowerCase() : null;
+  const key = channel ? emoteCacheKey(channel, provider) : null;
   const [version, setVersion] = useState(0);
 
   useEffect(() => {
-    if (!key) return;
+    if (!key || !channel) return;
     const unsubscribe = subscribeChannelEmotes(key, () => setVersion((v) => v + 1));
-    if (channelId) void ensureChannelEmotes(key, channelId);
+    // Kick fetches by slug (no channelId needed); Twitch needs the numeric id.
+    if (provider === 'kick' || channelId) void ensureChannelEmotes(channel, channelId ?? '', provider);
     return unsubscribe;
-  }, [key, channelId]);
+  }, [key, channel, channelId, provider]);
 
   // Re-read on each version bump
   void version;
@@ -1924,6 +2199,7 @@ export function useChannelChat(channel: string | null | undefined): ChannelChatS
     deletedMessageIds: slice.deletedMessageIds,
     clearedUserContexts: slice.clearedUserContexts,
     liveMessageCount: slice.liveMessageCount,
+    pinnedMessage: slice.pinnedMessage,
   };
 }
 

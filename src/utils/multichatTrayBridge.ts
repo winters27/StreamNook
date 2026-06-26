@@ -17,9 +17,10 @@ import { Logger } from './logger';
 const hash = window.location.hash;
 const isPopout = hash.startsWith('#/multichat') || hash.startsWith('#/profile');
 
-/** Stop everything that costs CPU/network when the user goes to chat-only mode
- *  via the tray. Chat (IRC) is intentionally left alive because popout windows
- *  are subscribed to it. */
+/** The core app's X button (with popouts open) goes to chat-only mode. Stop
+ *  everything that costs CPU/network, THEN destroy the main window to actually free
+ *  its memory — same outcome as Go Live. Chat (IRC) is intentionally left alive
+ *  because the popouts are subscribed to it; main recreates on demand. */
 async function stopStreamButKeepChat(): Promise<void> {
   // Lazy import to avoid pulling AppStore into the popout bundle's chunking.
   const { useAppStore } = await import('../stores/AppStore');
@@ -52,7 +53,12 @@ async function stopStreamButKeepChat(): Promise<void> {
     invoke('unregister_active_channel', { channelId: currentStream.user_id }).catch(() => {});
   }
 
-  Logger.debug('[TrayBridge] Stream stopped for tray hide; chat preserved');
+  // Destroy main to actually free its memory (the ~350MB webview + player), same as
+  // Go Live — the popouts keep the app alive and main recreates on demand. Rust
+  // already hid it for an instant disappear; this frees it. Fire-and-forget: this
+  // window is going away, so the invoke may not resolve.
+  void invoke('close_main_window');
+  Logger.debug('[TrayBridge] Stream stopped + main closed; chat preserved in popouts');
 }
 
 // Per-popout-window channel ownership — windowLabel → set of channel logins.
@@ -75,7 +81,7 @@ async function pushAggregateToStore() {
 if (!isPopout && typeof window !== 'undefined') {
   (async () => {
     try {
-      const { listen } = await import('@tauri-apps/api/event');
+      const { listen, emit } = await import('@tauri-apps/api/event');
 
       await listen('tray-open-multichat', async () => {
         Logger.debug('[TrayBridge] tray-open-multichat received, spawning empty popout');
@@ -161,6 +167,20 @@ if (!isPopout && typeof window !== 'undefined') {
         useAppStore.getState().openBadgesOnStreamNook();
       });
 
+      // A badge clicked on a chat message in a popout (Twitch/BTTV/etc.). The badges
+      // overlay lives only here in main, so show main + open the badge's detail.
+      await listen<{ badge: unknown; setId: string }>('open-badge-detail', async (event) => {
+        Logger.debug('[TrayBridge] open-badge-detail received', event.payload);
+        await showAndFocusMain();
+        const { useAppStore } = await import('../stores/AppStore');
+        useAppStore.getState().setShowBadgesOverlay(true);
+        window.dispatchEvent(
+          new CustomEvent('show-badge-detail', {
+            detail: { badge: event.payload.badge, setId: event.payload.setId },
+          }),
+        );
+      });
+
       await listen<{ tab: string; query?: string }>('open-badges-with-target', async (event) => {
         Logger.debug('[TrayBridge] open-badges-with-target received', event.payload);
         await showAndFocusMain();
@@ -228,6 +248,11 @@ if (!isPopout && typeof window !== 'undefined') {
       );
 
       Logger.debug('[TrayBridge] tray listeners registered');
+      // Tell any popout that just recreated this window (via ensureMainAlive) that
+      // main's popout->main listeners are now live, so it can safely emit its
+      // pending action (badge overlay, profile viewer, whisper, watch-in-main,
+      // clip/VOD). Fired on every main boot — harmless when nothing is waiting.
+      void emit('main-ready');
     } catch (err) {
       Logger.warn('[TrayBridge] Failed to register tray listeners:', err);
     }
