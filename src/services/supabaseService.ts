@@ -744,6 +744,43 @@ export const claimReward = async (
     }
 };
 
+export interface EventReward {
+    id: string;
+    title: string | null;
+    reward_kind: string;
+    reward_id: string;
+}
+
+/**
+ * Active event rewards (the watch-to-earn kind), cached briefly since they rarely
+ * change. Lets the generic watch-reward claimer treat new events as config, not a
+ * release. Reads the world-readable rewards table; returns the last good result
+ * if a refresh fails.
+ */
+let eventRewardsCache: { at: number; rows: EventReward[] } | null = null;
+export const listActiveEventRewards = async (): Promise<EventReward[]> => {
+    if (!supabase) return [];
+    const now = Date.now();
+    if (eventRewardsCache && now - eventRewardsCache.at < 5 * 60_000) return eventRewardsCache.rows;
+    try {
+        const { data, error } = await supabase
+            .from('rewards')
+            .select('id, title, reward_kind, reward_id')
+            .eq('active', true)
+            .eq('gate_kind', 'event');
+        if (error) {
+            Logger.warn('[Supabase] listActiveEventRewards failed:', error.message);
+            return eventRewardsCache?.rows ?? [];
+        }
+        const rows = (data ?? []) as EventReward[];
+        eventRewardsCache = { at: now, rows };
+        return rows;
+    } catch (error) {
+        Logger.warn('[Supabase] listActiveEventRewards exception:', error);
+        return eventRewardsCache?.rows ?? [];
+    }
+};
+
 /**
  * Sync the caller's owned subscriber atmospheres. The server function
  * (grant_atmosphere_ownership, security definer) grants ownership of every
@@ -1565,15 +1602,12 @@ const loadAtmospheres = async (): Promise<void> => {
             }
             atmospheresCatalog = next;
             atmospheresLoaded = true;
-            // Warm the browser cache for image-backed atmospheres so a profile or
-            // chat row that shows one paints instantly instead of fetching the
-            // webp on first sighting. Cheap (a handful of small files); the
-            // browser dedupes repeats across reloads.
-            if (typeof Image !== 'undefined') {
-                for (const atm of next.values()) {
-                    if (atm.image) { const img = new Image(); img.src = atm.image; }
-                }
-            }
+            // Atmosphere images load LAZILY at their render sites: AtmosphereBackground
+            // paints them via background-image, so a chat row, profile, or the
+            // customization picker fetches the webp the first time it actually shows
+            // that atmosphere. We deliberately do NOT pre-decode the whole catalog here
+            // -- that scaled with the catalog and added ~120MB of decoded bitmaps to the
+            // idle baseline for atmospheres the user may never see.
             Logger.debug('[Supabase] Atmospheres loaded:', { catalog: next.size });
             bumpAtmospheresVersion();
         } catch (e) {

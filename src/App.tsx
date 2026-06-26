@@ -5,7 +5,7 @@ import { useAppStore, type WhisperImportProgress, type SettingsTab } from './sto
 import { useContextMenuStore } from './stores/contextMenuStore';
 import { listenForSettingsUpdates } from './utils/settingsBroadcast';
 import { trackPresence, isSupabaseConfigured, incrementStat, incrementChannelWatch, subscribeToStreamNookRegistry, subscribeToCosmeticsRegistry, subscribeToAtmospheresRegistry, refreshEntitlementRegistries } from './services/supabaseService';
-import { maybeGrantCologneFromWatch } from './services/cologneGrant';
+import { maybeClaimWatchRewards } from './services/watchRewards';
 import TitleBar from './components/TitleBar';
 import DynamicIsland from './components/DynamicIsland';
 import VideoPlayer from './components/VideoPlayer';
@@ -109,6 +109,10 @@ function App() {
   // the sole chat surface — no duplicate chat across windows.
   const channelsInPopouts = useAppStore((s) => s.channelsInPopouts);
   const currentStream = useAppStore((s) => s.currentStream);
+  // Watch-reward inputs: the watched channel + its (live-updating) category, so
+  // event-reward claims can fire the moment a streamer switches categories.
+  const watchRewardChannel = currentStream?.user_login ?? null;
+  const watchRewardGame = currentStream?.game_name ?? null;
   const activeChatChannelInPopout = !!(
     currentStream?.user_login &&
     channelsInPopouts.has(currentStream.user_login.toLowerCase())
@@ -1071,9 +1075,9 @@ function App() {
     Logger.debug('[Stats] Stream session started, incrementing streams_watched');
     incrementStat(currentUser.user_id, 'streams_watched', 1);
 
-    // CS2 Major Cologne event: watching the Counter-Strike category during the
-    // window earns the accolade. Check on stream start, then every minute below.
-    void maybeGrantCologneFromWatch(
+    // Claim any active watch-to-earn event reward this stream qualifies for.
+    // Check on stream start, then every minute below.
+    void maybeClaimWatchRewards(
       currentUser.user_id,
       useAppStore.getState().currentStream?.user_login,
       useAppStore.getState().currentStream?.game_name,
@@ -1094,7 +1098,7 @@ function App() {
             name: cs.user_name || cs.user_login,
           });
         }
-        void maybeGrantCologneFromWatch(user.user_id, cs?.user_login, cs?.game_name);
+        void maybeClaimWatchRewards(user.user_id, cs?.user_login, cs?.game_name);
       }
     }, 60000); // Every minute
 
@@ -1102,6 +1106,17 @@ function App() {
       clearInterval(watchTimeInterval);
     };
   }, [streamSessionKey]);
+
+  // A streamer can switch category mid-stream (EventSub channel.update refreshes
+  // currentStream.game_name). The watch-time tracker above only re-checks once a
+  // minute, so also attempt watch-reward claims the moment the category changes,
+  // instead of making the viewer wait for the next tick.
+  useEffect(() => {
+    if (!isSupabaseConfigured() || !watchRewardChannel) return;
+    const { currentUser, isAuthenticated } = useAppStore.getState();
+    if (!isAuthenticated || !currentUser?.user_id) return;
+    void maybeClaimWatchRewards(currentUser.user_id, watchRewardChannel, watchRewardGame);
+  }, [watchRewardChannel, watchRewardGame]);
 
 
   // Handle aspect ratio locking when setting changes or chat is resized
