@@ -5,6 +5,9 @@ node_modules/
 dist/
 src-tauri/target/
 
+# Dev-only schema scraper + its scraped reference dumps (regenerable, not shipped)
+/tools/
+
 # Tauri auto-generated schemas (regenerated on every build)
 src-tauri/gen/schemas/
 scripts/*
