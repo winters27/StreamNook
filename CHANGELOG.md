@@ -1,3 +1,8 @@
+## [8.1.1] - 2026-06-25
+
+### 🐛 Bug Fixes
+- Fixed Kick account sign-in. Connecting Kick to send messages and moderate now works as expected.
+
 ## [8.1.0] - 2026-06-25
 
 ## 🎉 New: Multi-platform chat, all in one window
