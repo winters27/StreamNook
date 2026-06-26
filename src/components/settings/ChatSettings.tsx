@@ -249,7 +249,10 @@ const TrustedSourcesEditor = ({
   );
 };
 
-const ChatSettings = () => {
+// `hidePlacement` drops the Chat Placement section — it positions the MAIN app's
+// chat (left/right/bottom/hidden), which is meaningless in the MultiChat window's
+// own settings.
+const ChatSettings = ({ hidePlacement = false }: { hidePlacement?: boolean } = {}) => {
   const { settings, updateSettings } = useAppStore();
 
   const stored = settings.chat_design;
@@ -258,6 +261,7 @@ const ChatSettings = () => {
     alternating_backgrounds: stored?.alternating_backgrounds ?? false,
     message_spacing: stored?.message_spacing ?? 2,
     font_size: stored?.font_size ?? 14,
+    activity_font_size: stored?.activity_font_size ?? 14,
     font_weight: stored?.font_weight ?? 400,
     mention_color: stored?.mention_color ?? '#ff4444',
     reply_color: stored?.reply_color ?? '#ff6b6b',
@@ -349,6 +353,7 @@ const ChatSettings = () => {
 
   return (
     <div className="space-y-8">
+      {!hidePlacement && (
       <SettingsSection label="Chat Placement">
         <SettingsRow
           title="Placement"
@@ -380,6 +385,7 @@ const ChatSettings = () => {
           />
         )}
       </SettingsSection>
+      )}
 
       <SettingsSection label="Channel Points">
         <SettingsRow
@@ -515,15 +521,30 @@ const ChatSettings = () => {
 
         <SettingsRow
           title={`Font Size: ${cd.font_size ?? 14}px`}
-          description="Chat message text size"
+          description="Chat message text size. Goes large for MultiChat filling a monitor."
         >
           <input
             type="range"
             min="10"
-            max="20"
+            max="48"
             step="1"
             value={cd.font_size ?? 14}
             onChange={(e) => setDesign({ font_size: parseInt(e.target.value) })}
+            className="w-full accent-accent cursor-pointer"
+          />
+        </SettingsRow>
+
+        <SettingsRow
+          title={`Activity Feed Size: ${cd.activity_font_size ?? 14}px`}
+          description="Text size of the MultiChat activity feed (subs, raids, gifts, ...)"
+        >
+          <input
+            type="range"
+            min="10"
+            max="28"
+            step="1"
+            value={cd.activity_font_size ?? 14}
+            onChange={(e) => setDesign({ activity_font_size: parseInt(e.target.value) })}
             className="w-full accent-accent cursor-pointer"
           />
         </SettingsRow>

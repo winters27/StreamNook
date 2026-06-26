@@ -5,6 +5,9 @@ import { searchSettings, type SettingsIndexEntry } from './searchIndex';
 interface SettingsSearchResultsProps {
   query: string;
   onSelect: (entry: SettingsIndexEntry) => void;
+  /** Precomputed results. When omitted, the full settings index is searched.
+   *  A scoped surface (e.g. MultiChat) passes its own merged result set. */
+  results?: SettingsIndexEntry[];
 }
 
 const Highlight = ({ text, query }: { text: string; query: string }) => {
@@ -38,8 +41,9 @@ const Highlight = ({ text, query }: { text: string; query: string }) => {
 const SettingsSearchResults = ({
   query,
   onSelect,
+  results: provided,
 }: SettingsSearchResultsProps) => {
-  const results = useMemo(() => searchSettings(query), [query]);
+  const results = useMemo(() => provided ?? searchSettings(query), [provided, query]);
 
   if (results.length === 0) {
     return (

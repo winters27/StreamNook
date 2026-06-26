@@ -12,6 +12,9 @@ const tokenize = (s: string): string[] =>
 export const searchSettings = (
   query: string,
   limit = 50,
+  // Optional whitelist of source tabs. Lets a scoped surface (e.g. the MultiChat
+  // settings, which only has the Chat panel) search just its own settings.
+  allowTabs?: string[],
 ): SettingsIndexEntry[] => {
   const tokens = tokenize(query);
   if (tokens.length === 0) return [];
@@ -19,6 +22,7 @@ export const searchSettings = (
   const scored: { entry: SettingsIndexEntry; score: number }[] = [];
 
   for (const entry of SETTINGS_INDEX) {
+    if (allowTabs && !allowTabs.includes(entry.tab)) continue;
     const title = entry.title.toLowerCase();
     const description = entry.description?.toLowerCase() ?? '';
     const section = entry.section.toLowerCase();
