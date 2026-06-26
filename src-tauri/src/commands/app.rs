@@ -39,6 +39,37 @@ pub fn get_app_authors() -> String {
     env!("CARGO_PKG_AUTHORS").to_string()
 }
 
+/// Fetch latest FX rates from frankfurter.app (ECB data, free, no key) for the
+/// Super Chat currency converter. Done in Rust because a browser fetch from the web
+/// origin is CORS-blocked (the API sends no Access-Control-Allow-Origin). Returns the
+/// rates map; the API omits the base currency, so the caller treats it as 1.0.
+#[command]
+pub async fn fetch_exchange_rates(
+    base: String,
+) -> Result<std::collections::HashMap<String, f64>, String> {
+    let base = base.to_uppercase();
+    if base.len() != 3 || !base.chars().all(|c| c.is_ascii_alphabetic()) {
+        return Err("invalid base currency".to_string());
+    }
+    let url = format!("https://api.frankfurter.app/latest?base={}", base);
+    let resp = reqwest::get(&url).await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    let rates = json
+        .get("rates")
+        .and_then(|r| r.as_object())
+        .ok_or_else(|| "no rates in response".to_string())?;
+    let mut map = std::collections::HashMap::new();
+    for (k, v) in rates {
+        if let Some(n) = v.as_f64() {
+            map.insert(k.clone(), n);
+        }
+    }
+    Ok(map)
+}
+
 #[command]
 pub async fn get_window_size(window: Window) -> Result<(u32, u32), String> {
     let size = window.inner_size().map_err(|e| e.to_string())?;

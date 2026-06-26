@@ -49,7 +49,7 @@ mod imp {
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         EnumChildWindows, EnumThreadWindows, GetClassNameW, GetForegroundWindow, GetGUIThreadInfo,
-        GetWindowRect, GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindowVisible,
+        GetWindowRect, GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible,
         SendMessageTimeoutW, GUITHREADINFO, GUI_INMENUMODE, GUI_INMOVESIZE, GUI_POPUPMENUMODE,
         GUI_SYSTEMMENUMODE, SMTO_ABORTIFHUNG, SMTO_BLOCK, WM_NULL,
     };
@@ -474,6 +474,14 @@ mod imp {
                 let mut reported = false;
                 let mut self_lag_ms: u128 = 0;
                 loop {
+                    // The main window can be destroyed at runtime (going live closes
+                    // it to free its memory). A probe against a dead HWND returns
+                    // instantly with "no answer", which would spin this loop hot and
+                    // false-report a hang. Detect the gone window and end the thread;
+                    // a fresh watchdog is started when the main window is recreated.
+                    if !unsafe { IsWindow(Some(hwnd)) }.as_bool() {
+                        return;
+                    }
                     if pump_responsive(hwnd) {
                         if let Some(start) = hang_start.take() {
                             if reported {

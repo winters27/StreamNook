@@ -62,6 +62,68 @@ fn show_main_window(app: &tauri::AppHandle) {
         let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
+        return;
+    }
+    // Main was fully closed (the streamer went live, which destroys it to free its
+    // ~350MB of webview + player memory). Recreate it from the same options the
+    // config defines so the app shell, overlays, and player come back identically.
+    // The WebView2 browser args are applied process-wide via env var, so no
+    // per-window arg work is needed here.
+    //
+    // URL: in a DEBUG build (`tauri dev`) runtime-created windows are NOT
+    // auto-pointed at the Vite dev server the way config-defined windows are, so an
+    // App URL loads the (unbuilt) bundled dist and renders blank white. Use the dev
+    // URL explicitly in debug; the shipped release loads the bundled index.html.
+    let app_url = if cfg!(debug_assertions) {
+        app.config()
+            .build
+            .dev_url
+            .clone()
+            .map(tauri::WebviewUrl::External)
+            .unwrap_or_else(|| tauri::WebviewUrl::App("index.html".into()))
+    } else {
+        tauri::WebviewUrl::App("index.html".into())
+    };
+    match tauri::WebviewWindowBuilder::new(app, "main", app_url)
+        .title("StreamNook")
+    .inner_size(1600.0, 1000.0)
+    .min_inner_size(800.0, 600.0)
+    .center()
+    .resizable(true)
+    .decorations(false)
+    .build()
+    {
+        Ok(win) => {
+            debug!("[Main] Recreated main window on demand");
+            // Re-point the UI-hang watchdog at the new HWND. The old watchdog
+            // thread self-exits once its HWND is destroyed (see ui_hang_watchdog).
+            #[cfg(windows)]
+            if let Ok(hwnd) = win.hwnd() {
+                services::ui_hang_watchdog::start_for_hwnd(hwnd.0 as isize);
+            }
+        }
+        Err(e) => error!("[Main] Failed to recreate main window: {e}"),
+    }
+}
+
+/// Get-or-create the main window. Invoked from a MultiChat popout when an action
+/// needs the main app (badge/paint overlay, public profile viewer, whisper,
+/// watch-in-main, clip/VOD playback, or the "open main app" button) after Go Live
+/// destroyed it. Shows the existing window if it's only hidden.
+#[tauri::command]
+fn ensure_main_window(app: tauri::AppHandle) {
+    show_main_window(&app);
+}
+
+/// Destroy the main window (Go Live closes it to free its memory). Done Rust-side
+/// so it bypasses BOTH the JS `core:window:allow-destroy` permission and the
+/// close-to-tray CloseRequested interception (a forceful destroy fires no
+/// CloseRequested). The caller stops the stream + drops first; Rust releases the
+/// window's IRC claims on the resulting Destroyed event.
+#[tauri::command]
+fn close_main_window(app: tauri::AppHandle) {
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.destroy();
     }
 }
 
@@ -151,15 +213,16 @@ fn main() {
     // chat-identity). One uniform set keeps the main-window tweaks (audio in-process,
     // SmartScreen off) while letting those popups open again.
     //
-    // NOTE: CalculateNativeWinOcclusion is intentionally NOT disabled here. The alt-tab
-    // "(Not Responding)" freeze was NOT an occlusion-calc problem; it was the `unstable`
-    // tauri feature hosting the main window's webview as a child HWND (build_as_child),
-    // the composited-child mode that wedges the UI thread when occluded. Removing
-    // `tauri/unstable` (now unused; add_child is gone) restores the window-filling webview
-    // hosting 8.0.7 used and never froze, so this matches 8.0.7's arg set exactly.
+    // CalculateNativeWinOcclusion is disabled: with it on, the UI thread wedges in a
+    // blocking COM call whenever the window is occluded (covered, not minimized) or the
+    // shell queries it (taskbar jump list / thumbnail), showing "(Not Responding)" for
+    // tens of seconds until the call returns. This is a separate fault from the
+    // alt-tab/minimize freeze, which was the composited child-HWND webview and is fixed
+    // by not enabling `tauri/unstable`. Disabling the occlusion calc only stops Chromium
+    // throttling hidden windows, a negligible cost for one media window.
     std::env::set_var(
         "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
-        "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,AudioServiceOutOfProcess",
+        "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,AudioServiceOutOfProcess,CalculateNativeWinOcclusion",
     );
 
     // Initialize the logging system FIRST so all debug!/error! macros work
@@ -321,6 +384,7 @@ fn main() {
             // Hand the stream server an app handle so the ad auto-pivot can emit
             // its `ad-pivot` reload event to the player.
             services::stream_server::set_app_handle(app_handle.clone());
+            services::providers::set_app_handle(app_handle.clone());
             let live_notif_service = live_notification_service.clone();
 
             // Start the shared 7TV EventAPI WebSocket client (live emote set
@@ -361,6 +425,15 @@ fn main() {
             );
             watch_heartbeat.start();
 
+            // Whether background points farming was left enabled. Used right
+            // after the background service starts to bring the user-global points
+            // socket up at launch, so the farmer's background earns notify even
+            // before any stream is opened (restores pre-extraction behavior).
+            let initial_farming = settings_arc
+                .lock()
+                .map(|s| s.drops.auto_claim_channel_points)
+                .unwrap_or(false);
+
             let app_state = AppState {
                 settings: settings_arc,
                 drops_service,
@@ -384,9 +457,15 @@ fn main() {
                 plugin_host.startup().await;
             });
 
-            // Start background service
+            // Start background service, then bring the user-global points socket
+            // up if farming was left enabled.
             tauri::async_runtime::spawn(async move {
                 background_service.lock().await.start().await;
+                background_service
+                    .lock()
+                    .await
+                    .set_farming_active(initial_farming)
+                    .await;
             });
 
             // Start live notification service
@@ -512,14 +591,13 @@ fn main() {
                 .on_menu_event(|app_handle, event| match event.id.as_ref() {
                     "show" => show_main_window(app_handle),
                     "open_multichat" => {
-                        // Defer to the main window's JS — it already owns the
-                        // openMultiChatWindow helper (URL params, label
-                        // generation, persistence id). The main window is
-                        // always loaded even when hidden, so the event fires
-                        // reliably.
+                        // Recreate/show main first (going live may have CLOSED it),
+                        // then defer to its JS helper, which owns popout spawning
+                        // (URL params, label generation, persistence id). On a cold
+                        // recreate the emit can land before the JS listener is up; the
+                        // user still gets main back and can open MultiChat from there.
+                        show_main_window(app_handle);
                         if let Some(main_win) = app_handle.get_webview_window("main") {
-                            let _ = main_win.show();
-                            let _ = main_win.set_focus();
                             let _ = main_win.emit("tray-open-multichat", ());
                         }
                     }
@@ -548,7 +626,10 @@ fn main() {
             get_app_name,
             get_app_description,
             get_app_authors,
+            fetch_exchange_rates,
             get_window_size,
+            ensure_main_window,
+            close_main_window,
             calculate_aspect_ratio_size,
             calculate_aspect_ratio_size_preserve_video,
             get_system_info,
@@ -651,6 +732,31 @@ fn main() {
             join_chat_channel,
             leave_chat_channel,
             start_multi_chat,
+            provider_chat_connect,
+            provider_chat_disconnect,
+            provider_send_message,
+            provider_send_capability,
+            report_kick_chatroom,
+            report_kick_emotes,
+            get_kick_channel_meta,
+            get_youtube_channel_meta,
+            get_tiktok_channel_meta,
+            youtube_connect,
+            youtube_disconnect,
+            youtube_is_connected,
+            youtube_account_name,
+            youtube_delete_message,
+            youtube_ban_user,
+            youtube_unban_user,
+            youtube_can_moderate,
+            kick_connect,
+            kick_disconnect,
+            kick_is_connected,
+            kick_account_name,
+            kick_ban_user,
+            kick_unban_user,
+            kick_delete_message,
+            get_kick_channel_emotes,
             load_mod_logs,
             append_mod_log,
             clear_mod_logs,
@@ -980,6 +1086,13 @@ fn main() {
                 tauri::async_runtime::spawn(async move {
                     services::irc_service::IrcService::release_window_claims(&gone, None).await;
                 });
+                // Tell popouts the main window is gone so their Go Live control
+                // flips to "Live Chat" (standalone). Mirrors `main-ready`, which
+                // the main window emits when it boots.
+                if label == "main" {
+                    use tauri::Emitter;
+                    let _ = app_handle.emit("main-closed", ());
+                }
             }
 
             if label == "main" {
@@ -1022,13 +1135,18 @@ fn main() {
                         .filter(|(l, _)| l.starts_with("multichat-") && **l != label)
                         .count();
                     if still_open == 0 {
-                        if let Some(main_win) = app_handle.get_webview_window("main") {
-                            if !main_win.is_visible().unwrap_or(true) {
-                                debug!(
-                                    "[Main] Last MultiChat closed while main hidden — exiting"
-                                );
-                                app_handle.exit(0);
-                            }
+                        // Exit when the last popout closes and main is unavailable —
+                        // either hidden to tray OR fully destroyed (going live closes
+                        // main to free its memory). A destroyed main returns None
+                        // here, so treat None as "gone"; otherwise the process would
+                        // linger with no windows.
+                        let main_gone_or_hidden = match app_handle.get_webview_window("main") {
+                            Some(main_win) => !main_win.is_visible().unwrap_or(true),
+                            None => true,
+                        };
+                        if main_gone_or_hidden {
+                            debug!("[Main] Last MultiChat closed while main hidden/closed — exiting");
+                            app_handle.exit(0);
                         }
                     }
                 }
