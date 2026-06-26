@@ -13,6 +13,11 @@ fn main() {
         "TWITCH_APP_CLIENT_SECRET",
         "TWITCH_ANDROID_CLIENT_ID",
         "TWITCH_WEB_CLIENT_ID",
+        // Kick OAuth app (Authorization Code + PKCE). Read at compile time the
+        // same way as the Twitch keys; the code uses option_env! so a build
+        // without them still compiles (Kick connect just reports "not configured").
+        "KICK_APP_CLIENT_ID",
+        "KICK_APP_CLIENT_SECRET",
     ];
 
     // Try loading from project root .env file

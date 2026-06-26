@@ -25,7 +25,9 @@ pub mod eventsub_moderation;
 pub mod eventsub_service;
 pub mod http;
 pub mod irc_service;
+pub mod kick_auth_service;
 pub mod layout_service;
+pub mod youtube_auth_service;
 pub mod live_notification_service;
 pub mod ll_origin;
 #[cfg(test)]
@@ -36,6 +38,7 @@ pub mod ui_hang_watchdog;
 pub mod mod_log_storage_service;
 pub mod multi_nook_server;
 pub mod profile_cache_service;
+pub mod providers;
 pub mod quality;
 pub mod seventv_auth_service;
 pub mod seventv_eventapi;

@@ -27,6 +27,10 @@ use warp::Filter;
 pub struct IrcService;
 
 static WS_SERVER_HANDLE: OnceLock<Mutex<Option<tokio::task::JoinHandle<()>>>> = OnceLock::new();
+// Serializes bring-up of the local WS bridge so concurrent first-acquires (MultiChat
+// restoring N channels at boot) don't each spin up a separate server + broadcaster,
+// which leaves the frontend attached to a dead or message-less socket.
+static BRIDGE_BRINGUP_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static CURRENT_CHANNELS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 static MESSAGE_BROADCASTER: OnceLock<Mutex<Option<Arc<broadcast::Sender<String>>>>> =
     OnceLock::new();
@@ -89,6 +93,10 @@ const IRC_PORT: u16 = 6667;
 
 fn get_ws_server_handle() -> &'static Mutex<Option<tokio::task::JoinHandle<()>>> {
     WS_SERVER_HANDLE.get_or_init(|| Mutex::new(None))
+}
+
+fn get_bridge_bringup_lock() -> &'static Mutex<()> {
+    BRIDGE_BRINGUP_LOCK.get_or_init(|| Mutex::new(()))
 }
 
 fn get_current_channels() -> &'static Mutex<HashSet<String>> {
@@ -272,10 +280,16 @@ impl IrcService {
             }
         }
 
-        // Stop any partially-alive remnants of a previous connection before
-        // fresh setup. (Idempotent guard above handles the healthy-alive case;
-        // this stop() is for when only some of the handles are present.)
-        Self::stop().await?;
+        // Stop any partially-alive remnants before fresh setup. But if a
+        // non-Twitch provider is currently using the shared local-WS bridge, only
+        // clear the Twitch IRC remnants - a full stop() would tear the bridge
+        // down and drop every provider consumer. With no providers active this is
+        // the original full stop(), so the Twitch-only path is unchanged.
+        if crate::services::providers::has_active_bridge_users() {
+            Self::stop_irc_only().await;
+        } else {
+            Self::stop().await?;
+        }
 
         debug!(
             "[IRC Chat] Starting IRC chat service for channel: {}",
@@ -325,34 +339,13 @@ impl IrcService {
 
         *get_own_identity().lock().await = Some((user_info.login.clone(), user_info.id.clone()));
 
-        // Create broadcast channel for messages with larger buffer
-        let (tx, _rx) = broadcast::channel::<String>(1000);
-        let tx = Arc::new(tx);
-
-        // Store broadcaster globally
-        *get_message_broadcaster().lock().await = Some(tx.clone());
-
-        // Start local WS server for frontend
-        let port = rand::rng().random_range(20000..30000);
-        let addr = SocketAddr::from(([127, 0, 0, 1], port));
-
-        let tx_for_warp = tx.clone();
-        let local_ws = warp::ws().map(move |ws: warp::ws::Ws| {
-            let tx_clone = tx_for_warp.clone();
-            ws.on_upgrade(move |socket| Self::handle_local_ws(socket, tx_clone))
-        });
-
-        let handle = tokio::spawn(async move {
-            warp::serve(local_ws).run(addr).await;
-        });
-
-        *get_ws_server_handle().lock().await = Some(handle);
-        // Remember the port so subsequent start_chat calls (from popout
-        // windows etc.) can be served idempotently without tearing down.
-        *get_ws_port().lock().await = Some(port);
-
-        // Give the server time to start listening
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+        // Bring up (or reuse) the local WS bridge that fans parsed messages to
+        // the frontend. Extracted into ensure_local_ws_bridge so non-Twitch
+        // providers can publish onto the same bus without a Twitch chat open.
+        let port = Self::ensure_local_ws_bridge().await?;
+        let tx = Self::broadcaster()
+            .await
+            .ok_or_else(|| anyhow::anyhow!("WS bridge broadcaster missing after bring-up"))?;
 
         // Start IRC connection
         let tx_for_irc = tx.clone();
@@ -2334,6 +2327,7 @@ impl IrcService {
             badges,
             timestamp,
             content: content_for_segments,
+            provider: "twitch".to_string(),
             channel,
             emotes: emotes_adjusted,
             tags: tags_owned,
@@ -2557,6 +2551,7 @@ impl IrcService {
             badges,
             timestamp,
             content,
+            provider: "twitch".to_string(),
             channel,
             emotes,
             tags: tags_owned,
@@ -2659,5 +2654,93 @@ impl IrcService {
         debug!("[IRC Chat] Chat service stopped");
 
         Ok(())
+    }
+
+    /// Clear Twitch IRC state (connection, writer, per-channel caches, consumer
+    /// claims) WITHOUT tearing down the shared local-WS bridge. Used when a
+    /// non-Twitch provider is keeping the bridge alive and we only need to
+    /// (re)start the Twitch IRC connection on top of it.
+    async fn stop_irc_only() {
+        if let Some(handle) = get_irc_handle().lock().await.take() {
+            handle.abort();
+        }
+        *get_irc_writer().lock().await = None;
+        get_current_channels().lock().await.clear();
+        get_shared_chat_rooms().lock().await.clear();
+        get_channel_emotes().lock().await.clear();
+        get_user_badges_cache().lock().await.clear();
+        get_room_state_cache().lock().await.clear();
+        get_channel_consumers().lock().await.clear();
+        crate::services::seventv_eventapi::clear_all().await;
+        crate::services::eventsub_moderation::clear_all().await;
+    }
+
+    /// Bring up (or reuse) the local WebSocket bridge that streams parsed chat
+    /// frames to the frontend. Idempotent: returns the existing port if a bridge
+    /// is already serving, otherwise creates the broadcast channel + warp server.
+    /// Non-Twitch providers call this so they can publish onto the same bus the
+    /// frontend already listens to, with or without a Twitch chat open.
+    pub async fn ensure_local_ws_bridge() -> Result<u16> {
+        // Serialize bring-up: on boot MultiChat restores N channels that all hit this
+        // at once. Without this lock each ran its own bring-up — separate warp servers
+        // + broadcasters overwriting each other — so the frontend ended up on a socket
+        // whose broadcaster never received publishes (no messages) or whose random-port
+        // bind lost a collision (connection refused). With the lock, the first caller
+        // brings the bridge up and the rest reuse it.
+        let _guard = get_bridge_bringup_lock().lock().await;
+
+        {
+            let ws_alive = get_ws_server_handle().lock().await.is_some();
+            let has_tx = get_message_broadcaster().lock().await.is_some();
+            let port = *get_ws_port().lock().await;
+            if ws_alive && has_tx {
+                if let Some(p) = port {
+                    return Ok(p);
+                }
+            }
+        }
+
+        // Fresh bring-up: broadcast channel + local warp WS server.
+        let (tx, _rx) = broadcast::channel::<String>(1000);
+        let tx = Arc::new(tx);
+
+        let tx_for_warp = tx.clone();
+        let local_ws = warp::ws().map(move |ws: warp::ws::Ws| {
+            let tx_clone = tx_for_warp.clone();
+            ws.on_upgrade(move |socket| Self::handle_local_ws(socket, tx_clone))
+        });
+        // Pick a free port via an ephemeral probe bind, then hand it to warp. (warp 0.4
+        // exposes no ephemeral bind that returns the port, and a fixed random port in a
+        // small range can collide; an OS-allocated port + the bring-up lock above make a
+        // collision negligible.) The old random-port path could return a port whose
+        // server silently failed to bind, leaving callers to hit "refused".
+        let probe = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .map_err(|e| anyhow::anyhow!("WS bridge port probe failed: {}", e))?;
+        let port = probe
+            .local_addr()
+            .map_err(|e| anyhow::anyhow!("WS bridge local_addr failed: {}", e))?
+            .port();
+        drop(probe);
+        let addr = SocketAddr::from(([127, 0, 0, 1], port));
+        let handle = tokio::spawn(async move {
+            warp::serve(local_ws).run(addr).await;
+        });
+        // Let warp re-bind the freed port before callers connect (frontend also retries).
+        tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+
+        // Only now (bind succeeded) publish the live socket so providers/the frontend
+        // attach to a server that is actually listening.
+        *get_message_broadcaster().lock().await = Some(tx);
+        *get_ws_server_handle().lock().await = Some(handle);
+        *get_ws_port().lock().await = Some(port);
+        Ok(port)
+    }
+
+    /// The shared broadcast sender for the local WS bridge, if it is up. Provider
+    /// adapters serialize a `ChatMessage`/`ActivityEvent` frame and `send` it here
+    /// to reach the frontend over the same socket the Twitch path uses.
+    pub async fn broadcaster() -> Option<Arc<broadcast::Sender<String>>> {
+        get_message_broadcaster().lock().await.clone()
     }
 }

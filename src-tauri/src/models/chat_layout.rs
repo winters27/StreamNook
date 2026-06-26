@@ -119,6 +119,12 @@ pub enum MessageSegment {
     },
 }
 
+/// Default source platform for messages deserialized from pre-multi-platform
+/// state. Keeps old cached JSON (which has no `provider`) valid as Twitch.
+fn default_provider() -> String {
+    "twitch".to_string()
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ChatMessage {
     pub id: String,
@@ -129,6 +135,10 @@ pub struct ChatMessage {
     pub badges: Vec<Badge>,
     pub timestamp: String,
     pub content: String,
+    /// Source platform: "twitch" | "kick" | "youtube" | "rumble" | "tiktok" | "x".
+    /// Defaults to twitch so existing constructions and cached JSON stay valid.
+    #[serde(default = "default_provider")]
+    pub provider: String,
     /// Source channel name for multi-stream chat routing
     #[serde(default)]
     pub channel: String,
