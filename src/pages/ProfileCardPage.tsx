@@ -13,6 +13,10 @@ const ProfileCardPage = () => {
   const badges = JSON.parse(badgesStr);
   const channelId = params.get('channelId') || '';
   const channelName = params.get('channelName') || '';
+  // When opened from a context where the viewer can moderate this channel (e.g. the
+  // MultiChat blended feed), surface the card's Moderator Actions. The broadcaster
+  // target for those actions is this channel's id (channelId IS the broadcaster id).
+  const isModerator = params.get('isModerator') === '1';
   const messageHistoryStr = params.get('messageHistory') || '[]';
   const messageHistory = JSON.parse(messageHistoryStr);
 
@@ -58,6 +62,8 @@ const ProfileCardPage = () => {
         position={{ x: 0, y: 0 }} // Not used in window mode
         channelId={channelId}
         channelName={channelName}
+        isModerator={isModerator}
+        broadcasterId={channelId}
       />
     </div>
   );

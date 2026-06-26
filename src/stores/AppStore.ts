@@ -182,6 +182,12 @@ interface AppState {
     opts?: { created?: boolean; editUrl?: string; shareOnly?: boolean },
   ) => void;
   closeClipModal: () => void;
+  /** In-popout VOD player (parallel to clipModal). A VOD needs the HLS relay, so
+   *  this only plays in the popout when main is closed (chat-only); otherwise the
+   *  VOD routes to the main player. */
+  vodModal: { url: string; info: MediaInfo } | null;
+  openVodModal: (url: string, info: MediaInfo) => void;
+  closeVodModal: () => void;
   /** True while a Create Clip request is in flight (drives the Clip button spinner). */
   isCreatingClip: boolean;
   /** Clip the channel/VOD currently being watched (live → instant Helix; VOD →
@@ -467,6 +473,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   currentMediaType: null,
   originalMediaUrl: null,
   clipModal: null,
+  vodModal: null,
   clipEditor: null,
   isCreatingClip: false,
   setCurrentStream: (stream: TwitchStream | null) => set({ currentStream: stream }),
@@ -1212,6 +1219,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
   },
   closeClipModal: () => set({ clipModal: null }),
+  openVodModal: (url, info) => {
+    trackActivity(`Opened VOD modal: ${info?.title || url}`);
+    set({ vodModal: { url, info } });
+  },
+  closeVodModal: () => set({ vodModal: null }),
   openClipEditor: (opts) => set({ clipEditor: opts }),
   closeClipEditor: () => set({ clipEditor: null }),
   createClip: async () => {

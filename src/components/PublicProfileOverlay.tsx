@@ -648,12 +648,17 @@ const PublicProfileOverlay = () => {
               the WHOLE profile) but is softened to an ambient wash by a heavy
               blur + dim cover, so it's felt without competing with the stats.
               The panels stay semi-translucent so a hint of the wash tints them. */}
-          <div className="relative z-[1] min-h-0 flex-1">
+          <div className="relative z-[1] flex min-h-0 flex-1 flex-col">
             {hasAtmosphere && (
               <div className="pointer-events-none absolute inset-0 bg-[rgba(10,10,14,0.58)] backdrop-blur-[44px]" />
             )}
+            {/* Scroll body. Bounds its height via flex (flex-1 + min-h-0) rather
+                than height:100% — percentage-height resolution against a flex
+                item is unreliable across WebView2 runtime versions, which left
+                the body unbounded and unscrollable on some installs. The dim
+                cover above stays a non-scrolling backdrop (absolute, out of flow). */}
             <div
-              className="scrollbar-thin relative z-[1] h-full overflow-y-auto p-3"
+              className="scrollbar-thin relative z-[1] min-h-0 flex-1 overflow-y-auto p-3"
               style={hasAtmosphere ? ({ '--glass-strength': '0.45' } as CSSProperties & Record<string, string>) : undefined}
             >
             {loading ? (

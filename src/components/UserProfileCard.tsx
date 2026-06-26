@@ -929,8 +929,10 @@ const UserProfileCard = ({
       onStartWhisper(user);
     } else if (isStandaloneWindow) {
       try {
-        const { emit } = await import('@tauri-apps/api/event');
-        await emit('start-whisper', user);
+        // Ensure the main window is back + listening (going live may have closed
+        // it) before handing off the whisper, then close this profile card.
+        const { ensureMainAndEmit } = await import('../utils/ensureMainWindow');
+        await ensureMainAndEmit('start-whisper', user);
         const { getCurrentWindow } = await import('@tauri-apps/api/window');
         await getCurrentWindow().close();
       } catch (err) {

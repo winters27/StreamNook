@@ -247,8 +247,11 @@ const PredictionOverlay = ({ channelId, channelLogin, isHypeTrainActive = false 
     });
 
     return () => {
-      unlistenSpent.then(fn => fn());
-      unlistenEarned.then(fn => fn());
+      // Tauri's unlisten throws synchronously if the registry entry is already
+      // gone (e.g. teardown after the webview reset), surfacing as an uncaught
+      // rejection. Swallow it: the listener is already removed.
+      unlistenSpent.then(fn => fn()).catch(() => {});
+      unlistenEarned.then(fn => fn()).catch(() => {});
     };
   }, [currentChannelId]);
 
@@ -410,10 +413,12 @@ const PredictionOverlay = ({ channelId, channelLogin, isHypeTrainActive = false 
     });
 
     return () => {
-      unlistenCreated.then(fn => fn());
-      unlistenUpdated.then(fn => fn());
-      unlistenLocked.then(fn => fn());
-      unlistenEnded.then(fn => fn());
+      // See note above: a teardown unlisten can throw if the registry entry is
+      // already gone; swallow it so it doesn't surface as an uncaught rejection.
+      unlistenCreated.then(fn => fn()).catch(() => {});
+      unlistenUpdated.then(fn => fn()).catch(() => {});
+      unlistenLocked.then(fn => fn()).catch(() => {});
+      unlistenEnded.then(fn => fn()).catch(() => {});
     };
   }, [currentChannelId, activePrediction?.prediction_id, addToast, fetchChannelPoints]);
 

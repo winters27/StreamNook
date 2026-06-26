@@ -3,7 +3,7 @@ import { Play, ExternalLink, Eye, ShieldCheck, Instagram } from 'lucide-react';
 import { Tooltip } from '../ui/Tooltip';
 import { DiscordGlyph } from '../ui/DiscordGlyph';
 import { Logger } from '../../utils/logger';
-import { useAppStore } from '../../stores/AppStore';
+import { useAppStore, type MediaInfo } from '../../stores/AppStore';
 import { playTwitchMediaInMain } from '../../utils/playTwitchMediaInMain';
 import {
   fetchLinkPreview,
@@ -41,10 +41,30 @@ function playTwitchMedia(p: LinkPreview): void {
     // underneath and the viewer returns to it on close.
     useAppStore.getState().openClipModal(p.url, info);
   } else {
-    // A VOD needs the shared streaming pipeline → the in-app player (routed to
-    // the main window when clicked from a popout, which has no player).
-    void playTwitchMediaInMain('video', p.url, info);
+    void playVod(p.url, info);
   }
+}
+
+// VOD playback. A VOD needs the shared HLS relay (unlike a clip's direct MP4). In a
+// popout while the main app is CLOSED (chat-only / live mode), play it right here in
+// the popout's own lightweight player. Otherwise route to the main player — the
+// single shared relay can only serve one stream, and main owns it when it's open.
+async function playVod(url: string, info: MediaInfo): Promise<void> {
+  const hash = typeof window !== 'undefined' ? window.location.hash : '';
+  const isPopout = hash.startsWith('#/multichat') || hash.startsWith('#/profile');
+  if (isPopout) {
+    try {
+      const { getAllWindows } = await import('@tauri-apps/api/window');
+      const mainOpen = (await getAllWindows()).some((w) => w.label === 'main');
+      if (!mainOpen) {
+        useAppStore.getState().openVodModal(url, info);
+        return;
+      }
+    } catch {
+      /* fall through to the main player */
+    }
+  }
+  void playTwitchMediaInMain('video', url, info);
 }
 
 // The official YouTube glyph (red rounded rect + white play triangle), shown on

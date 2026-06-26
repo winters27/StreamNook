@@ -14,6 +14,10 @@ export async function openProfilePopup(opts: {
   badges?: Array<{ key: string; info: unknown }>;
   channelId?: string;
   channelName?: string;
+  /** Whether the viewer is a moderator/broadcaster in this channel. Drives the
+   *  card's Moderator Actions zone (it also needs the resolved channel id as the
+   *  broadcaster target, which the page derives from `channelId`). */
+  isModerator?: boolean;
   clientX?: number;
   clientY?: number;
 }): Promise<void> {
@@ -154,6 +158,7 @@ export async function openProfilePopup(opts: {
       badges: JSON.stringify(opts.badges || []),
       channelId: channelId || '',
       channelName: opts.channelName || '',
+      isModerator: opts.isModerator ? '1' : '',
       messageHistory: JSON.stringify(messageHistory),
     });
 

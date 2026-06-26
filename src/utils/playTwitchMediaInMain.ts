@@ -36,8 +36,11 @@ export async function playTwitchMediaInMain(
 ): Promise<void> {
   if (isPopoutWindow()) {
     try {
-      const { emit } = await import('@tauri-apps/api/event');
-      await emit('play-twitch-media-in-main', { type, url, info });
+      // Going live may have closed main; ensure it's back + listening before we
+      // emit (fast show+focus if it was only hidden). Phase 2 will play VODs in
+      // the popout itself; until then both clip + VOD route to main's player.
+      const { ensureMainAndEmit } = await import('./ensureMainWindow');
+      await ensureMainAndEmit('play-twitch-media-in-main', { type, url, info });
       return;
     } catch (err) {
       // Bridge unavailable — fall back to the browser so the link is never dead.

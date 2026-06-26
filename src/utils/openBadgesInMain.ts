@@ -28,9 +28,11 @@ function isPopoutWindow(): boolean {
 
 async function emitToMain(eventName: string, payload?: unknown): Promise<void> {
   try {
-    const { emit } = await import('@tauri-apps/api/event');
+    // Going live may have closed the main window; ensure it's back + listening
+    // before emitting (a fast show+focus if it was only hidden/already open).
+    const { ensureMainAndEmit } = await import('./ensureMainWindow');
     Logger.debug(`[openBadgesInMain] emitting ${eventName}`, payload);
-    await emit(eventName, payload ?? {});
+    await ensureMainAndEmit(eventName, payload ?? {});
     Logger.debug(`[openBadgesInMain] emit ${eventName} done`);
   } catch (err) {
     Logger.error(`[openBadgesInMain] emit ${eventName} failed:`, err);
@@ -105,4 +107,21 @@ export function openProfileViewerInMain(userId: string): void {
     return;
   }
   useAppStore.getState().openProfileViewer(userId);
+}
+
+// Open a specific badge's detail in the badges overlay — clicked on a chat MESSAGE
+// (Twitch/BTTV/etc.). The overlay lives ONLY in main, so from a popout we ensure
+// main is open + emit; in main we drive the store + detail event directly. Without
+// this, a message-badge click in a popout flipped the popout's own (overlay-less)
+// store and did nothing — only 7TV cosmetics, which have their own main-routing
+// handlers, opened main.
+export function openBadgeDetailInMain(badge: unknown, setId: string): void {
+  const popout = isPopoutWindow();
+  Logger.debug(`[openBadgesInMain] openBadgeDetail popout=${popout} setId=${setId}`);
+  if (popout) {
+    void emitToMain('open-badge-detail', { badge, setId });
+    return;
+  }
+  useAppStore.getState().setShowBadgesOverlay(true);
+  window.dispatchEvent(new CustomEvent('show-badge-detail', { detail: { badge, setId } }));
 }

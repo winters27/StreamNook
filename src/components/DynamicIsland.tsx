@@ -667,6 +667,7 @@ const DynamicIsland = () => {
             'WATCH': 'watching',
             'WATCH_STREAK': 'watch streak',
             'CLAIM': 'bonus claim',
+            'FARM': 'farming',
             'RAID': 'raid',
             'PREDICTION': 'prediction',
             'BITS': 'bits',
@@ -694,6 +695,19 @@ const DynamicIsland = () => {
             channelPoints[channel] = (channelPoints[channel] || 0) + e.points;
         });
 
+        // Per-channel earned breakdown ("ninja +50, pokimane +82"), highest
+        // first and capped so the line stays short. This names the actual
+        // streamers the points came from instead of a bare "N channels" count.
+        const MAX_CHANNELS_SHOWN = 3;
+        const channelBreakdown = Object.entries(channelPoints)
+            .filter(([name]) => name && name !== 'Unknown')
+            .sort((a, b) => b[1] - a[1]);
+        const channelListDisplay = channelBreakdown.length === 0
+            ? null
+            : channelBreakdown.length <= MAX_CHANNELS_SHOWN
+                ? channelBreakdown.map(([name, pts]) => `${name} +${pts.toLocaleString()}`).join(', ')
+                : `${channelBreakdown.slice(0, MAX_CHANNELS_SHOWN).map(([name, pts]) => `${name} +${pts.toLocaleString()}`).join(', ')} +${channelBreakdown.length - MAX_CHANNELS_SHOWN} more`;
+
         // Group events by reason for display
         const reasonCounts: Record<string, number> = {};
         cluster.events.forEach(e => {
@@ -712,8 +726,8 @@ const DynamicIsland = () => {
             // Single channel - show its name
             channelNameDisplay = uniqueChannels[0];
         } else if (uniqueChannels.length > 1) {
-            // Multiple channels - show count
-            channelNameDisplay = `${uniqueChannels.length} channels`;
+            // Multiple channels - name the streamers + what each earned
+            channelNameDisplay = channelListDisplay ?? `${uniqueChannels.length} channels`;
         }
         // If no channels, leave channelNameDisplay as null
 
@@ -728,7 +742,12 @@ const DynamicIsland = () => {
                     // Store the channel name if available, otherwise show the reason summary as the "channel name" for display purposes
                     channel_name: channelNameDisplay || reasonSummary,
                     points_earned: totalPoints,
-                    total_points: cluster.lastBalance, // Pass the balance through
+                    // Single channel: pass the balance so the line reads
+                    // "streamer: N points". Multi-channel: omit it — the
+                    // per-channel breakdown already carries each amount, and
+                    // lastBalance is only the final channel's balance (a sum
+                    // would be misleading).
+                    total_points: uniqueChannels.length > 1 ? undefined : cluster.lastBalance,
                     // Mark if this is a reason summary (not a real channel name)
                     is_reason_summary: !channelNameDisplay,
                 } as ChannelPointsNotificationData,
@@ -765,10 +784,8 @@ const DynamicIsland = () => {
                                     ? `${uniqueChannels[0]} • ${formatReasonCode(cluster.events[0]?.reason || 'watch')} • ${cluster.lastBalance.toLocaleString()} points`
                                     : `${uniqueChannels[0]} • ${formatReasonCode(cluster.events[0]?.reason || 'watch')}`
                             ) : uniqueChannels.length > 1 ? (
-                                // Multiple channels - show channel count and balance if available
-                                cluster.lastBalance
-                                    ? `From ${uniqueChannels.length} channels • ${cluster.lastBalance.toLocaleString()} points`
-                                    : `From ${uniqueChannels.length} channels`
+                                // Multiple channels - name the streamers + each earn
+                                channelListDisplay ?? `From ${uniqueChannels.length} channels`
                             ) : (
                                 // No channel info - show reason and balance if available
                                 cluster.lastBalance
@@ -787,7 +804,7 @@ const DynamicIsland = () => {
         const channelInfo = uniqueChannels.length === 1 && uniqueChannels[0]
             ? uniqueChannels[0]
             : uniqueChannels.length > 1
-                ? `${uniqueChannels.length} channels`
+                ? (channelListDisplay ?? `${uniqueChannels.length} channels`)
                 : formatReasonCode(cluster.events[0]?.reason || 'watch');
         sendNativeNotification(
             `+${totalPoints.toLocaleString()} Channel Points`,

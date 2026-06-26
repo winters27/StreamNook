@@ -376,6 +376,13 @@ const VideoPlayer = () => {
   const nonFatalErrorCountRef = useRef<number>(0); // Track non-fatal errors like bufferStalled, fragParsing
   const lastErrorTimeRef = useRef<number>(0);
   const lastSuccessfulPlayRef = useRef<number>(0);
+  // Pending "playback paused" report. A `pause` event is debounced before it
+  // gates the minute-watched heartbeat off, because ad-bypass region pivots (and
+  // quality changes) reload the source via video.pause()/load(), which fires a
+  // transient `pause` immediately followed by `playing`. Reporting paused on that
+  // blip would stall channel-points/drops earning every ad break. Only a pause
+  // that outlives the grace window (a real user pause / dead playback) reports.
+  const playingPausedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastFragLoadedTimeRef = useRef<number>(0); // Track when we last received a fragment
   const maxFatalErrorsBeforeOffline = 5; // Increased from 3 - be more tolerant
   const maxManifestErrorsBeforeOffline = 4; // Increased from 2 - be more tolerant
@@ -384,7 +391,16 @@ const VideoPlayer = () => {
   const minPlayTimeBeforeOfflineMs = 5000; // Must have played at least 5 seconds before considering offline
   const noFragmentTimeoutMs = 15000; // If no fragments received for 15 seconds with errors, stream is likely offline
 
-
+  // Drop any pending paused-report on unmount so it can't fire after the player
+  // is gone and wrongly gate a newly opened stream's earning off.
+  useEffect(() => {
+    return () => {
+      if (playingPausedTimerRef.current) {
+        clearTimeout(playingPausedTimerRef.current);
+        playingPausedTimerRef.current = null;
+      }
+    };
+  }, []);
 
   // Fetch available qualities from the resolver (live streams only)
   // Clips and VODs don't need quality switching — they serve a single MP4.
@@ -2096,11 +2112,27 @@ const VideoPlayer = () => {
           nonFatalErrorCountRef.current = 0;
 
           // Parity heartbeat gate: minute-watched reporting runs only while
-          // the video is actually playing.
+          // the video is actually playing. Cancel any pending paused-report — a
+          // resumed playback (incl. an ad-pivot/quality reload finishing) means
+          // earning should keep running uninterrupted.
+          if (playingPausedTimerRef.current) {
+            clearTimeout(playingPausedTimerRef.current);
+            playingPausedTimerRef.current = null;
+          }
           invoke('report_player_playing', { playing: true }).catch(() => {});
         }}
         onPause={() => {
-          invoke('report_player_playing', { playing: false }).catch(() => {});
+          // Debounce: don't gate earning off on the transient pause that an
+          // ad-bypass region pivot / quality change emits while reloading the
+          // source. If playback resumes within the grace window, `onPlaying`
+          // cancels this; only a pause that persists actually reports paused.
+          if (playingPausedTimerRef.current) {
+            clearTimeout(playingPausedTimerRef.current);
+          }
+          playingPausedTimerRef.current = setTimeout(() => {
+            playingPausedTimerRef.current = null;
+            invoke('report_player_playing', { playing: false }).catch(() => {});
+          }, 6000);
         }}
       />
 
