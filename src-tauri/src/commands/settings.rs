@@ -20,9 +20,21 @@ pub async fn load_settings(state: State<'_, AppState>) -> Result<Settings, Strin
 }
 
 #[tauri::command]
-pub async fn save_settings(settings: Settings, state: State<'_, AppState>) -> Result<(), String> {
+pub async fn save_settings(
+    mut settings: Settings,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
     {
         let mut state_settings = state.settings.lock().unwrap();
+        // `drops` is owned by the drops service: it's written only through
+        // update_drops_settings (the plugin's Autopilot panel writes through that
+        // path too), which keeps state.settings.drops authoritative. A frontend
+        // settings save carries the AppStore's copy of drops, which is loaded once
+        // at startup and never refreshed when the plugin panel changes it, so it
+        // goes stale. Letting it through here clobbers farming on/off and the
+        // priority targets the moment any unrelated setting is saved (e.g. a
+        // notifications toggle). Keep the backend's copy instead.
+        settings.drops = state_settings.drops.clone();
         *state_settings = settings.clone();
     }
 

@@ -1,7 +1,10 @@
 use log::{debug, error};
+use std::collections::HashMap;
 use std::sync::Arc;
-use tauri::{AppHandle, Listener};
+use std::time::Duration;
+use tauri::{AppHandle, Emitter, Listener};
 use tokio::sync::{Mutex, RwLock};
+use tokio::task::JoinHandle;
 
 use chrono::Utc;
 
@@ -10,16 +13,31 @@ use crate::services::channel_points_websocket_service::ChannelPointsWebSocketSer
 use crate::services::drops_auth_service::DropsAuthService;
 use crate::services::drops_service::DropsService;
 
-/// Realtime support for the channel the user is actually watching. Owns the
-/// single-channel PubSub socket (instant bonus-chest availability + that
-/// channel's predictions) and the points-earned listener that keeps the
-/// lifetime/history totals current. Background multi-channel farming lives in
-/// the opt-in plugin, not here.
+/// How often the farming balance poll re-reads followed-channel balances. The
+/// farmer earns ~10 points/min passively and sweeps bonus chests every few
+/// minutes, so a 3-minute cadence catches every grab with tolerable latency
+/// while keeping GQL/integrity load low (this walks the full followed list).
+const FARM_POLL_INTERVAL: Duration = Duration::from_secs(180);
+
+/// Realtime support for the channel the user is actually watching, plus the
+/// channel-points notification path. Owns the single-channel PubSub socket
+/// (instant bonus-chest availability + that channel's predictions) and a
+/// GQL balance-increase poll that surfaces points the Autopilot plugin farms on
+/// background channels. The watched channel's own claims are notified by the
+/// `claim_channel_points` command; background-farmed channels are notified here.
 pub struct BackgroundService {
     is_running: Arc<RwLock<bool>>,
     pub websocket_service: Arc<Mutex<ChannelPointsWebSocketService>>,
     drops_service: Arc<Mutex<DropsService>>,
     app_handle: AppHandle,
+    /// The channel currently on screen, if any. The farming poll excludes it so
+    /// its claims aren't double-notified (the `claim_channel_points` command
+    /// already emits for the watched channel).
+    watched: Arc<RwLock<Option<(String, String)>>>,
+    /// Handle to the running farming balance poll, if farming is active. Tracks
+    /// the Autopilot master toggle (auto_claim_channel_points): `set_farming_active`
+    /// spawns it on, aborts it off. `None` means no poll is running.
+    points_poll: Arc<Mutex<Option<JoinHandle<()>>>>,
 }
 
 impl BackgroundService {
@@ -29,6 +47,8 @@ impl BackgroundService {
             websocket_service: Arc::new(Mutex::new(ChannelPointsWebSocketService::new())),
             drops_service,
             app_handle,
+            watched: Arc::new(RwLock::new(None)),
+            points_poll: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -44,9 +64,10 @@ impl BackgroundService {
             *is_running = true;
         }
 
-        // Accumulate lifetime/history from every points-earned PubSub event
-        // (watch-time and claimed chests). The single source for the stats the
-        // Drops center shows; the watched channel's socket is what emits these.
+        // Accumulate lifetime/history from every channel-points-earned event
+        // (the watched channel's claims via claim_channel_points, and farmed
+        // channels via the balance poll). The single source for the lifetime
+        // stats the Drops center shows.
         let drops_service_for_stats = self.drops_service.clone();
         self.app_handle.listen("channel-points-earned", move |event| {
             let drops_service = drops_service_for_stats.clone();
@@ -67,8 +88,7 @@ impl BackgroundService {
                     let ds = drops_service.lock().await;
 
                     // Keep the per-channel balance current for the leaderboard
-                    // and the points accolades. The socket reports the new
-                    // balance with every earn; nothing else fills this store.
+                    // and the points accolades.
                     if balance > 0 {
                         if let Some(cid) = channel_id.as_deref() {
                             ds.update_channel_points_balance(cid, &channel_name, balance)
@@ -86,7 +106,9 @@ impl BackgroundService {
                             claimed_at: Utc::now(),
                             claim_type: match reason {
                                 "WATCH" | "watch" => ChannelPointsClaimType::Watch,
-                                "CLAIM" | "claim" => ChannelPointsClaimType::Bonus,
+                                "CLAIM" | "claim" | "FARM" | "farm" => {
+                                    ChannelPointsClaimType::Bonus
+                                }
                                 _ => ChannelPointsClaimType::Watch,
                             },
                         };
@@ -101,6 +123,8 @@ impl BackgroundService {
     /// community-points (bonus-chest availability) and predictions topics.
     /// Idempotent reconnect — calling it for a new channel drops the prior one.
     pub async fn set_watched_channel(&self, channel_id: String, login: String) {
+        *self.watched.write().await = Some((channel_id.clone(), login.clone()));
+
         let token = match DropsAuthService::get_token().await {
             Ok(t) => t,
             // No drops credential: the realtime socket can't authenticate. The
@@ -129,7 +153,205 @@ impl BackgroundService {
 
     /// Tear the realtime socket down when no channel is being watched.
     pub async fn clear_watched_channel(&self) {
+        *self.watched.write().await = None;
         self.websocket_service.lock().await.disconnect_all().await;
+    }
+
+    /// Reflect the farming master toggle (auto_claim_channel_points). On, it
+    /// starts a recurring GQL balance-increase poll so points the Autopilot
+    /// plugin farms on background channels surface as channel-points-earned
+    /// notifications (the plugin earns in its own process and has no way to emit
+    /// the event itself). Off, it stops the poll. Idempotent: a no-op when the
+    /// desired state already matches, so repeated drops-settings saves don't
+    /// churn the task.
+    pub async fn set_farming_active(&self, active: bool) {
+        let mut guard = self.points_poll.lock().await;
+        if active {
+            if guard.is_some() {
+                return;
+            }
+            *guard = Some(self.spawn_points_poll());
+            debug!("[CP-Farm-Poll] started");
+        } else if let Some(handle) = guard.take() {
+            handle.abort();
+            debug!("[CP-Farm-Poll] stopped");
+        }
+    }
+
+    /// Spawn the farming balance poll: every `FARM_POLL_INTERVAL`, read every
+    /// followed channel's balance via GQL and emit channel-points-earned for any
+    /// channel whose balance rose since the last cycle (excluding the watched
+    /// channel, which `claim_channel_points` already notifies). The first cycle
+    /// only seeds the baseline so existing holdings aren't reported as earns.
+    fn spawn_points_poll(&self) -> JoinHandle<()> {
+        let app_handle = self.app_handle.clone();
+        let drops_service = self.drops_service.clone();
+        let watched = self.watched.clone();
+
+        tokio::spawn(async move {
+            let mut baseline: HashMap<String, i32> = HashMap::new();
+            let mut first = true;
+            let mut ticker = tokio::time::interval(FARM_POLL_INTERVAL);
+
+            loop {
+                ticker.tick().await;
+
+                let Some(balances) = Self::fetch_all_followed_balances().await else {
+                    continue;
+                };
+
+                let watched_id = watched
+                    .read()
+                    .await
+                    .as_ref()
+                    .map(|(id, _)| id.clone());
+
+                for (channel_id, login, balance) in &balances {
+                    let prev = baseline.insert(channel_id.clone(), *balance);
+
+                    // Skip the on-screen channel (claim_channel_points covers it)
+                    // and the seeding pass.
+                    if first || watched_id.as_ref() == Some(channel_id) {
+                        continue;
+                    }
+
+                    let Some(prev) = prev else { continue };
+                    if *balance <= prev {
+                        continue;
+                    }
+                    let delta = *balance - prev;
+
+                    {
+                        let ds = drops_service.lock().await;
+                        ds.update_channel_points_balance(channel_id, login, *balance)
+                            .await;
+                    }
+
+                    debug!(
+                        "[CP-Farm-Poll] +{} on {} (balance {})",
+                        delta, login, balance
+                    );
+                    let _ = app_handle.emit(
+                        "channel-points-earned",
+                        serde_json::json!({
+                            "channel_id": channel_id,
+                            "channel_login": login,
+                            "channel_display_name": login,
+                            "points": delta,
+                            "reason": "farm",
+                            "balance": balance,
+                        }),
+                    );
+                }
+
+                first = false;
+            }
+        })
+    }
+
+    /// Read the channel-points balance of every followed channel via the same
+    /// inline ChannelPointsContext GQL query the on-demand refresh uses, batched
+    /// 35 ops per request. Returns (channel_id, login, balance) for channels with
+    /// a positive balance, or None if the credential/list lookup fails.
+    async fn fetch_all_followed_balances() -> Option<Vec<(String, String, i32)>> {
+        use crate::services::twitch_service::TwitchService;
+        use serde_json::json;
+
+        const CLIENT_ID: &str = env!("TWITCH_WEB_CLIENT_ID");
+        const QUERY: &str = r#"
+        query ChannelPointsContext($channelLogin: String!) {
+            user(login: $channelLogin) {
+                channel {
+                    self {
+                        communityPoints {
+                            balance
+                        }
+                    }
+                }
+            }
+        }
+        "#;
+
+        let token = DropsAuthService::get_token().await.ok()?;
+        let client = crate::services::http::client();
+
+        // Drain the full followed list (live or offline): (login, channel_id).
+        let mut channels: Vec<(String, String)> = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            match TwitchService::get_all_followed_channels(100, cursor.clone()).await {
+                Ok((page, next)) => {
+                    for s in page {
+                        if !s.user_login.is_empty() && !s.user_id.is_empty() {
+                            channels.push((s.user_login, s.user_id));
+                        }
+                    }
+                    match next {
+                        Some(c) => cursor = Some(c),
+                        None => break,
+                    }
+                }
+                Err(e) => {
+                    debug!("[CP-Farm-Poll] followed-list lookup failed: {}", e);
+                    return None;
+                }
+            }
+        }
+
+        let mut found: Vec<(String, String, i32)> = Vec::new();
+        for chunk in channels.chunks(35) {
+            let body: Vec<serde_json::Value> = chunk
+                .iter()
+                .map(|(login, _id)| {
+                    json!({
+                        "operationName": "ChannelPointsContext",
+                        "query": QUERY,
+                        "variables": { "channelLogin": login.to_lowercase() }
+                    })
+                })
+                .collect();
+
+            let resp = match client
+                .post("https://gql.twitch.tv/gql")
+                .header("Client-Id", CLIENT_ID)
+                .header("Authorization", format!("OAuth {}", token))
+                .json(&body)
+                .send()
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    debug!("[CP-Farm-Poll] balance batch failed: {}", e);
+                    continue;
+                }
+            };
+
+            let parsed: serde_json::Value = match resp.json().await {
+                Ok(v) => v,
+                Err(e) => {
+                    debug!("[CP-Farm-Poll] balance batch parse failed: {}", e);
+                    continue;
+                }
+            };
+
+            if let Some(arr) = parsed.as_array() {
+                for (idx, item) in arr.iter().enumerate() {
+                    let Some((login, channel_id)) = chunk.get(idx) else {
+                        continue;
+                    };
+                    if let Some(bal) = item
+                        .pointer("/data/user/channel/self/communityPoints/balance")
+                        .and_then(|v| v.as_i64())
+                    {
+                        if bal > 0 {
+                            found.push((channel_id.clone(), login.clone(), bal as i32));
+                        }
+                    }
+                }
+            }
+        }
+
+        Some(found)
     }
 
     /// Resolve the authenticated user's id from the drops token (needed for the

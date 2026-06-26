@@ -7,7 +7,7 @@ use crate::models::drops::*;
 use crate::models::settings::AppState;
 use crate::services::drops_auth_service::{DropsAuthService, DropsDeviceCodeInfo};
 use log::debug;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, State};
 
 #[tauri::command]
 pub async fn get_drops_settings(state: State<'_, AppState>) -> Result<DropsSettings, String> {
@@ -45,6 +45,17 @@ pub async fn update_drops_settings(
         .map_err(|e| format!("Failed to serialize settings: {}", e))?;
     std::fs::write(&settings_path, json)
         .map_err(|e| format!("Failed to write settings file: {}", e))?;
+
+    // Keep the realtime points socket in line with the farming master toggle so
+    // the farmer's background earns start (or stop) producing channel-points
+    // notifications immediately, without waiting for a relaunch. No-op when the
+    // flag is unchanged.
+    state
+        .background_service
+        .lock()
+        .await
+        .set_farming_active(settings.auto_claim_channel_points)
+        .await;
 
     Ok(())
 }
@@ -107,13 +118,40 @@ pub async fn claim_channel_points(
     channel_id: String,
     channel_name: String,
     claim_id: String,
+    app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<BonusClaimResult, String> {
-    let drops_service = state.drops_service.lock().await;
-    drops_service
-        .claim_channel_points(&channel_id, &channel_name, &claim_id)
-        .await
-        .map_err(|e| e.to_string())
+    let result = {
+        let drops_service = state.drops_service.lock().await;
+        drops_service
+            .claim_channel_points(&channel_id, &channel_name, &claim_id)
+            .await
+            .map_err(|e| e.to_string())?
+    };
+
+    // Surface the watched channel's claim as a channel-points notification on the
+    // path that actually delivers — a successful GQL claim. The legacy PubSub
+    // points-earned push (channel_points_websocket_service) is dead since Twitch
+    // decommissioned pubsub-edge, so this re-emits the same event shape the socket
+    // used. DynamicIsland's listener (gated by show_channel_points_notifications)
+    // and the lifetime/history accumulator in background_service then behave
+    // exactly as they did when the socket worked. Background-farmed channels are
+    // covered separately by the GQL balance poll in background_service.
+    if result.points_earned > 0 {
+        let _ = app.emit(
+            "channel-points-earned",
+            serde_json::json!({
+                "channel_id": channel_id,
+                "channel_login": channel_name,
+                "channel_display_name": channel_name,
+                "points": result.points_earned,
+                "reason": "claim",
+                "balance": result.new_balance,
+            }),
+        );
+    }
+
+    Ok(result)
 }
 
 #[tauri::command]
