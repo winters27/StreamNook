@@ -174,6 +174,19 @@ html[data-motion="off"] .update-pill { animation: none; }
 .titlebar-icon-btn:hover img {
   transform: scale(1.12);
 }
+/* Engaged title-bar toggle — an open pane (mod logs / activity). A pressed-in
+   neumorphic trench (a scaled-down version of the .glass-input "pressed" feel)
+   plus the accent color, so it reads as physically held down and clearly ON,
+   not just faintly tinted. The :hover twin keeps the trench from flattening when
+   the pointer is over an already-engaged button. */
+.titlebar-icon-btn.is-active,
+.titlebar-icon-btn.is-active:hover {
+  color: var(--color-accent);
+  background: var(--color-surface);
+  box-shadow:
+    inset 2px 2px 5px -2px rgba(0, 0, 0, 0.55),
+    inset -2px -2px 5px -2px rgba(255, 255, 255, 0.09);
+}
 
 /* Window controls — utilitarian rectangular hover, no icon scale, so they read
    as window chrome rather than app action buttons. */
@@ -359,6 +372,42 @@ html[data-motion="off"] .update-pill { animation: none; }
 .custom-scrollbar {
   scrollbar-width: thin;
   scrollbar-color: var(--color-scrollbar-thumb) var(--color-scrollbar-track);
+}
+
+/* Animated gradient border for gift-bomb activity cards. A bright shine travels
+   continuously around a colored ring so a bomb reads as a big deal, while the
+   card itself stays glassy (the mask paints only the border, not the fill).
+   Card color comes in via the --sn-bomb-color custom property. */
+@property --sn-bomb-angle {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+@keyframes sn-bomb-spin {
+  to {
+    --sn-bomb-angle: 360deg;
+  }
+}
+.sn-giftbomb-border::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1.5px;
+  background: conic-gradient(
+    from var(--sn-bomb-angle),
+    var(--sn-bomb-color, #fff),
+    #fff 14deg,
+    var(--sn-bomb-color, #fff) 44deg,
+    var(--sn-bomb-color, #fff) 360deg
+  );
+  -webkit-mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  animation: sn-bomb-spin 3s linear infinite;
+  pointer-events: none;
 }
 
 * {
@@ -894,6 +943,13 @@ html[data-motion="reduced"] .animate-shimmer {
   100% {
     background-position: 0% 50%;
   }
+}
+
+/* Chat badge size, in `em` so it scales with the chat font (the badge container
+   carries the message font-size). 1.4em = ~20px at the default 14px font. */
+.sn-chat-badge {
+  width: 1.4em;
+  height: 1.4em;
 }
 
 .subscription-gradient {
