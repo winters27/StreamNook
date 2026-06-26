@@ -1,3 +1,37 @@
+## [8.1.0] - 2026-06-25
+
+## 🎉 New: Multi-platform chat, all in one window
+> MultiChat is now a full multi-platform command center. Watch Twitch, Kick, YouTube, and TikTok chat side by side or in one blended feed, reply and moderate on Twitch, Kick, and YouTube, and track every sub, raid, gift, and super chat (including TikTok gifts) in a unified activity feed. Connect each account once and work your whole audience without leaving the window.
+
+---
+
+### ✨ Features
+- **Multi-platform chat.** Add Kick, YouTube, and TikTok channels next to Twitch. View them as separate panes or one blended, time-ordered feed where each message shows the platform it came from.
+- **Connect your accounts per platform.** Sign in to Kick and YouTube to send and moderate, all managed from one Account Connections screen.
+- **Cross-platform moderation.** Ban, time out, and delete messages on Kick and YouTube as well as Twitch, with a combined moderator log across every source.
+- **Activity feed.** A dedicated panel for subs, resubs, gift bombs, raids, YouTube super chats and members, Kick and TikTok gifts, and Twitch Hype Trains, with per-platform filters and a Super Chat currency converter.
+- **Kick emotes in the picker.** Kick channel and global emotes appear alongside Twitch, BetterTTV, FFZ, and 7TV.
+- **Go Live mode that frees memory.** Going live can close the main app to reclaim around 350MB, and opening a profile, badge, clip, or VOD brings it right back.
+- **Watch VODs from a popout.** With the main app closed, VOD links in a chat popout now play in place.
+- **Bigger, more readable chat.** Chat text scales up to 48px with badges and emotes scaling to match, and the activity feed has its own separate text size.
+- **Watch-to-earn rewards.** Event rewards are claimed automatically for whatever you are watching, with a notification when you earn one.
+- **Clearer points notifications.** Channel-points notifications now name the top channels and amounts instead of just a count.
+- **Redesigned MultiChat settings.** A full-window settings panel with a category rail, search, and a quick theme picker.
+
+### 🐛 Bug Fixes
+- Fixed a freeze that could show "Not Responding" for several seconds when the window was covered by another window.
+- The channel About panel now scrolls smoothly instead of snapping back to the stream when you scroll up.
+- Drops and farming settings take effect immediately, and saving settings no longer overwrites the Autopilot plugin's farming configuration.
+- Playback pauses during ad breaks no longer interrupt points and drops earning.
+- Whispering from a popout profile card works even when the main app is closed.
+
+### ⚡ Performance
+- Windows load only the code they need, so chat-only popouts start faster and lighter.
+- Removed a startup image preload that held roughly 120MB; backgrounds now load as they appear.
+
+### 🔧 Maintenance
+- Reworked the chat backend so every platform shares one message pipeline, keeping normal Twitch chat unchanged.
+
 ## [8.0.11] - 2026-06-22
 
 ### 🐛 Bug Fixes

@@ -1,6 +1,6 @@
 [package]
 name = "StreamNook"
-version = "8.0.11"
+version = "8.1.0"
 description = "StreamNook"
 authors = ["Brandon Winters"]
 license = ""
@@ -33,6 +33,7 @@ cookie_store = "0.22.0"
 oauth2 = "5.0.0"
 discord-rich-presence = "1.0.0"
 anyhow = "1.0.100"
+async-trait = "0.1.83"
 confy = "2.0.0"
 warp = { version = "0.4.2", features = ["server", "websocket"] }
 futures = "0.3"
@@ -41,6 +42,7 @@ rand = "0.9.2"
 keyring = "3.6.3"  # For secure token storage
 url = "2.5.7"
 sha2 = "0.10.9"
+sha1 = "0.10.6"  # SAPISIDHASH for the YouTube webview-session auth
 base64 = "0.22.1"
 # Song recognition: FFT + binary signature encoding for the vendored Shazam
 # fingerprinter (services/song_id, MIT, from shazamio-core).
@@ -63,6 +65,11 @@ cosmic-text = "0.15.0"
 scopeguard = "1.2"
 phf = "0.11"
 lru = "0.12"
+
+# TikTok LIVE webcast reader (vendored in-tree, see vendor/tiktok-live). Pure-Rust
+# ttwid-only connector (no signing service / no Python); deps pinned to match ours
+# so cargo builds one shared tokio-tungstenite/reqwest stack.
+tiktok-live = { path = "vendor/tiktok-live" }
 
 # Plugin host: manifest parsing, version gating, artifact verification and unpack
 toml = "0.8"
