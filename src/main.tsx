@@ -1,10 +1,15 @@
-import React from 'react';
+import React, { lazy, Suspense } from 'react';
 import ReactDOM from 'react-dom/client';
-import App from './App.tsx';
-import ProfileCardPage from './pages/ProfileCardPage.tsx';
-import MultiChatWindow from './components/multichat/MultiChatWindow.tsx';
-import PluginWindowHost from './plugins-ui/PluginWindowHost.tsx';
 import { MotionScope } from './components/MotionScope.tsx';
+
+// Route components are lazy so each window only downloads/parses the code it
+// actually renders. The MultiChat / profile / plugin popouts no longer pull in
+// App's whole tree (video player + hls.js/plyr, browse, settings) — a real
+// footprint + startup cut for the chat-only popout.
+const App = lazy(() => import('./App.tsx'));
+const ProfileCardPage = lazy(() => import('./pages/ProfileCardPage.tsx'));
+const MultiChatWindow = lazy(() => import('./components/multichat/MultiChatWindow.tsx'));
+const PluginWindowHost = lazy(() => import('./plugins-ui/PluginWindowHost.tsx'));
 // Side-effect import: registers `window.openMultiChatWindow` for popout spawning.
 import './utils/multichatWindow';
 // Side-effect import: listens for the tray's "Open MultiChat" menu event and
@@ -34,10 +39,22 @@ const isProfileCard = hash.startsWith('#/profile');
 const isMultiChat = hash.startsWith('#/multichat');
 const isPluginWindow = hash.startsWith('#/plugin/');
 
-ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
+// Create the React root ONCE per container. The lazy route imports above can make
+// React Fast Refresh re-execute this module instead of full-reloading, and a second
+// createRoot() on the same #root mounts a competing React tree — which manifests as
+// the "createRoot() on a container that has already been passed" warning AND erratic
+// freezes (two roots fighting over the same DOM, e.g. a clip modal locking up).
+// Caching the root on the container makes re-execution a re-render, not a new root.
+const container = document.getElementById('root') as HTMLElement & {
+  __snRoot?: ReactDOM.Root;
+};
+const root = container.__snRoot ?? (container.__snRoot = ReactDOM.createRoot(container));
+root.render(
   <React.StrictMode>
     <MotionScope>
-      {isMultiChat ? <MultiChatWindow /> : isPluginWindow ? <PluginWindowHost /> : isProfileCard ? <ProfileCardPage /> : <App />}
+      <Suspense fallback={null}>
+        {isMultiChat ? <MultiChatWindow /> : isPluginWindow ? <PluginWindowHost /> : isProfileCard ? <ProfileCardPage /> : <App />}
+      </Suspense>
     </MotionScope>
-  </React.StrictMode>
+  </React.StrictMode>,
 );
