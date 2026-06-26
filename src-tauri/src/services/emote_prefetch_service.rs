@@ -201,6 +201,7 @@ fn emote_cache_target(emote: &Emote, tier: &str) -> (String, String) {
         EmoteProvider::Twitch => (format!("twitch-{}", emote.id), emote.url.clone()),
         EmoteProvider::BTTV => (format!("bttv-{}", emote.id), emote.url.clone()),
         EmoteProvider::FFZ => (format!("ffz-{}", emote.id), emote.url.clone()),
+        EmoteProvider::Kick => (format!("kick-{}", emote.id), emote.url.clone()),
     }
 }
 
@@ -210,6 +211,7 @@ fn set_emotes(set: &EmoteSet) -> impl Iterator<Item = &Emote> {
         .chain(set.bttv.iter())
         .chain(set.seven_tv.iter())
         .chain(set.ffz.iter())
+        .chain(set.kick.iter())
 }
 
 async fn emit_progress(progress: &Arc<RwLock<PrefetchProgress>>, app_handle: &AppHandle) {

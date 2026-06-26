@@ -132,6 +132,9 @@ pub enum EmoteProvider {
     #[serde(rename = "7tv")]
     SevenTV,
     FFZ,
+    // Kick's own native emotes (channel sub set + Global + Emojis), served from
+    // files.kick.com. Only ever populated for Kick channels.
+    Kick,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -141,6 +144,10 @@ pub struct EmoteSet {
     #[serde(rename = "7tv")]
     pub seven_tv: Vec<Emote>,
     pub ffz: Vec<Emote>,
+    // Kick native emotes (empty for Twitch channels). Defaulted so older cached
+    // payloads / the Twitch path deserialize without it.
+    #[serde(default)]
+    pub kick: Vec<Emote>,
 }
 
 impl EmoteSet {
@@ -150,11 +157,12 @@ impl EmoteSet {
             bttv: Vec::new(),
             seven_tv: Vec::new(),
             ffz: Vec::new(),
+            kick: Vec::new(),
         }
     }
 
     pub fn total_count(&self) -> usize {
-        self.twitch.len() + self.bttv.len() + self.seven_tv.len() + self.ffz.len()
+        self.twitch.len() + self.bttv.len() + self.seven_tv.len() + self.ffz.len() + self.kick.len()
     }
 }
 
@@ -292,6 +300,7 @@ impl EmoteService {
             bttv: bttv_emotes,
             seven_tv: seven_tv_emotes,
             ffz: ffz_emotes,
+            kick: Vec::new(),
         };
 
         debug!(
