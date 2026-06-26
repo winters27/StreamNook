@@ -210,9 +210,13 @@ const EmptyState = () => (
 interface StreamerAboutPanelProps {
   channelLogin: string;
   hideHero?: boolean;
+  /** Forwarded to the panel's own scroll container. Lets a host (e.g. the player
+   *  About reveal) own the single scroller and read its scroll position directly,
+   *  instead of nesting a second overflow that the host can't see. */
+  scrollRef?: React.Ref<HTMLDivElement>;
 }
 
-const StreamerAboutPanel = memo(({ channelLogin, hideHero }: StreamerAboutPanelProps) => {
+const StreamerAboutPanel = memo(({ channelLogin, hideHero, scrollRef }: StreamerAboutPanelProps) => {
   const [aboutData, setAboutData] = useState<ChannelAboutData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -264,7 +268,7 @@ const StreamerAboutPanel = memo(({ channelLogin, hideHero }: StreamerAboutPanelP
   return (
     <div className="flex flex-col h-full">
       {/* Content */}
-      <div className="flex-1 overflow-y-auto scrollbar-thin">
+      <div ref={scrollRef} className="flex-1 overflow-y-auto scrollbar-thin">
         {isLoading && <LoadingSkeleton />}
 
         {error && (

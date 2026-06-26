@@ -152,13 +152,12 @@ export default function ChannelAboutReveal({ enabled, channelLogin, children }: 
           {/* About drawer — rises from below to fully cover the area. Parked
               off-screen (pointer-events off) until revealed. */}
           <motion.div
-            ref={aboutScrollRef}
-            className="absolute inset-0 z-30 overflow-y-auto scrollbar-thin bg-background"
+            className="absolute inset-0 z-30 flex flex-col bg-background"
             style={{ pointerEvents: open ? 'auto' : 'none' }}
             animate={{ y: open ? '0%' : '100%' }}
             transition={SNAP}
           >
-            <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-borderSubtle bg-background/90 px-4 py-2 backdrop-blur-md">
+            <div className="flex flex-shrink-0 items-center gap-2 border-b border-borderSubtle bg-background px-4 py-2">
               <button
                 type="button"
                 onClick={() => setShowAbout(false)}
@@ -210,7 +209,14 @@ export default function ChannelAboutReveal({ enabled, channelLogin, children }: 
                 )}
               </div>
             </div>
-            {channelLogin && <StreamerAboutPanel channelLogin={channelLogin} />}
+            {/* Single scroller: the panel's own overflow is the one that scrolls,
+                and we read its scrollTop (aboutScrollRef) to decide when an upward
+                scroll at the top should snap back to the stream. */}
+            <div className="min-h-0 flex-1">
+              {channelLogin && (
+                <StreamerAboutPanel channelLogin={channelLogin} scrollRef={aboutScrollRef} />
+              )}
+            </div>
           </motion.div>
 
           {/* Scroll affordance, pinned to the bottom edge. Only shown when a bottom
