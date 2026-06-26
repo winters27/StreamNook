@@ -5,6 +5,8 @@ import { BackendChatMessage } from '../services/twitchChat';
 import { ModerationContext } from '../hooks/useTwitchChat';
 import { useAppStore } from '../stores/AppStore';
 import { useChatUserStore } from '../stores/chatUserStore';
+import { ProviderLogo } from './ProviderLogo';
+import type { ProviderId } from '../types/providers';
 
 /**
  * Per-row wrapper carrying the native-virtualization styles, with one
@@ -95,6 +97,10 @@ interface ChatMessageListProps {
   getMessageId: (message: string | BackendChatMessage) => string | null;
   isModerator?: boolean;
   broadcasterId?: string;
+  /** Blended view: mark each row with its source platform (a provider-colored
+   *  left stripe), so a merged multi-source feed shows where each message is from.
+   *  Off everywhere else, so normal single-source chat is untouched. */
+  showSource?: boolean;
 }
 
 /**
@@ -128,6 +134,7 @@ const ChatMessageList = memo(function ChatMessageList({
   getMessageId,
   isModerator,
   broadcasterId,
+  showSource,
 }: ChatMessageListProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   // Inner messages-wrapper div. We observe its size with a ResizeObserver so
@@ -171,6 +178,11 @@ const ChatMessageList = memo(function ChatMessageList({
     const total = contentLine + timestampHeight + padding + 1; // +1 for divider
     return `auto ${total}px`;
   }, [chatDesign?.font_size, chatDesign?.message_spacing, chatDesign?.show_timestamps]);
+
+  // Source provider logo (blended feed): a touch larger than the text and scaling
+  // with the chat font size — like inline emotes — so it stays legible as the user
+  // sizes the chat up.
+  const sourceLogoSize = Math.round((chatDesign?.font_size ?? 14) * 1.2);
   
   // Track if user explicitly scrolled UP via wheel (negative deltaY = scroll up)
   // This is the ONLY reliable way to detect user scroll intent
@@ -537,6 +549,30 @@ const ChatMessageList = memo(function ChatMessageList({
             moderationContext = null;
           }
 
+          const chatMessageEl = (
+            <ChatMessage
+              message={message}
+              onUsernameClick={onUsernameClick}
+              onReplyClick={onReplyClick}
+              onMessageCopy={onMessageCopy}
+              isHighlighted={highlightedMessageId === messageId}
+              moderationContext={moderationContext}
+              onEmoteRightClick={onEmoteRightClick}
+              onUsernameRightClick={onUsernameRightClick}
+              onBadgeClick={onBadgeClick}
+              emotes={emotes}
+              isModerator={isModerator}
+              broadcasterId={broadcasterId}
+            />
+          );
+          // Blended feed: prefix each message with its source platform's logo so
+          // a merged multi-source feed is readable at a glance. Only when
+          // showSource is on (and the row is a structured message carrying a
+          // provider) — otherwise render unchanged.
+          const sourceProvider =
+            showSource && typeof message !== 'string'
+              ? ((message as BackendChatMessage).provider as ProviderId | undefined)
+              : undefined;
           return (
             <MessageRow
               key={messageId || `msg-${index}`}
@@ -545,20 +581,14 @@ const ChatMessageList = memo(function ChatMessageList({
               isModFocus={!!modFocusId && messageId === modFocusId}
               intrinsicSizeCSS={intrinsicSizeCSS}
             >
-              <ChatMessage
-                message={message}
-                onUsernameClick={onUsernameClick}
-                onReplyClick={onReplyClick}
-                onMessageCopy={onMessageCopy}
-                isHighlighted={highlightedMessageId === messageId}
-                moderationContext={moderationContext}
-                onEmoteRightClick={onEmoteRightClick}
-                onUsernameRightClick={onUsernameRightClick}
-                onBadgeClick={onBadgeClick}
-                emotes={emotes}
-                isModerator={isModerator}
-                broadcasterId={broadcasterId}
-              />
+              {sourceProvider ? (
+                <div className="flex items-center gap-1.5 pl-1">
+                  <ProviderLogo provider={sourceProvider} size={sourceLogoSize} />
+                  <div className="min-w-0 flex-1">{chatMessageEl}</div>
+                </div>
+              ) : (
+                chatMessageEl
+              )}
             </MessageRow>
           );
         })}

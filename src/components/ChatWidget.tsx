@@ -16,7 +16,11 @@ const ChannelPointsIcon = ({ className = "", size = 14 }: { className?: string; 
 );
 import { DropProgressStatus } from '../types';
 import { useTwitchChat } from '../hooks/useTwitchChat';
-import { useChannelEmotes, ensureChannelEmotes, getChannelEmotes, refreshChannelEmotes } from '../stores/chatConnectionStore';
+import { useChannelEmotes, ensureChannelEmotes, getChannelEmotes, refreshChannelEmotes, useChannelChat, setChannelPaused } from '../stores/chatConnectionStore';
+import { makeKey } from '../utils/providerKey';
+import type { ProviderId } from '../types/providers';
+import { KickAccountChip } from './KickAccountChip';
+import { ProviderLogo } from './ProviderLogo';
 import { useAppStore } from '../stores/AppStore';
 import { incrementStat } from '../services/supabaseService';
 import { trackEmoteUsage } from '../utils/trackEmoteUsage';
@@ -68,7 +72,7 @@ import { buildTemplateContext, handleSlashCommand } from '../utils/commandHandle
 import { getRemindFlowSuggestions, tokenizeRemindOverlay } from '../utils/reminderEngine';
 
 import { BackendChatMessage } from '../services/twitchChat';
-import { registerChatModController, type ChatModController } from '../keybindings';
+import { registerChatModController, getChatModController, type ChatModController } from '../keybindings';
 import { Tooltip } from './ui/Tooltip';
 
 interface ParsedMessage {
@@ -83,7 +87,7 @@ interface ParsedMessage {
 import { EMOJI_CATEGORIES, EMOJI_KEYWORDS } from '../services/emojiCategories';
 import { usemultiNookStore } from '../stores/multiNookStore';
 import { usePinStore } from '../stores/pinStore';
-import type { TwitchStream } from '../types';
+import type { TwitchStream, HypeTrainData } from '../types';
 
 import { Logger } from '../utils/logger';
 import { useVisibleInterval } from '../utils/useVisibleInterval';
@@ -483,10 +487,21 @@ export interface ChatWidgetChannelOverride {
   profile_image_url?: string;
   broadcaster_type?: string;
   is_live?: boolean;
+  /** MultiChat only: whether this pane is the active/focused one. The active pane
+   *  owns the keyboard-moderation controller (so the popout's hotkeys act on the
+   *  pane you're looking at, not every pane at once). */
+  is_active?: boolean;
+  /** Source platform. Absent/twitch = the full native Twitch path (unchanged).
+   *  A non-twitch provider reads the shared `provider:channel` chat slice and
+   *  gates off every Twitch-only behavior (Helix polls, points, mod, emotes). */
+  provider?: ProviderId;
 }
 
 export interface ChatWidgetProps {
   channelOverride?: ChatWidgetChannelOverride;
+  /** MultiChat only: the per-pane hype train (polled by MultiChatPane). The main
+   *  app leaves this unset and uses the global store value instead. */
+  hypeTrainOverride?: HypeTrainData | null;
 }
 
 // Minimum spacing between pause/resume transitions. Real gestures are hundreds
@@ -496,15 +511,156 @@ export interface ChatWidgetProps {
 // it. See `setChatPaused` in ChatWidget.
 const PAUSE_SETTLE_MS = 120;
 
-const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
-  const { messages, connectChat, sendMessage, isConnected, error, setPaused: setBufferPaused, deletedMessageIds, clearedUserContexts, roomState, userBadges, liveMessageCount } = useTwitchChat();
+const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}) => {
+  // Single source of truth for the source platform. Twitch (the default) runs the
+  // entire native path below unchanged; a non-twitch provider reads the shared
+  // `provider:channel` slice and every Twitch-only effect early-returns on it.
+  const provider: ProviderId = channelOverride?.provider ?? 'twitch';
+  const isTwitch = provider === 'twitch';
+
+  // Message-source seam (the only structural change). Both hooks ALWAYS run
+  // (rules-of-hooks); we select by provider. Twitch -> `chat` IS the existing
+  // useTwitchChat() result, byte-identical. A provider -> read its already-
+  // connected slice (the MultiChat add-source flow connected it) and stub the
+  // Twitch-only actions (connect is a no-op; send is read-only until OAuth).
+  const twitchChat = useTwitchChat();
+  const providerKey =
+    !isTwitch && channelOverride ? makeKey(provider, channelOverride.user_login.toLowerCase()) : null;
+  const providerSnapshot = useChannelChat(providerKey);
+  const providerChat = useMemo(
+    () => ({
+      // Fresh array ref each new message so the memo'd ChatMessageList re-renders
+      // (the store appends in place; liveMessageCount bumps drive this memo).
+      messages: providerSnapshot.messages.slice(),
+      connectChat: async () => {},
+      sendMessage: async (
+        messageText: string,
+        _userInfo?: unknown,
+        replyParentMsgId?: string,
+        _senderAccount?: unknown,
+      ) => {
+        if (!channelOverride) return;
+        await invoke('provider_send_message', {
+          provider,
+          channel: channelOverride.user_login.toLowerCase(),
+          text: messageText,
+          replyTo: replyParentMsgId ?? null,
+        });
+      },
+      isConnected: providerSnapshot.isConnected,
+      error: providerSnapshot.error,
+      setPaused: (paused: boolean) => {
+        if (providerKey) setChannelPaused(providerKey, paused);
+      },
+      deletedMessageIds: providerSnapshot.deletedMessageIds,
+      clearedUserContexts: providerSnapshot.clearedUserContexts,
+      roomState: providerSnapshot.roomState,
+      userBadges: providerSnapshot.userBadges,
+      liveMessageCount: providerSnapshot.liveMessageCount,
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [providerSnapshot, providerSnapshot.liveMessageCount, providerKey, provider, channelOverride],
+  );
+  const chat = isTwitch ? twitchChat : providerChat;
+  const { messages, connectChat, sendMessage, isConnected, error, setPaused: setBufferPaused, deletedMessageIds, clearedUserContexts, roomState, userBadges, liveMessageCount } = chat;
+
+  // Kick sending requires a connected Kick account (OAuth). Poll the state so the
+  // composer enables right after the user connects.
+  const [kickConnected, setKickConnected] = useState(false);
+  useEffect(() => {
+    if (provider !== 'kick') {
+      setKickConnected(false);
+      return;
+    }
+    let active = true;
+    const check = () =>
+      invoke<boolean>('kick_is_connected')
+        .then((c) => {
+          if (active) setKickConnected(c);
+        })
+        .catch(() => {});
+    check();
+    const t = setInterval(check, 5000);
+    return () => {
+      active = false;
+      clearInterval(t);
+    };
+  }, [provider]);
+  // The connected Kick account's username, lowercased — used to spot our OWN
+  // (badged) messages so we can tell whether we may moderate this Kick channel
+  // (Kick gives no Twitch-style USERSTATE with our role).
+  const [kickAccountName, setKickAccountName] = useState<string | null>(null);
+  useEffect(() => {
+    if (provider !== 'kick' || !kickConnected) {
+      setKickAccountName(null);
+      return;
+    }
+    let active = true;
+    invoke<string | null>('kick_account_name')
+      .then((n) => {
+        if (active) setKickAccountName(n ? n.toLowerCase() : null);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [provider, kickConnected]);
+  // YouTube sending + moderation drive the webview-session login. Poll connection so
+  // the composer enables right after connecting.
+  const [youtubeConnected, setYoutubeConnected] = useState(false);
+  useEffect(() => {
+    if (provider !== 'youtube') {
+      setYoutubeConnected(false);
+      return;
+    }
+    let active = true;
+    const check = () =>
+      invoke<boolean>('youtube_is_connected')
+        .then((c) => {
+          if (active) setYoutubeConnected(c);
+        })
+        .catch(() => {});
+    check();
+    const t = setInterval(check, 5000);
+    return () => {
+      active = false;
+      clearInterval(t);
+    };
+  }, [provider]);
+  // YouTube exposes no "are you a mod" flag, so the backend probes a message's
+  // context menu; poll it so the mod controls only appear for actual moderators.
+  const [youtubeCanModerate, setYoutubeCanModerate] = useState(false);
+  const youtubeSlug = channelOverride?.user_login;
+  useEffect(() => {
+    if (provider !== 'youtube' || !youtubeConnected || !youtubeSlug) {
+      setYoutubeCanModerate(false);
+      return;
+    }
+    let active = true;
+    const check = () =>
+      invoke<boolean>('youtube_can_moderate', { channel: youtubeSlug })
+        .then((c) => {
+          if (active) setYoutubeCanModerate(c);
+        })
+        .catch(() => {});
+    check();
+    const t = setInterval(check, 8000);
+    return () => {
+      active = false;
+      clearInterval(t);
+    };
+  }, [provider, youtubeConnected, youtubeSlug]);
   // Field selectors instead of whole-store subscriptions: ChatWidget re-renders
   // only when these specific fields change, not on every unrelated store tick.
   const rawCurrentStream = useAppStore((s) => s.currentStream);
   const currentUser = useAppStore((s) => s.currentUser);
   const openEmoteSets = useAppStore((s) => s.openEmoteSets);
   const externalDropsProvider = useAppStore((s) => s.externalDropsProvider);
-  const currentHypeTrain = useAppStore((s) => s.currentHypeTrain);
+  const globalHypeTrain = useAppStore((s) => s.currentHypeTrain);
+  // In MultiChat the pane drives its own hype train (via the prop); the main app
+  // uses the global store value. Resolving it here means the banner, countdown
+  // and level-up logic below all work per-pane with no further changes.
+  const currentHypeTrain = channelOverride ? (hypeTrainOverride ?? null) : globalHypeTrain;
   const currentMediaType = useAppStore((s) => s.currentMediaType);
   const isMultiNookActive = usemultiNookStore((s) => s.isMultiNookActive);
   const activeChatChannelId = usemultiNookStore((s) => s.activeChatChannelId);
@@ -525,7 +681,11 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
         type: channelOverride.is_live === false ? '' : 'live',
         title: channelOverride.title ?? '',
         viewer_count: channelOverride.viewer_count ?? 0,
-        started_at: channelOverride.started_at ?? new Date().toISOString(),
+        // Empty (not `new Date()`) when the start time is unknown: faking "now"
+        // made the uptime tick from when you opened the chat (a fake local start)
+        // and flip to that whenever a meta poll briefly lacked started_at. Empty
+        // just hides the uptime until the real start time is known.
+        started_at: channelOverride.started_at ?? '',
         language: 'en',
         thumbnail_url: channelOverride.thumbnail_url ?? '',
         profile_image_url: channelOverride.profile_image_url,
@@ -559,10 +719,26 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
     return rawCurrentStream;
   }, [channelOverride, rawCurrentStream, isMultiNookActive, activeChatChannelId, slots]);
 
+  // Kick has no USERSTATE, so derive our role from our OWN messages: if one of
+  // them (matched by the connected Kick username) carries a moderator/broadcaster
+  // badge, we can moderate this channel. Covers both the broadcaster and mods.
+  const kickIsModerator = useMemo(() => {
+    if (isTwitch || !kickAccountName) return false;
+    for (const m of messages) {
+      if (typeof m === 'string') continue;
+      if (((m.username as string) || '').toLowerCase() !== kickAccountName) continue;
+      const badges = (m.badges as Array<{ name?: string }> | undefined) || [];
+      if (badges.some((b) => b.name === 'moderator' || b.name === 'broadcaster')) return true;
+    }
+    return false;
+  }, [isTwitch, kickAccountName, messages]);
   const isModerator = useMemo(() => {
+    if (provider === 'youtube') return youtubeCanModerate;
+    if (provider === 'kick') return kickIsModerator;
+    if (!isTwitch) return false; // tiktok + other read-only providers: no mod actions
     if (!userBadges) return false;
     return userBadges.includes('moderator') || userBadges.includes('broadcaster');
-  }, [userBadges]);
+  }, [provider, youtubeCanModerate, isTwitch, kickIsModerator, userBadges]);
   
   // UI state
   const [messageInput, setMessageInput] = useState('');
@@ -613,6 +789,7 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
   const emotes = useChannelEmotes(
     currentStream?.user_login ?? null,
     currentStream?.user_id ?? null,
+    provider,
   );
 
 
@@ -633,7 +810,12 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
       setIsSmileyTransitioning(false);
     }, 110);
   }, [smileyPool]);
-  const [selectedProvider, setSelectedProvider] = useState<'twitch' | 'bttv' | '7tv' | 'ffz' | 'favorites' | 'emoji'>('twitch');
+  // Kick has no Twitch/BTTV/FFZ tabs — its native emotes (Global + Emojis +
+  // channel sub set) live in the Kick tab, with 7TV alongside — so open the
+  // picker on the Kick tab there instead of the always-blank Twitch tab.
+  const [selectedProvider, setSelectedProvider] = useState<'twitch' | 'bttv' | '7tv' | 'ffz' | 'favorites' | 'emoji' | 'kick'>(
+    isTwitch ? 'twitch' : provider === 'kick' ? 'kick' : 'emoji',
+  );
   const [searchQuery, setSearchQuery] = useState('');
   const [isLoadingEmotes, setIsLoadingEmotes] = useState(false);
   const [favoriteEmotes, setFavoriteEmotes] = useState<Emote[]>([]);
@@ -973,9 +1155,20 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
   const isSubOnly = roomState?.subsOnly || false;
   const isBroadcaster = currentUser?.login && currentStream?.user_login && currentUser.login.toLowerCase() === currentStream.user_login.toLowerCase();
   const canBypassSubOnly = isBroadcaster || (userBadges ? /(broadcaster|moderator|subscriber|founder|vip)/i.test(userBadges) : false);
-  const isInputDisabled = !isConnected || (isSubOnly && !canBypassSubOnly);
-  const chatPlaceholder = isWatchStreakMode 
-    ? "Add a message (optional)..." 
+  // Twitch always sends; Kick sends once a Kick account is connected (OAuth);
+  // other providers stay read-only. Disable + label the composer accordingly
+  // rather than letting a no-op send swallow input.
+  const canSendHere =
+    isTwitch || (provider === 'kick' && kickConnected) || (provider === 'youtube' && youtubeConnected);
+  const isInputDisabled = !canSendHere || !isConnected || (isSubOnly && !canBypassSubOnly);
+  const chatPlaceholder = !canSendHere
+    ? provider === 'kick'
+      ? 'Connect your Kick account to send'
+      : provider === 'youtube'
+      ? 'Connect your YouTube account to send'
+      : "Read-only — sending isn't available yet"
+    : isWatchStreakMode
+    ? "Add a message (optional)..."
     : (isSubOnly && !canBypassSubOnly ? "Subscriber-Only Mode" : "Send a message");
 
   // Messages to render
@@ -1055,7 +1248,11 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
               '';
             addUser(
               {
-                userId,
+                // Namespace non-Twitch chatters so their 7TV cosmetics resolve
+                // under the right platform and never collide with a Twitch id of
+                // the same number. Twitch stays the bare id (byte-identical). This
+                // matches ChatMessage's `cosmeticsKey`.
+                userId: provider === 'twitch' ? userId : `${provider}:${userId}`,
                 username,
                 displayName,
                 color: userColor || '#9147FF',
@@ -1089,6 +1286,7 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
   // so addUser's cache read (on your next send) gets the real paint, and the
   // subscribeToCosmetics bridge repaints an already-rendered own message.
   useEffect(() => {
+    if (!isTwitch) return; // 7TV self-cosmetics seeding is Twitch-only
     if (!isConnected) return;
     const selfId = currentUser?.user_id;
     if (!selfId) return;
@@ -1126,9 +1324,15 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
         });
       })
       .catch((e) => Logger.warn('[selfpaint] connect-resolve failed', e));
-  }, [isConnected, currentUser?.user_id]);
+  }, [isTwitch, isConnected, currentUser?.user_id]);
 
   const getViewerCount = useCallback(async () => {
+    if (!isTwitch) {
+      // Non-Twitch viewer count rides the override (Kick channel-API metadata),
+      // not Helix — surface it into the same state the header reads.
+      setViewerCount(currentStream?.viewer_count ?? null);
+      return;
+    }
     if (currentStream?.user_login) {
       try {
         const [clientId, token] = await invoke<[string, string]>('get_twitch_credentials');
@@ -1141,7 +1345,7 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
     } else {
       setViewerCount(null);
     }
-  }, [currentStream?.user_login]);
+  }, [isTwitch, currentStream?.user_login, currentStream?.viewer_count]);
   useEffect(() => {
     getViewerCount();
   }, [getViewerCount]);
@@ -1209,10 +1413,12 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
       const expiry = new Date(hypeTrainExpiresAtRef.current).getTime();
       const diffMs = Math.max(0, expiry - now);
       
-      // Timer expired - clear hype train immediately (don't wait for poll)
+      // Timer expired - clear hype train immediately (don't wait for poll). Only
+      // the main app owns the global value; a MultiChat pane lets its own poll
+      // clear the per-pane train so it never wipes the main app's banner.
       if (diffMs === 0) {
         Logger.debug('[HypeTrain] Timer expired - clearing immediately');
-        useAppStore.getState().setCurrentHypeTrain(null);
+        if (!channelOverride) useAppStore.getState().setCurrentHypeTrain(null);
         return;
       }
       
@@ -1413,8 +1619,9 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
 
   // Fetch channel points for current channel using direct GQL query with retry logic
   const fetchChannelPoints = useCallback(async () => {
+    if (!isTwitch) return; // channel points are Twitch-only
     if (!currentStream?.user_login) return;
-    
+
     const maxRetries = 3;
     const retryDelayMs = 1000;
     
@@ -1501,7 +1708,7 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
     }
     
     Logger.debug('[ChatWidget] All retries exhausted - will update via events');
-  }, [currentStream?.user_login, currentStream?.user_id]);
+  }, [isTwitch, currentStream?.user_login, currentStream?.user_id]);
 
   // Automatically fetch channel points when entering a new channel. Clear any
   // prior channel's chest first so its claim id can't be clicked against the
@@ -1523,6 +1730,7 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
   // command returns the exact credited amount (multipliers included) and the
   // new balance; the "+N" pop uses the credited amount.
   const claimWatchedChest = useCallback(async (claimId: string, channelId: string) => {
+    if (!isTwitch) return; // channel-points claim is Twitch-only
     if (claimingChestRef.current) return;
     claimingChestRef.current = true;
     setClaimingChest(true);
@@ -1604,6 +1812,7 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
 
   // Fetch resub notification when entering a new channel
   useEffect(() => {
+    if (!isTwitch) return; // resub prompts are Twitch-only
     const fetchResubNotification = async () => {
       if (!currentStream?.user_login || resubDismissed) return;
       
@@ -1622,7 +1831,7 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
     };
     
     fetchResubNotification();
-  }, [currentStream?.user_login, resubDismissed]);
+  }, [isTwitch, currentStream?.user_login, resubDismissed]);
 
   // Fetch watch streak milestone when entering a new channel. Skipped in
   // popout mode: popouts are chat-only and shouldn't be
@@ -1655,8 +1864,10 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
   // backgrounded window stops polling, and a visible window catches pins
   // within half a minute of them being set.
   const fetchPinnedMessages = useCallback(async () => {
-    if (!currentStream?.user_id) {
-      setPinnedMessages([]);
+    if (!isTwitch || !currentStream?.user_id) {
+      // Non-Twitch pins are provider-driven (the snapshot effect below owns
+      // `pinnedMessages`), so don't clobber them here; only clear for Twitch.
+      if (isTwitch) setPinnedMessages([]);
       usePinStore.getState().setPinnedIds([]);
       return;
     }
@@ -1676,7 +1887,7 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
       setPinnedMessages([]);
       usePinStore.getState().setPinnedIds([]);
     }
-  }, [currentStream?.user_id]);
+  }, [isTwitch, currentStream?.user_id]);
   useEffect(() => {
     fetchPinnedMessages();
   }, [fetchPinnedMessages]);
@@ -1692,6 +1903,13 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
     const t = setTimeout(() => fetchPinnedMessages(), 1200);
     return () => clearTimeout(t);
   }, [pinRefreshNonce, fetchPinnedMessages]);
+  // Non-Twitch (e.g. Kick) pins are pushed over the chat bus into the channel
+  // slice, not fetched — feed that into the same pinned banner.
+  useEffect(() => {
+    if (isTwitch) return;
+    const pin = providerSnapshot.pinnedMessage;
+    setPinnedMessages(pin ? [pin] : []);
+  }, [isTwitch, providerSnapshot.pinnedMessage]);
 
   // Listen for channel points updates from backend events
   useEffect(() => {
@@ -1789,7 +2007,9 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
         if (isMounted) {
           unlisten = unlistenFn;
         } else {
-          unlistenFn();
+          // Unmounted before listen resolved (StrictMode): unlisten now. Guard the
+          // promise — Tauri's unlisten can reject during teardown (registry gone).
+          void Promise.resolve(unlistenFn()).catch(() => {});
         }
       } catch (err) {
         Logger.warn('[ChatWidget] Failed to set up mining event listener:', err);
@@ -1906,9 +2126,12 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
   };
 
   const handleBadgeClick = useCallback(async (badgeKey: string, badgeInfo: any) => {
-    useAppStore.getState().setShowBadgesOverlay(true);
     const [setId] = badgeKey.split('/');
-    window.dispatchEvent(new CustomEvent('show-badge-detail', { detail: { badge: badgeInfo, setId } }));
+    // In a popout the badges overlay lives in main, so route there (opening main if
+    // Go Live closed it) rather than flipping the popout's own overlay-less store,
+    // which renders nothing. In the main window this opens the overlay directly.
+    const { openBadgeDetailInMain } = await import('../utils/openBadgesInMain');
+    openBadgeDetailInMain(badgeInfo, setId);
   }, []);
 
   // Helper function to scroll to a specific message by ID
@@ -2035,7 +2258,11 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
   useEffect(() => { if (!isPaused) setModFocusId(null); }, [isPaused]);
 
   useEffect(() => {
-    if (channelOverride) return; // popout / MultiNook chats don't own moderation keys
+    // The main app (no override) always owns the moderation keys; in MultiChat the
+    // ACTIVE pane owns them, so the popout's hotkeys act on the pane you're looking
+    // at rather than every pane registering and clobbering each other.
+    const ownsKeys = !channelOverride || channelOverride.is_active === true;
+    if (!ownsKeys) return;
 
     // `id` addresses the DOM row (matches data-message-id); `deleteId` is the
     // IRC `id` tag the Helix delete endpoint expects (the existing per-message
@@ -2124,28 +2351,62 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
         }));
       },
       deleteFocused: () => void act(
-        (t, b) => invoke('delete_chat_message', { broadcasterId: b, messageId: t.deleteId }),
+        (t, b) =>
+          isTwitch
+            ? invoke('delete_chat_message', { broadcasterId: b, messageId: t.deleteId })
+            : provider === 'youtube'
+            ? invoke('youtube_delete_message', { channel: youtubeSlug, messageId: t.deleteId })
+            : invoke('kick_delete_message', { messageId: t.deleteId }),
         (t) => `Deleted message from ${t.displayName}`,
         true,
       ),
       timeoutFocused: (seconds: number) => void act(
-        (t, b) => invoke('ban_user', { broadcasterId: b, targetUserId: t.userId, duration: seconds, reason: null }),
+        (t, b) =>
+          isTwitch
+            ? invoke('ban_user', { broadcasterId: b, targetUserId: t.userId, duration: seconds, reason: null })
+            : provider === 'youtube'
+            ? invoke('youtube_ban_user', { channel: youtubeSlug, targetChannelId: t.userId, durationSeconds: seconds })
+            : invoke('kick_ban_user', {
+                broadcasterUserId: Number(b),
+                targetUserId: Number(t.userId),
+                durationMinutes: Math.max(1, Math.round(seconds / 60)),
+                reason: null,
+              }),
         (t) => `Timed out ${t.displayName} (${fmtDur(seconds)})`,
         true,
       ),
       banFocused: () => void act(
-        (t, b) => invoke('ban_user', { broadcasterId: b, targetUserId: t.userId, duration: null, reason: null }),
+        (t, b) =>
+          isTwitch
+            ? invoke('ban_user', { broadcasterId: b, targetUserId: t.userId, duration: null, reason: null })
+            : provider === 'youtube'
+            ? invoke('youtube_ban_user', { channel: youtubeSlug, targetChannelId: t.userId, durationSeconds: null })
+            : invoke('kick_ban_user', {
+                broadcasterUserId: Number(b),
+                targetUserId: Number(t.userId),
+                durationMinutes: null,
+                reason: null,
+              }),
         (t) => `Banned ${t.displayName}`,
         true,
       ),
       unbanFocused: () => void act(
-        (t, b) => invoke('unban_user', { broadcasterId: b, targetUserId: t.userId }),
+        (t, b) =>
+          isTwitch
+            ? invoke('unban_user', { broadcasterId: b, targetUserId: t.userId })
+            : provider === 'youtube'
+            ? invoke('youtube_unban_user', { channel: youtubeSlug, targetChannelId: t.userId })
+            : invoke('kick_unban_user', { broadcasterUserId: Number(b), targetUserId: Number(t.userId) }),
         (t) => `Unbanned ${t.displayName}`,
         false,
       ),
     };
     registerChatModController(controller);
-    return () => registerChatModController(null);
+    return () => {
+      // Singleton: only clear if WE'RE still the registered controller (a different
+      // pane may have taken ownership before this cleanup runs).
+      if (getChatModController() === controller) registerChatModController(null);
+    };
     // All other live data is read through refs, so re-registration only needs
     // to track channelOverride (primary chat vs popout/MultiNook).
   }, [channelOverride]);
@@ -2159,10 +2420,14 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
         Logger.warn('[ChatWidget] Failed to preload third-party badge databases:', err)
       );
 
-      // Start badge initialization in the background (non-blocking)
-      invoke<[string, string]>('get_twitch_credentials')
-        .then(([clientId, token]) => initializeBadges(clientId, token, channelId))
-        .catch(err => Logger.warn('[ChatWidget] Badge init error (non-blocking):', err));
+      // Start Twitch badge cache initialization in the background (non-blocking).
+      // Twitch-only: Kick badge art is baked into each message (badges_v2 + sub
+      // art), so there's no Twitch badge cache to seed for a Kick channel.
+      if (isTwitch) {
+        invoke<[string, string]>('get_twitch_credentials')
+          .then(([clientId, token]) => initializeBadges(clientId, token, channelId))
+          .catch(err => Logger.warn('[ChatWidget] Badge init error (non-blocking):', err));
+      }
 
       // PRIORITY: Fetch emotes first and display immediately.
       // Routes through `ensureChannelEmotes` so the per-channel EmoteSet is
@@ -2171,7 +2436,7 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
       // copy. The subscription inside `useChannelEmotes` re-renders this
       // component when the cache populates; we still receive the set here
       // for the downstream owner-name + favorite-emote effects.
-      const emoteSet = await ensureChannelEmotes(channelName, channelId ?? '');
+      const emoteSet = await ensureChannelEmotes(channelName, channelId ?? '', provider);
       setIsLoadingEmotes(false); // Clear loading state immediately after emotes arrive
 
       // Proactively warm the on-disk cache for the WHOLE set at the size it will
@@ -2221,7 +2486,7 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
       // BACKGROUND: Load favorite emotes (non-blocking)
       loadFavoriteEmotes().then(() => {
         if (emoteSet) {
-          const allEmotes = [...emoteSet.twitch, ...emoteSet.bttv, ...emoteSet['7tv'], ...emoteSet.ffz];
+          const allEmotes = [...emoteSet.twitch, ...emoteSet.bttv, ...emoteSet['7tv'], ...emoteSet.ffz, ...emoteSet.kick];
           const availableFavorites = getAvailableFavorites(allEmotes);
           setFavoriteEmotes(availableFavorites);
         }
@@ -2234,6 +2499,7 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
   };
 
   useEffect(() => {
+    if (!isTwitch) return; // Twitch shared-chat badge hydration is Twitch-only
     const initializeSharedChannelBadges = async () => {
       const sourceRoomIds = new Set<string>();
       let hasSharedMessages = false;
@@ -2273,7 +2539,7 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
       }
     };
     initializeSharedChannelBadges();
-  }, [messages]);
+  }, [isTwitch, messages]);
 
   // Per-channel last-sent cache for the bypass-duplicate feature. Keyed by
   // currentStream user_id so switching channels resets the tracking.
@@ -2955,18 +3221,23 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
       // in favor of the higher-tier provider (e.g. a 7TV "Kappa" wins over the
       // Twitch one). A colon-prefixed query flips Twitch to the front so
       // Twitch-native / sub emotes lead, with the third-party sets as fallback.
+      // The Kick slot is appended last: it's empty for Twitch (so tier indices
+      // and ordering stay byte-identical there), and for a Kick channel its
+      // native emotes become tab-completable alongside 7TV.
       const ordered: Array<[Emote['provider'], Emote[] | undefined]> = isColonQuery
         ? [
             ['twitch', emotes.twitch],
             ['7tv', emotes['7tv']],
             ['bttv', emotes.bttv],
             ['ffz', emotes.ffz],
+            ['kick', emotes.kick],
           ]
         : [
             ['7tv', emotes['7tv']],
             ['bttv', emotes.bttv],
             ['ffz', emotes.ffz],
             ['twitch', emotes.twitch],
+            ['kick', emotes.kick],
           ];
       const tierOf = (provider: Emote['provider']) =>
         ordered.findIndex(([p]) => p === provider);
@@ -3262,6 +3533,20 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
     return sortedGroups;
   }, [filteredEmotes, channelNameCache, currentStream?.user_id]);
 
+  // Kick native emotes grouped by their set (the channel sub set, then Global,
+  // then Emojis — the order Kick returns them). The set label rides in
+  // `emote_type`; insertion order is preserved so no Twitch-style re-sorting.
+  // Same Map shape as groupedTwitchEmotes, so the grouped picker view renders it.
+  const groupedKickEmotes = useMemo((): Map<string, { name: string; emotes: Emote[] }> => {
+    const groups = new Map<string, { name: string; emotes: Emote[] }>();
+    for (const emote of filteredEmotes) {
+      const label = emote.emote_type || 'Emotes';
+      if (!groups.has(label)) groups.set(label, { name: label, emotes: [] });
+      groups.get(label)!.emotes.push(emote);
+    }
+    return groups;
+  }, [filteredEmotes]);
+
   // Memoize filtered emojis
   const filteredEmojis = useMemo(() => {
     if (!searchQuery) return allEmojis;
@@ -3485,12 +3770,36 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
                 } : undefined}
               >
                 <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-red-400'}`}></div>
+                {/* MultiChat panes: show which platform this chat is from, so split
+                    columns are identifiable at a glance. */}
+                {channelOverride && (
+                  <ProviderLogo provider={channelOverride.provider ?? 'twitch'} size={13} className="flex-shrink-0" />
+                )}
                 {/* Chat status label. The STREAM CHAT <-> ABOUT carousel toggle was
                     retired: the channel About is now reached by scrolling down on
                     the player (ChannelAboutReveal). */}
                 <p className={`text-xs font-semibold leading-4 whitespace-nowrap ${isSharedChat ? 'iridescent-title' : 'text-textPrimary'}`}>
-                  {isConnected ? (isSharedChat ? 'SHARED STREAM CHAT' : currentMediaType === 'offline_chat' ? 'OFFLINE CHAT' : 'STREAM CHAT') : 'DISCONNECTED'}
+                  {!isConnected
+                    ? 'DISCONNECTED'
+                    : channelOverride
+                      ? channelOverride.user_name || channelOverride.user_login || 'STREAM CHAT'
+                      : isSharedChat
+                        ? 'SHARED STREAM CHAT'
+                        : currentMediaType === 'offline_chat'
+                          ? 'OFFLINE CHAT'
+                          : 'STREAM CHAT'}
                 </p>
+                {/* MultiChat panes have no player, so surface the live title/game
+                    here (the main app shows them around the player instead). */}
+                {channelOverride && currentStream?.title && (
+                  <p
+                    className="min-w-0 flex-1 truncate text-[10px] font-normal leading-4 text-textMuted"
+                    title={currentStream.title}
+                  >
+                    {currentStream.game_name ? `${currentStream.game_name} · ` : ''}
+                    {currentStream.title}
+                  </p>
+                )}
                 <div className="flex items-center gap-3 ml-auto">
                   {/* Viewers list — the official chatters roster grouped by role.
                       Mod/broadcaster only (Helix Get Chatters requires it), so the
@@ -3973,30 +4282,47 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
                       <Tooltip content="Emoji" side="top">
                       <button onClick={() => setSelectedProvider('emoji')} className={`flex-1 py-1.5 text-xs transition-all flex items-center justify-center ${selectedProvider === 'emoji' ? 'glass-input text-emerald-400 font-extrabold' : 'glass-button text-textSecondary hover:text-white'}`} style={{ borderRadius: '8px' }}><img src={getAppleEmojiUrl('😀')} alt="😀" className="w-4 h-4" /></button>
                       </Tooltip>
+                      {isTwitch && (
                       <Tooltip content={`Twitch (${emotes?.twitch.length || 0})`} side="top">
                       <button onClick={() => setSelectedProvider('twitch')} className={`flex-1 py-1.5 text-xs transition-all flex items-center justify-center gap-1 ${selectedProvider === 'twitch' ? 'glass-input text-emerald-400 font-extrabold' : 'glass-button text-textSecondary hover:text-white'}`} style={{ borderRadius: '8px' }}>
                         <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M11.571 4.714h1.715v5.143H11.57zm4.715 0H18v5.143h-1.714zM6 0L1.714 4.286v15.428h5.143V24l4.286-4.286h3.428L22.286 12V0zm14.571 11.143l-3.428 3.428h-3.429l-3 3v-3H6.857V1.714h13.714Z" /></svg>
                         <span className="text-[10px] opacity-70">{emotes?.twitch.length || 0}</span>
                       </button>
                       </Tooltip>
+                      )}
+                      {isTwitch && (
                       <Tooltip content={`BetterTTV (${emotes?.bttv.length || 0})`} side="top">
                       <button onClick={() => setSelectedProvider('bttv')} className={`flex-1 py-1.5 text-xs transition-all flex items-center justify-center gap-1 ${selectedProvider === 'bttv' ? 'glass-input text-emerald-400 font-extrabold' : 'glass-button text-textSecondary hover:text-white'}`} style={{ borderRadius: '8px' }}>
                         <svg className="w-4 h-4" viewBox="0 0 300 300" fill="currentColor"><path fill="transparent" d="M249.771 150A99.771 99.922 0 0 1 150 249.922 99.771 99.922 0 0 1 50.229 150 99.771 99.922 0 0 1 150 50.078 99.771 99.922 0 0 1 249.771 150Z" /><path d="M150 1.74C68.409 1.74 1.74 68.41 1.74 150S68.41 298.26 150 298.26h148.26V150.17h-.004c0-.057.004-.113.004-.17C298.26 68.409 231.59 1.74 150 1.74zm0 49c55.11 0 99.26 44.15 99.26 99.26 0 55.11-44.15 99.26-99.26 99.26-55.11 0-99.26-44.15-99.26-99.26 0-55.11 44.15-99.26 99.26-99.26z" /><path d="M161.388 70.076c-10.662 0-19.42 7.866-19.42 17.67 0 9.803 8.758 17.67 19.42 17.67 10.662 0 19.42-7.867 19.42-17.67 0-9.804-8.758-17.67-19.42-17.67zm45.346 24.554-.02.022-.004.002c-5.402 2.771-11.53 6.895-18.224 11.978l-.002.002-.004.002c-25.943 19.766-60.027 54.218-80.344 80.33h-.072l-1.352 1.768c-5.114 6.69-9.267 12.762-12.098 18.006l-.082.082.022.021v.002l.004.002.174.176.052-.053.102.053-.07.072c30.826 30.537 81.213 30.431 111.918-.273 30.783-30.784 30.8-81.352.04-112.152l-.005-.004zM87.837 142.216c-9.803 0-17.67 8.758-17.67 19.42 0 10.662 7.867 19.42 17.67 19.42 9.804 0 17.67-8.758 17.67-19.42 0-10.662-7.866-19.42-17.67-19.42z" /></svg>
                         <span className="text-[10px] opacity-70">{emotes?.bttv.length || 0}</span>
                       </button>
                       </Tooltip>
+                      )}
+                      {provider === 'kick' && (
+                      <Tooltip content={`Kick (${emotes?.kick.length || 0})`} side="top">
+                      <button onClick={() => setSelectedProvider('kick')} className={`flex-1 py-1.5 text-xs transition-all flex items-center justify-center gap-1 ${selectedProvider === 'kick' ? 'glass-input text-emerald-400 font-extrabold' : 'glass-button text-textSecondary hover:text-white'}`} style={{ borderRadius: '8px' }}>
+                        <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M1.333 0h8v5.333H12V2.667h2.667V0h8v8H20v2.667h-2.667v2.666H20V16h2.667v8h-8v-2.667H12v-2.666H9.333V24h-8Z" /></svg>
+                        <span className="text-[10px] opacity-70">{emotes?.kick.length || 0}</span>
+                      </button>
+                      </Tooltip>
+                      )}
+                      {/* 7TV is fetched for Twitch + Kick; YouTube 7TV emotes are a later pass. */}
+                      {(isTwitch || provider === 'kick') && (
                       <Tooltip content={`7TV (${emotes?.['7tv'].length || 0})`} side="top">
                       <button onClick={() => setSelectedProvider('7tv')} className={`flex-1 py-1.5 text-xs transition-all flex items-center justify-center gap-1 ${selectedProvider === '7tv' ? 'glass-input text-emerald-400 font-extrabold' : 'glass-button text-textSecondary hover:text-white'}`} style={{ borderRadius: '8px' }}>
                         <svg className="w-4 h-4" viewBox="0 0 28 21" fill="currentColor"><path d="M20.7465 5.48825L21.9799 3.33745L22.646 2.20024L21.4125 0.0494437V0H14.8259L17.2928 4.3016L17.9836 5.48825H20.7465Z" /><path d="M7.15395 19.9258L14.5546 7.02104L15.4673 5.43884L13.0004 1.13724L12.3097 0.0247596H1.8995L0.666057 2.17556L0 3.31276L1.23344 5.46356V5.51301H9.12745L2.96025 16.267L2.09685 17.7998L3.33029 19.9506V20H7.15395" /><path d="M17.4655 19.9257H21.2398L26.1736 11.3225L27.037 9.83924L25.8036 7.68844V7.63899H22.0046L19.5377 11.9406L19.365 12.262L16.8981 7.96038L16.7255 7.63899L14.2586 11.9406L13.5679 13.1272L17.2682 19.5796L17.4655 19.9257Z" /></svg>
                         <span className="text-[10px] opacity-70">{emotes?.['7tv'].length || 0}</span>
                       </button>
                       </Tooltip>
+                      )}
+                      {isTwitch && (
                       <Tooltip content={`FrankerFaceZ (${emotes?.ffz.length || 0})`} side="top">
                       <button onClick={() => setSelectedProvider('ffz')} className={`flex-1 py-1.5 text-xs transition-all flex items-center justify-center gap-1 ${selectedProvider === 'ffz' ? 'glass-input text-emerald-400 font-extrabold' : 'glass-button text-textSecondary hover:text-white'}`} style={{ borderRadius: '8px' }}>
                         <svg className="w-4 h-4" viewBox="-0.5 -0.5 40 30" fill="currentColor"><path d="M 15.5,-0.5 C 17.8333,-0.5 20.1667,-0.5 22.5,-0.5C 24.6552,3.13905 26.8218,6.80572 29,10.5C 29.691,7.40943 31.5243,6.24276 34.5,7C 36.585,9.68221 38.2517,12.5155 39.5,15.5C 39.5,17.5 39.5,19.5 39.5,21.5C 34.66,25.2533 29.3267,27.92 23.5,29.5C 20.5,29.5 17.5,29.5 14.5,29.5C 9.11466,27.3005 4.11466,24.3005 -0.5,20.5C -0.5,17.5 -0.5,14.5 -0.5,11.5C 4.17691,4.45967 7.34358,5.12633 9,13.5C 10.6047,10.3522 11.6047,7.01889 12,3.5C 12.6897,1.64977 13.8564,0.316435 15.5,-0.5 Z" /></svg>
                         <span className="text-[10px] opacity-70">{emotes?.ffz.length || 0}</span>
                       </button>
                       </Tooltip>
+                      )}
                     </div>
                   </div>
                   <div ref={emoteScrollRef} className="flex-1 overflow-y-auto px-2 pb-2 scrollbar-thin">
@@ -4039,10 +4365,11 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
                       <div className="flex items-center justify-center h-32"><p className="text-xs text-textSecondary">Loading emotes...</p></div>
                     ) : filteredEmotes.length === 0 ? (
                       <div className="flex items-center justify-center h-32"><p className="text-xs text-textSecondary">No emotes found</p></div>
-                    ) : selectedProvider === 'twitch' ? (
-                      // Grouped Twitch emotes by channel
+                    ) : (selectedProvider === 'twitch' || selectedProvider === 'kick') ? (
+                      // Grouped by section: Twitch channels, or Kick's native sets
+                      // (channel / Global / Emojis). Both share the same Map shape.
                       <div className="flex flex-col gap-4 pt-2">
-                        {Array.from(groupedTwitchEmotes.entries()).map(([groupKey, group]) => (
+                        {Array.from((selectedProvider === 'kick' ? groupedKickEmotes : groupedTwitchEmotes).entries()).map(([groupKey, group]) => (
                           <div key={groupKey} className="flex flex-col">
                             <h3 className="text-[10px] text-textSecondary uppercase tracking-wider font-bold mb-2 -mx-2 px-4 sticky top-0 py-1.5 border-b border-borderSubtle z-10 backdrop-blur-ultra" style={{ backgroundColor: 'rgba(12, 12, 13, 0.95)' }}>
                               <span className="text-textPrimary">{group.name}</span> <span className="opacity-50">({group.emotes.length})</span>
@@ -4095,7 +4422,7 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
                                         } else {
                                           await addFavoriteEmote(emote);
                                           if (emotes) {
-                                            const allEmotes = [...emotes.twitch, ...emotes.bttv, ...emotes['7tv'], ...emotes.ffz];
+                                            const allEmotes = [...emotes.twitch, ...emotes.bttv, ...emotes['7tv'], ...emotes.ffz, ...emotes.kick];
                                             const availableFavorites = getAvailableFavorites(allEmotes);
                                             setFavoriteEmotes(availableFavorites);
                                           }
@@ -4152,7 +4479,7 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
                                         } else {
                                           await addFavoriteEmote(emote);
                                           if (emotes) {
-                                            const allEmotes = [...emotes.twitch, ...emotes.bttv, ...emotes['7tv'], ...emotes.ffz];
+                                            const allEmotes = [...emotes.twitch, ...emotes.bttv, ...emotes['7tv'], ...emotes.ffz, ...emotes.kick];
                                             const availableFavorites = getAvailableFavorites(allEmotes);
                                             setFavoriteEmotes(availableFavorites);
                                           }
@@ -4509,6 +4836,34 @@ const ChatWidget = ({ channelOverride }: ChatWidgetProps = {}) => {
               </div>
             </div>
             {!isConnected && <p className="text-xs text-yellow-400 mt-2">Chat is not connected. Messages cannot be sent.</p>}
+            {/* Connect chips only in the MAIN app. In a MultiChat popout
+                (channelOverride set) sign-in lives in Account Connections, so the
+                chat space stays clean — matching the blended feed + multi-pane. */}
+            {!channelOverride && provider === 'kick' && !kickConnected && (
+              <div className="mt-2 flex justify-end">
+                <KickAccountChip
+                  connected={kickConnected}
+                  onConnect={() =>
+                    void invoke<void>('kick_connect')
+                      .then(() => setKickConnected(true))
+                      .catch((e) => Logger.warn('[Kick] connect failed:', e))
+                  }
+                />
+              </div>
+            )}
+            {!channelOverride && provider === 'youtube' && !youtubeConnected && (
+              <div className="mt-2 flex justify-end">
+                <KickAccountChip
+                  provider="youtube"
+                  connected={youtubeConnected}
+                  onConnect={() =>
+                    void invoke<void>('youtube_connect')
+                      .then(() => setYoutubeConnected(true))
+                      .catch((e) => Logger.warn('[YouTube] connect failed:', e))
+                  }
+                />
+              </div>
+            )}
           </div>
         </div>}
       </div>

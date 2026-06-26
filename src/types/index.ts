@@ -155,8 +155,9 @@ export interface ChatDesignSettings {
   show_dividers: boolean;
   alternating_backgrounds: boolean;
   message_spacing: number; // 0-20 pixels
-  font_size: number; // 10-20 pixels
+  font_size: number; // 10-48 pixels
   font_weight: number; // 300-700
+  activity_font_size?: number; // 10-28 pixels (MultiChat activity feed rows)
   mention_color: string; // Hex color for @ mentions
   reply_color: string; // Hex color for reply threads
   mention_animation: boolean; // Enable red-shift animation for mentions
@@ -733,6 +734,9 @@ export interface ModLogEvent {
   message?: string;
   reason?: string;
   duration?: number;
+  /** How many of the target's messages were removed (recovered from chat history).
+   *  Set for ban / timeout / YouTube author-removals. */
+  removed_count?: number;
   details?: Record<string, unknown>;
   /** Lowercase channel login this action happened in (multi-stream routing + labeling). */
   channel?: string;

@@ -205,12 +205,41 @@ export default function ModerationDragLayer() {
     const runAction = (kind: string, secs?: number) => {
       const { userId, login, displayName, broadcasterId, messageId } = dragged;
       const app = useAppStore.getState();
+      // Kick routes ban/timeout/unban to its own moderation API (numeric ids,
+      // duration in minutes). delete/pin buckets never reach Kick (no messageId).
+      const isKick = dragged.provider === 'kick';
+      // YouTube routes to the webview-session mod commands (the chatter's channel id +
+      // the source slug carried on the drag). Timeout uses YouTube's fixed length.
+      const isYouTube = dragged.provider === 'youtube';
+      const kickBan = (durationMinutes: number | null) =>
+        invoke('kick_ban_user', {
+          broadcasterUserId: Number(broadcasterId),
+          targetUserId: Number(userId),
+          durationMinutes,
+          reason: null,
+        });
+      const kickUnban = () =>
+        invoke('kick_unban_user', {
+          broadcasterUserId: Number(broadcasterId),
+          targetUserId: Number(userId),
+        });
+      const youtubeBan = (durationSeconds: number | null) =>
+        invoke('youtube_ban_user', {
+          channel: dragged.channel,
+          targetChannelId: userId,
+          durationSeconds,
+        });
+      const youtubeUnban = () =>
+        invoke('youtube_unban_user', { channel: dragged.channel, targetChannelId: userId });
       const undo = {
         label: 'Undo',
         onClick: () => {
-          invoke('unban_user', { broadcasterId, targetUserId: userId }).catch((err) =>
-            Logger.error('[DragMod] Undo failed:', err),
-          );
+          (isKick
+            ? kickUnban()
+            : isYouTube
+            ? youtubeUnban()
+            : invoke('unban_user', { broadcasterId, targetUserId: userId })
+          ).catch((err) => Logger.error('[DragMod] Undo failed:', err));
         },
       };
       switch (kind) {
@@ -222,7 +251,12 @@ export default function ModerationDragLayer() {
           break;
         case 'delete':
           if (messageId) {
-            invoke('delete_chat_message', { broadcasterId, messageId })
+            (isKick
+              ? invoke('kick_delete_message', { messageId })
+              : isYouTube
+              ? invoke('youtube_delete_message', { channel: dragged.channel, messageId })
+              : invoke('delete_chat_message', { broadcasterId, messageId })
+            )
               .then(() => app.addToast(`Deleted a message from ${displayName}`, 'success'))
               .catch((err) => {
                 Logger.error('[DragMod] Delete failed:', err);
@@ -232,7 +266,12 @@ export default function ModerationDragLayer() {
           break;
         case 'timeout': {
           const s = secs ?? 600;
-          invoke('ban_user', { broadcasterId, targetUserId: userId, duration: s, reason: null })
+          (isKick
+            ? kickBan(Math.max(1, Math.round(s / 60)))
+            : isYouTube
+            ? youtubeBan(s)
+            : invoke('ban_user', { broadcasterId, targetUserId: userId, duration: s, reason: null })
+          )
             .then(() => app.addToast(`Timed out ${displayName} for ${formatDuration(s)}`, 'success', undo))
             .catch((err) => {
               Logger.error('[DragMod] Timeout failed:', err);
@@ -241,7 +280,12 @@ export default function ModerationDragLayer() {
           break;
         }
         case 'ban':
-          invoke('ban_user', { broadcasterId, targetUserId: userId, duration: null, reason: null })
+          (isKick
+            ? kickBan(null)
+            : isYouTube
+            ? youtubeBan(null)
+            : invoke('ban_user', { broadcasterId, targetUserId: userId, duration: null, reason: null })
+          )
             .then(() => app.addToast(`Banned ${displayName}`, 'success', undo))
             .catch((err) => {
               Logger.error('[DragMod] Ban failed:', err);
@@ -275,7 +319,11 @@ export default function ModerationDragLayer() {
           }
           break;
         case 'unban':
-          invoke('unban_user', { broadcasterId, targetUserId: userId })
+          (isKick
+            ? kickUnban()
+            : isYouTube
+            ? youtubeUnban()
+            : invoke('unban_user', { broadcasterId, targetUserId: userId }))
             .then(() =>
               app.addToast(
                 dragged.moderationState === 'timeout'

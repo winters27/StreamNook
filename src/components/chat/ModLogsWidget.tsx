@@ -9,6 +9,10 @@ import { colorForAction, highlightContainerStyle, type HighlightStyleKey } from 
 import { useAvatar } from '../../utils/avatarCache';
 import { Tooltip } from '../ui/Tooltip';
 import { usePluginUiRegistry, selectSlot } from '../../plugins-ui/registry';
+import { invoke } from '@tauri-apps/api/core';
+import { parseKey } from '../../utils/providerKey';
+import { ProviderLogo } from '../ProviderLogo';
+import type { ProviderId } from '../../types/providers';
 
 // Newest entries are prepended at the top. Keep the view pinned to the top (so
 // the newest is always visible and older entries slide down beneath it) while
@@ -26,16 +30,19 @@ function humanDuration(secs?: number): string | undefined {
 
 // A small round avatar resolved by login, with an initial fallback while it loads
 // (or if the user has none).
-const Avatar: React.FC<{ login?: string; name?: string; size?: number }> = ({ login, name, size = 18 }) => {
-  const url = useAvatar(login);
+const Avatar: React.FC<{ login?: string; name?: string; size?: number; url?: string }> = ({ login, name, size = 18, url }) => {
+  // `url` is an explicit override (e.g. a Kick channel's profile_pic, which can't
+  // resolve through the Twitch-login-keyed avatar cache). Falls back to it.
+  const fetched = useAvatar(login);
+  const src = url || fetched;
   const initial = (name || login || '?').charAt(0).toUpperCase();
   return (
     <span
       className="inline-flex items-center justify-center rounded-full overflow-hidden bg-background text-textSecondary font-medium flex-shrink-0 select-none"
       style={{ width: size, height: size, fontSize: Math.round(size * 0.5) }}
     >
-      {url ? (
-        <img src={url} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+      {src ? (
+        <img src={src} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
       ) : (
         initial
       )}
@@ -47,9 +54,16 @@ const Avatar: React.FC<{ login?: string; name?: string; size?: number }> = ({ lo
 // participants line carries who/whom; this is just the action.
 function labelForAction(log: ModLogEvent): { label: string; detail?: string } {
   const a = (log.action || '').toLowerCase();
+  const msgs = (n: number) => `${n} msg${n === 1 ? '' : 's'}`;
   switch (a) {
-    case 'ban': return { label: 'Banned' };
+    case 'ban':
+      return { label: 'Banned', detail: log.removed_count ? msgs(log.removed_count) : undefined };
     case 'timeout': return { label: 'Timed out', detail: humanDuration(log.duration) };
+    // YouTube author-removal: a non-mod reader can't tell a timeout from a permanent
+    // ban (both arrive as the same "remove all by author" action with no duration), so
+    // surface it honestly as a removal with the message count rather than guessing.
+    case 'removed':
+      return { label: 'Removed', detail: log.removed_count ? msgs(log.removed_count) : undefined };
     case 'delete': return { label: 'Message deleted' };
     case 'clear':
     case 'clear_chat': return { label: 'Chat cleared' };
@@ -96,7 +110,10 @@ const ModLogRow: React.FC<{
   colors?: Record<string, string>;
   highlightStyle: HighlightStyleKey;
   showChannel: boolean;
-}> = ({ log, colors, highlightStyle, showChannel }) => {
+  /** Resolved source identity for the per-entry chip in the combined view: provider
+   *  (for the logo), normalized display name, and avatar url (non-Twitch). */
+  channelMeta?: { provider: ProviderId; name: string; avatarUrl?: string };
+}> = ({ log, colors, highlightStyle, showChannel, channelMeta }) => {
   const color = colorForAction(log.action, colors);
   const { label, detail } = labelForAction(log);
 
@@ -219,8 +236,18 @@ const ModLogRow: React.FC<{
         <div className="mt-1.5 ml-4 flex flex-wrap items-center gap-x-2 gap-y-1 min-w-0">
           {showChannelChip && (
             <span className="flex items-center gap-1.5 min-w-0">
-              <Avatar login={log.channel} name={channelLabel} size={14} />
-              <span className="text-[11px] text-textSecondary truncate max-w-[140px]">{channelLabel}</span>
+              {channelMeta && (
+                <ProviderLogo provider={channelMeta.provider} size={12} className="flex-shrink-0" />
+              )}
+              <Avatar
+                login={!channelMeta || channelMeta.provider === 'twitch' ? log.channel : undefined}
+                name={channelMeta?.name ?? channelLabel}
+                size={14}
+                url={channelMeta && channelMeta.provider !== 'twitch' ? channelMeta.avatarUrl : undefined}
+              />
+              <span className="text-[11px] text-textSecondary truncate max-w-[140px]">
+                {channelMeta?.name ?? channelLabel}
+              </span>
             </span>
           )}
           {log.reason && (
@@ -235,12 +262,13 @@ const ModLogRow: React.FC<{
 // One channel's column in the split view. Owns its own scroll so each channel's
 // log scrolls independently, and auto-sticks to the newest entry.
 const ModLogColumn: React.FC<{
-  channel: { login: string; name: string };
+  channel: { login: string; name: string; provider: ProviderId; channel: string };
+  avatarUrl?: string;
   logs: ModLogEvent[];
   colors?: Record<string, string>;
   highlightStyle: HighlightStyleKey;
   isFirst: boolean;
-}> = ({ channel, logs, colors, highlightStyle, isFirst }) => {
+}> = ({ channel, avatarUrl, logs, colors, highlightStyle, isFirst }) => {
   const scrollRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const el = scrollRef.current;
@@ -254,7 +282,13 @@ const ModLogColumn: React.FC<{
       }`}
     >
       <div className="flex flex-shrink-0 items-center gap-1.5 border-b border-borderSubtle bg-secondary/30 px-2 py-1">
-        <Avatar login={channel.login} name={channel.name} size={14} />
+        <Avatar
+          login={channel.provider === 'twitch' ? channel.channel : undefined}
+          name={channel.name}
+          size={14}
+          url={channel.provider !== 'twitch' ? avatarUrl : undefined}
+        />
+        <ProviderLogo provider={channel.provider} size={10} className="flex-shrink-0" />
         <span className="truncate text-[12px] font-medium text-textSecondary">{channel.name}</span>
         {logs.length > 0 && (
           <span className="ml-auto flex-shrink-0 rounded-full bg-background px-1.5 text-[10px] text-textMuted">
@@ -387,8 +421,67 @@ export const ModLogsWidget: React.FC<{
     };
     return Array.from(activeSet)
       .sort()
-      .map((login) => ({ login, name: labelFor(login) }));
+      .map((login) => {
+        const { provider, channel } = parseKey(login);
+        return { login, name: labelFor(login), provider, channel };
+      });
   }, [activeSet, channelLabels, slots, currentStream]);
+
+  // Kick + YouTube channels can't resolve through the Twitch avatar cache, so fetch
+  // their captured profile_pic (cached backend-side at channel resolve) for the
+  // chips. Keyed by `provider:channel` so the same name on two providers can't clash.
+  const [providerAvatars, setProviderAvatars] = useState<Record<string, string>>({});
+  useEffect(() => {
+    const metaChannels = activeChannels.filter((c) => c.provider === 'kick' || c.provider === 'youtube');
+    if (metaChannels.length === 0) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    let attempts = 0;
+    // On a fresh launch the backend hasn't re-resolved the channel yet, so the
+    // pic isn't ready on the first pass. Poll until every channel has one (capped,
+    // so a channel with no pic doesn't poll forever).
+    const poll = async () => {
+      if (cancelled) return;
+      let missing = false;
+      for (const c of metaChannels) {
+        try {
+          const cmd = c.provider === 'youtube' ? 'get_youtube_channel_meta' : 'get_kick_channel_meta';
+          const meta = await invoke<{ profile_pic?: string | null } | null>(cmd, { slug: c.channel });
+          if (cancelled) return;
+          const mapKey = `${c.provider}:${c.channel}`;
+          if (meta?.profile_pic) {
+            const url = meta.profile_pic;
+            setProviderAvatars((prev) => (prev[mapKey] === url ? prev : { ...prev, [mapKey]: url }));
+          } else {
+            missing = true;
+          }
+        } catch {
+          missing = true;
+        }
+      }
+      if (!cancelled && missing && ++attempts < 40) timer = setTimeout(poll, 1000);
+    };
+    void poll();
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [activeChannels]);
+
+  // Source identity per channel key, for the combined view's per-entry chip
+  // (provider logo + normalized name + avatar). Keyed by the lowercased composite
+  // key, matching a log's `channel`.
+  const channelMeta = useMemo(() => {
+    const m: Record<string, { provider: ProviderId; name: string; avatarUrl?: string }> = {};
+    for (const ch of activeChannels) {
+      m[ch.login] = {
+        provider: ch.provider,
+        name: ch.name,
+        avatarUrl: ch.provider !== 'twitch' ? providerAvatars[`${ch.provider}:${ch.channel}`] : undefined,
+      };
+    }
+    return m;
+  }, [activeChannels, providerAvatars]);
 
   // Split the logs into a column per channel. Auto-engages with >1 channel;
   // the toggle (header) lets you force the combined list back. With one channel
@@ -463,7 +556,13 @@ export const ModLogsWidget: React.FC<{
               {activeChannels.slice(0, 4).map((ch) => (
                 <Tooltip key={ch.login} content={ch.name}>
                   <span className="flex items-center gap-1.5 min-w-0">
-                    <Avatar login={ch.login} name={ch.name} size={16} />
+                    <Avatar
+                      login={ch.provider === 'twitch' ? ch.channel : undefined}
+                      name={ch.name}
+                      size={16}
+                      url={ch.provider !== 'twitch' ? providerAvatars[`${ch.provider}:${ch.channel}`] : undefined}
+                    />
+                    <ProviderLogo provider={ch.provider} size={11} className="flex-shrink-0" />
                     <span className="text-[13px] text-textSecondary truncate max-w-[110px]">{ch.name}</span>
                   </span>
                 </Tooltip>
@@ -550,6 +649,7 @@ export const ModLogsWidget: React.FC<{
             <ModLogColumn
               key={ch.login}
               channel={ch}
+              avatarUrl={ch.provider !== 'twitch' ? providerAvatars[`${ch.provider}:${ch.channel}`] : undefined}
               logs={visibleLogs.filter((l) => (l.channel || '').toLowerCase() === ch.login)}
               colors={modColors}
               highlightStyle={highlightStyle}
@@ -579,6 +679,7 @@ export const ModLogsWidget: React.FC<{
                     colors={modColors}
                     highlightStyle={highlightStyle}
                     showChannel={showChannelPerEntry}
+                    channelMeta={channelMeta[(log.channel || '').toLowerCase()]}
                   />
                 ))
               )}

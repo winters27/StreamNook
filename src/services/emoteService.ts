@@ -7,7 +7,7 @@ export interface Emote {
   id: string;
   name: string;
   url: string;
-  provider: 'twitch' | 'bttv' | '7tv' | 'ffz';
+  provider: 'twitch' | 'bttv' | '7tv' | 'ffz' | 'kick';
   isZeroWidth?: boolean;
   localUrl?: string;
   /** Type of emote: "globals", "subscriptions", "bitstier", "follower", "channelpoints", etc. */
@@ -25,6 +25,8 @@ export interface EmoteSet {
   bttv: Emote[];
   '7tv': Emote[];
   ffz: Emote[];
+  /** Kick's own native emotes (channel sub set + Global + Emojis). Empty for Twitch. */
+  kick: Emote[];
 }
 
 // Module-level registry of cached emote files (cacheKey -> localPath).
@@ -292,7 +294,7 @@ export function queueEmoteForDisplayCaching(
  * are skipped by `queueEmoteForCaching`, so calling this repeatedly is cheap.
  */
 export function queueChannelEmotesForCaching(set: EmoteSet) {
-  const all = [...set.twitch, ...set.bttv, ...set['7tv'], ...set.ffz];
+  const all = [...set.twitch, ...set.bttv, ...set['7tv'], ...set.ffz, ...set.kick];
   for (const e of all) {
     queueEmoteForDisplayCaching(e.id, e.provider, e.url);
   }
@@ -420,6 +422,7 @@ export async function fetchAllEmotes(channelName?: string, channelId?: string): 
       bttv: enhanceWithLocalUrls(emoteSet.bttv),
       '7tv': enhanceWithLocalUrls(emoteSet['7tv']),
       ffz: enhanceWithLocalUrls(emoteSet.ffz),
+      kick: enhanceWithLocalUrls(emoteSet.kick ?? []),
     };
 
     // Count how many emotes got local URLs
@@ -449,7 +452,39 @@ export async function fetchAllEmotes(channelName?: string, channelId?: string): 
       bttv: [],
       '7tv': [],
       ffz: [],
+      kick: [],
     };
+  }
+}
+
+/**
+ * Fetch a KICK channel's 7TV emotes (channel set + globals) for the emote picker.
+ * Kick has no BTTV/FFZ/native-third-party path, so this fills the 7tv slot only;
+ * the same local-URL enhancement as Twitch applies so cached art renders disk-first.
+ */
+export async function fetchKickChannelEmotes(slug: string): Promise<EmoteSet> {
+  await ensureEmoteFileCache();
+  try {
+    const emoteSet = await invoke<EmoteSet>('get_kick_channel_emotes', { slug });
+    Logger.info(
+      `[EmoteService] Kick emotes for "${slug}": ${emoteSet.kick?.length ?? 0} native, ${emoteSet['7tv']?.length ?? 0} 7TV`,
+    );
+    const enhance = (emotes: any[]) =>
+      (emotes ?? []).map((emote) => {
+        const localPath = cachedEmoteFiles.get(emoteCacheKey(emote.id, emote.provider));
+        const zeroWidth = emote.is_zero_width !== undefined ? emote.is_zero_width : emote.isZeroWidth;
+        return { ...emote, isZeroWidth: zeroWidth, localUrl: localPath ? convertFileSrc(localPath) : undefined };
+      });
+    return {
+      twitch: enhance(emoteSet.twitch),
+      bttv: enhance(emoteSet.bttv),
+      '7tv': enhance(emoteSet['7tv']),
+      ffz: enhance(emoteSet.ffz),
+      kick: enhance(emoteSet.kick),
+    };
+  } catch (error) {
+    Logger.warn('[EmoteService] Failed to fetch Kick channel emotes:', error);
+    return { twitch: [], bttv: [], '7tv': [], ffz: [], kick: [] };
   }
 }
 

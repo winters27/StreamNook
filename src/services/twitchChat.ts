@@ -1,5 +1,7 @@
 import { parseBadges } from './twitchBadges';
 import type { SongMatch } from '../utils/songId';
+import type { ProviderId } from '../types/providers';
+import { kickBadgeImage } from '../utils/kickBadges';
 
 // Message segment types - matches Rust MessageSegment enum
 export type MessageSegment =
@@ -54,6 +56,11 @@ export interface BackendChatMessage {
   user_id: string;
   timestamp: string;
   content: string;
+  /** Source platform; absent means twitch (back-compat with pre-multi-platform messages). */
+  provider?: ProviderId;
+  /** Composite source key the message was published on ("youtube:slug", "kick:slug",
+   *  or a bare Twitch login). */
+  channel?: string;
   badges: Array<{
     name: string;
     version: string;
@@ -95,7 +102,30 @@ export const parseMessage = (raw: string | BackendChatMessage, channelId?: strin
     // Use parseBadges to enrich with metadata from cache
     const sourceRoomId = raw.metadata?.source_room_id || tags.get('source-room-id');
     const effectiveChannelId = sourceRoomId || channelId;
-    const badgeData = parseBadges(badgeStr, effectiveChannelId);
+    // Non-Twitch providers carry their own badge images (baked URLs, or for Kick
+    // global types a bundled icon). Bypass the Twitch badge cache, which is keyed
+    // by Twitch badge names and would mis-resolve or drop them.
+    let badgeData: ReturnType<typeof parseBadges>;
+    if (raw.provider && raw.provider !== 'twitch') {
+      // Non-Twitch providers carry their own already-resolved badge images
+      // (Kick: baked badges_v2 art + custom/default subscriber art; YouTube:
+      // real per-tier member badge art), so build badgeData directly instead of
+      // going through the Twitch badge cache. Only Kick has bundled fallback art
+      // for its icon-only role badges; YouTube role-badge art is a later pass, so
+      // YouTube only renders badges that ship a real image_url (member tiers).
+      badgeData = [];
+      for (const b of raw.badges) {
+        const url = b.image_url_1x || (raw.provider === 'kick' ? kickBadgeImage(b.name) : undefined);
+        if (url) {
+          badgeData.push({
+            key: `${b.name}/${b.version}`,
+            info: { localUrl: url, image_url_1x: url, image_url_4x: url, title: b.title },
+          });
+        }
+      }
+    } else {
+      badgeData = parseBadges(badgeStr, effectiveChannelId);
+    }
 
     // PHASE 3.1 - THE ENDGAME: Use pre-computed reply info from Rust
     let replyInfo: ReplyInfo | undefined;
@@ -143,6 +173,15 @@ export const parseMessage = (raw: string | BackendChatMessage, channelId?: strin
     return {
       tags,
       username: raw.username,
+      // The structured backend message carries the cased display name in its own
+      // field; the renderer prefers it over the lowercase login. (For Twitch the
+      // display-name tag already covers this; for Kick the login is the lowercase
+      // slug, so this is what shows the cased "Stone916" instead of "stone916".)
+      displayName: raw.display_name,
+      provider: raw.provider,
+      // The chatter's numeric platform user id (Kick puts it here; Twitch carries
+      // it in the user-id tag). Used provider-namespaced for 7TV cosmetics lookup.
+      providerUserId: raw.user_id,
       content,
       color: raw.color || tags.get('color') || '#9147FF',
       badges: badgeData,
@@ -153,6 +192,9 @@ export const parseMessage = (raw: string | BackendChatMessage, channelId?: strin
       segments: raw.segments, // Pass pre-parsed segments through (Phase 3.1)
       // Pass pre-computed metadata through (Phase 3.1 - THE ENDGAME)
       metadata: raw.metadata,
+      // The composite source key ("youtube:slug", "kick:slug", or a bare Twitch
+      // login). The non-Twitch mod commands need the slug to resolve the channel.
+      channel: raw.channel || '',
     };
   }
 
@@ -249,11 +291,14 @@ export const parseMessage = (raw: string | BackendChatMessage, channelId?: strin
   return {
     tags,
     username,
+    displayName: tags.get('display-name'),
+    provider: undefined as ProviderId | undefined,
     content,
     color: tags.get('color') || '#9147FF', // Twitch purple as default
     badges: badgeData,
     emotes: tags.get('emotes') || '',
     replyInfo,
     isAction,
+    channel: '', // raw IRC path is Twitch-only; channel slug isn't tracked here
   };
 };

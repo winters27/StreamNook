@@ -561,20 +561,28 @@ export const useChatUserStore = create<ChatUserStore>((set, get) => ({
       enqueueCosmeticUpdate(user.userId, selectedPaint, selectedBadge);
     };
 
-    const cachedCosmetics = getCosmeticsFromMemoryCache(user.userId);
-    if (cachedCosmetics && !isUserCosmeticsHardFailed(user.userId)) {
-      applyCosmetics(cachedCosmetics);
+    if (user.userId.startsWith('youtube:') || user.userId.startsWith('tiktok:')) {
+      // YouTube + TikTok chatters don't resolve 7TV cosmetics — we decorate them
+      // with their own native data (profile picture + platform badges) instead, so
+      // there's nothing to fetch. Mark them resolved-with-none so the fast path
+      // skips re-attempting on every message.
+      enqueueCosmeticUpdate(user.userId, null, null);
     } else {
-      // The fetch records (or clears) the hard-fail mark before it resolves, so
-      // re-read it here. On a hard failure, skip the apply and leave the user
-      // unresolved so the next message retries once the 30s window elapses.
-      getCosmeticsWithFallback(user.userId)
-        .then(() => {
-          if (isUserCosmeticsHardFailed(user.userId)) return;
-          const resolved = getCosmeticsFromMemoryCache(user.userId);
-          if (resolved) applyCosmetics(resolved);
-        })
-        .catch(() => {});
+      const cachedCosmetics = getCosmeticsFromMemoryCache(user.userId);
+      if (cachedCosmetics && !isUserCosmeticsHardFailed(user.userId)) {
+        applyCosmetics(cachedCosmetics);
+      } else {
+        // The fetch records (or clears) the hard-fail mark before it resolves, so
+        // re-read it here. On a hard failure, skip the apply and leave the user
+        // unresolved so the next message retries once the 30s window elapses.
+        getCosmeticsWithFallback(user.userId)
+          .then(() => {
+            if (isUserCosmeticsHardFailed(user.userId)) return;
+            const resolved = getCosmeticsFromMemoryCache(user.userId);
+            if (resolved) applyCosmetics(resolved);
+          })
+          .catch(() => {});
+      }
     }
 
     // Resolve this member's curated third-party badges once (no-op for non-members).

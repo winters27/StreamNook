@@ -10,6 +10,13 @@ export interface DragModUser {
   /** The message the user was lifted from (enables the Delete bucket). */
   messageId?: string;
   broadcasterId: string;
+  /** Source platform. Twitch (default) uses the Helix mod commands; 'kick' routes
+   *  ban/timeout/unban to the Kick API (and delete/pin buckets don't apply);
+   *  'youtube' routes to the YouTube webview-session mod commands. */
+  provider?: string;
+  /** The source identifier (the slug after the provider prefix), which the YouTube
+   *  mod commands need to resolve the channel. Unused by Twitch/Kick. */
+  channel?: string;
   /** Gates the destructive buckets (delete/timeout/ban) to moderators. */
   isModerator: boolean;
   /** Current moderation state of the user (from the lifted message): drives the

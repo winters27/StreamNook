@@ -17,7 +17,7 @@ export interface ModLogCategory {
 // low-opacity fill. Severity reads as a warm gradient: red (ban) -> orange
 // (timeout) -> amber (delete) -> yellow (warn); restorative greens; etc.
 export const MOD_LOG_CATEGORIES: ModLogCategory[] = [
-  { key: 'ban', label: 'Bans', defaultColor: '#e5484d', actions: ['ban'] },
+  { key: 'ban', label: 'Bans', defaultColor: '#e5484d', actions: ['ban', 'removed'] },
   { key: 'timeout', label: 'Timeouts', defaultColor: '#f76808', actions: ['timeout'] },
   { key: 'delete', label: 'Message deletions', defaultColor: '#ffb224', actions: ['delete'] },
   { key: 'warn', label: 'Warnings', defaultColor: '#f5d90a', actions: ['warn'] },

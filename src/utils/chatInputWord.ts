@@ -39,7 +39,7 @@ export interface EmoteTabCandidate {
     name: string;
     url: string;
     localUrl?: string;
-    provider: 'twitch' | 'bttv' | '7tv' | 'ffz';
+    provider: 'twitch' | 'bttv' | '7tv' | 'ffz' | 'kick';
     isZeroWidth?: boolean;
   };
   /** Set for chatter completions; the value is prefixed with @ if user typed @-prefix */

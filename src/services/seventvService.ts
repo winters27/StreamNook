@@ -472,6 +472,20 @@ type CosmeticsResolver = (data: UserCosmeticsResponse | null) => void;
 const batchQueue = new Map<string, CosmeticsResolver[]>();
 let batchScheduled = false;
 
+// Cosmetics ids are namespaced by platform for non-Twitch chatters (e.g.
+// "kick:12345"); a 7TV account's cosmetics are user-level and resolve from any
+// linked platform. Twitch stays a BARE numeric id, so its query, cache key, and
+// alias are all byte-identical to before — the no-prefix path is unchanged.
+const cosmeticPlatform = (id: string): { platform: string; platformId: string } =>
+  id.startsWith('kick:')
+    ? { platform: 'KICK', platformId: id.slice(5) }
+    : { platform: 'TWITCH', platformId: id };
+
+// GraphQL aliases must match /[_A-Za-z][_0-9A-Za-z]*/, so a "kick:123" id can't be
+// used raw. Sanitize to a stable token used identically when building the query
+// and when reading the response back. Bare numeric Twitch ids are unaffected.
+const cosmeticAlias = (id: string): string => `u_${id.replace(/[^a-zA-Z0-9_]/g, '_')}`;
+
 const requestUserCosmeticsBatched = (
   twitchId: string,
 ): Promise<UserCosmeticsResponse | null> => {
@@ -515,10 +529,10 @@ const drainBatch = async () => {
 
   const runChunk = async (chunk: string[]) => {
     const query = `{ ${chunk
-      .map(
-        (id) =>
-          `u_${id}: users { userByConnection(platform: TWITCH, platformId: "${id}") ${fullUserSelection} }`,
-      )
+      .map((id) => {
+        const { platform, platformId } = cosmeticPlatform(id);
+        return `${cosmeticAlias(id)}: users { userByConnection(platform: ${platform}, platformId: "${platformId}") ${fullUserSelection} }`;
+      })
       .join(' ')} }`;
 
     try {
@@ -539,7 +553,7 @@ const drainBatch = async () => {
       }
 
       for (const id of chunk) {
-        const userByConnection = response.data[`u_${id}`]?.userByConnection;
+        const userByConnection = response.data[cosmeticAlias(id)]?.userByConnection;
         const result = userByConnection
           ? parseUserCosmetics(userByConnection, cachedFiles)
           : { paints: [], badges: [], seventvUserId: undefined };
