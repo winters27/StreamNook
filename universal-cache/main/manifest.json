@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "last_sync": 1782548745,
+  "last_sync": 1782635975,
   "entries": {
     "global_badges": {
       "id": "global_badges",
@@ -5740,10 +5740,10 @@
             }
           ]
         },
-        "cached_at": 1782548745
+        "cached_at": 1782635975
       },
       "metadata": {
-        "timestamp": 1782548745,
+        "timestamp": 1782635975,
         "expiry_days": 7,
         "source": "twitch",
         "version": 1
