@@ -75,7 +75,7 @@ tiktok-live = { path = "vendor/tiktok-live" }
 toml = "0.8"
 semver = "1"
 minisign-verify = "0.2"
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "8", default-features = false, features = ["deflate"] }
 
 log = "0.4"
 env_logger = "0.11"
